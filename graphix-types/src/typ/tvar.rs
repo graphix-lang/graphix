@@ -6,8 +6,8 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, FnType, Mutability, NodePairs, PRINT_FLAGS, PrintFlag, RefKey, Type,
-        node_addr, setops::union_identical,
+        Bound, FnType, Mutability, NodePairs, PRINT_FLAGS, PrintFlag, RefKey, TVarsSeen,
+        Type, node_addr, setops::union_identical,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -27,7 +27,7 @@ use std::{
     collections::hash_map::Entry,
     fmt::{self, Debug},
     hash::Hash,
-    mem::ManuallyDrop,
+    mem::{self, ManuallyDrop},
     ops::{ControlFlow, Deref},
     sync::atomic::{self, AtomicU64},
 };
@@ -61,7 +61,7 @@ fn bound_cell_changes() {
     GROUND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
 }
 
-type CellRef = Arc<RwLock<TCell>>;
+type CellRef = Arc<CellLock>;
 
 /// Whether no open cell is reachable from `t` through the bindings,
 /// constraints and lower bounds [`would_cycle_inner`] walks: then `t`
@@ -123,7 +123,7 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
         return;
     }
     for cell in cells.drain(..) {
-        let mut c = cell.write();
+        let mut c = cell.0.write();
         if c.binding.is_some() {
             c.ground = c.ground.max(epoch);
         }
@@ -480,6 +480,64 @@ thread_local! {
     /// The compile task whose foreign writes this thread records
     /// ([`OwnWrites`]).
     static OWN_WRITES: RefCell<Option<Record>> = const { RefCell::new(None) };
+    static CELL_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many writes this thread has made to cells and to vars' links: a
+/// verdict this thread read from cells stands while the count does (a
+/// compile task on another thread writes only cells it owns).
+#[inline]
+pub(super) fn cell_writes() -> u64 {
+    CELL_WRITES.with(|n| n.get())
+}
+
+#[inline]
+fn count_write() {
+    CELL_WRITES.with(|n| n.set(n.get() + 1))
+}
+
+/// A cell's lock: each write counts toward [`cell_writes`].
+#[derive(Debug, Default)]
+pub struct CellLock(RwLock<TCell>);
+
+/// The cells whose conjuncts an alias walk has passed under one scope of
+/// quantifier names: passing them again aliases nothing. Each cell is
+/// held, so its address stays its own while the walk lasts.
+pub(super) struct ConjunctsPassed(RefCell<LPooled<AHashMap<usize, Arc<CellLock>>>>);
+
+impl ConjunctsPassed {
+    pub(super) fn take() -> Self {
+        Self(RefCell::new(LPooled::take()))
+    }
+
+    /// Whether `tv`'s cell is passed for the first time.
+    pub(super) fn first(&self, tv: &TVar) -> bool {
+        let cell = tv.cell();
+        let addr = cell.data_ptr().addr();
+        self.0.borrow_mut().insert(addr, cell).is_none()
+    }
+}
+
+impl CellLock {
+    pub(crate) fn new(cell: TCell) -> Self {
+        Self(RwLock::new(cell))
+    }
+
+    #[inline]
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, TCell> {
+        self.0.read()
+    }
+
+    #[inline]
+    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, TCell> {
+        count_write();
+        self.0.write()
+    }
+
+    #[inline]
+    pub(crate) fn data_ptr(&self) -> *mut TCell {
+        self.0.data_ptr()
+    }
 }
 
 /// A concurrent compile task: one started later is greater.
@@ -984,6 +1042,14 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // binding (no wrong value: the bind is the backstop). The direct `j <- |x: i64| -> i64 x + 1` and an annotated writer (mm2) are refused. It goes through
 // because a call copies the earlier quantifier the writer's parameter type holds. probe:
 // ~/ptmp/cr29/scratch/review-r14/D-r4-1/new/mm/{mm1,mm2,mm3,mm4}.txt (GRAPHIX_MODPATH=$PWD ../../r.sh lane FILE).
+// 2026-11-05 claude: Lane Q (cr51-Q, Eric's 11-05 ruling: (e) plus the ML rule) closes this CR's probes as a side effect of the ML rule, not by D14 (b) as
+// ruled: a lambda no binding names (the collection callback |e| W(e) here) takes its enclosing level's cells at its gate's close instead of generic ones
+// (Lambda::named, DefGate::close), and a read of a generalized binding no binding names is one instance (Ref::named), so the callback leaves no generic
+// cell in y's type and g is one type in x. gen_map, gen_map2, gen_map4, gen_map5 are now refused by --check (type mismatch i64 does not contain string, or
+// cannot compute string + i64), as gen_app2 was; the review r9 rank-2 forms (ref1_arg .. e2_default_sel, c1) are refused by the new rule on written
+// quantified function types; c4b_norank2 by the check. Left for D14's owner to decide whether this closes the CR or D14 (b) is still wanted for a shape
+// the ML rule misses; no probe here still holds. Pins: lang::quantified::a_callbacks_result_is_one_instance,
+// a_generic_binding_read_into_a_callbacks_result_is_one_instance.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
@@ -1037,10 +1103,6 @@ pub struct TCell {
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
     pub(crate) rigid_gates: u32,
-    /// The rigid gates a call opened on a rank-2 formal's quantifiers: a callee
-    /// checked against the declared bound alone, so a unification may not
-    /// add a conjunct the bound does not imply.
-    pub(crate) quantifier_gates: u32,
     /// Where the cell belongs ([`Level`]); everything it reaches is at
     /// its depth or shallower.
     pub(crate) level: Level,
@@ -1052,27 +1114,59 @@ pub struct TCell {
 }
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
-/// how often each cell occurs, a shared node's counted per sight.
+/// which cells occur more than once, a shared node's cells once per sight.
 #[derive(Default)]
 pub(crate) struct Occurrences {
     pub(crate) vars: Vec<TVar>,
-    count: AHashMap<usize, u32>,
-    /// The cells met, in order, a shared node's sights included.
+    /// Each cell met, and whether it occurs more than once.
+    many: AHashMap<usize, bool>,
+    /// The cells in the order first met.
     trail: Vec<usize>,
-    /// Per shared node walked, the cells beneath it.
-    nodes: AHashMap<usize, Arc<[usize]>>,
+    /// Per place in `trail`, a place at or after it that no
+    /// `met_again` has marked: an unmarked place names itself.
+    unmarked: Vec<usize>,
+    /// Per shared node walked, the span of `trail` its walk first met.
+    nodes: AHashMap<usize, (usize, usize)>,
 }
 
 impl Occurrences {
     fn met(&mut self, cell: usize) {
-        self.trail.push(cell);
-        let n = self.count.entry(cell).or_default();
-        *n = n.saturating_add(1);
+        match self.many.entry(cell) {
+            Entry::Occupied(mut e) => *e.get_mut() = true,
+            Entry::Vacant(e) => {
+                e.insert(false);
+                self.unmarked.push(self.trail.len());
+                self.trail.push(cell);
+            }
+        }
+    }
+
+    /// A node met again: every cell its walk first met occurs again, each
+    /// place of `trail` marked once whatever the spans that hold it.
+    fn met_again(&mut self, (start, end): (usize, usize)) {
+        let mut i = self.first_unmarked(start);
+        while i < end {
+            self.many.insert(self.trail[i], true);
+            self.unmarked[i] = i + 1;
+            i = self.first_unmarked(i + 1);
+        }
+    }
+
+    fn first_unmarked(&mut self, i: usize) -> usize {
+        let mut root = i;
+        while root < self.unmarked.len() && self.unmarked[root] != root {
+            root = self.unmarked[root];
+        }
+        let mut j = i;
+        while j < root {
+            j = mem::replace(&mut self.unmarked[j], root);
+        }
+        root
     }
 
     /// Whether `cell` occurs more than once.
     pub(crate) fn many(&self, cell: usize) -> bool {
-        self.count.get(&cell).is_some_and(|n| *n > 1)
+        self.many.get(&cell).is_some_and(|many| *many)
     }
 }
 
@@ -1094,11 +1188,6 @@ pub(crate) enum CellFact {
     /// a `_` annotation, a `-> _` return): a fact the gate keeps, where a
     /// ⊥ nothing required is vacuous and reopens.
     BottomRequired,
-    /// The cell is a quantifier of a rank-2 formal, or of a written fn
-    /// type other than a declared signature's own: wherever the type is
-    /// passed on, in a definition's check or an instance's elaboration,
-    /// it is any instance of itself, copied fresh for each use.
-    FormalQuantifier,
     /// The end of the input that made the cell settled it
     /// ([`settle_input`](super::settle::settle_input)): what it holds is
     /// decided, so a ⊥ it holds is required of whatever a later input sends
@@ -1114,7 +1203,6 @@ impl Default for TCell {
             lower: SmallVec::new(),
             facts: BitFlags::empty(),
             rigid_gates: 0,
-            quantifier_gates: 0,
             level: current_level(),
             task: TASK.get(),
             ground: 0,
@@ -1128,8 +1216,7 @@ impl Default for TCell {
 /// left, so the close decrements this cell and not whatever the var
 /// reads by then.
 pub struct RigidGate {
-    cell: Arc<RwLock<TCell>>,
-    quantifier: bool,
+    cell: Arc<CellLock>,
 }
 
 impl Drop for RigidGate {
@@ -1137,9 +1224,6 @@ impl Drop for RigidGate {
         let mut cell = self.cell.write();
         gated(&cell);
         cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
-        if self.quantifier {
-            cell.quantifier_gates = cell.quantifier_gates.saturating_sub(1);
-        }
     }
 }
 
@@ -1257,8 +1341,9 @@ fn settled_cause(container: &Type, contained: &Type, exact: bool) -> bool {
             (Type::ByRef(m, a), Type::ByRef(_, b)) => {
                 settled_cause(a, b, exact || *m == Mutability::Mut)
             }
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                settled_cause(k0, k1, exact) || settled_cause(v0, v1, exact)
+            (Type::Map(m0), Type::Map(m1)) => {
+                settled_cause(&m0.key, &m1.key, exact)
+                    || settled_cause(&m0.value, &m1.value, exact)
             }
             (Type::Tuple(a), Type::Tuple(b)) => pairs(a, b, exact),
             (Type::Variant(t0, a, _), Type::Variant(t1, b, _)) => {
@@ -1328,7 +1413,7 @@ impl fmt::Display for BoundAt<'_> {
 pub struct TVarLink {
     pub(crate) id: TVarId,
     pub(crate) frozen: bool,
-    pub(crate) cell: Arc<RwLock<TCell>>,
+    pub(crate) cell: Arc<CellLock>,
     /// The compile task that created the var ([`written`]).
     task: TaskId,
 }
@@ -1470,7 +1555,7 @@ impl Default for TVar {
     fn default() -> Self {
         let id = TVarId::new();
         let name = ArcStr::from(format_compact!("_{}", id.0).as_str());
-        Self::from_parts(name, id, false, Arc::new(RwLock::new(TCell::default())))
+        Self::from_parts(name, id, false, Arc::new(CellLock::default()))
     }
 }
 
@@ -1569,12 +1654,7 @@ impl TVar {
     }
 
     pub fn empty_named(name: ArcStr) -> Self {
-        Self::from_parts(
-            name,
-            TVarId::new(),
-            false,
-            Arc::new(RwLock::new(TCell::default())),
-        )
+        Self::from_parts(name, TVarId::new(), false, Arc::new(CellLock::default()))
     }
 
     /// A fresh variable no definition owns yet, as written in source.
@@ -1644,7 +1724,7 @@ impl TVar {
             name,
             TVarId::new(),
             false,
-            Arc::new(RwLock::new(TCell::bound(typ))),
+            Arc::new(CellLock::new(TCell::bound(typ))),
         )
     }
 
@@ -1653,7 +1733,7 @@ impl TVar {
         name: ArcStr,
         id: TVarId,
         frozen: bool,
-        cell: Arc<RwLock<TCell>>,
+        cell: Arc<CellLock>,
     ) -> Self {
         Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
@@ -1668,7 +1748,7 @@ impl TVar {
     }
 
     /// The wrapper's id and frozen flag, and its cell.
-    pub(crate) fn parts(&self) -> (TVarId, bool, Arc<RwLock<TCell>>) {
+    pub(crate) fn parts(&self) -> (TVarId, bool, Arc<CellLock>) {
         let link = self.read();
         (link.id, link.frozen, link.cell.clone())
     }
@@ -1679,7 +1759,7 @@ impl TVar {
     }
 
     /// The cell this var reads now.
-    pub(crate) fn cell(&self) -> Arc<RwLock<TCell>> {
+    pub(crate) fn cell(&self) -> Arc<CellLock> {
         self.read().cell.clone()
     }
 
@@ -1761,11 +1841,11 @@ impl TVar {
     /// is not a var, without an occurs walk of `t`'s whole depth, when
     /// `t` cannot reach the var's cell: nothing but `slot` holds the var
     /// and nothing but the var holds the cell, and either nothing but its
-    /// owner holds `slot` (a type reaches a cell only through a clone of
-    /// one of the three) or `t` reaches no open cell at all. False,
-    /// binding nothing, when any of that fails.
-    pub fn bind_unshared(slot: &Arc<Type>, t: &Type) -> bool {
-        let Type::TVar(tv) = &**slot else { return false };
+    /// owner holds the node `slot` sits in (`shared` false: a type reaches
+    /// a cell only through a clone of one of the three) or `t` reaches no
+    /// open cell at all. False, binding nothing, when any of that fails.
+    pub fn bind_unshared(slot: &Type, shared: bool, t: &Type) -> bool {
+        let Type::TVar(tv) = slot else { return false };
         if Arc::count(&tv.0) != 1
             || Arc::count(&tv.read().cell) != 1
             || matches!(t, Type::TVar(_))
@@ -1777,7 +1857,6 @@ impl TVar {
             return false;
         }
         let epoch = ground_epoch();
-        let shared = Arc::count(slot) > 1;
         let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
         if shared && !reaches_no_open_cell(t, epoch, &mut LPooled::take(), &mut walked) {
             return false;
@@ -1942,6 +2021,7 @@ impl TVar {
     }
 
     pub fn write<'a>(&'a self) -> RwLockWriteGuard<'a, TVarLink> {
+        count_write();
         self.link.write()
     }
 
@@ -2311,16 +2391,6 @@ impl TVar {
     /// others reading a cell that forwards), else on the cell it reads;
     /// see [`TCell::rigid_gates`].
     pub fn open_rigid(&self) -> RigidGate {
-        self.open_gate(false)
-    }
-
-    /// [`Self::open_rigid`] for a rank-2 formal's quantifier; see
-    /// [`TCell::quantifier_gates`].
-    pub fn open_quantifier_rigid(&self) -> RigidGate {
-        self.open_gate(true)
-    }
-
-    fn open_gate(&self, quantifier: bool) -> RigidGate {
         let cell = match self.open_cell() {
             Some(open) => open.cell(),
             None => self.cell(),
@@ -2329,16 +2399,8 @@ impl TVar {
             let mut c = cell.write();
             gated(&c);
             c.rigid_gates += 1;
-            if quantifier {
-                c.quantifier_gates += 1;
-            }
         }
-        RigidGate { cell, quantifier }
-    }
-
-    /// Whether a rank-2 formal's quantifier holds this cell rigid.
-    pub fn is_quantifier_rigid(&self) -> bool {
-        self.read().cell.read().quantifier_gates > 0
+        RigidGate { cell }
     }
 
     /// Whether a compile task started before the running one created the
@@ -2378,23 +2440,6 @@ impl TVar {
         if !c.facts.contains(CellFact::Settled) && decided(&c) {
             c.facts |= CellFact::Settled;
         }
-    }
-
-    /// Mark the cell a quantifier of a rank-2 formal; see
-    /// [`CellFact::FormalQuantifier`].
-    pub fn mark_formal_quantifier(&self) {
-        let cell = self.cell();
-        let mut c = cell.write();
-        if decided(&c) {
-            c.facts |= CellFact::FormalQuantifier;
-        }
-    }
-
-    /// Whether the cell is a rank-2 type's quantifier; see
-    /// [`CellFact::FormalQuantifier`].
-    #[doc(hidden)]
-    pub fn is_formal_quantifier(&self) -> bool {
-        self.cell().read().facts.contains(CellFact::FormalQuantifier)
     }
 
     /// Whether a ⊥ was produced into the cell while it was open: a
@@ -2512,13 +2557,6 @@ impl TVar {
         }
         let f = match how {
             Fresh::Copy => self.fresh_copy(),
-            // a rank-2 formal's quantifier a gate holds is one type for the
-            // check under it, which no definition inside generalizes
-            Fresh::Instantiate(_) | Fresh::Scheme(_) | Fresh::Generic
-                if self.is_quantifier_rigid() =>
-            {
-                return self.clone();
-            }
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
                 TVar::empty_named(self.name.clone())
             }
@@ -2688,10 +2726,7 @@ fn under_quantifiers(
     let mut renames: SmallVec<[(ArcStr, ArcStr); 2]> = SmallVec::new();
     let mut copies: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
     for q in captured {
-        let name = (1u64..)
-            .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
-            .find(|n| !avoid.contains(n))
-            .unwrap();
+        let name = name_apart(&q, &avoid);
         avoid.insert(name.clone());
         if let Some(tv) = cells.get(&q) {
             let copy = match fresh.get(&tv.cell_addr()) {
@@ -2712,6 +2747,68 @@ fn under_quantifiers(
         tv.copy_into(&copy, fresh, &mut scoped, |t, f, s| t.replace_tvars_int(s, f));
     }
     Some((inner, renames))
+}
+
+/// `q` numbered to a name `avoid` does not hold.
+fn name_apart(q: &ArcStr, avoid: &AHashSet<ArcStr>) -> ArcStr {
+    (1u64..)
+        .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
+        .find(|n| !avoid.contains(n))
+        .unwrap()
+}
+
+/// `copy`, a walk's image of `ft` that inlined bindings, with each of
+/// `ft`'s quantifiers renamed apart where a cell of its name that an
+/// inlined binding brought would stand for it by name, as
+/// [`under_quantifiers`] renames one a substituted type holds; where the
+/// quantifier's image stands in no position (it is held through a bound),
+/// the cells that would stand for it are renamed instead. `image` is the
+/// walk's image of a cell of `ft`, `None` where it keeps the cell.
+pub(super) fn keep_quantifiers(
+    ft: &FnType,
+    mut copy: FnType,
+    mut image: impl FnMut(&TVar) -> Option<Type>,
+) -> FnType {
+    if ft.quantifiers.is_empty() {
+        return copy;
+    }
+    let mut own: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
+    ft.each_quantifier(|q, tv| own.push((q.clone(), tv.clone())));
+    let mut picked: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    copy.collect_tvars(&mut picked);
+    for (q, tv) in own {
+        let addr = match &image(&tv) {
+            None => tv.cell_addr(),
+            Some(Type::TVar(img)) => img.cell_addr(),
+            Some(_) => continue,
+        };
+        if picked.get(&q).is_none_or(|p| p.cell_addr() == addr) {
+            continue;
+        }
+        let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        copy.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
+        avoid.extend(copy.quantifiers.iter().cloned());
+        let name = name_apart(&q, &avoid);
+        let rename = |copy: &FnType, pick: &dyn Fn(&TVar) -> bool| {
+            let mut memo = CopyMemo::default();
+            copy.cow_walk(|t| t.renamed_cells(pick, &name, &mut memo))
+        };
+        copy = match rename(&copy, &|c| c.cell_addr() == addr) {
+            Some(mut renamed) => {
+                renamed.quantifiers = Arc::from_iter(
+                    copy.quantifiers
+                        .iter()
+                        .map(|n| if *n == q { name.clone() } else { n.clone() }),
+                );
+                renamed
+            }
+            None => {
+                rename(&copy, &|c| c.name == q && c.cell_addr() != addr).unwrap_or(copy)
+            }
+        };
+    }
+    copy
 }
 
 // Each walk below spells out only the arms whose policy differs from
@@ -3049,8 +3146,8 @@ impl Type {
                     .zip(b.iter())
                     .fold(true, |ok, ((_, a, _), (_, b, _))| a.take_row_at(b, seen) & ok)
             }
-            (Type::Map { key: ka, value: va }, Type::Map { key: kb, value: vb }) => {
-                ka.take_row_at(kb, seen) & va.take_row_at(vb, seen)
+            (Type::Map(a), Type::Map(b)) => {
+                a.key.take_row_at(&b.key, seen) & a.value.take_row_at(&b.value, seen)
             }
             (
                 Type::Abstract { id: ia, params: a },
@@ -3119,10 +3216,8 @@ impl Type {
             }
             t => {
                 if let Some(n) = super::node_addr(t) {
-                    if let Some(cells) = out.nodes.get(&n).cloned() {
-                        for c in cells.iter() {
-                            out.met(*c)
-                        }
+                    if let Some(span) = out.nodes.get(&n).copied() {
+                        out.met_again(span);
                         return;
                     }
                     let start = out.trail.len();
@@ -3132,9 +3227,7 @@ impl Type {
                         }
                         t => t.for_each_child(&mut |c| c.tvar_occurrences(out)),
                     }
-                    let cells: Arc<[usize]> =
-                        Arc::from_iter(out.trail[start..].iter().copied());
-                    out.nodes.insert(n, cells);
+                    out.nodes.insert(n, (start, out.trail.len()));
                     return;
                 }
                 t.for_each_child(&mut |c| c.tvar_occurrences(out))
@@ -3144,6 +3237,14 @@ impl Type {
 
     /// Alias type variables with the same name to each other.
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        self.alias_tvars_in(known, &ConjunctsPassed::take())
+    }
+
+    pub(super) fn alias_tvars_in(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        passed: &ConjunctsPassed,
+    ) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
@@ -3156,26 +3257,20 @@ impl Type {
                 }
             },
             // a nested fn type's own quantifiers are its own, whatever an
-            // enclosing signature names alike, and any instance of
-            // themselves wherever the type stands, marked by the task that
-            // created them (`CellFact::FormalQuantifier`)
+            // enclosing signature names alike
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
-                ft.alias_tvars(known);
+                ft.alias_tvars_in(known, &ConjunctsPassed::take());
                 for (q, tv) in outer {
-                    if let Some(own) = known.remove(&q)
-                        && !own.earlier_task()
-                    {
-                        own.mark_formal_quantifier()
-                    }
+                    known.remove(&q);
                     if let Some(tv) = tv {
                         known.insert(q, tv);
                     }
                 }
             }
-            Type::Fn(ft) => ft.alias_tvars(known),
-            t => t.for_each_child(&mut |c| c.alias_tvars(known)),
+            Type::Fn(ft) => ft.alias_tvars_in(known, passed),
+            t => t.for_each_child(&mut |c| c.alias_tvars_in(known, passed)),
         })
     }
 
@@ -3250,19 +3345,17 @@ impl Type {
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.collect_tvars_seen(known, &mut LPooled::take())
+        self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
     /// [`Self::collect_tvars`], each shared node (`seen`) walked once.
-    /// `seen` holds each node, so a normalized conjunct dropped mid-walk
-    /// cannot lend its address to a node never walked.
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
-        seen: &mut AHashMap<usize, Type>,
+        seen: &mut TVarsSeen,
     ) {
         if let Some(n) = node_addr(self)
-            && seen.insert(n, self.clone()).is_some()
+            && seen.nodes.insert(n, self.clone()).is_some()
         {
             return;
         }
@@ -3309,6 +3402,27 @@ impl Type {
                 ft.for_each_type(&mut |t| t.names_held(out, seen))
             }
             t => t.for_each_child(&mut |c| c.names_held(out, seen)),
+        })
+    }
+
+    /// Self with each occurrence of a cell `pick` takes named `name`, its
+    /// function types' included; `None` where none occurs. Each shared
+    /// node (`memo`) is rebuilt once.
+    fn renamed_cells(
+        &self,
+        pick: &dyn Fn(&TVar) -> bool,
+        name: &ArcStr,
+        memo: &mut CopyMemo,
+    ) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => pick(tv).then(|| Type::TVar(tv.renamed(name.clone()))),
+            Type::Fn(ft) => once(self, memo, |memo| {
+                ft.cow_walk(|t| t.renamed_cells(pick, name, memo))
+                    .map(|f| Type::Fn(Arc::new(f)))
+            }),
+            t => once(t, memo, |memo| {
+                t.cow_children(&mut |c| c.renamed_cells(pick, name, memo))
+            }),
         })
     }
 
@@ -3455,6 +3569,20 @@ impl Type {
         go(self, counts, &mut LPooled::take())
     }
 
+    // CR claude for claude: [bug/high] A slice's binds over an application of a
+    // constructor variable are not typed by its argument: `self ⊇ pred` for 'c<'b> ⊇
+    // Array<['h, 'r]> narrows nothing, so 'h stays a cell of its own. `'c: Collection,
+    // 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string
+    // = h; q }, _ => null }` checks, and over `[(3, 4)]` the arm's test (now of strings)
+    // fails, so it answers null; the twin over `Array<'b>` is refused. Reading the
+    // application as `Array<'b>` in narrow_pattern alone (as Type::matching_type does
+    // for a written test) was tried: h1 still answered null (capture_type and
+    // bind_narrowed see the application too), and over `c: Collection`'s element cell
+    // the arm then decided the cell while the walks that refuse a pattern over a cell
+    // not decided at the select still saw the application whole, so `[`A(z), ..] => z`
+    // passed with a string z. Fix: read the application as the collection in the
+    // narrowing, the bind typing and those walks together.
+    // probe: ~/ptmp/cr29/scratch/r17-o1/h1.gx, twin h1t.gx (collection-element-bind-01)
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
@@ -3948,16 +4076,17 @@ impl Type {
                 })),
                 None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.named_as(tv))),
             },
-            Type::Fn(ft) => {
-                ft.cow_walk(|t| t.rename_memo(known, memo)).map(|f| Type::Fn(Arc::new(f)))
-            }
+            Type::Fn(ft) => ft.cow_walk(|t| t.rename_memo(known, memo)).map(|f| {
+                let image = |tv: &TVar| Type::TVar(tv.clone()).rename_memo(known, memo);
+                Type::Fn(Arc::new(keep_quantifiers(ft, f, image)))
+            }),
             t => {
                 once(t, memo, |memo| t.cow_children(&mut |c| c.rename_memo(known, memo)))
             }
         })
     }
 
-    // CR claude for claude: [risk/low] A walk that inlines a bound cell's binding under a
+    // XCR claude for claude: [risk/low] A walk that inlines a bound cell's binding under a
     // quantified function type (instantiate_memo here, rename_memo, resolve_tvars) can
     // put a cell named like that function type's quantifier inside it, which every
     // by-name reading of the quantifier (FnType::each_quantifier, collect_tvars'
@@ -3971,6 +4100,30 @@ impl Type {
     // quantifier named 'a and 'b, under GRAPHIX_NO_SUBST=1 too. If one shows: rename the
     // quantifier as under_quantifiers does when an inlined binding holds its name.
     // (resolve-capture-01)
+    // 2026-11-05 claude: Reproduced and fixed. The capture is reachable: a body
+    // annotation's free 'p bound to a parameter's Array<'a> (|k, v: Array<'a>| { let k2:
+    // fn<'a: Any>(y: 'p, x: 'a) -> 'a = k; (k2(v, 1), k2(v, "s")) }) passed --check but
+    // its instance was refused ('an instance at .. of a definition typed ..', ELAB_AUDIT
+    // instance-signature): instance_sig's instantiate_owned inlined 'p, and
+    // each_quantifier then took v's 'a for k2's. The three walks
+    // (FnType::instantiate_how, rename_with/rename_memo, resolve_tvars_seen_int) now end
+    // in tvar::keep_quantifiers: a quantifier whose name an inlined cell would take is
+    // renamed apart ('a1), as under_quantifiers does; where the quantifier stands only in
+    // a bound, the namesake is renamed. Pins that fail without it: graphix-types
+    // typ::fntyp::tests::an_inlined_binding_captures_no_quantifier (both branches),
+    // graphix-tests lang::types::rank2_quantifier_beside_an_inlined_namesake and
+    // rank2_quantifier_beside_a_declared_namesake (all four modes). Census of both repos:
+    // no verdict or message change; GUI-suite --check instructions unchanged (43.05G vs
+    // 43.04G). The printer's own capture is print-capture-01. probes:
+    // ~/ptmp/cr29/scratch/r17-hk/{v3,v3b,v4}.gx
+    // 2026-11-06 claude: Landed on main after rank-2 types were removed (lane Q): the two
+    // graphix-tests pins (rank2_quantifier_beside_an_inlined_namesake,
+    // rank2_quantifier_beside_a_declared_namesake) wrote a quantified let annotation,
+    // which main now refuses, so they were dropped with main's other rank-2 tests. The
+    // walks' fix stays, pinned by
+    // typ::fntyp::tests::an_inlined_binding_captures_no_quantifier. Whether a declared
+    // signature (an interface val, a trait method, a lambda's own variables) still reaches
+    // the capture is not shown.
     /// `None` when no TVar is beneath.
     /// The bindings resolved, each open cell freshened as `how` says.
     pub(super) fn instantiate_int(

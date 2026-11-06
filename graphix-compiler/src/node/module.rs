@@ -260,7 +260,7 @@ fn bind_sig_item(
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
-            // which each use picks, not a rank-2 type's
+            // which each use picks
             match &typ {
                 Type::Fn(ft) => {
                     ft.alias_tvars(&mut LPooled::take());
@@ -395,8 +395,10 @@ fn export_sig(env: &mut Env, inner_env: &Lexical, scope: &Scope, sig: &Sig) {
 }
 
 /// A signature binding (`outer`) and the binding behind it (`inner`):
-/// the implementation's own, or a trait default. A private inner
-/// binding's production moves out and a write to the outer id flows in.
+/// the implementation's own, or a trait default. An implementation's
+/// binding is the signature's variable at run time
+/// ([`crate::branch::VarAliases`]); only a trait default's production is
+/// relayed out and a write to the outer id relayed in.
 #[derive(Debug, Clone, Copy, netidx_derive::Pack)]
 #[pack(unwrapped)]
 struct Proxy {
@@ -405,10 +407,83 @@ struct Proxy {
     private_inner: bool,
 }
 
+// XCR claude for claude: [structure/medium] An interface pair is two runtime variables (the
+// val's binding and the body's) kept in step by relays: the static-call mark carry, the seq
+// planner's joined pairs (StaticCallees::add_joined), this cycle-start delivery, the module
+// node's productions, a wake's re-raise. Each review round of iface-join-mark-01 and
+// dyn-reload-reader-01 found another place the relay is not one variable. Still open here,
+// main alike: two place writes from opposite sides in one cycle lose one (pp: {x: 0, y: 9}
+// where one variable gives {x: 7, y: 9}; n7), the (Some, Some) arm reverses one variable's
+// set order (n2: 10 where 20), and a write through the val while the module's arm sleeps
+// fires readers outside the arm twice at the wake (s1: 3 where 2). A third round
+// (branch cr37-W, 2681714fa: both sides' writes merged into the val's queue) fixed those
+// and regressed two shapes main gets right: a replaced body's queued writes land on its
+// replacement, so one function answers two ways (d6: d::r 3, d::f(1) 21), and a level
+// write is ordered by the seq of the one it replaced (lv ends at 100 where 0). Proposed:
+// make the pair one variable at run time (one queue, the val's id, from the join), and
+// rule what a reload does with the replaced body's pending writes (main drops them with
+// the old binding; a root write queued across the reload lands, d4). probes:
+// ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{pp,ppn,ppctl}, W2-r3-2/cr37/p/{n7,n2,s1,s1ctl},
+// W2-r3-1/cr37/{d6,d2,d1,d4}, W2-r3-2/cr37/findings.sh (lv) (iface-pair-one-var-01)
+// 2026-11-03 claude: Eric ruled (2026-11-03): D18 (a) in ~/ptmp/cr-discuss.md: one variable
+// by construction: from the join the interface pair is the val's one id at run time (one
+// queue, one stored value, the body's let publishing to it) and the relays go,
+// iface-reload-mark-01 with them; on a reload keep both: a replaced body's pending writes
+// drop with its binding, a root write queued across the reload still lands; the shapes
+// cr37-W broke (d6, lv) are its tests.
+// 2026-11-05 claude: D18 (a) built: from the join (now at the start of the body's check,
+// join_implemented_vals) the implementing binding is the val's variable at run time
+// (branch::VarAliases: GXRt, the cycle's Layered event and a fork's ForkRt read and write
+// the val's id for it; one queue, each waiting write keeping the binding it was made
+// through). The relays are gone: deliver_pair_writes, the module node's productions and
+// pre-body copy (a trait default's relay stays), carry_static_mark and
+// join_interface_pair's mark copy; static resolution reads every name of the variable
+// (CompileCtx::rebinds, var_written). Reload: retire drops the writes made through the
+// replaced binding (forget_from), a write through the val lands; GXRt keeps an alias a join
+// left while a reader registered through it lives. Pins (lang::modules, all four modes)
+// fail on base-r17: patches_through_both_sides_of_an_interface_compose (0 9),
+// writes_to_both_sides_of_an_interface_land_in_the_order_made (10),
+// levels_through_both_sides_of_an_interface_are_one_level (0 3),
+// a_write_through_an_interface_while_its_arm_sleeps_fires_once (3); cr37-W's broken shapes
+// pass on base and lane: a_reload_drops_the_replaced_bodys_pending_writes (d6),
+// a_write_through_an_interface_lands_across_a_reload (d4). The seq planner still closes
+// write sets over the joined names (add_joined): the checker's two bindings are one
+// variable's two names. Needs a soak.
+// 2026-11-05 claude: Review r17 round 2: VarAliases::var cost 37 instructions a call in the
+// dev build (an out-of-line call through triomphe's Arc::ptr to an 8KB filter, about 160M
+// calls in fixed.gx), which callgrind put at 710M of the +981M D18 added to a 40-cycle
+// fixed.gx; perf's instruction samples had skidded it into Layered::get and the store
+// probes, whose own counts did not move. VarAliases now carries its smallest and largest
+// alias and var is an inlined two-compare range test, the filter and map out of line
+// (var_between). fixed.gx (64 slots folding 400, 300 cycles, --no-fusion), instructions:u:
+// GRAPHIX_PAR=off base-r17 77.7G, D18 85.0G, now 79.3G (pre-D18 78.1G); auto 105.5G /
+// 116.8G / 108.1G; vars.gx 2.34G / 2.39G / 2.33G. Pin:
+// branch::tests::var_aliases_name_their_variables_only. ForkRt::note_read now notes the
+// variable (aliases.var), so GRAPHIX_PAR_AUDIT matches a read of an implementing binding
+// against the val-keyed event and store; no planner witness exists to pin it.
+// 2026-11-06 claude: Review r17 round 3 (the medium: compile-time bindings between the
+// first and last alias paid the out-of-line lookup at every read). The runtime's store,
+// reader and notify calls (Rt::store_get/insert/put/remove, readers, notify_set, late,
+// produced) take a branch::Var, the variable an id names; RtView, Layered, read_var and
+// ExecCtx::deliver resolve an id once per read or delivery (a delivery had resolved it five
+// times, a read up to three), and VarAliases::var_of is the range test plus an inline
+// filter load, the map out of line. Probes
+// ~/ptmp/cr29/scratch/review-r17/o2-r3-1/{head,tail,head2,tail2}, GRAPHIX_PAR=off
+// --no-cache --no-fusion, per cycle = (N60000 - N20000)/40000, callgrind without the eval
+// pool's idle spin: base-r17 head 61288 tail 62741; before (the round-2 range test, inline
+// filter) head 61822 tail 63582; now head 61458 (+0.28%) tail 62642 (-0.16%). perf stat
+// instructions:u, median of 4: base head 66069 tail 66883 (two runs of 4), lane HEAD
+// e7b5030dc head 66.4k tail 69.1k, now head 65685 tail 67003. Tail over head is 2.0% now,
+// 1.2-2.4% on base: the module's own walk; the alias checks left cost about 400
+// instructions a cycle on tail. ExecCtx::deliver resolves the event's entry by the event's
+// own table, since a merge can leave it behind the runtime's (var-alias-merge-01). Pins:
+// the D18 pins and lang::delivery::a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake
+// pass; resolving the event by the runtime's table fails
+// lang::modules::dynamic_module_runs_on_under_a_bottom_source::{par,jit_par}.
 impl Proxy {
-    /// A private inner binding is one variable with the outer one: a
-    /// static call to either holds both, and a write to either is one to
-    /// both.
+    /// A private inner binding is the outer one's variable at run time
+    /// ([`crate::branch::VarAliases`]), and one `<-` target with it: a
+    /// static call through either binds only where neither is written.
     fn join<R: Rt>(&self, ctx: &mut CompileCtx<R>) {
         if self.private_inner {
             ctx.join_interface_pair(self.inner, self.outer)
@@ -981,16 +1056,17 @@ fn implementation_type<'a, R: Rt>(
     }
 }
 
-/// [`CompileCtx::carry_static_mark`] over each implemented `val`, before
-/// the body's check resolves anything through either binding: a `<-` is
-/// marked as it compiles, which may be before [`check_sig`] joins them.
-fn carry_static_marks<R: Rt>(
+/// Join each implemented `val` with the binding implementing it before
+/// the body's check resolves a call through either: a `<-` compiled
+/// before the module's check, the root's or the body's own, is a write
+/// to both.
+fn join_implemented_vals<R: Rt>(
     ctx: &mut CompileCtx<R>,
     sig_binds: &Map<CompactString, BindId>,
     nodes: &[Node<R>],
 ) {
     for (_, inner, outer) in implemented_vals(&ctx.env, sig_binds, nodes).drain(..) {
-        ctx.carry_static_mark(inner, outer)
+        ctx.join_interface_pair(inner, outer)
     }
 }
 
@@ -1064,7 +1140,7 @@ fn check_sig_items<R: Rt>(
                 generalized_impl(ctx, id),
                 |tv| Holder::of(ctx, id, tv),
             )?;
-            // CR claude for claude: [bug/low] A reload is held to a write the body it replaces
+            // XCR claude for claude: [bug/low] A reload is held to a write the body it replaces
             // made: a dynamic module whose first body writes its own let (`let f = |x: i64| ->
             // i64 x; f <- |x: i64| -> i64 x + 1`) leaves the val a `<-` target for good, so a
             // reload whose body is generic under a narrower val (`val f: fn(x: i64) -> i64`
@@ -1075,6 +1151,11 @@ fn check_sig_items<R: Rt>(
             // iface-reload-mark-01 already keeps past a reload; D18 (a)'s one-variable rebuild,
             // dropping a replaced body's writes with its binding, should drop this hold with
             // it. probe: ~/ptmp/cr29/scratch/r14-A/q4 (iface-reload-written-01)
+            // 2026-11-05 claude: Fixed with iface-pair-one-var-01: the body's write marks only
+            // its own binding, which goes with it, so check_sig's connect_targets.contains(val)
+            // sees only writes through the val. Pin
+            // lang::modules::a_reload_is_not_held_to_the_replaced_bodys_write (base-r17: the
+            // reload refused, 'val f is written').
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
             }
@@ -1346,52 +1427,6 @@ struct SetAside<R: Rt> {
     runs: Runs,
 }
 
-// CR claude for claude: [structure/medium] An interface pair is two runtime variables (the
-// val's binding and the body's) kept in step by relays: the static-call mark carry, the seq
-// planner's joined pairs (StaticCallees::add_joined), this cycle-start delivery, the module
-// node's productions, a wake's re-raise. Each review round of iface-join-mark-01 and
-// dyn-reload-reader-01 found another place the relay is not one variable. Still open here,
-// main alike: two place writes from opposite sides in one cycle lose one (pp: {x: 0, y: 9}
-// where one variable gives {x: 7, y: 9}; n7), the (Some, Some) arm reverses one variable's
-// set order (n2: 10 where 20), and a write through the val while the module's arm sleeps
-// fires readers outside the arm twice at the wake (s1: 3 where 2). A third round
-// (branch cr37-W, 2681714fa: both sides' writes merged into the val's queue) fixed those
-// and regressed two shapes main gets right: a replaced body's queued writes land on its
-// replacement, so one function answers two ways (d6: d::r 3, d::f(1) 21), and a level
-// write is ordered by the seq of the one it replaced (lv ends at 100 where 0). Proposed:
-// make the pair one variable at run time (one queue, the val's id, from the join), and
-// rule what a reload does with the replaced body's pending writes (main drops them with
-// the old binding; a root write queued across the reload lands, d4). probes:
-// ~/ptmp/cr29/scratch/review-r6/W2-r2-1/{pp,ppn,ppctl}, W2-r3-2/cr37/p/{n7,n2,s1,s1ctl},
-// W2-r3-1/cr37/{d6,d2,d1,d4}, W2-r3-2/cr37/findings.sh (lv) (iface-pair-one-var-01)
-// 2026-11-03 claude: Eric ruled (2026-11-03): D18 (a) in ~/ptmp/cr-discuss.md: one variable
-// by construction: from the join the interface pair is the val's one id at run time (one
-// queue, one stored value, the body's let publishing to it) and the relays go,
-// iface-reload-mark-01 with them; on a reload keep both: a replaced body's pending writes
-// drop with its binding, a root write queued across the reload still lands; the shapes
-// cr37-W broke (d6, lv) are its tests.
-/// Deliver each write the cycle's start brought to one binding of an
-/// interface pair to the other too, before any node runs, so a reader of
-/// either sees it this cycle wherever it runs. Writes to both in one cycle
-/// are two writes to one variable: the body's lands on both now, the
-/// other's next cycle.
-pub(crate) fn deliver_pair_writes<R: Rt>(ctx: &mut ExecCtx<'_, R>) {
-    let mut pairs: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
-    ctx.static_callees.pairs_of(ctx.event.variables.own_ids(), &mut pairs);
-    for (inner, outer) in pairs.drain(..) {
-        let written = |id| ctx.event.variables.get(&id).cloned();
-        match (written(inner), written(outer)) {
-            (Some(tv), None) => ctx.deliver(outer, tv, Notify::Roots),
-            (None, Some(tv)) => ctx.deliver(inner, tv, Notify::Roots),
-            (Some(tv), Some(next)) => {
-                ctx.rt.set_var(inner, next.value());
-                ctx.deliver(outer, tv, Notify::Roots)
-            }
-            (None, None) => (),
-        }
-    }
-}
-
 impl<R: Rt> Module<R> {
     fn with(
         spec: Arc<Expr>,
@@ -1601,15 +1636,17 @@ impl<R: Rt> Module<R> {
         // saved before the scrub, so a failure puts back the imports the
         // body that keeps running registered
         let saved = Saved::take(ctx);
-        let SetAside { env, nodes, .. } = replaced;
+        let SetAside { env, nodes, proxy, .. } = replaced;
         ctx.with_restored_mut(env, |ctx| {
             nodes.iter_mut().for_each(|n| n.unregister(ctx))
         });
-        // what the replaced body binds statically goes with it
+        // what the replaced body binds statically, and what it writes,
+        // go with it
         let mut holders = Refs::holders();
         nodes.iter().for_each(|n| n.refs(&mut holders));
+        let vars = proxy.iter().filter(|p| p.private_inner).map(|p| p.inner).collect();
         let _aside =
-            StaticCallees::set_aside(&ctx.static_callees, holders.take_holders());
+            StaticCallees::set_aside(&ctx.static_callees, holders.take_holders(), vars);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
@@ -1679,6 +1716,7 @@ impl<R: Rt> Module<R> {
                 self.top_id,
                 true,
                 exprs.iter(),
+                true,
             )
         });
         (self.nodes, self.catches) = compiled?;
@@ -1704,7 +1742,7 @@ impl<R: Rt> Module<R> {
         let Self {
             env, nodes, catches, body, top_id, proxy, scope, sig, sig_binds, ..
         } = self;
-        carry_static_marks(ctx, sig_binds, nodes);
+        join_implemented_vals(ctx, sig_binds, nodes);
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck0_statements(ctx, nodes, catches, false)
         })?;
@@ -1852,18 +1890,26 @@ impl<R: Rt> Module<R> {
     /// what still holds one keeps it.
     fn retire(&self, ctx: &mut ExecCtx<'_, R>, body: SetAside<R>) {
         let SetAside { mut env, nodes, proxy, .. } = body;
-        for Proxy { inner, outer, private_inner } in proxy {
-            ctx.unref_var(inner, self.top_id);
-            ctx.unref_var(outer, self.top_id);
-            if private_inner {
-                ctx.static_callees.unjoin(inner, outer)
-            }
+        for Proxy { inner, outer, .. } in proxy.iter() {
+            ctx.unref_var(*inner, self.top_id);
+            ctx.unref_var(*outer, self.top_id);
         }
+        // the body's nodes let go of the variables their bindings are
+        // while those still are
         ctx.with_restored_mut(&mut env, |ctx| {
             for mut n in nodes {
                 n.delete(ctx)
             }
         });
+        for Proxy { inner, outer, private_inner } in proxy {
+            if private_inner {
+                // what the body wrote through its binding and has not
+                // landed goes with it, a reference to it alive or not
+                ctx.rt.store_release(&inner);
+                ctx.static_callees.unjoin(inner, outer)
+            }
+        }
+        ctx.sync_var_aliases()
     }
 
     fn sleep_nodes(&mut self, ctx: &mut ExecCtx<'_, R>) {
@@ -1888,7 +1934,7 @@ impl<R: Rt> Update<R> for Module<R> {
         }
         let _task = InTask::enter(self.task);
         let Self { env, nodes, catches, top_id, proxy, scope, sig, sig_binds, .. } = self;
-        carry_static_marks(ctx, sig_binds, nodes);
+        join_implemented_vals(ctx, sig_binds, nodes);
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck_in_order(ctx, nodes, catches, false, |n, ctx| {
                 n.typecheck0_instance(ctx, types)
@@ -2014,19 +2060,7 @@ impl<R: Rt> Update<R> for Module<R> {
             });
         }
         let view = if compiled { View::Birth } else { View::Cycle };
-        ctx.under(view, |ctx| {
-            // a write the cycle's start did not pair: one to a body this
-            // cycle's load joined
-            for Proxy { inner, outer, private_inner } in &self.proxy {
-                if *private_inner
-                    && !ctx.event.variables.contains_key(inner)
-                    && let Some(tv) = ctx.event.variables.get(outer)
-                {
-                    ctx.deliver(*inner, tv.clone(), Notify::Roots);
-                }
-            }
-            self.runs.update(ctx, &mut self.nodes, &self.catches);
-        });
+        ctx.under(view, |ctx| self.runs.update(ctx, &mut self.nodes, &self.catches));
         if node::Lets::take_mark(&self.lets) {
             self.reraised = true;
             self.around.iter().for_each(node::Lets::mark)
@@ -2036,16 +2070,15 @@ impl<R: Rt> Update<R> for Module<R> {
         for id in primed.drain(..) {
             ctx.event.variables.remove(&id);
         }
+        // a trait default's binding is shared by every impl it serves, so
+        // each impl's method binding takes its production
         for Proxy { inner, outer, private_inner } in &self.proxy {
-            let tv = if *private_inner {
-                ctx.event.variables.remove(inner)
-            } else {
-                ctx.event.variables.get(inner).cloned()
-            };
-            let tv = match tv {
+            if *private_inner {
+                continue;
+            }
+            let tv = match ctx.event.variables.get(inner).cloned() {
                 Some(tv) => tv,
-                // a shared inner binding (a trait default) may have
-                // produced long before this load
+                // it may have produced long before this load
                 None if compiled => match ctx.rt.store_value(inner) {
                     Some(v) => TagValue::fired(v.clone()),
                     None => continue,

@@ -10,7 +10,7 @@ use super::{
     prune::Prune,
     wake::TrackedFires,
 };
-use crate::cost::{ProbeSite, SlotPlan, SlotSite};
+use crate::cost::{self, Parts, ProbeSite, SlotPlan, SlotSite};
 use crate::{
     ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Notify, PruneMode, Refs, Rt,
     Scope, SourcePosition, Tag, TagValue, Update, View,
@@ -283,8 +283,8 @@ impl MapCollection for ValueMap {
 
     fn element_type(ft: &FnType) -> Result<Type> {
         match &source_type(ft) {
-            Some(Type::Map { key, value }) => {
-                Ok(Type::Tuple(Arc::from_iter([(**key).clone(), (**value).clone()])))
+            Some(Type::Map(m)) => {
+                Ok(Type::Tuple(Arc::from_iter([m.key.clone(), m.value.clone()])))
             }
             _ => bail!("expected Map, got {}", ft.args[0].typ),
         }
@@ -828,16 +828,19 @@ impl<R: Rt> MapQBase<R> {
         [&mut self.source, &mut self.prototype]
     }
 
-    /// The fused loop for a call site's intrinsic call.
+    /// The fused loop for a call site's intrinsic call; `recursion` is
+    /// the prototype call and the name of the recursion the slots call,
+    /// where the call names it bare.
     pub(crate) fn emit_clif_call(
         &self,
         callsite: &CallSite<R>,
+        recursion: Option<(&CallSite<R>, BindId)>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let Some(source) = callsite.arg_positional(0) else {
             return Ok(None);
         };
-        // CR claude for claude: [perf/low] A collection call nested in its own
+        // XCR claude for claude: [perf/low] A collection call nested in its own
         // callback with the same callback does not fuse: in `let rec k = |n: i64|
         // -> i64 select n { 0 => 0, _ => n + array::fold(array::map([n - 1], k), 0,
         // |a, x| a + x) }`, `#[native] array::map([1, 2, 4], k)` is refused
@@ -861,8 +864,26 @@ impl<R: Rt> MapQBase<R> {
         // the bare program too (not discovered). probe:
         // ~/ptmp/cr29/scratch/review-r10/J-r1-1/m_two_holders.gx (eta:
         // m_two_holders_eta.gx).
+        // 2026-11-05 claude: Both gaps fuse now. A call sharing a collection instance
+        // the region runs around it emits that instance's loop
+        // (CallSite::shared_loop_callback; discovery keeps the region's collection
+        // instances, fusion::Loops, handed to emission as BodySpec::loops;
+        // BodyCx::shared_loop), its slots making the prototype's call of the
+        // recursion, which is the kernel's own call inside the recursion's kernel
+        // (BodyCx::loop_own_call); the analysis counts the shared instance as run
+        // inline in the call's holder. Loop prototype calls are recorded by prototype
+        // id and recursion binding (fusion::LambdaSites), so two recursions' loops in
+        // one region no longer collide. Pins that fail without it:
+        // lib_tests::tree_recursion::{bare_recursion_from_its_own_collection,
+        // bare_recursion_from_its_own_fold,
+        // bare_capturing_recursion_from_its_own_collection,
+        // bare_recursions_from_their_own_collections,
+        // bare_recursions_from_collection_callbacks} (jit, jit_par),
+        // shared_recursion_{children_deleted, frees_deleted_slots, sleeps_and_wakes}.
+        // A body fused without the outer collection in reach (an instance body alone)
+        // still node-walks the call.
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = match callsite.recursion_callback() {
+        let r = match recursion {
             Some((call, name)) => self.emit_recursion(source, call, name, cx),
             None => self.emit(source, &callsite.spec, cx),
         };
@@ -1087,7 +1108,12 @@ fn update_slots<R: Rt>(
             site.measured(t0, n);
             r
         }
-        SlotPlan::Fork { grain } => update_ranges(ctx, standing, 0, views, grain)?,
+        SlotPlan::Fork { grain } => {
+            let (t0, mut parts) = (cost::ticks(), Parts::default());
+            let r = update_ranges(ctx, standing, 0, views, grain, &mut parts)?;
+            site.forked(t0, n, &parts);
+            r
+        }
     };
     site.fresh.run(
         ctx,
@@ -1097,7 +1123,9 @@ fn update_slots<R: Rt>(
         |ctx, slot, at| update_slots_in_order(ctx, std::slice::from_mut(slot), at, views),
         |ctx, slots, at, grain| match grain {
             None => update_slots_in_order(ctx, slots, at, views),
-            Some(grain) => update_ranges(ctx, slots, at, views, grain),
+            Some(grain) => {
+                update_ranges(ctx, slots, at, views, grain, &mut Parts::default())
+            }
         },
         merge_tags,
     )
@@ -1154,13 +1182,14 @@ impl SlotViews {
 }
 
 /// Update `slots`, the first at index `at`, in sibling branches of
-/// `grain` slots each.
+/// `grain` slots each, adding each branch's ticks to `timed`.
 fn update_ranges<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     slots: &mut [Slot<R>],
     at: usize,
     views: SlotViews,
     grain: usize,
+    timed: &mut Parts,
 ) -> Option<Option<Tag>> {
     let n = slots.len();
     let grain = grain.max(1);
@@ -1171,9 +1200,12 @@ fn update_ranges<R: Rt>(
     let parts = crate::branch::cut(slots, &ranges);
     let parts = parts.into_iter().zip(ranges.iter().map(|r| at + r.0));
     let mut production = None;
-    for p in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
-        update_slots_in_order(c, p, at, views)
+    for (p, ticks) in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
+        let t0 = cost::ticks();
+        let p = update_slots_in_order(c, p, at, views);
+        (p, cost::ticks_since(t0))
     }) {
+        timed.add(ticks);
         production = merge_tags(production, p?);
     }
     Some(production)
@@ -1416,7 +1448,7 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
         self.callback.see_arg(ctx);
         each(self.base.nodes_mut(), |n| n.typecheck1(ctx))?;
         self.base.check_keys = self.base.typ.with_deref(|t| match t {
-            Some(Type::Map { key, .. }) => key.orders_refs(&ctx.env),
+            Some(Type::Map(m)) => m.key.orders_refs(&ctx.env),
             _ => false,
         });
         Ok(())
@@ -1524,10 +1556,12 @@ impl<R: Rt> FoldQBase<R> {
         [&mut self.source, &mut self.init, &mut self.prototype]
     }
 
-    /// The fused loop for a call site's intrinsic call.
+    /// The fused loop for a call site's intrinsic call, as
+    /// [`MapQBase::emit_clif_call`]'s.
     pub(crate) fn emit_clif_call(
         &self,
         callsite: &CallSite<R>,
+        recursion: Option<(&CallSite<R>, BindId)>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         let (Some(source), Some(init)) =
@@ -1536,7 +1570,7 @@ impl<R: Rt> FoldQBase<R> {
             return Ok(None);
         };
         let prev = cx.swap_collection_site(Some(callsite.spec.id));
-        let r = match callsite.recursion_callback() {
+        let r = match recursion {
             Some((call, name)) => self.emit_recursion(source, init, call, name, cx),
             None => self.emit(source, init, &callsite.spec, cx),
         };

@@ -20,8 +20,8 @@ pub(crate) mod share;
 pub use kernel::FusedKernel;
 
 use crate::{
-    AddrSet, ApplyView, BindId, CompileCtx, LambdaId, Node, NodeView, PrintFlag, Refs,
-    Rt, Update,
+    AddrSet, ApplyView, BindId, CompileCtx, LambdaId, LambdaInstanceId, Node, NodeView,
+    PrintFlag, Refs, Rt, Update,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
@@ -37,11 +37,7 @@ use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, hash_map::Entry},
-    sync::LazyLock,
-};
+use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
 
 #[derive(Debug, Clone)]
@@ -226,7 +222,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         Type::Struct(fs) => (a(fs), 0),
         Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => (a(t), 0),
         Type::Variant(tag, ts, _) => (tag.as_ptr() as usize, a(ts)),
-        Type::Map { key, value } => (a(key), a(value)),
+        Type::Map(m) => (a(m), 0),
         Type::App(f, x) => (a(f), a(x)),
         Type::Bottom
         | Type::Any
@@ -476,7 +472,9 @@ impl FusionCtx {
 
     pub(crate) fn join(&mut self, mut fork: Self) {
         self.stats.join(fork.stats);
-        self.dead.append(&mut fork.dead);
+        if self.records_dead() {
+            self.dead.append(&mut fork.dead)
+        }
         match fork.emission.into_inner() {
             EmissionSlot::Task(task) => self
                 .emission
@@ -648,9 +646,16 @@ impl FusionCtx {
     /// The definition `id` was deleted: the next link forgets its kernels.
     pub(crate) fn forget_def(&mut self, id: LambdaId) {
         self.instances.lock().retain(|(def, ..), _| *def != id);
-        if !matches!(self.emission.get_mut(), EmissionSlot::Root(None)) {
+        if self.records_dead() {
             self.dead.push(id)
         }
+    }
+
+    /// Whether this context keeps the definitions deleted until a link: a
+    /// root that has emitted nothing has no kernels to forget, and a task
+    /// cannot tell, so its join decides.
+    fn records_dead(&mut self) -> bool {
+        !matches!(self.emission.get_mut(), EmissionSlot::Root(None))
     }
 
     /// Start compiling every region fused since the last link while
@@ -938,6 +943,45 @@ pub(crate) fn may_raise_to_handler<R: Rt>(node: &Node<R>) -> bool {
 /// kernel every site reaching it shares.
 pub type LambdaCallInfo = triomphe::Arc<lowering::CachedKernel>;
 
+/// A body's statically resolved lambda calls ([`discover_lambda_calls`]):
+/// each call site by id, and each prototype call a loop's slots make of a
+/// recursion its collection's call names bare by the prototype's id and
+/// that name, since every instance of a collection shares the prototype's
+/// id.
+#[derive(Default)]
+pub struct LambdaSites {
+    calls: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
+    loops: LPooled<ahash::AHashMap<(ExprId, BindId), LambdaCallInfo>>,
+}
+
+impl LambdaSites {
+    /// The callee of the call site `id`.
+    pub(crate) fn call(&self, id: ExprId) -> Option<&LambdaCallInfo> {
+        self.calls.get(&id)
+    }
+
+    /// The callee of the prototype call `id` a loop's slots make of the
+    /// recursion `name`.
+    pub(crate) fn loop_call(&self, id: ExprId, name: BindId) -> Option<&LambdaCallInfo> {
+        self.loops.get(&(id, name))
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &LambdaCallInfo> {
+        self.calls.values().chain(self.loops.values())
+    }
+
+    /// Record `info` for the call `id`, made through `name` where it is a
+    /// loop's prototype call; false where that call has another kernel.
+    fn record(&mut self, id: ExprId, name: Option<BindId>, info: LambdaCallInfo) -> bool {
+        let key = kernel_abi::kernel_key(&info.kernel);
+        let had = match name {
+            Some(name) => self.loops.entry((id, name)).or_insert(info),
+            None => self.calls.entry(id).or_insert(info),
+        };
+        kernel_abi::kernel_key(&had.kernel) == key
+    }
+}
+
 /// A discovered callee's body Node + self-call info. The body reference
 /// is live through this region's resolved `GXLambda` for the duration
 /// of `try_fuse`.
@@ -949,7 +993,7 @@ pub struct CalleeBody<'n, R: Rt> {
     pub self_call: Option<(BindId, LambdaCallInfo)>,
     /// This callee body's own statically-resolved lambda call sites;
     /// empty for a leaf callee.
-    pub sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
+    pub sites: LambdaSites,
     /// This callee body's own builtin/cast/qop Apply sites.
     pub apply_sites: nohash::IntMap<ExprId, lowering::BuiltinCallSiteInfo>,
     /// This body's formal ids for the kernel's, where the kernel was
@@ -960,7 +1004,7 @@ pub struct CalleeBody<'n, R: Rt> {
 /// What [`discover_lambda_calls`] found in a region.
 pub(crate) struct Discovery<'n, R: Rt> {
     /// The root's call sites.
-    pub(crate) sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
+    pub(crate) sites: LambdaSites,
     /// Every callee in the closure, in discovery order, by kernel
     /// identity.
     pub(crate) callees: LPooled<Vec<(kernel_abi::KernelKey, Arc<KernelSig>)>>,
@@ -975,7 +1019,13 @@ pub(crate) struct Discovery<'n, R: Rt> {
     /// different kernels: emission finds a site by id, so the region
     /// refuses.
     pub(crate) collided: Option<&'n Expr>,
+    /// The collection-bodied instances the region runs as loops.
+    pub(crate) loops: Loops<'n, R>,
 }
+
+/// Collection-bodied instances by instance: the loop a call sharing one
+/// (`CallSite::shared_loop_callback`) runs.
+pub(crate) type Loops<'n, R> = nohash::IntMap<LambdaInstanceId, &'n GXLambda<R>>;
 
 /// Walk the region collecting every statically-resolved lambda call
 /// site, building (or cache-hitting) each callee's kernel signature
@@ -989,7 +1039,8 @@ pub(crate) struct Discovery<'n, R: Rt> {
 /// self-recursive instance, the root's other self-calls call `own`'s
 /// kernel, which runs the rest of the recursion. A loop whose callback is
 /// a recursion's bare name makes its prototype's call, through that name,
-/// recorded under the prototype's id.
+/// recorded under the prototype's id, as does a call sharing the instance
+/// of a loop the region runs around it.
 pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     root: &'n Node<R>,
     own: Option<&'n GXLambda<R>>,
@@ -997,12 +1048,13 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
 ) -> Discovery<'n, R> {
     let collect_decorated = !ctx.attr_census.lock().is_empty();
     let mut d = Discovery {
-        sites: LPooled::take(),
+        sites: LambdaSites::default(),
         callees: LPooled::take(),
         bodies: BTreeMap::new(),
         decorated: LPooled::take(),
         refused: LPooled::take(),
         collided: None,
+        loops: nohash::IntMap::default(),
     };
     // The second field says where a body's discovered sites land:
     // `None` = the root, `Some(ptr)` = that callee's `CalleeBody.sites`.
@@ -1012,8 +1064,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
     let mut reads = lowering::ReadsMemo::default();
     let own = own.and_then(|g| Some((g, g.self_bind()?, &**g.typ())));
     while let Some((body, target)) = worklist.pop() {
-        let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
-            LPooled::take();
+        let mut local_sites = LambdaSites::default();
         let mut enqueue: LPooled<Vec<(&'n Node<R>, kernel_abi::KernelKey)>> =
             LPooled::take();
         for_each_emitted_node_in(body, &mut |n, owners| {
@@ -1025,9 +1076,19 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
             let NodeView::CallSite(cs) = n.view() else {
                 return;
             };
+            if let Some(ApplyView::Lambda(g)) = cs.resolved_apply()
+                && g.inline_callback().is_some()
+            {
+                d.loops.insert(g.instance_id(), g);
+            }
+            let shared = || {
+                let g = *d.loops.get(&cs.static_target()?.instance)?;
+                cs.shared_loop_callback(g)
+            };
             // a loop whose callback is a recursion's bare name makes, in
             // each slot, its prototype's call of that recursion
-            let (cs, through) = match cs.recursion_callback() {
+            let looped = cs.recursion_callback().or_else(shared);
+            let (cs, through) = match looped {
                 Some((call, name)) => (call, Some(name)),
                 None => match cs.fnode().view() {
                     NodeView::Ref(r) => (cs, Some(r.id)),
@@ -1081,21 +1142,15 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt>(
                     CalleeBody {
                         body: g.body(),
                         self_call: cached.self_call.map(|sb| (sb, cached.clone())),
-                        sites: LPooled::take(),
+                        sites: LambdaSites::default(),
                         apply_sites: cached.apply_sites.clone(),
                         params: lowering::rebound_formals(g, &cached.kernel),
                     },
                 );
                 enqueue.push((g.body(), ptr));
             }
-            match local_sites.entry(cs.spec().id) {
-                Entry::Vacant(e) => {
-                    e.insert(cached);
-                }
-                Entry::Occupied(e) if kernel_abi::kernel_key(&e.get().kernel) == ptr => {}
-                Entry::Occupied(_) => {
-                    d.collided.get_or_insert(n.spec());
-                }
+            if !local_sites.record(cs.spec().id, looped.map(|(_, name)| name), cached) {
+                d.collided.get_or_insert(n.spec());
             }
         });
         match target {
@@ -1696,6 +1751,7 @@ fn build_region<R: Rt>(
             &discovery.apply_sites,
             &lambdas.sites,
             &lambdas.bodies,
+            &lambdas.loops,
             &ctx.env,
         )
     });
@@ -1875,5 +1931,20 @@ mod tests {
         let root = FusionCtx::new();
         let fork = root.fork();
         assert!(fork.emission().is_err());
+    }
+
+    #[test]
+    fn a_root_that_emitted_nothing_keeps_no_dead_definitions() {
+        let mut root = FusionCtx::new();
+        for _ in 0..3 {
+            let mut fork = root.fork();
+            fork.forget_def(LambdaId::new());
+            let mut nested = fork.fork();
+            nested.forget_def(LambdaId::new());
+            fork.join(nested);
+            assert_eq!(fork.dead.len(), 2);
+            root.join(fork);
+        }
+        assert!(root.dead.is_empty(), "{} dead definitions kept", root.dead.len());
     }
 }

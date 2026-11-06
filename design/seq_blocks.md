@@ -304,7 +304,43 @@ error.
 literal, a step's or a `{ .. }` statement's, binds the name to the
 lambda itself and the step's value is the name fired at entry, so a
 call through it resolves statically as it would outside a seq: its
-`#[sync]`/`#[native]` assertions are checked by the build.
+`#[sync]`/`#[native]` assertions are checked by the build. A `let` of
+a data literal of lambdas is no definition: it is a step as any other
+`let` is, and its value, which passes the holder's scheme on (below),
+leaves its names as generic as a holder's outside a seq; a later step
+reads them through its entry snapshot, as it reads any step's `let`,
+so a lambda a later step binds reads the holder as it stood at that
+step's entry, whatever a step after it writes. A step's read of an
+outer generalized binding goes through its entry snapshot, and a holder
+a step binds through the step's value: the lowering's bindings that pass a read on whole,
+the snapshot (`.. ~! #seqsin`), the projection of it a read takes, a
+step's or a `{ .. }` item's value (`any(pc ~! v, v)`) and a `{ .. }`
+statement's value (its last item's), are written by nothing, so each
+carries the read binding's scheme as a `let` of it does
+(`expr::seq::passes_on`, `bind::passes_generic`, Eric 11-05): the reads
+in such a value share one copy of a function as of a holder
+(`bind::Naming::Passed`), the entry fire's two reads of it are that copy
+(`Any::fired_at_entry`), and a `let` of a step's or a block's value
+(`let j = s.g`, `let g = f`, `let v = { let n = 1; s }`) is generic as
+it is outside a seq. Only those forms pass a scheme on (`bind::Passing`:
+each reads names only the lowering writes): what the program wrote inside
+them is judged as the same `let` outside a seq, so `let j = (1, s.g).1`,
+`k ~! s.g` or `any(s.g, s.g)` in a step is one instance; what the
+snapshot reads is still read at the step's entry, a holder's part that
+tracks a variable included. A step's `let` a later step writes is known
+written at its binding (`SeqMachine::compile` finds the writes among
+every step's items, once for the machine), so it is one instance, as
+a written `let` is anywhere. A holder with a call part is one instance in
+its step: a call's result is no binding's. A `seqq` request's capture
+(`#seqqcap`, the dequeued request's snapshot of a variable, or the
+variable itself where a step writes it) is written by nothing either, so
+a capture of a generalized binding carries its scheme too: it is typed
+by its live read, a copy of the scheme (`SeqCapture::scheme`,
+`bind::Passing::Capture`, Eric 11-05), never by the queue's one instance
+of what it carries, and its value is still the request's snapshot
+unless the capture is live (a step makes a call with no static target,
+which counts as every variable). A variable a step writes, a callee's
+write included, is written, so its capture is one instance, read live.
 
 ## 6. The lowering
 
@@ -469,10 +505,9 @@ conservatively, uses the next cycle everywhere. The last step writes
 `pc` idle. A block (`lower_block`) hoists each statement into a `let`
 under the step, connects `once(value)` (an answer on every run, a level
 as it stands at entry; the step's entry for a run is a birth
-(`View::Step`), which rebirths its `once`), and joins
-the statements with a
-select over the tuple of their values, present once every statement
-has produced. `until` is refused where its value would be used: the
+(`View::Step`), which rebirths its `once`), and takes
+the last of the tuple of the statements' values (`(v0, .., vn).n`),
+present once every statement has produced. `until` is refused where its value would be used: the
 last statement of a seq, or of a try or with body whose value is used,
 must be an expression.
 

@@ -511,10 +511,7 @@ fn stored_type(t: &Type, env: &Env) -> ArcStr {
             Type::Error(t) => Type::Error(triomphe::Arc::new(go(t))),
             Type::Array(t) => Type::Array(triomphe::Arc::new(go(t))),
             Type::List(t) => Type::List(triomphe::Arc::new(go(t))),
-            Type::Map { key, value } => Type::Map {
-                key: triomphe::Arc::new(go(key)),
-                value: triomphe::Arc::new(go(value)),
-            },
+            Type::Map(m) => Type::map(go(&m.key), go(&m.value)),
             Type::Struct(fs) => {
                 Type::Struct(fs.iter().map(|(n, t, w)| (n.clone(), go(t), *w)).collect())
             }

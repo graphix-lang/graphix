@@ -11,8 +11,8 @@ use crate::{
         Unfolded, node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
-            CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
-            settled_cause_note, would_cycle_inner,
+            CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
+            cycle_toward, settled_cause_note, would_cycle_inner,
         },
     },
 };
@@ -26,7 +26,6 @@ use nohash::IntMap;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
     collections::hash_map::Entry,
     mem,
     ops::{ControlFlow, Deref, DerefMut},
@@ -47,10 +46,6 @@ pub enum ContainsFlags {
     /// The walk is under an odd number of function arguments, where the
     /// sides of the judgment have swapped.
     Contra,
-    /// `self` is the written form of the very function `t` types, which
-    /// adopts `t`'s quantifier bounds: its quantifiers absorb them rather
-    /// than hold `t` to their declared bounds.
-    Adopt,
     /// An open cell `self` reaches outside a function's arguments takes
     /// `t`'s part as a lower bound instead of binding to it: a constructed
     /// value's payload bounds its parameters, the context decides them.
@@ -101,10 +96,18 @@ pub(super) struct ContainsHist {
     /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
     /// calls, keyed by both sides' content-Arc identities. Each entry
     /// pins both types so an address cannot be recycled under its key,
-    /// and carries the `epoch` at insert: a committing call may bind a
-    /// cell a verdict read, so the epoch bumps there.
-    probe_pairs: Lazy<AHashMap<(NormKey, NormKey, bool), (u64, bool)>>,
+    /// and carries the [`cell_writes`] count it was reached at: a write
+    /// to a cell may change a verdict that read it.
+    probe_pairs: Lazy<AHashMap<ProbeKey, (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
+    /// Probe verdicts that rest on assumptions still in progress, held
+    /// while those stand: one is dropped when an assumption it may rest
+    /// on is answered otherwise, and joins `probe_pairs` once every one
+    /// was answered as assumed. Pinned with `probe_pins`.
+    provisional: Lazy<AHashMap<ProbeKey, Provisional>>,
+    /// The keys of `provisional` in the order they were reached: an
+    /// assumption's verdicts are those reached after it was made.
+    provisional_order: Lazy<Vec<ProbeKey>>,
     /// Committing pairs proven to hold, by both sides' identities and the
     /// flags: what the proof bound stays bound for the rest of the call,
     /// so the same pair met again holds without walking it (a DAG's
@@ -118,13 +121,8 @@ pub(super) struct ContainsHist {
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
-    /// The shallowest entry of `in_progress` a verdict was answered by
-    /// assumption from: what depends on it is the walk's answer, not the
-    /// pair's, until that question returns.
-    tainted: Option<usize>,
-    /// The shallowest in-progress pair the current verdict assumed.
-    low_water: usize,
-    epoch: u64,
+    /// What the current verdict assumed of the walk in progress.
+    rests: Rests,
     /// Per definition and side (`true` for the right), on this path: the
     /// size of the params its latest expansion took, and how many
     /// expansions in a row grew them. The sides expand on alternate steps
@@ -136,9 +134,10 @@ pub(super) struct ContainsHist {
     /// A cycle under a constructor refused a pair of cells: the reason a
     /// refusal gives ([`TypeMismatch`]).
     cycled: bool,
-    /// [`Self::closed`]'s verdicts by node and cell identity, each node
-    /// pinned so its address is not recycled under its key.
-    closed: Lazy<AddrMap<bool>>,
+    /// [`Self::closure`]'s verdicts by node and cell identity, with the
+    /// [`cell_writes`] count each was reached at, each node pinned so its
+    /// address is not recycled under its key.
+    closed: Lazy<AddrMap<(Closure, u64)>>,
     closed_pins: Lazy<Vec<Type>>,
     /// How many function types hold quantifier cells rigid on this path
     /// (`FnType::contains_int`): a verdict reached under one depends on
@@ -183,11 +182,91 @@ pub(super) struct ContainsHist {
 // (diff-cycle-hang-01): here diff and could_match have no growth bound and
 // params_size stops at 1 << 16. probes: ~/ptmp/cr29/scratch/r11-X/x2/ (cg1.gx,
 // grow3.gx, grow3.base.gdb)
+// 2026-11-06 claude: The growth cut was built in lane o3 r17 and parked after three
+// review rounds, each finding false refusals of finite values (a five-parameter
+// shift and a large literal type; a finite N value 4 levels deep; a non-recursive
+// typedef nested 5 deep beside a growing type). The commits stay on branch cr52-o3
+// (d8a2d0bc0, dffb87798, 1a3fe4519, 1ee02743f), with a Kennedy-Pierce expansiveness
+// test in typ/expansive.rs. Eric is asked as D24 whether to refuse expansive
+// typedefs at their definition. Probes: ~/ptmp/cr29/scratch/r17-hk/ and r17-hk/r3/.
 /// How many expansions of one typedef in a row may take larger params. A
 /// pair met again ends a walk, so params that keep growing are a walk
 /// that never ends (`type N<'a> = [null, ('a, N<Array<'a>>)]`); nested
 /// applications of one alias shrink theirs.
 const MAX_GROWTH: u32 = 64;
+
+/// A probe memo's key: both sides' identities, rigid cells held rigid
+/// or not.
+type ProbeKey = (NormKey, NormKey, bool);
+
+/// What a verdict assumed of the walk in progress: the depth of the
+/// shallowest pair in progress it took to hold, the shallowest entries of
+/// `in_progress` it took to hold and to fail (`usize::MAX` for none), and
+/// whether a pair whose parameters grew past [`MAX_GROWTH`] was refused.
+#[derive(Clone, Copy)]
+struct Rests {
+    pairs: usize,
+    held: usize,
+    failed: usize,
+    cut: bool,
+}
+
+impl Rests {
+    const NOTHING: Self =
+        Rests { pairs: usize::MAX, held: usize::MAX, failed: usize::MAX, cut: false };
+
+    /// The questions taken to hold, or to fail.
+    fn taken(&mut self, held: bool) -> &mut usize {
+        match held {
+            true => &mut self.held,
+            false => &mut self.failed,
+        }
+    }
+
+    #[inline]
+    fn join(self, other: Self) -> Self {
+        Rests {
+            pairs: self.pairs.min(other.pairs),
+            held: self.held.min(other.held),
+            failed: self.failed.min(other.failed),
+            cut: self.cut || other.cut,
+        }
+    }
+
+    /// Whether verdict `r`, reached by a verdict at `height`, is the
+    /// pair's wherever it is met. contains is monotone in what it
+    /// assumes, so a false that took only holds stays false had they been
+    /// walked, and a true that took only failures stays true; a growth
+    /// cut is a failure on this path alone.
+    fn settled(self, r: bool, height: usize) -> bool {
+        let holds = self.pairs < height || self.held != usize::MAX;
+        match r {
+            true => !holds,
+            false => self.failed == usize::MAX && (!self.cut || !holds),
+        }
+    }
+}
+
+/// A probe verdict that rests on assumptions in progress, and the
+/// [`cell_writes`] count it was reached at.
+#[derive(Clone, Copy)]
+struct Provisional {
+    verdict: bool,
+    epoch: u64,
+    rests: Rests,
+}
+
+/// What [`ContainsHist::closure`] knows of a type, least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Closure {
+    /// It reaches an open cell through bindings, or may.
+    Open,
+    /// It reaches no open cell through bindings; a bound cell's conjuncts
+    /// and lower bounds may.
+    Closed,
+    /// It holds no cell.
+    NoCell,
+}
 
 impl Deref for ContainsHist {
     type Target = RefHist<AHashMap<RefPair, usize>>;
@@ -210,12 +289,12 @@ impl ContainsHist {
             expansions: Lazy::new(),
             probe_pairs: Lazy::new(),
             probe_pins: Lazy::new(),
+            provisional: Lazy::new(),
+            provisional_order: Lazy::new(),
             commit_pairs: Lazy::new(),
             apps: Lazy::new(),
             in_progress: SmallVec::new(),
-            tainted: None,
-            low_water: usize::MAX,
-            epoch: 0,
+            rests: Rests::NOTHING,
             unfolding: Lazy::new(),
             grew: None,
             cycled: false,
@@ -231,82 +310,191 @@ impl ContainsHist {
     }
 
     /// Whether `t` reaches no open cell, through bindings: a commit over
-    /// two closed sides binds nothing, so it is the probe. Within a walk
-    /// a closed node stays closed (cells only bind), and one found open
+    /// two closed sides binds nothing, so it is the probe. Within a walk a
+    /// closed node stays closed (cells only bind), and one found open
     /// only costs the commit's walk.
     fn closed(&mut self, t: &Type) -> bool {
+        self.closure(t, false) != Closure::Open
+    }
+
+    /// [`Self::closed`] as the cells stand now: a verdict reached before
+    /// a cell was written is reached again.
+    fn closed_now(&mut self, t: &Type) -> bool {
+        self.closure(t, true) != Closure::Open
+    }
+
+    /// Whether `t`, a node, holds no cell, so it reaches none: no occurs
+    /// check finds a cycle through it.
+    fn holds_no_cell(&mut self, t: &Type) -> bool {
+        t.shared_identity().is_some() && self.closure(t, false) == Closure::NoCell
+    }
+
+    fn closure(&mut self, t: &Type, now: bool) -> Closure {
         ensure_sufficient(|| {
             let key = t.shared_identity();
+            let writes = cell_writes();
             if let Some(k) = key {
-                if let Some(c) = self.closed.get().and_then(|m| m.get(&k)) {
-                    return *c;
+                match self.closed.get().and_then(|m| m.get(&k)).copied() {
+                    Some((c, at)) if !now || c == Closure::NoCell || at == writes => {
+                        return c;
+                    }
+                    Some(_) => (),
+                    None => self.closed_pins.get_mut().push(t.clone()),
                 }
                 // a binding that reaches its own cell is not closed
-                self.closed.get_mut().insert(k, false);
-                self.closed_pins.get_mut().push(t.clone());
+                self.closed.get_mut().insert(k, (Closure::Open, writes));
             }
             let c = match t {
-                Type::TVar(tv) => tv.binding().is_some_and(|b| self.closed(&b)),
-                t => t
-                    .try_for_each_child(&mut |c| match self.closed(c) {
-                        true => ControlFlow::Continue(()),
-                        false => ControlFlow::Break(()),
-                    })
-                    .is_continue(),
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => self.closure(&b, now).min(Closure::Closed),
+                    None => Closure::Open,
+                },
+                t => {
+                    let mut c = Closure::NoCell;
+                    let _ = t.try_for_each_child(&mut |p| {
+                        c = c.min(self.closure(p, now));
+                        match c {
+                            Closure::Open => ControlFlow::Break(()),
+                            Closure::Closed | Closure::NoCell => {
+                                ControlFlow::Continue(())
+                            }
+                        }
+                    });
+                    c
+                }
             };
             if let Some(k) = key {
-                self.closed.get_mut().insert(k, c);
+                self.closed.get_mut().insert(k, (c, writes));
             }
             c
         })
     }
 
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
-    /// or not, if current.
-    fn probe_get(&self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
+    /// or not, if current. A provisional one passes the assumptions it
+    /// rests on to the verdict reading it.
+    fn probe_get(&mut self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
         let k = (probe_key(t0)?, probe_key(t1)?, rigid);
-        let (epoch, r) = self.probe_pairs.get()?.get(&k).copied()?;
-        (epoch == self.epoch).then_some(r)
+        let writes = cell_writes();
+        if let Some((epoch, r)) = self.probe_pairs.get().and_then(|m| m.get(&k).copied())
+        {
+            return (epoch == writes).then_some(r);
+        }
+        let p = self.provisional.get()?.get(&k).copied()?;
+        if p.epoch != writes {
+            return None;
+        }
+        self.rests = self.rests.join(p.rests);
+        Some(p.verdict)
     }
 
-    fn probe_put(&mut self, rigid: bool, t0: &Type, t1: &Type, r: bool) {
-        if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
-            && self
-                .probe_pairs
-                .get_mut()
-                .insert((k0, k1, rigid), (self.epoch, r))
-                .is_none()
-        {
+    /// Memoize a probe's verdict, reached by a verdict at `height`
+    /// assuming `rests`: for good where it is settled, else while what it
+    /// rests on stands. A false a growth cut refused is the path's alone.
+    fn probe_put(
+        &mut self,
+        (rigid, t0, t1): (bool, &Type, &Type),
+        r: bool,
+        height: usize,
+        rests: Rests,
+    ) {
+        let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1)) else { return };
+        let k = (k0, k1, rigid);
+        let epoch = cell_writes();
+        let new = if rests.settled(r, height) {
+            self.probe_pairs.get_mut().insert(k, (epoch, r)).is_none()
+        } else if r || !rests.cut {
+            let p = Provisional { verdict: r, epoch, rests };
+            self.provisional_order.get_mut().push(k);
+            self.provisional.get_mut().insert(k, p).is_none()
+        } else {
+            false
+        };
+        if new {
             let pins = self.probe_pins.get_mut();
             pins.push(t0.clone());
             pins.push(t1.clone());
         }
     }
 
-    /// Start a verdict that may be memoized: its height, and the outer
-    /// verdict's assumption state, set aside.
-    fn enter_verdict(&mut self) -> (usize, usize, Option<usize>) {
-        let height = self.len();
-        let outer = mem::replace(&mut self.low_water, usize::MAX);
-        (height, outer, self.tainted.take())
+    /// An assumption that its question is `assumed`, made when `mark`
+    /// provisional verdicts were held, is answered `r`. Those reached
+    /// since may rest on it: one that agrees with a wrong assumption is
+    /// dropped (a disagreeing one stands, by monotonicity), the rest take
+    /// from `update` what the answer rested on, and each then settled is
+    /// held for good.
+    fn answer_assumption(
+        &mut self,
+        mark: usize,
+        assumed: bool,
+        r: &Result<bool>,
+        update: impl Fn(&mut Rests),
+    ) {
+        let wrong = match r {
+            Ok(r) if *r == assumed => None,
+            Ok(_) => Some(assumed),
+            Err(_) => {
+                self.drop_provisional(mark);
+                return;
+            }
+        };
+        let Some(order) = self.provisional_order.get() else { return };
+        if order.len() <= mark {
+            return;
+        }
+        let mut order = mem::take(self.provisional_order.get_mut());
+        let map = self.provisional.get_mut();
+        let mut kept = mark;
+        for i in mark..order.len() {
+            let k = order[i];
+            let Some(p) = map.get_mut(&k) else { continue };
+            if wrong == Some(p.verdict) {
+                map.remove(&k);
+                continue;
+            }
+            update(&mut p.rests);
+            if p.rests.settled(p.verdict, usize::MAX) {
+                let p = map.remove(&k).unwrap();
+                self.probe_pairs.get_mut().insert(k, (p.epoch, p.verdict));
+            } else {
+                order[kept] = k;
+                kept += 1;
+            }
+        }
+        order.truncate(kept);
+        *self.provisional_order.get_mut() = order;
     }
 
-    /// End it: whether the verdict assumed no pair from further out, so
-    /// it holds outside this call; the outer state takes its assumptions.
-    fn leave_verdict(
-        &mut self,
-        height: usize,
-        outer: usize,
-        outer_taint: Option<usize>,
-    ) -> bool {
-        let assumed = self.low_water;
-        self.low_water = outer.min(assumed);
-        let tainted = self.tainted;
-        self.tainted = match (outer_taint, tainted) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        assumed >= height && tainted.is_none()
+    fn drop_provisional(&mut self, mark: usize) {
+        let Some(order) = self.provisional_order.get() else { return };
+        if order.len() <= mark {
+            return;
+        }
+        let order = self.provisional_order.get_mut();
+        let map = self.provisional.get_mut();
+        for k in order.drain(mark..) {
+            map.remove(&k);
+        }
+    }
+
+    /// Start a verdict that may be memoized: its height, and the outer
+    /// verdict's assumptions, set aside.
+    fn enter_verdict(&mut self) -> (usize, Rests) {
+        (self.len(), mem::replace(&mut self.rests, Rests::NOTHING))
+    }
+
+    /// End it: whether the verdict assumed nothing from further out, so
+    /// it holds outside this call; the outer verdict takes its assumptions.
+    fn leave_verdict(&mut self, height: usize, outer: Rests) -> bool {
+        let r = self.leave_probe_verdict(outer);
+        r.pairs >= height && r.held == usize::MAX && r.failed == usize::MAX
+    }
+
+    /// [`Self::leave_verdict`]: what the verdict assumed.
+    fn leave_probe_verdict(&mut self, outer: Rests) -> Rests {
+        let rests = self.rests;
+        self.rests = outer.join(rests);
+        rests
     }
 
     /// The key a committed pair is held under: a node's identity, or an
@@ -351,20 +539,24 @@ impl ContainsHist {
 
     /// Decide `key` by `f`, assuming it holds meanwhile: a pair met
     /// again inside its own proof is `true` (coinduction), and the depth
-    /// of that assumption lowers `low_water`.
+    /// of that assumption is what the verdict meeting it rests on.
     fn assuming(
         &mut self,
         key: RefPair,
         f: impl FnOnce(&mut Self) -> Result<bool>,
     ) -> Result<bool> {
         if let Some(&depth) = self.hist.get(&key) {
-            self.low_water = self.low_water.min(depth);
+            self.rests.pairs = self.rests.pairs.min(depth);
             return Ok(true);
         }
         let depth = self.hist.len();
         self.hist.insert(key, depth);
+        let outer = mem::replace(&mut self.rests.pairs, usize::MAX);
+        let mark = self.provisional_order.get().map_or(0, |o| o.len());
         let r = f(self);
         self.hist.remove(&key);
+        let rest = beyond(&mut self.rests.pairs, depth, outer);
+        self.answer_assumption(mark, true, &r, |p| answered(&mut p.pairs, depth, rest));
         r
     }
 
@@ -378,16 +570,20 @@ impl ContainsHist {
         f: impl FnOnce(&mut Self) -> Result<bool>,
     ) -> Result<bool> {
         if let Some(i) = self.in_progress.iter().position(|p| *p == q) {
-            self.tainted = Some(self.tainted.map_or(i, |t| t.min(i)));
+            let at = self.rests.taken(assumed);
+            *at = (*at).min(i);
             return Ok(assumed);
         }
         let i = self.in_progress.len();
         self.in_progress.push(q);
+        let outer = mem::replace(self.rests.taken(assumed), usize::MAX);
+        let mark = self.provisional_order.get().map_or(0, |o| o.len());
         let r = f(self);
         self.in_progress.pop();
-        if self.tainted.is_some_and(|t| t >= i) {
-            self.tainted = None;
-        }
+        let rest = beyond(self.rests.taken(assumed), i, outer);
+        self.answer_assumption(mark, assumed, &r, |p| {
+            answered(p.taken(assumed), i, rest)
+        });
         r
     }
 
@@ -418,6 +614,26 @@ impl ContainsHist {
         let r = fresh(&e);
         self.expansions.get_mut().insert(id, e);
         Ok(Some(r))
+    }
+}
+
+/// The assumption at `depth` is answered: `at`, the shallowest one the
+/// verdict in progress took (`usize::MAX` for none), gives up those from
+/// `depth` on and joins `outer`'s. What the answer itself took.
+fn beyond(at: &mut usize, depth: usize, outer: usize) -> usize {
+    let rest = match *at {
+        a if a >= depth => usize::MAX,
+        a => a,
+    };
+    *at = rest.min(outer);
+    rest
+}
+
+/// [`beyond`] for a provisional verdict: one that took the assumption at
+/// `depth` (or one past it) takes what its answer took, `rest`, instead.
+fn answered(at: &mut usize, depth: usize, rest: usize) {
+    if (depth..usize::MAX).contains(at) {
+        *at = rest
     }
 }
 
@@ -561,21 +777,37 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
 /// Whether every part of `t` is one type, so an open cell bound to a part
 /// loses nothing (a union part would bind the cell to the whole union,
 /// where it only had to stay within it). A variable is exact: binding
-/// aliases the cell to it, constraints and all.
+/// aliases the cell to it, constraints and all. The walk stops at the
+/// first part that is not exact, so a shared node or cell met again was.
 fn exact(t: &Type) -> bool {
-    ensure_sufficient(|| match t {
-        Type::Set(_) | Type::Any | Type::Ref(_) => false,
-        Type::Primitive(p) => p.len() == 1,
-        Type::TVar(tv) => tv.binding().is_none_or(|b| exact(&b)),
-        t => {
-            let mut all = true;
-            t.for_each_child(&mut |c| all &= exact(c));
-            all
-        }
-    })
+    fn walk(t: &Type, seen: &mut AddrSet) -> bool {
+        ensure_sufficient(|| {
+            if let Some(node) = node_addr(t)
+                && !seen.insert(node)
+            {
+                return true;
+            }
+            match t {
+                Type::Set(_) | Type::Any | Type::Ref(_) => false,
+                Type::Primitive(p) => p.len() == 1,
+                Type::TVar(tv) => match tv.binding() {
+                    None => true,
+                    Some(_) if !seen.insert(tv.cell_addr()) => true,
+                    Some(b) => walk(&b, seen),
+                },
+                t => t
+                    .try_for_each_child(&mut |c| match walk(c, seen) {
+                        true => ControlFlow::Continue(()),
+                        false => ControlFlow::Break(()),
+                    })
+                    .is_continue(),
+            }
+        })
+    }
+    walk(t, &mut LPooled::take())
 }
 
-// CR claude for claude: [perf/medium] A type shaped like a DAG under a bound
+// XCR claude for claude: [perf/medium] A type shaped like a DAG under a bound
 // elaborates in exponential time, though it checks flat. A value DAG (`let
 // x{i+1} = (x{i}, x{i})`, then `'a: Array<'b> |x: 'a, y: 'b| 0` called with
 // `[]` and x{N}) costs 0.06 / 0.22 / 0.81 / 2.91 / 11.5 G instructions net of
@@ -595,7 +827,19 @@ fn exact(t: &Type) -> bool {
 // ~/ptmp/cr29/scratch/review-r14/K-r3-1/p/{vdag_26,map_24,dup_26,skip2_34}.gx
 // (gen.py, genv.py; sweep.txt; cg/{vdag_22,dup_22,map_16}.out.gz)
 // (bound-dag-elab-01)
-// CR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
+// 2026-11-05 claude: Fixed: contains::exact walks each shared node and cell
+// once (it stops at the first inexact part), and a map type is one allocation
+// (Type::Map(Arc<MapType>), Type::map), so node_addr gives it an identity and
+// every node-memo walk (position_cells, ContainsHist::closed,
+// would_cycle_inner, collect_tvars_seen) takes a shared map once. --expand
+// --no-cache, debug, total G instructions (empty program 0.93-0.98): vdag 26
+// 12.85 -> 1.00, dup 26 23.3 -> 0.95, map 24 252.9 -> 0.96, skip2 34 7.7 ->
+// 0.97, sdag 24 6.3 -> 0.96; all five at depth 60 under 1.07. GUI --check total
+// 43.16 G (lane head) -> 43.21 G. Pin: graphix-shell/tests/deep_nesting.rs
+// bound_dags_elaborate_in_linear_time (the five shapes at depth 60, 10 G budget
+// each); it fails with exact's memo removed (the value DAG) and with
+// node_addr(Map) None (the map chain).
+// XCR claude for claude: [perf/medium] Elaborating a chain of bounds is cubic
 // in its length, where its check is linear (chainbounds-cubic-01): `graphix
 // --expand --no-cache` of deep_nesting's chainbounds program costs, net of
 // the stdlib, 0.76 / 5.29 / 40.3 / 381 / 3520 G instructions at 250 / 500 /
@@ -618,6 +862,22 @@ fn exact(t: &Type) -> bool {
 // ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{chainbounds_250,chainbounds_500,run_rev_500}.gx
 // (gen.py chainbounds[:rev] N OUT), expand_sweep.txt, cg/exp_{250,500}.out.gz
 // (chainbounds-elab-01)
+// 2026-11-05 claude: Fixed. Three walks the chain repeated per link: the probe memo was
+// dropped at every commit's entry, so each link re-probed the rest of the chain
+// (ContainsHist's probe verdicts now stand while tvar::cell_writes, a per-thread count of
+// cell and link writes kept by CellLock::write and TVar::write, stands); the occurs check
+// walked each instance tree (ContainsHist::holds_no_cell, memoized with closed as a
+// Closure, skips it for a node holding no cell); commit_cell_bounds' post-commit
+// exact/has_unbound walks ran over the bound tree (ContainsHist::closed_now answers first,
+// its verdicts restamped by cell_writes). Also FnType::constraint_view normalizes with one
+// NormCx and reads the quantifiers by name. --expand --no-cache, debug, total G
+// instructions (empty 0.96): 500 links 6.28 (base-r17) -> 1.14, 1000 41.9 -> 1.30, 10000
+// 4.12, 30000 reversed 10.8. Pin: graphix-shell/tests/deep_nesting.rs
+// a_chain_of_bounds_elaborates_in_linear_time (10000 forward under 8G, 30000 reversed
+// under 18G); it fails without the change (8.2G over 8G at 10000), and each of the three
+// parts removed alone costs 6-23G at 4000. Census 2942 files: no verdict or message
+// change. GUI --check total 43.19G (lane head) -> 43.40G. probes:
+// ~/ptmp/cr29/scratch/r17-hk/chainbounds_{gen.py,500.gx,1000.gx}
 /// Give the open cells inside `t`, about to be bound into the cell, their
 /// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
 /// `'y`), each trait conjunct (every member of a union implements the
@@ -658,7 +918,8 @@ fn commit_cell_bounds(
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
         // later to a type without it is refused
-        if !exact(c)
+        if !hist.closed_now(c)
+            && !exact(c)
             && c.has_unbound()
             && !c.contains_int(flags | ContainsFlags::Lower, env, hist, t)?
         {
@@ -668,7 +929,7 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
-// CR claude for claude: [perf/medium] Two neighbours of the chain of bounds
+// XCR claude for claude: [perf/medium] Two neighbours of the chain of bounds
 // elaborate superlinearly, though each checks in linear time. A chain
 // through a typedef's parameter (`type T<'x> = Array<'x>`, `'a{i}:
 // T<'a{i+1}>`) costs 0.97 / 8.8 / 126 / 1951 G instructions net of the
@@ -685,6 +946,29 @@ fn commit_cell_bounds(
 // ~/ptmp/cr29/scratch/review-r14/K-r2-1/p/{typedef_125,typedef_250,union_500}.gx
 // (gen.py typedef|union N OUT), expand_sweep.txt, cg/td_{60,125}.out.gz
 // (chainbounds-elab-neighbours-01)
+// 2026-11-05 claude: chainbounds-elab-01's fix (probe verdicts standing across
+// commits that write nothing) takes the union chain from 15.69 to 1.70 G total
+// (base-r17 to lane, --expand --no-cache, union_500.gx; empty 0.96); the typedef
+// chain is unchanged (typedef_125.gx 9.65 -> 9.60 G), still in union_identical
+// -> TypeRef::same_definition.
+// 2026-11-05 claude: Fixed for the typedef chain; the union chain was fixed by
+// chainbounds-elab-01. RefHist::ref_id found a typedef application by scanning
+// every param list seen for its definition with union_identical, each a walk
+// down the chain: it now keys an application by its params' ids
+// (RefHist::param_id, the walk's own ids, an abstract type and an unresolvable
+// name by structure) in a hash map, and a ref node met again by its node.
+// probe_key keys a Ref by its node, so a link's conjunct T<'a{i+1}> is probed
+// once a chain and not once a link. --expand --no-cache, debug, total G
+// instructions (empty 0.98): typedef 125 links 9.72 (base-r17) -> 1.09, 250
+// 127.2 -> 1.38, 500 -> 2.41, 1000 -> 6.49; either part alone at 1000: 112
+// (ref_id) / 371 (probe_key). Still quadratic, not linear (typedef 2000 23.2,
+// union 1000 / 2000 3.61 / 11.16): chainbounds-elab-quadratic-01. Pin:
+// graphix-shell/tests/deep_nesting.rs
+// a_chain_of_bounds_through_a_typedef_or_a_union_elaborates (1000 links each;
+// typedef under 12G fails without the change at 12.1G+). Census 2942 files: no
+// verdict or message change against the lane's previous head (o3g). GUI --check
+// 43.38/43.46G (lane head before: 43.40G). probes:
+// ~/ptmp/cr29/scratch/r17-hk/elabnb/
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
@@ -745,8 +1029,8 @@ fn commit_parts(
             | (Type::ByRef(Mutability::Shared, c), Type::ByRef(Mutability::Shared, t)) => {
                 commit_parts(tv, flags, env, hist, c, t)
             }
-            (Type::Map { value: c, .. }, Type::Map { value: t, .. }) => {
-                commit_parts(tv, flags, env, hist, c, t)
+            (Type::Map(c), Type::Map(t)) => {
+                commit_parts(tv, flags, env, hist, &c.value, &t.value)
             }
             (Type::Tuple(cs), Type::Tuple(ts)) if cs.len() == ts.len() => {
                 all(&mut cs.iter().zip(ts.iter()), hist)
@@ -981,64 +1265,6 @@ fn admits_lower(
     Ok(true)
 }
 
-/// Whether `q`, when a rank-2 formal's quantifier holds it rigid at a
-/// call, admits unifying with the open cell `o`: the callee was checked
-/// against `q`'s declared bounds alone, so each of `o`'s conjuncts must
-/// follow from them. A quantifier with no bound is not judged.
-fn quantifier_admits(env: &Env, q: &TVar, o: &TVar) -> bool {
-    if !q.is_quantifier_rigid() || o.is_rigid() {
-        return true;
-    }
-    let own = q.cell_constraints();
-    if own.is_empty() {
-        return true;
-    }
-    // bounds that name each other (`'a: [i64, ('a, 'b)]`) reach this pair
-    // again while judging it: coinductively, it holds there
-    let pair = (Arc::as_ptr(&q.cell()) as usize, Arc::as_ptr(&o.cell()) as usize);
-    let Some(_judging) = Judging::enter(pair) else { return true };
-    let trait_of = |t: &Type| match t {
-        Type::Ref(tr) => env.trait_of_ref(tr),
-        _ => None,
-    };
-    o.cell_constraints().iter().all(|c| {
-        own.iter().any(|q| match (trait_of(q), trait_of(c)) {
-            (Some(a), Some(b)) => a == b,
-            (None, None) => q.implies(env, c).unwrap_or(false),
-            _ => false,
-        })
-    })
-}
-
-thread_local! {
-    static JUDGING: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// A quantifier/cell pair [`quantifier_admits`] is judging on this thread.
-struct Judging((usize, usize));
-
-impl Judging {
-    /// `None` when the pair is already being judged.
-    fn enter(pair: (usize, usize)) -> Option<Self> {
-        JUDGING.with_borrow_mut(|j| {
-            (!j.contains(&pair)).then(|| {
-                j.push(pair);
-                Self(pair)
-            })
-        })
-    }
-}
-
-impl Drop for Judging {
-    fn drop(&mut self) {
-        JUDGING.with_borrow_mut(|j| {
-            if let Some(i) = j.iter().rposition(|p| *p == self.0) {
-                j.remove(i);
-            }
-        })
-    }
-}
-
 impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
@@ -1086,10 +1312,7 @@ pub(super) fn on_copies<const N: usize, R>(
             if tv.is_rigid()
                 && let Some(c) = known.get(&tv.cell_addr())
             {
-                gates.push(match tv.is_quantifier_rigid() {
-                    true => c.open_quantifier_rigid(),
-                    false => c.open_rigid(),
-                });
+                gates.push(c.open_rigid());
             }
             false
         });
@@ -1158,9 +1381,7 @@ fn merge_bare_cycle(
             continue;
         }
         let (ts, to) = (Type::TVar(survivor.clone()), Type::TVar(o.clone()));
-        if !quantifier_admits(env, &survivor, o)
-            || !quantifier_admits(env, o, &survivor)
-            || !admits_lower(flags, env, hist, (&ts, &survivor), o)?
+        if !admits_lower(flags, env, hist, (&ts, &survivor), o)?
             || !admits_lower(flags, env, hist, (&to, o), &survivor)?
         {
             return Ok(false);
@@ -1315,8 +1536,8 @@ impl Link {
             | (Type::List(a), Type::List(b))
             | (Type::Error(a), Type::Error(b)) => self.equal(a, b),
             (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.equal(a, b),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                self.equal(k0, k1) && self.equal(v0, v1)
+            (Type::Map(m0), Type::Map(m1)) => {
+                self.equal(&m0.key, &m1.key) && self.equal(&m0.value, &m1.value)
             }
             (Type::App(c0, a0), Type::App(c1, a1)) => {
                 self.equal(c0, c1) && self.equal(a0, a1)
@@ -1441,6 +1662,24 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
+// CR claude for claude: [perf/medium] The typedef and union neighbours of the
+// chain of bounds still elaborate in quadratic time, where the Array chain is
+// linear. `graphix --expand --no-cache`, debug, total G instructions (empty
+// 0.98): `'a{i}: T<'a{i+1}>` over `type T<'x> = Array<'x>` 2.41 / 6.49 / 23.2
+// at 500 / 1000 / 2000 links; `'a{i}: [Array<'a{i+1}>, null]` 3.61 / 11.16 at
+// 1000 / 2000; the variant chain (`'a{i}: `V('a{i+1})`) 1.93 / 4.52; the Array
+// and struct chains 1.28 / 1.59 and 1.16 / 1.48. Each link walks the
+// instance's nested type once more: for the typedef, per Ref pair in
+// contains_dispatch, params_size, the pair_key's Type::param_key, shape_hash,
+// expand_ref's tvar_free and reset_tvars, and FnType::resolve_tvars /
+// collect_tvars_seen from CallSite::instance_ftype (perf, td_2000.gx; the stacks
+// are too deep for fp unwinding to name more); for the union,
+// identical_linked's union_identical and two Link::equal walks with their
+// NodePairs inserts, from the Set arms of contains_dispatch. Each wants a memo
+// by node (the probe memo's cell_writes stamp where a binding matters) or a
+// cheaper key. Found fixing chainbounds-elab-neighbours-01. probes:
+// ~/ptmp/cr29/scratch/r17-hk/elabnb/ (gen.py typedef|union|variant N OUT)
+// (chainbounds-elab-quadratic-01)
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
     union_identical(t0, t1)
@@ -1464,15 +1703,6 @@ pub struct TypeMismatch {
     infinite: bool,
     /// [`settled_cause_note`] of the two sides.
     settled: Option<CompactString>,
-}
-
-impl TypeMismatch {
-    /// The report with `expected` shown for the type it was found against:
-    /// its written form, where the check ran over an expansion of it.
-    pub fn shown_as(mut self, expected: Type) -> Self {
-        self.expected = expected;
-        self
-    }
 }
 
 impl std::fmt::Display for TypeMismatch {
@@ -1565,7 +1795,7 @@ impl<'a> DataMeet<'a> {
         }
         let expand = |i: usize| t[i].lookup_ref_probe(self.env).map(|(_, x)| x);
         match t {
-            [Type::Ref(r0), Type::Ref(r1)] if r0.same_definition(r1) => {
+            [Type::Ref(r0), Type::Ref(r1)] if r0.same_definition(r1, self.env) => {
                 self.zip(&r0.params, &r1.params)
             }
             [Type::Ref(_), _] => {
@@ -1602,9 +1832,9 @@ impl<'a> DataMeet<'a> {
             | [Type::List(a), Type::List(b)]
             | [Type::Error(a), Type::Error(b)]
             | [Type::ByRef(_, a), Type::ByRef(_, b)] => self.walk([a, b]),
-            [Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }] => {
-                self.walk([k0, k1]).or_else(|| self.walk([v0, v1]))
-            }
+            [Type::Map(m0), Type::Map(m1)] => self
+                .walk([&m0.key, &m1.key])
+                .or_else(|| self.walk([&m0.value, &m1.value])),
             [Type::App(c0, a0), Type::App(c1, a1)] => {
                 self.walk([c0, c1]).or_else(|| self.walk([a0, a1]))
             }
@@ -1713,9 +1943,7 @@ fn same_content(a: &Type, b: &Type) -> bool {
         | (Type::List(x), Type::List(y))
         | (Type::Error(x), Type::Error(y)) => Arc::ptr_eq(x, y),
         (Type::ByRef(m0, x), Type::ByRef(m1, y)) => m0 == m1 && Arc::ptr_eq(x, y),
-        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
-        }
+        (Type::Map(x), Type::Map(y)) => Arc::ptr_eq(x, y),
         _ => false,
     }
 }
@@ -1800,9 +2028,7 @@ fn any_part_pair(s: &Type, t: &Type, f: &mut impl FnMut(&Type, &Type) -> bool) -
         | (Type::List(a), Type::List(b))
         | (Type::Error(a), Type::Error(b))
         | (Type::ByRef(_, a), Type::ByRef(_, b)) => f(a, b),
-        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            f(k0, k1) || f(v0, v1)
-        }
+        (Type::Map(m0), Type::Map(m1)) => f(&m0.key, &m1.key) || f(&m0.value, &m1.value),
         (Type::Tuple(a), Type::Tuple(b)) => zip(a, b, f),
         (Type::Variant(n0, a, _), Type::Variant(n1, b, _)) if n0 == n1 => zip(a, b, f),
         (Type::Abstract { id: i0, params: a }, Type::Abstract { id: i1, params: b })
@@ -1810,7 +2036,7 @@ fn any_part_pair(s: &Type, t: &Type, f: &mut impl FnMut(&Type, &Type) -> bool) -
         {
             zip(a, b, f)
         }
-        (Type::Ref(r0), Type::Ref(r1)) if r0.same_definition(r1) => {
+        (Type::Ref(r0), Type::Ref(r1)) if r0.same_filled_definition(r1) => {
             zip(&r0.params, &r1.params, f)
         }
         (Type::Struct(a), Type::Struct(b)) => a.iter().any(|(n, x, _)| {
@@ -2148,15 +2374,6 @@ impl Type {
 
     /// [`Self::check_contains`] with rigid enforcement; the def gate's
     /// acceptance checks only.
-    /// [`Self::check_contains`] of a function's written type over its
-    /// checked type `t`, adopting `t`'s quantifier bounds
-    /// ([`ContainsFlags::Adopt`]).
-    pub fn check_adopts(&self, env: &Env, t: &Self) -> Result<()> {
-        let flags = ContainsFlags::Commit | ContainsFlags::Adopt;
-        let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
-    }
-
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
         let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
         let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
@@ -2194,11 +2411,9 @@ impl Type {
             if hist.gated == 0 && hist.commit_held(flags, self, t) {
                 return Ok(true);
             }
-            // A committing call may bind a cell a cached verdict read.
-            hist.epoch += 1;
-            let (height, outer, outer_taint) = hist.enter_verdict();
+            let (height, outer) = hist.enter_verdict();
             let r = self.contains_dispatch(flags, env, hist, t);
-            let own = hist.leave_verdict(height, outer, outer_taint);
+            let own = hist.leave_verdict(height, outer);
             let r = r?;
             if r && own && hist.gated == 0 {
                 hist.commit_put(flags, self, t);
@@ -2217,7 +2432,7 @@ impl Type {
         {
             return Ok(r);
         }
-        // CR claude for claude: [perf/low] A probe keeps a verdict only where its walk
+        // XCR claude for claude: [perf/low] A probe keeps a verdict only where its walk
         // assumed no pair from further out, so over names that recur through error
         // payloads one containment walk can be exponential: generated p1088.gx (gen_rnd.py
         // seed 1088) and err4.gx (mkerr.py 4: X_i = [Error<X_i+1>, Error<X_k>,
@@ -2249,15 +2464,34 @@ impl Type {
         // gd8 4.14G / 4.14G, gd10 11.68G / 11.67G, so it doubles per level on main as well;
         // 'main hangs earlier, in diff' held for base-r10. probes:
         // ~/ptmp/cr29/scratch/r11-X/x2/ (p1088.gx, err4.gx, gd6.gx)
+        // 2026-11-05 claude: Every probe verdict is now kept, by what it assumed
+        // (ContainsHist::rests: the shallowest pair taken to hold, questions taken to hold
+        // and to fail, a growth cut). Settled for good (Rests::settled): a false that took
+        // only holds and a true that took only failures, by monotonicity; I checked the
+        // probe-mode rules and each combines sub-verdicts by and/or (set_commit's first
+        // member, distribution's position pick and pool, the open-member rest-or-whole
+        // choice, the NoError and witness fallbacks), so no false is a reason for a true.
+        // Any other verdict is provisional (ContainsHist::provisional), read while its
+        // assumptions stand: when one is answered, those reached since take what the answer
+        // rested on, and those agreeing with a wrong assumption are dropped. A false a
+        // growth cut refused is kept only where it assumed nothing, as before. Pins,
+        // contains.rs tests: names_recurring_through_errors_contain_in_polynomial_steps
+        // (n=4/8/16; lane HEAD fails at n=4, Y0 ⊇ X0 495603 steps vs 588; without the
+        // provisional memo n=16 takes 11.2M steps vs 25k, over the 64k bound) and
+        // a_kept_probe_verdict_is_the_pairs_own (pairs asked in one walk either way answer
+        // as alone; fails if every verdict is kept as settled). p1088.gx now passes
+        // contains and hangs in diff (diff-cycle-hang-01); err4.gx hangs in matching_type's
+        // union normalization (matching-type-merge-01, new); the gd shape was already
+        // polynomial on this lane's head. Census 2942 files vs lane head: 0 verdict, 0
+        // message changes; GUI check 42.97G -> 42.98G instructions. probes:
+        // ~/ptmp/cr29/scratch/r17-hk/
 
-        // Only a verdict that assumed no pair from further out holds
-        // outside this call.
-        let (height, outer, outer_taint) = hist.enter_verdict();
+        let (height, outer) = hist.enter_verdict();
         let r = self.contains_dispatch(flags, env, hist, t);
-        let own = hist.leave_verdict(height, outer, outer_taint);
+        let rests = hist.leave_probe_verdict(outer);
         let r = r?;
-        if own && hist.gated == 0 {
-            hist.probe_put(rigid, self, t, r);
+        if hist.gated == 0 {
+            hist.probe_put((rigid, self, t), r, height, rests);
         }
         Ok(r)
     }
@@ -2349,7 +2583,7 @@ impl Type {
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
-                    && tr0.same_definition(tr1)
+                    && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                     && tr0
                         .params
@@ -2357,7 +2591,7 @@ impl Type {
                         .zip(tr1.params.iter())
                         .all(|(a, b)| identical_linked(a, b, commit)) =>
             {
-                Ok(true)
+                tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 // CR claude for claude: [bug/low] Taking two instances of one definition as
@@ -2397,7 +2631,7 @@ impl Type {
                 // and a non-recursive W over a recursive T is refused the same way. probes:
                 // ~/ptmp/cr29/scratch/rv17/typing-a/{tpe_rec,tpe_recz,tpe_nest}.gx
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
-                    && tr0.same_definition(tr1)
+                    && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                     && (!tr0.params.iter().chain(tr1.params.iter()).any(|p| p.has_free())
                         || tr0.resolve_peek(env).is_none_or(|d| d.is_recursive(env)))
@@ -2415,7 +2649,7 @@ impl Type {
                     };
                     let probe = flags & !BitFlags::from(ContainsFlags::Commit);
                     if equal(probe, hist)? && (!commit || equal(flags, hist)?) {
-                        return Ok(true);
+                        return tr0.hold_bounds_with(tr1, env, commit);
                     }
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
@@ -2459,6 +2693,7 @@ impl Type {
                         let name = tr.name.clone();
                         if !commit {
                             hist.grew = Some(name);
+                            hist.rests.cut = true;
                             return Ok(false);
                         }
                         return Err(growth_error(&name));
@@ -2607,16 +2842,14 @@ impl Type {
             (Self::Array(t0), Self::Primitive(p)) if *p == BitFlags::from(Typ::Array) => {
                 t0.contains_int(flags, env, hist, &Type::Any)
             }
-            (Self::Map { key: k0, value: v0 }, Self::Map { key: k1, value: v1 }) => {
-                Ok(k0.contains_int(flags, env, hist, k1)?
-                    && v0.contains_int(flags, env, hist, v1)?)
+            (Self::Map(m0), Self::Map(m1)) => {
+                Ok(m0.key.contains_int(flags, env, hist, &m1.key)?
+                    && m0.value.contains_int(flags, env, hist, &m1.value)?)
             }
             (Self::Primitive(p), Self::Map { .. }) => Ok(p.contains(Typ::Map)),
-            (Self::Map { key, value }, Self::Primitive(p))
-                if *p == BitFlags::from(Typ::Map) =>
-            {
-                Ok(key.contains_int(flags, env, hist, &Type::Any)?
-                    && value.contains_int(flags, env, hist, &Type::Any)?)
+            (Self::Map(m), Self::Primitive(p)) if *p == BitFlags::from(Typ::Map) => {
+                Ok(m.key.contains_int(flags, env, hist, &Type::Any)?
+                    && m.value.contains_int(flags, env, hist, &Type::Any)?)
             }
             (Self::Primitive(p0), Self::Error(_)) => Ok(p0.contains(Typ::Error)),
             (Self::Error(e), Self::Primitive(p)) if *p == BitFlags::from(Typ::Error) => {
@@ -2675,7 +2908,9 @@ impl Type {
             // occurs check guards the open cell's bind; an open cell
             // `t1` reaches (the μ-shape `'r ⊇ [T, 'r]`) takes the arms
             // below, where the union collapses.
-            (Self::TVar(t0), t1) if t0.is_bound() || !t0.would_cycle(t1) => {
+            (Self::TVar(t0), t1)
+                if t0.is_bound() || hist.holds_no_cell(t1) || !t0.would_cycle(t1) =>
+            {
                 if let Some(t0) = t0.binding() {
                     return t0.contains_int(flags, env, hist, t1);
                 }
@@ -2721,7 +2956,9 @@ impl Type {
                 }
                 Ok(true)
             }
-            (t0, Self::TVar(t1)) if t1.is_bound() || !t1.would_cycle(t0) => {
+            (t0, Self::TVar(t1))
+                if t1.is_bound() || hist.holds_no_cell(t0) || !t1.would_cycle(t0) =>
+            {
                 if let Some(t1) = t1.binding() {
                     return t0.contains_int(flags, env, hist, &t1);
                 }
@@ -2828,85 +3065,33 @@ impl Type {
                 if !commit || !shares_bare_cell(s0) {
                     return Self::place_members(flags, env, hist, t0, s0, s1);
                 }
-                // the members as written, else deepest first: the deepest a
-                // constructor member fits decides the variable its bare
-                // sibling shares; each order is tried on copies first
-                let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
-                deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m)));
-                for order in [&s1[..], &deepest[..]] {
-                    let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                    let copy0 = t0.reset_tvars_int(&mut known, Fresh::Copy);
-                    let copy0 = copy0.unwrap_or_else(|| t0.clone());
-                    let copy1: SmallVec<[Type; 8]> = order
-                        .iter()
-                        .map(|m| {
-                            m.reset_tvars_int(&mut known, Fresh::Copy)
-                                .unwrap_or_else(|| m.clone())
-                        })
-                        .collect();
-                    let Self::Set(c0) = &copy0 else {
-                        unreachable!("a copy keeps its shape")
-                    };
-                    let trial = &mut ContainsHist::new();
-                    if Self::place_members(flags, env, trial, &copy0, c0, &copy1)? {
-                        return Self::place_members(flags, env, hist, t0, s0, order);
-                    }
-                }
-                Self::place_members(flags, env, hist, t0, s0, s1)
+                // the deepest a constructor member fits decides the variable
+                // its bare sibling shares
+                Self::place_in_order(
+                    flags,
+                    env,
+                    hist,
+                    (t0, s0, s1),
+                    ContainsHist::new,
+                    Self::place_members,
+                )
             }
-            // Member-wise identity pre-pass: only the residue takes the
-            // general per-member walk (which is O(|s0|·|s1|) per level).
-            // An open rhs member takes from the lhs members its known
-            // siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E; where
-            // they leave none it can take, from the whole lhs.
+            // Where two lhs members hold open cells, the first that fits an
+            // rhs member alone may decide them so that a later member fits
+            // none.
             (t0 @ Self::Set(s0), Self::Set(s1)) => {
-                let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
-                let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
-                for m in s1.iter() {
-                    if is_unbound_tvar(m) {
-                        open.push(m);
-                        continue;
-                    }
-                    if let Some(i) =
-                        s0.iter().position(|c| identical_linked(c, m, commit))
-                    {
-                        used[i] = true;
-                        continue;
-                    }
-                    if !t0.contains_int(flags, env, hist, m)? {
-                        return Ok(false);
-                    }
-                    for (i, c) in s0.iter().enumerate() {
-                        if c.contains_int(guide(flags), env, hist, m)? {
-                            used[i] = true;
-                            break;
-                        }
-                    }
+                let holding = |m: &&Type| !is_unbound_tvar(m) && m.has_unbound();
+                if !commit || hist.trial || s0.iter().filter(holding).nth(1).is_none() {
+                    return Self::place_each(flags, env, hist, t0, s0, s1);
                 }
-                if open.is_empty() {
-                    return Ok(true);
-                }
-                let mut rest: SmallVec<[Type; 8]> = s0
-                    .iter()
-                    .zip(&used)
-                    .filter(|(_, used)| !**used)
-                    .map(|(c, _)| c.clone())
-                    .collect();
-                let rest = match rest.len() {
-                    0 => t0.clone(),
-                    1 => rest.pop().unwrap(),
-                    _ => Self::Set(Arc::from_iter(rest.drain(..))),
-                };
-                for m in open {
-                    let from = match rest.contains_int(guide(flags), env, hist, m)? {
-                        true => &rest,
-                        false => t0,
-                    };
-                    if !from.contains_int(flags, env, hist, m)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+                Self::place_in_order(
+                    flags,
+                    env,
+                    hist,
+                    (t0, s0, s1),
+                    ContainsHist::trial,
+                    Self::place_each,
+                )
             }
             (t0, Self::Set(s)) => Ok(s
                 .iter()
@@ -3177,9 +3362,6 @@ impl Type {
                     cycle_toward(addr0, tt1, down).max(cycle_toward(addr1, tt0, up))
                 {
                     return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
-                }
-                if !quantifier_admits(env, t0, t1) || !quantifier_admits(env, t1, t0) {
-                    return Ok(false);
                 }
                 // an open cell below is bounded by what bounds `t0`, as a
                 // merge would have it; a declared one is merged
@@ -3495,6 +3677,111 @@ impl Type {
             }
             Ok(true)
         })
+    }
+
+    /// `place` over the members `s1` in the first of two orders that
+    /// places them all on copies, each walk on copies starting from
+    /// `trial`: as written, then deepest first; as written where neither
+    /// does.
+    fn place_in_order(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        (t0, s0, s1): (&Self, &[Type], &[Type]),
+        trial: fn() -> ContainsHist,
+        place: fn(
+            BitFlags<ContainsFlags>,
+            &Env,
+            &mut ContainsHist,
+            &Self,
+            &[Type],
+            &[Type],
+        ) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
+        deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m)));
+        if deepest[..] == s1[..] {
+            return place(flags, env, hist, t0, s0, s1);
+        }
+        for order in [s1, &deepest[..]] {
+            let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            let copy0 = t0.reset_tvars_int(&mut known, Fresh::Copy);
+            let copy0 = copy0.unwrap_or_else(|| t0.clone());
+            let copy1: SmallVec<[Type; 8]> = order
+                .iter()
+                .map(|m| {
+                    m.reset_tvars_int(&mut known, Fresh::Copy)
+                        .unwrap_or_else(|| m.clone())
+                })
+                .collect();
+            let Self::Set(c0) = &copy0 else { unreachable!("a copy keeps its shape") };
+            if place(flags, env, &mut trial(), &copy0, c0, &copy1)? {
+                return place(flags, env, hist, t0, s0, order);
+            }
+        }
+        place(flags, env, hist, t0, s0, s1)
+    }
+
+    /// `t0`, a union `s0` holding no bare open member, contains the
+    /// members `s1` in that order. Member-wise identity pre-pass: only the
+    /// residue takes the general per-member walk (which is O(|s0|·|s1|)
+    /// per level). An open rhs member takes from the lhs members its known
+    /// siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E; where they
+    /// leave none it can take, from the whole lhs.
+    fn place_each(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t0: &Self,
+        s0: &[Type],
+        s1: &[Type],
+    ) -> Result<bool> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
+        let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
+        for m in s1.iter() {
+            if is_unbound_tvar(m) {
+                open.push(m);
+                continue;
+            }
+            if let Some(i) = s0.iter().position(|c| identical_linked(c, m, commit)) {
+                used[i] = true;
+                continue;
+            }
+            if !t0.contains_int(flags, env, hist, m)? {
+                return Ok(false);
+            }
+            for (i, c) in s0.iter().enumerate() {
+                if c.contains_int(guide(flags), env, hist, m)? {
+                    used[i] = true;
+                    break;
+                }
+            }
+        }
+        if open.is_empty() {
+            return Ok(true);
+        }
+        let mut rest: SmallVec<[Type; 8]> = s0
+            .iter()
+            .zip(&used)
+            .filter(|(_, used)| !**used)
+            .map(|(c, _)| c.clone())
+            .collect();
+        let rest = match rest.len() {
+            0 => t0.clone(),
+            1 => rest.pop().unwrap(),
+            _ => Self::Set(Arc::from_iter(rest.drain(..))),
+        };
+        for m in open {
+            let from = match rest.contains_int(guide(flags), env, hist, m)? {
+                true => &rest,
+                false => t0,
+            };
+            if !from.contains_int(flags, env, hist, m)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// `t0`, a union `s0` holding an open member, contains the members
@@ -3970,6 +4257,96 @@ mod tests {
         CONTAINS_STEPS.with(|n| n.set(0));
         expanded.check_contains(&env, &app).unwrap();
         CONTAINS_STEPS.with(|n| n.get())
+    }
+
+    /// Two families of names recurring through error payloads, each name
+    /// three: `X<i> = [Error<X<i+1>>, Error<X<7i+3>>, Error<Error<X<i+2>>>,
+    /// `P]` (mod `n`), a `Y` twin with `Q.
+    fn error_families(n: usize) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for (p, tag, k) in [("X", "`P", 7), ("Y", "`Q", 5)] {
+            for i in 0..n {
+                let (a, b, c) = ((i + 1) % n, (i * k + 3) % n, (i + 2) % n);
+                let body = format!(
+                    "[Error<{p}{a}>, Error<{p}{b}>, Error<Error<{p}{c}>>, {tag}]"
+                );
+                defs.push((format!("{p}{i}"), body));
+            }
+        }
+        defs
+    }
+
+    fn at_root(env: &Env, t: &str) -> Type {
+        let t = parsed(t).scope_refs(&ModPath::root());
+        t.seed_refs(env);
+        t
+    }
+
+    // A probe's verdict that assumed pairs or questions in progress is
+    // kept: a false that took only holds and a true that took only
+    // failures for good, any other while what it took stands, so each
+    // pair of the families is walked a bounded number of times.
+    #[test]
+    fn names_recurring_through_errors_contain_in_polynomial_steps() {
+        for (n, bound) in [(4, 4_000), (8, 16_000), (16, 64_000)] {
+            let defs = error_families(n);
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+            let (env, _) = Env::typed_at_root(&defs, "X0").unwrap();
+            for (a, b, holds) in [
+                ("Y0", "X0", false),
+                ("X0", "Y0", false),
+                ("[X0, Y0]", "Y0", true),
+                ("Y0", "[X0, Y0]", false),
+            ] {
+                let (a, b) = (at_root(&env, a), at_root(&env, b));
+                CONTAINS_STEPS.with(|n| n.set(0));
+                assert_eq!(a.contains(&env, &b).unwrap(), holds, "n={n}: {a} ⊇ {b}");
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                assert!(steps <= bound, "n={n}: {a} ⊇ {b} took {steps} steps");
+            }
+        }
+    }
+
+    // What one walk keeps is each pair's verdict wherever it is met: the
+    // pairs asked in one walk, in either order, are answered as each is
+    // asked alone. `U ⊇ V` holds inside `S ⊇ T`, which assumes itself,
+    // and fails alone, as `S ⊇ T` does.
+    #[test]
+    fn a_kept_probe_verdict_is_the_pairs_own() {
+        let mut defs = error_families(3);
+        defs.extend(
+            [
+                ("S", "[Error<U>, `A]"),
+                ("T", "[Error<V>, Error<`B>]"),
+                ("U", "[Error<S>, `C]"),
+                ("V", "[Error<T>, `C]"),
+            ]
+            .map(|(n, b)| (n.to_string(), b.to_string())),
+        );
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "X0").unwrap();
+        let mut names: Vec<String> = defs.iter().map(|(n, _)| n.to_string()).collect();
+        names.extend(defs.iter().map(|(n, _)| format!("Error<{n}>")));
+        names.extend(["[X0, Y1]".into(), "Error<[X2, Y0]>".into(), "`P".into()]);
+        let types: Vec<Type> = names.iter().map(|n| at_root(&env, n)).collect();
+        let pairs: Vec<(&Type, &Type)> =
+            types.iter().flat_map(|a| types.iter().map(move |b| (a, b))).collect();
+        let probe = |hist: &mut ContainsHist, (a, b): (&Type, &Type)| {
+            a.contains_int(BitFlags::empty(), &env, hist, b).unwrap()
+        };
+        let alone: Vec<bool> =
+            pairs.iter().map(|p| probe(&mut ContainsHist::new(), *p)).collect();
+        let mut hist = ContainsHist::new();
+        let forward: Vec<bool> = pairs.iter().map(|p| probe(&mut hist, *p)).collect();
+        let mut hist = ContainsHist::new();
+        let mut backward: Vec<bool> =
+            pairs.iter().rev().map(|p| probe(&mut hist, *p)).collect();
+        backward.reverse();
+        for (i, (a, b)) in pairs.iter().enumerate() {
+            assert_eq!(alone[i], forward[i], "{a} ⊇ {b}");
+            assert_eq!(alone[i], backward[i], "{a} ⊇ {b}");
+        }
     }
 
     fn parsed(s: &str) -> Type {

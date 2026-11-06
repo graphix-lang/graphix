@@ -35,11 +35,8 @@ pub(super) struct SigPairs {
     /// The unions whose pairing waits.
     deferred: Vec<DeferredUnion>,
     /// Each function type paired, signature and implementation, whose
-    /// bounds are judged once every variable has paired, and whether it
-    /// stands in a contravariant position.
-    pub(super) fns: Vec<(FnType, FnType, bool)>,
-    /// The walk is under an odd number of function arguments.
-    pub(super) contra: bool,
+    /// bounds are judged once every variable has paired.
+    pub(super) fns: Vec<(FnType, FnType)>,
 }
 
 /// A union pair whose pairing waits ([`SigPairs::settle`]).
@@ -47,8 +44,6 @@ pub(super) struct SigPairs {
 struct DeferredUnion {
     sig: Type,
     imp: Type,
-    /// It stands in a contravariant position.
-    contra: bool,
     /// The typedef pairs whose expansion it is part of, in progress again
     /// while its members pair, so a recursive typedef's union meets its
     /// own pair as the walk that deferred it would.
@@ -76,6 +71,41 @@ impl SigPairs {
         self.cells.get(&addr).map(|(_, t)| t)
     }
 
+    /// How many implementation cells are paired.
+    pub(super) fn paired_len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Each implementation cell paired since `from` pairs had been, by
+    /// address, with the signature's type at its place.
+    pub(super) fn paired_since(
+        &self,
+        from: usize,
+    ) -> impl Iterator<Item = (usize, &Type)> {
+        self.cells
+            .get_range(from..)
+            .into_iter()
+            .flatten()
+            .map(|(addr, (_, t))| (*addr, t))
+    }
+
+    /// `f` over the pairing, which keeps what `f` paired only where `f`
+    /// succeeds: a match only adds pairs.
+    pub(super) fn trial<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<R>,
+    ) -> Result<R> {
+        let (cells, deferred, fns) =
+            (self.cells.len(), self.deferred.len(), self.fns.len());
+        let r = f(self);
+        if r.is_err() {
+            self.cells.truncate(cells);
+            self.deferred.truncate(deferred);
+            self.fns.truncate(fns);
+        }
+        r
+    }
+
     /// End a signature match ([`Self::finish`]) and give what it paired.
     pub(super) fn finished(
         mut self,
@@ -96,8 +126,8 @@ impl SigPairs {
         self.settle(env, hist)?;
         let mut i = 0;
         while i < self.fns.len() {
-            let (sig, imp, contra) = self.fns[i].clone();
-            sig.sig_bounds(env, &imp, contra, self, hist)?;
+            let (sig, imp) = self.fns[i].clone();
+            sig.sig_bounds(env, &imp, self, hist)?;
             i += 1;
         }
         self.settle(env, hist)
@@ -170,7 +200,7 @@ impl SigPairs {
     /// Pair the last deferred union by the first assignment of its
     /// members under which the rest settle.
     fn search(&mut self, env: &Env, hist: &mut RefHist<AHashSet<RefPair>>) -> Result<()> {
-        let Some(DeferredUnion { sig, imp, contra, within }) = self.deferred.pop() else {
+        let Some(DeferredUnion { sig, imp, within }) = self.deferred.pop() else {
             return Ok(());
         };
         let (Type::Set(m0), Type::Set(m1)) = (&sig, &imp) else { unreachable!() };
@@ -179,7 +209,6 @@ impl SigPairs {
         let mut first_err = None;
         loop {
             let mut scratch = self.clone();
-            scratch.contra = contra;
             let entered: SmallVec<[RefPair; 2]> =
                 within.iter().filter(|k| hist.insert(**k)).copied().collect();
             let r = m0.iter().zip(order.iter()).try_for_each(|(t0, i)| {
@@ -188,7 +217,6 @@ impl SigPairs {
             entered.iter().for_each(|k| {
                 hist.remove(k);
             });
-            scratch.contra = self.contra;
             let r = r.and_then(|()| ensure_sufficient(|| scratch.settle(env, hist)));
             match r {
                 Ok(()) => {
@@ -509,9 +537,10 @@ impl Type {
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
-                    && tr0.same_definition(tr1) =>
+                    && tr0.same_definition(tr1, env) =>
             {
                 Ok(tr0.params.len() == tr1.params.len()
+                    && tr0.hold_bounds_with(tr1, env, true)?
                     && tr0
                         .params
                         .iter()
@@ -594,9 +623,9 @@ impl Type {
             (Type::Array(t0), Type::Array(t1)) => t0.could_match_int(env, hist, t1),
             (Type::List(t0), Type::List(t1)) => t0.could_match_int(env, hist, t1),
             (Type::Primitive(p), Type::Array(_)) => Ok(p.contains(Typ::Array)),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                Ok(k0.could_match_int(env, hist, k1)?
-                    && v0.could_match_int(env, hist, v1)?)
+            (Type::Map(m0), Type::Map(m1)) => {
+                Ok(m0.key.could_match_int(env, hist, &m1.key)?
+                    && m0.value.could_match_int(env, hist, &m1.value)?)
             }
             (Type::Primitive(p), Type::Map { .. }) => Ok(p.contains(Typ::Map)),
             (Type::Tuple(ts0), Type::Tuple(ts1)) => Ok(ts0.len() == ts1.len()
@@ -802,9 +831,10 @@ impl Type {
             (Self::Ref(r0), Self::Ref(r1))
                 if r0.scope == r1.scope
                     && r0.name == r1.name
-                    && r0.same_definition(r1)
+                    && r0.same_definition(r1, env)
                     && r0.params.len() == r1.params.len() =>
             {
+                r0.hold_bounds_with(r1, env, true)?;
                 for (t0, t1) in r0.params.iter().zip(r1.params.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
@@ -857,7 +887,6 @@ impl Type {
                 tvar_map.deferred.push(DeferredUnion {
                     sig: self.clone(),
                     imp: impl_type.clone(),
-                    contra: tvar_map.contra,
                     within: hist.iter().copied().collect(),
                 });
                 Ok(())
@@ -899,9 +928,9 @@ impl Type {
                 }
                 Ok(())
             }
-            (Self::Map { key: k0, value: v0 }, Self::Map { key: k1, value: v1 }) => {
-                k0.sig_matches_int(env, k1, tvar_map, hist)?;
-                v0.sig_matches_int(env, v1, tvar_map, hist)
+            (Self::Map(m0), Self::Map(m1)) => {
+                m0.key.sig_matches_int(env, &m1.key, tvar_map, hist)?;
+                m0.value.sig_matches_int(env, &m1.value, tvar_map, hist)
             }
             (
                 Self::Abstract { id: id0, params: p0 },

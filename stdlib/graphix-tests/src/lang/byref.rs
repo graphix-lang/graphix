@@ -534,7 +534,8 @@ async fn place_through_deref_mirror() -> Result<()> {
     let Some(id) = graphix_compiler::reference::cell(&v) else {
         anyhow::bail!("expected a reference, got {v}")
     };
-    let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
+    let mirror =
+        ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(ctx.rt.var_of(id))).await?;
     assert_eq!(mirror, Some(Value::I64(10)));
     Ok(())
 }
@@ -641,7 +642,8 @@ async fn place_root_bottom_mirror() -> Result<()> {
         }
     }
     let Some(id) = cell else { anyhow::bail!("no reference produced") };
-    let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
+    let mirror =
+        ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(ctx.rt.var_of(id))).await?;
     ctx.shutdown().await;
     assert_eq!(mirror, None);
     Ok(())
@@ -913,20 +915,6 @@ run!(write_through_aliased_reference_union, r#"{
   let t = select step { 3 => null, _ => never() };
   t ~ a
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(10))); FuseExpect::Jit);
-
-// A rank-2 parameter's quantifier is generic, not a binding an earlier
-// compile generalized: a writable reference to it is allowed.
-run!(mut_ref_to_a_rank2_parameter, r#"{
-  let app = |g: fn<'b: Any>(y: 'b) -> 'b| { let h = &mut g; (*h)(1) };
-  app(|x| x)
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
-
-// So is a lambda literal's parameter checked against a rank-2 formal:
-// its type is the quantifier itself.
-run!(mut_ref_to_a_rank2_argument_parameter, r#"{
-  let app = |g: fn<'b: Any>(y: 'b) -> 'b| g(1);
-  app(|y| { let r = &mut y; y })
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
 
 // A reference never equals an array of numbers, its root's bind id
 // among them: its comparison form holds the root as a reference.

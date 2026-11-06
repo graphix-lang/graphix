@@ -314,7 +314,7 @@ pub(super) fn gen_module(
                 gx.push_str(&format!("let via = {via}"));
             } else {
                 gx.push_str(decl);
-                gx.push_str(&format!("let via: fn<'a: Tr>(x: 'a) -> i64 = {via}"));
+                gx.push_str(&format!("let via = {via}"));
                 gx.push_str(&imp);
             }
             ctx.push(
@@ -365,12 +365,8 @@ pub(super) fn gen_module(
                 let body = "let tsum = 'a: Tr |xs: Array<'a>| -> i64 array::fold(xs, i64:0, |acc, x| acc + Tr::tv(x));\n";
                 if has_gxi {
                     gxi.push_str(decl);
-                    gx.push_str(body);
-                } else {
-                    gx.push_str(
-                        "let tsum: fn<'a: Tr>(xs: Array<'a>) -> i64 = 'a: Tr |xs: Array<'a>| -> i64 array::fold(xs, i64:0, |acc, x| acc + Tr::tv(x));\n",
-                    );
                 }
+                gx.push_str(body);
                 ctx.push(
                     format!("{mname}::tsum"),
                     GenType::Fn {

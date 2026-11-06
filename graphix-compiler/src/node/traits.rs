@@ -111,6 +111,13 @@ fn implements<R: Rt>(
     // trait-generic-written-01 notes the same claim for lambdas. No census file has the
     // shape. probes ~/ptmp/cr29/scratch/review-r14/A-r2-2/p/{tq1,tq1b} (controls tq1d,
     // tq1e, tq1f, vq1) (trait-nolambda-bound-01)
+    // 2026-11-05 claude: Lane Q (cr51-Q, Eric's 11-05 ML rule): a method whose value is no
+    // lambda ((|#x, s, y| x, 1).0, (id, 1).0) is now one instance by rule, since no binding
+    // names the lambda inside the tuple, so its refusal under a variable each call picks is
+    // the intended verdict, not an over-refusal (pin
+    // lang::traits::method_value_projected_from_data_is_refused). Whether the message
+    // should cite the ML rule rather than the level test is what remains; the probes tq1,
+    // tq1b are refused as before.
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
@@ -1009,6 +1016,16 @@ impl<R: Rt> Update<R> for Impl<R> {
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
+            let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
+            implements(ctx, &declared, &bind.typ, *id).with_context(|| {
+                format!(
+                    "method {} of impl {} for {} does not implement the declared {}",
+                    d.name,
+                    self.trait_def.name,
+                    self.def.target,
+                    declared.resolve_tvars()
+                )
+            })?;
             let expected =
                 Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
             expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
@@ -1019,16 +1036,6 @@ impl<R: Rt> Update<R> for Impl<R> {
                     self.def.target,
                     bind.typ.resolve_tvars(),
                     expected.resolve_tvars()
-                )
-            })?;
-            let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
-            implements(ctx, &declared, &bind.typ, *id).with_context(|| {
-                format!(
-                    "method {} of impl {} for {} does not implement the declared {}",
-                    d.name,
-                    self.trait_def.name,
-                    self.def.target,
-                    declared.resolve_tvars()
                 )
             })?;
         }
@@ -1331,26 +1338,6 @@ impl<R: Rt> CallSite<R> {
     /// ```
     ///
     /// The implementation bindings are named by id (`#bind::N`).
-    // CR claude for claude: [bug/medium] A trait method taking any rank-2 formal, called
-    // with a union self, passes the check and the build refuses it in every mode
-    // (default, --no-fusion, GRAPHIX_NO_SUBST=1): `trait T { val m: fn(#k: fn<'a: Any>(x:
-    // 'a) -> 'a, self) -> (self, null) }` with impls for i64 and string, then `let v:
-    // [i64, string] = "x"; T::m(#k: |x| x, v)` ("the argument is not polymorphic in 'a: a
-    // binding it reaches ... would carry 'a out", callsite::check_general); graphix-fuzz
-    // check reports DIVERGENCE. The bound does not matter (a written one, Any, self), nor
-    // the formal's position; the same method called once per member runs. Likely this
-    // lowering: `let #a_i = <arg_i>` binds the argument outside the select, which the
-    // build's general check rejects and the definition's check never sees. Not traced.
-    // Found by review r13 of lane R. probes:
-    // ~/ptmp/cr29/scratch/review-r11/R-r3-1/t/{a6_union_any_rank2,a8_union_any_rank2_positional,a7_mono_any_rank2}.gx,
-    // R-r3-2/y/{y1c_union_written_bound,y1d_union_any_bound}.gx (union-self-rank2-01)
-    // 2026-11-04 claude: Lane F round 14 traced the cause, unfixed: lower_trait_union passes each operand through
-    // bind::lower_over_operands, which binds it to a synthesized let (#k) that is never checked as a let, so a
-    // lambda-literal argument is not generalized as a written let k = |x| x is; each arm's Ref then hands the rank-2
-    // formal the definition's own cells, the first arm's containment binds them, and check_general on the next arm
-    // finds the binding reaching 'a. The hand-written select checks and runs (~/ptmp/cr29/scratch/r14-F/u/u1.gx). Fix:
-    // give an operand binding the read-copy treatment a checked let of a lambda gets, or pass a lambda-literal operand
-    // to each arm as its own literal.
     fn lower_trait_union(
         &mut self,
         ctx: &mut CompileCtx<R>,

@@ -459,6 +459,21 @@ impl<'a> Seen<'a> {
     }
 }
 
+// CR claude for claude: [bug/medium] Freezing a type whose parameters double at each
+// level walks MAX_FREEZE_EXPANSIONS levels of a type that doubles at each, so it never
+// ends: `type P<'a> = [`Leaf('a), `Node(P<('a, 'a)>)]; let t: P<i64> =
+// `Node(`Node(`Node(`Leaf((((1, 1), (1, 1)), ((1, 1), (1, 1)))))))`, then a select
+// over t or println(t), passes --check and runs with --no-fusion, but a plain run and
+// --expand are killed at 30 s on base-r17 (main ed2e39816) and on cr52-o3 alike (gdb:
+// Freeze::freeze_inner over Freeze::freeze, dozens of frames deep, under
+// TypeMemo::intern_frozen). A type whose parameters grow by one constructor (`N<'a> =
+// [`Nil, `Cons('a, N<Array<'a>>)]`) ends, but a lambda over `x: N<i64>` fuses nothing
+// (lang::types::nested_argument_ends is FuseExpect::None). TypeRef::endless (the
+// expansive test, typ/expansive.rs) tells such a definition at its first application;
+// freezing an endless application as the opaque two-word value a recursive type is
+// would end both, and might fuse the second. probes:
+// ~/ptmp/cr29/scratch/r17-hk/r3/perfect3.gx, perfect4.gx, perfect4.gdb
+// (freeze-expansive-01)
 /// Bounds the expansion chain for non-regular recursion
 /// (`type T<'a> = T<Array<'a>>`), whose keys never repeat.
 pub(crate) const MAX_FREEZE_EXPANSIONS: usize = 256;
@@ -877,10 +892,7 @@ pub fn null_type() -> Type {
 /// A placeholder `Map<null, null>` type; codegen only reads its
 /// [`AbiKind::Value`] classification, never its key/value types.
 pub fn map_type() -> Type {
-    Type::Map {
-        key: triomphe::Arc::new(null_type()),
-        value: triomphe::Arc::new(null_type()),
-    }
+    Type::map(null_type(), null_type())
 }
 
 /// One parameter of a fused kernel. The `KernelSig::params` order is
@@ -1361,9 +1373,7 @@ mod tests {
                 inner.clone().prop_map(|t| {
                     Type::Variant(literal!("V"), Arc::from_iter([t]), WrittenAt::NOWHERE)
                 }),
-                (inner.clone(), inner.clone()).prop_map(|(a, b)| {
-                    Type::Map { key: Arc::new(a), value: Arc::new(b) }
-                }),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| { Type::map(a, b) }),
                 (inner.clone(), inner.clone())
                     .prop_map(|(a, b)| Type::Tuple(Arc::from_iter([a, b]))),
                 (inner.clone(), inner.clone())

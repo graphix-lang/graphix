@@ -298,6 +298,7 @@ fn emit_chunk(
         ladder: RefCell::default(),
         builtin_apply_sites: p.builtin_apply_sites,
         lambda_call_sites: p.lambda_call_sites,
+        loops: p.loops,
         self_call: p.self_call,
         type_env: p.type_env,
         frontend: p.frontend,

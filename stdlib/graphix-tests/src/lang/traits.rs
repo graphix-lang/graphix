@@ -590,17 +590,6 @@ run!(
     "#
 );
 
-// A quantifier bound written in a `let` annotation is enforced.
-run!(
-    annotation_bound_enforced,
-    refused("within Number does not contain string"),
-    "/test.gx" => r#"
-        let f: fn<'a: Number>(x: 'a) -> 'a = |x| x;
-        let result = f("hi")
-    "#
-    ; FuseExpect::None
-);
-
 // A polymorphic binding used as a value is instantiated per occurrence.
 run!(
     poly_value_two_types,
@@ -2284,7 +2273,7 @@ run!(trait_any_bound_does_not_imply_ordered, r#"{
     impl Cmp for W { let lt = 'a: Any |s: W, x: 'a, y: 'a| -> bool x < y };
     let a = 1;
     Cmp::lt(W(1), &a, &a)
-}"#, refused("does not contain fn<'a: Any + Ordered>"); FuseExpect::None);
+}"#, refused("the implementation requires 'a: Ordered, which the signature does not declare"); FuseExpect::None);
 
 // A select over an open constructor application: a wildcard, a capture,
 // a null test beside it and a tuple pattern around it each match what
@@ -2554,8 +2543,7 @@ run!(impl_method_does_not_narrow_the_head, r#"{
   impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
   "[Box(41)]"
 }"#, refused(
-    "method fmt of impl Display for Box<'a> has type fn(self: Box<i64>) -> string, \
-     the trait declares fn(self: Box<'a>) -> string"
+    "signature has type variable 'a where implementation has i64"
 ); FuseExpect::None);
 
 // A core-trait hook site a dynamic load retires is deleted by whichever
@@ -3063,7 +3051,7 @@ run!(
 );
 
 run!(
-    method_value_no_lambda_is_generic_per_call,
+    method_value_projected_from_data_is_refused,
     r#"{
     type C = Abstract<i64>;
     let id = |s, x| x;
@@ -3075,7 +3063,7 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"), Put::get(c, 2), Put::get(c, "t"))
 }"#,
-    prints(r#"[i64:1, "s", i64:2, "t"]"#)
+    refused("its value is no lambda, so no call copies its types")
 );
 
 run!(

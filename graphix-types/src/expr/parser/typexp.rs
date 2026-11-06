@@ -391,7 +391,7 @@ pub(super) fn typ(i: &mut Input) -> R<Type> {
                     i.sptoken(',')?;
                     Ok((k, typ(i)?))
                 })?;
-                Ok(Type::Map { key: Arc::new(k), value: Arc::new(v) })
+                Ok(Type::map(k, v))
             },
             |i| applied(i, "Error").map(|t| Type::Error(Arc::new(t))),
             |i| {

@@ -21,9 +21,9 @@ use crate::{
     expr::{Expr, ExprId, ModPath, Origin, Source, WrittenAt},
     ids::{IdRelocation, IdSpan, IdSpans},
     typ::{
-        FnType, ResolvedRef, TVar, Type,
+        FnType, MapType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
-        tvar::{TCell, TVarId},
+        tvar::{CellLock, TCell, TVarId},
     },
 };
 use ahash::AHashMap;
@@ -31,7 +31,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::{
     any::Any,
@@ -219,7 +219,7 @@ pub struct ImageEncoder {
     resolveds: Table<usize, Resolved>,
     origins: Table<usize, Arc<Origin>>,
     tvars: Table<usize, TVar>,
-    cells: Table<usize, Arc<RwLock<TCell>>>,
+    cells: Table<usize, Arc<CellLock>>,
     /// Expressions by the address of the session's clone
     /// ([`expr_key`]).
     pub(crate) exprs: Table<usize>,
@@ -294,7 +294,7 @@ pub enum Obj {
     Resolved(Resolved),
     Origin(Arc<Origin>),
     TVar(TVar),
-    Cell(Arc<RwLock<TCell>>),
+    Cell(Arc<CellLock>),
     Expr(Box<Expr>),
     Type(Type),
     FnType(Box<FnType>),
@@ -344,7 +344,7 @@ object!(RefCell, RefCell);
 object!(Resolved, Resolved);
 object!(Arc<Origin>, Origin);
 object!(TVar, TVar);
-object!(Arc<RwLock<TCell>>, Cell);
+object!(Arc<CellLock>, Cell);
 object!(box Expr, Expr);
 object!(Type, Type);
 object!(box FnType, FnType);
@@ -1322,6 +1322,7 @@ pub(crate) enum KeyedNode {
     Type(Arc<Type>),
     Fn(Arc<FnType>),
     Fields(Arc<[(ArcStr, Type, WrittenAt)]>),
+    Map(Arc<MapType>),
 }
 
 /// Append the interned key of the shared type node at `ptr`, walking
@@ -1455,10 +1456,7 @@ pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackEr
     )
 }
 
-fn cell_encode(
-    cell: &Arc<RwLock<TCell>>,
-    buf: &mut impl BufMut,
-) -> Result<(), PackError> {
+fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackError> {
     let key = Arc::as_ptr(cell) as usize;
     object_encode(
         &key,
@@ -1474,7 +1472,6 @@ fn cell_encode(
                     lower,
                     facts,
                     rigid_gates,
-                    quantifier_gates: _,
                     level,
                     task: _,
                     ground: _,
@@ -1509,7 +1506,7 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
             let frozen = bool::decode(sub)?;
             // Entered over a placeholder before its cell: the cell's
             // bound type or a constraint can reach this wrapper.
-            let placeholder = Arc::new(RwLock::new(TCell::default()));
+            let placeholder = Arc::new(CellLock::default());
             let tv = TVar::from_parts(name, id, frozen, placeholder);
             enter(Obj::TVar(tv.clone()))?;
             let cell = cell_decode(sub)?;
@@ -1521,14 +1518,14 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
     )
 }
 
-fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
+fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
     shared_decode(
         buf,
-        built::<Arc<RwLock<TCell>>>,
+        built::<Arc<CellLock>>,
         |sub| {
             // Entered before its contents: a bound type can reach the
             // cell again.
-            let cell = Arc::new(RwLock::new(TCell::default()));
+            let cell = Arc::new(CellLock::default());
             enter(Obj::Cell(cell.clone()))?;
             let typ = Pack::decode(sub)?;
             let constraints: Vec<_> = Pack::decode(sub)?;

@@ -18,13 +18,15 @@ fn only_a_late_reader_is_passed_a_fire() {
     let walk = BoundaryRef::new(None);
     behind.visit(cycle);
     walk.visit(cycle);
-    let late = Reader { root, boundary: Some(behind.clone()), late: true };
-    let quiet = Reader { root, boundary: Some(behind), late: false };
+    let late = Reader { root, boundary: Some(behind.clone()), late: true, read: None };
+    let quiet = Reader { root, boundary: Some(behind), late: false, read: None };
     rt.ref_var(id, late.clone());
     rt.ref_var(id, quiet);
     let mut passed = None;
-    let elsewhere = RtView::Root(&mut rt).store_fire(
-        id,
+    let mut view = RtView::Root(&mut rt);
+    let var = view.var_of(id);
+    let elsewhere = view.store_fire(
+        var,
         TagValue::fired(Value::Null),
         root,
         Some(&walk),

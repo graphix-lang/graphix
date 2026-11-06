@@ -428,13 +428,14 @@ that binding (a REPL input's) is refused, naming the call, while the
 call lives: its holders (the call site, an alias `let`, the kernel that
 replaced them) hold it in `CompileCtx::static_callees` and carry their
 holds through the image; a module's interface binding and its
-implementation's are one binding there from the module's check on, a
-write to either compiled before it keeps static calls off both from the
-body's check on (`CompileCtx::carry_static_mark`; its typing stays the
-named binding's) and makes both `<-` targets from the join on
-(`CompileCtx::join_interface_pair`: a woken `let` keeps what was written
-through either), and a reload's replaced body holds nothing against its
-replacement (`design/program_image.md`).
+implementation's are one variable from the module's check on
+(`CompileCtx::join_interface_pair`): a `<-` marks the binding it names
+(its typing stays that binding's), and a call through either binds
+statically only where no name of the variable is written
+(`CompileCtx::rebinds`; a woken `let` keeps a value written through
+either, `var_written`); a reload's replaced body holds nothing against
+its replacement, and its marks go with its binding
+(`design/program_image.md`).
 
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
@@ -464,9 +465,8 @@ next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
 that cycle supersedes it): a reader before its producer runs a cycle
 behind, and none runs twice in a cycle; one feeding its producer back
 is a self-loop, a step a cycle, as `x <- x + 1` is. Order is judged by
-boundary: a reader in a boundary the walk is still inside is ahead, so a
-reference read earlier in its producer's own boundary misses the fire
-(CR late-same-boundary-01). A wake's
+boundary, and inside the walk's own boundary by a `Deref`'s read stamp
+(`prune::ReadStamp`): one that read this cycle is passed. A wake's
 re-raise, catch-up's inject, a priming from the store and a born
 callee's quiet arguments are fires in the event alone, never stored; an
 error raised to a catch is stored as any write is, delivered the cycle
@@ -474,9 +474,14 @@ it was raised in its handler's root, else a runtime write; a quiet formal's seed
 reference cell's quiet seed or its bottom where its place has no
 element, and a fold's quiet accumulator are written to the store alone
 (`design/dense_delivery.md`). A
-write to either binding of a module's interface pair lands on both as
-the cycle starts (`ExecCtx::deliver_pair_writes`); what the body
-produces reaches the `val` at the module node. A
+module's interface pair is the `val`'s one variable at run time from
+its join (`branch::VarAliases`; `Rt`'s store, reader and notify calls
+take the `branch::Var` an id names):
+the body's `let` publishes to it, and
+every read, write, store entry and registration through the
+implementing binding is the val's, in one queue; a reload drops the
+writes the replaced body made through its binding and had not landed,
+while one through the val lands on the new body. A
 running program's failures (an unhandled `?`, a hot operator's failure)
 are logged under `graphix_compiler::FAILURE_TARGET`, never printed; the
 shell shows that target on stderr.
@@ -1046,8 +1051,7 @@ node graph IS the IR — there is no parallel typed IR
   its update ends, so an update after no re-raise visits no `let`. A
   reader outside (an escaped `&mut`) sees the write once. At the wake
   the initializer's fire by catch-up replaces such a write, whichever
-  came first (a sample whose argument alone fired asleep does not fire;
-  a late fire the sleeping arm missed is lost, CR late-asleep-01); a
+  came first (a sample whose argument alone fired asleep does not fire); a
   write landing after the wake's cycle stands. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
@@ -1057,7 +1061,10 @@ node graph IS the IR — there is no parallel typed IR
   back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
-  once, at their current value (one fire bit per input per select, shared
+  a late fire to a reader in a select arm's body that did not run included
+  (`TrackedFires::observe_late`; a guard's reader, a seq step's, a
+  collection's over a bottom source and a call's over a bottom function
+  lose it, CR late-asleep-02), once, at their current value (one fire bit per input per select, shared
   by consulted guards and arm bodies and consumed by whichever arm reads
   it, an arm's guard and its own body seeing it alike; a destructuring let's
   siblings are inputs of their own; a pattern bind, of this select or
@@ -1140,19 +1147,25 @@ node graph IS the IR — there is no parallel typed IR
   `Value::edges`; design/place_references.md). Pins:
   `lang::functions::closure_outlives_collection_slot*`, `lang::orphans`.
 - **`let rec` is monomorphic-recursive**, and a binding something writes
-  (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,
-  a lambda body's included, and a module's in it through `super::`, a
-  name it imports from there or a `package::` path through the block's
-  module; `self::` in a module's top block; a write names the nearest
-  binding before it, `node::written_lets`) is not generalized:
-  its uses and writers share one instance of each function it holds (the
-  value restriction, `CompileCtx::monomorphic`; a name aliasing a
-  generalized binding, `let g = f`, holds an instance of its own), except
-  one an earlier compile generalized (a REPL input): it stays generic, a
-  later write is held to a copy of its type with the variables rigid, a
+  (a `<-` target, a `&mut`'s referent, as the resolver names it) is not
+  generalized: its uses and writers share one instance of each function
+  it holds (the value restriction, `CompileCtx::monomorphic`; a name
+  aliasing a generalized binding, `let g = f`, holds an instance of its
+  own, as does a written name a pattern takes apart). A write compiled
+  before the binding's check makes its check take one instance
+  (`Bind::typecheck0`); a writer in its block, a lambda body's included
+  (a body compiles at its definition's check), and a module's in it
+  through `super::`, a name it imports from there or a `package::` path
+  through the block's module, `self::` in a module's top block, keeps it
+  from being generalized at all (`node::written_lets`: the nearest
+  binding before the write; under a nested block's glob only a lambda
+  body's write, the rest left to the resolver). A binding
+  generalized before a write to it compiles (an earlier REPL input, or a
+  function body's write the walk missed) stays generic: the
+  write is held to a copy of its type with the variables rigid, a
   bound's included, each function type's apart whatever their names (a
   typedef application as its expansion, past 64 in one copy as one), and
-  a later `&mut` of it, or of a place whose type holds one of them, is
+  a `&mut` of it, or of a place whose type holds one of them, is
   refused
   (`Env::poly_binds`); a `let` nothing writes whose value
   holds a lambda or a generalized binding's value in a data literal (a
@@ -1215,8 +1228,7 @@ node graph IS the IR — there is no parallel typed IR
   `InstanceTypes::of_default`, `DefTable::record_defaults`). A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
-  declared variable is closed, as is a rank-2 formal's quantifier while a
-  call checks its argument: such a default fits its parameter whole, for
+  declared variable is closed: such a default fits its parameter whole, for
   every instance of the variable (an unannotated parameter takes its type),
   and a site outside that definition judges it over a copy of the scheme
   (`callsite::Judge`). A call's type variable that only
@@ -1225,51 +1237,30 @@ node graph IS the IR — there is no parallel typed IR
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
   transparent typedef is its expansion)
-  (`callsite.rs::Widening`, `holds_invariantly`); a written function type with its own quantifiers
-  (`fn<'b: C>(..)`) is rank-2 wherever it stands (a formal, a field, an
-  element, a member, a `let` annotation, a typedef, a return type, a
-  function type's result, an abstract type's representation or
-  parameter; an interface `val`'s or trait method's own quantifiers are
-  its scheme's, at its impls and default body too), and its bounds name
-  only written types and its own quantifiers (`fn<'b: 'c>` beside a
-  definition's `'c` or `self`, or a typedef's parameter, is refused:
-  `FnType::check_bounds_closed`): what
-  it holds is checked with `'b` rigid and held to exactly its declared
-  bounds, predicates included (`fn<'b: Number>` takes no `|x| x * x`:
-  declare `Number + Singleton`; `FnType::contains_int`, judged
-  coinductively where bounds name each other), except a lambda's written
-  type over its own checked one, which adopts its bounds and a
-  quantifier the check decided (`ContainsFlags::Adopt`); the value it
-  holds (a call's argument, a `let`'s, a write's, a struct update's
-  field, a body under a written return type, a labeled default, a
-  constructor's payload; the function whose result holds it) carries
-  `'b` into nothing that outlives it: no binding it reads or writes from
-  outside, its lambdas' captures included, and no instance a call in it
-  makes reaches `'b`, through bindings and an open cell's lower bounds
-  and constraints, outside a function type there that quantifies `'b`
-  itself (`callsite::check_general`, `contain_generally`; not judged:
-  what the function whose result holds it shares across its own calls,
-  CR rank2-result-maker-01, a written holder's own variable beside the
-  function type, CR rank2-holder-variable-01, and a value contained as a
-  copy of it (a write's, a written `let`'s, a select's or an array's of
-  lambdas, a read's of a generalized binding) whose callback ties a
-  binding outside to the original's cell, CR rank2-escape-hof-01); a
-  variable of the call an argument or an omitted labeled default is
-  passed to is one type for the call: none named in the call's signature
-  may be or reach `'b`, under the formal included (`callsite::HeldIn`,
-  one walk per call);
-  while a call
-  checks its argument against the
-  formal, `'b` is one type, which no definition in the argument
-  generalizes or copies (`TVar::freshen`); a call copies `'b`
-  generic, the formal passed on is any instance of itself in an
-  instance's elaboration as in the definition's check, as is any such
-  written type from where it takes its cells, whichever use comes first
-  (`CellFact::FormalQuantifier`, marked by `Type::alias_tvars` in the
-  creating task, and a gate holds rigid none an earlier task marked; an
-  interface `val`'s own quantifiers are its scheme's and unmarked), as
-  is a quantifier an earlier compile
-  task left open, which a later task's `contains` compares as a fresh
+  (`callsite.rs::Widening`, `holds_invariantly`); a function type with
+  type variables of its own (a written `fn<'b: C>(..)`, a trait as a
+  parameter's type, `fn(c: Collection)`, a constructor-trait quantifier)
+  stands only as a declared signature's top (an interface `val`'s, a
+  trait method's, an impl's or a default body's method `let`, a lambda's
+  own declared variables): anywhere else in a written type it is refused,
+  naming the fix (`typ::QUANTIFIED_FN`: `Type::rewrite_trait_args`, and
+  `refuse_quantified_fns` for a cast, a type test and a catch's
+  annotation); a function stays generic only where a binding names it (a
+  `let` whose value, past parentheses and a block's final expression, is
+  a lambda, a generalized binding, a field or tuple read of one
+  (`let j = s.g`) or a data literal holding these, a write to a
+  generalized binding, a labeled default, a call's callee by name, an
+  input's value: `bind::names_generic`, `holds_function`, `name_value`;
+  a reference, `&f`, is not one): a lambda no binding names takes its
+  enclosing level's cells at its gate's close (`Lambda::named`,
+  `DefGate::close`), and a read of a generalized binding no binding names
+  is one instance (`Ref::naming`, `FnType::one_instance`,
+  `Type::instance_read`), so an element of a collection a call returns, a
+  callback's result or a field of a call's result is one type its uses
+  decide; a call copies a quantifier only where its level says so, as any
+  cell, and a containment holds rigid a scheme's quantifiers alone; a
+  quantifier an earlier compile
+  task left open is one a later task's `contains` compares as a fresh
   copy on either side and never writes (`FnType::has_earlier_quantifier`:
   parallel elaborations share the check's cells; not in a top-level
   input's own check, to which an earlier input's is one type), and an open quantifier
@@ -1285,7 +1276,10 @@ node graph IS the IR — there is no parallel typed IR
   union collapse requires strict tvar identity; in a union checked against
   a union, an open member takes only the members its known siblings leave
   (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
-  all of them when none are left or what is left refuses it); a free union member stays free (a type test over an
+  all of them when none are left or what is left refuses it), and where two
+  of its members hold open cells (`[Array<'a>, Array<'b>, null]`) the other
+  union's members go in as written, else deepest first, whichever order
+  places them all on copies (`Type::place_each`); a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able, and numbers of
   different types (under `Any`) order by value, exactly, ties by type,
@@ -1373,10 +1367,12 @@ payload binds, owned binds of a nullable's payload, of a slice's rest,
 head or whole (`[x, tail..]`, `all@ [_, ..]`) and of non-scalar elements,
 tag tests and binds over a primitive union, every pattern at an
 element, a payload or a list head as at the top (a binding or-pattern
-included), scalar literals over an option, a result
+included), a tuple, struct or slice pattern over a union holding one
+member it may pass, scalar literals over an option, a result
 or a union, `never()` arms as bottom
 productions of the merge shape, or-patterns, list patterns, type tests
-that hold the scrutinee's type, any union of encoded members as one
+that hold the scrutinee's type, a written tuple, struct or array test
+over a composite whose type it does not hold, any union of encoded members as one
 value (`` [`A, `B, null] ``, a list beside an array) with its written
 type tests, a union naming union typedefs as the flat union they name, tail loops
 over any kernel param
@@ -1389,7 +1385,8 @@ value an assertion covers, binds at run time), a collection callback's
 call of the function whose body runs it inline being that function's
 self-call, each loop slot rooting its own activation, and so a callback
 that is that function's bare name (`array::map(xs, t)` in `t`), whose
-slots make the call (slot-root chains, `design/kernel_instance_state.md`). A subtree that does not fuse whole
+slots make the call, the collection's own instance's included where the
+function is its callback (slot-root chains, `design/kernel_instance_state.md`). A subtree that does not fuse whole
 descends: every part that calls a function (a lambda call, a collection
 operation) is tried as a region of its own, any other part only
 descends (`fusion::fuse_parts`); a lambda call whose argument does not
@@ -1433,8 +1430,10 @@ serially inside; runtime compiles run in compile tasks
 (`set_par_mode`), from `GRAPHIX_PAR=off|auto|force`, `auto` by
 default: `Auto` forks where `cost.rs`'s tick histograms say a side
 costs the calibrated threshold (4x the pool's wake latency) and not
-while every worker has a part; `Force` forks at every fork point (tests,
-the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
+while every worker has a part; a collection's slots fork only where each
+half also pays what its forks took beyond their parts, and run in order
+after three forks in a row no faster than in order (`SlotSite::forked`);
+`Force` forks at every fork point (tests, the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
 under it (a compile error where nothing forks; callees excluded),
 `#[serial]` inhibits them, callees included. The stack budget is per
 cycle, across workers; the compiler never pins threads.
@@ -1628,7 +1627,8 @@ cycle, across workers; the compiler never pins threads.
   itself as the arm compiles; an abstract pattern names the type its
   compile resolved, `CompiledAbstracts`); a name there takes the whole
   union. A written test's part over the variable must be closed: one
-  holding `_` or an undeclared variable is refused
+  holding `_` (a typedef's body included) or an undeclared variable is
+  refused
   (`StructurePattern::meets_rigid_written`). Under a written test a bind
   inside the variable takes the test's part (`Type::matching_parts`); a
   name over a value holding it keeps the variable where a part of the test
@@ -1786,8 +1786,8 @@ cycle, across workers; the compiler never pins threads.
   holds a variable, its own quantifiers and a typedef's arguments
   included, is generic (`Env::poly_binds`): each read copies it, a
   typedef's arguments as its function types (`Type::scheme_read`), and
-  it is held as an earlier compile's generalized binding is above (a
-  rank-2 type's quantifiers are not its variables). A val something writes
+  it is held as an earlier compile's generalized binding is above. A val
+  something writes
   (`<-`, `&mut`, in any compile) must fit its implementation, whose
   variables are held rigid with their bounds
   (`CompileCtx::check_val_written`).
@@ -1843,6 +1843,16 @@ cycle, across workers; the compiler never pins threads.
   each later step snapshots the local lets it reads at its own entry;
   a `let` of one name to a lambda literal binds the lambda itself, so
   calls through it resolve statically (its assertions are the build's).
+  A step's entry snapshot, the projection of it a read takes, a
+  step's value and a `seqq` request's capture are written by nothing, so
+  a read of a generalized binding through them carries its scheme
+  (`seq::passes_on`, `bind::Passing`: those forms only, what the program
+  wrote inside them judged as outside a seq; a capture is typed by its
+  live read, `SeqCapture::scheme`), read at the step's entry or the
+  request's enqueue as ever; a step's
+  `let` a later step writes is written at its binding (the machine walks
+  every step's items for writers); a holder with a call part is one
+  instance in the step.
   A statement starts in the first cycle its predecessor's effect can
   be seen: the next step enters in the cycle its predecessor completes
   unless it reads or writes a variable a pending write targets, by the
@@ -1952,10 +1962,7 @@ cycle, across workers; the compiler never pins threads.
   error (`design/tvar_constraints.md`). An interface declares every bound its
   implementation's variables carry, a typedef parameter's bound counting
   (`FnType::sig_matches`); the implementation may leave off a bound the
-  interface declares. A quantifier of a function the implementation is
-  handed (under an odd number of arguments) is the other way round: the
-  implementation uses it at any type its own bound admits, so that bound
-  implies each one the interface declares (`FnType::sig_bounds`).
+  interface declares.
 
 ## Stack discipline
 

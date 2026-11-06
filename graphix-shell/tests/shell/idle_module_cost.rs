@@ -91,6 +91,13 @@ fn walked(stmts: &str, interface: bool, cycles: usize) -> u64 {
     work
 }
 
+// CR claude for claude: [test-gap/low] The per-statement cost this compares swings by
+// about 20 instructions between runs of one binary under load (one gate run of
+// laneo2 r17 read lets with an interface 230.3 against expressions 210.8 and failed;
+// three reruns read 210.2, 193.9 and 214.9 and passed; base-r17's CLI twins read 191 to
+// 207 per variant), so its 15-instruction margin fails on noise: the count includes
+// what the runtime's idle polling retires. Count only the cycles' update passes, or
+// take the least of several runs. (idle-module-cost-noise-01)
 #[test]
 #[cfg(target_os = "linux")]
 fn walked_module_lets_cost_what_expression_statements_do() {

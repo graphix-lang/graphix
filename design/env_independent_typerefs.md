@@ -31,20 +31,16 @@ snapshot.
 
 Substitution is by name and avoids capture (`typ::tvar::under_quantifiers`).
 A function type finds its quantifiers by name (`FnType::each_quantifier`,
-a call's fresh quantifiers, the constraint view), so under a function type
-its own quantifiers shadow the names substituted (`type K<'a> =
-(Array<'a>, fn<'a: Any>(x: 'a) -> 'a)` keeps the inner `'a` its own), and
-a quantifier named like a variable a substituted type holds is renamed to
-the first `'a1`, `'a2`, .. nothing there holds, through a copy of its cell:
-`K<'a>` over `type K<'p> = fn<'a: Any>(x: 'p) -> 'a` is `fn<'a1: Any>(x:
-'a) -> 'a1`. An abstract type's representation substitutes the same way,
-and so does a trait method's signature for its impl or a method value at a
-function type it holds (`impl<'a> T for Array<'a>` over a method taking
-`f: fn<'a: Any>(x: 'a, s: self) -> 'a`); the signature's own quantifiers
-there are names like any other. Pins:
-`lang::types::typedef_quantifier_named_like_its_argument` and the fixtures
-after it, `impl_signature_quantifier_named_like_its_variable`,
-`method_value_quantifier_named_like_its_variable`.
+a call's fresh quantifiers, the constraint view), and a function type with
+quantifiers of its own stands only as a definition's scheme
+(`typ::QUANTIFIED_FN`), so what is substituted into one is a trait method's
+signature for its impl or a method value: the signature's own quantifiers
+there are names like any other, and one named like a variable the
+substituted type holds is renamed to the first `'a1`, `'a2`, .. nothing
+there holds, through a copy of its cell (`impl<'a> T for Box<'a>` over
+`val conv: fn(self, x: 'a) -> 'a`). An abstract type's representation
+substitutes the same way. Pins: `lang::traits::method_tvar_named_like_target_tvar`
+and its interface twin.
 
 - **Write-once.** Filled on the first successful `lookup_ref`, never
   overwritten: clones share the cell, and refilling would leak one

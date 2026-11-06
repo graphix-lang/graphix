@@ -593,12 +593,25 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    // CR claude for claude: [bug/low] A late fire for a reader in an arm that is still
+    // XCR claude for claude: [bug/low] A late fire for a reader in an arm that is still
     // asleep next cycle is never delivered: the select's catch-up bits never record it
     // (TrackedFires::observe reads read_var, not Event::late), so at the wake the reader
     // reads the value standing, unfired. Main loses that fire too. Record a late fire in
     // the waking select's bits as a fire of its input. probe: a function value read in an
     // arm asleep the cycle after the later binding fires (late-asleep-01)
+    // 2026-11-05 claude: Fixed: TrackedFires::observe_late records a late fire
+    // (Event::late) to a reader inside a select arm's boundary as that select's catch-up
+    // bit, at the select's update for every arm but the awake one and again at deselect
+    // for the arm leaving (whose refs the refresh just collected), so the arm takes it at
+    // its wake. Pin lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake: its
+    // "2" case fails without the deselect call, its "2 | 3" case without the update call.
+    // Guards and the other TrackedFires users: late-asleep-02.
+    // 2026-11-05 claude: Review r17 fix: observe_late now walks the select's tracked ids
+    // and looks each up in Event::late by the variable it names
+    // (ctx.event.variables.var), so a reader of a binding a .gxi declares as a val (D18
+    // keys Event::late by the val's id) takes the late fire too. Pin
+    // lang::delivery::a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake; its val w
+    // case fails without it (prints [[1, 1]]).
     // XCR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
     // root and a marked boundary, though only Ref, Deref and ConnectDeref read Event::late:
     // a catch's receipts, a select's tracked fires, a seq machine's and Payments' readers of
@@ -610,6 +623,11 @@ impl<X: GXExt> GX<X> {
     // only late readers a fire the walk had passed. Fails without it: graphix-rt
     // tests/rt late_readers::only_a_late_reader_is_passed_a_fire. No lang fixture passes
     // a non-late reader today, so the saving shows in no cycle count.
+    // 2026-11-06 claude: Lane M's merge of main: a Reader carries both main's read stamp and
+    // this lane's late flag; ExecCtx/CompileCtx::stamped_reader (the Deref's, keeping its
+    // stamp) is a late reader, late_reader is stamped_reader with no stamp, and reader is
+    // neither. TrackedFires::observe_late (late-asleep-01) finds a sleeping arm's late fire
+    // by the late readers inside it (its Refs), so the filter keeps that path.
     /// Deliver last cycle's late fires ([`GXRt::late`]) to their readers:
     /// each reader's root runs and its boundary is marked, unless a write
     /// delivered the variable already this cycle.
@@ -691,7 +709,6 @@ impl<X: GXExt> GX<X> {
                 self.deliver_custom(id, u, Via::Reply);
             }
         }
-        self.ctx.view().deliver_pair_writes();
         self.deliver_late();
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
@@ -784,12 +801,13 @@ impl<X: GXExt> GX<X> {
         };
         match path {
             Some(path) => {
-                let patched = self.ctx.rt.store_value(&id).and_then(|cur| {
-                    coretraits::with_hooks(&mut self.ctx.view(), || {
-                        place::write_path(&cur, &path, v.clone())
-                    })
-                    .ok()
-                });
+                let patched =
+                    self.ctx.rt.store_value(self.ctx.rt.var_of(id)).and_then(|cur| {
+                        coretraits::with_hooks(&mut self.ctx.view(), || {
+                            place::write_path(&cur, &path, v.clone())
+                        })
+                        .ok()
+                    });
                 if patched.is_none_or(|root| self.admits(id, &root)) {
                     sets.push(EmbedderWrite::Patch(id, path, v))
                 }
@@ -838,7 +856,7 @@ impl<X: GXExt> GX<X> {
                         "a write through a reference was dropped: {why}"
                     ),
                 };
-                let Some(cur) = self.ctx.rt.store_value(&id) else {
+                let Some(cur) = self.ctx.rt.store_value(self.ctx.rt.var_of(id)) else {
                     return dropped(&"its root has no value");
                 };
                 let written = coretraits::with_hooks(&mut self.ctx.view(), || {
@@ -860,6 +878,7 @@ impl<X: GXExt> GX<X> {
     }
 
     fn write(&mut self, id: BindId, u: VarUpdate, via: Via) {
+        let id = self.ctx.rt.aliases.var(id);
         if self.busy(&id) {
             self.ctx.rt.var_updates.push(id, u, via);
         } else {
@@ -871,6 +890,9 @@ impl<X: GXExt> GX<X> {
     /// where each is first for its variable. A set naming a variable twice
     /// cannot, and lands write by write.
     fn write_set(&mut self, mut set: GPooled<Vec<(BindId, Value)>>) {
+        for (id, _) in set.iter_mut() {
+            *id = self.ctx.rt.aliases.var(*id)
+        }
         let distinct = set
             .iter()
             .enumerate()
@@ -1442,7 +1464,13 @@ impl<X: GXExt> GX<X> {
         let n = genn::reference(&mut self.ctx.view(), id, typ.clone(), eid);
         self.ctx.view().apply_deferred();
         self.nodes.insert(eid, n);
-        Ok(Ref { id: eid, bid: id, typ, last: self.ctx.rt.store_value(&id), rt })
+        Ok(Ref {
+            id: eid,
+            bid: id,
+            typ,
+            last: self.ctx.rt.store_value(self.ctx.rt.var_of(id)),
+            rt,
+        })
     }
 
     fn call_callable(
@@ -1503,7 +1531,7 @@ impl<X: GXExt> GX<X> {
             sets.retain(|w| !matches!(w, EmbedderWrite::Set(set) if set.is_empty()));
             for a in c.args.iter() {
                 self.ctx.rt.forget_writes(*a);
-                self.ctx.rt.store_remove(a);
+                self.ctx.rt.store_remove(self.ctx.rt.var_of(*a));
             }
             if let Some(mut n) = self.nodes.remove(&c.expr) {
                 n.delete(&mut self.ctx.view())

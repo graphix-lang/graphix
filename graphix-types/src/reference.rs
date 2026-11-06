@@ -563,15 +563,14 @@ pub fn orderable(v: &Value) -> bool {
 mod order_check_test {
     use super::*;
     use crate::{env::Env, typ::Type};
-    use triomphe::Arc as TArc;
 
     #[test]
     fn typed_map_cast_skips_reference_walk() {
         let env = Env::default();
-        let target = Type::Map {
-            key: TArc::new(Type::Primitive(netidx_value::Typ::I64.into())),
-            value: TArc::new(Type::Primitive(netidx_value::Typ::I64.into())),
-        };
+        let target = Type::map(
+            Type::Primitive(netidx_value::Typ::I64.into()),
+            Type::Primitive(netidx_value::Typ::I64.into()),
+        );
         let value = Value::Map([(Value::I64(1), Value::I64(2))].into_iter().collect());
         ORDER_CHECKS.set(0);
         assert_eq!(target.cast_value(&env, value.clone()), value);

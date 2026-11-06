@@ -69,24 +69,29 @@ and an open cell has not decided).
 Each family: the site, the mutation, the rule that must refuse it, and
 what disqualifies a site.
 
-**1. Monomorphic reuse (instantiation).** Site: `let f = |..| ..` passed
-as a VALUE (a reference that is not a call's callee) at two uses whose
-instances the map shows taking different primitive first parameters.
-Mutation: wrap the lambda so the binding is not generalized, `let f = {
-let tm__0 = null; |..| .. }`. Rule: only a `let` of a lambda, a
-`let` forwarding a generalized binding (a single name something writes
-holds an instance of its own, `Bind::forwards`, pinned by
-`lang::interfaces::written_alias_of_*`), or a `let` nothing writes that
-holds either in a data literal (`bind::holds_function`; a block's value
-and a select's arms are not data literals, CR holder-block-select-01)
-generalizes, and a value reference to a binding that is not generalized
-holds the binding's own cells, so the two uses meet in one instance. A CALL instantiates its
-callee whatever the binding (`CallSite::typecheck0`), so calls are not
-sites: `f(1); f(1.5)` over the wrapped `f` is accepted, rightly. Right
-site: the definition, or the statement of any value use up to the
-second of the two: every value use shares the wrapped binding's cells,
-so the checker refuses at whichever conflicts first, a use the map
-gives no primitive first parameter included. An unannotated `let g = f`
+**1. Monomorphic reuse (instantiation).** Site: `let f = |..| ..` used
+at two uses whose instances take different primitive first parameters:
+a VALUE use's by the map's type of it, a call's by the map's type of its
+first positional argument where the lambda's first parameter is left
+open.
+Mutation: route the lambda through a binding something writes, `let f =
+{ let tm__0 = |..| ..; let tm__1 = &mut tm__0; tm__0 }`. Rule: a binding
+something writes is not generalized (the value restriction,
+`CompileCtx::monomorphic`; a written name's cells are claimed for its
+level at its binding), and `f`, a `let` of a block whose value names it,
+forwards that one instance (`bind::names_generic`; a single name
+something writes holds an instance of its own, `Bind::forwards`, pinned
+by `lang::interfaces::written_alias_of_*`), so every use, a call's
+included, shares its cells and the two uses meet in one instance:
+`f(1); f(1.5)` over it is refused. A block alone would not hold it: a
+`let` of a block whose value is a lambda, a generalized binding or a
+field or tuple read of one generalizes (Generalization, "Generic only
+where a binding names it", in `tvar_constraints.md`); a select's arms
+are not seen through (CR holder-block-select-01). Right site: the
+definition, or the statement of any use up to the second of the two:
+every use shares the written binding's cells, so the checker refuses at
+whichever conflicts first, a use the map gives no primitive first
+parameter included. An unannotated `let g = f`
 forwards the wrapped binding, so the value uses of `g` are uses of `f`
 (family 7's sites follow the same aliases).
 
@@ -205,9 +210,8 @@ them:
 - a default is checked at the definition against its parameter's type
   (or a declared variable's constraints, `lambda.rs::check_defaults`; a
   variable nested in the type is any instance of it there, and a default
-  holding an enclosing definition's declared variable, or a rank-2
-  formal's quantifier under the check of a call's argument, fits its
-  parameter whole) and again at each site that omits it, where it may narrow that
+  holding an enclosing definition's declared variable fits its parameter
+  whole) and again at each site that omits it, where it may narrow that
   site's cells, never an enclosing definition's scheme
   (`callsite::Judge`);
 - `F ⊇ G` for function types (`fntyp.rs::align`): the same number of
@@ -280,49 +284,14 @@ whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
 site: the let. Built (`abstract-param`).
 
-**12. Written quantified function types.** Site: a binding whose
-annotation writes a quantified function type in a part (`let fs:
-Array<fn<'b: Number + Singleton>(x: 'b) -> 'b> = [|x| x * x]`).
-Mutation: the element replaced by a function of one type (`|x: i64|
-x`). Rule: a written `fn<..>` type's quantifiers are rigid wherever the
-type stands, from where it is written (`Type::alias_tvars`,
-`CellFact::FormalQuantifier`), whichever use of the binding comes first.
-Right site: the let. Open. A second mutation ties the quantifier to an
-outer binding (`|x| { y <- x; x }`, `|x| (x, n)`) or takes the value
-from a call whose instance holds it (`mk(never())` over `|z| |x| { z <-
-x; z }`). Rule: a written quantified type holds its value as a formal
-holds its argument, wherever it stands (a let, a write, a struct
-update's field, a return type, a labeled default, a constructor's
-payload, an abstract type's parameter, a function type's result):
-nothing outside the
-value that outlives it, a binding it reads or writes or a call's
-instance, reaches a quantifier, through bindings and an open cell's
-lower bounds (`y <- W(x)`) and constraints (a callee's bound `'b: 'c`
-tying the outer `y` to `x`), outside a function type there that
-quantifies it (`callsite::check_general`, `contain_generally`); a
-variable of the call an argument or an omitted labeled default is passed
-to, named in the call's signature, is not and reaches not the
-quantifier, under the formal included (`k: fn<'a: Any>(x: 'a) -> W<'c>`
-given `|x| W(x)`; `callsite::HeldIn`, one walk per call). Right
-site: the value. Open: what the function whose result holds the
-quantifier shares across its own calls (a let of its body the function
-it makes captures), CR rank2-result-maker-01; a written holder's own
-variable beside the function type (`(fn<'a: Any>(x: 'a) -> W<'c>,
-W<'c>)` holding `(|x| W(x), W(1))`), CR rank2-holder-variable-01; a
-value contained as a copy of it, a connect's, `*r <-`'s or a written
-let's, a select's or an array's of lambda literals, a read's of a
-generalized let, whose callback ties a binding outside to the original's
-generic cell (`f <- |x| { y <- array::map([x], |e| W(e)); x }`, the same
-lambda in a select's arm, `f <- g` over such a `let g`), CR
-rank2-escape-hof-01 with callback-generic-leak-01. Not generated: a
-quantifier's bound naming a variable its written type does not quantify
-(`fn<'b: 'c>` beside the definition's `'c`); rule
-`FnType::check_bounds_closed`, right site the definition writing it.
-The module generator writes sites for it (its trait-bounded `let via`
-and `let tsum` annotate `fn<'a: Tr>(..)`), but the rule reads the
-written type alone, so no inference can repair around a mutant: the
-shallow kind the principle above leaves to its pins
-(`lang::types::rank2_bound_*_is_refused`).
+**12. Function types with variables of their own.** Not generated: a
+function type with type variables of its own anywhere but a declared
+signature's top is refused where the type is written
+(`typ::QUANTIFIED_FN`, `design/tvar_constraints.md`), a rule that reads
+the written type alone, so no inference can repair around a mutant: the
+shallow kind the principle above leaves to its pins (`lang::quantified`).
+The rule's deep half, that a function no binding names is one instance,
+is family 1's, whose call sites it made.
 
 **13. Patterns inside a rigid variable.** Site: a lambda with a
 parameter `x: 'a`, as family 2's. Mutation: a first statement `let tm__0

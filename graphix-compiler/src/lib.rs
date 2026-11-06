@@ -1190,8 +1190,8 @@ pub trait Rt: Debug + Any + Send + Sync {
     fn ref_var(&mut self, id: BindId, by: prune::Reader);
     fn unref_var(&mut self, id: BindId, by: prune::Reader);
 
-    /// Each reader `id` has.
-    fn readers(&self, id: &BindId, f: &mut dyn FnMut(&prune::Reader));
+    /// Each reader `var` has.
+    fn readers(&self, var: branch::Var, f: &mut dyn FnMut(&prune::Reader));
 
     /// Queue a variable write for the next cycle. Writes to distinct
     /// variables are delivered in one event; a second write to the same
@@ -1228,52 +1228,66 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// this cycle, an older stamp as standing (Stale; Fired under an
     /// init view), absence as the phantom. Maintained at delivery, never
     /// ahead of it.
-    fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)>;
+    fn store_get(&self, var: branch::Var) -> Option<&(TagValue, u64)>;
 
     /// The last delivered value of a bind; `None` if the last delivery
     /// was a bottom.
-    fn store_value(&self, id: &BindId) -> Option<Value> {
-        branch::stored_value(self.store_get(id))
+    fn store_value(&self, var: branch::Var) -> Option<Value> {
+        branch::stored_value(self.store_get(var))
     }
 
     /// Insert a production into the store, stamped with the current
     /// cycle.
-    fn store_insert(&mut self, id: BindId, tv: TagValue);
+    fn store_insert(&mut self, var: branch::Var, tv: TagValue);
 
     /// Remove a bind from the store.
-    fn store_remove(&mut self, id: &BindId);
+    fn store_remove(&mut self, var: branch::Var);
 
     /// Drop the writes waiting for `id`: its binding is gone, and a write
-    /// that landed now would leave a store entry nothing removes.
+    /// that landed now would leave a store entry nothing removes. Of a
+    /// binding that is another's variable, only the writes made through
+    /// it.
     fn forget_writes(&mut self, id: BindId);
+
+    /// The bindings that are another's variable at run time; every call
+    /// here naming one by its `BindId` acts on that variable, and a call
+    /// taking a [`branch::Var`] is given the variable.
+    fn var_aliases(&self) -> &branch::VarAliases;
+    fn set_var_aliases(&mut self, aliases: branch::VarAliases);
+
+    /// The variable `id` names.
+    fn var_of(&self, id: BindId) -> branch::Var {
+        self.var_aliases().var_of(id)
+    }
 
     /// Insert a standing entry: no delivery, so it keeps the stamp of
     /// the last one, and a same-cycle reader never sees it as delivered
     /// ([`branch::standing_stamp`]).
-    fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        let stamp = branch::standing_stamp(self.store_get(&id), self.cycle());
-        self.store_put(id, Some((tv, stamp)))
+    fn store_insert_standing(&mut self, var: branch::Var, tv: TagValue) {
+        let stamp = branch::standing_stamp(self.store_get(var), self.cycle());
+        self.store_put(var, Some((tv, stamp)))
     }
 
     /// Put back an entry [`Self::store_get`] read, stamp and all, or
     /// remove it when it was absent.
-    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>);
+    fn store_put(&mut self, var: branch::Var, entry: Option<(TagValue, u64)>);
 
     /// The current cycle number.
     fn cycle(&self) -> u64;
 
     /// A variable was set within the current cycle; dependent toplevel
     /// nodes must be updated.
-    fn notify_set(&mut self, id: BindId);
+    fn notify_set(&mut self, var: branch::Var);
 
-    /// `reader` meets this cycle's fire `tv` of `id` after the walk passed
-    /// it: deliver the fire to it alone next cycle ([`Event::late`]).
-    fn late(&mut self, id: BindId, tv: TagValue, reader: prune::Reader);
+    /// `reader` meets this cycle's fire `tv` of `var` after the walk
+    /// passed it: deliver the fire to it alone next cycle
+    /// ([`Event::late`]).
+    fn late(&mut self, var: branch::Var, tv: TagValue, reader: prune::Reader);
 
-    /// The root being updated fired `id`, which a reader in another root
+    /// The root being updated fired `var`, which a reader in another root
     /// reads: one in a root the cycle passed reads it next cycle
     /// ([`Self::late`]), one in a later root this cycle.
-    fn produced(&mut self, id: BindId);
+    fn produced(&mut self, var: branch::Var);
 
     /// Deliver a variable event for `id` carrying the current time after
     /// `timeout`.
@@ -1845,12 +1859,31 @@ impl<R: Rt> CompileCtx<R> {
 
     /// The reader a node at `top_id` inside the current boundary is.
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { root: top_id, boundary: self.boundary.clone(), late: false }
+        prune::Reader {
+            root: top_id,
+            boundary: self.boundary.clone(),
+            late: false,
+            read: None,
+        }
     }
 
     /// [`Self::reader`] for a node that reads [`Event::late`].
     pub fn late_reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { late: true, ..self.reader(top_id) }
+        self.stamped_reader(top_id, None)
+    }
+
+    /// [`Self::late_reader`] keeping the read stamp `read`.
+    pub(crate) fn stamped_reader(
+        &self,
+        top_id: ExprId,
+        read: Option<&prune::ReadStamp>,
+    ) -> prune::Reader {
+        prune::Reader {
+            root: top_id,
+            boundary: self.boundary.clone(),
+            late: true,
+            read: read.cloned(),
+        }
     }
 
     /// `f` compiling inside `boundary`.
@@ -1886,13 +1919,14 @@ impl<R: Rt> CompileCtx<R> {
 
     /// Record `id` as a `<-` target, of this batch and for good. A
     /// binding something writes is never generalized: its uses share one
-    /// type, which every value written takes (the value restriction). One
-    /// an earlier compile generalized stays so, its uses having relied on
-    /// it, and a write is held to its type (`Connect::typecheck0_with`).
+    /// type, which every value written takes (the value restriction): one
+    /// not yet checked takes one instance at its check (`Bind::typecheck0`).
+    /// One already generalized stays so, its uses having relied on it, and
+    /// a write is held to its type (`Connect::typecheck0_with`).
     /// The bindings `id` is one variable with ([`StaticCallees::join`]),
     /// each a target with it.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
-        // CR claude for claude: [bug/medium] A sibling module's compile task sees another's
+        // XCR claude for claude: [bug/medium] A sibling module's compile task sees another's
         // interface pair joined or not by schedule (StaticCallees is shared by every task;
         // check_sig joins in the module's own task), so a write from a sibling's lambda
         // through a val marks the implementing binding a `<-` target only where the join
@@ -1913,6 +1947,27 @@ impl<R: Rt> CompileCtx<R> {
         // --check passes 16/16 on base and lane, the build refuses "f cannot be written: an
         // earlier compile calls it as a fixed function at f(1)" in 7/16 runs on base, 5/16 on
         // the lane. probe ~/ptmp/cr29/scratch/review-r14/A-r4-1/.
+        // 2026-11-05 claude: Lane Q (cr51-Q, rank-2 types removed): the second probe sx14
+        // writes a rank-2 parameter (|k: fn<'b: Any>(x: 'b) -> 'b|) and is now refused by the
+        // check with typ::QUANTIFIED_FN, so it no longer reaches the join; the first shape
+        // (nw6t) stands, as does sx14's join race in any form that writes no nested quantified
+        // type.
+        // 2026-11-05 claude: Fixed with iface-pair-one-var-01: the pair joins before the
+        // body's check and static resolution reads the variable's names when it binds
+        // (CompileCtx::rebinds), so a sibling's write marked in its own task reaches the
+        // implementation's call: nw6t prints 101 6/6 (base-r17 7/8 refused, 1/8 printed 1),
+        // sx14 builds 6/6 (base 3/6 refused). Pins
+        // lang::modules::a_siblings_write_through_an_interface_reaches_the_bodys_call (base:
+        // 1) and a_siblings_write_through_a_generic_interface_builds (base: refused). Left: a
+        // sibling's write against an alias let h = f in the body is still judged at the
+        // alias's check (Bind::aliased_lambda runs in typecheck0), as before.
+        // 2026-11-06 claude: Rebased onto cr29-staging (lane Q, rank-2 removed, Eric's D3
+        // follow-up ruling (b) of 11-05): the pin
+        // a_siblings_write_through_a_generic_interface_builds wrote through a rank-2
+        // parameter, which the check now refuses (QUANTIFIED_FN), so its sibling writes the
+        // generic val from a lambda with no quantified type: let set = |u| { super::a::f <-
+        // |x| x; u }; let z = set(t ~ null). base-r17 refuses it 12/12 ('f cannot be written:
+        // an earlier compile calls it as a fixed function'); the lane prints 1 s 3 q 12/12.
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =
@@ -1935,14 +1990,38 @@ impl<R: Rt> CompileCtx<R> {
                 self.check_val_written(&o.name, &o.typ, &i.typ)?
             }
         }
-        for id in ids {
-            self.batch_connect_targets.insert(id);
-            self.connect_targets.insert(id);
-            if !self.generalized_earlier(id) {
-                self.env.poly_binds.remove(&id);
-            }
+        self.batch_connect_targets.insert(id);
+        self.connect_targets.insert(id);
+        if !self.generalized_earlier(id) {
+            self.env.poly_binds.remove(&id);
         }
         Ok(())
+    }
+
+    /// Whether a call through `id` dispatches at run time: this batch
+    /// writes it, or it is one variable with another binding and this
+    /// batch or an earlier one writes any of them. A mark stays with the
+    /// binding its write names, so it goes when that binding does.
+    pub(crate) fn rebinds(&self, id: BindId) -> bool {
+        if self.batch_connect_targets.contains(&id) {
+            return true;
+        }
+        let names = self.static_callees.variable(id);
+        names.len() > 1
+            && names.iter().any(|n| {
+                self.batch_connect_targets.contains(n) || self.connect_targets.contains(n)
+            })
+    }
+
+    /// Whether anything writes the variable `id` names: a `<-` to it or
+    /// to a binding it is one variable with.
+    pub(crate) fn var_written(&self, id: BindId) -> bool {
+        self.connect_targets.contains(&id)
+            || self
+                .static_callees
+                .variable(id)
+                .iter()
+                .any(|n| self.connect_targets.contains(n))
     }
 
     /// Refuse writes through the `val` `name`, declared `val`, that the
@@ -2002,17 +2081,7 @@ impl<R: Rt> CompileCtx<R> {
         }
     }
 
-    /// Where `a` or `b`, one variable, is a `<-` target, a static call
-    /// through neither binds in this batch. Only static resolution: the
-    /// binding a write names alone takes its typing.
-    pub(crate) fn carry_static_mark(&mut self, a: BindId, b: BindId) {
-        if self.connect_targets.contains(&a) || self.connect_targets.contains(&b) {
-            self.batch_connect_targets.insert(a);
-            self.batch_connect_targets.insert(b);
-        }
-    }
-
-    // CR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
+    // XCR claude for claude: [perf/low] The `<-`-target mark this puts on the outer outlives
     // the body whose write caused it: Bind::delete removes only the old inner at a reload,
     // so a reloaded body that writes nothing has its calls through the val resolved
     // dynamically (GXDBG_RESOLVE: unstable=true; base 432e34ac6 static), and fusion may go
@@ -2038,19 +2107,20 @@ impl<R: Rt> CompileCtx<R> {
     // f = |x| x) is refused as written through the val, where nothing writes it any more;
     // main reloads it. probe ~/ptmp/cr29/scratch/r14-A/q4. D18 (a)'s one-variable rebuild,
     // keeping a replaced body's writes with its binding, should take the mark with it.
+    // 2026-11-05 claude: Fixed with iface-pair-one-var-01: a write marks only the binding
+    // it names, and a reload's compile leaves the replaced body's bindings out of the
+    // variable (StaticCallees::set_aside's vars), so the reloaded body's f(count(k)) in n1
+    // resolves statically (GXDBG_RESOLVE unstable=false; base-r17 true). No answer changes,
+    // so no run! pin; lang::modules::a_reload_is_not_held_to_the_replaced_bodys_write pins
+    // the same mark staying with its binding.
     /// Join `inner`, a body's binding implementing an interface `val`, with
-    /// `outer`, the `val`'s ([`StaticCallees::join`]). From here on they are
-    /// one `<-` target where either is, so a woken `let` keeps what was
-    /// written through either. The typing stays the written binding's: the
-    /// body's check, before this, took the value restriction from the
-    /// targets as the writes named them.
+    /// `outer`, the `val`'s ([`StaticCallees::join`]): from here on they
+    /// are one variable, the val's at run time. A `<-` marks the binding
+    /// it names; whether the variable is written reads every name
+    /// ([`Self::rebinds`], [`Self::var_written`]). The typing stays the
+    /// written binding's.
     pub(crate) fn join_interface_pair(&mut self, inner: BindId, outer: BindId) {
-        self.static_callees.join(inner, outer);
-        if self.connect_targets.contains(&inner) || self.connect_targets.contains(&outer)
-        {
-            self.connect_targets.insert(inner);
-            self.connect_targets.insert(outer);
-        }
+        self.static_callees.join(inner, outer)
     }
 
     /// Hold `id`, a binding the call `call` binds statically.
@@ -2058,8 +2128,9 @@ impl<R: Rt> CompileCtx<R> {
         StaticCallees::hold(&self.static_callees, id, call)
     }
 
-    /// Whether `id` is a binding an earlier compile generalized: its
-    /// check already made variables of a function it holds generic.
+    /// Whether `id` is a binding generalized before the write being
+    /// compiled: its check already made variables of a function it holds
+    /// generic.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
@@ -2593,10 +2664,15 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
-    /// Deliver a write to either binding of an interface pair to both, as
-    /// the cycle starts (`node::module::deliver_pair_writes`).
-    pub fn deliver_pair_writes(&mut self) {
-        node::module::deliver_pair_writes(self)
+    /// Give the runtime the bindings that are another's variable, where
+    /// a module's join or retirement changed them
+    /// ([`StaticCallees::join`]).
+    pub(crate) fn sync_var_aliases(&mut self) {
+        if let Some(aliases) = self.static_callees.changed_aliases() {
+            self.rt.set_var_aliases(aliases);
+            let aliases = self.rt.var_aliases().clone();
+            self.event.variables.set_aliases(aliases)
+        }
     }
 
     /// Let go of what the references released since the last cycle kept:
@@ -2626,6 +2702,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
 
     /// The same view, borrowed for a shorter time, over `event`.
     pub fn with_event<'b>(&'b mut self, event: &'b mut Event) -> ExecCtx<'b, R> {
+        event.variables.set_aliases(self.event.variables.aliases().clone());
         ExecCtx {
             cx: self.cx.reborrow(),
             image_decoder: self.image_decoder,
@@ -2656,6 +2733,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// what `notify` says; a quiet production stands in the store with the
     /// stamp of the binding's last fire.
     pub fn deliver(&mut self, id: BindId, tv: TagValue, notify: Notify) {
+        let var = self.rt.var_of(id);
         let tag = tv.tag();
         let stored = match tag.is_bottom() {
             true => TagValue::tagged(Value::Null, tag),
@@ -2663,11 +2741,11 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         };
         if tag.triggers() {
             match self.event.root {
-                None => self.rt.store_insert(id, stored),
+                None => self.rt.store_insert_var(var, stored),
                 Some(root) => {
                     let mut passed = None;
                     let elsewhere = self.rt.store_fire(
-                        id,
+                        var,
                         stored,
                         root,
                         self.boundary.as_ref(),
@@ -2675,19 +2753,19 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
                     );
                     if let Some(passed) = passed {
                         for r in passed {
-                            self.rt.late(id, tv.clone(), r)
+                            self.rt.late_var(var, tv.clone(), r)
                         }
                     }
                     if elsewhere {
-                        self.rt.produced(id)
+                        self.rt.produced_var(var)
                     }
                 }
             }
             if notify == Notify::Roots {
-                self.rt.notify_marked(id)
+                self.rt.notify_marked_var(var)
             }
         } else {
-            self.rt.store_insert_standing(id, stored)
+            self.rt.store_insert_standing_var(var, stored)
         }
         self.event.variables.insert(id, tv);
     }
@@ -2721,14 +2799,38 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.rt.ref_var(id, reader)
     }
 
+    /// [`Self::ref_var`] for a reader taken earlier.
+    pub(crate) fn ref_reader(&mut self, id: BindId, reader: prune::Reader) {
+        self.rt.ref_var(id, reader)
+    }
+
     /// The reader a node at `top_id` inside the walk's boundary is.
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { root: top_id, boundary: self.boundary.clone(), late: false }
+        prune::Reader {
+            root: top_id,
+            boundary: self.boundary.clone(),
+            late: false,
+            read: None,
+        }
     }
 
     /// [`Self::reader`] for a node that reads [`Event::late`].
     pub fn late_reader(&self, top_id: ExprId) -> prune::Reader {
-        prune::Reader { late: true, ..self.reader(top_id) }
+        self.stamped_reader(top_id, None)
+    }
+
+    /// [`Self::late_reader`] keeping the read stamp `read`.
+    pub(crate) fn stamped_reader(
+        &self,
+        top_id: ExprId,
+        read: Option<&prune::ReadStamp>,
+    ) -> prune::Reader {
+        prune::Reader {
+            root: top_id,
+            boundary: self.boundary.clone(),
+            late: true,
+            read: read.cloned(),
+        }
     }
 
     /// `f` walking inside `boundary`.
@@ -2762,6 +2864,8 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// reference it recorded, then delete what it discarded, so each
     /// discard's unrefs reach the runtime.
     pub fn apply_deferred(&mut self) {
+        // the registrations below are of the variables the joins name
+        self.sync_var_aliases();
         // through `Deref`: a branch view forks no compile for nothing
         if !self.deferred_pending() {
             return;
@@ -3986,7 +4090,7 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
 /// the number of holders that hold it, and the bindings that are one
 /// variable. One index serves a context and every compile task it forks.
 #[derive(Debug, Default)]
-pub(crate) struct StaticCallees(Mutex<Holds>);
+pub(crate) struct StaticCallees(Mutex<Holds>, std::sync::atomic::AtomicBool);
 
 #[derive(Debug, Default)]
 struct Holds {
@@ -3995,6 +4099,9 @@ struct Holds {
     /// The holds of a body being replaced, which a write its replacement
     /// makes does not see ([`StaticCallees::set_aside`]).
     aside: AHashMap<(BindId, ExprId), u32>,
+    /// The bindings of a body being replaced: no longer one variable with
+    /// another to its replacement's compile.
+    aside_vars: AHashMap<BindId, u32>,
 }
 
 /// A binding's side of the interface pairs it is in
@@ -4038,17 +4145,22 @@ impl StaticCallees {
         calls.iter().find(|(c, n)| *n > aside(c.id)).map(|(c, _)| c.clone())
     }
 
-    /// Leave `holds`, a replaced body's, out of [`Self::held`] until the
+    /// Leave `holds`, a replaced body's, out of [`Self::held`], and its
+    /// bindings `vars` out of the variables they are one with, until the
     /// guard drops: the body goes when its replacement compiles.
     pub(crate) fn set_aside(
         index: &Arc<Self>,
         holds: Vec<(BindId, ExprId)>,
+        vars: Vec<BindId>,
     ) -> AsideHolds {
         let mut held = index.0.lock();
         for key in holds.iter() {
             *held.aside.entry(*key).or_default() += 1;
         }
-        AsideHolds { index: index.clone(), holds }
+        for id in vars.iter() {
+            *held.aside_vars.entry(*id).or_default() += 1;
+        }
+        AsideHolds { index: index.clone(), holds, vars }
     }
 
     /// `inner` and `outer` are one variable, a write to either reaching
@@ -4056,6 +4168,7 @@ impl StaticCallees {
     /// `val`'s.
     pub(crate) fn join(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
         held.joined.insert(inner, Side::Inner(outer));
         let side =
             held.joined.entry(outer).or_insert_with(|| Side::Outer(SmallVec::new()));
@@ -4069,6 +4182,7 @@ impl StaticCallees {
     /// `inner` and `outer` are no longer one variable.
     pub(crate) fn unjoin(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
         if matches!(held.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
             held.joined.remove(&inner);
         }
@@ -4086,6 +4200,25 @@ impl StaticCallees {
         let mut ids: SmallVec<[BindId; 2]> = smallvec::smallvec![id];
         held.close_over_joins(&mut ids);
         ids
+    }
+
+    /// Each binding implementing a `val` mapped to the val's, its variable
+    /// at run time, when a join or an unjoin changed them since the last
+    /// call.
+    fn changed_aliases(&self) -> Option<branch::VarAliases> {
+        if !self.1.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let held = self.0.lock();
+        let m = held
+            .joined
+            .iter()
+            .filter_map(|(id, side)| match side {
+                Side::Inner(outer) => Some((*id, *outer)),
+                Side::Outer(_) => None,
+            })
+            .collect();
+        Some(branch::VarAliases::new(m))
     }
 
     /// Add to `ids` every binding one of them is one variable with.
@@ -4128,6 +4261,7 @@ impl StaticCallees {
         let mut held = self.0.lock();
         held.calls.remove(&id);
         let Some(side) = held.joined.remove(&id) else { return };
+        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
         for with in side.with() {
             match held.joined.get_mut(with) {
                 Some(Side::Outer(inners)) => {
@@ -4164,6 +4298,7 @@ impl StaticCallees {
 pub(crate) struct AsideHolds {
     index: Arc<StaticCallees>,
     holds: Vec<(BindId, ExprId)>,
+    vars: Vec<BindId>,
 }
 
 impl Drop for AsideHolds {
@@ -4174,6 +4309,14 @@ impl Drop for AsideHolds {
                 *n -= 1;
                 if *n == 0 {
                     held.aside.remove(key);
+                }
+            }
+        }
+        for id in self.vars.iter() {
+            if let Some(n) = held.aside_vars.get_mut(id) {
+                *n -= 1;
+                if *n == 0 {
+                    held.aside_vars.remove(id);
                 }
             }
         }
@@ -4198,7 +4341,7 @@ impl Holds {
         let mut i = 0;
         while let Some(id) = ids.get(i).copied() {
             for with in self.joined.get(&id).map(Side::with).unwrap_or_default() {
-                if !ids.contains(with) {
+                if !ids.contains(with) && !self.aside_vars.contains_key(with) {
                     ids.push(*with)
                 }
             }
@@ -4330,6 +4473,8 @@ fn compile_top<R: Rt>(
         }
     };
     info!("compile time {:?}", st.elapsed());
+    // the input's value is what it names, as a `let` names its value
+    node::bind::name_value(&mut node, true);
     if let Err(err) = check_pending_imports(ctx) {
         let err = input.refused(ctx, err);
         return Err(abandon_stmt(ctx, node, saved, err));
@@ -4623,25 +4768,11 @@ fn abandon_stmt<R: Rt>(
 }
 
 /// Whether `t` holds a generic cell, a variable of a function it holds that
-/// a read copies: not a rank-2 type's quantifier, generic whatever compiled
-/// it, but a declared signature's own, its scheme's.
+/// a read copies.
 pub(crate) fn holds_generic(t: &Type) -> bool {
     let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
     t.reached_cells(&mut cells);
-    let mut generic = cells
-        .iter()
-        .filter(|(_, tv)| tv.level().is_generic() && !tv.is_quantifier_rigid())
-        .peekable();
-    if generic.peek().is_none() {
-        return false;
-    }
-    let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
-    t.each_quantifier(&mut |_, tv| {
-        if tv.is_formal_quantifier() {
-            quantified.insert(tv.cell_addr());
-        }
-    });
-    generic.any(|(addr, _)| !quantified.contains(addr))
+    cells.values().any(|tv| tv.level().is_generic())
 }
 
 #[cfg(test)]

@@ -239,6 +239,61 @@ async fn a_fire_reaches_a_passed_reader_next_cycle(mode: Mode) -> Result<()> {
 
 modes!(a_fire_reaches_a_passed_reader_next_cycle);
 
+/// `r`'s second arm reads `w` through `h`, and `w` is made after `r`'s
+/// statement ran, once, at `n == FIRES`; at `n == ASLEEP` the arm sleeps.
+const PASSED_ASLEEP: &str = "{
+  let n = 0;
+  n <- select n { k if k < 5 => k + 1, _ => never() };
+  let h: fn(x: i64) -> i64 = never();
+  let log: Array<(i64, i64)> = [];
+  let r = select n {
+    ASLEEP => -1,
+    _ => { let v = h(1); log <- v ~ array::push(log, (n, v)); v }
+  };
+  let w = uniq(select n { k if k < FIRES => 0, _ => 10 });
+  h <- |x: i64| -> i64 x + w;
+  select n { 5 => n ~ log, _ => never() }
+}";
+
+// `w`'s one fire reaches the passed reader next cycle: there if its arm is
+// awake, else at the arm's wake, once, as a fire made while it slept does,
+// whether the arm falls asleep as the fire arrives or slept already.
+async fn a_late_fire_reaches_a_sleeping_arm_at_its_wake(mode: Mode) -> Result<()> {
+    for (asleep, fires, want) in [
+        ("100", "1", "[[1, 1], [2, 11]]"),
+        ("2", "1", "[[1, 1], [3, 11]]"),
+        ("2 | 3", "2", "[[1, 1], [4, 11]]"),
+    ] {
+        let code = PASSED_ASLEEP.replace("ASLEEP", asleep).replace("FIRES", fires);
+        let got = result_updates(&code, &[], mode).await?;
+        assert_eq!(got, [want], "asleep at {asleep}, {mode:?}");
+    }
+    Ok(())
+}
+
+modes!(a_late_fire_reaches_a_sleeping_arm_at_its_wake);
+
+// The same in a module's body: a val the interface declares is the
+// binding's one variable, and the arm reading it owes the late fire the
+// same with the val declared or not.
+async fn a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake(
+    mode: Mode,
+) -> Result<()> {
+    let body = PASSED_ASLEEP
+        .replace("ASLEEP", "2")
+        .replace("FIRES", "1")
+        .replace("select n { 5 =>", "let out = select n { 5 =>");
+    let body = body.trim().trim_start_matches('{').trim_end_matches('}');
+    for gxi in ["val out: Array<(i64, i64)>", "val w: i64;\nval out: Array<(i64, i64)>"] {
+        let files = [("/test/m.gx", body), ("/test/m.gxi", gxi)];
+        let got = result_updates("{ mod m; m::out }", &files, mode).await?;
+        assert_eq!(got, ["[[1, 1], [3, 11]]"], "{gxi}, {mode:?}");
+    }
+    Ok(())
+}
+
+modes!(a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake);
+
 // A late value that feeds its producer back is a self-loop, as `x <- x + 1`
 // is: `r` reads `w` through `h` a cycle late, and each new `r` makes a new
 // `w`, one step a cycle, never settling. `c` counts the cycles.
@@ -360,6 +415,40 @@ async fn a_callee_fire_reaches_a_passed_reader_forked_or_not(mode: Mode) -> Resu
 }
 
 modes!(a_callee_fire_reaches_a_passed_reader_forked_or_not);
+
+/// `MAKE` makes `rr`'s target and fires it in the walk; `READ` reads it
+/// through `rr` before and after `MAKE`, in one statement or in three.
+const PASSED_DEREF: &str = "{
+  let n = 0;
+  n <- select n { k if k < 3 => k + 1, _ => never() };
+  let rr: [&i64, null] = null;
+  let mk = |u: i64| -> i64 { let v = u * 10; rr <- &v; v };
+  READ
+}";
+
+// A dereference the walk passed inside its own statement, before the
+// nested block or the call that fires its target, reads that fire next
+// cycle, as one in a statement of its own does; one after it reads it in
+// its cycle.
+async fn a_fire_reaches_a_passed_dereference_in_its_statement(mode: Mode) -> Result<()> {
+    for make in ["{ let inner = n * 10; rr <- &inner; inner }", "mk(n)"] {
+        for read in [
+            "(*(rr$), MAKE, *(rr$))",
+            "{ let a = *(rr$); let b = MAKE; let c = *(rr$); (a, b, c) }",
+        ] {
+            let code = PASSED_DEREF.replace("READ", read).replace("MAKE", make);
+            let got = result_updates(&code, &[], mode).await?;
+            assert_eq!(
+                got,
+                ["[0, 10, 10]", "[10, 20, 20]", "[20, 30, 30]", "[30, 30, 30]"],
+                "{read} over {make}, {mode:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+modes!(a_fire_reaches_a_passed_dereference_in_its_statement);
 
 // A write through a reference that moves after the walk passed the write
 // lands at the new target from the next cycle on.

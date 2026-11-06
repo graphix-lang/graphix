@@ -428,7 +428,20 @@ serial and probes again after 1024 updates. A measured site samples
 every update until each child it times has four samples, then on the doubling
 schedule, and turns serial when no split reaches `T` on both sides. A
 `SlotSite` keeps one per-slot histogram (the measured loop's total over
-its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
+its slot count) and forks in ranges of `ceil(T / estimate)` slots; past
+the last bucket's floor (`8T`) a slot is estimated at its decayed mean
+instead. It also times each fork it makes, and each part inside it: what
+the fork took beyond its parts' critical path (the longest part, or
+their sum over the workers) is its overhead, decayed (halved at each
+fork, halved again at each re-probe), and the slots fork only where each
+half costs `T` plus it (the overhead is the fork's, paid once, so a range
+still needs only `T`). Three forks in a row that take no less than the
+slots' mean times their count turn the site serial until it re-probes or
+its slots double. The
+wall time of a fork does not see the CPU the pool's woken workers spin
+away after it (rayon wakes a worker per job it finds, each spinning
+through every deque before it parks): a fork that wins wall time still
+costs that. `T`
 is four times the lower quartile of nine latencies of handing an idle
 pool a job, measured once per process on a thread of its own, against a pool of
 its own that nothing forks onto, as many workers as a runtime's, started when a

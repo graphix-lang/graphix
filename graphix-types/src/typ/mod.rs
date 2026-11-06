@@ -77,7 +77,7 @@ impl FromIterator<bool> for AndAc {
 impl Type {
     /// What a walk that visits each shared node once keys it by: a
     /// composite's content allocation, a reference's, a var's cell;
-    /// `None` for a leaf and for `Map`, whose content is two allocations.
+    /// `None` for a leaf and for `App`, whose content is two allocations.
     pub fn shared_identity(&self) -> Option<usize> {
         match self {
             Type::TVar(tv) => Some(tv.cell_addr()),
@@ -182,10 +182,10 @@ impl Type {
                 text_words(tag, out);
                 each(ts, out, at)
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
                 out.push(20);
-                key.key_words(out, at);
-                value.key_words(out, at)
+                m.key.key_words(out, at);
+                m.value.key_words(out, at)
             }
             Type::Abstract { id, params } => {
                 out.extend([21, id.0 as usize]);
@@ -367,7 +367,7 @@ impl NodePairs {
 /// The address of a composite's content allocation, its low bits telling
 /// apart the kinds (and a reference's mutability) that can wrap one
 /// allocation, for walks that visit each shared node once; `None` for
-/// leaves and for `Map`, whose content is two allocations.
+/// leaves and for `App`, whose content is two allocations.
 pub(super) fn node_addr(t: &Type) -> Option<usize> {
     const _: () = assert!(align_of::<Type>() >= 8);
     let slice = |a: &Arc<[Type]>, kind: usize| (**a).as_ptr().addr() | kind;
@@ -384,8 +384,8 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         Type::Error(a) => Some(boxed(a, 2)),
         Type::ByRef(Mutability::Shared, a) => Some(boxed(a, 3)),
         Type::ByRef(Mutability::Mut, a) => Some(boxed(a, 4)),
-        Type::Map { .. }
-        | Type::App(..)
+        Type::Map(m) => Some((&**m as *const MapType).addr()),
+        Type::App(..)
         | Type::Hole
         | Type::Bound(_)
         | Type::Primitive(_)
@@ -393,6 +393,21 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         | Type::Bottom
         | Type::Ref(_)
         | Type::TVar(_) => None,
+    }
+}
+
+/// A `collect_tvars` walk's state: each node walked (`nodes` holds it, so
+/// a normalized conjunct dropped mid-walk cannot lend its address to a
+/// node never walked), and one normal form for every conjunct it meets,
+/// so a conjunct met again is the node walked before.
+struct TVarsSeen {
+    nodes: LPooled<AHashMap<usize, Type>>,
+    norm: normalize::NormCx,
+}
+
+impl TVarsSeen {
+    fn take() -> Self {
+        Self { nodes: LPooled::take(), norm: normalize::NormCx::take() }
     }
 }
 
@@ -412,13 +427,14 @@ impl<A> Kept<A> {
     }
 }
 
-/// [`norm_key`] extended with `Variant`: a key may include the tag's
-/// allocation identity.
+/// [`norm_key`] extended with `Variant`, whose key may include the tag's
+/// allocation identity, and `Ref`, keyed by its node.
 fn probe_key(t: &Type) -> Option<NormKey> {
     match t {
         Type::Variant(tag, ts, _) => {
             Some((mem::discriminant(t), (**ts).as_ptr() as usize, tag.as_ptr() as usize))
         }
+        Type::Ref(r) => Some((mem::discriminant(t), Arc::as_ptr(r).addr(), 0)),
         t => norm_key(t),
     }
 }
@@ -445,9 +461,14 @@ impl<T: IsoPoolable> Lazy<T> {
 
 struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
-    /// Definition key → (the resolution it came from, pinned so the key
-    /// is not reused; the param lists seen with their ids).
-    ref_ids: Lazy<AddrMap<(sync::Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>>,
+    /// Definition key → the resolution it came from, pinned so the key
+    /// is not reused.
+    ref_defs: Lazy<AddrMap<sync::Arc<ResolvedRef>>>,
+    /// (Definition key, param list address) → the param list, pinned,
+    /// and its application's id: a ref met again keeps its id.
+    ref_nodes: Lazy<AHashMap<(usize, usize), (Arc<[Type]>, usize)>>,
+    /// (Definition key, the params' [`Self::param_id`]s) → id.
+    ref_apps: Lazy<AHashMap<(usize, SmallVec<[usize; 4]>), usize>>,
     /// Content identity → id for non-Ref types, so the cycle memo does
     /// not conflate distinct finite sub-problems.
     content_ids: Lazy<AHashMap<NormKey, usize>>,
@@ -529,7 +550,9 @@ impl<H: IsoPoolable> RefHist<H> {
     fn new() -> Self {
         RefHist {
             inner: LPooled::take(),
-            ref_ids: Lazy::new(),
+            ref_defs: Lazy::new(),
+            ref_nodes: Lazy::new(),
+            ref_apps: Lazy::new(),
             content_ids: Lazy::new(),
             shape_ids: Lazy::new(),
             next_id: 0,
@@ -555,28 +578,21 @@ impl<H: IsoPoolable> RefHist<H> {
             Type::Ref(tr) => {
                 let r = tr.resolve_in(env)?;
                 let key = r.def_key();
-                let entry = self
-                    .ref_ids
-                    .get_mut()
-                    .entry(key)
-                    .or_insert_with(|| (r, SmallVec::new()));
-                let found = entry.1.iter().find(|(p, _)| {
-                    Arc::ptr_eq(p, &tr.params)
-                        || p.len() == tr.params.len()
-                            && p.iter()
-                                .zip(tr.params.iter())
-                                .all(|(a, b)| setops::union_identical(a, b))
-                });
-                if let Some((_, id)) = found {
+                let node = (key, (*tr.params).as_ptr().addr());
+                if let Some((_, id)) = self.ref_nodes.get().and_then(|m| m.get(&node)) {
                     return Some(*id);
                 }
-                let id = self.next();
-                self.ref_ids
-                    .get_mut()
-                    .get_mut(&key)
-                    .expect("inserted")
-                    .1
-                    .push((tr.params.clone(), id));
+                self.ref_defs.get_mut().entry(key).or_insert(r);
+                let params = tr.params.iter().map(|p| self.param_id(p, env)).collect();
+                let id = match self.ref_apps.get_mut().entry((key, params)) {
+                    Entry::Occupied(e) => *e.get(),
+                    Entry::Vacant(e) => {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        *e.insert(id)
+                    }
+                };
+                self.ref_nodes.get_mut().insert(node, (tr.params.clone(), id));
                 return Some(id);
             }
             Type::TVar(tv) => match tv.binding() {
@@ -588,20 +604,7 @@ impl<H: IsoPoolable> RefHist<H> {
                 (d, (**params).as_ptr().addr(), id.0 as usize)
             }
             Type::Any | Type::Bottom => (d, 0, 0),
-            t => {
-                let h = shape_hash(t);
-                let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
-                    b.iter()
-                        .find(|(s, _)| setops::union_identical(s, t))
-                        .map(|(_, id)| *id)
-                });
-                if let Some(id) = found {
-                    return Some(id);
-                }
-                let id = self.next();
-                self.shape_ids.get_mut().entry(h).or_default().push((t.clone(), id));
-                return Some(id);
-            }
+            t => return Some(self.shape_id(t)),
         };
         if let Some(&id) = self.content_ids.get().and_then(|m| m.get(&k)) {
             return Some(id);
@@ -609,6 +612,31 @@ impl<H: IsoPoolable> RefHist<H> {
         let id = self.next();
         self.content_ids.get_mut().insert(k, id);
         Some(id)
+    }
+
+    /// The id of a ref's parameter, equal for parameters `union_identical`
+    /// holds identical: [`Self::ref_id`]'s, but an abstract type and an
+    /// unresolvable name by their structure.
+    fn param_id(&mut self, t: &Type, env: &Env) -> usize {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) if let Some(b) = tv.binding() => self.param_id(&b, env),
+            Type::Abstract { .. } => self.shape_id(t),
+            t => self.ref_id(t, env).unwrap_or_else(|| self.shape_id(t)),
+        })
+    }
+
+    /// The id of `t` by its structure, open cells by their cell.
+    fn shape_id(&mut self, t: &Type) -> usize {
+        let h = shape_hash(t);
+        let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
+            b.iter().find(|(s, _)| setops::union_identical(s, t)).map(|(_, id)| *id)
+        });
+        if let Some(id) = found {
+            return id;
+        }
+        let id = self.next();
+        self.shape_ids.get_mut().entry(h).or_default().push((t.clone(), id));
+        id
     }
 }
 
@@ -656,6 +684,14 @@ impl Unguarded {
 pub struct AbstractId(u64);
 
 impl nohash::IsEnabled for AbstractId {}
+
+/// The refusal of a function type with quantifiers of its own anywhere
+/// but a declared signature's top.
+pub const QUANTIFIED_FN: &str = "a function type with type variables of its own \
+     (`fn<'a: ..>(..)`, or a trait as a parameter's type, `fn(c: Collection)`) \
+     stands only as a definition's signature: declare the variables on the \
+     definition (`'a: Number |f: fn(x: 'a) -> 'a| ..`), or bind the generic \
+     function with `let` and call it by name";
 
 /// The v5 UUID namespace abstract type identities are derived from,
 /// so the compile-time [`AbstractId`] and a value's runtime tag agree
@@ -1262,7 +1298,7 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    // CR claude for claude: [risk/medium] same_definition and def_key read only the
+    // XCR claude for claude: [risk/medium] same_definition and def_key read only the
     // resolution cell: two references to one definition, one cell filled and one open,
     // are two definitions here, so a walk that fills cells (resolve_in, through ref_id
     // and lookup_ref) changes what a later walk's shortcuts read (could_match's and
@@ -1292,14 +1328,138 @@ impl TypeRef {
     // definitions). A filled and an open reference to one definition are still two
     // definitions to same_definition; closing that needs the env where these read it.
     // Not shown on main.
-    /// Whether two references name one definition: two filled cells by
-    /// the definition, two open ones by the written scope and name.
-    pub(crate) fn same_definition(&self, other: &Self) -> bool {
+    // 2026-11-05 claude: TypeRef::same_definition now takes the env and reads an open
+    // cell as what its name means there (resolve_peek, filling nothing), so the
+    // shortcuts in contains, could_match, sig_matches, union, diff and DataMeet answer
+    // the same whichever cells earlier walks filled; Identity and the env-free part
+    // walks (meets_itself, nests, decided_part) keep the cell-only answer as
+    // same_filled_definition. Taking the shortcut more often showed it skipped what an
+    // expansion does to the arguments: lookup_ref holds them to the definition's
+    // parameter bounds (an open cell takes 'r: NoError from Result<'r, ..>) and fills
+    // the cell; without that, 12 graphix-tests fixtures failed (str::parse's 'b lost
+    // NoError at the interface's sig_matches, a later-module annotation's cell stayed
+    // open). Every shortcut arm now calls TypeRef::hold_bounds_in (the loop
+    // lookup_ref_by now shares, hold_bounds_of), which fills the cell as the expansion
+    // would. Pins: typ::setops::tests::an_open_reference_is_its_filled_twin (union of a
+    // filled and an open R<i64> gave the expansion; fails without the fix) and
+    // one_definition_by_its_arguments_holds_their_bounds (fails without the hold in
+    // contains' shortcut). Census of both repos: no verdict changes, one message names
+    // the interface's 'b: Any + NoError (x-typecheck-generics-03b). guicheck +0.3%
+    // instructions vs base-r17. probes: ~/ptmp/cr29/scratch/r17-o3/
+    // 2026-11-05 claude: Review r17 (o3-r1-1's root-load flake): hold_bounds_in filled
+    // an open cell from the env of whatever walk took the shortcut, and a sibling
+    // module's parallel check, whose env does not see /gui/data_table, filled
+    // ColumnSpec's nested Source with core's Source (the name's outer shadow), so
+    // data_table's text_column was refused 'ColumnSpec does not contain {..}' about
+    // once in 450 cold starts (13/6000 --no-cache starts at 8 side by side; 0/6000 on
+    // base-r17; bisected to this CR's commit; 0/6000 with GRAPHIX_EVAL_THREADS=1). The
+    // shortcuts now call TypeRef::hold_bounds_with: an open cell takes its twin's
+    // filled definition, as the expansion it replaces filled it, and two open cells
+    // stay open (resolve_peek). 0/12000 failures after. Pins:
+    // typ::setops::tests::a_shortcut_fills_no_open_pair (fails with the env fill),
+    // lang::types::annotation_names_from_a_later_module (fails with no fill at all).
+    // Left: the x-typecheck-generics-03b message naming the declared val's 'b: Any +
+    // NoError (review r17 low; the bound is Result's and the verdict is base-r17's).
+    /// Whether two references name one definition: an open cell names
+    /// what its name means in `env`, so the answer does not depend on
+    /// which cells a walk filled; two that name nothing, by the written
+    /// scope and name. Fills no cell.
+    pub(crate) fn same_definition(&self, other: &Self, env: &Env) -> bool {
+        let same_name = || self.scope == other.scope && self.name == other.name;
+        if self.is_open() && other.is_open() && same_name() {
+            return true;
+        }
+        match (self.resolve_peek(env), other.resolve_peek(env)) {
+            (Some(a), Some(b)) => a.def_key() == b.def_key(),
+            (None, None) => same_name(),
+            _ => false,
+        }
+    }
+
+    /// [`Self::same_definition`] by what the cells hold, for a walk with
+    /// no env: a filled cell and an open one are two definitions.
+    pub(crate) fn same_filled_definition(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
             (None, None) => self.scope == other.scope && self.name == other.name,
             _ => false,
         }
+    }
+
+    /// Hold the arguments to `def`'s parameter bounds, as an expansion
+    /// does: an open argument cell takes its bound when `commit`, any
+    /// other argument must meet it, refused by error when `commit`, else
+    /// `false`.
+    fn hold_bounds_of(&self, env: &Env, def: &ResolvedRef, commit: bool) -> Result<bool> {
+        if def.params.iter().all(|(_, b)| b.is_none()) {
+            return Ok(true);
+        }
+        let Some(known) = def.bindings(&self.params) else { return Ok(true) };
+        for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
+            let Some(bound) = bound else { continue };
+            let bound = bound.replace_tvars(&known);
+            match arg {
+                Type::TVar(tv) if !tv.is_bound() => {
+                    if commit {
+                        tv.add_cell_constraint(bound)
+                    }
+                }
+                _ if commit => {
+                    bound.check_contains(env, arg)?;
+                    tvar::require_bounds(std::slice::from_ref(&bound), arg)
+                }
+                _ => {
+                    if !bound.contains_with_flags(BitFlags::empty(), env, arg)? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Hold this reference and `twin`, which name one definition, to its
+    /// parameter bounds ([`Self::hold_bounds_of`]): what a walk that takes
+    /// two applications of one definition by their arguments owes each, as
+    /// their expansions would. An open cell takes its twin's definition,
+    /// as an expansion would have filled it. Two open cells stay open: the
+    /// walk may run under an env that does not see their scope, where the
+    /// name means an outer shadow.
+    pub(crate) fn hold_bounds_with(
+        &self,
+        twin: &Self,
+        env: &Env,
+        commit: bool,
+    ) -> Result<bool> {
+        let def = match (self.resolved(), twin.resolved()) {
+            (Some(d), None) => {
+                twin.fill(&d);
+                Some(d)
+            }
+            (None, Some(d)) => {
+                self.fill(&d);
+                Some(d)
+            }
+            (Some(d), Some(_)) => Some(d),
+            (None, None) => self.resolve_peek(env),
+        };
+        match def {
+            Some(def) => Ok(self.hold_bounds_of(env, &def, commit)?
+                && twin.hold_bounds_of(env, &def, commit)?),
+            None => Ok(true),
+        }
+    }
+
+    /// Fill an open cell with `def`.
+    fn fill(&self, def: &sync::Arc<ResolvedRef>) {
+        let mut cell = self.resolved.lock();
+        if let Resolution::Open = &*cell {
+            *cell = Resolution::Def(sync::Arc::downgrade(def))
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        matches!(&*self.resolved.lock(), Resolution::Open)
     }
 
     /// Does the name mean something: its filled cell, a typedef visible
@@ -1524,10 +1684,7 @@ pub enum Type {
     Tuple(Arc<[Type]>),
     Struct(Arc<[(ArcStr, Type, WrittenAt)]>),
     Variant(ArcStr, Arc<[Type]>, WrittenAt),
-    Map {
-        key: Arc<Type>,
-        value: Arc<Type>,
-    },
+    Map(Arc<MapType>),
     Abstract {
         id: AbstractId,
         params: Arc<[Type]>,
@@ -1543,6 +1700,14 @@ pub enum Type {
     /// A conjunct a cell's constraints may hold ([`Bound`]). Legal only as
     /// a constraint.
     Bound(Bound),
+}
+
+/// A map type's key and value types, in one allocation so a map many
+/// paths share is one node ([`node_addr`]).
+#[derive(Debug)]
+pub struct MapType {
+    pub key: Type,
+    pub value: Type,
 }
 
 impl Debug for Type {
@@ -1575,9 +1740,11 @@ impl Debug for Type {
             Self::Variant(tag, ts, at) => {
                 f.debug_tuple("Variant").field(tag).field(ts).field(at).finish()
             }
-            Self::Map { key, value } => {
-                f.debug_struct("Map").field("key", key).field("value", value).finish()
-            }
+            Self::Map(m) => f
+                .debug_struct("Map")
+                .field("key", &m.key)
+                .field("value", &m.value)
+                .finish(),
             Self::Abstract { id, params } => f
                 .debug_struct("Abstract")
                 .field("id", id)
@@ -1659,6 +1826,14 @@ fn key_list(ts: &Arc<[Type]>, out: &mut Vec<u8>) {
         for t in ts.iter() {
             t.content_key(out);
         }
+    })
+}
+
+fn key_map(m: &Arc<MapType>, out: &mut Vec<u8>) {
+    let keep = || KeyedNode::Map(m.clone());
+    image::shared_key(Arc::as_ptr(m) as usize, keep, out, |out| {
+        m.key.content_key(out);
+        m.value.content_key(out)
     })
 }
 
@@ -1772,10 +1947,9 @@ impl Type {
                 key_text(name, out);
                 key_list(ts, out);
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
                 out.put_u8(tag::MAP);
-                key_one(key, out);
-                key_one(value, out);
+                key_map(m, out);
             }
             Type::Abstract { id, params } => {
                 out.put_u8(tag::ABSTRACT);
@@ -1807,7 +1981,7 @@ impl Type {
             }
             Type::Struct(fs) => fs.encoded_len(),
             Type::Variant(name, ts, _) => name.encoded_len() + ts.encoded_len(),
-            Type::Map { key, value } => key.encoded_len() + value.encoded_len(),
+            Type::Map(m) => m.key.encoded_len() + m.value.encoded_len(),
             Type::Abstract { id, params } => id.encoded_len() + params.encoded_len(),
             Type::App(c, a) => c.encoded_len() + a.encoded_len(),
         }
@@ -1881,10 +2055,10 @@ impl Type {
                 name.encode(buf)?;
                 ts.encode(buf)
             }
-            Type::Map { key, value } => {
+            Type::Map(m) => {
                 buf.put_u8(tag::MAP);
-                key.encode(buf)?;
-                value.encode(buf)
+                m.key.encode(buf)?;
+                m.value.encode(buf)
             }
             Type::Abstract { id, params } => {
                 buf.put_u8(tag::ABSTRACT);
@@ -1935,7 +2109,7 @@ impl Type {
             }
             tag::MAP => {
                 let key = PackTrait::decode(buf)?;
-                Type::Map { key, value: PackTrait::decode(buf)? }
+                Type::map(key, PackTrait::decode(buf)?)
             }
             tag::ABSTRACT => {
                 let id = PackTrait::decode(buf)?;
@@ -2072,9 +2246,10 @@ impl Type {
             Type::Variant(t0, a, _) => {
                 matches!(other, Type::Variant(t1, b, _) if t0 == t1 && slice_eq(a, b))
             }
-            Type::Map { key: k0, value: v0 } => matches!(
+            Type::Map(m0) => matches!(
                 other,
-                Type::Map { key: k1, value: v1 } if one_eq(k0, k1) && one_eq(v0, v1)
+                Type::Map(m1) if Arc::ptr_eq(m0, m1)
+                    || (m0.key == m1.key && m0.value == m1.value)
             ),
             Type::Abstract { id: i0, params: p0 } => matches!(
                 other,
@@ -2137,8 +2312,8 @@ impl Type {
             (Type::Variant(t0, a, w0), Type::Variant(t1, b, w1)) => {
                 t0.cmp(t1).then_with(|| a.cmp(b)).then_with(|| w0.cmp(w1))
             }
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                k0.cmp(k1).then_with(|| v0.cmp(v1))
+            (Type::Map(m0), Type::Map(m1)) => {
+                m0.key.cmp(&m1.key).then_with(|| m0.value.cmp(&m1.value))
             }
             (
                 Type::Abstract { id: i0, params: p0 },
@@ -2189,9 +2364,9 @@ impl Hash for Type {
                     ts.hash(state);
                     at.hash(state)
                 }
-                Type::Map { key, value } => {
-                    key.hash(state);
-                    value.hash(state)
+                Type::Map(m) => {
+                    m.key.hash(state);
+                    m.value.hash(state)
                 }
                 Type::Abstract { id, params } => {
                     id.hash(state);
@@ -2264,9 +2439,8 @@ impl Drop for Type {
                 a.is_unique()
             }
             Type::Struct(fs) => fs.is_unique(),
-            Type::Map { key: a, value: b } | Type::App(a, b) => {
-                a.is_unique() || b.is_unique()
-            }
+            Type::Map(m) => m.is_unique(),
+            Type::App(a, b) => a.is_unique() || b.is_unique(),
         };
         if !last {
             return;
@@ -2292,10 +2466,7 @@ impl Drop for Type {
                     drop(ptr::read(tag));
                     drop(ptr::read(ts))
                 }
-                Type::Map { key, value } => {
-                    drop(ptr::read(key));
-                    drop(ptr::read(value))
-                }
+                Type::Map(m) => drop(ptr::read(m)),
                 Type::Abstract { id: _, params } => drop(ptr::read(params)),
                 Type::App(c, a) => {
                     drop(ptr::read(c));
@@ -2401,9 +2572,9 @@ impl Type {
                 ControlFlow::Continue(())
             }
             Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => f(t),
-            Type::Map { key, value } => {
-                f(key)?;
-                f(value)
+            Type::Map(m) => {
+                f(&m.key)?;
+                f(&m.value)
             }
             Type::Fn(ft) => ft.try_for_each_type(f),
         }
@@ -2548,12 +2719,12 @@ impl Type {
             Type::Array(t) => f(t).map(|t| Type::Array(Arc::new(t))),
             Type::List(t) => f(t).map(|t| Type::List(Arc::new(t))),
             Type::ByRef(m, t) => f(t).map(|t| Type::ByRef(*m, Arc::new(t))),
-            Type::Map { key, value } => match (f(key), f(value)) {
+            Type::Map(m) => match (f(&m.key), f(&m.value)) {
                 (None, None) => None,
-                (k, v) => Some(Type::Map {
-                    key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
-                    value: v.map(Arc::new).unwrap_or_else(|| value.clone()),
-                }),
+                (k, v) => Some(Type::map(
+                    k.unwrap_or_else(|| m.key.clone()),
+                    v.unwrap_or_else(|| m.value.clone()),
+                )),
             },
             Type::Tuple(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Tuple),
             Type::Variant(tag, ts, at) => Type::cow_slice(ts, |t| f(t))
@@ -2569,6 +2740,10 @@ impl Type {
 
     pub fn empty_tvar() -> Self {
         Type::TVar(TVar::default())
+    }
+
+    pub fn map(key: Type, value: Type) -> Type {
+        Type::Map(Arc::new(MapType { key, value }))
     }
 
     /// Apply a constructor to an argument: a concrete constructor (a
@@ -2885,10 +3060,7 @@ impl Type {
         match self {
             Type::Array(t) => Some((Type::Array(Arc::new(Type::Hole)), (**t).clone())),
             Type::List(t) => Some((Type::List(Arc::new(Type::Hole)), (**t).clone())),
-            Type::Map { key, value } => Some((
-                Type::Map { key: key.clone(), value: Arc::new(Type::Hole) },
-                (**value).clone(),
-            )),
+            Type::Map(m) => Some((Type::map(m.key.clone(), Type::Hole), m.value.clone())),
             Type::Ref(tr) if !tr.params.is_empty() => {
                 let n = tr.params.len() - 1;
                 let params = Arc::from_iter(
@@ -3166,48 +3338,6 @@ impl Type {
         Some((def, t))
     }
 
-    /// Whether a function type with quantifiers of its own may stand at a
-    /// part of this type a value of it produces (an abstract type's
-    /// parameter, a function type's result and throws, never its
-    /// parameters): through
-    /// bindings, an open cell's lower bounds, and each definition a name
-    /// reaches, its body walked as written, once. A quick test that only
-    /// looks: it copies no body and decides no name, which another task's
-    /// check may resolve in another environment.
-    #[doc(hidden)]
-    pub fn may_hold_quantified_fn(&self, env: &Env) -> bool {
-        fn go(
-            t: &Type,
-            env: &Env,
-            defs: &mut AHashSet<usize>,
-            nodes: &mut AHashSet<usize>,
-        ) -> bool {
-            ensure_sufficient(|| match t {
-                Type::Fn(ft) if !ft.quantifiers.is_empty() => true,
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => go(&b, env, defs, nodes),
-                    None => t.open_lower().iter().any(|l| go(l, env, defs, nodes)),
-                },
-                Type::Ref(tr) => {
-                    tr.params.iter().any(|p| go(p, env, defs, nodes))
-                        || tr.resolve_peek(env).is_some_and(|d| {
-                            defs.insert(d.def_key()) && go(&d.typ, env, defs, nodes)
-                        })
-                }
-                t if node_addr(t).is_some_and(|n| !nodes.insert(n)) => false,
-                Type::Fn(ft) => {
-                    go(&ft.rtype, env, defs, nodes) || go(&ft.throws, env, defs, nodes)
-                }
-                t => {
-                    let mut r = false;
-                    t.for_each_child(&mut |c| r = r || go(c, env, defs, nodes));
-                    r
-                }
-            })
-        }
-        go(self, env, &mut LPooled::take(), &mut LPooled::take())
-    }
-
     fn lookup_ref_by(
         &self,
         env: &Env,
@@ -3234,7 +3364,7 @@ impl Type {
                     canonical_scope,
                     pos: _,
                     ori: _,
-                    params: def_params,
+                    params: _,
                     typ: def_typ,
                     recursive: _,
                 } = &*resolved;
@@ -3250,33 +3380,10 @@ impl Type {
                         });
                     }
                 }
-                let known = resolved.bindings(params).expect("arity checked");
-                for ((_, constraint), arg) in def_params.iter().zip(params.iter()) {
-                    let Some(constraint) = constraint else {
-                        continue;
-                    };
-                    let constraint = constraint.replace_tvars(&known);
-                    match arg {
-                        Type::TVar(tv) if !tv.is_bound() => {
-                            if commit {
-                                tv.add_cell_constraint(constraint)
-                            }
-                        }
-                        _ if commit => {
-                            constraint.check_contains(env, arg)?;
-                            tvar::require_bounds(std::slice::from_ref(&constraint), arg)
-                        }
-                        _ => {
-                            if !constraint.contains_with_flags(
-                                BitFlags::empty(),
-                                env,
-                                arg,
-                            )? {
-                                return Ok(None);
-                            }
-                        }
-                    }
+                if !tr.hold_bounds_of(env, &resolved, commit)? {
+                    return Ok(None);
                 }
+                let known = resolved.bindings(params).expect("arity checked");
                 // a raise extends a chain rather than nesting it, so a chain
                 // of a chain is that chain
                 if env.is_core_errchain(&resolved)
@@ -3516,8 +3623,9 @@ impl Type {
 
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
-    /// trait anywhere else is an error. Every function type it holds is
-    /// rank-2, its bounds held to [`FnType::check_bounds_closed`].
+    /// trait anywhere else is an error. A function type with quantifiers
+    /// of its own is refused ([`QUANTIFIED_FN`]): only a declared
+    /// signature's top has them ([`Self::rewrite_declared_args`]).
     /// Returns the rewritten type.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
         self.rewrite_written(env, false)
@@ -3525,10 +3633,43 @@ impl Type {
 
     /// [`Self::rewrite_trait_args`] over a declared signature (an
     /// interface `val`, a trait method), whose own quantifiers at its top
-    /// are its scheme's, which each use picks: their bounds may name any
-    /// variable.
+    /// are its scheme's, which each use picks.
     pub fn rewrite_declared_args(&self, env: &Env) -> Result<Type> {
         self.rewrite_written(env, true)
+    }
+
+    /// Refuse a function type with quantifiers of its own, written or a
+    /// trait as a parameter's type, anywhere in a written type that
+    /// [`Self::rewrite_trait_args`] does not read (a catch's annotation, a
+    /// cast's target, a type test).
+    pub fn refuse_quantified_fns(&self, env: &Env) -> Result<()> {
+        let mut found = false;
+        let _ = self.try_for_each_written_fn(&mut |ft| {
+            found = !ft.quantifiers.is_empty()
+                || ft.args.iter().any(
+                    |a| matches!(&a.typ, Type::Ref(tr) if env.trait_of_ref(tr).is_some()),
+                );
+            match found {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
+            }
+        });
+        match found {
+            true => bail!("{QUANTIFIED_FN}"),
+            false => Ok(()),
+        }
+    }
+
+    fn try_for_each_written_fn(
+        &self,
+        f: &mut impl FnMut(&FnType) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        ensure_sufficient(|| {
+            if let Type::Fn(ft) = self {
+                f(ft)?;
+            }
+            self.try_for_each_child(&mut |c| c.try_for_each_written_fn(f))
+        })
     }
 
     fn rewrite_written(&self, env: &Env, scheme: bool) -> Result<Type> {
@@ -3556,12 +3697,8 @@ impl Type {
                 tr.name
             ),
             Type::Fn(ft) => {
-                let bounds = ft.constraint_view();
-                for (_, c) in bounds.iter() {
+                for (_, c) in ft.constraint_view().iter() {
                     c.check_bound(env)?;
-                }
-                if !scheme {
-                    ft.check_bounds_closed(&bounds)?;
                 }
                 let mut quantifiers: LPooled<Vec<ArcStr>> =
                     ft.quantifiers.iter().cloned().collect();
@@ -3610,6 +3747,9 @@ impl Type {
                 let rtype = part(&ft.rtype)?;
                 let throws = part(&ft.throws)?;
                 let ctors = ctor_quantifiers(ft, env);
+                if !scheme && !quantifiers.is_empty() {
+                    bail!("{QUANTIFIED_FN}")
+                }
                 if !changed && !params_changed && ctors.is_empty() {
                     return Ok(None);
                 }

@@ -21,6 +21,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
+    prune::BoundaryRef,
     typ::{AbstractId, InfiniteType, ShallowScrutinee, TVar, Type, TypeMismatch},
     wrap,
 };
@@ -577,7 +578,7 @@ struct Dead(anyhow::Error);
 /// the last arm. Quadratic in the arm count (each arm re-walks what still
 /// reaches; 4000 tag arms check in about 2 s): member sets indexed by
 /// head would make it linear.
-// CR claude for claude: [perf/low] A select over an open part checks worse than
+// XCR claude for claude: [perf/low] A select over an open part checks worse than
 // quadratically in its arms, on main eb0989d33 as on cr50-P: `--no-cache --check`
 // instructions over the empty program's 1.45G, a tuple scrutinee `(k, z)` with z an
 // unannotated parameter and arms `(`Ki, x)`: 50 arms +0.07G, 100 +0.23G, 200 +1.0G,
@@ -586,6 +587,16 @@ struct Dead(anyhow::Error);
 // (`Reach::arm`'s diff of what still reaches) is the suspect the doc above names.
 // probes: ~/ptmp/cr29/scratch/review-r15/P-r1-1/scale/{tup,cat,mem,un}_*.gx, results
 // in scale/results.txt there (select-arm-cost-01)
+// 2026-11-05 claude: Located: the literal pool, not the Reach diff, and not the open
+// part (a closed z: i64 is as slow). PoolGroup::covers_all walked every combination
+// over every arm at each arm (n^3); a group now keeps the combinations its arms
+// match (Matched, a bitset over at most MAX_POOL_COMBINATIONS) and counts only the
+// new arm while its positions are unchanged, and PoolGroup::covers reads it.
+// Instructions over empty (base-r17 -> fix): tup 400 arms +5.9G -> +3.4G, 800 +36.8G
+// -> +12.9G, now x4 per doubling (quadratic, the Reach walk the doc above names;
+// plain tag arms 800 +3.9G). Pin: graphix-compiler
+// node::select::test::pool_counts_each_arm_once (9.27M matches for 300 arms without
+// the cache, bound 3n^2 = 270k). Probes ~/ptmp/cr29/scratch/r17-o1/.
 struct Reach {
     /// What still reaches the next arm.
     atype: Type,
@@ -1111,6 +1122,12 @@ fn deselect<R: Rt>(
     }
     tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
+    tracked.observe_late(ctx, |i| (i == j).then(|| arm_boundary(arm)).flatten());
+}
+
+/// The walk-pruning boundary around an arm's body.
+fn arm_boundary<R: Rt>(arm: &(PatternNode<R>, Node<R>)) -> Option<&BoundaryRef> {
+    arm.1.as_prune().map(|p| p.boundary_ref())
 }
 
 /// The chain ran and took `taken` (`None`: no arm, or a bottom scrutinee),
@@ -1529,9 +1546,35 @@ struct PoolGroup {
     member: Type,
     arms: Vec<SmallVec<[Leaf; 8]>>,
     done: bool,
+    /// The combinations `arms` match, kept from the last count.
+    matched: Option<Matched>,
+}
+
+/// The combinations a group's arms match, indexed as
+/// [`PoolGroup::combinations`] numbers them over its first `positions`
+/// positions. An arm adds its new positions after the group's, so a
+/// group with as many positions numbers its combinations alike.
+struct Matched {
+    positions: usize,
+    count: usize,
+    bits: [u64; MAX_POOL_COMBINATIONS / 64],
+}
+
+impl Matched {
+    fn get(&self, c: usize) -> bool {
+        self.bits[c / 64] & (1 << (c % 64)) != 0
+    }
+
+    fn set(&mut self, c: usize) {
+        if !self.get(c) {
+            self.bits[c / 64] |= 1 << (c % 64);
+            self.count += 1;
+        }
+    }
 }
 
 /// What pooling an atom decided.
+#[derive(Debug, PartialEq)]
 enum Claim {
     /// The pool does not read it.
     Unpooled,
@@ -1584,23 +1627,12 @@ impl LiteralPool {
                     member,
                     arms: Vec::new(),
                     done: false,
+                    matched: None,
                 });
                 self.groups.len() - 1
             }
         };
-        let g = &mut self.groups[i];
-        if g.done {
-            return Ok(Claim::Open);
-        }
-        if !g.arms.is_empty() && g.covers(&leaves) {
-            return Ok(Claim::Dead);
-        }
-        g.arms.push(leaves);
-        g.done = g.covers_all();
-        Ok(match g.done {
-            true => Claim::Completes(m),
-            false => Claim::Open,
-        })
+        Ok(self.groups[i].add(leaves))
     }
 }
 
@@ -1613,17 +1645,40 @@ fn admits(arm: &[Leaf], path: &[u32], h: &Head) -> bool {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    static MATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl PoolGroup {
+    /// Pool an arm's leaves: dead where earlier arms match every
+    /// combination it matches, else whether the group now covers its
+    /// member.
+    fn add(&mut self, leaves: SmallVec<[Leaf; 8]>) -> Claim {
+        if self.done {
+            return Claim::Open;
+        }
+        if !self.arms.is_empty() && self.covers(&leaves) {
+            return Claim::Dead;
+        }
+        self.arms.push(leaves);
+        self.done = self.covers_all();
+        match self.done {
+            true => Claim::Completes(self.member.clone()),
+            false => Claim::Open,
+        }
+    }
+
     /// The positions some arm (or `extra`) tests a head at, with the
     /// heads the member admits there; `None` when one is not a finite
     /// set, or there are too many combinations.
     fn positions<'a>(
-        &'a self,
+        arms: &'a [SmallVec<[Leaf; 8]>],
         extra: Option<&'a [Leaf]>,
     ) -> Option<SmallVec<[(&'a [u32], &'a [Head]); 8]>> {
         let mut out: SmallVec<[(&[u32], &[Head]); 8]> = SmallVec::new();
         let mut total = 1usize;
-        let arms = self.arms.iter().map(|a| &a[..]).chain(extra);
+        let arms = arms.iter().map(|a| &a[..]).chain(extra);
         for l in arms.flat_map(|a| a.iter()).filter(|l| l.heads.is_some()) {
             if out.iter().any(|(p, _)| *p == &l.path[..]) {
                 continue;
@@ -1662,6 +1717,8 @@ impl PoolGroup {
         nested: bool,
         combo: &[&Head],
     ) -> bool {
+        #[cfg(test)]
+        MATCHES.with(|n| n.set(n.get() + 1));
         positions.iter().zip(combo.iter()).all(|((p, _), h)| {
             admits(arm, p, h)
                 || nested
@@ -1677,21 +1734,49 @@ impl PoolGroup {
         positions.iter().any(|(_, d)| d.iter().any(|h| matches!(h, Head::Composite)))
     }
 
-    /// Some arm matches every combination the member admits.
-    fn covers_all(&self) -> bool {
-        let Some(positions) = self.positions(None) else { return false };
+    /// Some arm matches every combination the member admits, the last
+    /// arm pushed counted into `matched`.
+    fn covers_all(&mut self) -> bool {
+        let Some(positions) = Self::positions(&self.arms, None) else {
+            self.matched = None;
+            return false;
+        };
         let nested = Self::nested(&positions);
-        Self::combinations(&positions)
-            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, nested, &c)))
+        let (m, from) = match &mut self.matched {
+            Some(m) if m.positions == positions.len() => (m, self.arms.len() - 1),
+            slot => {
+                let fresh = Matched {
+                    positions: positions.len(),
+                    count: 0,
+                    bits: [0; MAX_POOL_COMBINATIONS / 64],
+                };
+                (slot.insert(fresh), 0)
+            }
+        };
+        for (i, c) in Self::combinations(&positions).enumerate() {
+            if self.arms[from..].iter().any(|a| Self::matches(a, &positions, nested, &c))
+            {
+                m.set(i)
+            }
+        }
+        m.count == positions.iter().map(|(_, d)| d.len()).product::<usize>()
     }
 
     /// Earlier arms match every combination `arm` matches.
     fn covers(&self, arm: &[Leaf]) -> bool {
-        let Some(positions) = self.positions(Some(arm)) else { return false };
+        let Some(positions) = Self::positions(&self.arms, Some(arm)) else {
+            return false;
+        };
         let nested = Self::nested(&positions);
-        Self::combinations(&positions)
-            .filter(|c| Self::matches(arm, &positions, nested, c))
-            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, nested, &c)))
+        let mut combos = Self::combinations(&positions)
+            .enumerate()
+            .filter(|(_, c)| Self::matches(arm, &positions, nested, c));
+        match &self.matched {
+            Some(m) if m.positions == positions.len() => combos.all(|(i, _)| m.get(i)),
+            _ => combos.all(|(_, c)| {
+                self.arms.iter().any(|a| Self::matches(a, &positions, nested, &c))
+            }),
+        }
     }
 }
 
@@ -1792,6 +1877,10 @@ impl<R: Rt> Update<R> for Select<R> {
             SmallVec::new();
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
+        let awake = *selected;
+        tracked.observe_late(ctx, |i| {
+            (Some(i) != awake).then(|| arms.get(i).and_then(arm_boundary)).flatten()
+        });
         // A guard runs where the chain reaches it, an arm whose shape
         // admits the value with no earlier arm claiming it (`open` is the
         // chain still running at arm `i`): the checker narrowed the binds
@@ -2962,5 +3051,55 @@ fn undecided_refusal(
              later use could decide apart from what the arms test: annotate the \
              scrutinee's type where it is built"
         ),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Claim, Head, Leaf, MATCHES, PoolGroup, Shape};
+    use crate::typ::Type;
+    use arcstr::ArcStr;
+    use enumflags2::BitFlags;
+    use smallvec::{SmallVec, smallvec};
+
+    fn group() -> PoolGroup {
+        PoolGroup {
+            shape: Shape::Tuple(2),
+            member: Type::Primitive(BitFlags::empty()),
+            arms: Vec::new(),
+            done: false,
+            matched: None,
+        }
+    }
+
+    /// `(`Ki, _)` over a tuple whose first position holds the tags `tags`.
+    fn arm(tags: &SmallVec<[Head; 4]>, i: usize) -> SmallVec<[Leaf; 8]> {
+        smallvec![
+            Leaf {
+                path: smallvec![0],
+                heads: Some(smallvec![tags[i].clone()]),
+                domain: Some(tags.clone()),
+            },
+            Leaf { path: smallvec![1], heads: None, domain: None },
+        ]
+    }
+
+    // n tag arms over n tags check n combinations per arm, a dead copy
+    // of it included: the group keeps what its earlier arms matched (n^3 / 6
+    // matches when every arm walks the combinations again).
+    #[test]
+    fn pool_counts_each_arm_once() {
+        let n = 300;
+        let tags: SmallVec<[Head; 4]> =
+            (0..n).map(|i| Head::Tag(ArcStr::from(format!("K{i}")), 0)).collect();
+        let mut g = group();
+        MATCHES.with(|m| m.set(0));
+        for i in 0..n - 1 {
+            assert_eq!(g.add(arm(&tags, i)), Claim::Open, "arm {i}");
+            assert_eq!(g.add(arm(&tags, i)), Claim::Dead, "arm {i} again");
+        }
+        assert_eq!(g.add(arm(&tags, n - 1)), Claim::Completes(g.member.clone()));
+        let steps = MATCHES.with(|m| m.get());
+        assert!(steps <= 3 * n * n, "{steps} matches for {n} arms");
     }
 }

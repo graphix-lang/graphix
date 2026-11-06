@@ -2239,20 +2239,6 @@ run!(typedef_callback_formal_fuses, TYPEDEF_CALLBACK_FORMAL, |v: Result<&Value>|
     matches!(v, Ok(v) if v.to_string() == "[i64:2, i64:1]")
 });
 
-const QUANTIFIED_TYPEDEF_CALLBACK_FORMAL: &str = r#"
-{
-  type K = fn<'a: Any>(x: 'a) -> 'a;
-  let outer = |#k: K, z: i64| (k(z), z);
-  #[native] outer(#k: |x| x, 1)
-}
-"#;
-
-run!(
-    quantified_typedef_callback_formal_fuses,
-    QUANTIFIED_TYPEDEF_CALLBACK_FORMAL,
-    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:1]")
-);
-
 // A result union's error test is the value's own tag, whatever the
 // success type: the split fuses over `[i64, Error<E>]`.
 const RESULT_SPLIT_OVER_A_SCALAR: &str = r#"

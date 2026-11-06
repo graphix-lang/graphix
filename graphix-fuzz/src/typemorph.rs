@@ -241,8 +241,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // decides, so two of its readers do not commute
     let open = open_lets(&stmts);
     // let-inline: substitute a single-use, unannotated, non-shadowed
-    // `let x = e` into its one later use
+    // `let x = e` into its one later use; not what may be a generic function
+    // into a field or tuple read, whose `let` names a generic binding's
+    // field but holds one instance of a literal's
     {
+        let generic = generic_names(&root);
         let mut done = 0usize;
         for si in 0..stmts.len() {
             if done >= cap {
@@ -283,6 +286,19 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let under = |k: fn(&ExprKind) -> bool| {
                 (0..gi).any(|j| k(&pre[j].kind) && gi < j + sizes[j])
             };
+            let projected = (0..gi)
+                .rev()
+                .filter(|&j| gi < j + sizes[j])
+                .find(|&j| !matches!(pre[j].kind, ExprKind::ExplicitParens(_)))
+                .is_some_and(|j| {
+                    matches!(
+                        pre[j].kind,
+                        ExprKind::StructRef { .. } | ExprKind::TupleRef { .. }
+                    )
+                });
+            if projected && may_be_generic(&b.value, &generic) {
+                continue;
+            }
             // the inline moves the value's check to its use, past the reads
             // between: a reader of an open let the value reads would decide
             // it first
@@ -787,6 +803,51 @@ pub(crate) fn calls_reached(
     });
 }
 
+/// The names a `let` in `root` binds to what may be a generic function
+/// ([`may_be_generic`]), by name whatever the scope.
+fn generic_names(root: &Expr) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for e in mutate::preorder(root) {
+        if let ExprKind::Bind(b) = &e.kind
+            && may_be_generic(&b.value, &names)
+        {
+            b.pattern.with_names(&mut |n| {
+                names.insert(n.to_string());
+            })
+        }
+    }
+    names
+}
+
+/// Whether `e` may be a generic function, or data holding one: a lambda,
+/// a module path or a name of `generic`, a projection of one, or a data
+/// literal holding one.
+fn may_be_generic(e: &Expr, generic: &HashSet<String>) -> bool {
+    match &unparen(e).kind {
+        ExprKind::Lambda(_) => true,
+        ExprKind::Ref { name } => {
+            let name = name.to_string();
+            name.contains("::") || generic.contains(&name)
+        }
+        ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
+            may_be_generic(source, generic)
+        }
+        ExprKind::Array { .. }
+        | ExprKind::List { .. }
+        | ExprKind::Map { .. }
+        | ExprKind::Tuple { .. }
+        | ExprKind::Variant { .. }
+        | ExprKind::Struct(_)
+        | ExprKind::StructWith(_) => {
+            let mut found = false;
+            unparen(e)
+                .for_each_child(&mut |c| found = found || may_be_generic(c, generic));
+            found
+        }
+        _ => false,
+    }
+}
+
 /// Whether an expression reads no name at all (a literal, an operator
 /// over literals), so it means the same thing anywhere.
 fn reads_no_name(e: &Expr) -> bool {
@@ -887,6 +948,18 @@ mod test {
         let (probes, noparse) = probes(bare, 3);
         assert_eq!(noparse, 0);
         assert!(probes.iter().any(|p| p.kind == TmKind::ParensWrap), "no probes");
+    }
+
+    #[test]
+    fn inline_keeps_a_generic_value_out_of_a_projection() {
+        let body = "{ let s = {f: |x| x}; let n = i64:1; let k = s.f; (k(n), k(\"s\")) }";
+        let (probes, _) = probes(body, 64);
+        assert!(
+            probes
+                .iter()
+                .all(|p| p.kind != TmKind::LetInline || p.body.contains("let s = ")),
+            "inlined a generic holder into a field read"
+        );
     }
 
     #[test]

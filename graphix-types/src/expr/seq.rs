@@ -139,6 +139,71 @@ fn note_lowered(
     }
 }
 
+/// The prefix of a step's entry snapshot, `let #seqs<id>_<n> = .. ~!
+/// #seqsin<id>_<n>`: the sampled tuple of what the step reads, which its
+/// reads take apart and nothing writes (`Machine::enter`).
+const ENTRY_SNAPSHOT: &str = "#seqs";
+
+/// The prefix of a step's value, `let #seqv.. = any(pc ~! v, v)`: `v`
+/// fired at the step's entry with its standing value, then tracked
+/// ([`entry_fire`], `Machine::step`).
+const STEP_VALUE: &str = "#seqv";
+
+/// The prefix of a `{ .. }` statement's item values (`Machine::lower_block`),
+/// each a step value's kind.
+const STATEMENT_VALUE: &str = "#seqb";
+
+/// The prefix of the tuple a step's entry snapshot samples, `let
+/// #seqsin<id>_<n> = (pc, ..)`.
+const ENTRY_INPUT: &str = "#seqsin";
+
+/// The prefix of a machine's program counter.
+const PC: &str = "#seqpc";
+
+/// The prefix of a `seqq` request's capture of a variable its body reads,
+/// `let #seqqcap<id>_<n> = capture(input.1.n or live v)`: the dequeued
+/// request's snapshot of `v`, or `v` itself where a step writes it.
+const CAPTURE: &str = "#seqqcap";
+
+/// Whether the lowering's binding `name` passes on what it reads whole,
+/// and nothing writes it: a step's entry snapshot ([`ENTRY_SNAPSHOT`]), a
+/// step's value ([`STEP_VALUE`]), a statement item's ([`STATEMENT_VALUE`])
+/// or a `seqq` request's capture ([`CAPTURE`]). A read of a generalized
+/// binding through one carries the binding's scheme.
+pub fn passes_on(name: &str) -> bool {
+    numbered(name, ENTRY_SNAPSHOT, &[2])
+        || numbered(name, STEP_VALUE, &[1, 2])
+        || is_statement_value(name)
+        || numbered(name, CAPTURE, &[2])
+}
+
+/// Whether `name` is a `{ .. }` statement's item value ([`STATEMENT_VALUE`]).
+pub fn is_statement_value(name: &str) -> bool {
+    numbered(name, STATEMENT_VALUE, &[2])
+}
+
+/// Whether `name` is the tuple a step's entry snapshot samples
+/// ([`ENTRY_INPUT`]).
+pub fn is_entry_input(name: &str) -> bool {
+    numbered(name, ENTRY_INPUT, &[2])
+}
+
+/// Whether `name` is a machine's program counter ([`PC`]), whose fire
+/// enters a step.
+pub fn is_pc(name: &str) -> bool {
+    numbered(name, PC, &[1])
+}
+
+/// `name` is `prefix` and then one of `parts` numbers joined by `_`.
+fn numbered(name: &str, prefix: &str, parts: &[usize]) -> bool {
+    name.strip_prefix(prefix).is_some_and(|rest| {
+        parts.contains(&rest.split('_').count())
+            && rest
+                .split('_')
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 /// The seq `spec` lowered to its machine, every expression of which
 /// comes from `spec`'s source. Under a language server, the cells it
 /// sends written names to are told to the IDE ([`Env::note_lowered`]).
@@ -342,7 +407,7 @@ fn desugar_plain(
     if steps.is_empty() {
         return Err(anyhow!("a seq block must contain at least one step").at(spec));
     }
-    let pc = format_compact!("#seqpc{id}");
+    let pc = format_compact!("{PC}{id}");
     let idle = format_compact!("#seqidle{id}");
     let result = format_compact!("#seqr{id}");
     let go = format_compact!("#seqgo{id}");
@@ -798,6 +863,86 @@ fn label(k: usize) -> ArcStr {
 }
 
 impl Machine<'_> {
+    // XCR claude for claude: [bug/medium] Under the ML rule a step's snapshot of an outer
+    // generalized holder is one instance, where a read outside a seq copies the scheme:
+    // `let s = {g: |x| x}; seq t { (s.g(1), s.g("s")) }` is refused ("i64 does not
+    // contain string"), and so are `seq t { let u = s; (u.g(1), u.g("s")) }` and `seq t
+    // { let u = {a: s}; .. u.a.g(1); u.a.g("s") }`; main 038729af4 runs all three,
+    // printing (1, "s"), on cells the snapshot leaked. An outer function binding is
+    // not snapshotted (`is_function`), and a step's holder of lambdas binds the literal
+    // itself (`inline_holder`), so those stay generic; a holder with a call or a `live`
+    // part (`{g: |x| x, n: str::len("ab")}`, `n: live(v)`) also goes through a cell and
+    // is one instance (main runs the live one, and passes the call one at --check, then
+    // its bind refuses it at run time). Options: (a) read an outer generalized binding
+    // bare, as a function binding is: generic, but a holder part that tracks a variable
+    // is then read live, not at the step's entry; (b) a snapshot cell of a generalized
+    // binding forwards that binding's scheme (sound, since nothing writes it): a new
+    // rule in the compiler for lowered snapshot lets, and the projection the snapshot
+    // tuple reads through must forward too; (c) keep it: annotate or bind the holder
+    // in the step. Recommend (b). probes: ~/ptmp/cr29/scratch/r16-Q/fix2/{o1,o3,
+    // h2_holder_of_holder,h1_holder_with_call,c3_seq_holder_live}.gx (run.sh FILE
+    // compares lane and base) (seq-snapshot-generic-01)
+    // 2026-11-05 claude: Eric ruled (2026-11-05, ~/ptmp/cr-discuss.md, D3 follow-up 2,
+    // Q2): (b), a step's snapshot of a generalized binding carries that binding's
+    // scheme; the snapshot rule itself is unchanged.
+    // 2026-11-05 claude: Built (b): the lowering's bindings that pass a read on whole
+    // and nothing writes, a step's entry snapshot (#seqs<id>_<n> = .. ~! #seqsin), a
+    // step's value and a { .. } item's value (any(pc ~! v, v)), carry the read's scheme
+    // (expr::seq::passes_on, bind::passes_generic / name_passed, their reads sharing one
+    // copy); the projection #seqs<id>_<n>_<i> = #seqs.i forwards it by Q1's rule. The
+    // machine now finds writes among every step's items (compile_block_children's
+    // writers), so a step's let a later step writes through &mut is one instance (it was
+    // generalized unseen). o1, o3, h2, h2s and c3 run as on main; h1/c1 are refused at
+    // --check. seqq captures stay one instance per request (through the queue builtin),
+    // as documented. Pins
+    // lang::quantified::{an_outer_holder_read_in_a_seq_step_is_generic,
+    // an_outer_holder_bound_in_a_seq_step_is_generic,
+    // a_holder_of_an_outer_holder_in_a_seq_step_is_generic,
+    // a_holder_of_an_outer_holder_in_a_seq_statement_block_is_generic,
+    // a_holder_with_a_live_part_in_a_seq_step_is_generic,
+    // a_holder_part_a_seq_step_reads_is_its_entry_value} fail without it;
+    // a_holder_a_later_step_writes_is_one_instance fails without the writers walk;
+    // a_holder_with_a_call_part_in_a_seq_step_is_one_instance and the twins pin what
+    // stays.
+    // 2026-11-05 claude: Review r16 (Q-r1-1 o1/o8, Q-r1-2 s_a..s_e): a step's let of a
+    // generic function (let j = s.g, let g = f) and a let of a { .. } statement's value
+    // were still one instance. Fixed: the reads a passed binding names share one copy of
+    // a function as of a holder (bind::Naming::Passed through Ref::decide), a union of
+    // two occurrences of one function type is that type, met with nothing
+    // (Type::meet_open_fns), and a { .. } statement's value is the last of its items'
+    // tuple, (v0, .., vn).n, which passes_generic sees through (was a select over a #seqb
+    // pattern bind). Pins lang::quantified::{a_field_alias_in_a_seq_step_is_generic,
+    // an_outer_function_alias_in_a_seq_step_is_generic,
+    // a_step_function_alias_in_a_seq_step_is_generic,
+    // a_field_alias_in_a_seq_statement_block_is_generic,
+    // a_seq_statement_block_ending_in_a_holder_is_generic,
+    // a_seq_statement_block_ending_in_a_field_read_is_generic} fail without the change
+    // (each of the three parts fails some); the written twins pin what stays one
+    // instance. The seqq capture is seqq-capture-generic-01.
+    // 2026-11-05 claude: Review r16 round 2 (reviewer 2 mediums, reviewer 1 lows): the
+    // generic verdict reached past the lowering's own forms. Type::meet_open_fns'
+    // same-Arc skip made [s.g, s.g] generic outside any seq, and passes_generic recursed
+    // into a program's any/sample/tuple read inside a step value (seq { let j = (1,
+    // s.g).1 }, k ~! s.g, any(s.g, s.g) ran while the same let outside a seq is refused).
+    // Fixed: the skip is gone; only the lowering's forms pass a scheme on (bind::Passing:
+    // the entry snapshot .. ~! #seqsin, the entry fire any(#seqpc ~! v, v), a { .. }
+    // statement's (#seqb.., ..).n, each recognized by names only the lowering writes),
+    // and the entry fire's two reads of one copy are typed as that copy
+    // (Any::fired_at_entry); what the program wrote is judged as outside a seq. Pins
+    // lang::quantified::{two_reads_of_a_holder_field_in_an_array_are_one_instance (fails
+    // with the meet skip restored), a_program_s_tuple_read_in_a_seq_step_is_one_instance,
+    // a_program_s_sample_in_a_seq_step_is_one_instance (fail with the old
+    // passed/name_passed), a_program_s_any_in_a_seq_step_is_one_instance} and their
+    // one-type twins; the five seq alias pins fail with the Any one-copy typing disabled.
+    // 2026-11-05 claude: Round 16 part 3: the step holder path (inline_holder, the holder
+    // half of Machine::bound_lambda, #seqh) is deleted: a step's let of a data literal of
+    // lambdas is an ordinary step whose value (any(pc ~! v, v) over the literal's own
+    // let) passes the holder's scheme on by this ruling's rule, and later steps read it
+    // through their entry snapshot as on main. Every generic step pin still passes;
+    // z2/z4/z5 and k1/k3 (review-r16 Q-r3-1/r16p2) print main's values. Pins
+    // lang::quantified::{a_lambda_over_a_step_s_holder_reads_it_at_its_step_s_entry,
+    // a_lambda_over_a_step_s_written_capture_reads_it_at_its_step_s_entry,
+    // a_step_s_written_capture_is_its_write_after_it} fail with the path restored.
     /// The step's entry snapshot of `e`'s external variables and completed
     /// local lets, `live` aside (`design/seq_blocks.md` §5). Each read goes
     /// to a cell filled at the
@@ -847,7 +992,8 @@ impl Machine<'_> {
         let mut map = scope(visible);
         let mut reads: LPooled<Vec<(ArcStr, Expr)>> = LPooled::take();
         for (i, (k, read)) in vars.drain(..).enumerate() {
-            let c = ArcStr::from(format_compact!("#seqs{id}_{n}_{i}").as_str());
+            let c =
+                ArcStr::from(format_compact!("{ENTRY_SNAPSHOT}{id}_{n}_{i}").as_str());
             map.insert(k, Redirect::Entry(c.clone()));
             reads.push((c, read));
         }
@@ -876,8 +1022,8 @@ impl Machine<'_> {
             return;
         }
         let (pc, id) = (self.issue.pc, self.id);
-        let input = format_compact!("#seqsin{id}_{n}");
-        let snap = format_compact!("#seqs{id}_{n}");
+        let input = format_compact!("{ENTRY_INPUT}{id}_{n}");
+        let snap = format_compact!("{ENTRY_SNAPSHOT}{id}_{n}");
         let tuple = ExprKind::Tuple {
             args: Arc::from_iter(
                 std::iter::once(r#ref(pos, pc))
@@ -908,7 +1054,7 @@ impl Machine<'_> {
         writes: impl FnOnce(&str) -> LPooled<Vec<Expr>>,
     ) -> usize {
         let k = self.steps.len();
-        let name = ArcStr::from(format_compact!("#seqv{}_{k}", self.id).as_str());
+        let name = ArcStr::from(format_compact!("{STEP_VALUE}{}_{k}", self.id).as_str());
         let mut items: SmallVec<[Expr; 4]> = SmallVec::new();
         // an until's condition is a boolean
         let typ = until.then(|| Type::Primitive(Typ::Bool.into()));
@@ -1225,7 +1371,7 @@ impl Machine<'_> {
                 )
                 .at(s));
             }
-            let v = format_compact!("#seqb{}_{i}", spec.id.inner());
+            let v = format_compact!("{STATEMENT_VALUE}{}_{i}", spec.id.inner());
             match &s.kind {
                 ExprKind::NoOp => continue,
                 ExprKind::Bind(b) if b.rec => {
@@ -1292,14 +1438,13 @@ impl Machine<'_> {
         let value = match vals.len() {
             0 => return Err(declaration_refused(spec)),
             1 => vals.pop().unwrap(),
-            n => {
-                let last = format_compact!("#seqb{}", spec.id.inner());
-                select(
-                    pos,
+            n => ExprKind::TupleRef {
+                source: Arc::new(
                     ExprKind::Tuple { args: Arc::from_iter(vals.drain(..)) }.to_expr(pos),
-                    [(pat_last(n, &last), r#ref(pos, &last))],
-                )
+                ),
+                field: n - 1,
             }
+            .to_expr(pos),
         };
         body.push(value);
         Ok(block(pos, body.drain(..)))
@@ -1402,7 +1547,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                         expr.kind = ExprKind::Ref { name: name.clone() };
                         (
                             expr,
-                            ArcStr::from(format_compact!("#seqqcap{id}_{n}").as_str()),
+                            ArcStr::from(format_compact!("{CAPTURE}{id}_{n}").as_str()),
                             bind.id,
                         )
                     });
@@ -1564,6 +1709,42 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         }
         .to_expr(pos),
     ));
+    // XCR claude for claude: [bug/low] A seqq refuses a generalized holder its body reads
+    // at two types where the same seq body runs: `let s = {g: |x| x}; seqq t {
+    // (s.g(1), s.g("s")) }` and `seqq t { let a = s.g(1); let b = s.g("s"); (a, b) }`
+    // are refused at --check ("i64 does not contain string"), while `seq t { .. }`
+    // over either runs and prints (1, "s"); main 038729af4 runs both. A seqq request
+    // captures what its body reads through this queue, a call, whose result no binding
+    // names, so the capture is one instance per request (as CLAUDE.md, seq_blocks.md §5
+    // and SKILL.md say). The argument for seq-snapshot-generic-01's (b), that nothing
+    // writes the capture, holds for the queue's capture too. Options: (a) keep it, the
+    // documented rule; (b) the projection of the dequeued request a read takes carries
+    // the captured binding's scheme, as a seq step's snapshot does: a lowering rule for
+    // the queue's capture cells. probe: ~/ptmp/cr29/scratch/r16-Q/fix4/q1_seqq_outer_holder.gx,
+    // q3_seqq_outer_holder_step2.gx (seqq-capture-generic-01)
+    // 2026-11-05 claude: Eric ruled (11-05, D3 follow-up 3): (b). A read of a dequeued seqq
+    // request's capture of a generalized binding carries its scheme, as a seq step's snapshot
+    // does (Q2 (b)): a lowering rule for the queue's capture cells. Nothing writes a queued
+    // capture, so the argument for Q2 holds.
+    // 2026-11-05 claude: Built (b): a seqq capture binding (#seqqcap, expr::seq::CAPTURE) is
+    // one of seq::passes_on's lowering names, and bind::Passing::Capture passes the scheme on:
+    // SeqCapture::scheme (bind::reads_generic of its live read, decided at compile, imaged)
+    // types the capture by its live read, which name_passed makes a copy of the scheme
+    // (Naming::Passed), never by the queue's one instance; the value is still the request's
+    // snapshot. A variable a step writes (a callee's write included) is not generalized, so its
+    // capture stays one instance, read live. Pins
+    // lang::quantified::{an_outer_holder_read_in_a_seqq_step_is_generic (q1),
+    // an_outer_holder_read_in_a_later_seqq_step_is_generic (q3),
+    // each_queued_seqq_request_reads_an_outer_holder_generically,
+    // an_outer_holder_read_in_a_flushed_seqq_is_generic} fail without the change (16 of 16 mode
+    // tests); a_holder_a_seqq_step_writes_is_one_instance and its annotated twin pin what
+    // stays.
+    // 2026-11-05 claude: Review r18: every earlier pin calls s.g in a step, a call with no
+    // static target, so its capture is read live;
+    // lang::quantified::each_queued_seqq_request_snapshots_an_outer_holder_generically pins the
+    // snapshot path (no step calls s.g, SEQPLAN live false): three requests each read their own
+    // s.n and s.g at both types, and it fails without the change. The shape a seqq inside a
+    // generalized holder's value still misses is seqq-capture-in-holder-01.
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {
@@ -1800,7 +1981,7 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
     match &e.kind {
         ExprKind::Ref { .. } | ExprKind::Constant(_) => any(at_entry(e.clone()), e),
         _ => {
-            let v = format_compact!("#seqv{}", e.id.inner());
+            let v = format_compact!("{STEP_VALUE}{}", e.id.inner());
             block(
                 pos,
                 [
@@ -2352,23 +2533,6 @@ fn pat_lit(v: Value) -> Pattern {
     }
 }
 
-/// `(_, …, name)`: the last of `n` tuple elements.
-fn pat_last(n: usize, name: &str) -> Pattern {
-    let binds = (1..n)
-        .map(|_| StructurePattern::Ignore)
-        .chain([StructurePattern::Bind(Name::from(name))]);
-    Pattern {
-        type_predicate: None,
-        structure_predicate: StructurePattern::Tuple {
-            all: None,
-            binds: Arc::from_iter(binds),
-        },
-        guard: None,
-        pos: WrittenAt::NOWHERE,
-        end: WrittenAt::NOWHERE,
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2421,7 +2585,7 @@ mod test {
             let mut found = false;
             lowered.fold((), &mut |(), e| {
                 if let ExprKind::Bind(b) = &e.kind
-                    && b.pattern.single_bind().is_some_and(|n| n.starts_with("#seqpc"))
+                    && b.pattern.single_bind().is_some_and(|n| is_pc(n))
                 {
                     assert_eq!(b.typ, Some(Type::Primitive(Typ::I64.into())));
                     found = true;

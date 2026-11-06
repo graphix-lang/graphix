@@ -76,7 +76,7 @@ impl Family {
     /// the mutation added) would hide the rule's regression.
     pub fn refuses_with(self, head: &str) -> bool {
         let says: &[&str] = match self {
-            Family::MonoReuse => &["does not contain fn("],
+            Family::MonoReuse => &["does not contain"],
             Family::RigidVar => &["unbound"],
             Family::RigidPattern => &["tests inside a value of", "matches no value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
@@ -762,7 +762,7 @@ fn holds(t: &Type, p: &impl Fn(&Type) -> bool) -> bool {
         Some(Type::Array(t) | Type::List(t) | Type::Error(t) | Type::ByRef(_, t)) => {
             holds(t, p)
         }
-        Some(Type::Map { key, value }) => holds(key, p) || holds(value, p),
+        Some(Type::Map(m)) => holds(&m.key, p) || holds(&m.value, p),
         Some(_) => false,
     })
 }
@@ -1685,13 +1685,12 @@ fn widen_through_let(
     }
 }
 
-/// Family 1. A generalized lambda (`let f = |..| ..`) passed as a VALUE
-/// at two uses whose instances take different primitive first parameters
-/// is wrapped so the binding is not generalized. A call instantiates its
-/// callee whatever the binding, but a value reference to a binding that
-/// is not generalized holds the binding's own cells, so the two uses
-/// meet in one instance and cannot both hold; an alias `let g = f`
-/// forwards the binding, and its value uses are among them.
+/// Family 1. A generalized lambda (`let f = |..| ..`) used at two uses
+/// whose instances take different primitive first parameters is routed
+/// through a binding something writes, `let f = { let tm__0 = |..| ..; let
+/// tm__1 = &mut tm__0; tm__0 }`: a written binding is one instance, which
+/// `f` forwards, so the two uses meet in it and cannot both hold; an alias
+/// `let g = f` forwards the binding, and its value uses are among them.
 fn mono_reuse(
     root: &Expr,
     pre: &[Expr],
@@ -1713,16 +1712,38 @@ fn mono_reuse(
         else {
             continue;
         };
-        let (calls, refs, _) = forwarded_uses(&stmts, si, f);
-        // a callee's reference sits right after its call in preorder
-        let values: Vec<(usize, usize)> = refs
-            .into_iter()
-            .filter(|(r, _)| !calls.iter().any(|c| c + 1 == *r))
-            .collect();
+        let (calls, values, _) = forwarded_uses(&stmts, si, f);
+        // a call's argument types its parameter only where the definition
+        // left the parameter open
+        let open_param = types.of(&b.value).first().is_some_and(|t| {
+            t.with_deref(|d| match d {
+                Some(Type::Fn(ft)) => {
+                    ft.args.iter().find(|a| a.is_positional()).is_some_and(
+                        |a| matches!(&a.typ, Type::TVar(tv) if !tv.is_bound()),
+                    )
+                }
+                _ => false,
+            })
+        });
+        // a use's first parameter: a value's from its type, a call's (its
+        // callee's reference sits right after it in preorder) from its
+        // first positional argument
         let firsts: Vec<(Typ, usize)> = values
             .iter()
             .filter_map(|(r, j)| {
-                Some((types.of(&pre[*r]).first().and_then(first_param)?, *j))
+                let first = match calls.iter().find(|c| *c + 1 == *r) {
+                    None => types.of(&pre[*r]).first().and_then(first_param)?,
+                    Some(_) if !open_param => return None,
+                    Some(c) => match &pre[*c].kind {
+                        ExprKind::Apply(ap) => {
+                            ap.args.iter().find(|(label, _)| label.is_none()).and_then(
+                                |(_, a)| types.of(a).first().and_then(primitive),
+                            )?
+                        }
+                        _ => return None,
+                    },
+                };
+                Some((first, *j))
             })
             .collect();
         let Some((_, (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
@@ -1730,16 +1751,23 @@ fn mono_reuse(
         }) else {
             continue;
         };
+        let bind = |name: &str, value: Expr| {
+            ExprKind::Bind(Arc::new(BindExpr {
+                rec: false,
+                pattern: StructurePattern::Bind(Name::from(name)),
+                typ: None,
+                value,
+            }))
+            .to_expr_nopos()
+        };
+        let held = ExprKind::Ref { name: ModPath::from(["tm__0"]) }.to_expr_nopos();
+        let writer =
+            ExprKind::ByRef(Mutability::Mut, Arc::new(held.clone())).to_expr_nopos();
         let wrapped = ExprKind::Block {
             exprs: Arc::from_iter([
-                ExprKind::Bind(Arc::new(BindExpr {
-                    rec: false,
-                    pattern: StructurePattern::Bind(Name::from("tm__0")),
-                    typ: None,
-                    value: ExprKind::Constant(netidx_value::Value::Null).to_expr_nopos(),
-                }))
-                .to_expr_nopos(),
-                b.value.clone(),
+                bind("tm__0", b.value.clone()),
+                bind("tm__1", writer),
+                held,
             ]),
         }
         .to_expr_nopos();

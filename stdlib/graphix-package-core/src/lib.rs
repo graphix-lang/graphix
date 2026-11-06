@@ -624,8 +624,8 @@ pub fn shape(
             }
             _ => untyped_shape(env, v, form)?,
         },
-        (Some(Type::Map { key, value }), Value::Map(m)) => {
-            map_shape(env, Some(key), Some(value), m, form)?
+        (Some(Type::Map(t)), Value::Map(m)) => {
+            map_shape(env, Some(&t.key), Some(&t.value), m, form)?
         }
         (Some(Type::Array(e)), v) if let Some(a) = rep::array_elems(v) => {
             Shape::Seq(a.iter().map(|x| (x.clone(), Some(Type::clone(e)))).collect())

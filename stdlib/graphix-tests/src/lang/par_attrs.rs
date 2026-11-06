@@ -164,6 +164,62 @@ async fn first_cycle_growth_agrees() -> Result<()> {
     Ok(())
 }
 
+// A closure a recursion hands its next activation reads the caller's
+// `let` there, so the caller's statements do not fork apart.
+#[tokio::test(flavor = "current_thread")]
+async fn a_closure_handed_down_a_recursion_reads_the_callers_let() -> Result<()> {
+    let code = r#"{
+        let x = 0;
+        x <- select x { k if k < 4 => k + 1, _ => never() };
+        let rec f = |n: i64, g: fn(u: i64) -> i64| -> i64 {
+            let y = x * 100 + n;
+            select n { 0 => g(0), n => f(n - 1, |u| y + g(u)) }
+        };
+        x * 10000 + f(3, |u| u)
+    }"#;
+    let want: Vec<Value> =
+        [6, 10306, 20606, 30906, 41206].into_iter().map(Value::I64).collect();
+    for mode in [Mode::Interp, Mode::Jit] {
+        assert_eq!(run_with(code, ParMode::Off, mode).await?.values, want, "{mode:?}");
+        let ran = run_with(code, ParMode::Force, mode).await?;
+        assert_eq!(ran.values, want, "{mode:?} forced");
+        assert!(ran.forks > 0, "{mode:?}: nothing forked");
+    }
+    Ok(())
+}
+
+// The same through a helper the recursion passes itself to: the helper's
+// `let` reaches the next activation in the closure it hands down.
+#[tokio::test(flavor = "current_thread")]
+async fn a_closure_handed_down_through_a_helper_reads_its_let() -> Result<()> {
+    let code = r#"{
+        let x = 0;
+        x <- select x { k if k < 4 => k + 1, _ => never() };
+        let h = |
+            n: i64,
+            g: fn(u: i64) -> i64,
+            k: fn(n: i64, g: fn(u: i64) -> i64) -> i64
+        | -> i64 {
+            let z = x * 1000;
+            k(n - 1, |u| z + g(u))
+        };
+        let rec f = |n: i64, g: fn(u: i64) -> i64| -> i64 {
+            let y = x * 100 + n;
+            select n { 0 => g(0), n => h(n, |u| y + g(u), f) }
+        };
+        x * 100000 + f(3, |u| u)
+    }"#;
+    let want: Vec<Value> =
+        [6, 103306, 206606, 309906, 413206].into_iter().map(Value::I64).collect();
+    for mode in [Mode::Interp, Mode::Jit] {
+        assert_eq!(run_with(code, ParMode::Off, mode).await?.values, want, "{mode:?}");
+        let ran = run_with(code, ParMode::Force, mode).await?;
+        assert_eq!(ran.values, want, "{mode:?} forced");
+        assert!(ran.forks > 0, "{mode:?}: nothing forked");
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn fold_growth_builds_in_tasks() -> Result<()> {
     let code = r#"{

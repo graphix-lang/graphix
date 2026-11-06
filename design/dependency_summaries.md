@@ -82,9 +82,13 @@ walks it (`fusion::for_each_node`):
 An instance's summary is its body's joined with its callees', to a
 fixpoint over the instances the machines' calls reach
 (`instance_summaries`, a union worklist over the `StaticCallGraph`
-the effect inference builds). Nothing is stored: each analysis pass
-recomputes what its machines need, and a pass with no machine computes
-nothing. An imaged callee not yet decoded has no body to walk and is
+the effect inference builds), less the instance's own bindings (its
+formals and what its body binds), which only a fresh activation of it
+reaches, except those a lambda in its body captures: a recursion that
+hands a closure to its next activation shares the instance, and the
+closure reads the caller's bindings there. Nothing is stored: each
+analysis pass recomputes what its machines need, and a pass with no
+machine computes nothing. An imaged callee not yet decoded has no body to walk and is
 opaque. There is no alias analysis.
 
 A callback written inline in a seq step is issued as `pc ~! |x| ..`
@@ -136,9 +140,9 @@ own). `node/seq_machine.rs` runs it:
 the first cycle; `analyze_bound_callee` for a runtime-bound body).
 Step `j+1` enters in the next cycle when its summary's reads or writes
 meet the writes pending since the last next-cycle boundary (`all` and
-`refs` meet any non-empty set; `pc` is left out). A write to either
-binding of a module's interface pair is pending on both
-(`StaticCallees::add_joined`). Otherwise it enters
+`refs` meet any non-empty set; `pc` is left out). A module's interface
+pair is one variable with two names, so a write to either is pending
+on both (`StaticCallees::add_joined`). Otherwise it enters
 in the same cycle. Every statement follows it, `until` and `try`
 included; the jump into a `with` body writes `pc`, so it is the next
 cycle. A call with no static target costs a cycle before a later read

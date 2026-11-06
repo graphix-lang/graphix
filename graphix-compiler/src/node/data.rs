@@ -1114,6 +1114,34 @@ impl<R: Rt> Struct<R> {
 }
 
 impl<R: Rt> StructWith<R> {
+    // CR claude for claude: [bug/high] A struct update holding a written binding passes
+    // --check and its run refuses the bind: `let s = {f: |x| x}; let j = s.f; let t = {s
+    // with f: j}; println((t.f("s"), j(1))); j <- |x: i64| x + 1` runs, in jit and
+    // --no-fusion, to "a run-time bind ... did not type" at t.f("s")
+    // (GRAPHIX_ELAB_AUDIT: "an instance at fn(x: string) -> string of a definition typed
+    // fn(x: i64) -> i64"); so do `let j = |x| x`, a chain `{t with f: j}`, a `let j =
+    // never()` written later, a write through `&mut j` and one under a nested glob. j
+    // is one instance (its write is seen), but the update's result keeps the source's
+    // type, a holder read's generic copy of s's lambda signature, into which j's live
+    // cell is only contained; t is generalized (holds_function sees the read of s), so
+    // each read of t copies a scheme the write decided at i64. The literal `{f: j}` is
+    // refused (its field is j's own cell). Main 038729af4 the same. This is the struct
+    // update site of the D11/D12 follow-up (~/ptmp/cr-discuss.md, Ruled 11-05, (a)): a
+    // merge of a live cell into a generic copy keeps the survivor generic; the
+    // min-level merge that ruling builds should close it, so that lane re-runs these
+    // probes; failing that, a replaced field takes the replacement's type. probes
+    // ~/ptmp/cr29/scratch/r16-Q/structwith/{w1,w2,w3,x2,x3,r7}.gx, refused twin w5.gx
+    // (run: one.sh <file>) (holder-structwith-written-01)
+    // 2026-11-05 claude: Review r16 Q part 4 found the same cause in an array, map or
+    // list of composites beside a generic holder: let s = {f: |x| x}; let j = s.f; let t
+    // = [s, {f: j}]; t[1]$.f("s") with j <- |x: i64| x + 1 passes --check and fails the
+    // run-time bind (ELAB-AUDIT instance-signature), on main 038729af4 too; so do a map,
+    // a list, nested composites, tuples, &mut j and a nested glob. Element order decides
+    // it ([{f: j}, s] and [s.f, j] are refused): the merge keeps s's generic copy and
+    // j's cell only joins it. Site 3 of the D11/D12 follow-up, ruled (a) 11-05 (a merge
+    // takes the lower level); the min-level-merge lane re-runs these. probes:
+    // ~/ptmp/cr29/scratch/review-r16/Q-r3-1/rr3/p/{m_arr_comp*, m_map_comp,
+    // m_list_comp, m_arr_nested, m_tuple_arr}.gx
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
@@ -1133,10 +1161,7 @@ impl<R: Rt> StructWith<R> {
                 if check {
                     for typ in typs.iter() {
                         let contain = |t: &Type| t.check_contains(&ctx.env, &rep.n.typ());
-                        wrap!(
-                            rep.n,
-                            super::callsite::contain_generally(ctx, typ, &rep.n, contain)
-                        )?;
+                        wrap!(rep.n, contain(typ))?;
                         wrap!(
                             rep.n,
                             super::callsite::check_hidden_defaults(
@@ -1263,10 +1288,7 @@ impl<R: Rt> Construct<R> {
             return Ok(());
         }
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
-        wrap!(
-            self.arg,
-            super::callsite::contain_generally(ctx, &self.rep, &self.arg, contain)
-        )?;
+        wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {

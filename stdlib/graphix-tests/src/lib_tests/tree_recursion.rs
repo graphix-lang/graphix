@@ -276,6 +276,70 @@ run!(bare_recursion_from_a_collection_callback, r#"
 }
 "#, prints("[i64:1, i64:3, i64:10]"); FuseExpect::Jit);
 
+// the recursion is the callback of the collection its body calls: the
+// call in its body shares the outer call's instance, whose loop it runs
+run!(bare_recursion_from_its_own_collection, r#"
+{
+    let rec k = |n: i64| -> i64 select n {
+        0 => 0,
+        _ => n + array::fold(array::map([n - 1], k), 0, |a, x| a + x)
+    };
+    #[native] array::map([1, 2, 4], k)
+}
+"#, prints("[i64:1, i64:3, i64:10]"); FuseExpect::Jit);
+
+run!(bare_recursion_from_its_own_fold, r#"
+{
+    let rec f = |a: i64, x: i64| -> i64 select x <= 0 {
+        true => a + 1,
+        false => a + array::fold([x - 1, x - 2], x, f)
+    };
+    #[native] array::fold([1, 2, 3], 0, f)
+}
+"#, is(Value::I64(21)); FuseExpect::Jit);
+
+run!(bare_capturing_recursion_from_its_own_collection, r#"
+{
+    let y = 2;
+    let rec t = |d: i64| -> i64 select d {
+        0 => y,
+        _ => array::fold(array::map([d - 1, d - 1], t), 0, |a, x| a + x)
+    };
+    #[native] array::map([3, 1], t)
+}
+"#, prints("[i64:16, i64:4]"); FuseExpect::Jit);
+
+// two recursions, each the callback of a collection in its own body,
+// in one region: every instance of a collection shares its prototype's
+// id, and the slots of each call their own recursion
+run!(bare_recursions_from_their_own_collections, r#"
+{
+    let rec k = |n: i64| -> i64 select n {
+        0 => 0,
+        _ => n + array::fold(array::map([n - 1], k), 0, |a, x| a + x)
+    };
+    let rec j = |n: i64| -> i64 select n {
+        0 => 1,
+        _ => n * array::fold(array::map([n - 1, n - 1], j), 0, |a, x| a + x)
+    };
+    #[native] (array::map([1, 2, 4], k), array::map([1, 2, 3], j))
+}
+"#, prints("[[i64:1, i64:3, i64:10], [i64:2, i64:8, i64:48]]"); FuseExpect::Jit);
+
+run!(bare_recursions_from_collection_callbacks, r#"
+{
+    let rec k = |n: i64| -> i64 select n {
+        0 => 0,
+        _ => n + array::fold(array::map([n - 1], k), 0, |a, x| a + x)
+    };
+    let rec j = |n: i64| -> i64 select n {
+        0 => 1,
+        _ => n * array::fold(array::map([n - 1, n - 1], j), 0, |a, x| a + x)
+    };
+    #[native] (list::map([<1, 2, 4>], k), list::map([<1, 2, 3>], j))
+}
+"#, prints("[[i64:1, i64:3, i64:10], [i64:2, i64:8, i64:48]]"); FuseExpect::Jit);
+
 // a bare callback that names another function: an instance of its own
 run!(bare_callback_naming_another_function, r#"
 {
@@ -306,6 +370,46 @@ const BARE_SHRINKING_CHILDREN: &str = "{ let rec f = |n: i64| -> i64 select n { 
       |a, c| a + c) }; \
     let n = array::iter([NS]); \
     #[native] f(n) }";
+
+/// [`BARE_SHRINKING_CHILDREN`] where the recursion is also the callback
+/// of the collection around it, whose instance its body's call shares.
+const SHARED_SHRINKING_CHILDREN: &str = "{ let rec f = |n: i64| -> i64 select n { 0 => 1, _ => \
+      1 + array::fold(array::map(array::filter([n - 1, n - 2], |c| c >= 0), f), 0, \
+      |a, c| a + c) }; \
+    let n = array::iter([NS]); \
+    #[native] array::fold(array::map([n], f), 0, |a, c| a + c) }";
+
+#[tokio::test(flavor = "current_thread")]
+async fn shared_recursion_children_deleted() -> Result<()> {
+    let code = SHARED_SHRINKING_CHILDREN.replace("NS", "5, 1, 5, 7, 2");
+    assert_stream(&code, &[20, 2, 20, 54, 4]).await
+}
+
+/// The region runs the outer loop and the root's body inline and calls
+/// the recursion's kernel for the root's children, so every activation
+/// but those three is a self-call's: 229 of the 232 under 10, 4 of the 7
+/// under 3.
+#[tokio::test(flavor = "current_thread")]
+async fn shared_recursion_frees_deleted_slots() -> Result<()> {
+    let deep =
+        collect_n_blocks(&SHARED_SHRINKING_CHILDREN.replace("NS", "10"), 1).await?;
+    let shallow =
+        collect_n_blocks(&SHARED_SHRINKING_CHILDREN.replace("NS", "10, 3"), 2).await?;
+    if deep[..] != [229] || shallow[1] != 4 {
+        bail!("live SelfBlocks {deep:?} then {shallow:?}, expected [229] then [_, 4]")
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shared_recursion_sleeps_and_wakes() -> Result<()> {
+    let code = "{ let rec k = |n: i64| -> i64 select n { 0 => 0, _ => \
+                  n + array::fold(array::map([n - 1], k), 0, |a, x| a + x) }; \
+                let ticks = array::iter([0, 1, 2, 3, 4]); \
+                select ticks % 2 { 0 => #[native] array::fold(array::map([ticks + 2], k), \
+                  0, |a, x| a + x), _ => 0 - 1 } }";
+    assert_stream(code, &[3, -1, 10, -1, 21]).await
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn bare_recursion_children_deleted() -> Result<()> {

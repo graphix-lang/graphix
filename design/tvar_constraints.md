@@ -119,7 +119,7 @@ included; a probe of a trait bound reads it so, and a commit settles it.
 
 No pattern decides a cell held rigid. A pattern that tests or binds
 inside a value of one (a definition's declared variable, a variable its
-signature names, an impl's parameter, a rank-2 formal's quantifier)
+signature names, an impl's parameter)
 needs a written test, which types its binds, and a name or `_` over the
 whole value keeps the variable (`StructurePattern::meets_rigid`, judged
 as a select, a destructuring `let` or a destructuring parameter is
@@ -128,7 +128,8 @@ itself as its arm compiles).
 A written test names the definition's variables as a `let`'s annotation
 does, and types a bind inside a rigid cell by its own part
 (`Type::matching_parts`), so that part must be closed: a test whose part
-over the cell holds `_` (bottom, which types nothing) or a variable no
+over the cell holds `_` (bottom, which types nothing; written or in the
+body of a typedef the test names, `Type::holds_bottom`) or a variable no
 definition declares (which the arm's body would decide) is refused,
 naming the closed test to write (`StructurePattern::meets_rigid_written`,
 which walks the written test beside the scrutinee). A name over a value
@@ -277,69 +278,40 @@ cells. Bound cells stay bound: a def-time unification is a settled
 fact, and erasing it made the static type lie about the runtime value
 (the JIT marshal-panic class).
 
-### Quantified function types written elsewhere
+### Function types with variables of their own
 
-A written `fn<'b: C>(..)` means the same wherever it stands: a `let`
-annotation, a struct field, a typedef, a return type, another function
-type's result or an abstract type's representation or parameter holds what it is
-given to every `'b` the bound admits, as a formal does.
+A function type with type variables of its own stands only as a
+declared signature's top: an interface `val`'s type, a trait method's
+(and an impl's or a default body's method `let`, whose annotation is the
+method's signature: `is_method_block`), a lambda's own declared
+variables, a builtin's signature. Anywhere else in a written type it is
+refused where the type is resolved from the AST, naming the fix:
+declare the variables on the definition, or bind the generic function
+with `let` and call it by name (`typ::QUANTIFIED_FN`). A written
+`fn<'b: C>(..)` is one; so is a trait as a parameter's type inside a
+written function type (`fn(c: Collection) -> i64`), which
+`Type::rewrite_trait_args_inner` makes a quantifier, and a
+constructor-trait quantifier (`ctor_quantifiers`). The positions refused:
+a formal's type, a struct field, an element, a union member, a `let` or
+`let rec` annotation, a typedef body, a function type's argument or
+result, a reference's referent, an abstract type's representation or
+parameter, a variant payload, `never<T>`, a bound
+(`Type::rewrite_trait_args`), and a cast's target, a type test and a
+catch's or a seq try's annotation (`Type::refuse_quantified_fns`). A
+generic operation passed around is a trait (`|c: Collection| ..`,
+`'c: Collection`), or a definition's declared variable that each call
+picks (`'a: Number |f: fn(x: 'a) -> 'a, x: 'a| f(x)`). Pins:
+`lang::quantified` (each position refused, each kept form),
+`lang::collection::collection_generic_formal_is_refused`.
 
-Its bounds name only written types and its own quantifiers
-(`FnType::check_bounds_closed`, run by `Type::rewrite_trait_args` on
-every function type a formal, a lambda's return or throws or bound, a
-`let` or body annotation, `never<T>`, a typedef body or an abstract's
-representation holds). `quantifier_admits` holds a rank-2 bound exactly,
-so a bound naming a variable something else decides (`#k: fn<'a: 'c>(..)`
-beside `z: 'c`, a typedef's parameter, a quantifier of an enclosing
-written type) is judged before or after that variable is decided
-depending on where its positions are written, and the check and an
-instance's signature disagree; it is refused at each of those sites,
-with `bound it by a written type`. A catch's annotation, a cast's target
-and a pattern's type test do not pass through the rewrite and are not
-held to it (a cast or a type test of a function type is refused on its
-own). A sibling (`fn<'a: Any, 'b: ['a, null]>`) is held rigid with it
-and stays. `self` and a constructor trait's element are not quantifiers
-of the function type a trait method's parameter writes, so a bound
-naming either is refused too. For the element under a labeled
-parameter, which comes before the `self` that decides it, that closes
-the hole; for `self` dispatched to one impl it closes none (no such
-shape passes the check and fails the build) and refuses methods that
-would run (CR rank2-self-bound-01). A union self fails the build for any
-rank-2 argument, `self` in its bound or not (CR union-self-rank2-01).
 An interface `val`'s or trait method's own quantifiers are its
-scheme's, not rank-2, and their bounds name any variable
+scheme's, and their bounds name any variable
 (`Type::rewrite_declared_args`); so are an impl's method's and a
-default body's, whose `let` stands directly in the impl's or the
-trait's block (`is_method_block`) and whose annotation is the method's
-signature. Pins:
-`lang::types::rank2_bound_*_is_refused`, `rank2_bound_by_a_written_type_runs`,
-`rank2_bound_naming_a_sibling_quantifier_runs`,
-`a_trait_methods_own_bound_names_any_variable_at_its_impls` and
-`_at_its_default`,
-`a_ctor_trait_methods_own_bound_names_its_element_at_its_impls_and_default`,
-`lang::interfaces::a_rank2_bound_in_a_val_names_only_its_own_quantifiers`.
-`FnType::contains_int` opens quantifier gates (`open_quantifier_rigid`)
-on the containing side's open quantifiers, so a merge into one is judged
-by `quantifier_admits`: `let f: fn<'b: Number>(..) = add` over `add` at
-`'a: Int` is refused at the binding, and so is `{f: add}` under a field
-of that type. Bounds that name each other (`'a: [i64, ('a, 'b)]`) reach
-the judgment of a pair again inside it; a thread-local set of the pairs
-in progress (`Judging`) answers such a re-entry that it holds, the
-coinductive reading, which stops the recursion. One check adopts rather
-than judges: an instance rebuilds a lambda from its written type and
-checks it over the type its definition's check recorded, which may hold
-a bound the body added (`'a: Number` with `+` gains `Singleton`); that
-check passes `ContainsFlags::Adopt`, whose plain rigid gates absorb the
-recorded bounds. A quantifier the recorded type no longer holds open
-(the check decided it where the literal met a fn type that fixes it, a
-`let` annotation or an array element held to its use) gets no gate: the
-instance's takes the decided type. Pins: `lang::types::rank2_struct_field_refuses_narrower_bound`,
-`rank2_let_annotation_refuses_narrower_bound`,
-`rank2_let_annotation_holds_each_instantiation`,
-`lang::image::a_definition_entered_three_times_restores` (the mutual
-bounds), `lang::collection::collection_returns_a_generic_function` (the
-adopting check), `lang::functions::a_body_lambdas_quantifier_decided_by_its_use`
-(a decided quantifier).
+default body's. `FnType::contains_int` holds a scheme's own open
+quantifiers rigid (`open_quantifier_gates`, generic cells only): what
+the contained type is must hold for every type its bound admits. A
+write to an earlier compile's generic binding holds its copy's
+quantifiers rigid with its other cells (`node::held_cells`).
 
 ### Generalization
 
@@ -384,40 +356,55 @@ the definition gates:
   definition whose gate has not run (a submodule the interface declares
   first calls into its parent) is called at its declared scheme. A
   reference to a generalized binding copies the same cells, generic
-  (`Fresh::Scheme`), so the call instantiates them. No copy but
-  `Fresh::Copy` takes a rank-2 formal's quantifier while a gate holds it
-  (`TVar::is_quantifier_rigid`): under the check of a call's argument it
-  is one type, so a definition in the argument that holds it (`|x| { let
-  g = |y: i64| x; g }`) is monomorphic in it.
+  (`Fresh::Scheme`), so the call instantiates them. A call's own
+  quantifiers are cells as any other: copied where their level says so,
+  so a function value one instance holds keeps its quantifier one type.
 
 A binding something writes is not generalized (the value restriction,
 `CompileCtx::mark_connect_target`): every function its value holds, a
 struct field's or a tuple element's included, is one instance its uses
-and writers share (`CompileCtx::monomorphic`). Its writers are known
-before its uses are checked: a block collects the names its lets bind
+and writers share (`CompileCtx::monomorphic`). The writer is the binding
+the resolver names, whatever path or import names it. Within one
+compile every statement compiles before any is checked, and a read
+copies a scheme only as it is checked, so a write compiled before the
+binding's check reaches it in time: the binding's check finds it a `<-`
+target and takes its value as one instance (`Bind::typecheck0`: its
+reads are its own, a single name's value is read as an instance, not a
+scheme, and a name a pattern takes apart beside others takes an
+instance of its part while the others keep the scheme,
+`Bind::type_leaves`). A function body compiles later, as its definition
+is checked, so a write in it would find a binding checked before it
+already generic; a block therefore also collects the names its lets bind
 that a `<-` or `&mut` in it writes, lambda bodies included, where no
 nearer binding of the name stands between (`node::written_lets`), and
-such a let is a `<-` target from its binding on. A module in the block is
-read for the names it may write there (`node::module_writes`, one walk of
-each module's body per compile, its own modules' writes folded in as it
-meets them, kept for the blocks inside: `node::ModuleWrites`): a `super::`
-path that reaches the block, a name it imports from it (a glob imports
-each name the module does not bind itself), and, where the block is its
-module's top block, a `package::` path or import through that module's
-path below the package root (`package::a` at the root, a script's top
-level included; `package::p::a` in module `p`). A `self::` write in a
+such a let is a `<-` target from its binding on and never generalized.
+Outside a lambda body a write under a nested block's glob, which may
+provide the name, is left to the resolver, which names it before the
+binding's check. A module in the block is read for the names it may
+write there (`node::module_writes`, one walk of each module's body per
+compile, its own modules' writes folded in as it meets them, kept for
+the blocks inside: `node::ModuleWrites`): a `super::` path that reaches
+the block, a name it imports from it (a glob imports each name the
+module does not bind itself), and, where the block is its module's top
+block, a `package::` path or import through that module's path below
+the package root (`package::a` at the root, a script's top level
+included; `package::p::a` in module `p`). A `self::` write in a
 module's top block names that block's binding of the name, past any
-nearer one. A module's write names the nearest binding before it as a block's does, so
-its own `let` of a name it imports writes nothing outside. So the block's
-reads of a holder a module writes copy at each read whether they stand
-before or after the `mod` statement (pins
+nearer one. A module's write names the nearest binding before it as a
+block's does, so its own `let` of a name it imports writes nothing
+outside. A write neither finds (a parent's `m::j` in a function body,
+an alias of the module) is one compiled after the binding's check,
+which is held as an earlier compile's is, below, and refused naming the
+annotation, the binding's type on its `let` (pins `lang::quantified::
+a_module_*`, `a_submodule_*`, `a_let_a_nested_block_*`,
+`*_written_is_one_instance`, `a_parent_s_let_a_nested_glob_*`,
 `lang::modules::module_writes_a_holder_name_*`,
-`module_writing_its_own_let_over_*`, the shell's
-`script_scope::a_module_writes_a_holder_through_package` and
-`a_holder_written_through_self_or_its_package_path`). A binding an earlier
-compile already generalized, which only a later input to the same
-runtime can see (the REPL, `GXHandle::compile`), had its uses checked
-against the scheme, so it stays one: a write is checked against a copy
+`module_writing_its_own_let_over_*`, the shell's `script_scope`). A
+binding generalized before a write to it compiles
+(by an earlier input to the same runtime, the REPL or
+`GXHandle::compile`, or earlier in this compile's check, for a function
+body's write the walk did not find) had its uses checked against the
+scheme, so it stays one: a write is checked against a copy
 of it with every variable rigid (`Connect::typecheck0_with`), each
 holding what its lower bounds hold (`|x| B(x)`'s `B<'c>` above `'x` takes
 `|x| B(x)` again), and a
@@ -463,10 +450,11 @@ module with no interface that writes such a name is not known as a
 writer when the parent's `let` compiles, so its write decides the copy
 the parent's other names share (CR module-holder-write-01). Two lambda
 literals one array or list holds meet as its elements (`[|x| x, |y| y]`
-is one function type), and a `seqq` reads a holder once per request,
+is one function type, and so are `[g, g]` and `[s.g, s.g]`), and a `seqq` reads a holder once per request,
 every step of the run sharing that read's copy. A lambda a let holds through a
-block or a select is not generalized (must_reject family 1), though a
-call through it instantiates it (CR holder-block-select-01). Pin
+select is not generalized, though a call through it instantiates it (CR
+holder-block-select-01); one through a block's final expression is
+("Generic only where a binding names it"). Pin
 `lang::types::holder_reads_copy_its_signatures`.
 
 An image carries each cell's level and each definition's depth.
@@ -511,8 +499,8 @@ An image carries each cell's level and each definition's depth.
   head's `'k` reaches a method's scheme only once the impl relates
   them, after the method's gate closed (`PendingSettle::Site::sigs`).
   It also leaves every quantifier of a function type its signature
-  holds (`FnType::inner_quantifiers`): a rank-2 formal's `'b` is its
-  callers' to pick.
+  holds (`FnType::inner_quantifiers`): a generic function the scheme
+  holds is its callers' to pick.
 - The check decides every cell it creates: the drain runs the site
   settles, then the operator operand and `let`-over-⊥ settles, then the
   rules judged over them (`PendingSettle`). Elaboration never settles
@@ -550,10 +538,10 @@ An image carries each cell's level and each definition's depth.
   open, a function type's own quantifier included, is one type to the
   input's own check (`tvar::in_input`): `contains` compares no earlier
   quantifier there as a fresh copy (`FnType::has_earlier_quantifier`), so
-  a value use that would decide one is refused (`let j = s.g`, `s` a
-  holder, then `app(j)` over `app: fn(f: fn(x: i64) -> i64)` or
-  `setf(&mut j)`; the refusal names `j`, not a type: declare `let j:
-  fn(x: i64) -> i64 = s.g`), while a call copies the quantifier as always; a rigid gate it
+  a use that would decide one is refused (`let fs = [g, g]`, `g` generic,
+  then `let z: fn(x: i64, y: i64) -> i64 = fs[0]$`; the refusal names
+  `fs`, not a type: annotate `fs`), while a read of a generalized binding
+  (`let j = s.g`, then `j(1)`, `app(j)`) copies its scheme as always; a rigid gate it
   holds on an earlier input's cell records no write (`tvar::gated`:
   inputs run one at a time), so a write as general as the binding
   decides nothing. A cell
@@ -870,6 +858,11 @@ to and never refuse.
   and an open member takes only the members they leave (all of them when
   none are left, `contains.rs`), so `let r: [&i64, Error<E>] = parse(..)`
   offers 'b only `&i64`, which `Concrete` refuses, never `Error<E>`.
+  Where two members hold open cells (`[Array<'a1>, Array<'a2>, null]`, a
+  bound naming two variables), the member that fits first alone may decide
+  them so a later one fits nowhere: the other union's members go in as
+  written, else deepest first, whichever order places them all on copies
+  (`Type::place_each`).
 - A builtin reads a quantifier only through the values of the arguments
   that hold it. At a call, a quantifier of a builtin's signature that the
   result and throws do not hold, and that no argument the call passes or
@@ -888,51 +881,44 @@ every cell its signature reaches exempt (`DefGate::close`): a cell the
 definition owns is judged at the definition, called or not; a
 signature's cell stays generalized and each call settles its copy.
 
-### Quantified function formals
+### Generic only where a binding names it
 
-A formal of function type with its own quantifiers (`|f: F|`, `type F
-= fn<'b: Number>(x: 'b) -> 'b`) is rank-2: every call of `f` in the
-callee instantiates `'b` afresh (`FnType::instantiate`, and
-`FnType::shared_call` for a call that shares the definition's other
-cells), so the callee may call it at any type the bound admits. Its argument is therefore checked with `'b`
-RIGID (`callsite.rs::quantified_formal`): the formal is expanded once,
-rigid gates open on its quantifier cells, and the pre-unify, the
-argument's typecheck0 and a `check_contains_rigid` all run against
-that one expansion (each expansion of a typedef reference freshens its
-cells). The quantifier keeps exactly its declared bounds: whatever the
-argument's check adds to it, a predicate included, must follow from them
-(`callsite.rs::added_bound`, by `Type::implies`, the rule an interface's
-bounds follow), so under `'b: Number` `apply(|x| x == x)` checks,
-`apply(|x| x < x)` is refused until the formal says `'b: Number +
-Ordered` and `apply(|x| x * x)` until it says `'b: Number +
-Singleton`; `apply(|x| x + 1)` and `apply(|x: i64| ..)` are refused,
-since they hold only where `'b` is `i64`. A call of `apply` copies `'b` generic
-(`FnType::generic_inner_quantifiers`): the argument's cells the check
-aliases to it stay its own scheme's, which each call of `f` copies,
-and the passing site's settle leaves it. While the argument checks, `'b`
-is closed to what the argument defines, as an enclosing definition's
-declared variable is: a reference to a definition holding it does not
-copy it, and a labeled default reading it fits its parameter whole
-(`check_defaults`), so `app(|x| { let g = |#d = x, y: i64| d; g })`
-against `fn<'b>(x: 'b) -> fn(y: i64) -> string` is refused at the check
-rather than at the bind.
-
-A written function type's own quantifiers anywhere but a declared
-signature's own (a formal's, a field's, an element's, a `let`
-annotation's, a typedef's) are any instance of themselves from where
-the type takes its cells: `Type::alias_tvars` marks them
-`CellFact::FormalQuantifier` in the task that created them, and every
-copy keeps the fact. So an annotation that picks one instance decides
-nothing for a later use, whichever comes first (pins `lang::types::
-rank2_element_annotated_then_used_again`, `rank2_let_used_at_two_types`).
-A gate holds rigid and marks the quantifiers its signature holds but
-one an earlier task created and marked: that one is any instance of
-itself to the gate's task already, which writes nothing of it, so a
-module whose callbacks call its parent's `Array<fn<'a: Number>(..)>`
-decides nothing of the parent's
-(`lang::modules::module_calls_outer_rank2_elements`). An interface
-`val`'s and a definition's own quantifiers are their scheme's, which
-each use copies, and carry no mark.
+A function stays generic only where a binding names it (ML's rule, Eric
+11-05): a `let` whose value, past parentheses and a block's final
+expression, is a lambda, a generalized binding or a field or tuple read
+of one (`let j = s.g`, `let j = t.0`, `let j = u.a.g`, `let f = { let n
+= 1; |x| x }`: `bind::names_generic`), or a data literal holding these
+(`bind::holds_function`), a write to a generalized binding, a labeled
+default (its parameter names it), a call's callee by name, a top-level
+input's value (`bind::name_value` marks each: the lambda, or the
+reference at the root of the read). The value restriction stands: a
+binding something writes is one instance (`let j = s.g; j <- ..`), and a
+reference is no binding naming a function (`let r = &f` makes `*r` one
+instance), as in ML. A lambda a binding names generalizes its signature at its
+gate's close; any other takes its enclosing level's
+(`Lambda::named`, `DefGate::close`, `FnType::claim`), so its cells are
+the enclosing definition's, or the top level's, and every use shares
+them. A read of a generalized binding a binding names copies its scheme
+generic (`Fresh::Scheme`); any other read is one instance of it
+(`Ref::naming`, `FnType::one_instance`, `Type::instance_read`:
+`Fresh::Instantiate`). So an element of a collection a call returns, a
+callback's result, a field of a call's result and an argument is one
+instance, which its uses decide: `let fs = array::map([1], |r| 'a:
+Number |x: 'a| x); let g = fs[0]$` makes `g` one type, `g(1)` and then
+`g(1.5)` is refused, and so is `let k = (id, 1).0` at two types (a read
+of a literal, not of a generalized binding). A call
+copies a quantifier only where its level says so, as any cell
+(`FnType::instantiate`), and a parameter called in its definition's body
+shares its cells. A write to a generalized binding's place through
+`&mut` reads the root as named, so the place's type holds the scheme's
+cells (`crate::holds_generic` refuses it). Pins: `lang::quantified`
+(`a_callbacks_result_is_one_instance` and its neighbours,
+`a_field_of_a_generic_binding_is_generic`,
+`a_block_whose_value_is_a_lambda_is_generic`,
+`a_reference_to_a_generic_function_is_one_instance`,
+`a_written_field_alias_is_one_instance`),
+`lang::collection::collection_returned_function_is_one_instance`,
+`lang::functions::generic_function_*`.
 
 `instance_sig` holds an instance's signature to a copy of the
 definition's by `FnType` containment, which decides a parameter or a
@@ -980,8 +966,7 @@ abandoned cell reads it as a forward link to the survivor (`TVar::
 open_cell` follows it), and is a second name for the survivor: a copy
 names the survivor's image after it too (`TVar::forwarded_as`), a gate
 holds the cell at the end of the link (`TVar::open_rigid`), and a
-quantifier is open, rigid or a formal's by that cell (`FnType::
-bounds_hold`, `is_rigid_formal`). A gate on the forwarding cell would
+quantifier is open or rigid by that cell (`FnType::bounds_hold`). A gate on the forwarding cell would
 leave the survivor flexible, and `Number ⊇ 'q` would bind it to
 `Number`'s first member.
 

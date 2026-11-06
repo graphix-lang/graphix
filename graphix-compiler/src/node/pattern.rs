@@ -533,7 +533,7 @@ pub(super) fn written_refusal(
             format_compact!("write the type it tests, `T as {pat}`{}", or_bound(tv, &var))
         }
     };
-    let why = match (part.has_bottom(), part) {
+    let why = match (part.holds_bottom(env), part) {
         (true, _) => format_compact!("{part} holds `_`, which is bottom"),
         (false, Type::TVar(t)) if t.written_open().is_some() => {
             format_compact!("{part} is a type variable nothing declares")
@@ -621,6 +621,7 @@ fn rigid_written(
     let bound = rigid_as_bounds(env, bound)?;
     let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
     let t = typ.written_form(&mut |t| is_tv(t).then(|| bound.clone()))?;
+    let t = slices_written(pat, &t)?;
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, &t, &mut members).ok()?;
     let held: SmallVec<[Type; 8]> = members
@@ -707,6 +708,68 @@ fn is_abstract(env: &Env, t: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// `t`, the type a test over `pat` writes, with each application of an
+/// open constructor (`'c<T>`) a slice of `pat` stands over written as the
+/// slice's collection, `Array<T>` or `List<T>`; `None` where one is left,
+/// which no test can write.
+fn slices_written(pat: &StructurePattern, t: &Type) -> Option<Type> {
+    fn elems(binds: &[StructurePattern], list: bool, t: &Type) -> Type {
+        let et = match (list, t) {
+            (false, Type::Array(et)) | (true, Type::List(et)) | (_, Type::App(_, et)) => {
+                et
+            }
+            _ => return t.clone(),
+        };
+        let et = binds.iter().fold((**et).clone(), |et, p| go(p, &et));
+        match list {
+            true => Type::List(Arc::new(et)),
+            false => Type::Array(Arc::new(et)),
+        }
+    }
+    fn each(binds: &[StructurePattern], ts: &[Type]) -> Arc<[Type]> {
+        binds.iter().zip(ts.iter()).map(|(p, t)| go(p, t)).collect()
+    }
+    fn go(pat: &StructurePattern, t: &Type) -> Type {
+        use StructurePattern as P;
+        crate::stack::ensure_sufficient(|| match (pat, t) {
+            (_, Type::Set(ts)) => Type::Set(ts.iter().map(|t| go(pat, t)).collect()),
+            (P::Or(alts), _) => alts.iter().fold(t.clone(), |t, a| go(a, &t)),
+            (P::Tuple { binds, .. }, Type::Tuple(ts)) if binds.len() == ts.len() => {
+                Type::Tuple(each(binds, ts))
+            }
+            (P::Variant { tag, binds, .. }, Type::Variant(vt, ts, at))
+                if vt == tag && binds.len() == ts.len() =>
+            {
+                Type::Variant(vt.clone(), each(binds, ts), *at)
+            }
+            (P::Struct { binds, .. }, Type::Struct(fs)) => Type::Struct(
+                fs.iter()
+                    .map(|(n, ft, at)| match binds.iter().find(|(b, _, _)| b == n) {
+                        Some((_, p, _)) => (n.clone(), go(p, ft), *at),
+                        None => (n.clone(), ft.clone(), *at),
+                    })
+                    .collect(),
+            ),
+            (P::Slice { list, binds, .. }, _)
+            | (P::SlicePrefix { list, prefix: binds, .. }, _) => elems(binds, *list, t),
+            (P::SliceSuffix { suffix, .. }, _) => elems(suffix, false, t),
+            _ => t.clone(),
+        })
+    }
+    fn holds_app(t: &Type) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::App(..) => true,
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || holds_app(c));
+                found
+            }
+        })
+    }
+    let t = go(pat, t);
+    (!holds_app(&t)).then_some(t)
 }
 
 /// Whether `t` holds `tv` in an abstract type's parameter, which no
@@ -2732,6 +2795,7 @@ impl<R: Rt> PatternNode<R> {
             Some(t) => {
                 let t = t.scope_refs(&scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
+                t.refuse_quantified_fns(&ctx.env)?;
                 super::lambda::body_annotation(ctx, &t);
                 (true, t.lookup_ref(&ctx.env)?)
             }

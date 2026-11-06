@@ -167,9 +167,9 @@ impl<'a> Walk<'a> {
                 ts.iter().try_for_each(|t| self.walk(t))
             }
             Type::Struct(fs) => fs.iter().try_for_each(|(_, t, _)| self.walk(t)),
-            Type::Map { key, value } => {
-                self.walk(key)?;
-                self.walk(value)
+            Type::Map(m) => {
+                self.walk(&m.key)?;
+                self.walk(&m.value)
             }
             Type::Abstract { id, params } => self.abstract_type(t, *id, params),
             Type::Primitive(_)
@@ -354,8 +354,8 @@ impl<'a> Walk<'a> {
                         .zip(ys.iter())
                         .all(|((n, x, _), (m, y, _))| n == m && self.same(cx, x, y))
             }
-            (Type::Map { key: k, value: v }, Type::Map { key: l, value: w }) => {
-                self.same(cx, k, l) && self.same(cx, v, w)
+            (Type::Map(m0), Type::Map(m1)) => {
+                self.same(cx, &m0.key, &m1.key) && self.same(cx, &m0.value, &m1.value)
             }
             (
                 Type::Abstract { id: i, params: p },
@@ -414,7 +414,7 @@ impl Type {
         let mut members: SmallVec<[(Type, Type); 8]> = SmallVec::new();
         walk.members(self, &mut members, &mut vec![]);
         members.into_iter().find_map(|(head, written)| match &head {
-            Type::Map { key, .. } => match walk.head(key)? {
+            Type::Map(m) => match walk.head(&m.key)? {
                 Type::Primitive(p) if p == Typ::String => None,
                 _ => Some(written),
             },

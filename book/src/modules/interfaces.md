@@ -221,8 +221,7 @@ outside it, `let y = never(); let f = |x| { y <- x; x }`, has one type
 for every call, and is refused: give `y` a type that holds every `'a`
 (`let y: Any = never()`), or declare `f` at one type. So is one that
 something writes, `let f = |x| x; f <- |x| x`, whose writers share one
-type: declare `f` at one type, or annotate the `let` with a quantified
-type, `let f: fn<'a: Any>(x: 'a) -> 'a = |x| x`.
+type: declare `f` at one type.
 
 A `val` whose type holds a variable is generic wherever its function
 types stand: in a struct (`val c: {f: fn(x: 'a) -> 'a}`), an array or a
@@ -233,8 +232,8 @@ through it must be as general as it is (`m::c <- {f: |x| x}`, not `{f:
 writable reference to it is refused where the referenced place holds
 one of its variables: `&mut m::c` and `&mut m::c.f` are, `&mut m::c.n`
 over a field `n: i64` is not. A function type with quantifiers of its
-own inside the val's data, `val c: {f: fn<'b: Any>(x: 'b) -> 'b}`, is
-one type, so such a val is one type too, and takes a `&mut`. A name
+own stands only as the val's whole type: inside its data, `val c: {f:
+fn<'b: Any>(x: 'b) -> 'b}`, it is refused. A name
 that copies a generic `val` and is written, `let g = m::c; g <- ..`, is
 one instance of it: what is written decides its type for every use of
 `g`.

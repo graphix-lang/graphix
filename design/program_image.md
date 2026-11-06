@@ -593,24 +593,19 @@ the next compile (`GX::prune_static_resolution`), so after a write the
 definition's instances call through the binding.
 
 A module's interface binding and the binding implementing it (a
-`Proxy` with a private inner binding) are one variable: a write to
-either reaches the other. The index joins them (`StaticCallees::join`,
-at `check_sig` and at a module's decode; `unjoin` when its body
-retires), so `mark_connect_target` refuses a write to either while a
-call holds either, and marks both as targets, which prunes both from
-`bind_to_lambda`. A write compiled before the join (one the body itself
-compiles, or one compiled before the module's check, a root's in the same
-script or one before a dynamic module's load) marks only the binding it
-names, so the body's check, before it reads either binding, carries the
-mark across each implemented `val` (`carry_static_marks`,
-`CompileCtx::carry_static_mark`): where either is a target, neither binds
-a static call in the batch, and the next compile prunes both. The carry
-is static resolution alone: the binding the write names takes its typing
-(the value restriction, a generic binding holding the write to its
-generality), the other keeps its own, and a write after the join marks
-both as above. The join itself (`CompileCtx::join_interface_pair`, after
-the body's check) makes both targets where either is, which the wake
-hold reads, not the typing.
+`Proxy` with a private inner binding) are one variable
+(`design/module_system.md`). The index joins them
+(`StaticCallees::join`, at `check_sig` and at a module's decode;
+`unjoin` when its body retires), so `mark_connect_target` refuses a
+write to either while a call holds either. A write marks only the
+binding it names, whenever it compiles, and takes that binding's
+typing (the value restriction, a generic binding holding the write to
+its generality). Static resolution reads the variable when it binds a
+call (`CompileCtx::rebinds`): a call through either binding of a pair
+dispatches at run time where this batch writes either or any compile
+has, so a sibling module's write, which its own compile task marks,
+reaches the implementation's calls whichever check ran first. The
+image carries no join: a module's decode joins its pairs again.
 
 A dynamic module's reload compiles while the body it replaces is set
 aside: that body goes with a load that compiles, so its holds are left

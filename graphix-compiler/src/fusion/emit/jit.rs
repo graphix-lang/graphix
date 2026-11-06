@@ -11,7 +11,7 @@ use crate::{
     env::Env,
     expr::ExprId,
     fusion::{
-        CalleeBody, FusionCtx, LambdaCallInfo,
+        CalleeBody, FusionCtx, LambdaCallInfo, LambdaSites, Loops,
         emit_helpers::all_helpers,
         kernel_abi::{self, KernelKey, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
@@ -45,6 +45,7 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    any::Any,
     cell::RefCell,
     collections::BTreeMap,
     mem::ManuallyDrop,
@@ -59,7 +60,7 @@ use triomphe::Arc;
 use super::{
     abi::{LocalKind, local_payload_ty},
     arena::{Arena, ArenaExhausted, Committed},
-    body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
+    body::{BodyRole, BodySource, BodySpec, ErasedLoops, NodeBodyEmitter},
     lower::{
         Callees, EmittedBody, HelperFuncIds, KernelFns, SiteLayout, compile_into_function,
     },
@@ -1816,10 +1817,12 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt>(
     callees: &[(KernelKey, Arc<KernelSig>)],
     root: &Node<R>,
     apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
-    lambda_sites: &nohash::IntMap<ExprId, LambdaCallInfo>,
+    lambda_sites: &LambdaSites,
     callee_bodies: &BTreeMap<KernelKey, CalleeBody<'_, R>>,
+    loops: &Loops<'_, R>,
     type_env: &Env,
 ) -> Result<WrappedKernel> {
+    let loops: ErasedLoops = loops.iter().map(|(id, g)| (*id, *g as &dyn Any)).collect();
     let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
     let parent = BodySource {
         spec: BodySpec {
@@ -1828,6 +1831,7 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt>(
             type_env,
             role: BodyRole::Parent,
             params: &[],
+            loops: &loops,
         },
         hook: &parent,
     };
@@ -1845,6 +1849,7 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt>(
                         type_env,
                         role: BodyRole::Callee(cb.self_call.as_ref()),
                         params: &cb.params,
+                        loops: &loops,
                     },
                 ))
             })

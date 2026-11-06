@@ -7,7 +7,7 @@ use super::common;
 use common::graphix;
 
 /// Generic programs and the value each prints.
-const PROGRAMS: [(&str, &str); 5] = [
+const PROGRAMS: [(&str, &str); 4] = [
     ("let len = |l| select l { [] => 0, [_, ..] => 1 };\nlen([1, 2])\n", "1"),
     (
         "let twice = |f: fn(x: 'a) -> 'a, x: 'a| f(f(x));\n(twice(|x| x + 1, 1), twice(|s| \"[s]!\", \"a\"))\n",
@@ -16,10 +16,6 @@ const PROGRAMS: [(&str, &str); 5] = [
     (
         "let sum = |a| array::fold(a, 0, |acc, x| acc + x);\nsum(array::map([1, 2, 3], |x| x * 2))\n",
         "12",
-    ),
-    (
-        "let app = |f: fn<'b: Any>(x: 'b) -> 'b| f;\nlet g = app(|x| x);\n(g(1), g(\"s\"))\n",
-        "(1, \"s\")",
     ),
     (
         "let first = |o: [`Some('a), `None], d: 'a| select o { `Some(x) => x, `None => d };\n\

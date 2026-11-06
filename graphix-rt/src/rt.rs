@@ -4,6 +4,7 @@ use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecState, Rt, TagValue,
+    branch::{Var, VarAliases},
     expr::{Expr, ExprId},
     node::place::{Path, RefPath, VarUpdate},
     prune::Reader,
@@ -56,12 +57,13 @@ pub(super) struct Waiting<T> {
     taken: IntSet<BindId>,
 }
 
-/// One variable's writes, oldest first; nearly always one, inline.
+/// One variable's writes, oldest first, each with the binding it was
+/// made through; nearly always one, inline.
 #[derive(Debug)]
 struct Fifo<T> {
     /// The waiting writes are `q[head..]`, every one `Some`; the taken
     /// ones before them are `None` until they are half of `q`.
-    q: SmallVec<[Option<(T, Via)>; 1]>,
+    q: SmallVec<[Option<(T, Via, BindId)>; 1]>,
     head: usize,
 }
 
@@ -76,22 +78,22 @@ impl<T> Fifo<T> {
         self.head == self.q.len()
     }
 
-    fn push(&mut self, w: (T, Via)) {
+    fn push(&mut self, w: (T, Via, BindId)) {
         self.q.push(Some(w))
     }
 
-    fn front(&self) -> Option<&(T, Via)> {
+    fn front(&self) -> Option<&(T, Via, BindId)> {
         self.q.get(self.head).and_then(Option::as_ref)
     }
 
-    fn back_mut(&mut self) -> Option<&mut (T, Via)> {
+    fn back_mut(&mut self) -> Option<&mut (T, Via, BindId)> {
         match self.is_empty() {
             true => None,
             false => self.q.last_mut().and_then(Option::as_mut),
         }
     }
 
-    fn pop_front(&mut self) -> Option<(T, Via)> {
+    fn pop_front(&mut self) -> Option<(T, Via, BindId)> {
         let w = self.q.get_mut(self.head)?.take();
         self.head += 1;
         if self.head * 2 >= self.q.len() {
@@ -110,11 +112,16 @@ impl<T> Default for Waiting<T> {
 
 impl<T> Waiting<T> {
     pub(super) fn push(&mut self, id: BindId, t: T, via: Via) {
+        self.push_from(id, id, t, via)
+    }
+
+    /// Push a write to the variable `id` made through the binding `from`.
+    pub(super) fn push_from(&mut self, id: BindId, from: BindId, t: T, via: Via) {
         let q = self.by_id.entry(id).or_default();
         if q.is_empty() {
             self.ids.push_back(id);
         }
-        q.push((t, via));
+        q.push((t, via, from));
     }
 
     /// Push a level's write, replacing the variable's last waiting write
@@ -122,12 +129,16 @@ impl<T> Waiting<T> {
     pub(super) fn push_level(
         &mut self,
         id: BindId,
+        from: BindId,
         t: T,
         replaces: impl FnOnce(&T) -> bool,
     ) {
         match self.by_id.get_mut(&id).and_then(|q| q.back_mut()) {
-            Some((last, Via::Level)) if replaces(last) => *last = t,
-            _ => self.push(id, t, Via::Level),
+            Some((last, Via::Level, by)) if replaces(last) => {
+                *last = t;
+                *by = from
+            }
+            _ => self.push_from(id, from, t, Via::Level),
         }
     }
 
@@ -135,6 +146,22 @@ impl<T> Waiting<T> {
     /// in line.
     pub(super) fn forget(&mut self, id: &BindId) {
         self.by_id.remove(id);
+    }
+
+    /// Drop the writes waiting for the variable `id` that were made
+    /// through the binding `from`.
+    pub(super) fn forget_from(&mut self, id: &BindId, from: &BindId) {
+        let Some(q) = self.by_id.get_mut(id) else { return };
+        let mut kept: SmallVec<[Option<(T, Via, BindId)>; 1]> =
+            q.q.drain(q.head..)
+                .filter(|w| w.as_ref().is_some_and(|(_, _, by)| by != from))
+                .collect();
+        q.q.clear();
+        q.q.append(&mut kept);
+        q.head = 0;
+        if q.is_empty() {
+            self.by_id.remove(id);
+        }
     }
 
     /// The writes waiting for `id`.
@@ -152,11 +179,11 @@ impl<T> Waiting<T> {
 
     fn pop(&mut self, id: &BindId) -> (T, Via) {
         let q = self.by_id.get_mut(id).expect("a waiting variable");
-        let r = q.pop_front().expect("a waiting write");
+        let (t, via, _) = q.pop_front().expect("a waiting write");
         if q.is_empty() {
             self.by_id.remove(id);
         }
-        r
+        (t, via)
     }
 
     /// This cycle's deliveries into `out`: each waiting variable's first
@@ -164,7 +191,7 @@ impl<T> Waiting<T> {
     pub(super) fn take(&mut self, out: &mut Vec<(BindId, T, Via)>) {
         for _ in 0..self.ids.len() {
             let id = self.ids.pop_front().expect("a waiting variable");
-            let Some((_, via)) = self.by_id.get(&id).and_then(|q| q.front()) else {
+            let Some((_, via, _)) = self.by_id.get(&id).and_then(|q| q.front()) else {
                 continue;
             };
             if !self.taken.contains(&id) {
@@ -175,7 +202,7 @@ impl<T> Waiting<T> {
                         let first = |m: &BindId| {
                             !self.taken.contains(m)
                                 && self.by_id.get(m).and_then(|q| q.front()).is_none_or(
-                                    |(_, v)| matches!(v, Via::Set(s) if Arc::ptr_eq(s, &members)),
+                                    |(_, v, _)| matches!(v, Via::Set(s) if Arc::ptr_eq(s, &members)),
                                 )
                         };
                         if members.iter().all(first) {
@@ -308,6 +335,12 @@ pub struct GXRt<X: GXExt> {
     pub(super) produced: Vec<BindId>,
     /// The fires to deliver next cycle to readers that met them late.
     pub(super) late: Vec<(BindId, TagValue, Reader)>,
+    /// The bindings that are another's variable ([`Rt::var_aliases`]): the
+    /// compile's joins, and each binding a join left that a reader still
+    /// reads through.
+    pub(super) aliases: VarAliases,
+    /// The readers registered through each binding in `aliases`.
+    pub(super) alias_reads: IntMap<BindId, u32>,
     pub ext: X,
 }
 
@@ -359,6 +392,8 @@ impl<X: GXExt> GXRt<X> {
             running: false,
             produced: Vec::new(),
             late: Vec::new(),
+            aliases: VarAliases::default(),
+            alias_reads: IntMap::default(),
             ext: X::default(),
             tasks,
             timers: IntMap::default(),
@@ -378,24 +413,42 @@ impl<X: GXExt> Default for GXRt<X> {
 }
 
 impl<X: GXExt> Rt for GXRt<X> {
-    fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
-        self.store.get(id)
+    fn store_get(&self, var: Var) -> Option<&(TagValue, u64)> {
+        self.store.get(&var.id())
     }
 
-    fn store_insert(&mut self, id: BindId, tv: TagValue) {
-        self.store.insert(id, (tv, self.cycle));
+    fn var_aliases(&self) -> &VarAliases {
+        &self.aliases
     }
 
-    fn store_remove(&mut self, id: &BindId) {
-        self.store.remove(id);
+    fn set_var_aliases(&mut self, aliases: VarAliases) {
+        let reads = &self.alias_reads;
+        self.aliases =
+            aliases.with_kept(&self.aliases, |id| reads.get(id).is_some_and(|n| *n > 0));
+        let aliases = &self.aliases;
+        self.alias_reads.retain(|id, n| *n > 0 && aliases.var(*id) != *id)
+    }
+
+    fn store_insert(&mut self, var: Var, tv: TagValue) {
+        self.store.insert(var.id(), (tv, self.cycle));
+    }
+
+    fn store_remove(&mut self, var: Var) {
+        self.store.remove(&var.id());
     }
 
     fn forget_writes(&mut self, id: BindId) {
-        self.var_updates.forget(&id);
-        self.custom_updates.forget(&id);
+        match self.aliases.var(id) {
+            var if var == id => {
+                self.var_updates.forget(&id);
+                self.custom_updates.forget(&id);
+            }
+            var => self.var_updates.forget_from(&var, &id),
+        }
     }
 
-    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
+    fn store_put(&mut self, var: Var, entry: Option<(TagValue, u64)>) {
+        let id = var.id();
         match entry {
             None => self.store.remove(&id),
             Some(e) => self.store.insert(id, e),
@@ -424,12 +477,19 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("REF_VAR {id:?} by {ref_by:?}");
         }
+        let id = match self.aliases.var(id) {
+            var if var == id => id,
+            var => {
+                *self.alias_reads.entry(id).or_default() += 1;
+                var
+            }
+        };
         let readers = self.by_ref.entry(id).or_default();
         readers.add(ref_by)
     }
 
-    fn readers(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
-        if let Some(readers) = self.by_ref.get(id) {
+    fn readers(&self, var: Var, f: &mut dyn FnMut(&Reader)) {
+        if let Some(readers) = self.by_ref.get(&var.id()) {
             readers.iter().for_each(|(r, _)| f(r))
         }
     }
@@ -438,6 +498,15 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
         }
+        let id = match self.aliases.var(id) {
+            var if var == id => id,
+            var => {
+                if let Some(n) = self.alias_reads.get_mut(&id) {
+                    *n = n.saturating_sub(1)
+                }
+                var
+            }
+        };
         let Some(readers) = self.by_ref.get_mut(&id) else {
             debug_assert!(false, "unref_var of an unregistered {id:?} by {ref_by:?}");
             return;
@@ -456,25 +525,28 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("SET_VAR {id:?} = {value}");
         }
-        self.var_updates.push(id, VarUpdate::Set(value), Via::Write);
+        let var = self.aliases.var(id);
+        self.var_updates.push_from(var, id, VarUpdate::Set(value), Via::Write);
     }
 
     fn waiting_writes(&self, id: &BindId) -> usize {
-        self.var_updates.waiting(id)
+        self.var_updates.waiting(&self.aliases.var(*id))
     }
 
     fn set_level(&mut self, id: BindId, value: Value) {
         if dbg_vars() {
             eprintln!("SET_LEVEL {id:?} = {value}");
         }
-        self.var_updates.push_level(id, VarUpdate::Set(value), |_| true);
+        let var = self.aliases.var(id);
+        self.var_updates.push_level(var, id, VarUpdate::Set(value), |_| true);
     }
 
     fn patch_var(&mut self, id: BindId, path: Path, value: Value, w: Option<Arc<Expr>>) {
         if dbg_vars() {
             eprintln!("PATCH_VAR {id:?} {path:?} = {value}");
         }
-        self.var_updates.push(id, VarUpdate::Patch(path, value, w), Via::Write);
+        let var = self.aliases.var(id);
+        self.var_updates.push_from(var, id, VarUpdate::Patch(path, value, w), Via::Write);
     }
 
     fn patch_level(&mut self, id: BindId, path: Path, value: Value) {
@@ -484,7 +556,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         let same =
             |last: &VarUpdate| matches!(last, VarUpdate::Patch(p, ..) if *p == path);
         let update = VarUpdate::Patch(path.clone(), value, None);
-        self.var_updates.push_level(id, update, same);
+        let var = self.aliases.var(id);
+        self.var_updates.push_level(var, id, update, same);
     }
 
     fn set_ref_path(&mut self, cell: BindId, to: RefPath) {
@@ -499,7 +572,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.ref_paths.remove(cell);
     }
 
-    fn notify_set(&mut self, id: BindId) {
+    fn notify_set(&mut self, var: Var) {
+        let id = var.id();
         if dbg_vars() {
             eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
         }
@@ -510,13 +584,13 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
-    fn late(&mut self, id: BindId, tv: TagValue, reader: Reader) {
-        self.late.push((id, tv, reader))
+    fn late(&mut self, var: Var, tv: TagValue, reader: Reader) {
+        self.late.push((var.id(), tv, reader))
     }
 
-    fn produced(&mut self, id: BindId) {
+    fn produced(&mut self, var: Var) {
         if self.running {
-            self.produced.push(id)
+            self.produced.push(var.id())
         }
     }
 

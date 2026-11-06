@@ -5,7 +5,7 @@ use crate::{
     compiler::compile,
     defetyp,
     env::Env,
-    expr::{self, CatchRole, Expr, ExprId, ExprKind, ModPath},
+    expr::{self, At, CatchRole, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
         self,
@@ -309,6 +309,9 @@ impl<R: Rt> Catch<R> {
         top_id: ExprId,
         c: &Arc<expr::CatchExpr>,
     ) -> Result<(Node<R>, Scope)> {
+        if let Some(t) = &c.constraint {
+            t.refuse_quantified_fns(&ctx.env).at(&spec)?;
+        }
         let catch_scope = scope.append_place("ca", &spec, None);
         // an ascribed catch takes its type now, so a raise it covers writes
         // nothing, from whatever task checks the raise

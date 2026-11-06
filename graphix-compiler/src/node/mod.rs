@@ -21,6 +21,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
+    prune::ReadStamp,
     typ::{
         CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
         tvar::{
@@ -100,7 +101,7 @@ pub(crate) fn read_var<'a, R: Rt>(
     if let Some(tv) = ctx.event.variables.get(id) {
         return Some(VarRead::Delivered(tv));
     }
-    match ctx.rt.store_get(id) {
+    match ctx.rt.store_get_var(ctx.rt.var_of(*id)) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
         Some((tv, _)) => Some(VarRead::Standing(tv)),
         None => None,
@@ -108,16 +109,17 @@ pub(crate) fn read_var<'a, R: Rt>(
 }
 
 /// [`read_var`] by a reader at the root `root`, inside the walk's
-/// boundary: a fire made last cycle after the walk passed it is delivered
-/// to it now ([`crate::Event::late`]).
+/// boundary, keeping the read stamp `read`: a fire made last cycle after
+/// the walk passed it is delivered to it now ([`crate::Event::late`]).
 #[inline]
 pub(crate) fn read_var_by<'a, R: Rt>(
     ctx: &'a ExecCtx<'_, R>,
     id: &BindId,
     root: ExprId,
+    read: Option<&ReadStamp>,
 ) -> Option<VarRead<'a>> {
     if ctx.event.late.is_some()
-        && let Some(tv) = late_fire(ctx, id, root)
+        && let Some(tv) = late_fire(ctx, id, root, read)
     {
         return Some(VarRead::Delivered(tv));
     }
@@ -125,17 +127,21 @@ pub(crate) fn read_var_by<'a, R: Rt>(
 }
 
 /// The fire of `id` made last cycle after the walk passed a reader at the
-/// root `root`, inside the walk's boundary, delivered to it now
-/// ([`crate::Event::late`]).
+/// root `root`, inside the walk's boundary, keeping the read stamp `read`,
+/// delivered to it now ([`crate::Event::late`]).
 fn late_fire<'a, R: Rt>(
     ctx: &'a ExecCtx<'_, R>,
     id: &BindId,
     root: ExprId,
+    read: Option<&ReadStamp>,
 ) -> Option<&'a TagValue> {
     let late = ctx.event.late.as_ref()?;
-    let (tv, readers) = late.get(id)?;
-    if ctx.event.variables.contains_key(id)
-        || !readers.iter().any(|r| r.root == root && r.boundary == ctx.boundary)
+    let var = ctx.event.variables.var_of(*id);
+    let (tv, readers) = late.get(&var.id())?;
+    if ctx.event.variables.get_var(var).is_some()
+        || !readers.iter().any(|r| {
+            r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read
+        })
     {
         return None;
     }
@@ -524,6 +530,26 @@ fn gather_in_order<'a, R: Rt>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 /// `$tag` is the join of the consumed productions.
+// CR claude for claude: [bug/medium] A quiet change of a standing value
+// reaches a bare read but not an operator over it: an operator whose
+// inputs did not fire rides its resident here, so in a closure whose
+// capture is a callee's formal refreshed standing at its arm's wake, `|y|
+// { let z = y; x }` reads the new value and `|y| { let z = y; x + 0 }` the
+// old one, in the unpruned node-walk alike (GRAPHIX_PRUNE=off --no-fusion,
+// at clk 6: `(6, 3, 0, 3)` against `(6, 3, 0, 1)`). A kernel computes as
+// the operator does, so fusing a run-time bind of the bare read (D20 (b),
+// bound-bind-policy-01) diverges from the node-walk, and
+// lang::prune::standing_formal_refresh_marks_its_readers fails in Jit.
+// Which is intended: does a quiet standing change reach the readers of an
+// operator over it (operators recompute on a stale input), or only a fire
+// does (a bare read rides as well)? probes:
+// ~/ptmp/cr29/scratch/r17-o1/bound-bind-policy/sf.gx, sfp.gx
+// (quiet-refresh-op-01)
+// 2026-11-05 claude: Eric ruled (11-05, D20 follow-up): (a). A quiet change
+// reaches every reader as a stale value: an operator over a standing input
+// whose value changed without a fire recomputes (stale, no fire), as wake
+// catch-up already does. Build with D20 (b) (bound-bind-policy-01) and the
+// FuseExpect fix (count only what the build fused).
 macro_rules! dense_gate {
     ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
@@ -1062,16 +1088,38 @@ impl<R: Rt> Block<R> {
         module: bool,
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R>> {
-        let (children, catches) =
-            compile_block_children(ctx, flags, scope, top_id, module, exprs.iter())?;
+        let (children, catches) = compile_block_children(
+            ctx,
+            flags,
+            scope,
+            top_id,
+            module,
+            exprs.iter(),
+            true,
+        )?;
         Ok(Self::with(module, spec, children, catches, Runs::default()))
     }
+}
+
+/// A module's top block's path below its package root, which its
+/// statements' `self::` writes name; `None` for any other block.
+pub(crate) fn block_top<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+) -> Option<CompactString> {
+    let lexical: &str = &scope.lexical;
+    (crate::mod_root(lexical) == lexical).then(|| {
+        let below = &lexical[ctx.env.package_root(lexical).len()..];
+        CompactString::from(below.trim_start_matches('/'))
+    })
 }
 
 /// Compile a statement list: each `catch(e) expr` child compiles
 /// through [`error::Catch::compile`], which advances the dynamic scope
 /// for all subsequent siblings. Returns the children in syntactic order
-/// plus the catch indices.
+/// plus the catch indices. The lets something writes are found among the
+/// list's own statements where `own_writers`, else the caller entered the
+/// statements its lets are visible to ([`BlockWrites::enter`]).
 pub(crate) fn compile_block_children<'a, R: Rt>(
     ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -1079,6 +1127,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     top_id: ExprId,
     module: bool,
     exprs: impl Iterator<Item = &'a Expr>,
+    own_writers: bool,
 ) -> Result<(Box<[Node<R>]>, Box<[usize]>)> {
     let exprs: SmallVec<[&'a Expr; 32]> = exprs.collect();
     // pre-register the block's `mod` names so resolution is independent
@@ -1116,12 +1165,10 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
-    let lexical: &str = &scope.lexical;
-    let top = (crate::mod_root(lexical) == lexical).then(|| {
-        let below = &lexical[ctx.env.package_root(lexical).len()..];
-        CompactString::from(below.trim_start_matches('/'))
-    });
-    ctx.written.enter(&exprs, top);
+    if own_writers {
+        let top = block_top(ctx, &scope);
+        ctx.written.enter(&exprs, top);
+    }
     let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
         if matches!(e.kind, ExprKind::Catch(_)) {
             catches.push(i);
@@ -1135,7 +1182,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         children.push(prune::Prune::wrap(boundary, node));
         Ok::<_, anyhow::Error>(())
     });
-    ctx.written.exit();
+    if own_writers {
+        ctx.written.exit();
+    }
     if declares_types {
         ctx.block_typedefs.pop();
     }
@@ -1175,8 +1224,11 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
 /// and a `package::` path through the block's own module path, name the
 /// block's lets where the block is its module's top (`top`, that path below
 /// the package root). Such a let is never generalized, whatever the order
-/// of its uses and writers. What a module in the block writes outside it
-/// comes from `known`, and what this walk finds goes there.
+/// of its uses and writers. Outside a lambda body, a write under a nested
+/// block's glob is left to the resolver: it compiles before the binding's
+/// check, which then holds a binding it reaches to one instance
+/// ([`CompileCtx::mark_connect_target`]). What a module in the block writes
+/// outside it comes from `known`, and what this walk finds goes there.
 fn written_lets(
     exprs: &[&Expr],
     top: Option<CompactString>,
@@ -1192,7 +1244,11 @@ fn written_lets(
 /// compile of the outermost block, so a module nested d blocks deep is
 /// walked once, not once for each block around it.
 #[derive(Default)]
-struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<(Anchor, CompactString)>>>);
+struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<OuterWrite>>>);
+
+/// A write a module's body makes outside it: where it lands, the name, and
+/// whether it sits in a lambda body (it compiles at its definition's check).
+type OuterWrite = (Anchor, CompactString, bool);
 
 /// Per block being compiled, innermost last, the lets something in it
 /// writes ([`written_lets`]), and what the modules they hold write
@@ -1247,7 +1303,7 @@ fn module_writes(
     id: ExprId,
     exprs: &[Expr],
     known: &mut ModuleWrites,
-) -> LPooled<Vec<(Anchor, CompactString)>> {
+) -> LPooled<Vec<OuterWrite>> {
     if let Some(outer) = known.0.remove(&id) {
         return outer;
     }
@@ -1326,9 +1382,14 @@ struct Writes<'a> {
     /// A block walk's written lets.
     written: LPooled<AHashSet<(ExprId, CompactString)>>,
     /// A module walk's writes outside it.
-    outer: LPooled<Vec<(Anchor, CompactString)>>,
+    outer: LPooled<Vec<OuterWrite>>,
     /// The modules' writes outside them known so far.
     known: &'a mut ModuleWrites,
+    /// The globs of the nested blocks around the walk's position.
+    nested_globs: usize,
+    /// The lambda bodies around the walk's position: a write in one
+    /// compiles after the checks of the lets it may name.
+    lambdas: usize,
 }
 
 #[cfg(test)]
@@ -1354,6 +1415,8 @@ impl<'a> Writes<'a> {
             written: LPooled::take(),
             outer: LPooled::take(),
             known,
+            nested_globs: 0,
+            lambdas: 0,
         }
     }
 
@@ -1437,17 +1500,22 @@ impl<'a> Writes<'a> {
         };
         let b = match nearer {
             Some(b) => Some(b),
+            // a glob may provide `n`: the resolver names what this write
+            // reaches before the binding's check
+            None if !top && self.nested_globs > 0 && self.lambdas == 0 => return,
             None => self.declared.get(n),
         };
         match b {
             Some(Binding::Let(id)) => {
                 self.written.insert((*id, n.into()));
             }
-            Some(Binding::Outer(a, m)) => self.outer.push((a.clone(), m.clone())),
+            Some(Binding::Outer(a, m)) => {
+                self.outer.push((a.clone(), m.clone(), self.lambdas > 0))
+            }
             Some(Binding::Other) => (),
             None => {
                 for a in self.globs.iter() {
-                    self.outer.push((a.clone(), n.into()))
+                    self.outer.push((a.clone(), n.into(), self.lambdas > 0))
                 }
             }
         }
@@ -1456,7 +1524,7 @@ impl<'a> Writes<'a> {
     /// A write to `n` at `a` from here.
     fn write_outer(&mut self, a: Anchor, n: &str) {
         match (&self.walk, a) {
-            (Walk::Module, a) => self.outer.push((a, n.into())),
+            (Walk::Module, a) => self.outer.push((a, n.into(), self.lambdas > 0)),
             (Walk::Block { top: Some(at) }, Anchor::Package(p)) if *at == p => {
                 if let Some(Binding::Let(id)) = self.declared.get(n) {
                     self.written.insert((*id, n.into()));
@@ -1474,15 +1542,22 @@ impl<'a> Writes<'a> {
             return;
         }
         let outer = module_writes(id, exprs, self.known);
-        for (a, n) in outer.iter() {
+        for (a, n, in_lambda) in outer.iter() {
+            let lambdas = self.lambdas;
+            self.lambdas += *in_lambda as usize;
             match a {
                 Anchor::Super(1) => self.write(n, false),
                 Anchor::Super(k) => match self.walk {
-                    Walk::Module => self.outer.push((Anchor::Super(k - 1), n.clone())),
+                    Walk::Module => self.outer.push((
+                        Anchor::Super(k - 1),
+                        n.clone(),
+                        self.lambdas > 0,
+                    )),
                     Walk::Block { .. } => (),
                 },
                 Anchor::Package(_) => self.write_outer(a.clone(), n),
             }
+            self.lambdas = lambdas;
         }
         self.known.0.insert(id, outer);
     }
@@ -1497,8 +1572,9 @@ impl<'a> Writes<'a> {
     }
 
     fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
-        let len = self.shadowed.len();
+        let (len, globs) = (self.shadowed.len(), self.nested_globs);
         f(self);
+        self.nested_globs = globs;
         for n in self.shadowed.drain(len..) {
             if let Some(bs) = self.shadow.get_mut(&n) {
                 bs.pop();
@@ -1513,6 +1589,9 @@ impl<'a> Writes<'a> {
                 match &e.kind {
                     ExprKind::Use { names, .. } => {
                         for item in names.iter() {
+                            if item.bound_name().is_none() {
+                                w.nested_globs += 1
+                            }
                             if let Some((n, b)) = w.imported(item) {
                                 w.nearer(n, b)
                             }
@@ -1551,8 +1630,10 @@ impl<'a> Writes<'a> {
                 w.expr(&b.value)
             }),
             ExprKind::Lambda(l) => self.scoped(|w| {
+                w.lambdas += 1;
                 l.args.iter().for_each(|a| w.bound(&a.pattern));
-                e.for_each_child(&mut |c| w.expr(c))
+                e.for_each_child(&mut |c| w.expr(c));
+                w.lambdas -= 1
             }),
             ExprKind::Block { exprs } => self.block(exprs),
             ExprKind::Select(s) => {
@@ -2342,7 +2423,11 @@ impl<R: Rt> Connect<R> {
                 bind_id: id,
             });
         }
-        let node = compile(ctx, flags, value.clone(), scope, top_id)?;
+        let mut node = compile(ctx, flags, value.clone(), scope, top_id)?;
+        // a generalized binding names what is written to it
+        if ctx.env.poly_binds.contains(&id) {
+            bind::name_value(&mut node, true);
+        }
         Ok(Self::with(spec, node, id))
     }
 }
@@ -2598,6 +2683,34 @@ fn params_union(env: &env::Env, held: &Type, written: &Type) -> Option<Type> {
         }
         _ => None,
     }
+}
+
+/// What a refusal of a write to `bind`, a generic binding, calls it (its
+/// module path, where a module holds it) and the hint that ends the
+/// refusal: the annotation that lets the write pass, none for a package's
+/// binding, which the program cannot annotate.
+pub(crate) fn generic_target(
+    env: &env::Env,
+    bind: &env::Bind,
+) -> (CompactString, &'static str) {
+    let mut parts = netidx_core::path::Path::parts(&bind.scope.0)
+        .filter(|p| !graphix_types::is_block_component(p))
+        .peekable();
+    let package = parts.peek().is_some_and(|p| env.package_roots.contains(*p));
+    let mut name = CompactString::new("");
+    for p in parts {
+        name.push_str(p);
+        name.push_str("::");
+    }
+    name.push_str(&bind.name);
+    let hint = match package {
+        true => "",
+        false => {
+            "; to write it at one type, write that type on its let (on its val, where an \
+             interface declares it)"
+        }
+    };
+    (name, hint)
 }
 
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
@@ -2868,7 +2981,7 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
             .event
             .variables
             .get(&self.src_id)
-            .or_else(|| late_fire(ctx, &self.src_id, self.top_id))
+            .or_else(|| late_fire(ctx, &self.src_id, self.top_id, None))
         {
             self.cell = Self::cell(tv);
             addressless = self.cell.is_none();
@@ -3000,6 +3113,7 @@ impl<R: Rt> TypeCast<R> {
         let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let target = typ.scope_refs(&scope.lexical);
         crate::warn_later_block_names(ctx, flags, &target)?;
+        target.refuse_quantified_fns(&ctx.env).at(&spec)?;
         target.check_cast(&ctx.env).at(&spec)?;
         let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
         Ok(Self::with(spec, typ, target, n, false, true))
@@ -3692,118 +3806,12 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A value held through its monomorphic copy
-        // (CompileCtx::monomorphic: a connect, `*r <-`, a let of a binding something
-        // writes, a REPL write to a generic binding) is contained by a written quantified
-        // type as that copy, while callsite::check_general walks what the original reaches:
-        // where the original's cells stay generic, as a collection HOF's callback's do,
-        // the quantifier merges with the copy's cell and no binding outside reaches it.
-        // `type W<'t> = Abstract<'t>; let y = never(); let f: fn<'a: Any>(x: 'a) -> 'a =
-        // |x| x; f <- |x| { y <- array::map([x], |e| W(e)); x }` passes --check and the
-        // run-time bind refuses f("s") (map_conn; the same through `*r <-` map_deref,
-        // filter_map fm_conn, list::map lmap_conn, a named constructor mapn_conn,
-        // Transparent mapt_conn, a let of a binding a later `<-` writes map_let_w, the REPL
-        // h5.txt); the let of an unwritten binding (map_let) and a direct call (`y <-
-        // mk(x)`) are refused; graphix-fuzz check says AGREE, so the fuzzer cannot see it.
-        // Main bbb06c0c6 the same. Fix: check_general judges the cells of the copy the
-        // containment held, or the copy shares the cells the original's body reaches
-        // outside it. probes: ~/ptmp/cr29/scratch/review-r7/B5-r4-1/i1c/{map_conn,
-        // map_deref,fm_conn,lmap_conn,mapn_conn,mapt_conn}.gx, repl/h5.txt,
-        // ~/ptmp/cr29/scratch/r8-R/map_let_w.gx (rank2-escape-hof-01)
-        // 2026-11-02 claude: Not specific to the collection intrinsics: a user generic HOF
-        // does it too, B5-r4-1/i1c/app3_conn.gx (`let app = 'p: Any, 'q: Any |g: fn(v: 'p)
-        // -> 'q, v: 'p| -> 'q g(v); f <- |x| { y <- app(|e| W(e), x); x }`) passes --check
-        // with 29145700c and runs, y holding W(1) and then W("s").
-        // 2026-11-03 claude: Round 9 lane R, the CR's first way: a value contained as its
-        // monomorphic copy has each of its cells whose copy is or reaches a quantifier
-        // stand for that quantifier, so check_general asks for those cells too
-        // (CompileCtx::monomorphic_noting names the cells it copied through
-        // FnType::instantiate_noting; callsite::stand_ins, contain_generally's copied;
-        // Connect, ConnectDeref and Bind::check_value pass them; the REPL write to a
-        // generic binding asks for its rigid cells' stand-ins through
-        // callsite::general_as_copied and keeps its message). Existing messages unchanged
-        // (the census). map_conn map_deref fm_conn lmap_conn mapn_conn mapt_conn map_let_w
-        // and h5.txt are refused by the check ('a binding it reaches, of type
-        // Array<W<'_N>>, where '_N is 'a'; h5 'made generic by an earlier compile'); main
-        // passes each --check and its run-time bind refuses f("s"). app3_conn is no hole:
-        // its 'q: Any settles y to Any (runs on both); with written undeclared variables
-        // (r9-R/app_undecl.gx) main passes the check and the bind refuses, now refused. The
-        // same leak with no rank-2 type (a collection callback's generic cells in an outer
-        // binding's type, gen_map) is the new CR callback-generic-leak-01. Pins: the
-        // RANK2_CONNECT_THROUGH_A_COLLECTION_CALLBACK, _FILTER_MAP, _A_LIST_CALLBACK,
-        // _A_CALLBACK, RANK2_DEREF_THROUGH_A_COLLECTION_CALLBACK and
-        // RANK2_WRITTEN_LET_THROUGH_A_COLLECTION_CALLBACK cases of
-        // lang::types::unsound_acceptances_are_refused (main's build runs each and its bind
-        // refuses, so no value arrives), graphix-shell tests/rank2_escape.rs
-        // a_repl_write_to_a_generic_binding_holds_its_copy_generally (main accepts the
-        // write), lang::types::rank2_copied_value_keeps_its_callbacks_inside (no
-        // over-refusal). Pass under GRAPHIX_NO_SUBST=1.
-        // 2026-11-03 claude: Cost follow-up: computing every copied cell's stand-in before
-        // the bindings' walk cost one more walk of what the copies reach (tk14 3.89G ->
-        // 5.33G instructions to --check with the holder walk below). Now check_general asks
-        // the copied cells beside the quantifiers and finds the quantifier a copied cell
-        // stands for only where a binding reaches it (its copy walked once then), so a
-        // value nothing outside reaches walks nothing more: tk14 3.894G (main 3.891G), tr14
-        // 3.894G (3.887G), rcself12 5.203G (5.181G), dq_1000_900 1.784G (1.782G).
-        // callsite::stand_ins is folded into check_general; the pins hold.
-        // 2026-11-03 claude: Review r9 (R-r1-1, medium) found the fix holds only where
-        // CompileCtx::monomorphic_noting made the copy. A copy another step made still
-        // passes --check, and the build or the run-time bind refuses f("s") ('an instance
-        // at fn(x: string) -> string of a definition typed fn(x: i64) -> i64'): a select or
-        // array of lambda literals, whose type contains copies into its result cell
-        // (connected: c4_sel, a3_appconn; an unwritten let annotation: c4e_let, c4h_arr; a
-        // rank-2 call argument: a1_selarg; an omitted labeled default: e2_default_sel), a
-        // read of a let-bound lambda, which copies its signature (ref1_arg, ref2_let,
-        // ref3_conn, R-r1-2's c1), and a block whose value is such a read (c5_block); main
-        // ec53d4846 the same. In each the outer binding holds the callback's generic cell,
-        // which reaches the original lambda's generic parameter cell, and nothing records
-        // the copy the containment merged into the quantifier. The non-rank-2 analog of the
-        // select shapes (c4b_norank2) is refused, of the read shapes it is
-        // callback-generic-leak-01 itself. Two ways out, neither in lane R's brief: the
-        // root, callback-generic-leak-01's second option (lower a generic cell a
-        // non-generic binding reaches, so a copy shares it and check_general's walk meets
-        // the quantifier), which closes every shape here and leaves monomorphic_noting's
-        // record moot; or a copy record at every copy site (contains' left copy, a read's
-        // instantiation), a new mechanism. Readdressed to eric with
-        // callback-generic-leak-01. What c82330ef5 refuses stays pinned (the
-        // RANK2_*_THROUGH_A_* cases of lang::types::unsound_acceptances_are_refused,
-        // graphix-shell rank2_escape
-        // a_repl_write_to_a_generic_binding_holds_its_copy_generally). probes:
-        // ~/ptmp/cr29/scratch/review-r9/R-r1-1/p/{c4_sel,c4e_let,c4h_arr,c5_block,a1_selarg,a3_appconn,e2_default_sel,ref1_arg,ref2_let,ref3_conn,c4b_norank2}.gx
-        // (R-r1-1/run2.sh audit <file>), review-r9/R-r1-2/p/c1.gx
-        // 2026-11-03 claude: Review r9 round 2 (R-r2-1 medium, R-r2-2 high): asking every copied cell in Free's answers made a binding that reaches a K-deep nest
-        // of copied cells cost O(K^2) per walk (gen_nest/gen_deep4: 100 bindings over 1000 cells 25.0G instructions to --check, main 9.1G). A copied cell is now
-        // only met by the walk, never answered, until a function type the walk meets quantifies it (Free::answering, escapes_standing re-walks that binding once
-        // with it answered): a cell no function type binds is free wherever it is met, so the verdicts and messages are those of c82330ef5, and the answer sets
-        // hold the quantifiers and the copied cells some function type quantifies, as on main. nest_400_1000 23.54G (main 23.32G), deep4_50_1000 6.30G (6.26G).
-        // Pins: graphix-shell rank2_escape a_binding_meets_a_nest_of_copies_once (6.88G over the 5G bound without it, 3.21G with), node::callsite
-        // escape_walk_answers_a_copied_cell_a_function_type_quantifies (fails with the re-walk dropped). No program found reaches the re-walk (lang:: fixtures,
-        // the review probes, rw1-rw4 under ~/ptmp/cr29/scratch/r9-R/fix2/).
-        // 2026-11-03 claude: Lane R salvage (branch cr46-R2): the copied-cell mechanism the three notes above describe is withdrawn, as built on cr46-R by
-        // c82330ef5, 4841e0987, 5cce8189b and their share of 951b5fbcb: CompileCtx::monomorphic_noting, FnType::instantiate_noting, check_general's copied-cell
-        // index and stand-ins, callsite::general_as_copied, Sights, escapes_standing and Free's met/answered split are gone, and the escape walk asks the
-        // quantifiers alone, as on main ec53d4846. Why: three reviews in a row found it superlinear where main is not, each fix bringing the next shape: bindings
-        // x copied cells (R-r1-2: api3_2000 8.63G instructions to --check, main 5.95G), K^2 per binding over a K-deep nest of copies (R-r2-1, R-r2-2:
-        // nest_100_1000 25.04G, main 9.13G; deep4_50_1000 14.50G, main 6.59G), then K^3 per binding in the re-walk (R-r3-2: gen_kr kr_50_100 21.28G, main 14.65G;
-        // gen_kb kb_50_100 21.35G, main 14.86G; R-r3-1: gen_mk mk_50_400 15.44G, main 13.82G); and it closed only the copies CompileCtx::monomorphic makes, never
-        // a select's or an array's copy of lambda literals or a read of a let-bound lambda (the review r9 note above). Every shape this CR and its notes name
-        // passes --check again with main's verdict and message (map_conn and kin, map_let_w, app_undecl, the review r9 i2_*/k*/c*/h* probes; h5.txt and r3_h5 in
-        // the REPL). The pins the notes above give for the mechanism are removed with it (the six RANK2_*_THROUGH_* cases, graphix-shell rank2_escape
-        // a_repl_write_to_a_generic_binding_holds_its_copy_generally, a_copy_is_asked_once_for_every_binding, a_binding_meets_a_nest_of_copies_once,
-        // node::callsite escape_walk_answers_a_copied_cell_a_function_type_quantifies), and the last note's 'No program found reaches the re-walk' is moot
-        // (R-r3-1's mk_1_3.gx did reach it). lang::types::rank2_copied_value_keeps_its_callbacks_inside stays: no over-refusal, main runs it. The way that closes
-        // every copy shape is callback-generic-leak-01's root fix (its second option: lower a generic cell a non-generic binding reaches, so a copy shares it and
-        // check_general meets the quantifier through the outer binding). Generators: ~/ptmp/cr29/scratch/review-r9/R-r1-2/p/gen_api3.sh, R-r2-2/p/gen_nest.py,
-        // R-r2-1/p/gen_deep4.sh, R-r3-2/p/{gen_kr,gen_kb}.py, R-r3-1/p/gen_mk.py.
-        // 2026-11-03 claude: Eric ruled (2026-11-03): D14 (b) in ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an annotation, then a
-        // --check census; back to him only if the stdlib, the book's examples or netidx-admin would need a new annotation): when a non-generic binding's type
-        // reaches a generic variable no let names, that variable stops being generic (ML's level rule); census and the must-reject lane before landing.
         let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
         };
-        // a binding an earlier compile generalized holds what is written
+        // a binding generalized before the write holds what is written
         // as its every instance: a copy of its type, the variables rigid
         let generic = ctx.env.poly_binds.contains(&self.id);
         let held = match generic {
@@ -3821,11 +3829,10 @@ impl<R: Rt> Connect<R> {
                     Some(_) if generic => format_with_flags(
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
+                            let (name, hint) = generic_target(&ctx.env, bind);
                             anyhow!(
-                                "{} is {held}, made generic by an earlier compile, so \
-                                 what is written to it must be as general, and {written} \
-                                 is not",
-                                bind.name
+                                "{name} is {held}, a generic binding, so what is written \
+                                 to it must be as general, and {written} is not{hint}"
                             )
                         },
                     ),
@@ -3841,19 +3848,19 @@ impl<R: Rt> Connect<R> {
                 }
             })
         };
-        wrap!(self, callsite::contain_generally(ctx, &held, &self.node, contain))?;
+        wrap!(self, contain(&held))?;
         // as general as the binding: the written value may not carry one of
         // its variables into the environment, as a function's parameter would
         let quantified: LPooled<Vec<(ArcStr, usize)>> =
             rigid.iter().map(|(addr, tv)| (tv.name.clone(), *addr)).collect();
         if generic && callsite::carried_out(&quantified, self.node.typ()).is_some() {
             return format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                let (name, hint) = generic_target(&ctx.env, bind);
                 Err(anyhow!(
-                    "{} is {}, made generic by an earlier compile, so what is written to \
-                     it must be as general, and {written} is not: it holds a type variable \
-                     of the code around the write",
-                    bind.name,
-                    bind.typ
+                    "{name} is {}, a generic binding, so what is written to it must be as \
+                     general, and {written} is not: it holds a type variable of the code \
+                     around the write{hint}",
+                    bind.typ,
                 ))
             })
             .map_err(|e| e.at(&self.spec));
@@ -3897,17 +3904,21 @@ impl<R: Rt> Connect<R> {
 // another reason, the argument-first merge of the val's open cell into the held 'x: new CR
 // val-write-arg-merge-01 at CompileCtx::check_val_written. Census of both repos unchanged
 // (2942 files, 0 verdict or message changes).
-/// The open cells `held`, a generic binding's copy, reaches, a bound's
-/// included, by address, but a function type's own quantifiers, which its
-/// containment holds: two of one name are two cells where the copy took
-/// each function type apart.
+// 2026-11-05 claude: Another shape, review r18 Q-r1-1, no seq involved: in the REPL, `let s
+// = {g: |x| x, n: 0}` then `s <- sys::time::timer(duration:700.ms, false) ~ {g: |x| x, n:
+// 5}` is refused ("s is { g: fn(x: '_8549) -> '_8550, n: i64 }, a generic binding, so what
+// is written to it must be as general, and { g: fn(x: '_8556) -> '_8549, .. } is not: it
+// holds a type variable of the code around the write"): the held copy prints the identity's
+// result apart from its parameter, the result bounded below by it, as this CR describes.
+// Main 5a28e6a57 and lane Q's cr53-sq refuse it alike. probe:
+// ~/ptmp/cr29/scratch/review-r16/Q-r1-1/r18/repl8.txt piped into graphix --no-cache (also
+// repl7, repl9-11).
+/// The open cells `held`, a generic binding's copy, reaches, a bound's and
+/// a function type's own quantifiers included, by address: two of one name
+/// are two cells where the copy took each function type apart.
 fn held_cells(held: &Type, out: &mut AHashMap<usize, TVar>) {
     held.reached_cells(out);
-    let mut own: LPooled<AHashSet<usize>> = LPooled::take();
-    held.each_quantifier(&mut |_, tv| {
-        own.insert(tv.cell_addr());
-    });
-    out.retain(|addr, tv| !tv.is_bound() && !own.contains(addr));
+    out.retain(|_, tv| !tv.is_bound());
 }
 
 fn reference_targets(
@@ -3975,10 +3986,7 @@ impl<R: Rt> ConnectDeref<R> {
                         )
                     }
                     let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
-                    wrap!(
-                        self,
-                        callsite::contain_generally(ctx, &t, &self.rhs, contain)
-                    )?;
+                    wrap!(self, contain(&t))?;
                     wrap!(
                         self,
                         callsite::check_hidden_defaults(
@@ -4022,6 +4030,20 @@ impl<R: Rt> Never<R> {
 }
 
 impl<R: Rt> Any<R> {
+    /// Whether this is a seq lowering's `any(#seqpc ~! v, v)`: `v` fired at
+    /// its step's entry, then tracked, both alternatives one read's value.
+    pub(crate) fn fired_at_entry(&self, env: &env::Env) -> bool {
+        let [at_entry, v] = &self.n[..] else { return false };
+        let NodeView::Sample(s) = at_entry.view() else { return false };
+        let read = |n: &Node<R>| match n.view() {
+            NodeView::Ref(r) => Some(r.id),
+            _ => None,
+        };
+        s.is_strict()
+            && bind::reads_lowered(env, &s.trigger, crate::expr::seq::is_pc)
+            && read(&s.arg.node).is_some_and(|id| read(v) == Some(id))
+    }
+
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -4034,10 +4056,22 @@ impl<R: Rt> Any<R> {
         if !check {
             return Ok(());
         }
+        let fn_of = |t: &Type| {
+            t.with_deref(|t| match t {
+                Some(Type::Fn(f)) => Some(f.clone()),
+                _ => None,
+            })
+        };
+        // a passed read's two reads share one copy of a generic function,
+        // which meeting would pin to one instance
+        let one_copy = self.fired_at_entry(&ctx.env)
+            && fn_of(self.n[0].typ())
+                .zip(fn_of(self.n[1].typ()))
+                .is_some_and(|(f, g)| Arc::ptr_eq(&f, &g));
         let bottom = Type::Bottom;
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();
         ts.push(&bottom);
-        ts.extend(self.n.iter().map(|n| n.typ()));
+        ts.extend(self.n.iter().skip(one_copy as usize).map(|n| n.typ()));
         let rtyp = wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?;
         let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
         self.typ.check_contains(&ctx.env, &rtyp)?;
@@ -4046,6 +4080,11 @@ impl<R: Rt> Any<R> {
 }
 
 impl<R: Rt> Sample<R> {
+    /// `~!`: a trigger finding the argument absent produces bottom.
+    pub(crate) fn is_strict(&self) -> bool {
+        matches!(self.banking, Banking::Strict)
+    }
+
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,

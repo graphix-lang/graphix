@@ -7,10 +7,11 @@ use crate::{
     },
     format_with_flags, image,
     typ::{
-        Bound, Mutability, TVar, Type,
+        Bound, Mutability, TVar, TVarsSeen, Type,
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
+        normalize::NormCx,
         tvar::{self, Fresh, Level, RigidGate},
     },
 };
@@ -581,17 +582,23 @@ impl FnType {
     // bound-chain-rigid-01, on main and lane alike. probes:
     // ~/ptmp/cr29/scratch/r17-m/{bc_r2d,bc_r2c}.gx, bcmod/main.gx
     // (rank2-bound-chain-01)
+    // 2026-11-06 claude: Lane M's merge of main (lane Q): the rank-2 shapes (bc_r2d,
+    // bc_r2c) are refused where written now (a function type with type variables of its
+    // own stands only as a definition's signature), so only the interface val's print
+    // stands: bcmod/main.gx is told 'val f is declared fn<'b: ['c, `X], 'c: [null,
+    // 'a]>..', the list without 'a.
     /// [`Self::collect_tvars`] and then, until nothing new arrives, the
     /// cells the bounds of the cells found name: a quantifier only the
     /// bound of a bound names is reached too.
     pub fn collect_tvars_through_bounds(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.collect_tvars(known);
+        let mut seen = super::TVarsSeen::take();
+        self.collect_tvars_seen(known, &mut seen);
         let mut todo: LPooled<Vec<TVar>> = LPooled::take();
         todo.extend(known.values().cloned());
         let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         while let Some(tv) = todo.pop() {
             for tc in tv.cell_constraints() {
-                tc.collect_tvars(&mut found);
+                tc.collect_tvars_seen(&mut found, &mut seen);
             }
             for (name, tv) in found.drain() {
                 if !known.contains_key(&name) {
@@ -602,24 +609,26 @@ impl FnType {
         }
     }
 
-    /// `(tvar, conjunct)` for every conjunct of every signature cell
-    /// `keep` selects, normalized (so equality and display agree on the
-    /// canonical form), sorted by name then conjunct.
-    fn constraint_pairs(
-        &self,
-        keep: impl Fn(&TVar) -> bool,
-    ) -> LPooled<Vec<(TVar, Type)>> {
+    /// `(tvar, conjunct)` for every conjunct of every declared quantifier,
+    /// normalized (so equality and display agree on the canonical form),
+    /// sorted by name then conjunct: the part of the constraints that is
+    /// the signature's identity.
+    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        if self.quantifiers.is_empty() {
+            return view;
+        }
         let Some(_guard) = Walking::enter(&VIEWING, self) else { return view };
         // every cell the signature reaches, through its conjuncts too: a
         // quantifier may occur only inside another's bound
         let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut reached);
-        for (_, tv) in reached.drain() {
-            if keep(&tv) {
-                for tc in tv.cell_constraints() {
-                    view.push((tv.clone(), tc.normalize()));
-                }
+        let mut cx = NormCx::take();
+        for q in self.quantifiers.iter() {
+            let Some(tv) = reached.remove(q) else { continue };
+            for tc in tv.cell_constraints() {
+                let n = tc.normalize_int(&mut cx).unwrap_or_else(|| tc.clone());
+                view.push((tv.clone(), n));
             }
         }
         // equality is blind to an open variable's name: `'a: 'b + 'c` holds two
@@ -635,15 +644,6 @@ impl FnType {
                 && var_names(x).as_slice() == var_names(y).as_slice()
         });
         view
-    }
-
-    /// The declared quantifiers' conjuncts, as [`Self::constraint_pairs`]:
-    /// the part of the constraints that is the signature's identity.
-    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
-        if self.quantifiers.is_empty() {
-            return LPooled::take();
-        }
-        self.constraint_pairs(|tv| self.quantifiers.contains(&tv.name))
     }
 
     /// The canonical bytes the image keys this type by: the shape with
@@ -769,7 +769,11 @@ impl FnType {
         self.open_quantifiers(|_, open| {
             cx.quantifiers.insert(open.cell_addr());
         });
-        self.cow_walk(|t| t.resolve_tvars_seen_int(cx))
+        self.cow_walk(|t| t.resolve_tvars_seen_int(cx)).map(|f| {
+            tvar::keep_quantifiers(self, f, |tv| {
+                Type::TVar(tv.clone()).resolve_tvars_seen_int(cx)
+            })
+        })
     }
 
     /// Rewrite every type position through `f` (`None` means
@@ -850,6 +854,16 @@ impl FnType {
     /// conjuncts are guarded per `FnType` address: one can reach back.
     #[doc(hidden)]
     pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
+        self.for_each_part_passing(&mut |_| true, f)
+    }
+
+    /// [`Self::for_each_part`], passing the conjuncts only of the cells
+    /// `pass` admits.
+    fn for_each_part_passing(
+        &self,
+        pass: &mut impl FnMut(&TVar) -> bool,
+        f: &mut impl FnMut(&Type, bool),
+    ) {
         let _depth = PartsDepth::enter();
         let FnType {
             args,
@@ -874,7 +888,9 @@ impl FnType {
             let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
             self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells, &mut seen));
             for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
-                if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr()) {
+                if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr())
+                    && pass(&tv)
+                {
                     for tc in tv.cell_constraints() {
                         f(&tc, true);
                     }
@@ -910,7 +926,12 @@ impl FnType {
     /// [`Type::rename_with`] over the signature.
     #[doc(hidden)]
     pub fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Self {
-        self.cow_walk(|t| t.rename_int(known)).unwrap_or_else(|| self.clone())
+        match self.cow_walk(|t| t.rename_int(known)) {
+            None => self.clone(),
+            Some(f) => tvar::keep_quantifiers(self, f, |tv| {
+                Type::TVar(tv.clone()).rename_int(known)
+            }),
+        }
     }
 
     /// [`Self::instantiate_with`] copying every open cell, whoever owns
@@ -926,9 +947,12 @@ impl FnType {
         known: &mut AHashMap<usize, TVar>,
         how: Fresh<'_>,
     ) -> Self {
-        let mut fresh = self
+        let fresh = self
             .cow_walk(|t| t.instantiate_int(known, how))
             .unwrap_or_else(|| self.clone());
+        let mut fresh = tvar::keep_quantifiers(self, fresh, |tv| {
+            Type::TVar(tv.clone()).instantiate_int(known, how)
+        });
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh
     }
@@ -998,7 +1022,17 @@ impl FnType {
     }
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.for_each_part(&mut |t, _| t.alias_tvars(known))
+        self.alias_tvars_in(known, &tvar::ConjunctsPassed::take())
+    }
+
+    pub(super) fn alias_tvars_in(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        passed: &tvar::ConjunctsPassed,
+    ) {
+        self.for_each_part_passing(&mut |tv| passed.first(tv), &mut |t, _| {
+            t.alias_tvars_in(known, passed)
+        })
     }
 
     /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
@@ -1008,22 +1042,32 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
-    /// A quantifier of this signature no call has picked: the type is a
-    /// scheme, not the type of a call.
-    pub fn has_open_quantifier(&self) -> bool {
-        self.any_open_quantifier(|_| true)
-    }
-
-    /// A rank-2 formal in its definition's body: its open quantifiers are
-    /// held rigid there, so its value is still any instance of itself.
-    fn is_rigid_formal(&self) -> bool {
-        self.any_open_quantifier(|tv| tv.is_rigid() || tv.is_formal_quantifier())
-    }
-
-    fn any_open_quantifier(&self, also: impl Fn(&TVar) -> bool) -> bool {
-        let mut any = false;
-        self.open_quantifiers(|_, open| any |= also(&open));
-        any
+    // CR claude for claude: [readability/low] One instance keeps its scheme's
+    // quantifier list, so a checker message prints a one-instance function type with a
+    // quantifier header, which reads as generic and, written back as an annotation, is
+    // refused by QUANTIFIED_FN: `let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a
+    // x); let y = never(); y <- fs; y <- 1` says `y is Array<fn<'a: Number>(x: 'a ...)
+    // -> 'a> and cannot hold i64`. The list stays because the builtin unread settle
+    // (CallSite::settle_unread) reads quantifier names; printing could drop the header
+    // of a type whose quantifiers are not generic cells instead. probe:
+    // ~/ptmp/cr29/scratch/r16-Q/hint1.gx, hint2.gx (instance-quantifier-print-01)
+    // 2026-11-05 claude: A second face of the same kept quantifier: in a module task,
+    // two calls through a one-instance function a parent binding's projection gives
+    // (main.gx `let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x + x); mod m;`,
+    // m.gx `let g = super::fs[0]$; let go = (g(1), g(1.5))`, m.gxi `val go: (i64,
+    // f64)`) are refused, as the ML rule wants, but the message is "val go is declared
+    // (i64, f64) but implemented ('_7814: unbound within Number & Singleton, ..)",
+    // naming open cells and not fs: has_earlier_quantifier compares fs's kept
+    // quantifier as a fresh copy in the module task, so each call's result stays open.
+    // The sibling forms name fs ("annotate fs"). Whether dropping the list from one
+    // instance (this fix) makes the calls decide the copy and name fs is untried. probe
+    // ~/ptmp/cr29/scratch/review-r16/Q-r2-2/mq1/main.gx (run.sh mq1/main.gx).
+    /// One instance of the scheme under the open gates `open`: what a
+    /// call copies is a fresh cell at the current level, which every use of
+    /// the copy shares (`Fresh::Instantiate`).
+    #[doc(hidden)]
+    pub fn one_instance(&self, open: &IntSet<LambdaId>) -> Self {
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Instantiate(open))
     }
 
     /// A quantifier an earlier compile task left open: the check decided
@@ -1062,12 +1106,16 @@ impl FnType {
             return Ok(());
         }
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut held);
+        let mut seen = TVarsSeen::take();
+        self.collect_tvars_seen(&mut held, &mut seen);
         let mut todo: LPooled<Vec<TVar>> = held.values().cloned().collect();
         let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         while let Some(tv) = todo.pop() {
             for tc in tv.cell_constraints() {
-                tc.normalize().collect_tvars(&mut found);
+                match tc.normalize_int(&mut seen.norm) {
+                    Some(n) => n.collect_tvars_seen(&mut found, &mut seen),
+                    None => tc.collect_tvars_seen(&mut found, &mut seen),
+                }
             }
             for (name, tv) in found.drain() {
                 if !held.contains_key(&name) {
@@ -1082,78 +1130,6 @@ impl FnType {
                 "'{q} is declared but the signature does not hold it: write it on \
                  a parameter, the return type, the throws or the bound of a \
                  quantifier the signature holds, or remove it"
-            ),
-        }
-    }
-
-    // CR claude for claude: [bug/low] A trait method's parameter whose rank-2 bound names
-    // `self` or a constructor trait's element is refused here, as any variable its written
-    // type does not quantify is: `trait T { val m: fn(self, k: fn<'a: [self, null]>(x: 'a)
-    // -> 'a) -> (self, null) }` and `trait C { val m: fn(self<'a>, f: fn<'b: ['a,
-    // null]>(x: 'b) -> 'b) -> null }` ("a rank-2 quantifier's bound names 'self"). Main
-    // (387c29e60) runs every such method right in every mode where the rank-2 parameter is
-    // positional, so checked after `self`, which decides both: an impl, a generic impl, a
-    // default body (t7, t8, t9, t11, t12). A labeled parameter comes before `self`, and
-    // there it is the hole rank2-bound-instance-01 closes (`fn(#f: fn<'b: ['a, null]>(x:
-    // 'b) -> 'b, self<'a>)`: main's check passes, its build refuses every instance, s9,
-    // s10) or main's check refuses it (`#k: fn<'a: [self, null]>`, s7, s8). No annotation
-    // passes: the trait cannot write its impls' types. Options: (a) keep refusing, the
-    // one-line rule as it stands; (b) let a positional parameter's rank-2 bound name `self`
-    // and its element, a labeled one's not: one line, but the parameter's kind decides, and
-    // only what main runs argues that a positional parameter is always checked after
-    // `self`. Pins of the labeled shapes, which stay refused either way:
-    // lang::types::rank2_bound_naming_self_is_refused,
-    // rank2_bound_naming_a_ctor_traits_element_is_refused. probes:
-    // ~/ptmp/cr29/scratch/r11-R/r1fix/{t7_self_in_rank2,t8_self_in_rank2_generic,t9_ctor_elem_rank2,t11_self_rank2_default,t12_elem_rank2_default,s7_labeled_first,s8_labeled_first_default,s9_elem_labeled_first,s10_elem_labeled_first_default}.gx
-    // (rank2-self-bound-01)
-    // 2026-11-03 claude: Corrected evidence (review r12 of lane R, both reviewers): no
-    // shape of a rank-2 bound naming self is the hole; only the constructor trait's element
-    // is. Main (387c29e60, 30702808d) runs every labeled-self method its check passes right
-    // in every mode (default, --no-fusion, GRAPHIX_NO_SUBST=1, ELAB_AUDIT silent, fuzzer
-    // check AGREE): s7i (one i64 impl, exactly the pin rank2_bound_naming_self_is_refused),
-    // s7s (i64 and string), s11 (a 'q: T caller), s15 (a struct self), s16 (a HOF argument,
-    // under array::map). Its check refuses labeled self only over a generic impl (s7, s14)
-    // or a default body (s8, s8i), and its build refuses none. So refusing self is
-    // over-refusal of methods that run, with no annotation that passes: lost s7i, s7s, s11,
-    // s15, s16 and the positional t7, t8, t11; the element is the hole labeled (s9, s10)
-    // and a loss positional (t9, t12). Option (b) above rests on the wrong premise.
-    // Corrected options: (a) keep refusing self and the element, the one-line rule as
-    // built, with those losses; (b) let a trait method's rank-2 bound name self, the
-    // element staying refused. (b) is not a filter by name: self parses as a type anywhere
-    // and outside a trait is a plain variable, where it is the hole (|#k: fn<'a: [self,
-    // null]>(x: 'a) -> 'a, z: self| ..: main's check passes, its build refuses the
-    // instance, selfout_let), so the exemption needs scoping to a trait method's signature
-    // and its impls' and default's lets, and two further choices: at a generic impl self
-    // becomes the target, whose variable the rule then names (t8 runs on main, s7 and s14
-    // its check refuses), and at a default body self stays a variable (t11 runs on main, s8
-    // its check refuses). Not built: a mechanism and a rule the brief does not state.
-    // probes: ~/ptmp/cr29/scratch/review-r11/R-r2-1/t/{s7i,s7s,s11,s14,s15,s16,s8i}_*.gx,
-    // review-r11/R-r2-2/{pin_self,self_lab_two_mono,self_lab_generic,self_lab_default_i64,pin_elem}.gx,
-    // ~/ptmp/cr29/scratch/r11-R/r12/selfout_{let,pos}.gx
-    // 2026-11-03 claude: Scope of the note above (review r13 of lane R): 'no shape of a
-    // rank-2 bound naming self is the hole' holds for a self dispatched to one impl. A
-    // union self fails the build for ANY rank-2 argument, self in its bound or not (y1,
-    // y1c, y1d, a6, a8: main's check passes, every mode's build refuses 'the argument is
-    // not polymorphic in 'a'), a separate bug, CR union-self-rank2-01; and self outside a
-    // trait is the hole (selfout_let). Options (a) and (b) stand. The note's s15/s16 are
-    // review-r11/R-r2-1 probes, not review-r10's. probes:
-    // ~/ptmp/cr29/scratch/review-r11/R-r3-2/y/, R-r3-1/t/
-    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2 types: a written quantified function type stands only as a definition's, a val's or a trait method's own scheme; plus the ML rule: a function stays generic
-    // only where a binding names it, and anywhere else (data, a result) takes one instance. Lane Q (cr51-Q) builds it; this CR goes with the feature.
-    /// Refuse a bound of the type's own quantifiers (`bounds`, its
-    /// [`Self::constraint_view`]) naming a variable it does not quantify.
-    /// A rank-2 quantifier is held rigid at exactly its bounds, which such
-    /// a variable, decided elsewhere, does not say.
-    pub fn check_bounds_closed(&self, bounds: &[(TVar, Type)]) -> Result<()> {
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        for (_, b) in bounds.iter() {
-            b.collect_tvars(&mut named);
-        }
-        match named.keys().filter(|n| !self.quantifiers.contains(*n)).min() {
-            None => Ok(()),
-            Some(n) => bail!(
-                "a rank-2 quantifier's bound names '{n}, which this function type \
-                 does not quantify: bound it by a written type"
             ),
         }
     }
@@ -1188,44 +1164,11 @@ impl FnType {
             for c in tv.cell_constraints() {
                 f.add_cell_constraint(walk(&c, known));
             }
-            if tv.is_formal_quantifier() {
-                f.mark_formal_quantifier()
-            }
         }
     }
 
-    /// Map each open quantifier of a function type the signature holds
-    /// (a rank-2 formal's `fn<'b: C>`) that `copied` says a call copies
-    /// to a fresh generic cell, its conjuncts copied through `walk`: the
-    /// formal's callers pick it, never the site that passes the argument.
-    /// A rank-2 formal's quantifier is copied whatever gate owns it.
-    fn generic_inner_quantifiers(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-        copied: impl Fn(&TVar) -> bool,
-        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
-    ) {
-        let mut inner: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.inner_quantifiers(&mut inner);
-        inner.retain(|addr, tv| {
-            !known.contains_key(addr) && (tv.is_formal_quantifier() || copied(tv))
-        });
-        for (addr, tv) in inner.iter() {
-            known.insert(*addr, TVar::empty_generic(tv.name.clone()));
-        }
-        for (addr, tv) in inner.iter() {
-            let f = known[addr].clone();
-            for c in tv.cell_constraints() {
-                f.add_cell_constraint(walk(&c, known));
-            }
-            if tv.is_formal_quantifier() {
-                f.mark_formal_quantifier()
-            }
-        }
-    }
-
-    /// The open quantifiers of every function type the signature holds
-    /// (a rank-2 formal's `fn<'b: C>`), by cell.
+    /// The open quantifiers of every function type the signature holds, by
+    /// cell: a generic function's a scheme holds.
     pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         self.for_each_part(&mut |t, _| {
@@ -1237,17 +1180,9 @@ impl FnType {
         });
     }
 
-    /// A call's copy of a signature whose cells it shares (a parameter
-    /// called in its definition's body): only the quantifiers are fresh,
-    /// its own and its rank-2 formals'.
-    #[doc(hidden)]
-    pub fn shared_call(&self) -> Self {
-        self.fresh_quantified(true)
-    }
-
-    /// A copy whose own open quantifiers are fresh cells, and its rank-2
-    /// formals' when `formals`; every other cell is shared.
-    fn fresh_quantified(&self, formals: bool) -> Self {
+    /// A copy whose own open quantifiers are fresh cells; every other cell
+    /// is shared.
+    fn fresh_own_quantifiers(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let image = |known: &AHashMap<usize, TVar>, a| {
             known.get(&a).map(|f| Type::TVar(f.clone()))
@@ -1256,9 +1191,6 @@ impl FnType {
             c.swap_cells(&|a| image(known, a))
         };
         self.fresh_quantifiers(&mut known, walk);
-        if formals {
-            self.generic_inner_quantifiers(&mut known, |_| false, walk);
-        }
         if known.is_empty() {
             return self.clone();
         }
@@ -1267,18 +1199,12 @@ impl FnType {
     }
 
     /// A call's copy of the signature under the open gates `open`
-    /// (`Fresh::Instantiate`), its quantifiers always fresh, each fresh
-    /// cell the copy holds more than once frozen, so it keeps its cell
-    /// when it unifies with an unfrozen one.
+    /// (`Fresh::Instantiate`), each fresh cell the copy holds more than
+    /// once frozen, so it keeps its cell when it unifies with an unfrozen
+    /// one.
     pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let how = Fresh::Instantiate(open);
-        let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
-            c.reset_tvars_int(known, how).unwrap_or_else(|| c.clone())
-        };
-        self.fresh_quantifiers(&mut known, walk);
-        self.generic_inner_quantifiers(&mut known, |tv| tv.level().copied_by(open), walk);
-        let fresh = self.reset_tvars_int(&mut known, how);
+        let fresh = self.reset_tvars_int(&mut known, Fresh::Instantiate(open));
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();
         let mut occurrences = super::tvar::Occurrences::default();
@@ -1321,19 +1247,16 @@ impl FnType {
     /// portion that normalizes away carries no constraint force, and
     /// identity must not depend on the stored form.
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.collect_tvars_seen(known, &mut LPooled::take())
+        self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
-        seen: &mut AHashMap<usize, Type>,
+        seen: &mut TVarsSeen,
     ) {
-        // one normal form for every conjunct: a cell its conjuncts share is
-        // normalized once
-        let mut cx = super::normalize::NormCx::take();
         self.for_each_part(&mut |t, constraint| match constraint {
-            true => match t.normalize_int(&mut cx) {
+            true => match t.normalize_int(&mut seen.norm) {
                 Some(n) => n.collect_tvars_seen(known, seen),
                 None => t.collect_tvars_seen(known, seen),
             },
@@ -1423,13 +1346,12 @@ impl FnType {
         let copy;
         let this = match self.has_earlier_quantifier() {
             true => {
-                copy = self.fresh_quantified(false);
+                copy = self.fresh_own_quantifiers();
                 &copy
             }
             false => self,
         };
-        let adopted = flags.contains(ContainsFlags::Adopt).then_some(t);
-        let gates = this.open_quantifier_gates(adopted);
+        let gates = this.open_quantifier_gates();
         let gated = u32::from(!gates.is_empty());
         hist.gated += gated;
         let r = this.contains_gated(flags, env, hist, t);
@@ -1481,13 +1403,13 @@ impl FnType {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        // a rank-2 formal passed on is any instance of itself, as is a
-        // type whose quantifier an earlier task left open: its quantifiers
-        // are fresh for this comparison, so self's bind them
+        // a type whose quantifier an earlier task left open is any instance
+        // of itself: its quantifiers are fresh for this comparison, so
+        // self's bind them
         let fresh;
-        let t = match t.is_rigid_formal() || t.has_earlier_quantifier() {
+        let t = match t.has_earlier_quantifier() {
             true => {
-                fresh = t.shared_call();
+                fresh = t.fresh_own_quantifiers();
                 &fresh
             }
             false => t,
@@ -1538,32 +1460,14 @@ impl FnType {
         Ok(true)
     }
 
-    /// Rigid gates on the quantifiers no call has picked: each holds what
-    /// it meets to its declared bounds, unless self is the written form of
-    /// the function `adopted` types: then each adopts the bounds of its
-    /// counterpart there, and takes the type `adopted` decided it to.
-    fn open_quantifier_gates(
-        &self,
-        adopted: Option<&Self>,
-    ) -> LPooled<Vec<super::tvar::RigidGate>> {
-        let mut decided: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        if let Some(t) = adopted {
-            decided.extend(t.quantifiers.iter().cloned());
-            t.each_quantifier(|name, tv| {
-                if tv.open_cell().is_some() {
-                    decided.remove(name);
-                }
-            })
-        }
+    /// Rigid gates on a scheme's quantifiers no call has picked: what each
+    /// meets must hold for every type its bound admits.
+    fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
         let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.each_quantifier(|name, tv| {
-            if tv.open_cell().is_none() || decided.contains(name) {
-                return;
+        self.open_quantifiers(|tv, open| {
+            if open.level().is_generic() {
+                gates.push(tv.open_rigid())
             }
-            gates.push(match adopted {
-                Some(_) => tv.open_rigid(),
-                None => tv.open_quantifier_rigid(),
-            })
         });
         gates
     }
@@ -1600,11 +1504,6 @@ impl FnType {
     /// before its body is typechecked. Return and throws are what the
     /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
-        // a rank-2 formal passed on is any instance of itself, copied fresh
-        // at the check: nothing is pushed into its own quantifiers
-        if t.is_rigid_formal() {
-            return Ok(());
-        }
         let mut hist = ContainsHist::new();
         for (s, t) in self.align(t).0 {
             t.typ.contains_int(ContainsFlags::Commit.into(), env, &mut hist, &s.typ)?;
@@ -1655,9 +1554,6 @@ impl FnType {
         if !aligned {
             bail!("the signature's and the implementation's labeled arguments differ")
         }
-        // the arguments are the implementation's to use: what pairs there
-        // stands under one more contravariant position
-        tvar_map.contra = !tvar_map.contra;
         let args = (|| -> Result<()> {
             let first_positional = self.first_positional();
             for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
@@ -1698,7 +1594,6 @@ impl FnType {
             }
             Ok(())
         })();
-        tvar_map.contra = !tvar_map.contra;
         args?;
         sig_rtype
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
@@ -1722,7 +1617,7 @@ impl FnType {
                 })
             })
             .context("in throws clause")?;
-        tvar_map.fns.push((self.clone(), impl_fn.clone(), tvar_map.contra));
+        tvar_map.fns.push((self.clone(), impl_fn.clone()));
         Ok(())
     }
 
@@ -1732,7 +1627,6 @@ impl FnType {
         &self,
         env: &Env,
         impl_fn: &Self,
-        contra: bool,
         tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
@@ -1750,21 +1644,39 @@ impl FnType {
         // the signature declares need not be the implementation's. One the
         // implementation does carry pairs the variables inside it with the
         // signature's, as positions do.
+        // each signature cell's paired impl cells, by their place in
+        // `impl_cells`, as the pairing grows
+        let place: LPooled<AHashMap<usize, usize>> = impl_cells
+            .iter()
+            .enumerate()
+            .map(|(i, (_, tv))| (tv.cell_addr(), i))
+            .collect();
+        let mut paired_to: LPooled<AHashMap<usize, SmallVec<[usize; 1]>>> =
+            LPooled::take();
+        let mut indexed = 0;
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
             if *sig_tc == Type::Any {
                 continue;
             }
+            for (addr, t) in tvar_map.paired_since(indexed) {
+                if let Type::TVar(s) = t
+                    && let Some(i) = place.get(&addr)
+                {
+                    paired_to.entry(s.cell_addr()).or_default().push(*i);
+                }
+            }
+            indexed = tvar_map.paired_len();
             // the impl cells the signature's was matched with, else the
             // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way
-            let sig_addr = sig_tv.cell_addr();
-            let mut matched: LPooled<Vec<&TVar>> = impl_cells
-                .iter()
-                .filter(|(_, tv)| {
-                    matches!(tvar_map.sig_type(tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
-                })
-                .map(|(_, tv)| tv)
-                .collect();
+            let mut matched: LPooled<Vec<&TVar>> =
+                match paired_to.get_mut(&sig_tv.cell_addr()) {
+                    None => LPooled::take(),
+                    Some(places) => {
+                        places.sort_unstable();
+                        places.iter().map(|i| &impl_cells[*i].1).collect()
+                    }
+                };
             if matched.is_empty()
                 && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
             {
@@ -1772,9 +1684,8 @@ impl FnType {
             }
             for impl_tv in matched.iter() {
                 for c in impl_tv.cell_constraints().iter() {
-                    let mut scratch = tvar_map.clone();
-                    if sig_tc.sig_matches_int(env, c, &mut scratch, hist).is_ok() {
-                        *tvar_map = scratch;
+                    if tvar_map.trial(|m| sig_tc.sig_matches_int(env, c, m, hist)).is_ok()
+                    {
                         break;
                     }
                 }
@@ -1786,6 +1697,10 @@ impl FnType {
         // every conjunct of every impl cell must admit the signature's
         // concrete choice, or follow from the conjuncts of the signature
         // variable it stands for.
+        // the signature's variables held rigid while `declared` judges, from
+        // its first call to the next judgment of another kind
+        let sig_rigid: RefCell<Option<LPooled<Vec<RigidGate>>>> = RefCell::new(None);
+        let release_sig = || drop(sig_rigid.borrow_mut().take());
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
@@ -1799,8 +1714,13 @@ impl FnType {
             // the conjunct in the signature's terms, whose variables are
             // each caller's to pick
             let in_sig = impl_tc.swap_cells(&|a| tvar_map.sig_type(a).cloned());
-            let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-            self.for_each_part(&mut |t, _| super::contains::hold_rigid(t, &mut gates));
+            sig_rigid.borrow_mut().get_or_insert_with(|| {
+                let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+                self.for_each_part(&mut |t, _| {
+                    super::contains::hold_rigid(t, &mut gates)
+                });
+                gates
+            });
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -1811,76 +1731,9 @@ impl FnType {
                  does not declare"
             )
         };
-        // a quantifier of a function the implementation is handed is the
-        // implementation's to pick at each call: the signature's paired
-        // argument must leave it a quantifier too
-        let arg_quantifiers = |f: &FnType| {
-            let mut q: AHashMap<usize, TVar> = AHashMap::new();
-            FnType { args: f.args.clone(), vargs: f.vargs.clone(), ..FnType::default() }
-                .inner_quantifiers(&mut q);
-            q
-        };
-        let (impl_q, sig_q) = (arg_quantifiers(impl_fn), arg_quantifiers(self));
-        // a quantifier of a function type inside this one is judged at that
-        // function type's own pair, under its polarity
-        let mut nested_q: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        impl_fn.inner_quantifiers(&mut nested_q);
-        // under a contravariant position the function is the one the
-        // implementation is handed: it uses it at any type its own bound
-        // admits, so that bound must imply each of the signature's
-        let mut handed_q: LPooled<AHashSet<usize>> = LPooled::take();
-        if contra {
-            impl_fn.open_quantifiers(|_, open| {
-                handed_q.insert(open.cell_addr());
-            });
-        }
-        let held_to = |sig_tv: &TVar, impl_tv: &TVar| -> Result<()> {
-            let impl_tcs: LPooled<Vec<Type>> = impl_tv
-                .cell_constraints()
-                .iter()
-                .map(|c| c.swap_cells(&|a| tvar_map.sig_type(a).cloned()))
-                .collect();
-            for sig_tc in sig_tv.cell_constraints().iter() {
-                if *sig_tc == Type::Any {
-                    continue;
-                }
-                let mut held = false;
-                for c in impl_tcs.iter() {
-                    if c.implies(env, sig_tc)? {
-                        held = true;
-                        break;
-                    }
-                }
-                if !held {
-                    bail!(
-                        "the implementation uses the function it is handed at any \
-                         {impl_tv}, where the signature hands it one at {sig_tv}: \
-                         {sig_tc} only"
-                    )
-                }
-            }
-            Ok(())
-        };
         for (_, tv) in impl_cells.iter() {
-            let addr = tv.cell_addr();
-            if impl_q.contains_key(&addr) {
-                match tvar_map.sig_type(addr) {
-                    Some(Type::TVar(s)) if sig_q.contains_key(&s.cell_addr()) => (),
-                    None => (),
-                    Some(t) => bail!(
-                        "the implementation picks {tv} at each call of the function it \
-                         is handed, where the signature hands it a function at {t}"
-                    ),
-                }
-            }
-            if nested_q.contains_key(&addr) {
-                continue;
-            }
-            match tvar_map.sig_type(addr) {
+            match tvar_map.sig_type(tv.cell_addr()) {
                 None => (),
-                Some(Type::TVar(sig_tv)) if handed_q.contains(&addr) => {
-                    held_to(sig_tv, tv)?
-                }
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
                         declared(sig_tv, &impl_tc)?
@@ -1907,6 +1760,7 @@ impl FnType {
                             }
                         }
                     }
+                    release_sig();
                     for impl_tc in tv.cell_constraints() {
                         let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
                         // the signature's variables are every caller's to
@@ -1981,6 +1835,12 @@ fn is_self_param(a: &FnArgType) -> bool {
 // Main 968fa9bc0 the same. Found by review r14 of lane K (round 3). probe:
 // ~/ptmp/cr29/scratch/review-r14/K-r2-1/q/fnqtyp_320.gx (genq.py fnqtyp N
 // OUT), cg/fnq_160.out.gz (rank2-print-01)
+// 2026-11-05 claude: Lane Q (cr51-Q): written nested quantified function types
+// are now refused by the check (QUANTIFIED_FN at Type::rewrite_trait_args), so
+// fnqtyp_320 no longer type-checks, but graphix fmt formats without checking
+// and still reaches this printer path at the same cost; an inferred nest (a
+// lambda declaring a variable, returned by a lambda declaring one, ...) also
+// prints nested headers. The CR stands for the formatter.
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
@@ -2077,6 +1937,18 @@ pub(crate) fn write_bounds(
     Ok(())
 }
 
+// CR claude for claude: [readability/low] Printing under PrintFlag::DerefTVars
+// prints a parameter's binding in place, so a cell of the quantifier's name the binding
+// holds prints as the quantifier: `'a: Number |y, x: 'a| -> 'a { let z = array::len(y);
+// x }` passed for `k: fn<'c: Any>(y: Array<i64>, x: 'c) -> 'c` is refused with "does
+// not contain fn<'a: Number>(y: Array<'a: i64>, x: 'a: unbound within Number)", the
+// `'a: i64` being array::len's copied 'a, not the quantifier. Type::written_form inlines
+// bindings the same way. The walks rename the quantifier apart (tvar::keep_quantifiers,
+// resolve-capture-01); the printer could do the same over the printed signature. probe:
+// ~/ptmp/cr29/scratch/r17-hk/s6.gx (print-capture-01)
+// 2026-11-06 claude: Its probe hands the lambda to a rank-2 formal (k: fn<'c: Any>(..)),
+// which main refuses since rank-2 types were removed (lane Q); the printer capture is
+// unshown on main and may need a declared signature to reach.
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let constraints = printed_quantifiers(self);
@@ -2184,6 +2056,62 @@ impl FnType {
 mod tests {
     use crate::expr::parser::parse_fn_type;
     use poolshark::local::LPooled;
+
+    /// A walk that inlines a parameter's binding holding a cell named like
+    /// the signature's quantifier keeps the quantifier the signature's:
+    /// renamed apart where it stands in a position, the namesake renamed
+    /// where it is held through a bound alone.
+    #[test]
+    fn an_inlined_binding_captures_no_quantifier() {
+        use crate::typ::{TVar, Type};
+        use ahash::AHashMap;
+        let quantifier = |ft: &super::FnType, name: &str| {
+            let mut out = None;
+            ft.each_quantifier(|q, tv| {
+                if &**q == name {
+                    out = Some(tv.clone())
+                }
+            });
+            out.unwrap()
+        };
+        let cell = |t: &Type| match t {
+            Type::TVar(tv) => tv.cell_addr(),
+            t => panic!("{t}"),
+        };
+        let element = |ft: &super::FnType| match &ft.args[0].typ {
+            Type::Array(e) => cell(e),
+            t => panic!("{t}"),
+        };
+        let walks = |ft: &super::FnType| {
+            let p = match &ft.args[0].typ {
+                Type::TVar(p) => p.clone(),
+                t => panic!("{t}"),
+            };
+            p.bind(Type::Array(triomphe::Arc::new(Type::TVar(TVar::empty_named(
+                "a".into(),
+            )))));
+            [
+                ("instantiate_owned", ft.instantiate_owned(&mut AHashMap::default())),
+                ("rename_with", ft.rename_with(&AHashMap::default())),
+                ("resolve_tvars", ft.resolve_tvars()),
+            ]
+        };
+        let ft = parse_fn_type("fn<'a: Number>(y: 'p, x: 'a) -> 'a").unwrap();
+        for (walk, copy) in walks(&ft) {
+            let q = quantifier(&copy, &copy.quantifiers[0]);
+            assert_eq!(q.cell_addr(), cell(&copy.args[1].typ), "{walk}: {copy}");
+            assert!(!q.cell_constraints().is_empty(), "{walk}: {copy}");
+        }
+        let ft =
+            parse_fn_type("fn<'a: Any, 'b: ['a, null]>(y: 'p, x: 'b) -> 'b").unwrap();
+        for (walk, copy) in walks(&ft) {
+            assert_ne!(
+                quantifier(&copy, "a").cell_addr(),
+                element(&copy),
+                "{walk}: {copy}"
+            );
+        }
+    }
 
     /// The refusal names the first variable declared whose bound reaches
     /// it, by the shortest path back its bounds' names lead to first:
@@ -2472,6 +2400,18 @@ impl Type {
     ) -> Option<Type> {
         ReadCopies::default().read(self, open, keep)
     }
+
+    /// [`Self::scheme_read`] taking one instance of each signature
+    /// ([`FnType::one_instance`]): a read no binding names.
+    #[doc(hidden)]
+    pub fn instance_read(
+        &self,
+        open: &IntSet<LambdaId>,
+        keep: &dyn Fn(&FnType) -> bool,
+    ) -> Option<Type> {
+        let mut copies = ReadCopies::default();
+        ReadWalk { open, keep, copies: &mut copies, generic: false }.go(self)
+    }
 }
 
 /// The copies reads take ([`Type::scheme_read`]) through one cell map:
@@ -2495,7 +2435,7 @@ impl ReadCopies {
         open: &IntSet<LambdaId>,
         keep: &dyn Fn(&FnType) -> bool,
     ) -> Option<Type> {
-        ReadWalk { open, keep, copies: self }.go(t)
+        ReadWalk { open, keep, copies: self, generic: true }.go(t)
     }
 }
 
@@ -2503,6 +2443,17 @@ struct ReadWalk<'a> {
     open: &'a IntSet<LambdaId>,
     keep: &'a dyn Fn(&FnType) -> bool,
     copies: &'a mut ReadCopies,
+    /// Copies are generic, a scheme's; else one instance's.
+    generic: bool,
+}
+
+impl<'a> ReadWalk<'a> {
+    fn how(&self) -> Fresh<'a> {
+        match self.generic {
+            true => Fresh::Scheme(self.open),
+            false => Fresh::Instantiate(self.open),
+        }
+    }
 }
 
 impl ReadWalk<'_> {
@@ -2529,16 +2480,15 @@ impl ReadWalk<'_> {
                     None
                 }
                 Type::Fn(ft) => {
-                    let fresh = ft.reset_tvars_int(
-                        &mut self.copies.known,
-                        Fresh::Scheme(self.open),
-                    );
+                    let how = self.how();
+                    let fresh = ft.reset_tvars_int(&mut self.copies.known, how);
                     fresh.alias_tvars(&mut LPooled::take());
                     Some(Type::Fn(Arc::new(fresh)))
                 }
                 Type::Ref(_) if t.copied_outside_functions(self.open) => {
+                    let how = self.how();
                     let fresh = t
-                        .reset_tvars_int(&mut self.copies.known, Fresh::Scheme(self.open))
+                        .reset_tvars_int(&mut self.copies.known, how)
                         .unwrap_or_else(|| t.clone());
                     fresh.alias_tvars(&mut LPooled::take());
                     Some(fresh)
@@ -2696,7 +2646,7 @@ fn copied_beneath(t: &Type, open: &IntSet<LambdaId>, functions: bool) -> bool {
                 seen.insert(tv.cell_addr())
                     && match tv.binding() {
                         Some(b) => go(&b, open, functions, seen),
-                        None => !tv.is_quantifier_rigid() && tv.level().copied_by(open),
+                        None => tv.level().copied_by(open),
                     }
             }
             Type::Fn(_) if !functions => false,

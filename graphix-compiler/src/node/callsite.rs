@@ -11,12 +11,10 @@ use super::{
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
-    LambdaId, LambdaInstanceId, Node, NodeView, Notify, PrintFlag, Refs, ResolvingLambda,
-    Rt, Scope, StaticHold, Tag, TagValue, Update, View, analysis, bailat, dbgenv,
-    deref_typ,
+    LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
+    StaticHold, Tag, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
-    format_with_flags,
     fusion::{
         self,
         emit::{
@@ -36,8 +34,7 @@ use crate::{
     profile::{self, Phase},
     stack::ensure_sufficient,
     typ::{
-        AppKey, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
-        TypeMismatch,
+        ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
         tvar::{Level, RigidGate},
     },
     wrap,
@@ -299,7 +296,6 @@ fn checked_default<R: Rt>(
     site: Option<&FnType>,
     value: Option<&FnType>,
     judge: Judge,
-    held_in: Option<&mut HeldIn>,
 ) -> Result<Node<R>> {
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
@@ -311,6 +307,7 @@ fn checked_default<R: Rt>(
         let mut node = f.in_signature(ctx, types.clone(), |ctx| {
             compile(ctx, flags, expr.clone(), &local_scope, top_id)
         })?;
+        super::bind::name_value(&mut node, true);
         let res = match types {
             Some(mut types) => node.typecheck0_instance(ctx, &mut types),
             None => {
@@ -330,31 +327,18 @@ fn checked_default<R: Rt>(
         Judge::Check | Judge::Bind => None,
     };
     let typ = copy.as_ref().unwrap_or(node.typ());
-    // the default is held as a written argument is: general in each
-    // quantifier its label holds, in the signature the call sees it in
-    let held = |sig: &FnType, held_in: &mut HeldIn| match label(sig) {
+    // the default is held as a written argument is, in the signature the
+    // call sees it in
+    let held = |sig: &FnType| match label(sig) {
         None => Ok(()),
-        Some(t) if !t.may_hold_quantified_fn(&ctx.env) => t.check_contains(&ctx.env, typ),
-        Some(t) => {
-            held_in.before(sig);
-            let contain = |t: &Type| t.check_contains(&ctx.env, typ);
-            let quantified = held_generally(ctx, &t, &node, contain)?;
-            held_in.held(&ArgKey::Named(name.clone()), "the default", &quantified);
-            Ok(())
-        }
+        Some(t) => t.check_contains(&ctx.env, typ),
     };
-    let held_at_once = |sig: &FnType| {
-        let mut held_in = HeldIn::default();
-        held(sig, &mut held_in)?;
-        held_in.judged(sig)
-    };
-    let res = res.and_then(|()| match (site.filter(|s| label(*s).is_some()), held_in) {
-        (Some(site), Some(held_in)) => held(site, held_in),
-        (Some(site), None) => held_at_once(site),
-        (None, _) => {
+    let res = res.and_then(|()| match site.filter(|s| label(*s).is_some()) {
+        Some(site) => held(site),
+        None => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-            held_at_once(&callee_instance(ctx, f, name, site, &mut gates))?;
-            value.map_or(Ok(()), held_at_once)
+            held(&callee_instance(ctx, f, name, site, &mut gates))?;
+            value.map_or(Ok(()), held)
         }
     });
     node.refs(defaults);
@@ -404,7 +388,6 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(formal),
                 Some(value),
                 Judge::Check,
-                None,
             )
             .map_err(|e| met_default_note::<R>(e, &defs, name))?;
             ctx.discard(node);
@@ -613,9 +596,9 @@ fn hidden_defaults_at<R: Rt>(
         | (Type::List(d), Type::List(v))
         | (Type::Error(d), Type::Error(v))
         | (Type::ByRef(_, d), Type::ByRef(_, v)) => at(ctx, d, v),
-        (Type::Map { key: dk, value: dv }, Type::Map { key: vk, value: vv }) => {
-            at(ctx, dk, vk)?;
-            at(ctx, dv, vv)
+        (Type::Map(d), Type::Map(v)) => {
+            at(ctx, &d.key, &v.key)?;
+            at(ctx, &d.value, &v.value)
         }
         _ => Ok(()),
     })
@@ -702,33 +685,6 @@ fn compile_apply_args<R: Rt>(
     Ok(res)
 }
 
-/// The rank-2 quantifiers of a formal: those of each function type at a
-/// part of it the value produces (the formal itself, a field, an element,
-/// a member, an abstract type's parameter, a function type's result or
-/// throws; never a parameter), as the function type names them.
-type Quantified = SmallVec<[(ArcStr, TVar); 2]>;
-
-/// A formal holding a quantified function type `fn<'b: C>(..)`, with the
-/// typedefs on the way to one expanded, and its [`Quantified`] held rigid
-/// for the argument's check: the argument must be well typed for every
-/// 'b the bound admits, since the callee may call it at any. `None` for
-/// any other formal.
-fn quantified_formal(
-    env: &Env,
-    typ: &Type,
-) -> Option<(Type, LPooled<Vec<RigidGate>>, Quantified)> {
-    if !typ.may_hold_quantified_fn(env) {
-        return None;
-    }
-    let mut quantified = Quantified::new();
-    let formal = rank2_parts(env, typ, &mut Expanding::default(), &mut quantified);
-    if quantified.is_empty() {
-        return None;
-    }
-    let gates = quantified.iter().map(|(_, tv)| tv.open_quantifier_rigid()).collect();
-    Some((formal.unwrap_or_else(|| typ.clone()), gates, quantified))
-}
-
 /// `t`, a typedef reference, expanded, with its definition's key; `None`
 /// where it does not resolve (its check reports that) or `expanding`
 /// holds its definition already (a recursive typedef met inside its own
@@ -737,173 +693,16 @@ fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> 
     t.lookup_ref_probe(env).filter(|(key, _)| !expanding.contains(key))
 }
 
-/// A walk's typedef expansions: those in progress, each one it met in
-/// progress and so did not expand again, and each parameterless one whose
-/// expansion held nothing, with the ones in progress it met there; each
-/// shared node of the walked type outside every expansion, and each
-/// application whose walk met none in progress, by its definition and its
-/// parameters' keys (the parameters held, so the identities stay theirs:
-/// [`Type::param_key`]), with what its walk built and whether it met a
-/// quantifier; the quantified function types met so far, and the cells of
-/// the quantifiers pushed.
-#[derive(Default)]
-struct Expanding {
-    stack: SmallVec<[usize; 4]>,
-    met: SmallVec<[usize; 4]>,
-    clean: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>>,
-    nodes: LPooled<AHashMap<usize, (Option<Type>, bool)>>,
-    apps: LPooled<AHashMap<AppKey, (Option<Type>, bool, TArc<[Type]>)>>,
-    found: usize,
-    quantifiers: LPooled<AHashSet<usize>>,
-}
-
-impl Expanding {
-    /// `t` expanded, or `None` where it does not resolve or is in progress.
-    fn expand(&mut self, env: &Env, t: &Type) -> Option<(usize, Type)> {
-        let (key, whole) = t.lookup_ref_probe(env)?;
-        if self.stack.contains(&key) {
-            self.met.push(key);
-            return None;
-        }
-        Some((key, whole))
-    }
-
-    /// Whether `key`'s expansion held nothing while the ones in progress it
-    /// met are in progress again; met again for the walk's later records.
-    fn known_clean(&mut self, key: usize) -> bool {
-        match self.clean.get(&key) {
-            Some(met) if met.iter().all(|k| self.stack.contains(k)) => {
-                self.met.extend(met.iter().copied());
-                true
-            }
-            Some(_) | None => false,
-        }
-    }
-}
-
-/// Push to `out` the quantifiers of each function type at a part of `t`
-/// the value produces ([`Quantified`]), each once; `t` rebuilt with every
-/// binding and typedef on the way to one expanded, `None` where it is
-/// unchanged. A typedef already being expanded is not expanded again.
-fn rank2_parts(
-    env: &Env,
-    t: &Type,
-    expanding: &mut Expanding,
-    out: &mut Quantified,
-) -> Option<Type> {
-    rank2_step();
-    ensure_sufficient(|| {
-        // a node many paths share is walked once; one an expansion built
-        // lives only while it is walked, so it has no identity
-        let node = t.shared_identity().filter(|_| expanding.stack.is_empty());
-        if let Some((r, found)) = node.and_then(|n| expanding.nodes.get(&n)) {
-            expanding.found += usize::from(*found);
-            return r.clone();
-        }
-        let before = expanding.found;
-        let found = |expanding: &Expanding| expanding.found > before;
-        let r = match t {
-            Type::Fn(ft) => {
-                ft.each_quantifier(|name, tv| {
-                    if expanding.quantifiers.insert(tv.cell_addr()) {
-                        out.push((name.clone(), tv.clone()))
-                    }
-                });
-                expanding.found += usize::from(!ft.quantifiers.is_empty());
-                let rtype = rank2_parts(env, &ft.rtype, expanding, out);
-                let throws = rank2_parts(env, &ft.throws, expanding, out);
-                (rtype.is_some() || throws.is_some()).then(|| {
-                    Type::Fn(TArc::new(FnType {
-                        rtype: rtype.unwrap_or_else(|| ft.rtype.clone()),
-                        throws: throws.unwrap_or_else(|| ft.throws.clone()),
-                        ..(**ft).clone()
-                    }))
-                })
-            }
-            Type::TVar(tv) => tv.binding().and_then(|b| {
-                let r = rank2_parts(env, &b, expanding, out);
-                found(expanding).then(|| r.unwrap_or(b))
-            }),
-            Type::Ref(tr) => {
-                let bare = tr.params.is_empty();
-                match expanding.expand(env, t) {
-                    None => None,
-                    Some((key, _)) if bare && expanding.known_clean(key) => None,
-                    Some((key, whole)) => {
-                        let app = tr.app_key(key);
-                        if let Some((r, hit, _)) = expanding.apps.get(&app) {
-                            expanding.found += usize::from(*hit);
-                            return r.clone();
-                        }
-                        let met = expanding.met.len();
-                        expanding.stack.push(key);
-                        let r = rank2_parts(env, &whole, expanding, out);
-                        expanding.stack.pop();
-                        if bare && !found(expanding) {
-                            let mut seen: SmallVec<[usize; 2]> = expanding.met[met..]
-                                .iter()
-                                .copied()
-                                .filter(|k| *k != key)
-                                .collect();
-                            seen.sort_unstable();
-                            seen.dedup();
-                            expanding.clean.insert(key, seen);
-                        }
-                        let r = found(expanding).then(|| r.unwrap_or(whole));
-                        if expanding.met.len() == met {
-                            let held = tr.params.clone();
-                            let f = found(expanding);
-                            expanding.apps.insert(app, (r.clone(), f, held));
-                        }
-                        r
-                    }
-                }
-            }
-            t => t.cow_children(&mut |c| rank2_parts(env, c, expanding, out)),
-        };
-        if let Some(n) = node {
-            let f = found(expanding);
-            expanding.nodes.insert(n, (r.clone(), f));
-        }
-        r
-    })
-}
-
 #[cfg(test)]
 thread_local! {
-    static RANK2_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WALK_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// A step of a rank-2 walk, counted under test.
+/// A step of an escape walk, counted under test.
 #[inline(always)]
-fn rank2_step() {
+fn walk_step() {
     #[cfg(test)]
-    RANK2_STEPS.with(|n| n.set(n.get() + 1));
-}
-
-/// A rank-2 quantifier `q` keeps exactly the bounds its formal `declared`:
-/// the callee may call the argument at any type they admit, so the
-/// argument's check may add no conjunct, a predicate included, that none
-/// of them implies.
-fn added_bound(env: &Env, name: &ArcStr, q: &TVar, declared: &[Type]) -> Result<()> {
-    for c in q.cell_constraints() {
-        let mut implied = false;
-        for d in declared {
-            if d.implies(env, &c)? {
-                implied = true;
-                break;
-            }
-        }
-        if !implied {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "the argument requires '{name}: {c}, which the parameter's quantifier \
-                     does not declare: the callee may call it at any type its bound admits"
-                )
-            })?
-        }
-    }
-    Ok(())
+    WALK_STEPS.with(|n| n.set(n.get() + 1));
 }
 
 /// Whether a value of `t` can carry a value of a cell its formal holds:
@@ -963,309 +762,30 @@ enum ArgFit {
     Open,
 }
 
-/// Check a call's argument node against its formal's type `typ` in the
-/// call's signature `site`, answering how it fit and the quantifiers it was
-/// held general in (`held_in` takes the call's variables first); an
-/// argument holding an undecided cell is [`ArgFit::Open`] when `waits`.
+/// Check a call's argument node against its formal's type `typ`,
+/// answering how it fit; an argument holding an undecided cell is
+/// [`ArgFit::Open`] when `waits`.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
-    (site, held_in): (&FnType, &mut HeldIn),
     typ: &Type,
     hint: Option<&Type>,
     waits: bool,
     n: &mut Node<R>,
-) -> Result<(ArgFit, SmallVec<[(ArcStr, usize); 2]>)> {
+) -> Result<ArgFit> {
     // A reference instantiates its signature in its own typecheck0,
     // which must precede the pre-unify.
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    match quantified_formal(&ctx.env, typ) {
-        None => {
-            Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
-            wrap!(n, n.typecheck0(ctx))?;
-            let fit = if waits && n.typ().has_free() {
-                ArgFit::Open
-            } else if typ.contains(&ctx.env, n.typ())? {
-                ArgFit::Fits
-            } else {
-                ArgFit::Misfit
-            };
-            Ok((fit, SmallVec::new()))
-        }
-        Some((formal, _rigid, quantified)) => {
-            held_in.before(site);
-            let declared: SmallVec<[SmallVec<[Type; 1]>; 2]> =
-                quantified.iter().map(|(_, q)| q.cell_constraints()).collect();
-            Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
-            wrap!(n, n.typecheck0(ctx))?;
-            for ((name, q), declared) in quantified.iter().zip(declared.iter()) {
-                wrap!(n, added_bound(&ctx.env, name, q, declared))?;
-            }
-            wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
-            let quantified = cells(&quantified);
-            check_general(ctx, &quantified, n, "the argument")?;
-            Ok((ArgFit::Fits, quantified))
-        }
-    }
-}
-
-/// `contain` the value `n` in `holder`, a written type. Where the type
-/// holds quantified function types it is expanded to them, their
-/// quantifiers held rigid, for the containment (a mismatch shows
-/// `holder`), and the value must be general in each, as a call's argument
-/// must be in its formal's ([`check_general`]).
-// CR claude for claude: [bug/medium] A written holder's own variable that stands both
-// under a quantified function type and beside it carries the quantifier out, and
-// nothing judges it: `type W<'t> = Abstract<'t>; let h: (fn<'a: Any>(x: 'a) -> W<'c>,
-// W<'c>) = (|x| W(x), W(1)); let w: W<i64> = h.0("s"); w.0 + 1` passes --check and the
-// run-time bind refuses h.0("s") (an instance at fn(x: string) -> W<i64> of a
-// definition typed fn(x: i64) -> W<i64>); main ec53d4846 the same. One variable under
-// the function type alone is generalized with it and sound (let h: fn<'a: Any>(x: 'a)
-// -> W<'c> = |x| W(x) runs h(1), h("s")). A walk of the expanded holder after the
-// containment, each quantifier bound only under the function type quantifying it,
-// refuses it (tried in round 9 lane R), but it walks everything the holder's cells
-// reach, the value's types included: on the round-7 generators tr14 3.89G -> 4.47G
-// instructions to --check, rcself12 5.18G -> 5.39G (escapes_through 0.7M -> 192M).
-// Options: that walk at its cost; a conservative local rule refusing a written
-// holder whose variable stands under a quantified function type and outside it ("name
-// a type for 'c"); or the walk only over the variables the holder names outside its
-// quantified function types, cutting the rest. probe:
-// ~/ptmp/cr29/scratch/r9-R/let_pair.gx (rank2-holder-variable-01)
-// 2026-11-03 claude: Eric ruled (2026-11-03): D15 b (filled by claude at his word) in
-// ~/ptmp/cr-discuss.md, under his rule for type holes (reject and require an
-// annotation, then a --check census: it comes back to him only if the stdlib, the
-// book's examples or netidx-admin would need a new annotation): refuse a written type
-// (typedefs expanded) whose own variable stands both inside a quantified function type
-// and outside it, "name a type for 'c".
-// 2026-11-04 claude: D15 (b) is built on the parked branch cr49-F
-// (callsite::check_written_apart: a let annotation, written formals and return type,
-// never<T>, an abstract typedef's representation and an interface val; a variable the
-// enclosing definition declares is not refused) and held both final reviews with no
-// D15 finding; one shape stays (rank2-written-two-fns-01 on the branch: a variable
-// under two quantified function types and nowhere else, no wrong value). It is
-// interleaved with D3 (a)'s commits, so it waits to be extracted onto main alone,
-// after lane A's interface-val work lands.
-pub(crate) fn contain_generally<R: Rt>(
-    ctx: &CompileCtx<R>,
-    holder: &Type,
-    n: &Node<R>,
-    contain: impl FnOnce(&Type) -> Result<()>,
-) -> Result<()> {
-    held_generally(ctx, holder, n, contain).map(|_| ())
-}
-
-/// [`contain_generally`], answering the quantifiers the value was held
-/// general in, by name and cell; none where `holder` holds no quantified
-/// function type.
-fn held_generally<R: Rt>(
-    ctx: &CompileCtx<R>,
-    holder: &Type,
-    n: &Node<R>,
-    contain: impl FnOnce(&Type) -> Result<()>,
-) -> Result<SmallVec<[(ArcStr, usize); 2]>> {
-    match quantified_formal(&ctx.env, holder) {
-        None => contain(holder).map(|()| SmallVec::new()),
-        Some((formal, _rigid, quantified)) => {
-            contain(&formal).map_err(|e| match e.downcast::<TypeMismatch>() {
-                Ok(m) => anyhow::Error::new(m.shown_as(holder.clone())),
-                Err(e) => e,
-            })?;
-            let quantified = cells(&quantified);
-            check_general(ctx, &quantified, n, "the value")?;
-            Ok(quantified)
-        }
-    }
-}
-
-// CR claude for claude: [bug/high] A quantified fn type in a function type's result
-// (`fn(z: i64) -> fn<'a: Any>(x: 'a) -> 'a`) is general in 'a only if the function
-// that makes the result shares nothing that reaches 'a across its calls, and nothing
-// checks that: check_general judges the bindings outside the outer value, so a let of
-// the maker's own body that the made function captures passes. `let mk: fn(z: i64) ->
-// fn<'a: Any>(x: 'a) -> 'a = |z| { let v = never(); |x| { v <- x; v } }; let h =
-// mk(0); let s = h("s"); println(h(1) + 1)` passes --check, and the run logs an arith
-// error over "s" at a value typed i64. The same at a call's formal, a labeled default,
-// a struct field, a connect, a constructor's payload, through a call's instance in the
-// body (`|q| mk2(never())`) and through a generic definition read whole (main a084f9887
-// the same); the same body under a written return type (e8) is refused. Lane B round 6
-// tried a record of what outlives a call of each lambda (callsite::Makes, judged by
-// check_made; branch cr39-B 0cb9a50bd, not landed). It missed a maker reached through a
-// field read, an element, an index or a select's first arm (ms15, ms20-ms22, s5b: the
-// run puts "s" in an i64), gave a sibling module's interface val a verdict that
-// depended on which compile task finished first (34 of 40 --check runs refused), and
-// refused a valid maker returning a struct through a let (st1, which main runs). The
-// local rule both reviewers propose: a result-position quantifier takes only a lambda
-// literal, checked as if the holder's result were its written return type (the path
-// that refuses e8), or a value whose own type quantifies 'a there; any other value is
-// refused with "write its return type". That refuses programs main runs today (a safe
-// maker read from a field, `s.mk`; a let-bound generic maker), hence for eric. probes:
-// ~/ptmp/cr29/scratch/review-r6/B4-r2-1/s/{l1,l3,l10}.gx, B4-r2-2/n/{e1b,e4,e9,e11}.gx,
-// B4-r3-1/s/{ms15,ms20,ms1,st1}.gx, B4-r3-1/s/sib/main.gx, B4-r3-2/p/{s5b,s3a,s7a}.gx
-// (rank2-result-maker-01)
-// 2026-11-03 claude: Worse than the text says (main 387c29e60, round-6 discussion
-// merge): fed from a timer under fusion, a maker's returned function puts an i64 in a
-// kernel's string slot and fusion/kernel.rs's param check panics, so the runtime dies
-// ("graphix runtime is dead"), in every build; probe
-// ~/ptmp/cr29/scratch/discuss-merge/maker_crash.gx. The maker also gets through an
-// interface `val mk` (discuss-merge/val_maker/), so whatever rule is ruled must judge a
-// val's implementation too. Question D3 in ~/ptmp/cr-discuss.md.
-// 2026-11-03 claude: Eric ruled (2026-11-03): D3 (a) in ~/ptmp/cr-discuss.md, under his
-// rule for type holes (reject and require an annotation, then a --check census; back to
-// him only if the stdlib, the book's examples or netidx-admin would need a new
-// annotation): where a type says a function returns a generic function, the value must
-// be a lambda literal, its body checked as if that return type were written on it (the
-// check that already refuses the unsafe body under a written return type), or a value
-// whose own type already says so; anything else is refused "write its return type", at
-// every holder (a let's type, a parameter, a labeled default, a field, a connect, a
-// constructor's payload, an interface val). Census: no rank-2 result type outside the
-// pins. Explainer ~/ptmp/cr29/d3-explainer.md.
-// 2026-11-03 claude: For whoever builds D3 (a): ~/ptmp/cr29/d3-explainer.md (probes
-// ~/ptmp/cr29/scratch/d3-explainer/) has every route run on main 30702808d. Routes that
-// pass --check: val, parameter, labeled default, field, connect, select (rd_select: a
-// block or select is not a literal, so (a) refuses it), let-bound maker, abstract
-// parameter, and a written return type one level down (rd_mr_bad: `|q: i64| -> fn(z:
-// i64) -> fn<'a: Any>(x: 'a) -> 'a |z| { let v = never(); .. }` passes, so the
-// written-return-type check must apply recursively). No timer is needed for the runtime
-// death (bad2 dies in its first cycle); not every unsafe program panics (bad.gx logs an
-// arith error). The interface val needs a test of its own (rd_val_field; D4 (a) does
-// not cover val_bad). A safe and an unsafe let-bound maker infer the same type
-// (rd_types), which is why (a) asks for the return type at the definition rather than
-// reading it.
-// 2026-11-04 claude: D3 (a) built in round 14 on branch cr49-F (b83037266, not landed)
-// and parked after failing review twice, each time on new routes. Round 1 found a maker
-// quantified at the outer function, a HOF-fed callback, an abstract representation
-// through a typedef and a written val implementation; round 2 found places under
-// parameters, container literal arguments and typedef'd callbacks; the final review
-// found an annotated let rec (the brief's own crash program checks: the let's
-// compile-time contains runs before the judge), a data-literal argument where the maker
-// stands under parameters, and invariant positions (&mut, an abstract parameter). The
-// build also added a cost about cubic in nested quantified function types (140 G
-// against base 28.5 G at 200 levels; exponential on a typedef DAG) and refused safe
-// data-literal arguments main runs (a lambda in the literal lost the formal's parameter
-// types). Routes no holder sees (rank2-maker-no-holder-01 on the branch: an open
-// abstract parameter or &mut of a literal decided by ==, a generic call or a write)
-// need a rule at the source. Plain rank-2 values leak too, with no maker:
-// rank2-under-params-01, rank2-invariant-view-01, rank2-recursive-holder-01,
-// rank2-param-subsumed-01. The corpus outside test fixtures and repro files writes no
-// nested rank-2 type. Back to eric as a D3 follow-up in the next discuss round. Probes:
-// ~/ptmp/cr29/scratch/r14-F/review/, ~/ptmp/cr29/scratch/review-r14/F-r3-{1,2}/.
-// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
-// types: a written quantified function type stands only as a definition's, a val's or a
-// trait method's own scheme; plus the ML rule: a function stays generic only where a
-// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
-// (cr51-Q) builds it; this CR goes with the feature.
-// CR claude for claude: [bug/high] A plain rank-2 quantifier (at a function type's top,
-// not in a result) under an even number of parameters is never judged: `let drive:
-// fn(cb: fn(g: fn<'a: Any>(x: 'a) -> 'a) -> string) -> string = drive0` over `drive0
-// = 'q: Any |cb: fn(g: fn(x: 'q) -> 'q) -> string| { let y = never(); cb(|x| { y <-
-// x; y }) }` passes --check, and `drive(|g| ..g("s")..g(1)..)` shares one y:
-// --no-fusion prints `n = s, s = s` and fusion kills the runtime. rank2_parts holds
-// rigid only the quantifiers on a path of results, so check_general never asks the
-// value to be generic at a place under its parameters. Main 968fa9bc0 and 1b74df102.
-// Found by review r14 of lane F (D3 (a), parked on cr49-F). probe:
-// ~/ptmp/cr29/scratch/r14-F/review/r3/n42b_pp_plain_inner_state.gx
-// (rank2-under-params-01)
-// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
-// types: a written quantified function type stands only as a definition's, a val's or
-// a trait method's own scheme; plus the ML rule: a function stays generic only where
-// a binding names it, and anywhere else (data, a result) takes one instance. Lane Q
-// (cr51-Q) builds it; this CR goes with the feature.
-// CR claude for claude: [bug/high] An invariant position lets a generic value be viewed,
-// then written, at a monomorphic type: `let g: fn<'a: Any>(x: 'a) -> 'a = |x| x; let
-// r: &mut fn(x: 'q) -> 'q = &mut g; *r <- { let y = never(); |x| { y <- x; y } }`
-// passes --check and g then shares one y (`n = s, s = s` under --no-fusion; fusion
-// kills the runtime). `&mut T`'s reverse containment runs as a plain contains, not a
-// generality check. The same through a formal (`|rr: &mut fn(..)| *rr <- bad`), a
-// struct field, an array, and an abstract type's parameter that its representation
-// puts under a parameter (`type A<'t> = Abstract<fn(f: 't) -> string>`, an `A<Mk>`
-// held as `A<fn(z: i64) -> fn(x: 'q) -> 'q>`). Main the same. Found by review r14 of
-// lane F (final). probes: ~/ptmp/cr29/scratch/review-r14/F-r3-1/p/
-// {t15c_mutref_plain_rank2,t15b_mutref_let,t15_mutref_view,t15e_mutref_struct_field,
-// t15h_mutref_array,t23_abstract_param_handed,t23b_abstract_param_let}.gx
-// (rank2-invariant-view-01)
-// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
-// types: a written quantified function type stands only as a definition's, a val's or
-// a trait method's own scheme; plus the ML rule: a function stays generic only where a
-// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
-// (cr51-Q) builds it; this CR goes with the feature.
-// CR claude for claude: [bug/high] A recursive typedef holding a quantified function type
-// is judged only at its first unfolding: `type R = [`End, `More(fn<'a: Any>(x: 'a) ->
-// 'a, R)]` holding `|x| { y <- x; y }` at depth two passes --check and the read
-// function shares one y (`n = s, s = s`); makers leak the same way one level down.
-// rank2_parts expands a typedef in progress once, so only the first unfolding's
-// quantifiers are held rigid and asked of the value. Main the same. Found by review r14
-// of lane F. probes: ~/ptmp/cr29/scratch/r14-F/review/r3/rec/n89_rec_plain_rank2.gx,
-// n80..n88; ~/ptmp/cr29/scratch/review-r14/F-r3-2/p/r03_rec_lit_bad_d3.gx
-// (rank2-recursive-holder-01)
-// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
-// types: a written quantified function type stands only as a definition's, a val's or a
-// trait method's own scheme; plus the ML rule: a function stays generic only where a
-// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
-// (cr51-Q) builds it; this CR goes with the feature.
-// CR claude for claude: [bug/medium] A function whose parameter is a plain rank-2 formal
-// is handed whatever its holder's parameter admits when a function type whose
-// parameter is not rank-2 holds it: `let f = |g: fn<'a: Any>(x: 'a) -> 'a| ..; let k:
-// fn(g: fn(x: 'q) -> 'q) -> string = f; k(|x| { y <- x; y })` passes --check and the
-// build refuses ('an instance at fn(g: fn(x: _) -> _) -> string of a definition typed
-// fn(g: fn<'a: Any>...)'), as does `array::map([|x| { y <- x; y }], |g: fn<'a: Any>(x:
-// 'a) -> 'a| ..)`: the check accepts what elaboration refuses, no wrong value. Main the
-// same. Found by review r14 of lane F. probes:
-// ~/ptmp/cr29/scratch/r14-F/review/r1/{d03_subsume_plain,c05_hof_plain_rank2}.gx
-// (rank2-param-subsumed-01)
-// 2026-11-05 claude: Eric ruled (2026-11-05) on the D3 follow-up: (e), remove rank-2
-// types: a written quantified function type stands only as a definition's, a val's or a
-// trait method's own scheme; plus the ML rule: a function stays generic only where a
-// binding names it, and anywhere else (data, a result) takes one instance. Lane Q
-// (cr51-Q) builds it; this CR goes with the feature.
-/// A value checked against quantifiers held rigid holds for every choice
-/// of them only if nothing outside it that lives on reaches one: a binding
-/// it reads or writes from outside (its lambdas' captures included), or the
-/// instance a call in it makes, whose signature types that instance's
-/// bindings. Its own cells (a literal's, a lambda's) live only in it.
-fn check_general<R: Rt>(
-    ctx: &CompileCtx<R>,
-    quantified: &[(ArcStr, usize)],
-    n: &Node<R>,
-    what: &str,
-) -> Result<()> {
-    let mut refs = Refs::default();
-    n.refs(&mut refs);
-    let mut free: SmallVec<[(Type, &str); 4]> = SmallVec::new();
-    let mut ids: LPooled<AHashSet<BindId>> = LPooled::take();
-    let binding = "a binding it reaches";
-    let mut reaches = |id: BindId, free: &mut SmallVec<[(Type, &str); 4]>| {
-        if ids.insert(id)
-            && let Some(b) = ctx.env.by_id.get(&id)
-        {
-            free.push((b.typ.clone(), binding))
-        }
-    };
-    refs.with_external_refs(|id| reaches(id, &mut free));
-    // a lambda's body is no child of its node: the bindings it reads
-    // and writes are its definition's captures
-    fusion::for_each_node(n, &mut |c| match c.view() {
-        NodeView::Lambda(l) => {
-            if let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>() {
-                d.captured_ids(&mut |id| reaches(id, &mut free))
-            }
-        }
-        NodeView::CallSite(cs) => {
-            if let Some(ft) = &cs.ftype {
-                free.push((Type::Fn(ft.clone()), "the instance a call in it makes"))
-            }
-        }
-        _ => (),
-    });
-    for (t, through) in free.iter() {
-        wrap!(n, escapes_through(quantified, t, what, through))?;
-    }
-    Ok(())
-}
-
-/// Each quantifier by name and cell address.
-fn cells(quantified: &Quantified) -> SmallVec<[(ArcStr, usize); 2]> {
-    quantified.iter().map(|(name, tv)| (name.clone(), tv.cell_addr())).collect()
+    Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
+    wrap!(n, n.typecheck0(ctx))?;
+    Ok(if waits && n.typ().has_free() {
+        ArgFit::Open
+    } else if typ.contains(&ctx.env, n.typ())? {
+        ArgFit::Fits
+    } else {
+        ArgFit::Misfit
+    })
 }
 
 /// `f`'s signature as a call through `site` instantiates it to pass the
@@ -1283,10 +803,10 @@ fn callee_instance<R: Rt>(
     let inst = f.typ.instantiate(&ctx.rec_defs);
     if let Some(site) = site {
         // each argument the site passes fits the callee's parameter for it;
-        // a rank-2 site's quantifiers stand for any type, so they are held
+        // a site's own quantifiers stand for any type, so they are held
         // rigid while `gates` lives
         let site = site.replace_tvars(&Default::default());
-        site.each_quantifier(|_, tv| gates.push(tv.open_quantifier_rigid()));
+        site.each_quantifier(|_, tv| gates.push(tv.open_rigid()));
         let keys =
             |args: &[FnArgType]| ArgKey::of_formals(args).collect::<SmallVec<[_; 4]>>();
         let (site_keys, inst_keys) = (keys(&site.args), keys(&inst.args));
@@ -1302,150 +822,6 @@ fn callee_instance<R: Rt>(
         let _ = site.throws.contains(&ctx.env, &inst.throws);
     }
     inst
-}
-
-/// A binding the value reads or writes, or an instance it makes, of type
-/// `env`, holds none of the quantifiers outside a function type there that
-/// quantifies it: its cell would carry one out.
-fn escapes_through(
-    quantified: &[(ArcStr, usize)],
-    env: &Type,
-    what: &str,
-    through: &str,
-) -> Result<()> {
-    let asked = asked(quantified);
-    let mut first: SmallVec<[Option<(usize, TVar)>; 4]> =
-        quantified.iter().map(|_| None).collect();
-    let mut sights = 0;
-    let free = Free::new(&asked).free(env, &mut |i, tv| {
-        if first[i as usize].is_none() {
-            first[i as usize] = Some((sights, tv.clone()));
-            sights += 1
-        }
-    });
-    let reached = free
-        .iter()
-        .filter_map(|i| first[*i as usize].as_ref().map(|(n, c)| (*n, *i, c)))
-        .min_by_key(|(n, _, _)| *n);
-    match reached {
-        None => Ok(()),
-        Some((_, i, c)) => {
-            let q = &quantified[i as usize].0;
-            let named = match c.name == *q {
-                true => format_compact!(""),
-                false => format_compact!(", where {c} is '{q}"),
-            };
-            bail!(
-                "{what} is not polymorphic in '{q}: {through}, of type {}{named}, would \
-                 carry '{q} out",
-                printed_deref(env)
-            )
-        }
-    }
-}
-
-/// The cells `quantified` asks of [`Free`], each numbered by its first
-/// place there.
-fn asked(quantified: &[(ArcStr, usize)]) -> Asked {
-    let mut asked: Asked = LPooled::take();
-    for (i, (_, a)) in quantified.iter().enumerate() {
-        asked.entry(*a).or_insert(i as u32);
-    }
-    asked
-}
-
-/// The variables of the callee a call's signature names, as the call
-/// instantiates them: each cell written in it that no function type there
-/// quantifies. Taken before an argument's check, which may merge one into
-/// a formal's quantifier.
-fn call_variables(site: &FnType) -> LPooled<Vec<TVar>> {
-    fn go(
-        t: &Type,
-        seen: &mut AHashSet<usize>,
-        bound: &mut AHashSet<usize>,
-        vars: &mut Vec<TVar>,
-    ) {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr()) {
-                    vars.push(tv.clone())
-                }
-            }
-            t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => (),
-            t => {
-                if let Type::Fn(ft) = t {
-                    ft.each_quantifier(|_, q| {
-                        bound.insert(q.cell_addr());
-                    })
-                }
-                t.for_each_child(&mut |c| go(c, seen, bound, vars))
-            }
-        })
-    }
-    let (mut seen, mut bound) = (LPooled::take(), LPooled::take());
-    let mut vars: LPooled<Vec<TVar>> = LPooled::take();
-    site.for_each_type(&mut |t| go(t, &mut seen, &mut bound, &mut vars));
-    vars.retain(|v| !bound.contains(&v.cell_addr()));
-    vars
-}
-
-/// The quantifiers a call's arguments and the defaults it omits were held
-/// general in, each with the argument it came from. A call's variables are
-/// one type for the call, so once those are checked none of the variables,
-/// taken before the first check ([`call_variables`]), may be or reach one
-/// of them, even where its formal holds it.
-#[derive(Default)]
-struct HeldIn {
-    vars: Option<LPooled<Vec<TVar>>>,
-    quantified: SmallVec<[(ArcStr, usize); 2]>,
-    from: SmallVec<[(ArgKey, &'static str); 2]>,
-}
-
-impl HeldIn {
-    /// Before a check against a formal of `site` holding quantifiers.
-    fn before(&mut self, site: &FnType) {
-        if self.vars.is_none() {
-            self.vars = Some(call_variables(site))
-        }
-    }
-
-    /// The quantifiers `what`, the argument `key`, was held general in.
-    fn held(&mut self, key: &ArgKey, what: &'static str, quantified: &[(ArcStr, usize)]) {
-        for q in quantified {
-            self.quantified.push(q.clone());
-            self.from.push((key.clone(), what));
-        }
-    }
-
-    /// The first variable of the call's signature `site` that is or reaches
-    /// a quantifier, refused at the argument it came from.
-    fn judge(&self, site: &FnType) -> std::result::Result<(), (ArgKey, anyhow::Error)> {
-        let (Some(vars), false) = (&self.vars, self.quantified.is_empty()) else {
-            return Ok(());
-        };
-        let asked = asked(&self.quantified);
-        let mut walk = Free::new(&asked);
-        for v in vars.iter() {
-            if let Some(i) = walk.free(&Type::TVar(v.clone()), &mut |_, _| ()).first() {
-                let q = &self.quantified[*i as usize].0;
-                let (key, what) = &self.from[*i as usize];
-                let site = Type::Fn(TArc::new(site.clone()));
-                let e = anyhow!(
-                    "{what} is not polymorphic in '{q}: the call's signature, of type {}, \
-                     would carry '{q} out through {v}, one type for the call; annotate \
-                     {what} with the type {v} is meant to be",
-                    printed_deref(&site)
-                );
-                return Err((key.clone(), e));
-            }
-        }
-        Ok(())
-    }
-
-    /// [`Self::judge`] at once, for a check outside a call's own.
-    fn judged(&self, site: &FnType) -> Result<()> {
-        self.judge(site).map_err(|(_, e)| e)
-    }
 }
 
 /// A walk of the cells under a type, following bindings and an open
@@ -1465,7 +841,7 @@ impl Reach {
         cut: &mut impl FnMut(&Type) -> bool,
         f: &mut impl FnMut(&TVar) -> bool,
     ) -> bool {
-        rank2_step();
+        walk_step();
         ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 if !self.seen.insert(tv.cell_addr()) {
@@ -1534,13 +910,13 @@ impl<T: Copy + Eq + std::hash::Hash> Interned<T> {
     fn seal(&mut self, at: usize) -> (u32, bool) {
         let Self { data, spans, by_hash } = self;
         for _ in at..data.len() {
-            rank2_step();
+            walk_step();
         }
         let ids = by_hash.entry(RUN_HASH.hash_one(&data[at..])).or_default();
         for id in ids.iter() {
             let (s, e) = spans[*id as usize];
             for _ in s..e {
-                rank2_step();
+                walk_step();
             }
             if data[s as usize..e as usize] == data[at..] {
                 data.truncate(at);
@@ -1606,7 +982,7 @@ impl<'a> Free<'a> {
     /// What is free under `t`, none for nothing; the shallowest depth on the
     /// path a cycle from `t` returned to, `usize::MAX` for none.
     fn go(&mut self, t: &Type, met: &mut impl FnMut(u32, &TVar)) -> (usize, Option<Ans>) {
-        rank2_step();
+        walk_step();
         ensure_sufficient(|| {
             let key = t.shared_identity();
             if let Some(k) = key {
@@ -1627,7 +1003,7 @@ impl<'a> Free<'a> {
                 if let Some(a) = ans
                     && walk.stack[start..].last() != Some(&a)
                 {
-                    rank2_step();
+                    walk_step();
                     walk.stack.push(a)
                 }
             };
@@ -1685,7 +1061,7 @@ impl<'a> Free<'a> {
 
     /// `tv`'s number, if it is asked.
     fn number(&self, tv: &TVar) -> Option<u32> {
-        rank2_step();
+        walk_step();
         self.asked.get(&tv.cell_addr()).copied()
     }
 
@@ -1696,7 +1072,7 @@ impl<'a> Free<'a> {
         let mut n = parts.len();
         if n > 1 {
             for _ in 0..n {
-                rank2_step();
+                walk_step();
             }
             parts.sort_unstable();
             n = 1;
@@ -1737,13 +1113,13 @@ fn union(sets: &mut Interned<u32>, parts: &[Ans], bound: &[u32]) -> Option<Ans> 
     for p in parts {
         match *p {
             Ans::One(i) => {
-                rank2_step();
+                walk_step();
                 sets.data.push(i)
             }
             Ans::Many(k) => {
                 let (s, e) = sets.spans[k as usize];
                 for _ in s..e {
-                    rank2_step();
+                    walk_step();
                 }
                 sets.data.extend_from_within(s as usize..e as usize)
             }
@@ -1756,10 +1132,10 @@ fn union(sets: &mut Interned<u32>, parts: &[Ans], bound: &[u32]) -> Option<Ans> 
     for i in at..sets.data.len() {
         let c = sets.data[i];
         while bound.get(b).is_some_and(|q| *q < c) {
-            rank2_step();
+            walk_step();
             b += 1
         }
-        rank2_step();
+        walk_step();
         if (kept == at || sets.data[kept - 1] != c) && bound.get(b) != Some(&c) {
             sets.data[kept] = c;
             kept += 1
@@ -2526,6 +1902,35 @@ impl<R: Rt> CallSite<R> {
     /// and the binding this call names it by.
     pub(crate) fn recursion_callback(&self) -> Option<(&CallSite<R>, BindId)> {
         let Some(ApplyView::Lambda(g)) = self.resolved_apply() else { return None };
+        let (call, name) = self.loop_callback(g)?;
+        call.shares_instance().then_some((call, name))
+    }
+
+    /// Where this call shares `g`, a collection's instance whose
+    /// callback is the recursion this call names bare (`array::map(xs,
+    /// k)` in `k`, run by `array::map(ys, k)`): `g`'s prototype call,
+    /// which holds the recursion's instance, and the binding this call
+    /// names it by.
+    pub(crate) fn shared_loop_callback<'a>(
+        &'a self,
+        g: &'a GXLambda<R>,
+    ) -> Option<(&'a CallSite<R>, BindId)> {
+        let target = self.static_target.as_ref()?;
+        if !self.shares_instance() || target.instance != g.instance_id() {
+            return None;
+        }
+        let (call, name) = self.loop_callback(g)?;
+        matches!(call.resolved_apply(), Some(ApplyView::Lambda(_)))
+            .then_some((call, name))
+    }
+
+    /// The prototype call of the loop of `g`, a collection-bodied
+    /// instance, and the binding this call passes for the formal that
+    /// call makes its call through.
+    fn loop_callback<'a>(
+        &'a self,
+        g: &'a GXLambda<R>,
+    ) -> Option<(&'a CallSite<R>, BindId)> {
         let prototype = match g.body().view() {
             NodeView::MapQ(m) => &m.prototype,
             NodeView::FoldQ(f) => &f.prototype,
@@ -2533,9 +1938,6 @@ impl<R: Rt> CallSite<R> {
         };
         let NodeView::CallSite(call) = prototype.view() else { return None };
         let NodeView::Ref(formal) = call.fnode().view() else { return None };
-        if !call.shares_instance() {
-            return None;
-        }
         let key =
             ArgKey::of_formals(&g.typ().args).zip(g.args()).find_map(|(key, pat)| {
                 (pat.single_bind_id() == Some(formal.id)).then_some(key)
@@ -2634,10 +2036,12 @@ impl<R: Rt> CallSite<R> {
         reject_dead_variadic_call(ctx, scope, f, args).at(&spec)?;
         // a call's function is compiled as written: a trait method named
         // here is the dispatcher itself, never its eta-expansion
-        let fnode = match &f.kind {
+        let mut fnode = match &f.kind {
             ExprKind::Ref { name } => Ref::compile(ctx, f.clone(), scope, top_id, name)?,
             _ => compile(ctx, flags, (**f).clone(), scope, top_id)?,
         };
+        // a call by name reads its callee's scheme, which the call copies
+        super::bind::name_value(&mut fnode, false);
         let args = compile_apply_args(ctx, flags, scope, top_id, &spec, args)?;
         let rtype = ctx.instance_node_type(spec.id).unwrap_or_else(Type::empty_tvar);
         let site =
@@ -2703,7 +2107,6 @@ impl<R: Rt> CallSite<R> {
                 expr,
                 defaults,
                 Judge::Bind,
-                None,
             )?;
             let typ = default_node.typ().clone();
             let id = BindId::new();
@@ -2727,8 +2130,7 @@ impl<R: Rt> CallSite<R> {
     /// it: compiled in `f`'s environment under the site's handlers, and
     /// checked against the site's view of the parameter, else, where the
     /// site's fn type hides the label, `f`'s own parameter as that type
-    /// instantiates it; `held_in` takes the quantifiers the site's view
-    /// holds it general in, else the site's signature is judged at once.
+    /// instantiates it.
     #[allow(clippy::too_many_arguments)]
     fn checked_default(
         &self,
@@ -2740,7 +2142,6 @@ impl<R: Rt> CallSite<R> {
         expr: &Expr,
         defaults: &mut Refs,
         judge: Judge,
-        held_in: Option<&mut HeldIn>,
     ) -> Result<Node<R>> {
         let entered = ctx.enter_default(f.id, name);
         let node = checked_default(
@@ -2755,7 +2156,6 @@ impl<R: Rt> CallSite<R> {
             self.ftype.as_deref(),
             None,
             judge,
-            held_in,
         );
         if entered {
             ctx.leave_default(f.id, name)
@@ -2889,7 +2289,6 @@ impl<R: Rt> CallSite<R> {
         ctx: &mut CompileCtx<R>,
         ftype: &FnType,
         carriers: &mut SmallVec<[ArcStr; 2]>,
-        held_in: &mut HeldIn,
     ) -> Result<bool> {
         let omitted = |name: &ArcStr| {
             self.args
@@ -2944,7 +2343,6 @@ impl<R: Rt> CallSite<R> {
                         expr,
                         &mut Refs::default(),
                         Judge::Check,
-                        Some(&mut *held_in),
                     )
                     .map_err(|e| met_default_note::<R>(e, &defs, name))?;
                 if carries(&ctx.env, node.typ()) {
@@ -3324,6 +2722,36 @@ impl<R: Rt> CallSite<R> {
             // costs what a named call does (a JIT compile at the first bind of each
             // new instance, cached by definition and type); measure the admin TUI's
             // first-bind cost first and bring it back if it stalls visibly.
+            // 2026-11-05 claude: Built D20 (b) in lane o1 r17 and did not land it
+            // (patch, pins and probes: ~/ptmp/cr29/scratch/r17-o1/bound-bind-policy/).
+            // The change: build_bound calls fusion::fuse_instance for every non-slot
+            // bind, and fuse_instance caches an instance whose walk fused nothing
+            // (None), walking it again only where an assertion reaches the bind;
+            // without that cache a node-walked recursion whose body does not fuse
+            // retries fusion at every level (nf_bound.gx at depth 2000: 2001 walks,
+            // 4002 recorded failures, growing with depth). Measured (instructions:u,
+            // debug): b8.gx 24.5G on main to 1.15G; nf_named/nf_bound +1-3% (the
+            // per-bind fingerprint). Pins in the patch:
+            // lang::fusion::bound_function_value_fuses (fails without the policy
+            // change: no kernel runs) and bound_unfused_instance_tried_once (fails
+            // without the cache: 16 against 406 failures). Two things block it, both
+            // Eric's: (1) a wrong answer under fusion:
+            // lang::prune::standing_formal_refresh_marks_its_readers fails in Jit,
+            // since the kernel of a bound closure reading a capture bare computes as
+            // an operator over it does in the node-walk, not as the bare read does
+            // (quiet-refresh-op-01); fusing every bind makes that a node-walk/JIT
+            // divergence. (2) 81 run! fixtures marked FuseExpect::None now fuse (list
+            // in fuseexpect-flips.txt): fixture_mode counts the regions fused by the
+            // time its fusion_stats read arrives, which a run-time bind in the first
+            // cycle reaches; rec: count the build alone (a snapshot at the compile's
+            // end), keeping FuseExpect's documented meaning, rather than flipping 81
+            // annotations on a race. The admin TUI's first-bind cost was not measured.
+            // Rec: settle quiet-refresh-op-01 first, then land the patch with the
+            // FuseExpect change.
+            // 2026-11-05 claude: Eric ruled (11-05, D20 follow-up):
+            // quiet-refresh-op-01 (a), so a fused run-time bind and the node-walk
+            // agree. Build (b) with that change, and make FuseExpect count only what
+            // the build fused (its doc), which settles the 81 fixtures' flips.
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
@@ -3636,11 +3064,11 @@ impl<R: Rt> CallSite<R> {
                         "RESOLVE {} id={:?} unstable={} b2l={}",
                         self.spec,
                         r.id,
-                        ctx.batch_connect_targets.contains(&r.id),
+                        ctx.rebinds(r.id),
                         ctx.bind_to_lambda.contains_key(&r.id),
                     );
                 }
-                if ctx.batch_connect_targets.contains(&r.id) {
+                if ctx.rebinds(r.id) {
                     None
                 } else {
                     let id = r.id;
@@ -3686,7 +3114,7 @@ impl<R: Rt> CallSite<R> {
             .filter_map(|(key, arg)| {
                 let source = arg.node.as_ref().and_then(|node| match node.view() {
                     _ if let Some(l) = lambda_literal(node) => Some(l.source_id()),
-                    NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
+                    NodeView::Ref(r) if !ctx.rebinds(r.id) => ctx
                         .bind_to_lambda
                         .get(&r.id)
                         .and_then(|fv| fv.downcast_ref::<LambdaDef<R>>())
@@ -3741,6 +3169,9 @@ impl<R: Rt> CallSite<R> {
             // formal now fuse (FuseExpect::Jit):
             // modules::interface_typedef_with_a_trait_parameter,
             // types::rank2_written_holders_take_general_values. Needs a soak.
+            // 2026-11-05 claude: Lane Q (cr51-Q): the quantified typedef spelling (type K =
+            // fn<'a: Any>(x: 'a) -> 'a) is now refused where it is written (QUANTIFIED_FN), so
+            // tdpoly is moot; the plain typedef case (tdplain) stands.
             if !farg.typ.is_function(&ctx.env) {
                 continue;
             }
@@ -3762,7 +3193,7 @@ impl<R: Rt> CallSite<R> {
                     param_binds.push(id);
                 }
                 NodeView::Ref(r) => {
-                    if ctx.batch_connect_targets.contains(&r.id) {
+                    if ctx.rebinds(r.id) {
                         continue;
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id).cloned() {
@@ -4712,7 +4143,7 @@ impl<R: Rt> CallSite<R> {
                     // A shallow clone shares the def's TVar cells.
                     (*ftype).clone()
                 } else if is_param_knot {
-                    ftype.shared_call()
+                    (*ftype).clone()
                 } else {
                     fresh = true;
                     ftype.instantiate(&ctx.rec_defs)
@@ -4736,19 +4167,12 @@ impl<R: Rt> CallSite<R> {
             })
             .collect();
         formals.sort_by_key(|(later, ..)| *later);
-        let mut held_in = HeldIn::default();
         for (_, farg, key) in formals {
             let Some(arg) = self.args.get_mut(&key) else { continue };
-            let given = arg.stage == ArgStage::Given;
             if let Some(n) = arg.node.as_mut() {
                 let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
                 let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let site = (&**ftype, &mut held_in);
-                let (fit, quantified) =
-                    typecheck_arg(ctx, site, &farg.typ, hint.as_ref(), waits, n)?;
-                if given {
-                    held_in.held(&key, "the argument", &quantified)
-                }
+                let fit = typecheck_arg(ctx, &farg.typ, hint.as_ref(), waits, n)?;
                 widening.fit(
                     &ctx.env,
                     self.fnode.typ(),
@@ -4767,10 +4191,7 @@ impl<R: Rt> CallSite<R> {
                 if let Some(n) = arg.node.as_mut() {
                     let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, typ);
                     let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let site = (&**ftype, &mut held_in);
-                    let (fit, quantified) =
-                        typecheck_arg(ctx, site, typ, hint.as_ref(), waits, n)?;
-                    held_in.held(&key, "the argument", &quantified);
+                    let fit = typecheck_arg(ctx, typ, hint.as_ref(), waits, n)?;
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }
@@ -4787,7 +4208,7 @@ impl<R: Rt> CallSite<R> {
         if fresh || self_call {
             let mut carriers = SmallVec::new();
             self.defaults_open =
-                !self.check_omitted_defaults(ctx, ftype, &mut carriers, &mut held_in)?;
+                !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
             if fresh && !self.defaults_open {
                 if static_builtin(ctx, self).is_some() {
                     self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
@@ -4807,14 +4228,6 @@ impl<R: Rt> CallSite<R> {
                     });
                 }
             }
-        }
-        if let Err((key, e)) = held_in.judge(ftype) {
-            return match self.args.get(&key) {
-                Some(Arg { node: Some(n), stage: ArgStage::Given, .. }) => {
-                    wrap!(n, Err(e))
-                }
-                _ => Err(e),
-            };
         }
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an
@@ -4987,6 +4400,9 @@ impl<R: Rt> CallSite<R> {
             // A resolved lambda callee is a cross-kernel call; an
             // undiscovered site de-fuses.
             if matches!(f.view(), ApplyView::Lambda(_)) {
+                if let Some(own) = cx.loop_own_call(self) {
+                    return emit_lambda_call_node(cx, self, Called::Own(own));
+                }
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
                     return emit_lambda_call_node(cx, self, Called::Other(&info));
                 }
@@ -4999,6 +4415,11 @@ impl<R: Rt> CallSite<R> {
                     ),
                 ));
             }
+        }
+        if let Some(g) = cx.shared_loop(self)
+            && let Some(cv) = Apply::emit_clif(g, self, cx)?
+        {
+            return Ok(cv);
         }
         // A value-position self-call: `self.callee` is unresolved here.
         if let Some(own) = cx.own_call(self) {
@@ -5304,45 +4725,7 @@ pub(crate) fn lambda_literal<R: Rt>(node: &Node<R>) -> Option<&Lambda> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        SourcePosition,
-        expr::{
-            ModPath,
-            parser::{parse_one, parse_type},
-        },
-    };
     use netidx_value::Typ;
-
-    // A type whose nodes many paths share is walked once per node, not once
-    // per path: `let x1 = (x0, x0); let x2 = (x1, x1); ..` passed to a call.
-    #[test]
-    fn rank2_parts_walks_a_shared_node_once() {
-        let mut t = Type::Primitive(Typ::I64.into());
-        for _ in 0..16 {
-            t = Type::Tuple(TArc::from_iter([t.clone(), t.clone()]));
-        }
-        RANK2_STEPS.with(|n| n.set(0));
-        let mut out = Quantified::new();
-        let r = rank2_parts(&Env::default(), &t, &mut Expanding::default(), &mut out);
-        assert!(r.is_none() && out.is_empty());
-        assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * 17);
-    }
-
-    // So is one each of whose paths ends in a quantified function: `let x0 =
-    // (g, 1)` with `g: fn<'b: Number>(..)`, its quantifier taken once.
-    #[test]
-    fn rank2_parts_walks_a_quantified_dag_once() {
-        let g = parse_type("fn<'b: Number>(x: 'b) -> 'b").unwrap();
-        let mut t = Type::Tuple(TArc::from_iter([g, Type::Primitive(Typ::I64.into())]));
-        for _ in 0..16 {
-            t = Type::Tuple(TArc::from_iter([t.clone(), t.clone()]));
-        }
-        RANK2_STEPS.with(|n| n.set(0));
-        let mut out = Quantified::new();
-        let r = rank2_parts(&Env::default(), &t, &mut Expanding::default(), &mut out);
-        assert!(r.is_none() && out.len() == 1);
-        assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * 17 + 3);
-    }
 
     // A call's escape checks walk the argument's shared nodes once:
     // `carried_out` over a 24-deep shared tuple holding a cell.
@@ -5355,377 +4738,8 @@ mod test {
         for _ in 0..24 {
             t = Type::Tuple(TArc::from_iter([t.clone(), t.clone()]));
         }
-        RANK2_STEPS.with(|n| n.set(0));
+        WALK_STEPS.with(|n| n.set(0));
         assert!(carried_out(&[], &t).is_none());
-        assert!(RANK2_STEPS.with(|n| n.get()) <= 2 * (2 * 25 + 2));
-    }
-
-    /// `fn<'b: Any>(x: ('b, i64)) -> 'b`, its quantifier's cell and the
-    /// tuple node its parameter is.
-    fn quantified_holding_a_node() -> (Type, (ArcStr, usize), Type) {
-        let g = parse_type("fn<'b: Any>(x: ('b, i64)) -> 'b").unwrap();
-        let Type::Fn(ft) = &g else { panic!("{g}") };
-        let mut q = None;
-        ft.each_quantifier(|name, tv| q = Some((name.clone(), tv.cell_addr())));
-        let node = ft.args[0].typ.clone();
-        (g.clone(), q.unwrap(), node)
-    }
-
-    // A quantifier is bound only under the function type that quantifies it:
-    // beside it, the same cell, or a node it shares holding it, carries it out.
-    #[test]
-    fn escapes_through_skips_a_quantifier_only_under_its_binder() {
-        let (g, q, node) = quantified_holding_a_node();
-        let i64 = Type::Primitive(Typ::I64.into());
-        let check = |parts: [Type; 2]| {
-            escapes_through(&[q.clone()], &Type::Tuple(TArc::from_iter(parts)), "v", "b")
-        };
-        assert!(check([g.clone(), i64]).is_ok());
-        assert!(check([g.clone(), node]).is_err());
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        g.reached_cells(&mut cells);
-        assert_eq!(cells.len(), 1);
-        let bare = Type::TVar(cells.values().next().unwrap().clone());
-        assert!(check([g, bare]).is_err());
-    }
-
-    // An open cell is held by its constraints as by its lower bounds: one
-    // a quantifier bounds carries it out.
-    #[test]
-    fn escapes_through_follows_an_open_cells_constraints() {
-        let (g, q, _) = quantified_holding_a_node();
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        g.reached_cells(&mut cells);
-        let quantifier = cells.values().next().unwrap().clone();
-        let outer = TVar::empty_named(literal!("y"));
-        assert!(
-            escapes_through(&[q.clone()], &Type::TVar(outer.clone()), "v", "b").is_ok()
-        );
-        outer.add_cell_constraint(Type::TVar(quantifier));
-        assert!(escapes_through(&[q], &Type::TVar(outer), "v", "b").is_err());
-    }
-
-    // A cell on a cycle back to a cell still on the walk's path is answered
-    // only in part there; met again, beside the binder, it is answered in
-    // full: `y` is met first under the binder of 'b, through `z`, whose
-    // constraint it is and which it constrains back.
-    #[test]
-    fn escapes_through_answers_a_cell_on_a_cycle_where_it_is_met_again() {
-        let g = parse_type("fn<'b: Any>(x: i64) -> 'b").unwrap();
-        let Type::Fn(ft) = &g else { panic!("{g}") };
-        let mut q = None;
-        ft.each_quantifier(|name, tv| q = Some((name.clone(), tv.clone())));
-        let (name, b) = q.unwrap();
-        let (y, z) = (TVar::empty_named(literal!("y")), TVar::empty_named(literal!("z")));
-        z.add_cell_constraint(Type::TVar(b.clone()));
-        z.add_cell_constraint(Type::TVar(y.clone()));
-        y.add_cell_constraint(Type::TVar(z.clone()));
-        let x = FnArgType { typ: Type::TVar(z), ..ft.args[0].clone() };
-        let f = Type::Fn(TArc::new(FnType {
-            args: TArc::from_iter([x]),
-            ..FnType::clone(ft)
-        }));
-        let q = [(name, b.cell_addr())];
-        assert!(escapes_through(&q, &f, "v", "b").is_ok());
-        let beside = Type::Tuple(TArc::from_iter([f, Type::TVar(y)]));
-        assert!(escapes_through(&q, &beside, "v", "b").is_err());
-    }
-
-    /// `n` levels over `i64`, each `(fn<'a: Any>(x: 'a) -> ('a, L),
-    /// fn<'b: Any>(x: 'b) -> ('b, L))` with quantifiers of its own and `L`
-    /// the level below, one node in each function's result.
-    fn quantified_result_pairs(n: usize) -> Type {
-        let mut t = Type::Primitive(Typ::I64.into());
-        for _ in 0..n {
-            let over = |src: &str| {
-                let Type::Fn(ref ft) = parse_type(src).unwrap() else { panic!("{src}") };
-                let Type::Tuple(ref parts) = ft.rtype else { panic!("{src}") };
-                let rtype = Type::Tuple(TArc::from_iter([parts[0].clone(), t.clone()]));
-                Type::Fn(TArc::new(FnType { rtype, ..FnType::clone(ft) }))
-            };
-            t = Type::Tuple(TArc::from_iter([
-                over("fn<'a: Any>(x: 'a) -> ('a, i64)"),
-                over("fn<'b: Any>(x: 'b) -> ('b, i64)"),
-            ]));
-        }
-        t
-    }
-
-    /// The quantifiers `t` holds, by name and cell, and the cells.
-    fn asked_of(t: &Type) -> (SmallVec<[(ArcStr, usize); 2]>, Vec<TVar>) {
-        let (_, gates, quantified) =
-            quantified_formal(&Env::default(), t).expect("a quantified formal");
-        drop(gates);
-        let q = quantified.iter().map(|(n, tv)| (n.clone(), tv.cell_addr())).collect();
-        (q, quantified.iter().map(|(_, tv)| tv.clone()).collect())
-    }
-
-    /// `escapes_through` asked of every quantifier `t` holds, with the
-    /// steps its walks took.
-    fn escape_steps(t: &Type) -> (Result<()>, usize) {
-        let (q, _) = asked_of(t);
-        RANK2_STEPS.with(|n| n.set(0));
-        let r = escapes_through(&q, t, "v", "b");
-        (r, RANK2_STEPS.with(|n| n.get()))
-    }
-
-    // Asked of every quantifier a DAG of quantified function types holds,
-    // each under its own binder, the escape walk takes a bounded number of
-    // steps per node: never one walk per path or per set of binders around
-    // a node (2^16 here), nor one per quantifier (2 * 16 walks here).
-    #[test]
-    fn escape_walk_is_linear_in_a_dag_of_binders() {
-        let n = 16;
-        let t = quantified_result_pairs(n);
-        let (r, steps) = escape_steps(&t);
-        assert!(r.is_ok());
-        assert!(steps <= 32 * n, "{steps}");
-        let (q, cells) = asked_of(&t);
-        assert_eq!(q.len(), 2 * n);
-        let beside = Type::Tuple(TArc::from_iter([t, Type::TVar(cells[0].clone())]));
-        assert!(escapes_through(&q[..1], &beside, "v", "b").is_err());
-    }
-
-    // A record of `n` functions each quantifying its own variable, asked of
-    // every one: the walk is linear in the record, not in the record times
-    // its quantifiers, a lookup of an asked cell included.
-    #[test]
-    fn escape_walk_is_linear_in_a_record_of_binders() {
-        let n = 256;
-        let fields = (0..n)
-            .map(|i| format!("f{i}: fn<'a{i}: Any>(x: 'a{i}) -> ('a{i}, i64)"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let t = parse_type(&format!("{{{fields}}}")).unwrap();
-        let (r, steps) = escape_steps(&t);
-        assert!(r.is_ok());
-        assert!(steps <= 16 * n, "{steps}");
-    }
-
-    // One function quantifying `n` variables, asked of every one: the walk
-    // is linear in its quantifiers, dropping those it binds included.
-    #[test]
-    fn escape_walk_is_linear_in_one_binder_of_many() {
-        let n = 256;
-        let each =
-            |f: &dyn Fn(usize) -> String| (0..n).map(f).collect::<Vec<_>>().join(", ");
-        let t = parse_type(&format!(
-            "fn<{}>(x: ({})) -> i64",
-            each(&|i| format!("'a{i}: Any")),
-            each(&|i| format!("'a{i}"))
-        ))
-        .unwrap();
-        let (r, steps) = escape_steps(&t);
-        assert!(r.is_ok());
-        assert!(steps <= 16 * n, "{steps}");
-    }
-
-    // One function quantifying `n` variables whose parameter wraps their
-    // tuple `d` deep in `(_, i64)`: each wrapper has all `n` free, its
-    // child's answer, so the walk is linear in `n + d`, not in `n * d`.
-    #[test]
-    fn escape_walk_shares_an_answer_up_a_chain_of_wrappers() {
-        let (n, d) = (128, 128);
-        let vars = (0..n).map(|i| format!("'a{i}")).collect::<Vec<_>>();
-        let bounds = vars.iter().map(|v| format!("{v}: Any")).collect::<Vec<_>>();
-        let mut x = format!("({})", vars.join(", "));
-        for _ in 0..d {
-            x = format!("({x}, i64)")
-        }
-        let t = parse_type(&format!("fn<{}>(x: {x}) -> i64", bounds.join(", "))).unwrap();
-        let (r, steps) = escape_steps(&t);
-        assert!(r.is_ok());
-        assert!(steps <= 16 * (n + d), "{steps}");
-    }
-
-    /// `fn<'a0: Any, .., 'c: ('a0, ..), 'd: Any>(x: {f0: F0, ..}) -> i64`
-    /// over `n` quantifiers 'a, its fields `fields`.
-    fn binding_c_and_d(n: usize, fields: &[&str]) -> Type {
-        let each = |f: &dyn Fn(usize) -> String, k: usize| {
-            (0..k).map(f).collect::<Vec<_>>().join(", ")
-        };
-        parse_type(&format!(
-            "fn<{}, 'c: ({}), 'd: Any>(x: {{{}}}) -> i64",
-            each(&|i| format!("'a{i}: Any"), n),
-            each(&|i| format!("'a{i}"), n),
-            each(&|i| format!("f{i}: {}", fields[i]), fields.len()),
-        ))
-        .unwrap()
-    }
-
-    // Where `m` nodes each join the same answers, 'c's (its `n` bound cells)
-    // and 'd's, in `m` fields `('c, 'd)`, or one node joins them `m` times,
-    // in `m` fields alternating 'c and 'd, the join is made once and its
-    // answer shared: the walk copies and compares no cell per node or per
-    // field, so it is linear in `n + m`, not in `n * m`.
-    #[test]
-    fn escape_walk_joins_the_same_answers_once() {
-        let (n, m) = (128, 1024);
-        let alternating = (0..m).map(|i| ["'c", "'d"][i % 2]).collect::<Vec<_>>();
-        for fields in [vec!["('c, 'd)"; m], alternating] {
-            let (r, steps) = escape_steps(&binding_c_and_d(n, &fields));
-            assert!(r.is_ok());
-            assert!(steps <= 16 * (n + m), "{} {steps}", fields[0]);
-        }
-    }
-
-    // A tuple of `n` quantifiers that `d` wrappers `(_, 'a0)` each join with
-    // a cell it holds answers as the tuple does: the walk is linear in `n +
-    // d`, not in `n * d`.
-    #[test]
-    fn escape_walk_joins_a_wrapper_with_a_cell_it_holds_once() {
-        let (n, d) = (128, 512);
-        let vars = (0..n).map(|i| format!("'a{i}")).collect::<Vec<_>>();
-        let bounds = vars.iter().map(|v| format!("{v}: Any")).collect::<Vec<_>>();
-        let mut x = format!("({})", vars.join(", "));
-        for _ in 0..d {
-            x = format!("({x}, 'a0)")
-        }
-        let t = parse_type(&format!("fn<{}>(x: {x}) -> i64", bounds.join(", "))).unwrap();
-        let (r, steps) = escape_steps(&t);
-        assert!(r.is_ok());
-        assert!(steps <= 16 * (n + d), "{steps}");
-    }
-
-    // A formal holding no quantified function is not walked, a chain of
-    // parametric typedefs whose expansions no walk can share included:
-    // `type P1<'a> = (P0<'a>, P0<'a>); ..` and `let x: P16<i64>`.
-    fn typedef_chain() -> Env {
-        chain_of("P", "'a", "('a, i64)")
-    }
-
-    fn chain_of(name: &str, params: &str, base: &str) -> Env {
-        chain_passing(name, params, base, params)
-    }
-
-    /// `type <name>0<params> = base; type <name>1<params> = (<name>0<pass>,
-    /// <name>0<pass>); ..` to depth 16.
-    fn chain_passing(name: &str, params: &str, base: &str, pass: &str) -> Env {
-        let mut env = Env::default();
-        let mut defs = vec![format!("type {name}0<{params}> = {base}")];
-        for i in 1..=16 {
-            let below = format!("{name}{}<{pass}>", i - 1);
-            defs.push(format!("type {name}{i}<{params}> = ({below}, {below})"));
-        }
-        for d in defs.iter() {
-            let e = parse_one(d).unwrap();
-            let ExprKind::TypeDef(td) = &e.kind else { panic!("not a typedef: {d}") };
-            let (params, body) = Type::reset_typedef_tvars(&td.params, &td.body);
-            let at = SourcePosition::default();
-            env.deftype(
-                &ModPath::root(),
-                &td.name.name,
-                params,
-                &body,
-                true,
-                None,
-                at,
-                at,
-                e.ori.clone(),
-            )
-            .unwrap();
-        }
-        env
-    }
-
-    #[test]
-    fn quantified_formal_skips_a_formal_holding_none() {
-        let env = typedef_chain();
-        let t = parse_type("P16<i64>").unwrap();
-        assert!(t.lookup_ref_probe(&env).is_some());
-        RANK2_STEPS.with(|n| n.set(0));
-        assert!(quantified_formal(&env, &t).is_none());
-        assert_eq!(RANK2_STEPS.with(|n| n.get()), 0);
-    }
-
-    // The walk that asks whether a type holds one only looks: it decides no
-    // name it meets, which another task's check may resolve in another
-    // environment.
-    #[test]
-    fn quantified_formal_decides_no_name() {
-        let env = typedef_chain();
-        let t = parse_type("P16<i64>").unwrap();
-        let Type::Ref(tr) = &t else { panic!("not a reference: {t}") };
-        assert!(quantified_formal(&env, &t).is_none());
-        assert!(tr.def_key().is_none());
-    }
-
-    // One that holds one walks each application of a typedef to the same
-    // parameters once: `P16<fn<'b: Number>(x: 'b) -> 'b>`.
-    #[test]
-    fn rank2_parts_walks_an_application_once() {
-        let env = typedef_chain();
-        let t = parse_type("P16<fn<'b: Number>(x: 'b) -> 'b>").unwrap();
-        RANK2_STEPS.with(|n| n.set(0));
-        let (_, _, quantified) =
-            quantified_formal(&env, &t).expect("a quantified formal");
-        assert_eq!(quantified.len(), 1);
-        assert!(RANK2_STEPS.with(|n| n.get()) <= 6 * 17);
-    }
-
-    // And to the same parameters by content where one has no node
-    // identity: a primitive, `Any`, a map.
-    #[test]
-    fn rank2_parts_walks_an_application_over_a_leaf_once() {
-        let env = chain_of("Q", "'a, 'c", "('a, 'c)");
-        for leaf in ["i64", "Any", "Map<string, i64>"] {
-            let t =
-                parse_type(&format!("Q16<fn<'b: Number>(x: 'b) -> 'b, {leaf}>")).unwrap();
-            RANK2_STEPS.with(|n| n.set(0));
-            let (_, _, quantified) =
-                quantified_formal(&env, &t).expect("a quantified formal");
-            assert_eq!(quantified.len(), 1);
-            let steps = RANK2_STEPS.with(|n| n.get());
-            assert!(steps <= 8 * 17, "{leaf}: {steps} steps");
-        }
-    }
-
-    // And to a parameter each level rebuilds, by its content: `P<i><'a> =
-    // (P<i-1><('a, i64)>, P<i-1><('a, i64)>)` under a let's annotation.
-    #[test]
-    fn rank2_parts_walks_an_application_over_a_rebuilt_parameter_once() {
-        let env = chain_passing("R", "'a", "('a, i64)", "('a, i64)");
-        let t = parse_type("R16<fn<'b: Number>(x: 'b) -> 'b>").unwrap();
-        RANK2_STEPS.with(|n| n.set(0));
-        let (_, _, quantified) =
-            quantified_formal(&env, &t).expect("a quantified formal");
-        assert_eq!(quantified.len(), 1);
-        let steps = RANK2_STEPS.with(|n| n.get());
-        assert!(steps <= 8 * 17, "{steps} steps");
-    }
-
-    // A formal whose every level builds its quantified function types anew,
-    // `Q<i><'a> = (Q<i-1><fn<'b: Any>(x: 'b) -> 'a>, ..)`, holds 2^11 - 2
-    // distinct quantifiers at Q10, each taken once.
-    #[test]
-    fn rank2_parts_takes_each_of_many_quantifiers_once() {
-        let env = chain_passing("Q", "'a", "('a, i64)", "fn<'b: Any>(x: 'b) -> 'a");
-        let t = parse_type("Q10<i64>").unwrap();
-        let (_, _, quantified) =
-            quantified_formal(&env, &t).expect("a quantified formal");
-        let cells: AHashSet<usize> =
-            quantified.iter().map(|(_, q)| q.cell_addr()).collect();
-        assert_eq!((quantified.len(), cells.len()), (2046, 2046));
-    }
-
-    // And where that parameter is a function type with no quantifiers of
-    // its own, holding the quantified one in its result or only in its
-    // parameter (no holder), or a struct of 26 fields.
-    #[test]
-    fn rank2_parts_walks_an_application_over_a_rebuilt_function_or_wide_parameter_once() {
-        let wide: String =
-            (1..=25).map(|k| format!("a{k:02}: i64, ")).chain(["z: 'a".into()]).collect();
-        let wide = format!("{{{wide}}}");
-        for (pass, holds) in
-            [("fn(x: i64) -> 'a", true), ("fn(x: 'a) -> i64", false), (&*wide, true)]
-        {
-            let env = chain_passing("R", "'a", "('a, i64)", pass);
-            let t = parse_type("R16<fn<'b: Number>(x: 'b) -> 'b>").unwrap();
-            RANK2_STEPS.with(|n| n.set(0));
-            let found = quantified_formal(&env, &t).map(|(_, _, q)| q.len());
-            assert_eq!(found, holds.then_some(1), "{pass}");
-            let steps = RANK2_STEPS.with(|n| n.get());
-            assert!(steps <= 64 * 17, "{pass}: {steps} steps");
-        }
+        assert!(WALK_STEPS.with(|n| n.get()) <= 2 * (2 * 25 + 2));
     }
 }

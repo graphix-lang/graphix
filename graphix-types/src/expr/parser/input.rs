@@ -570,20 +570,6 @@ impl<'a> Input<'a> {
         r
     }
 
-    // CR claude for claude: [perf/low] Near the nesting limit a remembered
-    // parse is still superlinear, bounded by the limit: an entry the limit
-    // cut short replays only at the depth it started at, and `select x{ "[`
-    // nested near the limit reaches each inner offset at about 50 depths, a
-    // parse each (fsp_150: 22896 offset-depth pairs over 449 offsets).
-    // `graphix fmt --stdout` costs 34M / 50M / 202M / 345M / 1.20G / 1.56G
-    // instructions at N = 95 / 100 / 105 / 110 / 150 / 195, level past 190; the
-    // template form 1.90G at 150 and 2.46G at 195, on 3.9 KB; str::parse of
-    // the ftp_150 text about 1.2G above N=20. Main 968fa9bc0 is exponential
-    // there. Replaying a cut entry at another depth needs a rule for where a
-    // deeper start is cut that is exact without the parse; until then such
-    // a string costs about a second, not a stall. Found by review r14 of lane
-    // K. probes: ~/ptmp/cr29/scratch/review-r14/K-r1-2/deep/{fsp,ftp}_*.gx,
-    // rt_tp_150.gx (probe-limit-cost-01)
     /// `f`, an expression, parsed once where it starts when a lookahead or
     /// a probe parses it first: what follows them reads it again (a block,
     /// the arguments of an attribute a struct's lookahead read; a select's

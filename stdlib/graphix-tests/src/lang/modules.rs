@@ -942,29 +942,6 @@ run!(
     FuseExpect::None
 );
 
-// A module's callbacks over its parent's annotated array of rank-2
-// functions call each element at a type of their own and decide nothing
-// of the parent's written type.
-run!(
-    module_calls_outer_rank2_elements,
-    prints("[[f64:4., f64:4.], [i64:3, i64:3]]"),
-    "/test.gx" => r#"
-        let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
-        let fs: Array<fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a> = [f, f];
-        mod m;
-        let result = (m::r, m::q)
-    "#,
-    "/test/m.gxi" => r#"
-        val r: Array<f64>;
-        val q: Array<i64>
-    "#,
-    "/test/m.gx" => r#"
-        use super::fs;
-        let r = array::map(fs, |h| h(1.5, 2.5));
-        let q = array::map(fs, |h| h(1, 2))
-    "#
-);
-
 // A module with no interface writing a name its parent destructured from a
 // holder decides that holder value's copy, never the definition the
 // parent's other reads instantiate.
@@ -1756,7 +1733,7 @@ run!(
 
 run!(
     a_load_cannot_narrow_a_written_generic_interface,
-    load_refused("made generic by an earlier compile"),
+    load_refused("a generic binding, so what is written"),
     "/test.gx" => r#"
         mod a;
         a::f <- |x| x;
@@ -1781,7 +1758,7 @@ run!(
 // general.
 run!(
     a_write_through_a_dynamic_struct_of_functions_val_refused,
-    refused("c is { f: fn(x: 'a: unbound) -> 'a: unbound }, made generic by an earlier compile, so what is written to it must be as general"),
+    refused("c is { f: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general"),
     "/test.gx" => r#"
         let s = mod d dynamic {
             sandbox unrestricted;
@@ -1988,6 +1965,198 @@ run!(
     "#,
     "/test/a.gxi" => "val x: i64; val set: fn(v: i64) -> i64",
     "/test/a.gx" => "let x = 0; let set = |v: i64| -> i64 { x <- v; v }"; FuseExpect::Jit
+);
+
+// A val and the binding implementing it are one variable: writes through
+// either side land in one queue, in the order they were made, each on the
+// value the one before it left, as writes to one binding do.
+run!(
+    patches_through_both_sides_of_an_interface_compose,
+    is(Value::String("7 9".into())),
+    "/test.gx" => r#"
+        mod a;
+        let ep = 0;
+        ep <- select ep { n if n < 3 => n + 1, _ => never() };
+        let go = select ep { 1 => null, _ => never() };
+        let ry = &mut a::s.y;
+        *ry <- go ~ 9;
+        let b = a::bump(go);
+        let result = select ep { 3 => "[a::s.x] [a::s.y]", _ => never() }
+    "#,
+    "/test/a.gxi" => "val s: {x: i64, y: i64}; val bump: fn(t: null) -> null",
+    "/test/a.gx" => r#"
+        let s = {x: 0, y: 0};
+        let bump = |t: null| -> null { let rx = &mut s.x; *rx <- t ~ 7; t }
+    "#; FuseExpect::Jit
+);
+
+run!(
+    writes_to_both_sides_of_an_interface_land_in_the_order_made,
+    is(Value::I64(20)),
+    "/test.gx" => r#"
+        mod a;
+        let ep = 0;
+        ep <- select ep { n if n < 4 => n + 1, _ => never() };
+        let t = select ep { 1 => 0, _ => never() };
+        a::v <- t ~ 10;
+        let s = a::set(t ~ 20);
+        let result = select ep { 4 => a::v, _ => never() }
+    "#,
+    "/test/a.gxi" => "val v: i64; val set: fn(x: i64) -> i64",
+    "/test/a.gx" => "let v = 1; let set = |x: i64| -> i64 { v <- x; x }"; FuseExpect::Jit
+);
+
+// A level written through a val and its implementation is one variable's
+// level: each write replaces the one waiting before it, whichever side
+// made it, as for one binding.
+run!(
+    levels_through_both_sides_of_an_interface_are_one_level,
+    is(Value::String("0 4".into())),
+    "/test.gx" => r#"
+        mod a;
+        let ep = 0;
+        ep <- select ep { n if n < 5 => n + 1, _ => never() };
+        let q1 = queuefn(#count: &mut a::d, #trigger: null, |x: i64| -> i64 x);
+        let s = a::set(100);
+        let q2 = queuefn(#count: &mut a::d, #trigger: null, |x: i64| -> i64 x);
+        let n = count(a::d);
+        let result = select ep { 5 => "[a::d] [n]", _ => never() }
+    "#,
+    "/test/a.gxi" => "val d: i64; val set: fn(x: i64) -> i64",
+    "/test/a.gx" => "let d = 5; let set = |x: i64| -> i64 { d <- x; x }"; FuseExpect::Jit
+);
+
+// What a write through a val lands while the module's arm sleeps fires the
+// val's readers outside the arm once, as for one binding.
+run!(
+    a_write_through_an_interface_while_its_arm_sleeps_fires_once,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 12 => n + 1, _ => never() };
+        let on = select ep { k if k > 5 && k < 9 => false, _ => true };
+        let rv: [&mut i64, null] = null;
+        let r = select on {
+            true => { mod a; rv <- once(ep) ~ &mut a::v; a::g(ep ~ 1) },
+            false => never()
+        };
+        let w = select ep { 7 => 50, _ => never() };
+        let rr = rv$;
+        *rr <- w;
+        let fires = count(*rr);
+        let result = select ep { 12 => fires, _ => never() }
+    "#,
+    "/test/a.gxi" => "val v: i64; val g: fn(x: i64) -> i64",
+    "/test/a.gx" => "let v = 0; let g = |x: i64| -> i64 x + v"; FuseExpect::Jit
+);
+
+// A reload drops what the body it replaces wrote and had not landed, a
+// reference to its binding alive or not, so the new body's value stands.
+run!(
+    a_reload_drops_the_replaced_bodys_pending_writes,
+    r#"
+    {
+        let ep = 0;
+        ep <- select ep { n if n < 9 => n + 1, _ => never() };
+        let src = r"let go = never(); let f = |x: i64| -> i64 x + 1; f <- go ~ |x: i64| -> i64 x + 10; let rf = &mut f; *rf <- go ~ |x: i64| -> i64 x + 20; let r = 0";
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val go: i64; val f: fn(x: i64) -> i64; val r: i64 };
+            source src
+        };
+        d::go <- select ep { 3 => 1, _ => never() };
+        src <- select ep { 4 => r"let go = 0; let f = |x: i64| -> i64 x + 2; let r = f(1)", _ => never() };
+        select ep { 9 => "[d::r] [d::f(ep ~ 1)]", _ => never() }
+    }
+    "#,
+    is(Value::String("3 3".into())); FuseExpect::Jit
+);
+
+// A write through a val queued across a reload lands on the new body.
+run!(
+    a_write_through_an_interface_lands_across_a_reload,
+    r#"
+    {
+        let ep = 0;
+        ep <- select ep { n if n < 9 => n + 1, _ => never() };
+        let src = r"let v = 1";
+        let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src };
+        src <- select ep { 4 => r"let v = 5000", _ => never() };
+        d::v <- select ep { 4 => 10, _ => never() };
+        let rv = &mut d::v;
+        *rv <- select ep { 4 => 20, _ => never() };
+        select ep { 9 => d::v, _ => never() }
+    }
+    "#,
+    is(Value::I64(20)); FuseExpect::Jit
+);
+
+// A reload is held only to what writes it now: the replaced body's write
+// to its own binding went with that binding.
+run!(
+    a_reload_is_not_held_to_the_replaced_bodys_write,
+    r#"
+    {
+        let ep = 0;
+        ep <- select ep { n if n < 4 => n + 1, _ => never() };
+        let src = "let f = |x: i64| -> i64 x; f <- |x: i64| -> i64 x + 1; let n = 0";
+        src <- select ep { 2 => "let f = |x| x; let g = |u| f(u ~ \"s\"); let n = 1", _ => never() };
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val f: fn(x: i64) -> i64; val n: i64 };
+            source src
+        };
+        select ep { 4 => "[s] [d::n]", _ => never() }
+    }
+    "#,
+    is(Value::String("null 1".into())); FuseExpect::Jit
+);
+
+// A sibling's write through a val reaches the implementation's own calls,
+// whichever module's check ran first.
+run!(
+    a_siblings_write_through_an_interface_reaches_the_bodys_call,
+    is(Value::I64(101)),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 4 => n + 1, _ => never() };
+        let t = select ep { 1 => 1, 2 => 2, _ => never() };
+        mod a;
+        mod w;
+        let r = a::g(t);
+        let result = select ep { 4 => r, _ => never() }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> i64",
+    "/test/a.gx" => "let f: fn(x: i64) -> i64 = |x| x; let g = |t| f(t ~ 1)",
+    "/test/w.gxi" => "val z: null",
+    "/test/w.gx" => r#"
+        use super::t;
+        let set = |v| { super::a::f <- v; null };
+        let z = set(t ~ |x: i64| -> i64 x + 100)
+    "#; FuseExpect::Jit
+);
+
+run!(
+    a_siblings_write_through_a_generic_interface_builds,
+    is(Value::String("1 s 3 q".into())),
+    "/test.gx" => r#"
+        let ep = 0;
+        ep <- select ep { n if n < 4 => n + 1, _ => never() };
+        let t = select ep { 1 => 1, _ => never() };
+        mod a;
+        mod w;
+        let p = a::f(t ~ 3);
+        let q = a::f(t ~ "q");
+        let result = select ep { 4 => "[a::u] [a::v] [p] [q]", _ => never() }
+    "#,
+    "/test/a.gxi" => "val f: fn(x: 'a) -> 'a; val u: i64; val v: string",
+    "/test/a.gx" => r#"let f = |x| x; let u = f(1); let v = f("s")"#,
+    "/test/w.gxi" => "val z: null",
+    "/test/w.gx" => r#"
+        use super::t;
+        let set = |u| { super::a::f <- |x| x; u };
+        let z = set(t ~ null)
+    "#; FuseExpect::Jit
 );
 
 // An interface-only `mod` goes after the body's declarations of every
@@ -2533,23 +2702,6 @@ run!(
         let y = f(2)
     "#; FuseExpect::Jit);
 
-// An interface typedef naming a trait-typed parameter serves its
-// implementation.
-run!(
-    interface_typedef_with_a_trait_parameter,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
-    "/test.gx" => r#"
-        mod m;
-        let result = m::apply(|x| "[x]", 3)
-    "#,
-    "/test/m.gxi" => r#"
-        type F = fn(x: Display) -> string;
-        val apply: fn(f: F, x: i64) -> string
-    "#,
-    "/test/m.gx" => r#"
-        let apply = |f: F, x: i64| -> string f(x)
-    "#; FuseExpect::Jit);
-
 // A predicate bound on a typedef parameter reaches the open members of a
 // union argument on the interface's side as on the implementation's.
 run!(
@@ -2566,27 +2718,6 @@ run!(
     "/test/m.gx" => r#"
         let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
     "#; FuseExpect::Jit);
-
-// The same with the trait-typed parameter inside an abstract's
-// representation.
-run!(
-    interface_abstract_typedef_with_a_trait_parameter,
-    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "3"),
-    "/test.gx" => r#"
-        mod m;
-        let result = m::apply(3)
-    "#,
-    "/test/m.gxi" => r#"
-        type F = Abstract<fn(x: Display) -> string>;
-        val apply: fn(x: i64) -> string
-    "#,
-    "/test/m.gx" => r#"
-        let apply = |x: i64| -> string {
-            let f = F(|y| "[y]");
-            let g = f.0;
-            g(x)
-        }
-    "#; FuseExpect::None);
 
 // A dynamic module whose source goes bottom keeps its loaded body
 // running: a write to an interface val reaches the body that cycle.

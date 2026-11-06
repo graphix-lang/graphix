@@ -132,7 +132,7 @@ impl BoundaryRef {
     }
 
     /// Whether this boundary is `inner` or one of its ancestors.
-    fn holds(&self, inner: Option<&BoundaryRef>) -> bool {
+    pub(crate) fn holds(&self, inner: Option<&BoundaryRef>) -> bool {
         let mut b = inner;
         while let Some(x) = b
             && x.0.depth > self.0.depth
@@ -178,16 +178,62 @@ impl fmt::Debug for BoundaryRef {
     }
 }
 
+/// The last cycle a reader read its binding: a reader whose binding may
+/// fire later in the walk of its own boundary keeps one, which orders it
+/// against that fire where the boundaries cannot.
+#[derive(Clone)]
+pub struct ReadStamp(Arc<AtomicU64>);
+
+impl Default for ReadStamp {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU64::new(u64::MAX)))
+    }
+}
+
+impl ReadStamp {
+    /// Record a read in `cycle`.
+    pub fn read(&self, cycle: u64) {
+        self.0.store(cycle, Relaxed)
+    }
+
+    /// Whether the reader read in `cycle`.
+    pub fn read_in(&self, cycle: u64) -> bool {
+        self.0.load(Relaxed) == cycle
+    }
+}
+
+impl PartialEq for ReadStamp {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ReadStamp {}
+
+impl Hash for ReadStamp {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state)
+    }
+}
+
+impl fmt::Debug for ReadStamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ReadStamp({:p})", Arc::as_ptr(&self.0))
+    }
+}
+
 /// Who reads a variable: the top-level expression the runtime schedules,
-/// and the innermost boundary around the reader, if any. A `late` reader
-/// takes a fire it met after the walk passed it next cycle
-/// ([`crate::Event::late`]: a `Ref`, a `Deref`, a `ConnectDeref`); any
-/// other is scheduled only by a fire in a root after its own.
+/// the innermost boundary around the reader, if any, and the reader's own
+/// read stamp, if it keeps one. A `late` reader takes a fire it met after
+/// the walk passed it next cycle ([`crate::Event::late`]: a `Ref`, a
+/// `Deref`, a `ConnectDeref`); any other is scheduled only by a fire in a
+/// root after its own.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Reader {
     pub root: ExprId,
     pub boundary: Option<BoundaryRef>,
     pub late: bool,
+    pub read: Option<ReadStamp>,
 }
 
 impl Reader {
@@ -198,7 +244,7 @@ impl Reader {
         }
     }
 
-    // CR claude for claude: [bug/medium] Order is judged by boundary only: a reader in a
+    // XCR claude for claude: [bug/medium] Order is judged by boundary only: a reader in a
     // boundary the walk is still inside counts as ahead, though the walk may have passed it
     // there, so it never gets the fire. A Deref directly in a statement, before a nested block
     // statement that fires its target: `{let rr: [&i64, null] = null; let p = (*(rr$), { let
@@ -209,14 +255,25 @@ impl Reader {
     // Deref's read stamp compared at the fire) or keep the limit. probe:
     // ~/ptmp/cr29/scratch/review-r16/W-r1-1/{fz_s1,fz_s4,s3_same_stmt_callee,s4_split_stmt_callee}.gx
     // (late-same-boundary-01)
-    /// Whether a walk now inside `at` in `cycle` has passed the reader:
-    /// reached its boundary, or one around it, and left it. The verdict is
-    /// that of the innermost of them the walk reached.
+    // 2026-11-05 claude: A Deref keeps a read stamp (prune::ReadStamp, carried in its Reader) set as
+    // it reads; Reader::passed_by counts a reader that read this cycle as passed, so a *r before a
+    // nested block or call of its own statement that fires its target reads the fire next cycle, as
+    // the split statement does, and late_fire matches the stamp so a Deref after the producer takes
+    // no late copy. Pins that fail without it:
+    // lang::delivery::a_fire_reaches_a_passed_dereference_in_its_statement (all four modes); unit
+    // prune::tests::a_reader_in_the_walks_boundary_is_passed_once_it_read. Docs: CLAUDE.md,
+    // design/dense_delivery.md, book core/connect.md, graphix-lang skill. Needs a soak.
+    /// Whether a walk now inside `at` in `cycle` has passed the reader: it
+    /// read in `cycle`, or the walk reached its boundary, or one around it,
+    /// and left it, the verdict that of the innermost of them the walk
+    /// reached.
     pub fn passed_by(&self, at: Option<&BoundaryRef>, cycle: u64) -> bool {
-        self.boundary
-            .as_ref()
-            .and_then(|b| b.innermost_visited(cycle))
-            .is_some_and(|x| !x.holds(at))
+        self.read.as_ref().is_some_and(|r| r.read_in(cycle))
+            || self
+                .boundary
+                .as_ref()
+                .and_then(|b| b.innermost_visited(cycle))
+                .is_some_and(|x| !x.holds(at))
     }
 }
 
@@ -225,7 +282,12 @@ mod tests {
     use super::*;
 
     fn reader(boundary: &BoundaryRef) -> Reader {
-        Reader { root: ExprId::new(), boundary: Some(boundary.clone()), late: true }
+        Reader {
+            root: ExprId::new(),
+            boundary: Some(boundary.clone()),
+            late: true,
+            read: None,
+        }
     }
 
     /// Whether a walk inside `at` passed `r`, climbing one boundary a step.
@@ -267,6 +329,29 @@ mod tests {
     /// The steps one judgment may climb at depth `n`.
     fn bound(n: usize) -> usize {
         8 * (usize::BITS - n.leading_zeros()) as usize + 8
+    }
+
+    /// A reader in the boundary the walk is inside is passed once it read
+    /// in the cycle, and ahead before.
+    #[test]
+    fn a_reader_in_the_walks_boundary_is_passed_once_it_read() {
+        let cycle = 7;
+        let stmt = BoundaryRef::new(None);
+        stmt.visit(cycle);
+        let block = BoundaryRef::new(Some(stmt.clone()));
+        block.visit(cycle);
+        let read = ReadStamp::default();
+        let r = Reader {
+            root: ExprId::new(),
+            boundary: Some(stmt),
+            late: true,
+            read: Some(read.clone()),
+        };
+        assert!(!r.passed_by(Some(&block), cycle));
+        read.read(cycle - 1);
+        assert!(!r.passed_by(Some(&block), cycle));
+        read.read(cycle);
+        assert!(r.passed_by(Some(&block), cycle));
     }
 
     /// A recursion `n` deep whose level `k` fires once while the walk is

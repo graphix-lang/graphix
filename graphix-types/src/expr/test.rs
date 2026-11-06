@@ -625,8 +625,7 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::List(Arc::new(t))),
             inner.clone().prop_map(|t| Type::Error(Arc::new(t))),
-            (inner.clone(), inner.clone())
-                .prop_map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
+            (inner.clone(), inner.clone()).prop_map(|(k, v)| Type::map(k, v)),
             (tvar(), inner.clone())
                 .prop_map(|(c, t)| Type::App(Arc::new(Type::TVar(c)), Arc::new(t))),
             (mutability(), inner.clone()).prop_map(|(m, t)| Type::ByRef(m, Arc::new(t))),

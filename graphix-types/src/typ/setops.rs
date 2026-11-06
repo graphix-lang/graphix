@@ -313,15 +313,15 @@ impl Identity {
                 Type::Abstract { id: i1, params: p1 },
             ) => i0 == i1 && self.all(p0, p1),
             (Type::Ref(r0), Type::Ref(r1)) => {
-                r0.same_definition(r1) && self.all(&r0.params, &r1.params)
+                r0.same_filled_definition(r1) && self.all(&r0.params, &r1.params)
             }
             (Type::Set(s0), Type::Set(s1)) => self.all(s0, s1),
             (Type::Error(a), Type::Error(b))
             | (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b)) => self.same(a, b),
             (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.same(a, b),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                self.same(k0, k1) && self.same(v0, v1)
+            (Type::Map(m0), Type::Map(m1)) => {
+                self.same(&m0.key, &m1.key) && self.same(&m0.value, &m1.value)
             }
             (Type::Tuple(a), Type::Tuple(b)) => self.all(a, b),
             (Type::Struct(a), Type::Struct(b)) => {
@@ -364,8 +364,8 @@ impl Identity {
 }
 
 /// Two same-named refs to one definition with identical params.
-fn same_ref(r0: &TypeRef, r1: &TypeRef) -> bool {
-    r0.same_definition(r1)
+fn same_ref(env: &Env, r0: &TypeRef, r1: &TypeRef) -> bool {
+    r0.same_definition(r1, env)
         && r0.params.len() == r1.params.len()
         && r0.params.iter().zip(r1.params.iter()).all(|(a, b)| union_identical(a, b))
 }
@@ -452,8 +452,9 @@ impl Type {
                 Ok(t.clone())
             }
             (Type::Ref(t0), Type::Ref(t1))
-                if t0.same_definition(t1) && t0.params.len() == t1.params.len() =>
+                if t0.same_definition(t1, env) && t0.params.len() == t1.params.len() =>
             {
+                t0.hold_bounds_with(t1, env, true)?;
                 self.union_ref_params(env, hist, merge, t0, t1, t)
             }
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
@@ -899,7 +900,8 @@ impl Type {
 
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
-            (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
+            (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(env, tr0, tr1) => {
+                tr0.hold_bounds_with(tr1, env, true)?;
                 Ok(Type::Primitive(BitFlags::empty()))
             }
             (t0 @ Type::Ref(_), t1) | (t0, t1 @ Type::Ref(_)) => {
@@ -1051,8 +1053,8 @@ impl Type {
                     Ok(self.clone())
                 }
             }
-            (Type::Primitive(p), Type::Map { key, value }) => {
-                if is_any(key) && is_any(value) {
+            (Type::Primitive(p), Type::Map(m)) => {
+                if is_any(&m.key) && is_any(&m.value) {
                     let mut p = *p;
                     p.remove(Typ::Map);
                     Ok(Type::Primitive(p))
@@ -1322,6 +1324,12 @@ impl Type {
                 }
                 None => Ok(p.clone()),
             },
+            (p @ Self::Array(_), Self::App(c, a)) if Self::app_filled(c, a).is_none() => {
+                p.matching_type_int(env, walk, &Self::Array(a.clone()))
+            }
+            (p @ Self::List(_), Self::App(c, a)) if Self::app_filled(c, a).is_none() => {
+                p.matching_type_int(env, walk, &Self::List(a.clone()))
+            }
             (p @ Self::Ref(_), t) | (p, t @ Self::Ref(_)) => {
                 let definition = |t: &Type| match t {
                     Self::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
@@ -1351,6 +1359,17 @@ impl Type {
                         matched.push(m);
                     }
                 }
+                // CR claude for claude: [perf/low] err4.gx (mkerr.py 4: X_i = [Error<X_i+1>,
+                // Error<X_k>, Error<Error<X_i+2>>, `P], a Y twin with `Q, `select v: [X0, Y0] {
+                // Y0 as y => 0, _ => 1 }`) does not end its --check in 60 s on base-r17, in
+                // Select::typecheck0_with -> PatternNode::capture_type -> Type::matching_type,
+                // and once contains walks these names in polynomial steps
+                // (contains-probe-falses-01) it is still killed at 60 s, here: a gdb sample at
+                // 15 s shows matching_type_inner -> flatten_set -> Kept::merge_with -> merge ->
+                // merge_inner -> flat_eq -> flatten_set nested eight deep, so normalizing the
+                // matched union seems to walk the nested Error payloads as a tree. probes:
+                // ~/ptmp/cr29/scratch/r17-hk/ (err4.gx, mkerr.py, err4.fix.gdb)
+                // (matching-type-merge-01)
                 Ok(Self::flatten_set(matched.drain(..)))
             }
             (p, t) => {
@@ -1523,15 +1542,17 @@ mod tests {
     use crate::{
         PrintFlag,
         env::Env,
+        expr::{ModPath, TypeDefBody, parser::parse_type},
         format_with_flags,
         typ::{
-            Type,
+            Bound, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
             setops::WALK_PAIRS,
         },
     };
     use ahash::AHashMap;
+    use arcstr::literal;
     use netidx_value::Typ;
     use triomphe::Arc;
 
@@ -1556,6 +1577,67 @@ mod tests {
             let m = test.matching_type(&env, &reaching).unwrap().normalize();
             assert_eq!(m.to_string(), "[`X, Box<i64>, Box<string>]");
         }
+    }
+
+    // A reference whose cell is open names the definition its name has
+    // in the env, as a filled one does: the union of the two is the one
+    // reference, whichever cells a walk filled before.
+    #[test]
+    fn an_open_reference_is_its_filled_twin() {
+        let (env, filled) = typed(&[("R<'a>", "[`Nil, `Cons('a, R<'a>)]")], "R<i64>");
+        let open = || parse_type("R<i64>").unwrap().scope_refs(&ModPath::root());
+        for (t0, t1) in [(filled.clone(), open()), (open(), filled.clone())] {
+            let u = Type::union(&env, &[&t0, &t1]).unwrap();
+            assert_eq!(u.to_string(), "R<i64>");
+            assert!(t0.diff(&env, &t1).unwrap().is_uninhabited());
+        }
+    }
+
+    // Two open references a walk takes as one by their arguments stay
+    // open: the walk may run under an env that does not see their scope,
+    // where their name means an outer shadow, which a fill would keep for
+    // every later walk.
+    #[test]
+    fn a_shortcut_fills_no_open_pair() {
+        let (env, _) = typed(&[("S<'a>", "['a, `X]"), ("I", "i64")], "null");
+        let open = |t: &str| parse_type(t).unwrap().scope_refs(&ModPath::root());
+        let (t0, t1) = (open("S<i64>"), open("S<I>"));
+        t0.check_contains(&env, &t1).unwrap();
+        for t in [&t0, &t1] {
+            let Type::Ref(tr) = t else { panic!("{t} is a reference") };
+            assert!(tr.is_open(), "{t} was filled")
+        }
+    }
+
+    // Two applications of one definition taken as one by their arguments
+    // hold those arguments to the parameters' bounds, as their expansions
+    // do.
+    #[test]
+    fn one_definition_by_its_arguments_holds_their_bounds() {
+        let (mut env, _) = typed(&[], "null");
+        let r = (TVar::empty_named(literal!("r")), Some(Type::Bound(Bound::NoError)));
+        let body = TypeDefBody::Alias(parse_type("['r, `X]").unwrap());
+        let site = (Default::default(), Default::default(), Arc::new(Default::default()));
+        let root = ModPath::root();
+        env.deftype(
+            &root,
+            "R",
+            Arc::from_iter([r]),
+            &body,
+            true,
+            None,
+            site.0,
+            site.1,
+            site.2,
+        )
+        .unwrap();
+        env.seed_typedef_refs();
+        let t = parsed(&env, "R<'c>");
+        let mut cells = AHashMap::default();
+        t.collect_tvars(&mut cells);
+        t.check_contains(&env, &t.clone()).unwrap();
+        let bounds = cells["c"].cell_constraints();
+        assert!(bounds.contains(&Type::Bound(Bound::NoError)), "{bounds:?}");
     }
 
     // diff reads a bound cell as its binding wherever it compares parts:

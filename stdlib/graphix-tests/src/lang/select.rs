@@ -5219,7 +5219,7 @@ run!(
     f((5, 6)) + f((7, 8, 9))
 }"#,
     is(Value::I64(12));
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -5276,7 +5276,7 @@ run!(or_arm_wildcard_only_through_bare_name, "{ let f = |t: [(i64, i64), (i64, i
 
 // a tuple alternative and a struct alternative are told apart
 run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
-    is(Value::I64(1)); FuseExpect::None);
+    is(Value::I64(1)); FuseExpect::Jit);
 
 // A woken arm's constants stand (through any operator, call, builtin,
 // select, formal or collection loop), so they never rewrite a `<-`
@@ -6778,7 +6778,7 @@ run!(
         (f((true, false)), f((false, false)), f(`Y), g([]), g([false]), g([true, true]), g(`X))
     }"#,
     prints("[i64:1, i64:3, i64:5, i64:0, i64:2, i64:3, i64:4]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Short of exhaustive over such a union, the refusal names only what no arm
@@ -6976,7 +6976,7 @@ run!(
         [f(`B((false, true))), f(`B((true, false))), f(`B(`A((true, true)))), f(`C(1))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 6, 7, 8]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -6993,7 +6993,7 @@ run!(
         [f((false, true)), f(`A((false, true))), f(`B((true, false))), f(`B(`A((true, false)))), f(`C((true, true)))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 4, 6, 7, 8]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -7208,7 +7208,7 @@ run!(
         [u(`B((true, w))), u(`B((true, true))), u(`B(`A)), u(`C)]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A position holding a declared variable beside other members has a head of
@@ -7384,7 +7384,7 @@ run!(
         [u((`A, null)), u((`B, 7)), u((`B, "w")), u((`B, null))]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 1, 3]);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Plain containment splits a declared variable by its bound the same way.
@@ -7474,7 +7474,7 @@ run!(
         g(("str", `B))
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "b");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A pattern tests nothing inside the variable at a member it cannot match.
@@ -7518,6 +7518,182 @@ run!(
         g((o, 1))
     }"#,
     refused("(`A(z), n) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c is a type variable nothing declares; write the type it tests, `([`A(i64), `B(i64)], i64) as (`A(z), n)`");
+    FuseExpect::None
+);
+
+// A typedef a written test names is closed only where its body is.
+run!(
+    written_test_typedef_of_bottom_inside_a_declared_variable_refused,
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(T) holds `_`, which is bottom; write the type it tests, ``A(i64) as `A(z)`"),
+    "/test.gx" => r#"
+        type T = _;
+        let g = 'b: [`A(i64), `B(i64)] |x: 'b| -> [string, null] select x {
+            `A(T) as `A(z) => z,
+            _ => null
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(o)
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_typedef_holding_bottom_inside_a_declared_variable_refused,
+    refused("(`A(z), n) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: BotA holds `_`, which is bottom; write the type it tests, `([`A(i64), `B(i64)], i64) as (`A(z), n)`"),
+    "/test.gx" => r#"
+        type BotA = `A(_);
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
+            (BotA, i64) as (`A(z), n) => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g((o, 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_typedef_holding_bottom_at_an_element_refused,
+    refused("tests inside a value of 'b, a type variable of the definition, and its type test types none of it: BotA holds `_`"),
+    "/test.gx" => r#"
+        type BotA = `A(_);
+        let g = 'b: [`A(i64), `B(i64)] |x: Array<'b>| select x {
+            Array<BotA> as [`A(z), ..] => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_typedef_holding_bottom_returning_the_variable_refused,
+    refused("tests inside a value of 'b, a type variable of the definition, and its type test types none of it: BotA holds `_`"),
+    "/test.gx" => r#"
+        type BotA = `A(_);
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| -> 'b select x {
+            (BotA, i64) as (`A(z), n) => z,
+            (v, n) => v
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g((o, 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    written_test_closed_typedef_inside_a_declared_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 3]),
+    "/test.gx" => r#"
+        type AB = [`A(i64), `B(i64)];
+        type I = i64;
+        let g = 'b: [`A(i64), `B(i64)] |x: ('b, i64)| select x {
+            (AB, i64) as (`A(z), n) => z + n,
+            _ => 0
+        };
+        let h = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(I) as `A(z) => z, _ => 0 };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = [g((o, 1)), h(o)]
+    "#;
+    FuseExpect::Jit
+);
+
+run!(
+    collection_variable_element_pattern_refused,
+    refused("[`A(z), ..] tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `Array<[`A(i64), `B(i64)]> as [`A(z), ..]`"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| select x {
+            [`A(z), ..] => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_list_element_pattern_refused,
+    refused("[<`A(z), ..>] tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `List<[`A(i64), `B(i64)]> as [<`A(z), ..>]`"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| -> f64 select x {
+            [<`A(z), ..>] => z + 1.5,
+            _ => 0.0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g([<o>])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_tuple_element_pattern_refused,
+    refused("[(a, b), ..] tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `Array<(i64, i64)> as [(a, b), ..]`"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> f64 select x {
+            [(a, b), ..] => a + 1.5,
+            _ => 0.0
+        };
+        let result = g([(3, 4)])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_parameter_element_pattern_refused,
+    refused("[`A(z), ..] tests a value whose type is not decided at this select"),
+    "/test.gx" => r#"
+        let h = |c: Collection| -> [string, null] select c { [`A(z), ..] => z, _ => null };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = h([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_parameter_element_pattern_arith_refused,
+    refused("[`A(z), ..] tests a value whose type is not decided at this select"),
+    "/test.gx" => r#"
+        let h = |c: Collection| select c { [`A(z), ..] => z + 1.5, _ => 0.0 };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = h([o])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_element_written_test,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 0, 4, 8, 0]),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| select x {
+            Array<[`A(i64), `B(i64)]> as [`A(z), ..] => z + 1,
+            _ => 0
+        };
+        let l = 'c: Collection, 'b: [`A(i64), `B(i64)] |x: 'c<'b>| select x {
+            List<[`A(i64), `B(i64)]> as [<`A(z), ..>] => z + 1,
+            _ => 0
+        };
+        let t = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| select x {
+            Array<(i64, i64)> as [(a, b), ..] => a + b + 1,
+            _ => 0
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = [g([o]), g([<o>]), l([o]), l([<o>]), t([(3, 4)]), t([<(3, 4)>])]
+    "#;
+    FuseExpect::Jit
+);
+
+run!(
+    collection_variable_element_written_test_types_binds,
+    refused("type mismatch string does not contain i64"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x {
+            Array<(i64, i64)> as [(a, b), ..] => { let q: string = a; q },
+            _ => null
+        };
+        let result = g([(3, 4)])
+    "#;
     FuseExpect::None
 );
 
@@ -8255,4 +8431,102 @@ run!(
     }"#,
     refused("pattern Error<`Q> will never match");
     FuseExpect::None
+);
+
+// A tuple or struct pattern over a union holding one such member fuses, at
+// the top, at a payload, and in an or-pattern that binds nothing.
+run!(
+    composite_pattern_over_a_union_member_fuses,
+    r#"{
+        let f = |v: [(i64, bool), `A((i64, bool))]| #[native] select v {
+            (_, true) => 0,
+            (n, false) => n + 10,
+            `A((n, _)) => n + 100
+        };
+        [f((1, true)), f((2, false)), f(`A((3, true)))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 12, 103]);
+    FuseExpect::Jit
+);
+
+run!(
+    composite_payload_pattern_over_a_union_member_fuses,
+    r#"{
+        let f = |v: [`B([{x: i64, y: bool}, `A(i64)]), `C(i64)]| #[native] select v {
+            `B({x: _, y: true}) => 1,
+            `B({x, y: false}) => x + 10,
+            `B(`A(n)) => n + 100,
+            `C(n) => n + 1000
+        };
+        [f(`B({x: 1, y: true})), f(`B({x: 2, y: false})), f(`B(`A(3))), f(`C(4))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 12, 103, 1004]);
+    FuseExpect::Jit
+);
+
+run!(
+    composite_or_payload_over_a_union_member_fuses,
+    r#"{
+        let f = |v: [`B([(bool, bool), `A((bool, bool))]), `C]| #[native] select v {
+            `B((_, true) | (true, _)) => 1,
+            `B(_) => 2,
+            `C => 3
+        };
+        [
+            f(`B((false, true))),
+            f(`B((true, false))),
+            f(`B((false, false))),
+            f(`B(`A((true, true)))),
+            f(`C)
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2, 3]);
+    FuseExpect::Jit
+);
+
+// Of two tuple members the inferred test leaves one: `(4, "")` is no
+// `(_, false)`.
+run!(
+    composite_pattern_over_one_of_two_tuple_members_fuses,
+    r#"{
+        let f = |v: [(bool, bool), (i64, string)]| #[native] select v {
+            (_, false) => 1,
+            (_, true) => 2,
+            (i64, string) as (n, s) => n + str::len(s)
+        };
+        [f((true, false)), f((false, true)), f((3, "ab")), f((4, ""))]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 5, 4]);
+    FuseExpect::Jit
+);
+
+// A written test over a tuple or struct its type does not hold is the value's
+// test against it; its binds read at the test's types.
+run!(
+    written_composite_test_fuses,
+    r#"{
+        let f = |x: ([i64, null], i64)| #[native] select x {
+            (i64, i64) as (a, b) if a > 0 => a + b,
+            (i64, i64) as (a, b) => a - b,
+            (_, b) => b
+        };
+        let g = |s: {a: [i64, string, null], b: i64}| #[native] select s {
+            {a: i64, b: i64} as {a, b} => a + b,
+            {a: string, b: i64} as {a: _, b} => b * 10,
+            {a: _, b} => b * 100
+        };
+        let h = |x: (Array<[i64, null]>, i64)| #[native] select x {
+            (Array<i64>, i64) as ([hd, ..], n) => hd + n,
+            (Array<i64>, i64) as (_, n) => n,
+            _ => -1
+        };
+        [
+            f((3, 4)), f((-3, 4)), f((null, 9)),
+            g({a: 1, b: 2}), g({a: "s", b: 3}), g({a: null, b: 4}),
+            h(([1, 2], 10)), h(([], 10)), h(([1, null], 10))
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [7, -7, 9, 3, 30, 400, 11, 10, -1]);
+    FuseExpect::Jit
 );

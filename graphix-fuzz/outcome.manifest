@@ -280,7 +280,6 @@ trace	operand-bound-member-oct2026/00_extracted_callback.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx
 trace	param-call-expr-sep2026/00_param_called_through_parens.gx
-trace	param-call-expr-sep2026/01_rank2_param_called_through_parens.gx
 reject	N: the type 'b must be fully known here, a type-directed operation reads it: annotate it	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 reject	N: the type 'b must be fully known here, a type-directed operation reads it: annotate it	parse-bottom-member-jul2026/01_nested_bottom_member.gx
 trace	prevlen-word-jul2026/00_callee_loop_source_refresh.gx
@@ -337,7 +336,6 @@ reject	N: type mismatch fn(x: 'a: string) -> 'a: string does not contain fn(s: s
 reject	N: cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
 reject	N: type mismatch '_N: unbound does not contain 'b: unbound	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
 reject	N: type mismatch 'a: unbound does not contain string	rigid-param-call-sep2026/00_param_called_with_a_string.gx
-trace	rigid-param-call-sep2026/01_rank2_quantifier_per_call.gx
 reject	N: st is { last: iN, n: iN } and cannot hold { b: fN, y: iN }; declare st: [{ b: fN, y: iN }, { last: iN, n: iN }] where it is bound (line N, column N)	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
 trace	scalar-read-widen-sep2026/00_nullable_f64_let.gx
 trace	scalar-read-widen-sep2026/01_nullable_bool_capture.gx

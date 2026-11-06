@@ -79,14 +79,14 @@ deliberately not a delivery (`ByRef`'s seed, a formal seeded standing).
 
 A node's production to a binding is delivered through
 `ExecCtx::deliver`: a let's publication, a reference cell's, a module's
-relay between an interface pair, a select's pattern binds, a call's
+trait-default method relayed to its impl's binding, a select's pattern binds, a call's
 fired formals, a collection's elements and accumulators, the seq
 machine's `pc`, a runtime write (`GX::deliver`). It puts the production
 into the event; a fire is stored as the event holds it (a value Fired, a
 bottom FreshBottom), stamped this cycle; a quiet production stands
 (`store_insert_standing`) with the stamp of the binding's last fire,
 since nothing fired (a `let` republished at its wake, a stale
-scrutinee's binds, a module's val relayed quietly, a collection's
+scrutinee's binds, a trait default relayed quietly, a collection's
 element or a fold's accumulator delivered stale). A wake owes no fire
 for one, whether it kept the value or changed it, to any reader, one
 wake catch-up dates by write stamp (a callee bound at the wake)
@@ -206,7 +206,7 @@ unchanged.
   write delivered the binding in that cycle, and `Event::late` holds the
   fire for those readers alone: `Ref` and `Deref` read it through
   `read_var_by`, and `ConnectDeref` its reference through `late_fire`,
-  matching their root and the walk's boundary.
+  matching their root, the walk's boundary and their read stamp.
 - A run of statements that fork must not race that choice: siblings are
   dependent when an earlier one reads what a later one publishes
   (`analysis::plan_runs`, `ids_verdict`; `design/parallel_eval.md`). An
@@ -217,12 +217,26 @@ unchanged.
   it reaches makes a reference or a lambda or a call has no static
   target (`analysis::hands_out_callee_binds`): any other `let` is named
   by its scope alone.
-- Not delivered late: to a reader in an arm asleep in the next cycle
-  (its select did not observe the fire either); to a reader in a boundary
-  the walk is still inside, which counts as ahead though the walk may
-  have passed it there: a `*r` directly in a statement, before a nested
-  block of that statement that makes `r`'s target fire, never sees that
-  fire (CR late-same-boundary-01, as on main).
+- A late fire to a reader in a select arm that does not run in the next
+  cycle sets its select's catch-up bit (`TrackedFires::observe_late`,
+  matching the reader's root and an arm's boundary around it, as the
+  select updates and again as it deselects the arm), so the arm takes it
+  at its wake as a fire made while it slept, the reader's own binding
+  compared as the variable the late fire names (a val's included). Not
+  yet a guard's reader, which carries the select's own boundary, nor what
+  a seq machine, a collection over a bottom source or a call over a bottom
+  function holds asleep: those lose the fire (CR late-asleep-02). Pins:
+  `lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake`,
+  `a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake`.
+- Inside the walk's own boundary the boundaries cannot order a reader
+  against the fire: a `Deref` keeps a read stamp (`prune::ReadStamp`,
+  in its `Reader`), set as it reads, and one that read this cycle is
+  passed (`Reader::passed_by`), so a `*r` before a nested block or a call
+  of its own statement that makes `r`'s target fire reads that fire next
+  cycle. The stamp tells apart Derefs that share a root and a boundary,
+  so one after the producer, which read the fire in its cycle, takes no
+  late copy. Pin:
+  `lang::delivery::a_fire_reaches_a_passed_dereference_in_its_statement`.
 - A backward reader that feeds its producer (`let r = h(1); let w = r +
   1; h <- |x| x + w`) runs a cycle at a time, never settling, as a
   `<-` self-loop does: it is what the program says (Eric, 2026-11-05).
