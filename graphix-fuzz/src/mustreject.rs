@@ -490,6 +490,9 @@ fn undecided_part(
         if !concrete(t) || typemorph::leaks_binds(&se.arg) {
             continue;
         }
+        // a `never()` scrutinee adds nothing to a union beside `tm__z`,
+        // which is then the whole scrutinee, one the arms decide together
+        let bottom = matches!(se.arg.kind, ExprKind::Never { typ: None, .. });
         let binds = |p: &Pattern| {
             let mut any = false;
             p.structure_predicate.with_names(&mut |_| any = true);
@@ -552,8 +555,11 @@ fn undecided_part(
             false => ExprKind::Tuple { args: Arc::from_iter([union.clone(), zero]) }
                 .to_expr_nopos(),
         };
-        let scrutinees = [(union, Arc::from_iter(arms)), (beside, nested)];
-        for (arg, arms) in scrutinees {
+        let scrutinees = [
+            (!bottom).then(|| (union, Arc::from_iter(arms))),
+            (decides || !bottom).then(|| (beside, nested)),
+        ];
+        for (arg, arms) in scrutinees.into_iter().flatten() {
             let sel =
                 ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms }).to_expr_nopos();
             let never =
@@ -750,6 +756,21 @@ fn disjoint_literal(t: &Type) -> Option<Expr> {
 
 /// Whether a type has no cell anywhere, so it cannot bend to a widened
 /// argument.
+/// Whether `t` is a set of primitives or names a class of them (`Number`,
+/// `Int`, ..): a bound only those primitives meet.
+fn primitive_class(t: &Type) -> bool {
+    const CLASSES: [&str; 6] = ["Number", "Real", "Float", "Int", "Uint", "Sint"];
+    match t {
+        Type::Primitive(_) => true,
+        Type::Ref(r) => {
+            r.params.is_empty()
+                && netidx_core::path::Path::basename(&r.name.0)
+                    .is_some_and(|n| CLASSES.contains(&n))
+        }
+        _ => false,
+    }
+}
+
 fn concrete(t: &Type) -> bool {
     t.resolve_tvars().tvar_free()
 }
@@ -1106,7 +1127,12 @@ fn rigid_pattern_probe(l: &LambdaExpr) -> Option<(Expr, Option<Type>)> {
     let int = |i| ExprKind::Constant(netidx_value::Value::I64(i)).to_expr_nopos();
     l.args.iter().filter(|a| !a.kind.is_labeled()).find_map(|a| {
         let StructurePattern::Bind(x) = &a.pattern else { return None };
-        let Type::TVar(_) = a.constraint.as_ref()? else { return None };
+        let Type::TVar(tv) = a.constraint.as_ref()? else { return None };
+        // a bound other than a class of primitives (a trait) refuses `null`
+        // by another rule
+        if l.constraints.iter().any(|(c, b)| c.name == tv.name && !primitive_class(b)) {
+            return None;
+        }
         let null = StructurePattern::literal(netidx_value::Value::Null);
         let sel = ExprKind::Select(SelectExpr {
             arg: Arc::new(
@@ -1244,7 +1270,9 @@ fn with_first_statement(
 /// there becomes `str::parse("1")`, whose type the call leaves undecided:
 /// it takes the variable the other arguments decide, a primitive, which
 /// cannot hold the parse's error, so it is refused whatever its place,
-/// asking for an annotation (`callsite.rs::undecided_note`).
+/// asking for an annotation (`callsite.rs::undecided_note`). A variable
+/// with a primitive or `Singleton` bound is skipped: the bound refuses the
+/// result first.
 fn shared_var(
     root: &Expr,
     pre: &[Expr],
@@ -1291,9 +1319,19 @@ fn shared_var(
                 )
             })
         };
+        // a primitive bound (`'a: Number`), or `Singleton`, which no union
+        // meets, refuses the parse's result whole, before the rule
+        let primitive_bound = |t: &Type| match t {
+            Type::TVar(tv) => tv.cell_constraints().iter().any(|c| {
+                primitive_class(c) || matches!(c, Type::Bound(Bound::Singleton))
+            }),
+            _ => false,
+        };
         let replaced = match family {
             Family::OpenArg
-                if ft.args.iter().any(|p| fixed(&p.typ)) || fixed(&ft.rtype) =>
+                if ft.args.iter().any(|p| fixed(&p.typ))
+                    || fixed(&ft.rtype)
+                    || primitive_bound(params[a]) =>
             {
                 continue;
             }

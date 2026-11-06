@@ -1,0 +1,6 @@
+// A parametric abstract type defined in a function body: the instance's
+// compile of the block declared the live definition, whose formals are the
+// check's, beside a representation over its own fresh formals, so the
+// comparison saw a changed representation and the build refused what the
+// check passed. Found by the nov06a soak (ryouko).
+{ let f = |b: i64| -> i64 { type B<'p> = Abstract<'p>; let x = B(1); let y = B(b); x <- y; x.0 + 1 } * b; let g = |b: i64| { type C<'p> = Abstract<'p>; let x = C(b); x.0 + 1 }; (f(4), g(1), g(2)) }

@@ -1,0 +1,4 @@
+// A dynamic module's compile error, which the program reads, names a fresh
+// cell by its id, a run's: the oracle numbers such names by first sight.
+// Found by the nov06a soak (aieka, ryouko).
+{ type W<'t> = Abstract<'t>; let unw = |w: W<'a>| -> 'a w.0; let p = { let y: Array<W<i64>> = never(); let g = |x| { x }; let y = g; y }; let status = mod d dynamic { sandbox unrestricted; sig { val s: fn(u: i64) -> i64 }; source "let s = |u: i64| -> i64 super::unw(super::p\[0\]$) + u" }; select status { error as e => never(dbg(e)), null as _ => d::s } }

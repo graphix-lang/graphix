@@ -140,7 +140,9 @@ Rule: an argument holding an undecided cell takes the variable the
 other arguments join to, whatever its place, and is refused, "annotate
 it", where the join does not hold it (`callsite::undecided_note`): a
 primitive join holds no parse error (a join admitting `error` is
-skipped). Built, right site the call.
+skipped, and so is a variable with a primitive bound, `'a: Number`, or
+`Singleton`, which no union meets: either refuses the parse's result before
+the rule). Built, right site the call.
 
 **4. Widening into a rigid consumer.** Site: a use of a value `v: T`
 whose parent is one of:
@@ -311,8 +313,10 @@ inside a value of a type variable its definition holds rigid needs a
 written test; a name or `_` over the whole value keeps the variable
 (`StructurePattern::meets_rigid`, checked in `Select::typecheck0_with`
 and a destructuring `let`), and an arm that can match no value of a
-bounded variable is told as unreachable. Built (`rigid-pattern`), right
-site the definition. Not generated: coverage beside a bounded variable (a head
+bounded variable is told as unreachable. Built (`rigid-pattern`) over a
+variable the lambda writes no bound for, or a class of primitives
+(`Number`); a trait bound (`'c: Collection`) refuses `null` by the
+dead-arm rule instead. Right site the definition. Not generated: coverage beside a bounded variable (a head
 arm at `['a, null]` leaves the variable's values to a name or `_`,
 `Head::Open`; containment splits `'a` by its bound,
 `Type::covers_by_parts`): the generated declared variables are
@@ -342,7 +346,8 @@ arm tests is refused (`Select::check_undecided`,
 only takes apart every value of the shape it decides is no test of it
 (`StructurePattern::only_destructures`), except beside a member of that
 shape. Built (`undecided-part`), right
-site the select. Not generated: an arm that only destructures the open
+site the select; over a `never()` scrutinee only the decide shape, since a
+union of ⊥ and `tm__z` is `tm__z` whole, which the arms decide together. Not generated: an arm that only destructures the open
 part alone, which decides its shape as an annotation would (pins
 `lang::select_undecided::destructuring_*`); a name over the open part, typed beside
 the members' others (`TVar::narrow_per_member`), whose refusal comes at

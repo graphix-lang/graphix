@@ -101,6 +101,9 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
                 let i = first_sight(&mut ids.refs, c);
                 out.push(Value::String(ArcStr::from(format_compact!("&ref{i}").as_str())))
             }
+            Task::Visit(Value::String(t)) if let Some(n) = fresh_cells(t) => {
+                out.push(Value::String(ArcStr::from(n)))
+            }
             Task::Visit(v) if is_handle(v) => {
                 let i = first_sight(&mut ids.handles, v.clone());
                 out.push(Value::String(ArcStr::from(
@@ -144,6 +147,36 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
     out.pop().expect("normalize: empty result stack")
 }
 
+/// `text` with each fresh cell's name (`'_` and digits, the cell's id, as
+/// a type error prints an unbound cell) numbered by first sight in the text
+/// instead, or `None` where it names none: an error a program reads holds
+/// the ids of the compile that raised it, a run's.
+pub fn fresh_cells(text: &str) -> Option<String> {
+    cell_names(text).next()?;
+    let (mut out, mut seen, mut last) =
+        (String::with_capacity(text.len()), Vec::new(), 0);
+    for (i, end) in cell_names(text) {
+        let n = first_sight(&mut seen, &text[i..end]);
+        out.push_str(&text[last..i]);
+        out.push_str(&format_compact!("'_cell{n}"));
+        last = end;
+    }
+    out.push_str(&text[last..]);
+    Some(out)
+}
+
+/// Where `s` names a fresh cell: each `'_` followed by digits, start and end.
+fn cell_names(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let i = at + s[at..].find("'_")?;
+        let digits = s[i + 2..].bytes().take_while(u8::is_ascii_digit).count();
+        at = i + 2 + digits;
+        Some((i, at, digits))
+    })
+    .filter_map(|(i, end, digits)| (digits > 0).then_some((i, end)))
+}
+
 fn first_sight<T: PartialEq>(seen: &mut Vec<T>, x: T) -> usize {
     seen.iter().position(|s| *s == x).unwrap_or_else(|| {
         seen.push(x);
@@ -151,8 +184,8 @@ fn first_sight<T: PartialEq>(seen: &mut Vec<T>, x: T) -> usize {
     })
 }
 
-/// Whether `v` holds a lambda, a reference or a handle anywhere, what
-/// [`normalize`] rewrites.
+/// Whether `v` holds a lambda, a reference, a handle or a string naming a
+/// fresh cell anywhere, what [`normalize`] rewrites.
 fn holds_run_ids(v: &Value) -> bool {
     let mut work: Vec<&Value> = vec![v];
     while let Some(v) = work.pop() {
@@ -161,6 +194,7 @@ fn holds_run_ids(v: &Value) -> bool {
             Value::Error(e) => work.push(e),
             Value::Map(m) => m.into_iter().for_each(|(k, v)| work.extend([k, v])),
             v if let Some(a) = abstract_value::get(v) => work.push(&a.payload),
+            Value::String(t) if fresh_cells(t).is_some() => return true,
             v => {
                 if reference::cell(v).is_some()
                     || matches!(v, Value::Abstract(_)) && rep::marker_kind(v).is_none()
@@ -513,6 +547,21 @@ mod tests {
         f.epochs[0].capped = true;
         assert!(!a.agrees_final(&f));
         assert_eq!(a.first_final_difference(&f), a.first_difference(&f));
+    }
+
+    /// A fresh cell's id is a run's: two runs' errors naming their cells
+    /// alike compare equal, two naming them differently do not.
+    #[test]
+    fn fresh_cells_are_numbered_by_first_sight() {
+        let a = "Array<'_6775: unbound> does not contain '_6775 or '_12";
+        let b = "Array<'_6959: unbound> does not contain '_6959 or '_3";
+        assert_eq!(fresh_cells(a), fresh_cells(b));
+        assert_eq!(
+            fresh_cells(a).as_deref(),
+            Some("Array<'_cell0: unbound> does not contain '_cell0 or '_cell1")
+        );
+        assert_ne!(fresh_cells(a), fresh_cells("'_1 and '_2 and '_2"));
+        assert_eq!(fresh_cells("'_ and 'a, no cell"), None);
     }
 
     /// At final strength an epoch's prints are a set: a print fired

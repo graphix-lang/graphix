@@ -896,7 +896,7 @@ async fn drive_inner(
                 lines.push(trace::Printed {
                     epoch: epoch as u32,
                     offset: cycle as i64 - base as i64,
-                    text,
+                    text: trace::fresh_cells(&text).unwrap_or(text),
                 });
             }
         }
