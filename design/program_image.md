@@ -646,3 +646,85 @@ a_write_through_an_interface_outlasts_its_arms_sleep,
 a_write_through_an_interface_outlasts_a_sleep_in_an_instance}`,
 `lang::image::{a_restored_static_call_holds_its_callee_while_it_lives,
 a_restored_interface_pair_calls_what_was_written}`.
+
+## The rules in brief
+
+**Session images** (`design/program_image.md`): the shell caches the
+session state before any cycle (`graphix-compiler/src/image/` over
+the session core in `graphix-types/src/image/`) under
+`$XDG_CACHE_HOME/graphix/registration/<build-id>/<key>.img`: the
+registration entry (the package root compiled under fixed flags; key =
+image format + root; the build id covers the packages compiled in, and
+an executable without one has no cache) and, for a script, the program
+entry (the program compiled too; key adds the script's path or an
+embedded program's text, the flags and `GRAPHIX_MODPATH`; the entry
+records every place its module resolution looked, each file read and each
+found absent (`expr::Probes`), and a load re-verifies them). The
+runtime restores the first of the program entry and the registration
+entry that reads, else compiles; an entry that fails to read leaves the
+session untouched, and whatever was compiled is written, except a
+program that asked for fusion where the JIT does not build. `--no-cache`
+disables the cache, `--warm` writes and exits (failing when it cannot);
+on Unix the graphix/registration directories, build directory and entry
+must belong to the effective user and forbid group/other writes, and the
+cache base must belong to that user and forbid other writes (group write,
+a user private group's umask, is fine: each entry is checked when
+opened). The cache base may be a symlink chain owned by that user to such
+a directory; it is checked before creating anything beneath it.
+Managed directories and entries refuse symlinks; new directories and
+files use 0700 and 0600. A run's first refusal prints one stderr line
+(`cache::report`). The collector skips untrusted paths;
+the header carries the ISA, the build's fingerprint (its helpers,
+libcalls and version, `build_fingerprint`), refused on a mismatch as the
+ISA is, and a checksum of everything after it
+(`image::seal`), so a corrupted entry is a failed read, never decoded. A script compiles at runtime
+construction (`GXConfig::program`, `GXHandle::program`), never through
+`load`. The package root compiles with fusion off. A fused region
+travels as its wrapper's `BodyRecord` (`fusion/emit/record.rs`):
+machine code, relocations by symbolic target and constants by recipe;
+every JIT function is installed from its record through
+`define_function_bytes`, cold and warm alike, and every process
+address the code refers to is an imported data symbol (`BodyCx::
+const_ptr`), never an immediate. A restored kernel enters no cache.
+Every
+imaged node kind owns an `Update::image_encode` / `image_decode` pair
+in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
+logged) and the shell runs cold, never a partial image. Every shared
+object (expressions, types, function types, origins, paths, handlers,
+resolution cells, type variables, map nodes, definitions' check tables)
+is written once, in the
+definitions area after the body and the heap (`ImageEncoder::finish`),
+and every occurrence of it, the first included, is a reference to the
+ordinal its first sight assigned; the trailer maps ordinals to
+definition offsets, and a reference to an object not built yet decodes
+it from its offset, so any part of the image decodes in any order. An
+occurrence costs its reference whatever was measured or written
+before it, so every `encoded_len` under a session is exact and a
+derived `Pack` may frame an image object.
+Types and function types are keyed by their canonical bytes with every
+shared leaf by identity (`Type::content_key`), so equal types decode to
+one value. An expression is keyed by the first expression seen with its
+id and contents (`image::expr_key`), so a node's spec shares its def
+body's definition.
+Everything a session encodes must be borrowed from the context and
+root nodes for the whole session. A program image writes instance
+bodies to a heap after the eager part with an instance table, which
+holds each instance's own reads and its callees by instance; a call
+site keeps `Callee::Imaged` and decodes the body on its first
+dispatch, synchronously, through `ExecCtx::image_decoder`; an imaged
+site holds its callee's flat reads under its boundary until the callee
+decodes, whose nodes then register their own; a builtin callee travels as its own bytes:
+every `Apply` owns `image_encode` and every `BuiltIn` an
+`image_decode` (no defaults — a builtin without a codec does not
+compile), wrapper payloads implement `graphix_package_core::ImageState`
+(`unit_image_state!` / `pack_image_state!` for the common shapes), a
+resident `TagValue` decodes as phantom, a bind id created with
+`ctx.rt.ref_var` is re-registered at decode, and state that exists only
+once a cycle ran refuses the write with `NOT_QUIESCENT`.
+Compiler ids are `image_id!` (the compiler's `atomic_id!` plus
+relocation); netidx's ids and wire format are untouched. A definition
+built by Rust at runtime is `DefOrigin::Runtime` and is never imaged.
+Pins: `stdlib/graphix-tests/src/lang/image.rs`.
+
+An image object of a type the core does not know rides `image::Foreign` and
+the session's extension (`image::Compiled`, `image::Restored` in the compiler).

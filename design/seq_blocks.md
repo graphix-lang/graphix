@@ -845,3 +845,84 @@ compiler node per machine, and nothing per step. A taken with branch costs the f
 cycle per extra error that step raised) plus the jump. The machine is
 longer than the `~` chain it replaces — it does not save typing; the
 keyword earns its keep as the surface in §2.
+
+## The rules in brief
+
+- **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`
+  desugars to a machine node (`node/seq_machine.rs`: busy-drop, calls
+  issued once per entry over an argument snapshot); every statement is
+  a step and a passed step sleeps, so a `let` keeps its step's value;
+  each later step snapshots the local lets it reads at its own entry;
+  a `let` of one name to a lambda literal binds the lambda itself, so
+  calls through it resolve statically (its assertions are the build's).
+  A step's entry snapshot, the projection of it a read takes, a
+  step's value and a `seqq` request's capture are written by nothing, so
+  a read of a generalized binding through them carries its scheme
+  (`seq::passes_on`, `bind::Passing`: those forms only, what the program
+  wrote inside them judged as outside a seq; a capture is typed by its
+  live read, `SeqCapture::scheme`), read at the step's entry or the
+  request's enqueue as ever; a step's
+  `let` a later step writes is written at its binding (the machine walks
+  every step's items for writers); a holder with a call part is one
+  instance in the step.
+  A statement starts in the first cycle its predecessor's effect can
+  be seen: the next step enters in the cycle its predecessor completes
+  unless it reads or writes a variable a pending write targets, by the
+  post-resolution dependency summaries (`design/dependency_summaries.md`,
+  `analysis::plan_machines`, per instance): a callee's writes count, an
+  interface pair is one variable, a
+  read or write through a reference or a call with no static target
+  counts as every variable; `until` and `try` follow the same rule.
+  Entering a step is its birth for the run (`View::Step`: constants fire,
+  the builtins in it are reborn) with `Select`'s catch-up
+  (`node/wake.rs`). A call a step issues is a fresh frame at each run
+  (`SeqGuard`, `wake::FreshFrame`): at its issue everything it reads that
+  stands, its callee's captures and a callee it binds included, is
+  delivered fired, and its callee's body, slept since the last run, is
+  born again with the step (builtins reborn, an async one holding no
+  answer; lets take their initializers, so one whose initializer never
+  fires, and a catch's binder, which has none, keep their last value;
+  selects forget their entry history); what the callee captures keeps its
+  value, an event's last fire included. A bound callee whose function value is bottom then is
+  born so when the function returns (`callsite.rs::Unborn`), as is a
+  call in the callee meeting a bottom function at its birth. A call
+  outside a seq is never born again.
+  A `{ .. }` statement issues its statements together with local lets. `until`,
+  `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
+  in a seq body outside lambda literals). A step completes on a FIRED
+  production after its entry, never on a standing value. A step sees the
+  world as it stood at its entry: every variable the seq's own text
+  reads (lambdas written in it included, a nested seq excepted, which
+  takes its own) is sampled together, at the step's entry (`seq`) or at
+  enqueue (`seqq`). The whole snapshot waits for every named variable,
+  including untaken arms and uncalled lambdas: an absent variable delays
+  reading the present ones until it arrives, as an issued call's
+  arguments do; a callee's state and captures stay live (the rule is
+  lexical), a read through a reference (`*r`) reads its target live,
+  and `live(e)` reads `e`'s variables live (a call whose argument reads
+  live, a pattern bind of a live scrutinee included, is issued again at
+  each fire of that argument; a nullary call is issued on the entry clock
+  as any call is): those are the ways a step waits for the world to change (`until live(ready)`; an `until` with
+  no `live` part, no dereference and no call warns). `seqq` queues triggers
+  with captured values. Each request retains its own trigger while
+  waiting for absent captures; waiting requests share the first complete
+  external snapshot and keep their arrival order. A capture a step writes, a callee's write
+  included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when
+  `e` fires: silent, past any `try`, and it wins the cycle it fires in
+  (the compiler-only `SeqAbort` node fails the machine's guards before
+  the machine updates); `e` is an initial step, asleep between runs and
+  born at each run's entry (`CFlag::RunEvent`), and only its fires after
+  the entry cycle count. `flush(e)` (`seqq` only)
+  also empties the queue: requests still waiting for a capture
+  included, numbered by arrival (`queue`'s `flush_before`); its source stays active between runs and the
+  queue sees its ungated fires; only its abort of the current run is gated.
+  A machine resets to idle in its handler's
+  `sleep()`: a run does not survive its arm's sleep, and a `seqq`'s
+  handler owes its queue the aborted run's credit, paid at the wake
+  (`CatchRole::Machine::clock`). `--expand` prints the
+  machine and each instance's step boundaries. Every name a lowering
+  binds starts with `#`, which no source can write (`is_lowered`,
+  `Expr::is_lowered`): an error's chain records no frame for an
+  expression a lowering built and prints no snippet naming one, and a
+  write a lowering built gets no declaration hint. `range(i, j)` is
+  the integer builtin (`` `RangeError ``).

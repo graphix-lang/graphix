@@ -182,3 +182,38 @@ scrutinee admits `Any` is refused (`Type::ref_over_any`). Pin:
 Not built: a place rooted at an expression that is neither a variable
 nor a dereference (`&f(x)[0]` stays a derived channel); slices as
 places; a patch that grows an array.
+
+## The rules in brief
+
+- **References** (`design/place_references.md`): `&e` is read-only
+  (`&T`, covariant); `&mut e` is writable (`&mut T`, invariant) and
+  `*r <- v` requires it of every reference `r` may hold. A read through a
+  union of references has the union of their referent types; a write must
+  fit every referent. Reads and writes expand typedefs through the same
+  `node::reference_targets` walk. `&mut` of a
+  non-place expression is a fresh cell it bounds from below, which its
+  uses decide (else its type); an optional
+  writable argument is `[&mut T, null]`. `&a[i]`, `&s.f`, `&t.0`,
+  `&m{k}` are root + path; writes patch the root at delivery; a dynamic
+  key is a moving reference, and a write while its address is bottom (a
+  bottom key, a dereference of a bottom reference) does not happen,
+  silently; one made before the reference first arrives lands at its
+  first target. A reference keeps its cell, its place and the binding it
+  names alive while any copy of it lives, past the deletion of the `&`
+  that minted it or of the binding; the last copy to drop releases them,
+  at the next cycle's start (`reference::Lives`,
+  `ExecCtx::release_references`). References de-fuse. A reference's value is
+  its own cell, so `==`/`!=` compare references by what they name
+  (`bind::ref_target`: the place, else the byref chain's binding, else
+  the cell), rewriting each one the operand type holds
+  (`Type::map_refs`) before the value comparison. An `Any` part walks its
+  runtime value; statically reference-free parts are shared untouched.
+  Such a comparison never fuses. References under `Any` are refused at
+  runtime by ordering operators, min/max, sorts, dedup and map-key
+  operations, including singleton collections and cast-created maps;
+  the operation logs a failure and bottoms (a cast returns its error).
+  An abstract's own `Eq` or `Ord` controls its corresponding operation.
+  References and functions have no order (`Ordered`);
+  under `Any` a function orders by an id minted in run order, so an
+  order over `Any`-typed functions is nondeterministic, and the fuzzer
+  excludes a program that may make one (`oracle_tier`).

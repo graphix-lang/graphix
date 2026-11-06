@@ -203,3 +203,54 @@ form another type shares is refused there too ("annotate it").
 `next_update` returns data, `next_update_raw` and `Fixture::new` the raw
 value for Rust readers (the gui/tui harnesses). Embedders building
 values in Rust use `rep` or a `GraphixShape` derive.
+
+## The rules in brief
+
+- **Composite forms** (`graphix-types/src/rep.rs`,
+  `design/distinct_composite_forms.md`): a tuple, struct, variant (bare
+  included) and list cell is an array whose element 0 is its kind's
+  marker, a Rust-registered abstract; an array is unmarked. Only `rep.rs`
+  and `list.rs` know the layout. Text and netidx writers strip markers
+  through `abstract_value::to_data` (`rep::strip`: a list as a flat array,
+  a bare variant as its tag), and the reader's cast rebuilds the forms
+  (`rep::read_*` report `Parts::Data`). Pack and db values keep composite
+  kinds through `to_marked_data`; their reader, `rep::decode_marked_data`,
+  admits markers only in well-formed composites, with no other abstract
+  value admitted. Image reads admit markers within the image session.
+  A primitive `array` holds
+  arrays only; `cast<string>` of a bare variant is its tag.
+
+- **One runtime form** (`Type::rep_collision`): no select arm, and so no
+  union trait dispatch, may tell apart two types that share a runtime
+  form: a reference and another reference, two function types, a
+  Rust-backed abstract at two instantiations.
+  Checked per arm, after its narrowing, in the definition's check;
+  members that share a constructor are told apart by their parts. An open
+  member there, or in a union dispatch, reads as any type it may yet bind
+  (`Open::Unknown`, judged at the statement's settle, `PendingSettle::
+  Told`): beside a member whose form another type may share it is refused
+  ("annotate it"), a `NoError` cell sharing no error's form. A cell of
+  the arm's own test, bound or open (a bind, a slice's rest: a part it
+  binds, not one it tests), collides with nothing, except against a type
+  bound of what else reaches the arm; an open one of what else reaches
+  the arm does, even where the arm's capture shares it
+  (`Type::rep_collision_tested`). Each element of a slice pattern is a
+  test of its own among the whole element type, whatever the rest covers
+  (`StructPatternNode::element_tests`). A
+  compared type (`==` and the orderings), a map key type and what the
+  stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
+  `map::` keys) may hold no such pair anywhere: the `'a: Discernible`
+  bound (`Type::indiscernible`; an abstract type without `Eq` is judged by
+  its representation for equality, and one without `Ord` for ordering,
+  the refusal naming the abstract and the missing trait), which a generic definition's variable
+  takes from its body, so each call checks it; what orders or hashes
+  (the orderings, sorts, `min`/`max`, `dedup`, map keys) takes
+  `'a: Ordered`, which also refuses a reference, a function or a type holding two
+  numeric types; a member still open at
+  the statement's settle reads as any type it may yet bind
+  (`PendingSettle::Discernible`, `design/tvar_constraints.md`).
+  `flat_map`'s callback returns the collection (`fn(x: 'a) ->
+  Array<'b>`), so nothing splices by shape; `filter_map`'s returns
+  `` [`Keep('b), null] ``: null drops an element, `` `Keep(v) `` keeps
+  `v`, null included, and the unwrap strips that one layer, so a `'b`
+  that is itself a `` `Keep `` round trips.

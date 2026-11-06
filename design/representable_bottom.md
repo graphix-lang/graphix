@@ -67,3 +67,21 @@ legally spin forever inside one, and a native loop cannot yield to the
 scheduler. Containment is the interrupt (`GXHandle::interrupt`, which
 stops the runtime for good, polled by the interpreter's tail driver and
 every emitted loop head), not a bottom the kernel fails to represent.
+
+## The rules in brief
+
+- **Bottom scrutinee ⇒ bottom select.** No stored-selection ride of any
+  kind; `hold` on the scrutinee is the tool. A STALE-PRESENT scrutinee
+  still routes the taken arm's own fires. **Consulted-guard rule**: arms
+  are consulted top-down, structure then guard; a consulted guard whose
+  channel is bottom makes the selection undecidable; a never-produced
+  guard is unknown, not false; a guard runs only where the chain reaches
+  its arm (never on a value an earlier arm claimed, or one its arm's
+  structure refuses): any other sleeps, as an unselected arm does, and
+  wakes caught up when the chain next reaches it. `&&`/`||` are strict (`false && ⊥ = ⊥`).
+
+- **`never<T>()` is syntax** (`ExprKind::Never`): typed bottom or `T`;
+  args stay live and are consumed. An unannotated `let` over a ⊥
+  initializer takes its type from its first use, a writer or a reader;
+  a later writer must fit it, and a refused one is told the declaration
+  that holds both (`node/mod.rs::write_mismatch`).

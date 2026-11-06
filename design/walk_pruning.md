@@ -361,3 +361,31 @@ node-walk 17.7 -> 0.64 s; every other program, either engine, within
 noise (±2%), so a program that changes everywhere each cycle pays
 nothing measurable. The walked/skipped counter (`note_boundary`, a shared
 atomic) is invisible beside a no-op on the forked mark probe.
+
+## The rules in brief
+
+**Walk pruning** (`design/walk_pruning.md`): a block statement, a select
+arm body and an instance body each sit in a `Prune` boundary
+(`prune::BoundaryRef`, parent-linked), which rides its resident in a
+`Cycle` view when nothing marked it this cycle. A registration names its
+root and the boundary around the reader (`prune::Reader`), taken from the
+traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
+copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
+pending reference keep theirs). Every this-cycle write marks its readers'
+boundaries and their ancestors: a stamped `store_insert` or a standing
+`store_insert_standing`, `notify_set`,
+`ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
+node), the cycle's deliveries; state a node polls without a variable
+marks its pollers (error handlers: `ErrorHandler::polled_by`). A map traversal may skip an awake standing lambda slot before its call
+when neither source nor callback moved, its only argument is the element
+reference and its body is clean; defaults and wake/step views run in full,
+and audit verifies the skipped call. `Prune`
+is transparent to analyses (view, children, spec, `downcast_*`);
+`fusion::fuse` fuses its child inside it. `GRAPHIX_PRUNE=off|on|audit`
+(on by default; `Control::set_prune_mode`): the audit walks everything
+and panics where a skip would have changed a production, published or
+queued a runtime call;
+the fuzzer's `Pair::Prune` compares against `Mode::Unpruned`; a test
+fixture prunes for real in `jit` and `par` and audits every skip in
+`interp` and `jit_par` (`testing::Mode::fixture_prune`), and a test that
+measures pruning sets `Mode::prune` in its setup.

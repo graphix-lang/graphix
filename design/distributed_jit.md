@@ -260,3 +260,20 @@ each was obvious in hindsight and invisible in advance.
   interleaving context mutation with an open builder is how a
   half-built function leaks state; the two-phase split keeps a
   discarded function free of consequences.
+
+## The rules in brief
+
+- **Emit contracts** (`design/distributed_jit.md`): effects de-fuse,
+  never silently skip; owned select-arm binds drop at every arm exit
+  (run `leakcheck` when adding an owned-local class); an owned local's
+  words are defined only through `ValueVar::define`, which also writes
+  the stack slot its drops read (`abi.rs`); a bottom is a
+  production whose STALE bit follows the same trigger fold as a value
+  (`nodes::emit_bottom_placeholder` takes the governing disc); a node
+  produces, placeholder included, the form its type FREEZES to, which is
+  how its readers take it (`BodyCx::node_kind`); a pattern reads a
+  value at its arm's predicate's type only where the value is known to
+  be of it (`SelectScrut::Composite`'s `exact`), else it tests the
+  value's words; kernel
+  cache keys carry catch coverage and a resolution fingerprint; a pass
+  the fusion gate owns must never change what the typechecker sees.

@@ -1385,3 +1385,310 @@ former consumer derives from the cells:
   param knot, self-referential quantifier constraints); do not
   resurrect per-Fn-boundary scoping or cell provenance without a live
   witness.
+
+## The rules in brief
+
+**Types** (`graphix-types/src/typ/`): `Type` (structural),
+`TVar` (inference cells; `design/tvar_constraints.md`), `FnType`.
+`contains` expands `Type::Ref` through `lookup_ref`, so bindings made
+during `contains` hold the EXPANDED form — code inspecting resolved types
+handles both. `TypeRef` carries a write-once resolution cell
+(`design/env_independent_typerefs.md`): rebuilds share it via
+`with_params`, `with_scope` makes a new one (filled when the source's
+is), never overwrite a filled cell; the cell holds the definition
+weakly and the `TypeDef` owns it (a recursive body reaches its own
+cell), so a type outliving its definition's env entry is refused,
+never re-resolved, and what outlives the entry owns the definitions
+its types name (a definition's check table, a kernel's type
+constant, an abstract type's registration, the block's `TypeDef` node:
+`DefTable::typedefs`, `record::KernelType`, `AbstractRep::named`,
+`node::TypeDef`). A typedef a block declares (a scope ending in a
+generated component) stays findable after the block in `Env::
+block_types`, by scope and name, held weakly and shared by every copy
+of the env: a lookup at a block level no lexical map holds reads it, so
+does one at a compiling block's level (or a snapshot of it) for a name
+the block declares later (`Env::open_block`), and one
+that meets a dead entry is refused, never continued outward; a block compiled again declares the live definition, so one
+source typedef is one definition; an image carries the live entries. A
+scope an expression opens is named by where it is written and its
+source's load (`place_component`, `Origin::tag`), never by an id, so a
+restore names a block as the cold compile did (design/program_image.md,
+Scope names).
+`Env::seed_typedef_refs` (block types included) runs at the check's end
+(an instance elaborates under its definition's env) and again right
+before fusion in both modes, and every node outside a definition has
+its type's names filled then (`seed_node_types`; a definition's rows at
+its check, `DefTable::record`). A bound's ref resolves the same way, its
+cell holding the trait (`Resolution::Trait`), filled by the seed walk at
+a definition's check. Substitution by name (`Type::replace_tvars`: a
+typedef's expansion, an abstract's representation, a trait method's
+signature for an impl or a method value) is capture-avoiding,
+since a signature finds its quantifiers by name: under a function type
+its quantifiers shadow the names substituted, and one named like a
+variable a substituted type holds is renamed (`tvar::under_quantifiers`).
+A trait method named as a value is its
+eta-expansion (`eta_dispatcher`); a dispatcher is only a call's own
+function. A typedef must be contractive: every
+self-reference sits under a constructor (`type T = [i64, T]` is refused
+at `Env::deftype`), which is what makes the coinductive ref-pair memos
+sound. An inferred type is finite the same way: a relation that would
+put a cell under a constructor of itself is refused (`b <- B([t ~
+b.0])`); a lower bound's check follows its direction, and the cells
+on a cycle through cells and unions alone are one type, merged
+(`tvar::cycle_toward`, `contains::merge_bare_cycle`,
+`design/tvar_constraints.md`). A rigid cell holds only itself, ⊥ and
+what one of its lower bounds holds (`contains::rigid_holds_by_lower`): an open
+cell a merge would put below it merges into it, or, where the occurs
+check refuses that merge, stays a lower bound (`TVar::merge_into`).
+A cast to an integer type, a type-directed read's included, is an
+`InvalidCast` where the value does not fit (a float drops its fraction);
+a float cast to `decimal` is the decimal its shortest text names,
+rounded to 28 places, a whole one keeping its point and a zero (one
+too small for 28 places included) `0.0` with its sign (`float_decimal`). A cast leaves a value's runtime class
+only to parse a string into a scalar (never a collection), to print a number, bool, datetime or duration
+plainly (`"42"`; a whole float, and a duration's seconds, keep the
+point, `"3.0"`, as every plain print does: `typ::PlainScalar`), between a number and a datetime (Unix seconds) or a
+duration (seconds), from a bool to a number (1 or 0), or to read an array of numbers as bytes; a list reads as the array of its elements and a map as the array of its `(key, value)` pairs, and an array of pairs reads as a map. A union target reads by its members past every union and name in it, its primitives, written or named, one set whose parts each go in their class (`typ/cast.rs::cast_member`, `members_by_class`, `merge_primitives`), in groups: an array the source type says is one (`cast_from`) an array member it inhabits; a member whose tag the value carries; the members of the value's own class (`in_own_class`: a container's class is its elements' too, and unmarked array data is a list's; a tuple of the data's length, then a struct, first, only where its elements stay in their classes); for text the members of the class of the scalar it parses as (`parsed_scalar`: integer text too long for every integer type is the decimal it names, else the nearest f64); the rest. Within a group a member that holds the value exactly comes first, then a real one that holds it rounded, then one that drops part of it (`Holds`, `Type::tier`; a bool is held exactly by 1 or 0), and short of a dropped part one keeping every number an integer or a real as it was before one reading it across (`Choice`); canonical order breaks a tie. An infinity a finite value overflows to is none of these: a member reads it only once every group failed short of it (`Holds::Overflowed`), so `cast<[f32, string]>(1e300)` is the string and `cast<[f32, i64]>(1e300)` f32 inf. So `cast<[f32, string]>(0.1)` is f32, `cast<[i64, string]>(3.5)` 3, `cast<[i64, f64]>("3.5")` 3.5, `cast<[duration, decimal]>("3.0")` decimal and `cast<[f32, u8]>(true)` u8 1. The JIT inlines
+only the casts that always fit (`lowering::inline_cast`). A struct cast
+reads a field the data omits as null wherever the field's type
+admits null (`typ/cast.rs`), and a string parses as an RFC3339
+datetime, so what the json and toml writers emit reads back into its
+type. An abstract type crosses data only through its core `Cast` impl
+(`design/abstract_cast.md`): casts and reads make it with `from_value`
+(a value already of the type is held), writers write its `to_value`
+(`abstract_value::to_data`), only the defining module implements it
+and a method it leaves out is the representation; a type with no impl,
+a Rust-backed one included, is refused by the check as a cast or read
+target (`Concrete`) and as a written value (`'a: Data`), and an abstract
+value decodes only under an image session. JSON and TOML write one as an
+object of one entry keyed by its type's unqualified name, its data
+inside, and read it only so (`core::Form::Text`, `CastInput::Text`);
+the data inside is in the form its reader reads: with abstract values
+in it wrapped where the representation is read, bare where a written
+`from_value` casts it (`core::Form::Data`). Core's `Transparent<T>` is
+written as what `T` writes without its object, and elsewhere is its
+representation. They write a map as an object (a table) only under the
+key type `string`, its `[key, value]` pairs under any other or none;
+template data (hbs, `core::Form::Template`) writes abstract values bare
+and a map whose keys are scalars that print apart as an object
+(`core::map_shape`).
+A reference is its own runtime form (`graphix_types::reference`, an
+abstract holding its cell), never a number: a cast whose source can
+hold one is refused (`Type::holds_ref`), and where only an instance
+knows the source, the cast yields its `InvalidCast` error; a reference
+prints as `&ref`; under `Any` a reference test is refused, since
+references to different types share the form (`Type::ref_over_any`);
+nothing orders references or hashes them by value (`Ordered`).
+Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`;
+under it a union's members that name one cell or print alike (two cells
+bound to one type) print once. A hint's declaration writes a type as a
+program can (`Type::written_form`): an open cell as `'x` for the binding
+`x` it waits for (`node::Holders`), else as the variable a program wrote,
+else none, and the hint names no type. A refused write into a payload
+an earlier use decided is told both: the payload union, then a named
+recursive type for a value that reads the target; one whose own
+references name the target is told the recursive type alone
+(`node::write_mismatch`, `design/tvar_constraints.md`).
+
+- **`let rec` is monomorphic-recursive**, and a binding something writes
+  (a `<-` target, a `&mut`'s referent, as the resolver names it) is not
+  generalized: its uses and writers share one instance of each function
+  it holds (the value restriction, `CompileCtx::monomorphic`; a node its
+  value's type shares is one instance wherever it stands, so the instance
+  keeps the value's sharing, but each place a typedef application copied
+  as its expansion names is copied apart; a name aliasing a generalized binding, `let g
+  = f`, holds an instance of its own, as does a written name a pattern
+  takes apart). A write compiled
+  before the binding's check makes its check take one instance
+  (`Bind::typecheck0`); a writer in its block, a lambda body's included
+  (a body compiles at its definition's check), and a module's in it
+  through `super::`, a name it imports from there or a `package::` path
+  through the block's module, `self::` in a module's top block, keeps it
+  from being generalized at all (`node::written_lets`: the nearest
+  binding before the write; under a nested block's glob only a lambda
+  body's write, the rest left to the resolver). A binding
+  generalized before a write to it compiles (an earlier REPL input, or a
+  function body's write the walk missed) stays generic: the
+  write is held to a copy of its type with the variables rigid, a
+  bound's included, each function type's apart whatever their names (a
+  typedef application as its expansion, past 64 in one copy as one), and
+  a `&mut` of it, or of a place whose type holds one of them, is
+  refused
+  (`Env::poly_binds`); a `let` nothing writes whose value
+  holds a lambda or a generalized binding's value in a data literal (a
+  struct, its update, a tuple, a variant, an array, a list, a map:
+  `bind::holds_function`) is generalized too: each read copies the
+  closed definitions' signatures its type holds (`Type::scheme_read`), so
+  an annotation, a typed formal or a site's settle decides only that
+  read's copy, never the definition; every read in such a holder's value
+  (a call's argument, a block, a select arm, a lambda body included)
+  copies through one cell map, so reads of one binding share one copy
+  and a chain of holders holds one copy of its last link
+  (`bind::ValueReads::Shared`, `ReadCopies`), but an annotated `let`'s or
+  one binding a written name copies at each read, and a `let` forwarding a
+  holder gives each name a copy of its own beside a written one; two
+  lambda literals in one array or list meet, one type of the array's own (a
+  definition's type is untouched, however many met), whose label a call
+  through it or a formal holding it judges each one's labeled defaults
+  against, a refusal naming the annotation (`callsite::met_default_note`);
+  a type written
+  in a body (a `let`
+  annotation, `never<T>`, a select arm's type test, a nested lambda's
+  signature) names one
+  variable per name, and a name a definition around it declares, and
+  the written place does not declare itself, is that definition's
+  variable, any other the written type's own: generic until a cell of
+  a definition or the top level merges into it, which claims it there
+  (`tvar::Level::Written`; `lambda::body_annotation`, `enclosing_tvars`; a labeled
+  default's, the definitions' around its own, `LambdaDef::in_signature`;
+  in an instance, the instance's types under the definition's names,
+  `lambda::instance_sig`, the names its signature writes alone, never one
+  a body's annotation gave a cell its check reached); a quantifier
+  a definition or a written `fn<..>` declares must be held by its
+  signature (a parameter, the return, the throws, a held quantifier's
+  bound), else it is refused (`FnType::check_quantifiers_held`), and a
+  quantifier's bound (a definition's, a written `fn<..>`'s, an impl
+  head's) may not reach it, directly, under a constructor or through
+  another's bound (`'a: 'a`, `'a: Array<'a>`, `'a: 'b, 'b: 'a`;
+  `check_bounds_acyclic`): a recursive bound is a recursive type; a
+  written function type (a lambda's signature, a `.gxi` val, a trait
+  method, one a body's annotation writes) holds no union written with two
+  or more of its own bare variables (`['a, 'b]`, under any constructor as
+  written; a typedef is not looked through; `self` and an impl's head are no
+  method's own), refused, naming one variable or written types as the fix
+  (`Type::variable_union`); a def's declared tvars are
+  rigid in its body check: none binds to a concrete type or ⊥, no
+  two unify (`contains.rs` Distinct) and none escapes into a cell outside
+  the definition (`DefGate::check_declared_kept`; a variable the signature
+  only names, undeclared, is lowered with that cell, and the definition is
+  monomorphic in it), so a function type without
+  `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them
+  freely; a call copies only what the callee's definition owns once
+  its gate is closed (or not yet open): a cell shared with the
+  environment, or an open gate's, is shared (`let t = |x| x + y` is
+  monomorphic in `y`'s cell; design/tvar_constraints.md,
+  Generalization); a labeled default is checked at the definition
+  against its parameter's type, or a declared tvar's constraints, a
+  variable nested in the type taking any instance (`check_defaults`),
+  and again at each omitting site by the check, where it may narrow
+  that site's cells: against the site's own view of the parameter, the
+  type the instance runs with, and only where a fn type hides the
+  label against the callee's parameter as that type instantiates it
+  (arguments, result and throws) and the label of the function value it
+  hides, which the default narrows; compiled at a bind, it takes its
+  types from its definition's check, as an instance's body does (the
+  definition's `DefTable` holds the defaults' rows,
+  `InstanceTypes::of_default`, `DefTable::record_defaults`). A default whose type holds an enclosing
+  definition's open cell requires a closed parameter type (annotate the
+  factory's parameter or the defaulted parameter); an enclosing definition's
+  declared variable is closed: such a default fits its parameter whole, for
+  every instance of the variable (an unannotated parameter takes its type),
+  and a site outside that definition judges it over a copy of the scheme
+  (`callsite::Judge`). A call's type variable that only
+  data positions or read-only references hold settles to the widest of the
+  arguments holding no undecided cell and the defaults the call omits,
+  whatever the order; an argument or an omitted default holding an
+  undecided cell outside function types (a read target, a `let` over
+  `never()`, `[]`'s element; never a lambda's, `Type::has_free_in_data`)
+  decides its formal's other variables at once, waits for that join and
+  takes the variable it settles, and is refused where the join, or an undecided argument before it, decided
+  the variable and does not hold it, "annotate it", naming the bindings it
+  reads, where a decision of its cells could fit (`Widening::opening`,
+  `check_waiting`); a written argument or an omitted default neither wider
+  nor narrower waits for the others to widen it. One a
+  callback holds settles to the first argument, and one an abstract
+  type, a type application or a writable reference holds is fixed there, those
+  arguments checked first whatever the order the call writes (a
+  transparent typedef is its expansion)
+  (`callsite.rs::Widening`, `holds_invariantly`); a function type with
+  type variables of its own (a written `fn<'b: C>(..)`, a trait as a
+  parameter's type, `fn(c: Collection)`, a constructor-trait quantifier)
+  stands only as a declared signature's top (an interface `val`'s, a
+  trait method's, an impl's or a default body's method `let`, a lambda's
+  own declared variables): anywhere else in a written type it is refused,
+  naming the fix (`typ::QUANTIFIED_FN`: `Type::rewrite_trait_args`, and
+  `refuse_quantified_fns` for a cast, a type test and a catch's
+  annotation); a function stays generic only where a binding names it (a
+  `let` whose value, past parentheses and a block's final expression, is
+  a lambda, a generalized binding, a field or tuple read of one
+  (`let j = s.g`) or a data literal holding these, a write to a
+  generalized binding, a labeled default, a call's callee by name, an
+  input's value: `bind::names_generic`, `holds_function`, `name_value`;
+  a reference, `&f`, is not one): a lambda no binding names takes its
+  enclosing level's cells at its gate's close (`Lambda::named`,
+  `DefGate::close`), and a read of a generalized binding no binding names
+  is one instance (`Ref::naming`, `FnType::one_instance`,
+  `Type::instance_read`), so an element of a collection a call returns, a
+  callback's result or a field of a call's result is one type its uses
+  decide; a call copies a quantifier only where its level says so, as any
+  cell, and a containment holds rigid a scheme's quantifiers alone; a
+  quantifier an earlier compile
+  task left open is one a later task's `contains` compares as a fresh
+  copy on either side and never writes (`FnType::has_earlier_quantifier`:
+  parallel elaborations share the check's cells; not in a top-level
+  input's own check, to which an earlier input's is one type), and an open quantifier
+  never binds to its bound, no site's settle decides it; a copy of a type
+  keeps each written variable name, so a parameter merged into a declared
+  quantifier still names it (`TVar::named_as`), and a name whose cell a
+  merge forwarded stands for the cell at the end of the link: a copy names
+  that cell's image after it, and a rigid gate holds that cell
+  (`TVar::forwarded_as`, `open_rigid`; `design/tvar_constraints.md`);
+  `Any` binds an open
+  cell only in a contravariant position (a `|v: Any|` callback fixes its
+  formal's type; `let x: Any = y` decides nothing of `y`);
+  union collapse requires strict tvar identity (two function types pair
+  their cells as a renaming, generic with generic or live with live, never
+  a generic cell with a live one, `setops::Identity::cells`;
+  a field read of a union and a select's arms meet their function
+  members, through a copy of a member's generic cells, binding its live
+  ones, `Type::union_of_alternatives`); a merge takes the
+  lower of its two cells' levels, a generic survivor included
+  (`TVar::merge_one`), so a relation against a scheme instantiates it first
+  (`callsite::checked_default`, `Impl::build_prototypes`); in a union checked against
+  a union, an open member takes only the members its known siblings leave
+  (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
+  all of them when none are left or what is left refuses it), and where two
+  of its members hold open cells (`[Array<'a>, Array<'b>, null]`) the other
+  union's members go in as written, else deepest first, whichever order
+  places them all on copies (`Type::place_each`); a free union member stays free (a type test over an
+  untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
+  NaN`, below every number) so `Value` is map-key-able, and numbers of
+  different types (under `Any`) order by value, exactly, ties by type,
+  every number before every other kind (netidx-value's `Value::cmp`); checked arith
+  (`+?` …) yields a catchable `ArithError` naming its cause, except
+  over floats, which follow IEEE and never fail (inf, NaN), unchecked
+  `+ - *` wrap, integer div0 and `MIN / -1` bottom, `x % -1` is 0; indexing is bounds-checked through shared helpers on
+  both backends; `$` and handler-less `?` report a fired error operand,
+  with no report-count or at-least-once guarantee inside a fused region:
+  an unreached prologue guard may report, a constant in a late arm may
+  never report, and native tail depths may share one report
+  (`design/strict_fusion.md`; `tests/fusion_diagnostics.rs`).
+  Unchecked-arith diagnostics, `sum`/`product`/`divide`'s
+  included, are node-walk-only (debug with `--no-fusion`).
+
+- **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
+  comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
+  left-associative (`8 / 2 * 2` is 8), and a lambda may be an operator's
+  last operand, its body taking the rest (`t ~ |x| x + 1`). `BinOp` (`expr/binop.rs`) is the
+  one table. Arithmetic (`fn<'a: Number + Singleton>(x: 'a, y: 'a) ->
+  'a`) and comparison (`fn('a, 'a) -> bool`) take operands of EXACTLY
+  one type, each containing the other's (`node/op.rs::operand_type`):
+  `[i64, null] == 3`, `` [`A, `B] == `A `` and `[i64, f64] + 1` are
+  refused; a ⊥ operand, or one only ⊥ was produced into
+  (`TVar::bottom_fed`, `CellFact::BottomFed`), takes the other's type. `Singleton` is a bound
+  like `Concrete`: whatever binds the variable is no union, a primitive
+  set of two or more included, so arithmetic over a type holding two
+  numeric types is refused even against itself, and a generic
+  definition's at the call, by the check; the open members of a union
+  under it merge into one cell. Comparison takes any one type, unions
+  and mixed numerics included, if it is `Discernible`; the orderings take
+  `Ordered`, which refuses two numeric types. `OneNumber`, a written
+  bound only, holds a type to at most one numeric type (`'a: [Number,
+  null] + OneNumber`); a binding with a numeric member beside an open one
+  is refused at the definition that leaves it open (annotate it). `NoError` holds a type to no member a value of
+  which is an error (`Error<..>`, the primitive `error`, `Any`):
+  `type Result<'r: NoError, 'e>`, so a result's error member is its only
+  error (`design/tvar_constraints.md`). An interface declares every bound its
+  implementation's variables carry, a typedef parameter's bound counting
+  (`FnType::sig_matches`); the implementation may leave off a bound the
+  interface declares.

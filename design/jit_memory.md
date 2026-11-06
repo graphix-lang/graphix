@@ -149,3 +149,55 @@ stress runs.
 - `GRAPHIX_JIT_RELOCATE=every` is a stress mode for the whole `run!`
   suite and for a soak lane: every kernel moves every cycle, so any
   state or address that depends on where the code lives diverges.
+
+## The rules in brief
+
+- **JIT pipeline and memory** (`fusion/emit/jit.rs`): emission names
+  everything by ids of its own (`jit::Names`) and defines nothing.
+  Disjoint subtrees fuse in compile tasks (`fusion::fuse_each`: the
+  parts of a node that call a function); a task emits into its own
+  `Emission` over a frozen copy of its parent's names and caches, and
+  its join renumbers its functions after the parent's in join order, a
+  lambda kernel the parent already has replacing the task's, so the
+  decisions and the output are the serial walk's (`GRAPHIX_FUSE_SERIAL`
+  is the A/B). A region that fails forgets the kernel signatures it
+  cached with its bodies. Only the context's root emission links:
+  every `LINK_BATCH` regions a batch starts compiling on threads of its
+  own while emission goes on (`FusionCtx::link_batch`), and installs at
+  the next batch or at the pass's link (`FusionCtx::link`), which
+  compiles the rest; records are built in emission order and a batch's
+  wrappers install with one finalize; a kernel has its entry only after
+  its pass links. Emission accepted everything a link compiles, so a
+  link that fails (a verifier error included) is a JIT bug and panics.
+  A function past `jit::LARGE_FUNCTION` instructions compiles with
+  Cranelift's single-pass register allocator: linear compile time,
+  worse code, one region still.
+  One JITModule + 256MB
+  arena per generation (reserved, committed as code installs, on every
+  host: `emit/arena.rs`), built on the first fusion (a fusion-off context
+  never builds one); an install that fails retires the generation, and
+  on exhaustion the link reinstalls its records in a fresh one, twice the
+size while a fresh one cannot hold the batch; a
+  generation's code is freed when it and every kernel installed into it
+  have dropped (each `WrappedKernel`'s `KernelEntry` holds its code). A
+  deleted definition's kernels and bodies, and the records no kernel
+  reaches, are forgotten at the next link
+  (`FusionCtx::link`); only a cached body's ids stay named. A link that
+  retired a generation, or left the current one mostly dead (4MB
+  committed, under a quarter live), marks a relocation: at the next
+  cycle's start (`GX::do_cycle`, `FusionCtx::relocate_kernels`) every
+  live kernel outside the current generation is reinstalled there from
+  its record and its entry repointed, so the old module drops. No JIT
+  code runs outside a cycle's update pass, and a kernel reads its entry
+  at each call (`design/jit_memory.md`). Pins:
+  `graphix-rt/tests/rt/jit_retention.rs`, `jit_arena_rotation.rs`. Pin:
+  `graphix-shell/tests/shell/jit_arena_rotation.rs`. A two-word value never
+  crosses the helper seam by value: a pointer in, an out-pointer back,
+  through `HelperRefs::call` alone (`design/helper_abi_portability.md`),
+  so fusion runs on every host Cranelift supports, Windows included.
+  Kernel ABI (`KernelSig::abi_params`): the context words, then a
+  (disc, payload) pair per param in source order (formals, then
+  captures); recursive types, abstract types, primitive
+  unions (a union naming primitive typedefs, `Number`, is one) and the
+  primitives with no register form (varints, decimal,
+  error) are opaque 2-word values (`design/unified_value_abi.md`).

@@ -118,3 +118,19 @@ flow — `design/seq_blocks.md` §7).
   (`Receipt::Passed`). Pins:
   `a_catch_asleep_with_raises_in_flight_lets_its_step_pass`,
   `a_handler_never_hears_a_raise_given_up`.
+
+## The rules in brief
+
+- **`catch`** (`design/catch.md`) installs a handler for the rest of its
+  block; it is not control flow. A user handler that never reads its
+  binder warns: its expression can act at birth before an error arrives.
+  An ascribed catch checks each raised type at its join, while the enclosing
+  definition's declared variables are rigid; the annotation must contain
+  each variable's declared bound (`node::error::join_raised`).
+  `?` wraps its error in an `ErrChain`
+  once, extending a chain rather than nesting it, and the types agree:
+  `ErrChain<ErrChain<X>>` is `ErrChain<X>`, so a generic `Result<T, 'e>`
+  raises `ErrChain<'e>`. Chain-ness is the type's (`Type::
+  chain_error_type`, a struct's field types included), and a site
+  extends only when all it may raise is chains, never by a value's
+  shape.

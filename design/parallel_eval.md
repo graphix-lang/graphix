@@ -953,3 +953,39 @@ Taken (Eric, 2026-10-03):
 7. A builtin is parallel-safe unless it declares `Ordered` (§6); the
    stdlib is audited in phase 2.
 
+## The rules in brief
+
+`design/parallel_eval.md`. A cycle's update pass forks independent
+subtrees onto the runtime's own evaluation pool (`Control::eval_pool`,
+built at its first fork, `GRAPHIX_EVAL_THREADS` workers; runtimes in
+one process never run each other's parts): a block's runs, a call's arguments, a
+constructor's fields, an operator's operands, a collection's slots, a
+server's requests (`http::serve`, `sys::net` rpc: an instance of the
+handler per request, `branch::fork_instances`, planned by a `SlotSite`
+as a collection's slots are) and a kernel's top-level map-family
+loops (chunks, `fusion/par_loop.rs`).
+Branches see the runtime through branch views (`RtView`/`ForkRt`,
+`Layered`, `CxView`) and merge back in program order, so a forked cycle
+computes what the serial node-walk does. Siblings are independent iff
+neither reads what the other publishes (`analysis::plan_block`, an
+earlier reader taking a later fire next cycle, through a reference or an
+unresolved call only one a reference names or a lambda captures,
+`analysis::escaping`, or one a call fires in a callee whose body makes a
+reference or a lambda, or that has no static target; a module, trait or impl
+statement is a run of its own and a catch runs last) and they do not
+both reach an `ORDERED` builtin
+(in-language state shared across nodes, `queuefn`; a call with no static
+target counts as one, a slot site's own call excepted). External effects in
+parallel branches happen when they run, unordered. A seq machine runs
+serially inside; runtime compiles run in compile tasks
+(`branch::compile_each`). The mode is the runtime `Control`'s
+(`set_par_mode`), from `GRAPHIX_PAR=off|auto|force`, `auto` by
+default: `Auto` forks where `cost.rs`'s tick histograms say a side
+costs the calibrated threshold (4x the pool's wake latency) and not
+while every worker has a part; a collection's slots fork only where each
+half also pays what its forks took beyond their parts, and run in order
+after three forks in a row no faster than in order (`SlotSite::forked`);
+`Force` forks at every fork point (tests, the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
+under it (a compile error where nothing forks; callees excluded),
+`#[serial]` inhibits them, callees included. The stack budget is per
+cycle, across workers; the compiler never pins threads.

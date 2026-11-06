@@ -128,3 +128,10 @@ images preserve marked cells. Binary data validation walks these cells iterative
 Whether `list::init/map/...` keep their package-side intrinsic markers
 or fold further into the compiler — orthogonal to this design, revisit
 with the intrinsics-deletion endgame.
+
+## The rules in brief
+
+- **Native List** (`design/list_native.md`): `List<'a>` is a compiler
+  constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
+  patterns (rest is the O(1) tail; the suffix form is refused); the rep
+  is private to `graphix-types/src/list.rs`.

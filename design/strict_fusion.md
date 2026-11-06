@@ -231,3 +231,106 @@ semantics, engine-independent.
 - **Admitting stateful builtins as fast fns with per-site memory:** a
   fast fn that remembers is a DynCall slot by another name — the same
   multiplicity questions return.
+
+## The rules in brief
+
+- **Strict fusion** (`design/strict_fusion.md`): fusion admits pure
+  computation only, and the `Effect::Io` calls gated on their trigger's
+  fire. A builtin fuses iff its `Effect::Stateless` carries a `FastCall`
+  or its `Effect::Io` an `IoCall`; one that performs under a select arm
+  fuses there only when its trigger fires at every entry (it fires with
+  the scrutinee or the arm's binds, through a nested select's scrutinee
+  only and never a function's result; a performing callee performs only
+  on its formals, `analysis::io_follows`; and no arm has a guard,
+  `lowering::arm_io_blocker`), and a tail recursion is one native loop
+  only when its Io and its handler-ful raises follow its formals
+  (`lowering::site_memory`: a constant-derived raise is an
+  activation's at its birth); `?` fuses with or without a covering catch (a handler-ful
+  raise is queued and delivered after the run through the same path
+  `Qop` uses), except a handler-ful `?` reachable under a select arm,
+  callee bodies included: its raise may be owed to a fire the arm
+  missed asleep or to a constant at its first entry, and a kernel remembers
+  neither, so it node-walks (`lowering::arm_raise_blocker`), as does a
+  guard whose handler-ful raise or performing call does not fire with
+  its arm's binds (`lowering::unfollowed_guard`): a kernel runs its
+  prologue guards even where unreached, with those binds bottom; the
+  node-walk runs only guards the chain reaches; only a
+  `never(..)` arm is a
+  standing bottom (its args are still emitted and consumed), any other
+  bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
+  `~`, `Any`, `Catch` — node-walks, transitively. A kernel's only
+  cross-invocation memory is the firing boundary (prev-length words,
+  first-call words, per-site/per-activation blocks; in a loop each is
+  the slot's, never shared by its iterations) and its loops' cost sites,
+  which decide nothing a program sees; no replay caches, no selection
+  memory. The runtime loans a kernel exactly `KERNEL_ABORT`,
+  `KERNEL_PANIC`, `KERNEL_ENV`, the deferred raises and Io calls
+  (`emit_helpers::Deferred`), the self-block counters (`SELF_BLOCK_GEN`
+  and its kin), the core-trait value hooks and the fork
+  mode (`par_loop::ParLoan`): a map-family loop at a kernel's top level
+  runs as chunks of its slots, in order or forked
+  (`design/parallel_eval.md` §10).
+  `#[native]` asserts zero node-walk residue at a source location and is
+  THE advertised performance model (an argument a fused call is fed by
+  the node-walk is residue; bound outside the annotation it is an
+  input). A registry attribute inside a definition body stays pending until
+  an instance is built, including a dynamic call or a later REPL input;
+  the definition alone does not require fusion to dispatch it.
+  `#[sync]`/`#[async]`/`#[pure]` assert analysis facts
+  (`#[pure]`: nothing that makes an arm sleep but `dbg`, which warns),
+  and
+  `#[tail_recursive]` analysis's gate plus, for every instance a compile
+  or a run-time bind builds (a later REPL input's included), the loop
+  fusion built: no call to it left in the node-walk, a dynamic call's
+  included, but one dispatching an instance whose body is the loop's
+  kernel (`analysis::check_tail_loops`; a bind it covers is fused until
+  its failure is reported, once; unchecked where fusion does not run). A
+  run-time bind fuses a collection slot's instance (its prototype's
+  kernels) and one an assertion it reaches covers, no other (a function
+  value called with no attribute in reach node-walks); it does so as its
+  runtime does, whatever its site's flags (the package root's have fusion
+  off, a site a collection or a builtin builds has none): a runtime whose
+  flags disable fusion disables its context's (`FusionCtx::disable`).
+
+Coverage today: scalar arithmetic/comparison/logic/casts, producers and
+accessors, string interpolation of every part kind, `?`/`$`, a bare `null`
+wherever a value stands, the eight array HOFs as native loops (nesting
+included; filter_map's unwraps a `` `Keep `` result and skips a null),
+structural select destructuring with scalar and variant
+payload binds, owned binds of a nullable's payload, of a slice's rest,
+head or whole (`[x, tail..]`, `all@ [_, ..]`) and of non-scalar elements,
+tag tests and binds over a primitive union, every pattern at an
+element, a payload or a list head as at the top (a binding or-pattern
+included), a tuple, struct or slice pattern over a union holding one
+member it may pass, scalar literals over an option, a result
+or a union, `never()` arms as bottom
+productions of the merge shape, or-patterns, list patterns, type tests
+that hold the scrutinee's type, a written tuple, struct or array test
+over a composite whose type it does not hold, any union of encoded members as one
+value (`` [`A, `B, null] ``, a list beside an array) with its written
+type tests, a union naming union typedefs as the flat union they name, tail loops
+over any kernel param
+kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
+calls, trait default bodies, a self-recursive instance's body, its
+self-calls calling its own kernel, wherever an instance's body fuses
+(`fusion::fuse_instance_body`: a compiled instance whose call does not
+fuse as a region, and the loop a collection's callback, or a function
+value an assertion covers, binds at run time), a collection callback's
+call of the function whose body runs it inline being that function's
+self-call, each loop slot rooting its own activation, and so a callback
+that is that function's bare name (`array::map(xs, t)` in `t`), whose
+slots make the call, the collection's own instance's included where the
+function is its callback (slot-root chains, `design/kernel_instance_state.md`). A subtree that does not fuse whole
+descends: every part that calls a function (a lambda call, a collection
+operation) is tried as a region of its own, any other part only
+descends (`fusion::fuse_parts`); a lambda call whose argument does not
+fuse takes that argument as a node-walked feeder of its kernel
+(`fusion::try_fuse_feeding_args`); a `let` bound to a lambda literal
+emits nothing in a kernel, which calls it statically; a collection that
+does not fuse whole fuses its prototype's callback instance, and each
+slot's instance takes those kernels at its bind (`fusion/share.rs`:
+by attempt ordinal, where root, inputs, return, callees and raises
+agree). An attribute on a
+node absorbed into a larger kernel still has its target checked
+(`Attribute::check_target`). `FusionStats.failed` is a blocker profile,
+not a gap count.

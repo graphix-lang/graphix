@@ -645,3 +645,46 @@ refusal lands, their FLIPs recorded as typeflips.
   earliest JIT classes, so the fleet builds the `soak` profile, release
   codegen with `debug-assertions` and `overflow-checks` on, never
   `--release`.
+
+## The rules in brief
+
+- **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
+  per-cycle trace oracle, each engine also no-cache vs cold-image vs
+  warm-image (`GRAPHIX_FUZZ_SESSIONS`) and forked against the serial
+  node-walk (`Pair::Par`: the node-walk at `Force`, the JIT at `Auto`
+  over a fixed tiny threshold, `cost::fix_calibration`), and a program
+  both builds refuse
+  also against the check alone (`Pair::Check`: elaboration refused what
+  the check passed); every run on the shell's script
+  path (`GXConfig::program`), never the REPL's `rt.compile`; a corpus
+  pin both engines reject is a regression unless it says
+  `// expect: reject`; `check`/`run`/`generate`/`fuzz`/`minimize`/
+  `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`; every
+  typemorph subject also yields must-reject mutants
+  (`design/must_reject.md`), each family citing a checker rule: a rule
+  change updates its family in the same commit. The
+  committed `findings/` corpus is the regression gate: `regress` runs
+  every pin through `check` and also compares each pin's fused-region
+  count with `graphix-fuzz/fusecheck.manifest`, so a de-fusion fails
+  loud; the count is the program's compile alone, which runs no cycle
+  (`GXConfig::compile_counted`), so a budget abort has its count too.
+  After an INTENDED fusion change, `fusecheck
+  --bless` rewrites the manifest (rebuild to embed it) and the diff is
+  reviewed like code. `regress` also compares each pin's verdict
+  (`trace`/`contained`/`reject`/`excluded`/`unsure`) with
+  `graphix-fuzz/outcome.manifest`: the corpus runs in parallel on a
+  worker per core, and only an agreement the manifest does not vouch
+  for is retried alone at 4x; `regress --bless` records the verdicts
+  (every untrusted pin retried alone) when a pin's class changes on
+  purpose or a pin is added. `sys::`/`http::`
+  programs compare settled values per epoch (`FinalValues`); the
+  `Excluded` markers (`oracle_tier`) never record a divergence.
+  Soaks run under `nice -n 19` from a campaign-private copy of the
+  binary with output outside the repo; `graphix-fuzz/fleet.sh` deploys.
+  A box in the rustc-dist build farm runs its farm profile `soak` while a
+  campaign runs there and `default` after a stop leaves no survivor
+  (`soak.sh`'s `farm_profile`).
+  A stack-budget abort is a `Timeout` outcome (containment). Construction
+  timeouts agree only with construction timeouts; beside a runtime timeout
+  the construction side is retried at the slow budget and the pair cannot
+  be recorded as a trusted containment (`design/graphix_fuzz.md`).

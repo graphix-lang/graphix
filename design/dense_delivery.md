@@ -366,3 +366,13 @@ what `dense_deltas.rs` cites.
 13. Builtins bottom on any bottomed argument (`array::window` over an
     absent value, `max(fired, bottomed)`).
 14. Error logging inside a recursion appears.
+
+## The rules in brief
+
+- **Bottom is dense** (`design/dense_delivery.md`,
+  `design/representable_bottom.md`): `update` returns a `TagValue`
+  every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the
+  orthogonal fired×bottom algebra. A standing bottom re-delivers
+  `StaleBottom` and never re-fires consumers; bottomness ORs over
+  consumed productions. In the JIT the bits ride each param's disc
+  (`STALE` bit 61, `TAINT` bit 62).

@@ -190,7 +190,7 @@ the compile's scratch and fusion's state (`CompileCtx::fusion`). The
 runtime (`rt`, `libstate`, `control`, the cycle's `event`) is the rest of
 `ExecState`, which derefs to the `CompileCtx`.
 What compiling would ask of the runtime it records and the runtime
-replays at install (CLAUDE.md, "Compiling never reaches the runtime").
+replays at install (`design/architecture.md`, "Compiling never reaches the runtime").
 
 A `CompileCtx` forks and joins (`CompileCtx::fork`/`join`): a fork shares
 every tracked map and records what it touches, and a join takes the

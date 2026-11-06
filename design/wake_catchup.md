@@ -424,3 +424,77 @@ arm_entry_prints_every_time}`, `lang::dense_deltas::no_arm_window_pauses`,
 `lib_tests::net::{net_call_not_repeated_after_wake,
 net_write_not_repeated_after_wake}`, and the LSP's
 `birth_only_arm_actions_are_warnings`.
+
+## The rules in brief
+
+- **Sleep is pause, not reset; a wake is a resume, never a rebirth.**
+  The views (`View`): `Birth` (standing values read as delivered,
+  constants fire), `Wake` (a resume: standing values read stale,
+  constants stand, a `<-` target keeps its value), `Step` (born into a
+  world that stands: constants fire, standing values read stale), and
+  nested views join (`View::join`). An arm's first entry inherits `Birth`
+  from an enclosing birth and is otherwise a `Step`; every later one is
+  a `Wake`. A seq step entered for a run is a `Step`. Its rebirth resets
+  the entry history of selects inside it, so an arm's first entry in each
+  run is born even when its scrutinee arrives later. A
+  `let` re-raises, fired, a write to it that landed while it slept (a
+  fire no reader saw: `Bind::reraise_writes_while_asleep`), to the
+  readers that slept with it alone: its block takes it back after its
+  last statement (a module, with an interface or without, leaves that to
+  the block around it, whose later statements read its names); a `let`
+  that re-raises marks its block (`node::Lets`), which reads the mark as
+  its update ends, so an update after no re-raise visits no `let`. A
+  reader outside (an escaped `&mut`) sees the write once. At the wake
+  the initializer's fire by catch-up replaces such a write, whichever
+  came first (a sample whose argument alone fired asleep does not fire); a
+  write landing after the wake's cycle stands. State
+  survives an arm's sleep (`Held` residents at the select scrutinee,
+  pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
+  a `<-` target's value, which only a fired input of its initializer
+  overwrites; the restart builtins' latches and counts; a `queue`'s
+  contents and credits, a delivery it sent but had not received taken
+  back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
+  recomputes from the world as it stands, reading standing values STALE;
+  the only events it re-raises are the fires no selected reader saw,
+  a late fire to a reader in a select arm's body that did not run included
+  (`TrackedFires::observe_late`; a guard's reader, a seq step's, a
+  collection's over a bottom source and a call's over a bottom function
+  lose it, CR late-asleep-02), once, at their current value (one fire bit per input per select, shared
+  by consulted guards and arm bodies and consumed by whichever arm reads
+  it, an arm's guard and its own body seeing it alike; a destructuring let's
+  siblings are inputs of their own; a pattern bind, of this select or
+  an enclosing one, is a facet of its scrutinee's delivery: reading it
+  consumes that input's bit, and it is never delivered; an arm a guard's
+  flip selects binds stale). An input an arm learns as it runs (a callee
+  a function value binds, a reference's new target) is caught up by its
+  write stamp against the arm's falling asleep, walked or not, and, where
+  a select around it tracks the input, only while the innermost such
+  select holds its fire bit, which the evaluation then consumes
+  (`node::wake::CatchUp`); a standing
+  entry keeps its stamp (`branch::standing_stamp`). An input that
+  went bottom during the sleep is bottom at the wake: a bottom input
+  SETS a node's resident (`TagValue::set_bottom`), never rides it, and
+  every wake refresh stands a stale bottom like a value. Sleep state is
+  LOCAL: every skip-owning node owns a `slept` bit its `sleep()` sets and
+  its next update takes — no ExecCtx globals (parallel compile and a
+  parallel evaluator stay possible). A builtin's state starts afresh
+  only where it is born again: a call site whose update after a sleep
+  is a birth calls `Apply::reborn` (a seq step's next run, a call it
+  issues). A labeled
+  DEFAULT is born with the binding and delivers
+  FIRED at a fresh callee's first dispatch. Sleep aborts an async call
+  in flight (one not cancel-safe finishes, unanswered) and
+  the wake restarts nothing: only an argument's fire
+  starts a call, and a call's result survives the sleep; an event
+  source (a timer, an idle wait, a subscription, a line reader, a
+  server) pauses (a timer's run resumes at the wake, a pending idle
+  wait too, a standing interest re-attaches) and its output, the last
+  event, does not survive (`design/async_sleep_outputs.md`). A seq
+  machine's run is aborted by its arm's sleep (`pc` to idle); a
+  `seqq`'s queue keeps its requests and the aborted run's credit is
+  returned at the wake. An arm with no state, no
+  effect (an `Io` call included), no raise to a handler (an event, as a write is) and no recursive call
+  skips `sleep` and is not updated while untaken, and is slept at its
+  re-entry so it recomputes from what stands; a fused arm is judged
+  by the region its kernel replaced (`analysis::RegionFacts`), so fusion
+  decides nothing here.

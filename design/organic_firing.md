@@ -87,3 +87,36 @@ what `organic_deltas.rs` cites.
 9. `~` samples at its trigger's fires and retains its output while the
    trigger is bottom. `select t { _ => v }` instead goes bottom with `t`
    and also emits when `v` fires; the two have different cadences.
+
+## The rules in brief
+
+- **Organic firing** (`design/organic_firing.md`): a node fires iff a
+  consumed input fires; nothing stores a previous value or selection to
+  decide a tag; `uniq`/`filter`/`~` are the cadence tools. A select emits
+  per fired input — scrutinee delivery, a CONSULTED guard, or the taken
+  arm's own production; same-arm re-matches emit the arm's current
+  value. A delivery to a function-valued callee fires its current result
+  even for the same definition, keeping that call's instance and state.
+  A constant fires where it is born (`View::born`) and stands
+  stale everywhere else; every argument-less literal (`` `Tag ``, `[]`,
+  `{}`) is a constant (`node::produce_constant`). Kernel outputs
+  fire only when an input feeding them fired; collection loops fire on
+  resize, a fired slot, a fired empty source, a fired fold carry, a
+  source back from bottom, or, for filter and find, which read the
+  elements, a fired source of the same length. A bottom source forgets the length and runs
+  no slot: its slots pause as a deselected arm does and wake, caught up,
+  when it returns; a kernel loop runs no iteration over a tainted source
+  (`scaffold::slots_run`).
+
+- **Sampling**: `e ~ v` is `v` at each fire of `e`, banking one trigger
+  however many find `v` absent, paid once when `v` arrives (the `seqq`
+  lowering's own `BinOp::BankedSample` pays each); `e ~! v` is strict
+  (bottom, no bank). Neither sample treats a bottom trigger as a fire: both
+  keep their last output until another trigger or a banked payment. A sample
+  keeps its bank through an arm's sleep, but a seq step's rebirth clears it. A connect
+  writes when its RHS fires; a constant RHS in an arm fires only at the
+  arm's first entry, and the definition's check warns of it (and of an
+  effect call reading no variable, or a `seq` with no trigger, there:
+  `select.rs::warn_birth_only`; not in a seq step, born at every run,
+  `CFlag::SeqStep`); an action at every entry samples the
+  event that selects the arm (`k@ .. => x <- k ~ v`), or is a seq.

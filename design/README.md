@@ -65,6 +65,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `place_references.md` | `&a[i]`, `&s.f`, `&t.0`, `&m{k}` as root + path |
 | `seq_blocks.md` | `seq`/`seqq`: the pc machine, `until`, `try … with`, the completion rule, the error guards |
 | `dependency_summaries.md` | per-node read/write summaries after resolution; the seq machine node: every statement a step, a passed step asleep, boundaries per instance; `seqq` captures from summaries |
+| `select_coverage.md` | what reaches each arm, exhaustiveness, undecided types at a select, patterns inside a declared variable, `name@` captures |
 
 ## Infrastructure
 
@@ -78,3 +79,11 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `parallel_eval.md` | forked independent subtrees of a cycle on the evaluation pool, serial-equivalent by branch views merged in order; fork decisions measured per site (`Auto`, the default); `#[parallel]`/`#[serial]`; kernel loops as chunks |
 | `walk_pruning.md` | per-boundary scheduling (statements, instance bodies, select arms) by read registrations and cycle stamps; what marks a boundary dirty; atomic vs layered marks under parallel eval; the prune audit and `Pair::Prune` |
 | `program_image.md` | the registration and program images as built: cached compilation, block-relocated IDs, the lexical edit log, first-dispatch materialization |
+| `architecture.md` | the pipeline, key types, nodes, compile/runtime split, the runtime, the typecheck knot, stack discipline |
+| `builtins.md` | how a builtin is written and classified; what an async call site does with its calls |
+| `formatter.md` | `graphix fmt`, canonical printing, comments, layout |
+| `language_server.md` | roots, lazy checks, the last successful check, queries by target |
+| `testing.md` | how `run!` fixtures run; what a landing owes |
+| `debugging.md` | scoped tracing and every debug environment variable |
+| `stdlib_notes.md` | notes on single packages |
+

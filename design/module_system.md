@@ -414,3 +414,59 @@ Not touched: the node graph, the JIT, module SOURCE loading
 name resolution), the dynamic catch scope.
 
 Not built: `pub use` re-exports.
+
+## The rules in brief
+
+**Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
+`VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in
+`graphix-package-sys`. `sys::net` owns its netidx through `NetState` in
+`ctx.libstate`; `NetHandles` shares the raw publisher/subscriber between
+the loader and `NetState`; unseeded contexts get a process-internal
+netidx on demand, so programs that never touch `sys::net` have zero
+network. The shell library is netidx-agnostic; the CLI is the
+netidx-aware embedder (`ShellBuilder::setup_context`,
+`resolver_factories`, `GXHandle::with_ctx`).
+
+- **Module system** (`design/module_system.md`): Rust-2018-style
+  `use`; every name arrives by declaration, `use`, or prelude;
+  `self`/`super`/`package` roots (`package::` is the registered
+  package, else `/`, where a script's top level is in every mode);
+  declarations, `let` included, are statement-position only. A module
+  with an interface compiles its body with its `mod` statement and
+  checks it with the statement (`Module::typecheck0`), in a compile task
+  of its own; a run of them checks in parallel, after the statements
+  before it. Siblings reach each other only through interfaces: an impl
+  a body adds undeclared is hidden from its siblings' checks
+  (`Env::hidden_impls`) and seen after them, a write through a sibling's
+  `val` is judged against its implementation once all are checked
+  (`Module::check_written_vals`), and a module's check that
+  would write a cell created outside the module is refused and the
+  write not made (`tvar::decided`; annotate the binding it would
+  decide; `design/parallel_compile.md`); a raise of nothing joins no
+  handler (`error::join_raised`), and an error the body raises to the
+  function around the module, whose throws are a cell only its check
+  writes, is refused: catch it inside the module. A job a compile puts on a shared pool runs
+  under its spawner's `tvar::TaskContext` (task, level; the thread's
+  foreign-write record set aside), never the thread's: a runtime
+  compiles on its own pool (`Control::eval_pool`), and a worker blocked
+  in a join runs jobs stolen from any of its compiles (`branch::Live`,
+  `check_in_tasks`, `fusion::fuse_each`). Every cell of an interface
+  `val`'s function type is generic, a constructor trait's element
+  included: a call copies it. A `val`'s type variable stands only
+  inside function types (a typedef as its expansion; an abstract
+  type's parameter is outside), else it is refused: declare the val at
+  one type (`Type::variable_outside_functions`). An implementation cell
+  no use copies (a written `let`'s, an outer binding's, a call's
+  result's) may not stand where the val, or a trait method's
+  declaration, has a variable a use picks; else the declaration decides
+  it, as an annotation on the `let` would (`module::hold_paired`; a
+  method that is a lambda is judged by the bindings it captures, any
+  other method and a val's implementation by level). A val whose type
+  holds a variable, its own quantifiers and a typedef's arguments
+  included, is generic (`Env::poly_binds`): each read copies it, a
+  typedef's arguments as its function types (`Type::scheme_read`), and
+  it is held as an earlier compile's generalized binding is above. A val
+  something writes
+  (`<-`, `&mut`, in any compile) must fit its implementation, whose
+  variables are held rigid with their bounds
+  (`CompileCtx::check_val_written`).

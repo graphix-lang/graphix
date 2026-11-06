@@ -93,3 +93,14 @@ split at purity is what makes both correct. Containment is the
 interrupt (`GXHandle::interrupt`, which stops the runtime for good,
 polled by the interp's tail driver and every emitted loop head) and the
 stack budget, never a depth limit.
+
+## The rules in brief
+
+The node-walk (`node/*.rs`) is the canonical evaluator and the universal
+fallback; fusion → cranelift (`fusion/`) compiles pure sync subtrees to
+native kernels, splicing on success and leaving the nodes on failure.
+**A fusion bug may lose fusion, never produce a wrong answer**; the
+fuzzer enforces bit-for-bit agreement, and a divergence is adjudicated
+against the INTENDED semantics, never by trusting either engine. The
+node graph IS the IR — there is no parallel typed IR
+(`design/final_jit_architecture.md`, `design/distributed_jit.md`).

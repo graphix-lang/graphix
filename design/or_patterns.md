@@ -160,3 +160,13 @@ cell for the rest).
 
 A dead ALTERNATIVE beyond duplicate/post-wildcard/range/type-dead
 (structural overlap like `` `A(1) | x@ `A(_) ``) is not yet refused.
+
+## The rules in brief
+
+- **Or-patterns** (`design/or_patterns.md`): select arms and bracketed
+  element positions; each alternative is typed over the scrutinee as a
+  separate arm is, alternatives bind the same names, and a shared name
+  is the union of the alternatives' types; alternatives a
+  structure test cannot tell apart are refused
+  (`StructPatternNode::footprint`); one guard per arm; dead alternatives
+  are errors; they fuse natively.

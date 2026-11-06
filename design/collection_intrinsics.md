@@ -146,3 +146,12 @@ intrinsics do not pay.
   `recursive_activations.md` §10) — the scaffold loops are the
   predictable fast path, and only Array `map`/`filter` and Map's impl
   have a Graphix derivation at parity today.
+
+## The rules in brief
+
+**Collection intrinsics** (`node/collection.rs`,
+`design/collection_intrinsics.md`): the Array/List/Map traversal HOFs
+are compiler nodes (`MapQ`/`FoldQ`) built when a lambda body is a
+reserved marker name (`'array_map`, …); they own callback
+instantiation, slot identity, per-slot firing/taint/sleep and result
+construction.

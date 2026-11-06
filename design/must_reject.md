@@ -35,8 +35,8 @@ the base's check already knows: the type of every expression.
 Inference re-infers around a change, so "must reject" needs a reason
 that no inference can repair. Every mutation below names a RIGID
 CONSUMER: a use whose required type is fixed independently of the
-mutated value, by a rule the language states (CLAUDE.md, "The
-semantics both engines implement" and "Language features"). The
+mutated value, by a rule the language states (`design/tvar_constraints.md`, and each
+feature's own doc). The
 mutation puts a value the consumer cannot take in front of it. The
 certainty argument is always the pair (the consumer's rule, the type
 the base's check gave the value), and a candidate whose argument does

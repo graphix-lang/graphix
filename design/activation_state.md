@@ -170,3 +170,50 @@ loop's always-executed exit block (`TruncRec` → `emit_slot_truncates`),
 so a shrink-to-zero truncates exactly when the interpreter deletes the
 slot activations. Stateful builtins never fuse, so the interior-sleep
 multiplicity question does not arise in kernels.
+
+## The rules in brief
+
+- **Activation state** (`design/activation_state.md`,
+  `design/recursive_activations.md`, `design/atomic_recursion.md`):
+  held state never decides output bottomness; activations ARE
+  collection slots; every call is an activation, tail or not: the
+  node-walk has no frames, and the JIT runs a STATELESS tail recursion
+  as one native loop held to the activations' answers
+  (`design/tail_calls_are_calls.md`); instances are retained
+  unconditionally; shrink = delete (a depth not reached this cycle is
+  deleted; re-reaching it is fresh), except that a pure callee is kept
+  asleep and reborn as a fresh bind when re-reached; each exit of the
+  recursion past the kept edge (its select's chain runs and takes another
+  arm) deletes its deepest kept level, or 1% of the levels it kept where
+  that is more, all of them by the hundredth (`callsite::Kept`); a
+  reborn select leaves the arm it held as
+  a deselect does unless its chain takes it again. No depth limit;
+  evaluation is atomic within a cycle; containment stops the runtime for good, busy or
+  idle, never to resume (`Control::stop`, its cause read back by
+  `Control::stopped_by`): the interrupt (`GXHandle::interrupt`, `Ctrl-\`),
+  the stack budget (`GRAPHIX_STACK_BUDGET`) and the activation budget:
+  live activations (calls, slots, kernel blocks) bound per runtime,
+  unlimited by default, set by an embedder
+  (`Control::set_activation_budget`) or `GRAPHIX_ACTIVATION_BUDGET`. A
+  stopped runtime's handle fails every call; an embedder mints a new
+  runtime, the shell's script exits 130 at Ctrl-C or `Ctrl-\` and its
+  REPL's `Ctrl-\` (SIGQUIT; Ctrl-Break on Windows), idle or busy, replaces
+  the runtime with a fresh one; the REPL's Ctrl-C stops nothing, leaving
+  the display with the session kept. While a text display shows or an
+  input runs the terminal sends both keys as signals; a TUI display reads
+  them as keys. Ctrl-D exits. Kernel
+  interior memory (`design/kernel_instance_state.md`) gives one compiled
+  body the interp's per-slot/per-activation multiplicity for exactly the
+  state that decides firing; only a site's first-ever dispatch, and a
+  loop slot's first iteration, is an init view.
+
+- **Closure lifetimes**: a function value keeps the bindings it captures alive
+  after their owning slot or activation is deleted, including captures used by
+  nested literals and labeled defaults. `DefTable::captures` records names;
+  the emitted `LambdaDef` pins their instance ids through `reference::Captures`.
+  Deletion removes the names from the current scope but retains the type records
+  and stored values until the last owner drops. The initializer does not survive.
+  An orphan that only orphans' values keep (a self-reference, a `let rec`
+  closure) is collected (`reference::Lives::collect`, over netidx-value's
+  `Value::edges`; design/place_references.md). Pins:
+  `lang::functions::closure_outlives_collection_slot*`, `lang::orphans`.

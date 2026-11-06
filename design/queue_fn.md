@@ -154,3 +154,12 @@ user asked for.
   the `InitFn` trait alias demands it.
 - The builtin is `Effect::Async` (a pop lands on a later cycle), so it
   never fuses, and `ORDERED`: two forked branches never both reach it.
+
+## The rules in brief
+
+**Queued calls** (`design/queue_fn.md`): `queuefn` uses a counting
+semaphore, initially one permit, and banks unused post-birth trigger
+fires. Later invocations spend those permits without a new trigger;
+a wrapper site releases at most one call per runtime cycle so its
+argument deltas remain distinct. Sleep preserves credit and queued calls;
+a seq rebirth resets them.

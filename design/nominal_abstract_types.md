@@ -206,3 +206,24 @@ construction would hand back everything its slim representation saves,
 so `List<'a>` is a compiler-known constructor beside `Array`
 (`list_native.md`). `gui::Color` and `gui::menu::Shortcut` (structs,
 constructed at init) take the box with no visible cost.
+
+## The rules in brief
+
+- **Nominal abstract types** (`design/nominal_abstract_types.md`):
+  `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
+  definition is visible; `T as t` is a nominal tag test anywhere. Its
+  parameters, and an unknown constructor's (`'c<a>`), are invariant; a
+  constructed value's payload bounds its parameters from below (`TCell::
+  lower`), so the type it flows into decides them (a return, an element,
+  a union of instantiations, a call through a definition that constructs)
+  and one nothing decides settles to the payload's type, a ⊥ produced
+  beside it included; a binding of such a parameter passes the bound to
+  its open parts (`commit_cell_bounds`), and a definition whose body
+  binds it holds its argument to that binding, which a call's context
+  then cannot widen; a trait bound or dispatch reads it, so decides it
+  there. Two values compare their
+  parameters, as regular trees (`typ::regular`; an application whose
+  arguments grow at every level as its definition over its arguments),
+  before their payloads. A pattern `T(p)` with no
+  type test tests the tag and takes its parameters from the scrutinee,
+  never from `p` (`StructPatternNode::narrow_payloads`).
