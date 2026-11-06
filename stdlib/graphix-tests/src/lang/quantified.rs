@@ -521,6 +521,31 @@ run!(
     "/test/m.gx" => "let j = |x: i64| x"; FuseExpect::None
 );
 
+// A write in a module's function body compiles at its definition's check,
+// after the parent's lets: a glob in the block around the `mod` hides
+// nothing from it, and it is held to one instance.
+run!(
+    a_module_s_function_body_writes_past_a_nested_glob_is_one_instance,
+    prints("[i64:1, i64:1]"),
+    "/test.gx" => "let s = {f: |x| x}; let j = s.f; \
+                   let r = { use array::*; mod m; m::n }; \
+                   let result = (j(1), r)",
+    "/test/m.gx" => "let g = |v: i64| { super::j <- |x: i64| x + 1; v }; let n = g(1)";
+    FuseExpect::None
+);
+
+run!(
+    a_module_s_function_body_writes_through_an_import_past_a_nested_glob,
+    prints("[i64:1, i64:1]"),
+    "/test.gx" => "let s = {f: |x| x}; let j = s.f; \
+                   let r = { use array::*; mod m; m::n }; \
+                   let result = (j(1), r)",
+    "/test/m.gx" => "use super::j; \
+                     let g = |v: i64| { let w = &mut j; *w <- |x: i64| x + 1; v }; \
+                     let n = g(1)";
+    FuseExpect::None
+);
+
 // A `use` of a value named like a module leaves the module's name alone.
 run!(
     a_module_a_value_import_shares_the_name_of_is_written_through_it,

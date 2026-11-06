@@ -1165,7 +1165,11 @@ fn written_lets(
 /// compile of the outermost block, so a module nested d blocks deep is
 /// walked once, not once for each block around it.
 #[derive(Default)]
-struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<(Anchor, CompactString)>>>);
+struct ModuleWrites(AHashMap<ExprId, LPooled<Vec<OuterWrite>>>);
+
+/// A write a module's body makes outside it: where it lands, the name, and
+/// whether it sits in a lambda body (it compiles at its definition's check).
+type OuterWrite = (Anchor, CompactString, bool);
 
 /// Per block being compiled, innermost last, the lets something in it
 /// writes ([`written_lets`]), and what the modules they hold write
@@ -1220,7 +1224,7 @@ fn module_writes(
     id: ExprId,
     exprs: &[Expr],
     known: &mut ModuleWrites,
-) -> LPooled<Vec<(Anchor, CompactString)>> {
+) -> LPooled<Vec<OuterWrite>> {
     if let Some(outer) = known.0.remove(&id) {
         return outer;
     }
@@ -1299,7 +1303,7 @@ struct Writes<'a> {
     /// A block walk's written lets.
     written: LPooled<AHashSet<(ExprId, CompactString)>>,
     /// A module walk's writes outside it.
-    outer: LPooled<Vec<(Anchor, CompactString)>>,
+    outer: LPooled<Vec<OuterWrite>>,
     /// The modules' writes outside them known so far.
     known: &'a mut ModuleWrites,
     /// The globs of the nested blocks around the walk's position.
@@ -1426,11 +1430,13 @@ impl<'a> Writes<'a> {
             Some(Binding::Let(id)) => {
                 self.written.insert((*id, n.into()));
             }
-            Some(Binding::Outer(a, m)) => self.outer.push((a.clone(), m.clone())),
+            Some(Binding::Outer(a, m)) => {
+                self.outer.push((a.clone(), m.clone(), self.lambdas > 0))
+            }
             Some(Binding::Other) => (),
             None => {
                 for a in self.globs.iter() {
-                    self.outer.push((a.clone(), n.into()))
+                    self.outer.push((a.clone(), n.into(), self.lambdas > 0))
                 }
             }
         }
@@ -1439,7 +1445,7 @@ impl<'a> Writes<'a> {
     /// A write to `n` at `a` from here.
     fn write_outer(&mut self, a: Anchor, n: &str) {
         match (&self.walk, a) {
-            (Walk::Module, a) => self.outer.push((a, n.into())),
+            (Walk::Module, a) => self.outer.push((a, n.into(), self.lambdas > 0)),
             (Walk::Block { top: Some(at) }, Anchor::Package(p)) if *at == p => {
                 if let Some(Binding::Let(id)) = self.declared.get(n) {
                     self.written.insert((*id, n.into()));
@@ -1457,15 +1463,22 @@ impl<'a> Writes<'a> {
             return;
         }
         let outer = module_writes(id, exprs, self.known);
-        for (a, n) in outer.iter() {
+        for (a, n, in_lambda) in outer.iter() {
+            let lambdas = self.lambdas;
+            self.lambdas += *in_lambda as usize;
             match a {
                 Anchor::Super(1) => self.write(n, false),
                 Anchor::Super(k) => match self.walk {
-                    Walk::Module => self.outer.push((Anchor::Super(k - 1), n.clone())),
+                    Walk::Module => self.outer.push((
+                        Anchor::Super(k - 1),
+                        n.clone(),
+                        self.lambdas > 0,
+                    )),
                     Walk::Block { .. } => (),
                 },
                 Anchor::Package(_) => self.write_outer(a.clone(), n),
             }
+            self.lambdas = lambdas;
         }
         self.known.0.insert(id, outer);
     }

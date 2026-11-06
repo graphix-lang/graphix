@@ -1132,6 +1132,16 @@ impl<R: Rt> StructWith<R> {
     // probes; failing that, a replaced field takes the replacement's type. probes
     // ~/ptmp/cr29/scratch/r16-Q/structwith/{w1,w2,w3,x2,x3,r7}.gx, refused twin w5.gx
     // (run: one.sh <file>) (holder-structwith-written-01)
+    // 2026-11-05 claude: Review r16 Q part 4 found the same cause in an array, map or
+    // list of composites beside a generic holder: let s = {f: |x| x}; let j = s.f; let t
+    // = [s, {f: j}]; t[1]$.f("s") with j <- |x: i64| x + 1 passes --check and fails the
+    // run-time bind (ELAB-AUDIT instance-signature), on main 038729af4 too; so do a map,
+    // a list, nested composites, tuples, &mut j and a nested glob. Element order decides
+    // it ([{f: j}, s] and [s.f, j] are refused): the merge keeps s's generic copy and
+    // j's cell only joins it. Site 3 of the D11/D12 follow-up, ruled (a) 11-05 (a merge
+    // takes the lower level); the min-level-merge lane re-runs these. probes:
+    // ~/ptmp/cr29/scratch/review-r16/Q-r3-1/rr3/p/{m_arr_comp*, m_map_comp,
+    // m_list_comp, m_arr_nested, m_tuple_arr}.gx
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
