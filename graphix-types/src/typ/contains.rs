@@ -7,8 +7,8 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
-        Mutability, NodePairs, NormKey, Open, RefHist, RefKey, RefPair, TVar, TraitId,
-        Type, Unfolded, node_addr, params_size, probe_key,
+        Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
+        Unfolded, node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
@@ -439,12 +439,30 @@ fn shares_bare_cell(s0: &[Type]) -> bool {
         })
 }
 
+/// The named types a member walk expanded: each definition's parameter
+/// lists, told apart by [`strictly_identical`], so two open cells are two.
+type Expanded = IntMap<usize, SmallVec<[Arc<[Type]>; 1]>>;
+
+/// Whether `params` of `def` is not in `seen` yet; adds it.
+fn first_expansion(seen: &mut Expanded, def: usize, params: &Arc<[Type]>) -> bool {
+    let applied = seen.entry(def).or_default();
+    let same = |ps: &Arc<[Type]>| {
+        ps.len() == params.len()
+            && ps.iter().zip(params.iter()).all(|(p0, p1)| strictly_identical(p0, p1))
+    };
+    if applied.iter().any(same) {
+        return false;
+    }
+    applied.push(params.clone());
+    true
+}
+
 /// The walk of [`Type::dispatch_members`]; with `seen`, a named type
 /// already expanded is skipped.
 fn flatten_members(
     env: &Env,
     t: &Type,
-    mut seen: Option<&mut AHashSet<RefKey>>,
+    mut seen: Option<&mut Expanded>,
     out: &mut SmallVec<[Type; 8]>,
 ) -> Result<()> {
     ensure_sufficient(|| match t {
@@ -456,9 +474,9 @@ fn flatten_members(
             ts.iter().try_for_each(|t| flatten_members(env, t, seen.as_deref_mut(), out))
         }
         Type::Ref(tr) => {
-            let key = tr.resolve_in(env).map(|r| (r.def_key(), tr.params.clone()));
-            if let (Some(seen), Some(key)) = (seen.as_deref_mut(), key)
-                && !seen.insert(key)
+            if let Some(seen) = seen.as_deref_mut()
+                && let Some(r) = tr.resolve_in(env)
+                && !first_expansion(seen, r.def_key(), &tr.params)
             {
                 return Ok(());
             }
@@ -2085,7 +2103,7 @@ impl Type {
     /// [`Self::dispatch_members`] with each named type expanded once,
     /// however many of the names it reaches name it.
     pub fn distinct_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
-        let mut seen: LPooled<AHashSet<RefKey>> = LPooled::take();
+        let mut seen: LPooled<Expanded> = LPooled::take();
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         flatten_members(env, t, Some(&mut seen), &mut members)?;
         Ok(members)

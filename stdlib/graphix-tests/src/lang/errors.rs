@@ -1419,6 +1419,89 @@ run!(
     FuseExpect::Jit
 );
 
+/// `n` named tags (`Tags`) beside one name applied to two open cells,
+/// `F<'a>` and `F<'b>` with `F<'t> = ['t, null]`, which `strip` takes the
+/// null from; the call decides `'b` as string, which `ann` must hold.
+fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
+    with_named_tags(
+        n,
+        "type Tags = [{names}];\ntype F<'t> = ['t, null];",
+        &format!(
+            "let f = 'a: Any, 'b: Any |p: [Tags, F<'a>, F<'b>]| {strip};\n\
+             let s: [Tags, F<i64>, F<string>] = \"hello\";\n\
+             let r: {ann} = f(s);\n\
+             select r {{ string as v => v, _ => \"other\" }}"
+        ),
+    )
+}
+
+// Past the pair budget a `?` or `$` result keeps every cell its operand's
+// names are applied to.
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_stay_two_with_dollar,
+    two_cells_beside_named_tags(1100, "p$", "[Tags, i64]"),
+    refused("'b: string");
+    FuseExpect::None
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_stay_two_with_q,
+    two_cells_beside_named_tags(1100, "p?", "[Tags, i64]"),
+    refused("'b: string");
+    FuseExpect::None
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_hold_both_with_dollar,
+    two_cells_beside_named_tags(1100, "p$", "[Tags, i64, string]"),
+    is(Value::String("hello".into()));
+    FuseExpect::Jit
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_hold_both_with_q,
+    two_cells_beside_named_tags(
+        1100,
+        "{ catch(e) println(\"[e]\"); p? }",
+        "[Tags, i64, string]"
+    ),
+    is(Value::String("hello".into()));
+    FuseExpect::Jit
+);
+
+/// `n` named tags (`Tags`) beside one name applied to two open cells,
+/// `G<'a>` and `G<'b>` with `G<'t> = Error<'t>`, which `?` raises to a
+/// handler with `arms`; the call decides them as `A and `B.
+fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
+    with_named_tags(
+        n,
+        "type Tags = [{names}];\ntype G<'t> = Error<'t>;",
+        &format!(
+            "let f = 'a: Any, 'b: Any |p: [Tags, G<'a>, G<'b>]| p?;\n\
+             let s: [Tags, G<`A>, G<`B>] = error(`B);\n\
+             let caught = never();\n\
+             let r = {{ catch(e) caught <- select e.0.error {{ {arms} }}; f(s) }};\n\
+             caught"
+        ),
+    )
+}
+
+// Past the pair budget `?` raises every cell its operand's names are
+// applied to.
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_raise_both,
+    two_raised_cells_beside_named_tags(1100, "`A => 1"),
+    refused("missing match cases: no arm covers `B");
+    FuseExpect::None
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_raise_both_caught,
+    two_raised_cells_beside_named_tags(1100, "`A => 1, `B => 2"),
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
 /// Past the pair budget, `$` over names that each name the two before
 /// them: the paths to the first double at every level.
 fn named_dag_past_the_pair_budget(depth: usize) -> String {

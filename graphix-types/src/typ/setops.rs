@@ -845,6 +845,14 @@ impl Type {
     // operand), lang::errors::a_dag_of_names_past_the_pair_budget_strips_once_per_name (hangs with
     // dispatch_members), typ::setops::tests::distinct_members_expand_each_name_once; twins
     // lang::errors::an_open_operand_inside_the_pair_budget_*.
+    // 2026-11-05 claude: Review r16 part 3 (U-r2-2, high): Type::distinct_members keyed a named type by
+    // (definition, parameters) under binding equality, so F<'a> and F<'b> over two open cells were one key and
+    // F<'b>'s members were dropped from ?/$'s result and raised types past the pair budget (cell1100 ran a string
+    // into an i64 kernel slot). It now tells parameter lists apart with strictly_identical (contains.rs
+    // first_expansion), and computes no key on the dispatch_members path. Pins that fail without it:
+    // typ::setops::tests::distinct_members_expand_a_name_per_open_cell,
+    // lang::errors::two_cells_behind_one_name_past_the_pair_budget_{stay_two_with_dollar,stay_two_with_q,raise_both}
+    // (16 of 24 modes fail without it); twins *_hold_both_* and *_raise_both_caught run.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         #[cfg(test)]
         DIFF_STEPS.with(|n| n.set(n.get() + 1));
@@ -2027,5 +2035,18 @@ mod tests {
             members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
         });
         assert_eq!(printed, "null, Error<`E>, `A, null, `B");
+    }
+
+    // One definition applied to two open cells is two types, each
+    // expanded; applied to one cell twice, it is expanded once.
+    #[test]
+    fn distinct_members_expand_a_name_per_open_cell() {
+        let (env, t) = typed(&[("F<'t>", "['t, null]")], "[F<'a>, F<'b>, F<'a>]");
+        t.alias_tvars(&mut AHashMap::default());
+        let members = Type::distinct_members(&env, &t).unwrap();
+        let printed = format_with_flags(PrintFlag::DerefTVars, || {
+            members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+        });
+        assert_eq!(printed, "null, 'a: unbound, null, 'b: unbound");
     }
 }

@@ -1387,7 +1387,8 @@ cycle, across workers; the compiler never pins threads.
   are found and a missing case may be refused that `_` fixes. What reads
   the part a difference left out (`?`'s strip and raised type) and
   `?`/`$`'s result type split the operand by its members, each name
-  expanded once, where the budget widened it (`Strip::taken`,
+  expanded once per parameter list (open cells by identity), where the
+  budget widened it (`Strip::taken`,
   `Strip::left`). A partial
   struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
