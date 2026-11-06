@@ -265,53 +265,56 @@ fn a_value_literal_failure_is_said_in_a_pattern_and_an_index() {
             "let x = 1;\nlet a = select x { `A(error:\"\\u{d800}\") => 1, _ => 0 };",
             "line: 2, column: 38\ninvalid unicode escape: a surrogate, not a character\n",
         ),
-        (
-            "let x = 1;\nlet a = x.99999999999999999999999;",
-            "line: 2, column: 34\ninvalid signed integer\n",
-        ),
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(&format!("Parse error at {said}")), "{src}: {msg}");
     }
+    let msg = parse_program("let x = 1;\nlet a = x.99999999999999999999999;");
+    assert!(msg.contains("Parse error at line: 2, column: 34\n"), "{msg}");
     let msg = parse_program("let x = 1;\nlet a = select x { u8:300 => 1, _ => 0 };");
     assert!(msg.contains("the parser could not continue past this point\n"), "{msg}");
     assert!(msg.contains("`300` is out of the range of u8"), "{msg}");
     let msg =
         parse_program("let x = 1;\nlet a = select x { (bytes: n, 1) => 1, _ => 0 };");
     assert!(
-        msg.contains(
-            "Parse error at line: 2, column: 29\nthe parser could not continue past this point\n"
-        ),
+        msg.contains("Parse error at line: 2, column: 29\nbase64 decode failed\n"),
         "{msg}"
     );
 }
 
-// `name: value` at the start of a list item is a field, a labeled argument
-// or a key, written with a space after the colon, where a value literal
-// prints its colon tight: the literal's failure is not said there, at the
-// point the report stands at all the same. Anywhere else, or tight, it is.
+// A value literal read where a struct literal's or a functional update's
+// field `name:` was read is that field's name: its failure is not said
+// there, at the point the report stands at all the same. Anywhere else, an
+// array's, a tuple's or a call's item included, spaced or tight, it is.
 #[test]
-fn a_spaced_label_is_no_literal() {
+fn a_struct_field_name_is_no_literal() {
     let generic = "the parser could not continue past this point\n";
     for (src, col) in [
         ("let s = {datetime: \"\\u{41}\\q\", b: 1};", 28),
         ("let s = {error: \"\\u{41}\\u{d800}\"};", 32),
-        ("let x = 1;\nlet y = f(bytes: x);", 19),
-        ("let x = 1;\nlet y = f(1, bytes: x);", 22),
-        ("let y = f(duration: 5);", 22),
-        ("let x = 1;\nlet y = [u8: x];", 14),
-        ("let n = 1;\nlet x = {bytes: n, b: 2};\nlet y = x{bytes: n};", 19),
     ] {
         let msg = parse_program(src);
         let line = src.matches('\n').count() + 1;
         let head = format!("Parse error at line: {line}, column: {col}\n");
         assert!(msg.contains(&format!("{head}{generic}")), "{src}: {msg}");
     }
+    let escapes = "Expected `n`, `r`, `t`, `0`, `u{`, `\\` or `\"`\n";
     for (src, said) in [
         ("let a = datetime: \"\\u{41}\\q\";", "Unexpected `q`\n"),
         ("let y = f(datetime:\"\\u{41}\\q\");", "Unexpected `q`\n"),
         ("let a = bytes: x;", "base64 decode failed\n"),
         ("let a = duration: 5;", "Expected `.` or `e`\n"),
+        ("let x = 1;\nlet y = f(bytes: x);", "base64 decode failed\n"),
+        ("let x = 1;\nlet y = f(1, bytes: x);", "base64 decode failed\n"),
+        ("let y = f(duration: 5);", "Expected `.` or `e`\n"),
+        ("let x = 1;\nlet y = [u8: x];", "Expected a digit\n"),
+        ("let a = [u8: 300];", "invalid unsigned integer\n"),
+        ("let a = [1, u8: 300];", "invalid unsigned integer\n"),
+        ("let a = (u8: 300, 1);", "invalid unsigned integer\n"),
+        ("let a = (error: \"\\q\", 1);", escapes),
+        ("let y = f(error: \"\\q\");", escapes),
+        ("let a = [duration: 5.xs];", "Expected a duration unit"),
+        ("let a = [datetime: \"2020-13-01T00:00:00Z\"];", "invalid datetime"),
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(said), "{src}: {msg}");

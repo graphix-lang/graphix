@@ -1,5 +1,5 @@
 use super::state::{Effects, Info, Labels, Mode, State};
-use crate::{AddrMap, SourcePosition, expr::Expr, stack::ensure_sufficient};
+use crate::{AddrMap, AddrSet, SourcePosition, expr::Expr, stack::ensure_sufficient};
 use compact_str::CompactString;
 use netidx_value::parser::{Expected, Failure};
 use poolshark::local::LPooled;
@@ -84,6 +84,9 @@ pub(super) struct Input<'a> {
     speculating: u32,
     /// The expressions they parsed, by where each starts.
     memo: LPooled<AddrMap<Remembered>>,
+    /// Where a struct field's `name:` was read: a value literal read from
+    /// there is that field's name.
+    field_names: LPooled<AddrSet>,
 }
 
 /// The first alternative that does not fail without consuming input; a
@@ -123,6 +126,7 @@ impl<'a> Input<'a> {
             g: State::new(mode),
             speculating: 0,
             memo: LPooled::take(),
+            field_names: LPooled::take(),
         }
     }
 
@@ -663,27 +667,18 @@ impl<'a> Input<'a> {
     }
 
     /// [`Input::value_part`] of an expression's literal, whose failure past
-    /// its start is not said where the text is a spaced label.
+    /// its start is not said where the text is a struct field's `name:`.
     pub(super) fn literal_part<T>(
         &mut self,
         p: impl FnOnce(&'a str) -> Result<(T, usize), Failure>,
     ) -> R<T> {
-        let says = !self.spaced_label();
+        let says = !self.field_names.contains(&self.at.off);
         self.read_value(p, says)
     }
 
-    /// Whether the text here is `name: ` at the start of a bracketed list's
-    /// item: a field, a labeled argument or a key, which the printer writes
-    /// with a space after the colon where a value literal's colon is tight.
-    fn spaced_label(&self) -> bool {
-        if !self.text[..self.at.off].trim_end().ends_with(['(', '[', '{', ',']) {
-            return false;
-        }
-        let rest = self.rest();
-        let word = rest.find(|c: char| !(c.is_alphanumeric() || c == '_'));
-        word.filter(|w| *w > 0)
-            .and_then(|w| rest[w..].strip_prefix(':'))
-            .is_some_and(|r| r.starts_with(char::is_whitespace))
+    /// A struct field's `name:` starts at `at`.
+    pub(super) fn field_name_at(&mut self, at: Mark) {
+        self.field_names.insert(at.off);
     }
 
     fn read_value<T>(
@@ -722,6 +717,15 @@ impl<'a> Input<'a> {
         // literal speaks against it. Judgment: the spaced-label rule is a
         // heuristic, not a grammar fact; tight forms and non-item positions (`let
         // a = u8: 256;`) still speak. Diagnostics only, no soak.
+        // 2026-11-05 claude: Repair (review r17): the spaced-label rule read the
+        // text, and silenced real literals in arrays, tuples and calls, which
+        // only read as literals (`[u8: 300]`, `(error: "\q", 1)`, `f(duration:
+        // 5)`). Input::spaced_label is gone: struct_field (a struct literal's and
+        // a functional update's) marks where it read `name:`
+        // (Input::field_name_at), and a literal read from there
+        // (Input::literal_part) is quiet. Pin:
+        // parser::test::a_struct_field_name_is_no_literal; its array, tuple and
+        // call rows fail on the spaced-label rule, its brace rows on main.
         let at = self.mark_at(self.at.off + f.offset);
         if says {
             let token = !matches!(f.expected, Expected::Refused(_));

@@ -1161,12 +1161,14 @@ fn cast(i: &mut Input) -> R<Expr> {
 
 fn struct_field(i: &mut Input) -> R<(ArcStr, Expr)> {
     let dec = leading_decorations(i)?;
+    let start = i.mark();
     let pos = i.pos();
     let name = fldname(i)?;
     let end = i.pos();
     i.spaces();
     let v = match i.optional(|i| {
         i.token(':')?;
+        i.field_name_at(start);
         expr(i)
     })? {
         Some(v) => v,
