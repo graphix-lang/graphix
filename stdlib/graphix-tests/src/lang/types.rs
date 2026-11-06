@@ -7516,3 +7516,43 @@ run!(
     refused(ONE_INSTANCE_WRITTEN);
     FuseExpect::None
 );
+
+// Two lambdas no binding names are one union member where their live cells
+// pair as a renaming, so a select of composites holding them destructures.
+run!(
+    select_of_structs_holding_lambdas_destructures,
+    r#"{
+  let b = true;
+  let v = select b { true => {g: |x| x + 1}, false => {g: |y| y * 2} };
+  let {g} = v;
+  (select v { {g} => g(3) }, g(4))
+}"#,
+    prints("[i64:4, i64:5]");
+    FuseExpect::None
+);
+
+run!(
+    select_of_tuples_and_arrays_holding_lambdas_destructures,
+    r#"{
+  let b = true;
+  let v = select b { true => (|x| x + 1, 1), false => (|y| y * 2, 2) };
+  let w = select b { true => [|x| x + 1], false => [|y| y * 2] };
+  (select v { (f, n) => f(n) }, select w { [f] => f(3), _ => 0 })
+}"#,
+    prints("[i64:2, i64:4]");
+    FuseExpect::None
+);
+
+run!(
+    field_read_of_a_select_of_composites_in_a_definition,
+    r#"{
+  let k = |v| {
+    let s = select v > 0 { true => (|x| x, 1), false => (|y| y, 2) };
+    let t = select v > 0 { true => {f: |x| x}, false => {f: |y| y} };
+    (s.0(v), t.f(v))
+  };
+  k(2)
+}"#,
+    prints("[i64:2, i64:2]");
+    FuseExpect::Jit
+);

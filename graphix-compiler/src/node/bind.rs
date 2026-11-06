@@ -1810,6 +1810,21 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // (lang::types::default_of_a_declared_variable_outside_the_factory,
 // lang::traits::core_eq_generic_impl and four neighbours fail under the merge rule
 // alone). Needs a soak.
+// 2026-11-06 claude: Review of lane d12 (round 18, both reviewers, high): pairing only
+// generic cells in setops::Identity::cells refused ordinary destructuring of a select
+// of composites holding lambda literals, whose cells are live at the enclosing level
+// (u2: select v { {g} => g(3) }, let {g} = v, tuple and array patterns; 'can't tell
+// fn(x: i64) -> i64 from fn(x: i64) -> i64'), and with the field read's meet made a
+// field read of a select of tuples or structs of lambdas inside a definition pass
+// --check and fail the bind (r8b, r8d). Now two cells pair when both are generic or
+// both live; a scheme's copy never pairs with a live cell, which keeps the [s, {f: j}]
+// probes refused. Pins that fail at 40c511a72:
+// lang::types::select_of_structs_holding_lambdas_destructures,
+// select_of_tuples_and_arrays_holding_lambdas_destructures,
+// field_read_of_a_select_of_composites_in_a_definition. The 474 D11 probes classify as
+// at 40c511a72 except m_sel_comp, which runs again as on main. h7/h8 (NO_SUBST-only
+// holes on main that 40c511a72 refused) are main's again: new CR
+// union-live-renaming-01. Needs a soak.
 // CR claude for claude: [bug/medium] A holder whose data holds a call's result, a
 // closure over a cell its maker writes, passes --check and its run refuses the bind:
 // `let mk = || { let v = never(); |x| { v <- x; v } }; let s = {f: |x| x, g: |y| y};

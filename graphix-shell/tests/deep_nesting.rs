@@ -1030,6 +1030,18 @@ fn bound_dags_elaborate_in_linear_time() {
     completes_within(&["--expand", "--no-cache"], &valued, 10 * BILLION)
 }
 
+// CR claude for claude: [perf/low] Only the check of a chain of calls whose
+// argument types are DAGs is linear; its build is still exponential. `let mk = |f| (f,
+// f); let x0 = (|x| x, 1);` then `let x{i} = mk(x{i-1});` (nothing written): --check
+// 0.75G at 18 links, --expand (--no-cache, instructions:u) 0.94G/3.05G/9.81G at
+// 12/16/18, main 187fd838d alike; the written form w-mk builds in 1.10/1.95/5.33/18.87G
+// at 12/14/16/18 on lane d12, and with no lambda in the value (u-mk0) 9.93G at 18.
+// The w-conn and o-apart2 chains build linearly. The pin below bounds a search over a
+// DAG inside one definition and this shape escapes it; written_holder_chains_check_in_
+// linear_time bounds --check only. Find which elaboration walk (an instance's types
+// per call, a kernel signature) copies per path, and pin --expand of u-mk at 40 links.
+// probes: ~/ptmp/cr29/scratch/r19-d12/p/{u-mk-*,w-mk-*}.gx,
+// ~/ptmp/cr29/scratch/review-r16/d12-r1-2/new/ (call-dag-chain-build-01)
 // A search over a shared type walks each shared node once: the definition
 // called at two types, whose kernels' types are DAGs, builds in time
 // linear in the DAG.

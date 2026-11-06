@@ -1162,6 +1162,17 @@ impl<R: Rt> StructWith<R> {
     // either a binding of a non-generalized let's cell lowers what it holds, or a struct
     // update takes a replacement's type at its field (this CR's fallback). Left for the
     // coordinator / Eric.
+    // 2026-11-06 claude: Review of lane d12 (round 18, reviewer 1, low): the hole does
+    // not need two calls. y4 (let s = {f: |x| x}; let j = never(); let t = {s with f:
+    // j}; println(t.f("s")); j <- |x: i64| x + 1), the chained update y7 ({ {s with n:
+    // 2} with f: j }) and a seqq step (s2) all pass --check and fail the run-time bind
+    // (ELAB-AUDIT: an instance at fn(x: string) -> string of a definition typed fn(x:
+    // i64) -> i64), main 187fd838d alike. Also: the refusals the min-level merge adds
+    // (m_arr_comp0, s1, the ONE_INSTANCE_WRITTEN pins) name no binding to annotate
+    // ('type mismatch string does not contain i64'); naming j needs the call's mismatch
+    // to find the written binding whose instance the cell is, which nothing records
+    // today, so it is left. probes
+    // ~/ptmp/cr29/scratch/r19-d12/p/{y4,y7,s2,m_arr_comp0,s1}.gx
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,

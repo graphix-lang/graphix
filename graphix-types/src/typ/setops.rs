@@ -264,13 +264,33 @@ impl Identity {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
+    // CR claude for eric: [bug/medium] Two live cells pair as a renaming here, so a
+    // union collapse keeps one member and drops the other's live cells, which then learn
+    // nothing the kept member learns. Inside a definition a call through a select of
+    // two bare lambdas passes --check and its run-time bind fails: `let k = |v| { let s
+    // = select v > 0 { true => |x| x, false => |y| y }; s(v) }; println(k(2))` prints
+    // "binding the callee failed: ... an instance at fn(y: i64) -> i64 of a definition
+    // typed fn(x: _) -> '_N" (ELAB-AUDIT instance-signature; r8e). And a written name's
+    // live instance beside a holder's copy taken at another level collapses into the
+    // copy: `let s = {f: |x| x}; let j = s.f; let pick = |b| select b { true => s,
+    // false => {f: j} }; (pick(true).f("s"), pick(false).f(1)); j <- |x: i64| x + 1`
+    // runs ("s", 1) but under GRAPHIX_NO_SUBST=1 its build refuses `type mismatch { f:
+    // fn(x: string) -> string } does not contain ..` (h7, h8). Main 187fd838d alike. Not
+    // pairing live cells at all (lane d12's first cut) closes both but refuses ordinary
+    // destructuring of a select of composites holding lambda literals (u2: `select v {
+    // {g} => g(3) }`, `let {g} = v`, tuple and array patterns), whose cells are live at
+    // the enclosing level; only field reads met the members. A rule is needed: (a) a
+    // collapse that pairs two live cells merges them (the arms are one type, as ML
+    // unifies a conditional's branches), or (b) live cells never pair and every pattern
+    // bind over a union meets its function members as a field read does. probes:
+    // ~/ptmp/cr29/scratch/r19-d12/p/{r8e,h7,h8,u2*}.gx (union-live-renaming-01)
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
         if a.same_cell(b) {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
         let Some(pairs) = &mut self.pairs else { return false };
-        if !(a.level().is_generic() && b.level().is_generic()) {
+        if a.level().is_generic() != b.level().is_generic() {
             return false;
         }
         match pairs.iter().find(|(p, q)| *p == x || *q == y) {

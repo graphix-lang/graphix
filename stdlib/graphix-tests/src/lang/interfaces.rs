@@ -2142,6 +2142,16 @@ run!(
     "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
+// A typedef whose body names its parameter twice, applied to a typedef of
+// a function type: its expansion copies each place apart.
+run!(
+    write_through_a_typedef_naming_a_function_typedef_twice_val_as_general,
+    prints("[i64:1, \"s\", i64:2, \"t\"]"),
+    "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; m::d <- (|x| x, |x| x); let result = (m::c.f(1), m::c.g(\"s\"), m::d.0(2), m::d.1(\"t\"))",
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type P<'t> = {f: 't, g: 't}; type Q<'t> = ('t, 't); val c: P<F<'a>>; val d: Q<F<'a>>",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}; let d = (|x| x, |x| x)"
+; FuseExpect::None);
+
 // Each application of a nest of typedefs doubling at every level is
 // copied as its expansion only so many times; the rest as one.
 run!(

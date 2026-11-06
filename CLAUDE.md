@@ -943,7 +943,8 @@ node graph IS the IR — there is no parallel typed IR
   generalized: its uses and writers share one instance of each function
   it holds (the value restriction, `CompileCtx::monomorphic`; a node its
   value's type shares is one instance wherever it stands, so the instance
-  keeps the value's sharing; a name aliasing a generalized binding, `let g
+  keeps the value's sharing, but each place a typedef application copied
+  as its expansion names is copied apart; a name aliasing a generalized binding, `let g
   = f`, holds an instance of its own, as does a written name a pattern
   takes apart). A write compiled
   before the binding's check makes its check take one instance
@@ -1068,7 +1069,8 @@ node graph IS the IR — there is no parallel typed IR
   cell only in a contravariant position (a `|v: Any|` callback fixes its
   formal's type; `let x: Any = y` decides nothing of `y`);
   union collapse requires strict tvar identity (two function types pair
-  only generic cells, a live cell is only itself, `setops::Identity::cells`;
+  their cells as a renaming, generic with generic or live with live, never
+  a generic cell with a live one, `setops::Identity::cells`;
   a field read of a union meets its function members); a merge takes the
   lower of its two cells' levels, a generic survivor included
   (`TVar::merge_one`), so a relation against a scheme instantiates it first

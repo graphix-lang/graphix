@@ -2258,17 +2258,35 @@ impl<R: Rt> CompileCtx<R> {
     // written_holder_sharing_a_node_holds_one_instance and the twin
     // written_value_of_two_reads_holds_two_instances pass on both), and the review-r9
     // m5/mono probes check alike on base-r18 and the lane. Needs a soak.
+    // 2026-11-06 claude: Review of lane d12 (round 18, reviewer 2, medium; the cause is
+    // ec6d5fa05, not the merge rule: the reviewer's p1 binary did not carry D12,
+    // w-conn-18 runs out its 40 s there): memoizing every shared node also shared the
+    // argument a typedef expansion substitutes into two places, so val c: P<F<'a>> (type
+    // P<'t> = {f: 't, g: 't}, Q<'t> = ('t, 't)) was refused when written with two
+    // lambdas, where CLAUDE.md copies each function type apart. CompileCtx::monomorphic
+    // now leaves out of its memo, inside a typedef application copied as its expansion,
+    // any node whose rebuild instantiated beneath it (Memo::copied, kept per entry so a
+    // hit inside an expansion is not reused). Pin
+    // lang::interfaces::write_through_a_typedef_naming_a_function_typedef_twice_val_as_general
+    // (fails without it). Chains stay flat: w-conn/o-apart2/t-ownone/u-wsingle-18
+    // 0.75-0.76G, reviewer 2's 15 written shapes at 18 0.74-0.79G (empty 0.74G).
+    // Building (--expand) a chain of calls is still exponential, main alike: new CR
+    // call-dag-chain-build-01.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
         const MONOMORPHIC_EXPANSIONS: usize = 64;
         /// A shared node rebuilds once and stays shared: every occurrence
-        /// of it holds the one instance of each function beneath it.
+        /// of it holds the one instance of each function beneath it, except
+        /// inside a typedef application copied as its expansion, which
+        /// copies each place its body names apart.
         struct Memo<'a> {
             open: &'a nohash::IntSet<LambdaId>,
             /// each entry keeps its node alive, so no other node takes its
-            /// address
-            done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
+            /// address; and whether its rebuild instantiated beneath it
+            done: LPooled<AHashMap<usize, (Type, Option<Type>, bool)>>,
+            /// the node just rebuilt instantiated a function beneath it
+            copied: bool,
             env: &'a Env,
             /// the typedefs being expanded, and the lowest of them a
             /// nested application met: an expansion holding its own
@@ -2284,13 +2302,19 @@ impl<R: Rt> CompileCtx<R> {
             crate::stack::ensure_sufficient(|| {
                 let key = t.shared_identity();
                 if let Some(k) = key
-                    && let Some((_, r)) = m.done.get(&k)
+                    && let Some((_, r, copied)) = m.done.get(&k)
+                    && !(*copied && !m.expanding.is_empty())
                 {
+                    m.copied |= *copied;
                     return r.clone();
                 }
+                let outer = mem::replace(&mut m.copied, false);
                 let r = match t {
                     Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
-                    Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate(m.open)))),
+                    Type::Fn(ft) => {
+                        m.copied = true;
+                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
+                    }
                     // a typedef's arguments stand for what its body holds:
                     // instantiated as one, or, where the body holds two
                     // places a copy takes apart, as its expansion would be
@@ -2365,6 +2389,7 @@ impl<R: Rt> CompileCtx<R> {
                                     ))
                                 .then_some((key, body)),
                             });
+                        m.copied = true;
                         let as_one =
                             |open| t.instantiate_with(&mut LPooled::take(), open);
                         match apart {
@@ -2388,15 +2413,19 @@ impl<R: Rt> CompileCtx<R> {
                     }
                     t => t.cow_children(&mut |c| instance(c, m)),
                 };
-                if let Some(k) = key {
-                    m.done.insert(k, (t.clone(), r.clone()));
+                if let Some(k) = key
+                    && !(m.copied && !m.expanding.is_empty())
+                {
+                    m.done.insert(k, (t.clone(), r.clone(), m.copied));
                 }
+                m.copied |= outer;
                 r
             })
         }
         let mut m = Memo {
             open: &self.rec_defs,
             done: LPooled::take(),
+            copied: false,
             env: &self.env,
             expanding: LPooled::take(),
             cycle: usize::MAX,

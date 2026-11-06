@@ -349,8 +349,9 @@ the definition gates:
   definition compiles its default among generic cells and judges a copy
   (`callsite::checked_default`), and a core trait's prototype calls an
   instance of its method (`Impl::build_prototypes`). Two function types
-  are one union member when their cells pair up as a renaming of generic
-  cells only; a live cell is only itself (`setops::Identity::cells`), and
+  are one union member when their cells pair up as a renaming, generic
+  with generic or live with live; a scheme's copy never pairs with a live
+  cell, which keeps that cell's instance (`setops::Identity::cells`), and
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`). A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
@@ -379,7 +380,9 @@ struct field's or a tuple element's included, is one instance its uses
 and writers share (`CompileCtx::monomorphic`); a node the value's type
 shares (two reads of one copy, `mk(g)` over `mk = |f| (f, f)`) is one
 instance wherever it stands, as ML's weak variable is, so the instance
-keeps the value's sharing and costs what its nodes do, not its paths (pin
+keeps the value's sharing and costs what its nodes do, not its paths
+(a typedef application copied as its expansion copies each place its
+body names apart, as a `val`'s type is written out; pin
 `deep_nesting::written_holder_chains_check_in_linear_time`). The writer is the binding
 the resolver names, whatever path or import names it. Within one
 compile every statement compiles before any is checked, and a read
