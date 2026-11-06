@@ -363,6 +363,18 @@ pub(super) enum Holder {
 // lang::select::nullable_variable_beside_an_abstract_member_advice,
 // bound_holding_a_variable_the_test_leaves_out_advice,
 // bound_holding_a_variable_bounded_by_any_advice; twins _written pass.
+// 2026-11-05 claude: Repair (review r18): the member form reached only the top of the
+// advised test, so an abstract pattern in a struct field over a nullable variable ('b:
+// [W<i64>, `B] |x: {f: ['b, null]}| with {f: W(n)}) was advised { f: [null, W<i64>, `B]
+// } as { f: W(n) }, which is refused. rigid_written now narrows each union an abstract
+// part of the pattern tests, inside tuples, variants and struct fields, to the members
+// that part may hold (abstract_parts_held): { f: W<i64> } as { f: W(n) }. Pin that fails
+// without the repair: lang::select::nullable_variable_beside_an_abstract_field_advice;
+// its twin nullable_variable_beside_an_abstract_field_written runs. Left, low: over 'b:
+// [`A('c), `B] with an `A(z) arm the advice still says bound 'c, though `A('c) as `A(z)
+// also checks: telling the two apart needs the advised test judged by
+// meets_rigid_written, which sees the bound's 'c as an open cell (the check judges the
+// written test's rigid 'c), so the advice that works both ways stands (d6_c_inner.gx).
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
@@ -615,11 +627,66 @@ fn rigid_written(
     {
         return Some(t);
     }
-    Some(match &held[..] {
+    let t = match &held[..] {
         [] => t,
         _ if held.len() == members.len() => t,
         [m] => m.clone(),
         _ => Type::Set(Arc::from_iter(held)),
+    };
+    Some(abstract_parts_held(env, ids, pat, &t))
+}
+
+/// `t` with each union a part of `pat` tests by an abstract pattern
+/// narrowed to the members that part may hold: an abstract pattern over a
+/// union is refused.
+fn abstract_parts_held(
+    env: &Env,
+    ids: &AbstractOf,
+    pat: &StructurePattern,
+    t: &Type,
+) -> Type {
+    use StructurePattern as P;
+    let parts = |ps: &[StructurePattern], ts: &[Type]| -> Arc<[Type]> {
+        ps.iter()
+            .zip(ts.iter())
+            .map(|(p, t)| abstract_parts_held(env, ids, p, t))
+            .collect()
+    };
+    crate::stack::ensure_sufficient(|| match (pat, t) {
+        (P::Abstract { .. }, Type::Set(_)) => {
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            if union_members(env, t, &mut members).is_err() {
+                return t.clone();
+            }
+            let held: SmallVec<[Type; 8]> = members
+                .into_iter()
+                .filter(|m| pat.may_hold(env, ids, m).unwrap_or(true))
+                .collect();
+            match &held[..] {
+                [m] => m.clone(),
+                _ => t.clone(),
+            }
+        }
+        (P::Tuple { binds, .. }, Type::Tuple(ts)) if binds.len() == ts.len() => {
+            Type::Tuple(parts(binds, ts))
+        }
+        (P::Variant { tag, binds, .. }, Type::Variant(u, ts, at))
+            if tag == u && binds.len() == ts.len() =>
+        {
+            Type::Variant(u.clone(), parts(binds, ts), *at)
+        }
+        (P::Struct { binds, .. }, Type::Struct(fs)) => Type::Struct(
+            fs.iter()
+                .map(|(n, ft, at)| {
+                    let ft = match binds.iter().find(|(m, _, _)| m == n) {
+                        Some((_, p, _)) => abstract_parts_held(env, ids, p, ft),
+                        None => ft.clone(),
+                    };
+                    (n.clone(), ft, *at)
+                })
+                .collect(),
+        ),
+        _ => t.clone(),
     })
 }
 
