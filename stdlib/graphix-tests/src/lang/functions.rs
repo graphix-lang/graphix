@@ -2834,6 +2834,46 @@ run!(array_member_beside_a_literal_called_directly, r#"{
     f2(7)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
 
+// Every lambda of a longer array is one member: the odd default is judged
+// wherever it stands.
+run!(array_defaults_of_three_odd_last, r#"{
+    let fs = [
+        |#d = 1, x: i64| cast<string>(d)$,
+        |#d = 2, x: i64| cast<string>(d)$,
+        |#d = "q", x: i64| cast<string>(d)$
+    ];
+    fs[0]$(7)
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(array_defaults_of_three_named, r#"{
+    let f1 = |#d = 1, x: i64| cast<string>(d)$;
+    f1 <- never();
+    let f2 = |#d = "q", x: i64| cast<string>(d)$;
+    f2 <- never();
+    let f3 = |#d = 2, x: i64| cast<string>(d)$;
+    f3 <- never();
+    let fs = [f1, f3, f2];
+    fs[0]$(7)
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+// A function the array is passed to may call through it: the refusal names
+// the annotation, whose twin passes.
+run!(array_defaults_passed_on_name_the_annotation, r#"{
+    let fs = [
+        |#d = 1, x: i64| cast<string>(d)$,
+        |#d = "q", x: i64| cast<string>(d)$
+    ];
+    array::len(fs)
+}"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(array_defaults_passed_on_annotated, r#"{
+    let fs: Array<fn(?#d: [i64, string], x: i64) -> string> = [
+        |#d = 1, x: i64| cast<string>(d)$,
+        |#d = "q", x: i64| cast<string>(d)$
+    ];
+    "[array::len(fs)] [fs[1]$(7)] [fs[0]$(7)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "2 q 1"); FuseExpect::None);
+
 run!(array_defaults_with_declared_types, r#"{
     let fs = [
         |#d: [i64, string] = 1, x: i64| cast<string>(d)$,

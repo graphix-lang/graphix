@@ -266,6 +266,18 @@ enum Judge {
 // differ in type is refused wherever a formal holds it (array::len(fs) too), not only at a
 // call through it: the formal judges each default against the met label
 // (check_hidden_defaults); CLAUDE.md and the skill say so.
+// 2026-11-05 claude: Repair (review r18): the meet built each met member's ids from the
+// two definitions of its last pair, so in an array of three or more a member's id was lost
+// and a differing default passed the check and failed at every run-time bind (ad3.gx,
+// ad_named3.gx), the verdict depending on member order. meet_open_fns now groups the
+// members it meets and gives each group one FnType whose LambdaIds joins every definition
+// of the group. A refused default of met functions now names the annotation
+// (callsite::met_default_note: annotate the binding with a function type whose label holds
+// every default), so array::len(fs), still refused, is told how to pass. Pins that fail
+// without the repair: lang::functions::array_defaults_of_three_odd_last,
+// array_defaults_of_three_named; the note: array_defaults_passed_on_name_the_annotation,
+// its annotated twin array_defaults_passed_on_annotated passes. Nested arrays are
+// array-defaults-nested-01.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -357,7 +369,9 @@ fn judge_hidden_defaults<R: Rt>(
     formal: &FnType,
     value: &FnType,
 ) -> Result<()> {
-    for id in value.lambda_ids.ids().iter() {
+    let ids = value.lambda_ids.ids();
+    let met = ids.len() > 1;
+    for id in ids.iter() {
         let def = ctx.lambda_defs.get(id).cloned();
         let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()) else {
             continue;
@@ -383,11 +397,24 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(value),
                 Judge::Check,
                 None,
-            )?;
+            )
+            .map_err(|e| met_default_note(e, met, name))?;
             ctx.discard(node);
         }
     }
     Ok(())
+}
+
+/// A refused default of one of several functions met into one type names
+/// the annotation that holds them all.
+fn met_default_note(e: anyhow::Error, met: bool, name: &ArcStr) -> anyhow::Error {
+    if !met {
+        return e;
+    }
+    e.context(format_compact!(
+        "the functions met here share one #{name}: annotate the binding that \
+         holds them with a function type whose #{name} holds every default"
+    ))
 }
 
 /// Whose cells a hidden default's judgment may narrow.
@@ -2885,17 +2912,19 @@ impl<R: Rt> CallSite<R> {
                     known = false;
                     continue;
                 }
-                let node = self.checked_default(
-                    ctx,
-                    flags,
-                    &self.scope,
-                    f,
-                    name,
-                    expr,
-                    &mut Refs::default(),
-                    Judge::Check,
-                    Some(&mut *held_in),
-                )?;
+                let node = self
+                    .checked_default(
+                        ctx,
+                        flags,
+                        &self.scope,
+                        f,
+                        name,
+                        expr,
+                        &mut Refs::default(),
+                        Judge::Check,
+                        Some(&mut *held_in),
+                    )
+                    .map_err(|e| met_default_note(e, ids.len() > 1, name))?;
                 if carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
                 }

@@ -614,6 +614,16 @@ impl Type {
         Ok(acc.normalize())
     }
 
+    // CR claude for claude: [bug/medium] Only a union's own function members meet:
+    // lambdas one level down, in arrays of an array, do not, so a call through the
+    // outer array's element judges one lambda's default and the other's fails at every
+    // run-time bind. `let fs = [[|#d = 1, x: i64| cast<string>(d)$], [|#d = "q", x: i64|
+    // cast<string>(d)$]]` with `fs[i]$[0]$(7)`, i from a timer, passes --check and
+    // prints 1, then "binding the callee failed: ... "q": type mismatch i64 does not
+    // contain string" (main 302ef13fd and lane cr52-m alike, review r18). The meet would
+    // have to reach the members' parts (an Array's, a List's, a tuple's element), or
+    // the union keep each part's lambda ids. probe:
+    // ~/ptmp/cr29/scratch/review-r16/m-r1-1/ad_nest.gx (array-defaults-nested-01)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh
@@ -636,10 +646,13 @@ impl Type {
             return Ok(None);
         }
         let open = nohash::IntSet::default();
-        let mut out: Option<LPooled<Vec<Type>>> = None;
+        // `group[k]` names the member each of `fns` met into, and `base`
+        // holds that group's last met type
+        let mut group: SmallVec<[usize; 4]> = (0..fns.len()).collect();
+        let mut base: SmallVec<[Option<Arc<FnType>>; 4]> = smallvec![None; fns.len()];
         let mut met: SmallVec<[bool; 4]> = smallvec![false; fns.len()];
         let probe = BitFlags::empty();
-        for (k, (i, f)) in fns.iter().enumerate() {
+        for (k, (_, f)) in fns.iter().enumerate() {
             if Type::Fn(f.clone()).tvar_free() {
                 continue;
             }
@@ -659,23 +672,41 @@ impl Type {
                     && inst.contains(env, &g)?
                     && g.contains(env, &inst)?
                 {
-                    // one member stands for both, and a call through it may be
-                    // either definition; the definitions' own types are untouched
                     let Type::Fn(g) = &g else { unreachable!("a function member") };
-                    let both = Type::Fn(Arc::new(FnType {
-                        lambda_ids: LambdaIds::joining(&[&g.lambda_ids, &f.lambda_ids]),
-                        ..(**g).clone()
-                    }));
-                    let out = out
-                        .get_or_insert_with(|| ts.iter().map(|t| (*t).clone()).collect());
-                    out[*i] = both.clone();
-                    out[fns[j].0] = both;
+                    let (from, to) = (group[k], group[j]);
+                    for m in group.iter_mut().filter(|m| **m == from) {
+                        *m = to;
+                    }
+                    base[from] = None;
+                    base[to] = Some(g.clone());
                     met[k] = true;
                     break;
                 }
             }
         }
-        Ok(out)
+        if !met.iter().any(|m| *m) {
+            return Ok(None);
+        }
+        // one member stands for each group, and a call through it may be any
+        // of its definitions; the definitions' own types are untouched
+        let mut out: LPooled<Vec<Type>> = ts.iter().map(|t| (*t).clone()).collect();
+        for (to, g) in base.iter().enumerate() {
+            let Some(g) = g else { continue };
+            let ids: SmallVec<[&LambdaIds; 4]> = fns
+                .iter()
+                .zip(group.iter())
+                .filter(|(_, m)| **m == to)
+                .map(|((_, f), _)| &f.lambda_ids)
+                .collect();
+            let one = Type::Fn(Arc::new(FnType {
+                lambda_ids: LambdaIds::joining(&ids),
+                ..(**g).clone()
+            }));
+            for ((i, _), _) in fns.iter().zip(group.iter()).filter(|(_, m)| **m == to) {
+                out[*i] = one.clone();
+            }
+        }
+        Ok(Some(out))
     }
 
     // XCR claude for claude: [bug/medium] diff does not end over some names that recur

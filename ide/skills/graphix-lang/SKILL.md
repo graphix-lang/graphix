@@ -327,7 +327,9 @@ serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
 in one array or list are one function type (`[|x| x, |y| y]`), and a
 call through it, or a function it is passed to, judges each one's labeled
 defaults against that one label (`[|#d = 1, x| x, |#d = "q", x| x]` is
-refused there; a direct call of a named member judges its own), and a
+refused there, even by `array::len`: annotate the binding, `let fs:
+Array<fn(?#d: [i64, string], x: i64) -> i64> = ..`; a direct call of a
+named member judges its own), and a
 `seqq` reads `s` once per request, so its steps share one type of it.
 A `let` nothing writes or annotates reads `s` once in its value,
 wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
