@@ -2221,7 +2221,9 @@ impl TVar {
         }
         s.cell = o_cell;
         drop(s);
-        lower(&Type::TVar(other.clone()), level);
+        if !level.is_generic() {
+            other.claim(level)
+        }
         let at = other.level();
         for t in moved.iter() {
             lower(t, at)

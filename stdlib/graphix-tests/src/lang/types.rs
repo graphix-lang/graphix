@@ -5559,11 +5559,28 @@ run!(
     let s = {f: |x| x == x};
     let (a, b) = (s, s);
     b <- never();
-    (b.f(b), s.f(z), a.f("a"))
+    (b.f(2), s.f(z), a.f("a"))
   };
   g(1)
 }"#,
     prints("[true, true, true]");
+    FuseExpect::None
+);
+
+// A written name holds one instance, which a call through it shares: its
+// function passed the name itself would hold a type containing itself.
+run!(
+    call_through_a_written_name_passed_itself_is_refused,
+    r#"{
+  let g = |z| {
+    let s = {f: |x| x == x};
+    let (a, b) = (s, s);
+    b <- never();
+    (b.f(b), s.f(z), a.f("a"))
+  };
+  g(1)
+}"#,
+    refused("unification requires a type that contains itself");
     FuseExpect::None
 );
 
@@ -7399,5 +7416,103 @@ run!(
   (p.0(1), p.1("s"), q.0.f(2), q.1.f("a"))
 }"#,
     prints(r#"[i64:1, "s", i64:2, "a"]"#);
+    FuseExpect::None
+);
+
+// A merge takes the lower of its two cells' levels: a holder read's
+// generic copy that meets a written name's cells is that name's one
+// instance, so a struct update, or a collection or tuple of composites,
+// holding the name shares its type, and the call that decides it decides
+// the name.
+const ONE_INSTANCE_WRITTEN: &str = "type mismatch i64 does not contain string";
+
+run!(
+    struct_update_holding_a_written_name_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = {s with f: j};
+  let r = (t.f("s"), j(1));
+  j <- |x: i64| x + 1;
+  r
+}"#,
+    refused("type mismatch string does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    struct_update_holding_an_unwritten_name_runs,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = {s with f: j};
+  (t.f("s"), j("t"))
+}"#,
+    prints(r#"["s", "t"]"#);
+    FuseExpect::None
+);
+
+run!(
+    array_of_composites_holding_a_written_name_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = [s, {f: j}];
+  j <- |x: i64| x + 1;
+  (t[1]$.f("s"), j(1))
+}"#,
+    refused(ONE_INSTANCE_WRITTEN);
+    FuseExpect::None
+);
+
+run!(
+    array_of_composites_holding_a_written_name_runs_at_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = [s, {f: j}];
+  j <- never<fn(x: i64) -> i64>();
+  (t[1]$.f(2), j(1))
+}"#,
+    prints("[i64:2, i64:1]");
+    FuseExpect::None
+);
+
+run!(
+    list_of_composites_holding_a_written_name_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = [<s, {f: j}>];
+  j <- |x: i64| x + 1;
+  (list::nth(t, 1)$.f("s"), j(1))
+}"#,
+    refused(ONE_INSTANCE_WRITTEN);
+    FuseExpect::None
+);
+
+run!(
+    map_of_composites_holding_a_written_name_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = {"a" => s, "b" => {f: j}};
+  j <- |x: i64| x + 1;
+  (t{"b"}$.f("s"), j(1))
+}"#,
+    refused(ONE_INSTANCE_WRITTEN);
+    FuseExpect::None
+);
+
+run!(
+    array_of_tuples_holding_a_written_name_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let t = [(s.f, 0), (j, 1)];
+  j <- |x: i64| x + 1;
+  (t[1]$.0("s"), j(1))
+}"#,
+    refused(ONE_INSTANCE_WRITTEN);
     FuseExpect::None
 );

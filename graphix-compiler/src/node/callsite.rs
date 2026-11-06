@@ -35,7 +35,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
-        tvar::{Level, RigidGate},
+        tvar::{AtLevel, Level, RigidGate},
     },
     wrap,
 };
@@ -304,6 +304,11 @@ fn checked_default<R: Rt>(
             Judge::Bind => InstanceTypes::of_default(ctx, f, expr.id),
             Judge::Check => None,
         };
+        // a check outside the definition reads its scheme, whose cells it
+        // may not decide: it compiles among generic cells, and the copy
+        // below is what it judges
+        let _level = (matches!(judge, Judge::Check) && !ctx.rec_defs.contains(&f.id))
+            .then(|| AtLevel::enter(Level::GENERIC));
         let mut node = f.in_signature(ctx, types.clone(), |ctx| {
             compile(ctx, flags, expr.clone(), &local_scope, top_id)
         })?;

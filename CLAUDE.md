@@ -1067,7 +1067,12 @@ node graph IS the IR — there is no parallel typed IR
   `Any` binds an open
   cell only in a contravariant position (a `|v: Any|` callback fixes its
   formal's type; `let x: Any = y` decides nothing of `y`);
-  union collapse requires strict tvar identity; in a union checked against
+  union collapse requires strict tvar identity (two function types pair
+  only generic cells, a live cell is only itself, `setops::Identity::cells`;
+  a field read of a union meets its function members); a merge takes the
+  lower of its two cells' levels, a generic survivor included
+  (`TVar::merge_one`), so a relation against a scheme instantiates it first
+  (`callsite::checked_default`, `Impl::build_prototypes`); in a union checked against
   a union, an open member takes only the members its known siblings leave
   (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
   all of them when none are left or what is left refuses it), and where two

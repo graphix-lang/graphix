@@ -1709,7 +1709,7 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     }
 }
 
-// CR claude for claude: [bug/medium] A lambda a let holds through a block or a select
+// XCR claude for claude: [bug/medium] A lambda a let holds through a block or a select
 // is a binding no rule generalizes (must_reject family 1 wraps a lambda in a block
 // for exactly that), yet a call through it instantiates the definition's scheme as
 // any call does, while a value use binds the scheme's own cells; a call checked
@@ -1785,6 +1785,31 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // relation against a generic copy instantiates first or uses rigid cells. (4) D11 (b)
 // is built on that, without lane M's local claims. Start by re-running this CR's
 // probes on Q's result. Analysis: ~/ptmp/cr-discuss.md, Ruled 11-05.
+// 2026-11-06 claude: Lane d12 round 18 (D11/D12 follow-up, Eric 11-05): on main
+// 187fd838d lane Q's ML rule had already built D11 (b) for every shape this CR and
+// the r15 reviews name (lambdas no binding names take their enclosing level, a block
+// whose value is a lambda generalizes): of 474 D11 and holder-structwith probes
+// (~/ptmp/cr29/scratch/review-r15/M-r*/p, r15-M, discuss-merge, r16-Q/structwith,
+// review-r16/Q-r3-1/rr3/p) the only ones passing --check and failing the run-time
+// bind (GRAPHIX_ELAB_AUDIT) were the generic-copy sites. Built the textbook fix: a
+// merge takes the lower of its two cells' levels, a generic survivor included
+// (TVar::merge_one); relations against a scheme instantiate first (an omitting site's
+// default outside its definition compiles among generic cells and judges a copy,
+// callsite::checked_default; a core trait's prototype calls an instance of its
+// method, Impl::build_prototypes); function types pair only generic cells as a
+// renaming in a union (setops::Identity::cells) and a field read of a union meets its
+// function members (struct_field_type, tuple_field_type). No local claims were on
+// main, none built. Now 1 probe of 474 passes the check and fails the bind
+// (r16-Q/structwith/x2.gx, see holder-structwith-written-01); blk1.gx runs 1, c4.gx
+// is refused, as base-r18. Pins that fail without the change:
+// lang::types::array_of_composites_holding_a_written_name_shares_its_type,
+// list_/map_of_composites_..., array_of_tuples_...,
+// struct_update_holding_a_written_name_shares_its_type,
+// call_through_a_written_name_passed_itself_is_refused; existing fixtures pin the
+// instantiate-first sites
+// (lang::types::default_of_a_declared_variable_outside_the_factory,
+// lang::traits::core_eq_generic_impl and four neighbours fail under the merge rule
+// alone). Needs a soak.
 // CR claude for claude: [bug/medium] A holder whose data holds a call's result, a
 // closure over a cell its maker writes, passes --check and its run refuses the bind:
 // `let mk = || { let v = never(); |x| { v <- x; v } }; let s = {f: |x| x, g: |y| y};

@@ -320,7 +320,10 @@ function a call returns (`let h = mk(0)` over `let mk = |z| |x| x`), a
 field of a call's result, `(id, 1).0`, a reference (`let r = &f`, then
 `(*r)(1)`) and a binding something writes (`let j = s.g; j <- ..`).
 Each call of `mk` is an instance of its own: `let a = mk(0); let b =
-mk(0)` takes `a(1)` and `b("s")`. A write the compiler meets only after
+mk(0)` takes `a(1)` and `b("s")`. Whatever holds such an instance beside
+a generic value is that instance too: with `let j = s.f; j <- ..`, a
+`{s with f: j}`, a `[s, {f: j}]` (an array, list or map of composites)
+or a `[(s.f, 0), (j, 1)]` takes `j`'s one type in every element. A write the compiler meets only after
 the binding was made generic (a function body's `m::j <- ..` in the
 module's parent, a later REPL input) must be as general as the binding,
 and a `&mut` of it is refused: to write it at one type, write that type

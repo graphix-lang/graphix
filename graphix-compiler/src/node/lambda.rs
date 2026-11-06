@@ -1317,7 +1317,7 @@ impl Typing {
         };
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
-            // CR claude for claude: [bug/medium] A lambda literal held in a
+            // XCR claude for claude: [bug/medium] A lambda literal held in a
             // struct, tuple or array and passed a value holding itself passes
             // --check, then its run-time bind is refused here and the call never
             // produces: `{ let s = {f: |x| 0}; s.f(s) }` prints "binding the callee
@@ -1557,6 +1557,16 @@ impl Typing {
             // cells. (4) D11 (b) is built on that, without lane M's local claims.
             // Start by re-running this CR's probes on Q's result. Analysis:
             // ~/ptmp/cr-discuss.md, Ruled 11-05.
+            // 2026-11-06 claude: Lane d12 round 18: with D11 (b) as lane Q built it
+            // and the min-level merge (see holder-block-select-01's note), every
+            // probe this CR names (review-r8/xcr-self-arg/a/v1, v2, w/w2, w3, w6,
+            // w7; r9-N/mono/snd1, snd3) is refused at --check on base-r18 and the
+            // lane alike, and s.f(s) through a written name inside a body is now
+            // refused too (it was accepted through the holder's generic copy): pin
+            // lang::types::call_through_a_written_name_passed_itself_is_refused
+            // (fails without the merge change);
+            // holder_destructured_beside_a_written_name_in_a_body calls b.f(2).
+            // Needs a soak.
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 bail!("an instance at {} of a definition typed {def}", typ)
             }),

@@ -829,7 +829,7 @@ pub(crate) fn tuple_field_type<R: Rt>(
 ) -> Result<Type> {
     let ts = tuple_field_types(ctx, scope, source, field)?;
     let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-    Type::union(&ctx.env, &ts)
+    Type::union_of_alternatives(&ctx.env, &ts)
 }
 
 /// [`tuple_field_type`] per member of a union source (one type for any
@@ -895,7 +895,7 @@ pub(crate) fn struct_field_type<R: Rt>(
 ) -> Result<(Option<usize>, Type)> {
     let (i, ts) = struct_field_types(ctx, source, name)?;
     let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-    Ok((i, Type::union(&ctx.env, &ts)?))
+    Ok((i, Type::union_of_alternatives(&ctx.env, &ts)?))
 }
 
 /// [`struct_field_type`] per member of a union source (one type for any
@@ -1142,6 +1142,26 @@ impl<R: Rt> StructWith<R> {
     // takes the lower level); the min-level-merge lane re-runs these. probes:
     // ~/ptmp/cr29/scratch/review-r16/Q-r3-1/rr3/p/{m_arr_comp*, m_map_comp,
     // m_list_comp, m_arr_nested, m_tuple_arr}.gx
+    // 2026-11-06 claude: Lane d12 round 18: the min-level merge (TVar::merge_one, see
+    // holder-block-select-01's note) closes w1, w2, w3, x3 and r7 (refused at the check,
+    // 'type mismatch string does not contain i64' at j(1)), and the union identity rule
+    // plus the field read's meet close every m_* probe of review-r16/Q-r3-1 (m_arr_comp,
+    // _glob, _lam, _mut, _nested, m_list_comp, m_map_comp, m_tuple_arr refused;
+    // m_arr_comp_ok runs (3, 2); m_arr_comp0 and m_sel_comp, which main runs, are now
+    // refused, the array's or select's one element type holding j's instance). Pins:
+    // lang::types::struct_update_holding_a_written_name_shares_its_type,
+    // array_/list_/map_of_composites_holding_a_written_name_shares_its_type,
+    // array_of_tuples_..., twins struct_update_holding_an_unwritten_name_runs,
+    // array_of_composites_holding_a_written_name_runs_at_its_type. NOT closed: x2.gx
+    // (let j = never(); let t = {s with f: j}; (t.f("s"), t.f(1)); j <- |x: i64| x + 1)
+    // still passes --check and fails the bind. There no merge happens: j's open Top cell
+    // is bound to s's read copy, whose cells stay generic because tvar::lower never
+    // lowers a generic cell under a binding ('a scheme bound into a cell is still a
+    // scheme', which holder lets rely on: lowering generic cells under every binding
+    // broke 199 lang fixtures). Closing it needs a rule the 11-05 ruling does not state:
+    // either a binding of a non-generalized let's cell lowers what it holds, or a struct
+    // update takes a replacement's type at its field (this CR's fallback). Left for the
+    // coordinator / Eric.
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,

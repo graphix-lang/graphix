@@ -78,7 +78,9 @@ Mutation: route the lambda through a binding something writes, `let f =
 { let tm__0 = |..| ..; let tm__1 = &mut tm__0; tm__0 }`. Rule: a binding
 something writes is not generalized (the value restriction,
 `CompileCtx::monomorphic`; a written name's cells are claimed for its
-level at its binding), and `f`, a `let` of a block whose value names it,
+level at its binding, and a merge takes the lower of its two cells'
+levels, so a holder's copy that meets them is that one instance too,
+`TVar::merge_one`), and `f`, a `let` of a block whose value names it,
 forwards that one instance (`bind::names_generic`; a single name
 something writes holds an instance of its own, `Bind::forwards`, pinned
 by `lang::interfaces::written_alias_of_*`), so every use, a call's

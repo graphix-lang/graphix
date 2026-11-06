@@ -270,6 +270,9 @@ impl Identity {
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
         let Some(pairs) = &mut self.pairs else { return false };
+        if !(a.level().is_generic() && b.level().is_generic()) {
+            return false;
+        }
         match pairs.iter().find(|(p, q)| *p == x || *q == y) {
             Some(&(p, q)) => p == x && q == y,
             None => {

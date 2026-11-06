@@ -338,8 +338,21 @@ the definition gates:
   conjuncts and lower bounds a merge moves into the surviving cell
   included: what an outer cell is bound to or bounded by is the
   environment's. A generic cell is never
-  lowered: a scheme bound into a cell (a let's name, a reference's
-  placeholder) is still a scheme. A written cell is: an enclosing
+  lowered by a binding: a scheme bound into a cell (a let's name, a
+  reference's placeholder) is still a scheme. A merge takes the lower of
+  its two cells' levels, a generic survivor included (`TVar::merge_one`),
+  so a scheme's copy that meets a live cell is that cell's: a struct
+  update, an array, list or map of composites, or a tuple holding a
+  written name beside a holder's read is the name's one instance. What a
+  merge may lower must never be a scheme's own cell, so a relation
+  against a scheme instantiates it first: an omitting site outside a
+  definition compiles its default among generic cells and judges a copy
+  (`callsite::checked_default`), and a core trait's prototype calls an
+  instance of its method (`Impl::build_prototypes`). Two function types
+  are one union member when their cells pair up as a renaming of generic
+  cells only; a live cell is only itself (`setops::Identity::cells`), and
+  a field read of a union meets the function members it reads
+  (`data::struct_field_type`, `tuple_field_type`). A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
   Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
   of the enclosing definition's inner functions shares.
