@@ -1537,24 +1537,26 @@ impl Widening {
         inst: &FnType,
         formal: &Type,
     ) -> Option<Type> {
-        let held = self.held(env, def, inst, formal);
-        if held.is_empty() {
+        if !self.fresh {
             return None;
         }
         let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut all);
-        let kept: AHashMap<ArcStr, Type> = all
-            .drain()
-            .filter(|(name, _)| !held.contains_key(name))
-            .map(|(name, tv)| (name, Type::TVar(tv)))
+        let cells = Self::cells(&mut self.cells, env, def, inst);
+        if !all.keys().any(|name| cells.contains_key(name)) {
+            return None;
+        }
+        let kept: LPooled<AHashMap<ArcStr, Type>> = all
+            .iter()
+            .filter(|(name, _)| !cells.contains_key(*name))
+            .map(|(name, tv)| (name.clone(), Type::TVar(tv.clone())))
             .collect();
         let open = formal.replace_tvars(&kept);
         let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         open.collect_tvars(&mut opened);
-        for name in held.keys() {
-            if let Some(tv) = opened.get(name) {
-                tv.unbind()
-            }
+        let widened = |name: &ArcStr| cells.contains_key(name) && all.contains_key(name);
+        for (_, tv) in opened.iter().filter(|(name, _)| widened(name)) {
+            tv.unbind()
         }
         Some(open)
     }
