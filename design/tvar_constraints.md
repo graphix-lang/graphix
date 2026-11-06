@@ -321,19 +321,25 @@ A written function type may not hold a union written with two or more
 distinct bare type variables of its own (`['a, 'b]`, `['a, 'b, null]`),
 at any part (a parameter, a callback's parameter, the result, the throws,
 a bound) and under any constructor as the source writes it
-(`Array<['a, 'b]>`, `{v: ['a, 'b]}`, `M<['a, 'b]>`): `Type::variable_union`
-walks the written type and looks through no typedef, so `E<'a, 'b>` over
+(`Array<['a, 'b]>`, `{v: ['a, 'b]}`, `M<['a, 'b]>`): the walk of a
+written type's names (`Type::for_each_written`, which every name check
+rides) hands each union it writes in a function type to
+`VariableUnion::of` and looks through no typedef, so `E<'a, 'b>` over
 `type E<'p, 'q> = ['p, 'q]`, `['a, Id<'b>]` over `type Id<'x> = 'x` and
 `['a, M<'b>]` over `type M<'x> = ['x, null]` stand (a typedef's own body
 writes a union of its parameters, not of the definition's variables;
 those forms still meet in order, formal-union-order-01). It is judged
-where the type is written: a lambda's signature as it compiles (a variable an enclosing
-definition declares is not its own; a method in an impl or a trait's
-default body is judged over the types it writes itself, its lambda's and
-an impl `let`'s annotation, the rest being its trait's declaration, and
-an impl's head variables are the impl's: `traits::written_method_unions`), a `.gxi` val (`module::check_val_variable`), a trait method's
-declaration (`traits::method_decl`, where `self`, a written type at every
-impl, is no variable) and a function type a body's annotation writes
+where the type is written: a lambda's signature as it compiles, in the
+walk that warns of a later block's names (`warn_written`; a variable an
+enclosing definition declares is not its own; a method in an impl or a
+trait's default body is judged over the types it writes itself, its
+lambda's and an impl `let`'s annotation, the rest being its trait's
+declaration, and an impl's head variables are the impl's:
+`traits::written_method_unions`), a `.gxi` val in the walk that resolves
+its names in the interface (`module::check_interface_names`), a trait
+method's declaration in the walk that defers its names (`Trait::typecheck0`,
+where `self`, a written type at every impl, is no variable) and a
+function type a body's annotation writes
 (`lambda::body_annotation`: a `let`'s, a select's type test,
 `never<T>`). No value's type says which
 variable such a member takes, so whichever relation meets it first would decide (a call's

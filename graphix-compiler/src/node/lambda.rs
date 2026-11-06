@@ -30,6 +30,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, check_bounds_acyclic,
+        settle::VariableUnion,
         tvar::{AtLevel, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
@@ -2418,15 +2419,6 @@ impl Lambda {
             .chain(l.rtype.iter())
             .chain(l.throws.iter())
             .chain(l.constraints.iter().map(|(_, tc)| tc));
-        for t in signature.clone() {
-            crate::warn_later_block_names(ctx, flags, &t.scope_refs(&scope.lexical))?;
-        }
-        // a method's lambda is judged over what it writes itself, its impl
-        // or trait filling in the rest (traits::written_method_unions)
-        let method = || {
-            netidx_core::path::Path::basename(&*scope.lexical)
-                .is_some_and(crate::is_method_block)
-        };
         let outer: OnceCell<LPooled<AHashMap<ArcStr, TVar>>> = OnceCell::new();
         let own = |tv: &TVar| {
             l.constraints.iter().any(|(c, _)| c.name == tv.name)
@@ -2438,12 +2430,20 @@ impl Lambda {
                     })
                     .contains_key(&tv.name)
         };
+        let mut union = None;
         for t in signature {
-            if let Err(e) = t.signature_variable_union(&own)
-                && !method()
-            {
-                return Err(e.into());
-            }
+            crate::warn_written(ctx, flags, &t.scope_refs(&scope.lexical), &mut |u| {
+                if union.is_none() {
+                    union = VariableUnion::of(u, &own)
+                }
+            })?;
+        }
+        // a method's lambda is judged over what it writes itself, its impl
+        // or trait filling in the rest (traits::written_method_unions)
+        if let Some(e) = union
+            && !Path::basename(&*scope.lexical).is_some_and(crate::is_method_block)
+        {
+            return Err(e.into());
         }
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")
@@ -3008,7 +3008,7 @@ impl<R: Rt> Update<R> for Lambda {
             .downcast_ref::<LambdaDef<R>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let spec: &Expr = &self.spec;
-        crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec)?;
+        crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec, None)?;
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after
         // the body (`check_defaults`), and again per omitting call site

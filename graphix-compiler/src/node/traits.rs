@@ -32,7 +32,7 @@ use crate::{
     },
     typ::{
         CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
-        seed_conjuncts,
+        seed_conjuncts, settle::VariableUnion,
     },
     wrap,
 };
@@ -176,14 +176,10 @@ pub(crate) fn method_decl(
         }
         requires.push(a.name.clone());
     }
-    let typ = Arc::new(method_sig(env, &m.typ, tref, scope)?);
-    Type::Fn(typ.clone())
-        .variable_union(&|tv| &*tv.name != "self")
-        .map_err(|e| anyhow!("trait method {}: {e}", m.name.name))?;
     Ok(TraitMethodSig {
         name: m.name.name.clone(),
         pos: m.name.pos_or(pos),
-        typ,
+        typ: Arc::new(method_sig(env, &m.typ, tref, scope)?),
         self_index: m.self_index,
         requires: Arc::from_iter(requires),
     })
@@ -504,9 +500,15 @@ impl<R: Rt> Update<R> for Trait<R> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
         // every written name in a method's signature must name something by
-        // the check's end
+        // the check's end, and it writes no union of two of its variables
         for m in record.methods.iter() {
-            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec)?;
+            let mut union =
+                |u: &Type| match VariableUnion::of(u, &|tv| &*tv.name != "self") {
+                    None => Ok(()),
+                    Some(e) => Err(anyhow!("trait method {}: {e}", m.name)),
+                };
+            let t = Type::Fn(m.typ.clone());
+            crate::defer_unresolved_names(ctx, &t, &self.spec, Some(&mut union))?;
         }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };

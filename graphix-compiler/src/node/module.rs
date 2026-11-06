@@ -19,7 +19,8 @@ use crate::{
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
-        Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
+        Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type, Written,
+        settle::VariableUnion,
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
@@ -771,13 +772,13 @@ fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
 /// function type ([`Type::variable_outside_functions`]): that is one type
 /// all the val's uses share, which no declaration may leave open.
 fn check_val_variable(env: &Env, name: &str, typ: &Type) -> Result<()> {
-    if let Some(v) = typ.variable_outside_functions(env) {
-        bail!(
+    match typ.variable_outside_functions(env) {
+        None => Ok(()),
+        Some(v) => bail!(
             "val {name} has its type variable {v} outside a function type, one type \
              all its uses share: declare the val at one type"
-        )
+        ),
     }
-    typ.variable_union(&|_| true).map_err(|e| anyhow!("val {name}: {e}"))
 }
 
 /// [`check_val_variable`] for each `val` of `sig`, whose binding is
@@ -950,7 +951,8 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
 /// Refuse a name the interface item `si` writes that the interface
 /// neither imports nor declares: each resolves in `view`
 /// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
-/// item's declared type.
+/// item's declared type, which may not write a union of two of its
+/// variables in a function type ([`VariableUnion`]).
 fn check_interface_names(
     view: &Env,
     scope: &ModPath,
@@ -958,7 +960,21 @@ fn check_interface_names(
     val: Option<&Type>,
 ) -> Result<()> {
     match &si.kind {
-        SigKind::Bind(_) => val.map_or(Ok(()), |t| t.resolve_names_only_in(view)),
+        SigKind::Bind(BindSig { name, .. }) => val.map_or(Ok(()), |t| {
+            let mut res = Ok(());
+            t.for_each_written(false, &mut |w| {
+                if res.is_ok() {
+                    res = match w {
+                        Written::Name(tr) => tr.resolve_only_in(view),
+                        Written::Union(u) => match VariableUnion::of(u, &|_| true) {
+                            None => Ok(()),
+                            Some(e) => Err(anyhow!("val {}: {e}", name.name)),
+                        },
+                    }
+                }
+            });
+            res
+        }),
         SigKind::TypeDef(td) => {
             let Some(def) =
                 view.lexical.typedefs.get(scope).and_then(|m| m.get(td.name.as_str()))

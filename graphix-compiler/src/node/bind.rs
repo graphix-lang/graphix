@@ -902,7 +902,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
-            crate::defer_unresolved_names(ctx, &self.typ, &self.spec)?;
+            crate::defer_unresolved_names(ctx, &self.typ, &self.spec, None)?;
         }
         // every write compiled before this check is a target by now, the
         // ones no block's walk found included: the value's reads are its own,

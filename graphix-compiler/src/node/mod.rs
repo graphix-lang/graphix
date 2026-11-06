@@ -1706,7 +1706,7 @@ pub(crate) fn defer_typedef_names<R: Rt>(
         .chain(def.params().iter().filter_map(|(_, c)| c.clone()))
         .collect();
     for t in written.iter() {
-        defer_unresolved_names(ctx, t, &td.spec)?;
+        defer_unresolved_names(ctx, t, &td.spec, None)?;
     }
     Ok(())
 }
@@ -3306,7 +3306,7 @@ impl<R: Rt> Update<R> for Never<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        defer_unresolved_names(ctx, &self.typ, &self.spec)?;
+        defer_unresolved_names(ctx, &self.typ, &self.spec, None)?;
         // each application of a definition T names holds its parameter
         // bounds, as where a contains expands it
         fn applications(t: &Type, env: &env::Env, r: &mut Result<()>) {

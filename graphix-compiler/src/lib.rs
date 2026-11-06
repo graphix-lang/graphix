@@ -3983,15 +3983,17 @@ pub(crate) fn recheck_pending_contractive<R: Rt>(ctx: &mut CompileCtx<R>) -> Res
 
 /// Record the names `t`, written at `spec`, holds that do not resolve
 /// yet ([`CompileCtx::pending_names`]); refuse one that resolves and is
-/// applied wrongly.
+/// applied wrongly; each union it writes in a function type goes to
+/// `union`.
 pub(crate) fn defer_unresolved_names<R: Rt>(
     ctx: &mut CompileCtx<R>,
     t: &Type,
     spec: &Expr,
+    union: Option<&mut dyn FnMut(&Type) -> Result<()>>,
 ) -> Result<()> {
     use expr::At;
     let mut names = Vec::new();
-    let res = t.unresolved_names(&ctx.env, &mut names).at(spec);
+    let res = t.unresolved_names(&ctx.env, &mut names, union).at(spec);
     ctx.pending_names.extend(names.into_iter().map(|tr| Pending::Name(tr, spec.clone())));
     res
 }
@@ -4009,17 +4011,42 @@ pub(crate) fn warn_later_block_names<R: Rt>(
         return Ok(());
     }
     let mut res = Ok(());
-    t.for_each_written_name(&mut |tr| {
-        if res.is_ok()
-            && let (Some(pos), Some(ori)) = (tr.pos, &tr.ori)
-            && let Some(note) = ctx.env.later_block_type_note(tr)
-        {
-            let width = tr.name.chars().count() as i32;
-            let end = SourcePosition { column: pos.column + width, ..pos };
-            res = ctx.env.warn_at(flags, ori, pos, end, note)
-        }
+    t.for_each_written_name(&mut |tr| warn_later_block_name(ctx, flags, tr, &mut res));
+    res
+}
+
+/// [`warn_later_block_names`] of a written part of a function type,
+/// handing each union it writes to `union` in every compile.
+pub(crate) fn warn_written<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    t: &Type,
+    union: &mut dyn FnMut(&Type),
+) -> Result<()> {
+    let warn = !ctx.body.as_ref().is_some_and(|b| !b.checking);
+    let mut res = Ok(());
+    t.for_each_written(true, &mut |w| match w {
+        typ::Written::Union(u) => union(u),
+        typ::Written::Name(tr) if warn => warn_later_block_name(ctx, flags, tr, &mut res),
+        typ::Written::Name(_) => (),
     });
     res
+}
+
+fn warn_later_block_name<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    tr: &typ::TypeRef,
+    res: &mut Result<()>,
+) {
+    if res.is_ok()
+        && let (Some(pos), Some(ori)) = (tr.pos, &tr.ori)
+        && let Some(note) = ctx.env.later_block_type_note(tr)
+    {
+        let width = tr.name.chars().count() as i32;
+        let end = SourcePosition { column: pos.column + width, ..pos };
+        *res = ctx.env.warn_at(flags, ori, pos, end, note)
+    }
 }
 
 /// A `use` whose name did not exist at its compile position must name
