@@ -2154,7 +2154,7 @@ impl StructPatternNode {
         }
     }
 
-    // XCR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
+    // CR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
     // `null` at another position cover nothing: over `x: (bool, [i64, null])`, `select x {
     // (_, null) => 1, (true, _) => 0, (false, _) => 2 }` and `{ (true, null) => 0, (true,
     // _) => 2, (false, _) => 1 }` are refused "missing match cases: no arm covers (bool,
@@ -2178,57 +2178,17 @@ impl StructPatternNode {
     // (LiteralPool::claim skips a member the test does not contain) and matched_part
     // answers None for a bool literal; covering them needs the pool to read a written test
     // as the member's part it holds, a change to how written tests pool, not this rule's.
-    // 2026-11-05 claude: Fixed the written-test forms: a written tuple/struct test holding
-    // only part of a member pools as that part (select.rs written_part, restrict_leaves:
-    // the test's bool/null/primitive heads at each position it narrows, intersected with
-    // the pattern's), each primitive member is its own Head::Prim (was one Head::Rest),
-    // and an open cell with one typed bound of primitives has that bound's heads (q10
-    // under 'b: [i64, string]). q10p, q10c, q10 now check and run ([0,7,1], [0,1,3],
-    // [0,1,3]). Pins that fail without it:
-    // lang::select_undecided::written_test_beside_bool_head_covers,
-    // written_tests_split_a_primitive_member,
-    // written_tests_split_a_declared_variable_beside_bool_head,
-    // written_test_after_bool_head_is_dead; refusal pins
-    // written_test_leaves_a_member_part_refused,
-    // written_test_leaves_a_declared_variable_part_refused. Census of every .gx/.gxi here
-    // and in ../netidx: no difference against base-r17. Needs a soak.
-    // 2026-11-05 claude: Repair (review r17): one Head::Prim per primitive raised a
-    // position's heads past the pool's 1024 combinations, so seven bool positions beside
-    // [i64, u8, i32, u32, string, f64, f32, bytes, null] were refused "missing match
-    // cases" (main runs them). The primitives a select's written tests name
-    // (written_primitives, the Split) are heads of their own; the rest are one Head::Rest,
-    // which only a name or `_` admits, at a position and in a cell's primitive bound
-    // alike. Pin that fails without the repair:
-    // lang::select_undecided::unsplit_primitives_are_one_head. design/must_reject.md,
-    // design/tvar_constraints.md and CLAUDE.md say so. The commit's dead-arm refusals
-    // (wc_dead, wc_dead2: a written-test arm whose part earlier arms claim) stand: the
-    // arms are dead. Two gaps remain refused on main and lane alike, now CR
-    // written-test-variable-cover-01.
-    // 2026-11-05 claude: Repair (review r18): each primitive a written test named was a
-    // head of its own, so a test naming many primitives alike (bn_combo_named.gx: seven
-    // bools beside eight primitives, one arm testing all eight) raised the heads past
-    // MAX_POOL_COMBINATIONS and was refused where main runs it. select::Split now holds
-    // the named primitives in classes no written primitive set tells apart (each set a
-    // test names, through typedefs, bound cells and an open cell's bound, splits the
-    // classes), and a class is one Head::Prim. Pins:
-    // lang::select_undecided::primitives_a_test_holds_alike_are_one_head fails without the
-    // repair; primitive_classes_follow_each_written_set (refused: a test holding i64 at
-    // one position and u8 at another covers neither alone) and its covered twin pass both
-    // ways. CLAUDE.md, design/must_reject.md and design/tvar_constraints.md say so.
-    // 2026-11-06 claude: Repair (review r19): written_primitives visited each typedef once
-    // per written test, by its definition's key, so O<i64> after O<[i64, u8]> in one test
-    // split nothing and the test's position claimed the class {i64, u8}: bn_td_twice.gx
-    // passed the check and aborted at run time (no arm matches). Each application's
-    // arguments are now walked, and each definition's body once as written
-    // (Type::lookup_ref_written), the sets every expansion's sets are made of, so the
-    // classes are sound for any application and the walk ends on recursive and growing
-    // typedefs. Pins that fail without the repair:
-    // lang::select_undecided::each_typedef_application_splits_the_classes (refused) and
-    // typedef_body_primitives_split_apart_from_arguments (refused; fails too where only
-    // the arguments are walked); their twins
-    // each_typedef_application_splits_the_classes_covered and
-    // typedef_body_primitives_split_apart_from_arguments_covered run.
-    // design/tvar_constraints.md says so.
+    // 2026-11-06 claude: Parked (r17, lane M): the fix (sonnet a9176bf8a plus three
+    // repairs) failed review three times in new ways: the pool's combination cap refusing
+    // programs main runs (r17 review), a select whose written tests name enough primitives
+    // still refused (lane M r1), and a test applying a typedef twice claiming a primitive
+    // it does not hold, so the check passed and the run aborted (lane M r2, bn_td_twice).
+    // Its last repair passed review, but by the park rule it is reverted; the commits stay
+    // on branch cr52-m's history (e2e5f58c2, 909a37a78, c98a34ae5, 8537fead4). The two
+    // gaps it left (a written test naming the declared variable at the position, wc_s8;
+    // two positions narrowed by four tests, wc_s9) stand on main too. probes
+    // ~/ptmp/cr29/scratch/rv17/typing-a/wc_*.gx,
+    // ~/ptmp/cr29/scratch/review-r16/m-r*/bn_*.gx
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members

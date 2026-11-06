@@ -162,15 +162,7 @@ Coverage counts a rigid cell's values apart from its neighbours'. In the
 literal pool a position holding an open cell has a head of its own,
 `Head::Open`, which only a name or `_` there admits, so `(true, _)`,
 `(false, null)` over `(bool, ['b, null])` leave `(false, v)` for an arm
-of its own (a cell with one typed bound of primitives has that bound's
-heads instead, a `Head::Prim` for each class of the primitives the
-select's written tests name, primitives no written primitive set tells
-apart being one class (`select::Split`; a typedef application's
-arguments and its definition's body as written are each such sets, as
-every expansion's sets are made of them), the rest one `Head::Rest`, and a
-written test admits the `Head::Prim`s it holds:
-`(bool, i64) as (false, n)` and `(bool, string) as (false, s)` under
-`'b: [i64, string]` complete it), and a tuple or struct member beside the cell is never the
+of its own, and a tuple or struct member beside the cell is never the
 position's only shape. In containment (`Type::covers_by_parts`, which
 set coverage and every annotation reach) a rigid cell at the position
 the distribution splits is its one typed bound's members, each also

@@ -13,7 +13,7 @@ use crate::{
     env::Env,
     expr::{
         At, Decided, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern,
-        UndecidedMembers, union_members, union_members_open, union_members_with,
+        UndecidedMembers, union_members, union_members_open,
     },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -24,7 +24,7 @@ use crate::{
     typ::{AbstractId, InfiniteType, ShallowScrutinee, TVar, Type, TypeMismatch},
     wrap,
 };
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -694,15 +694,11 @@ impl Reach {
         let atype = scrut.normalize();
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());
         let ladders = Ladder::of(env, &members_of)?;
-        let mut split = Split::default();
-        for (pat, _) in arms.iter().filter(|(p, _)| p.explicit_type_predicate) {
-            written_primitives(env, &pat.type_predicate, &mut split)
-        }
         Ok(Self {
             atype,
             members_of,
             ladders,
-            pool: LiteralPool { groups: Vec::new(), split },
+            pool: LiteralPool::default(),
             bools: (false, false),
             covered: SmallVec::new(),
             wildcard: false,
@@ -1163,12 +1159,8 @@ enum Head {
     /// A value of an open cell the position holds, which only a name or
     /// `_` there matches.
     Open,
-    /// The values of the primitive members but `bool` and `null` in one
-    /// class of the [`Split`], which only a name or `_` there, or a
-    /// written test holding them, matches.
-    Prim(BitFlags<Typ>),
-    /// The values of the primitive members but `bool` and `null` no
-    /// written test names, which only a name or `_` there matches.
+    /// A value of a primitive member but `bool` and `null`, which only a
+    /// name or `_` there matches.
     Rest,
 }
 
@@ -1242,13 +1234,11 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, at most one tuple or struct holding no open
-/// cell, the [`Head::Prim`] or [`Head::Rest`] of its other primitives and
-/// [`Head::Open`] for the open cells among them, an open cell whose one
-/// typed bound is a union of primitives having those as its heads.
-fn heads(env: &Env, split: &Split, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
+/// cell, [`Head::Rest`] for its other primitives and [`Head::Open`] for
+/// the open cells among them.
+fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    let mut cells: SmallVec<[TVar; 2]> = SmallVec::new();
-    union_members_with(env, t, &mut members, &mut |tv| cells.push(tv.clone()))?;
+    let open = union_members_open(env, t, &mut members)?;
     if members.is_empty() {
         return Ok(None);
     }
@@ -1261,120 +1251,23 @@ fn heads(env: &Env, split: &Split, t: &Type) -> Result<Option<SmallVec<[Head; 4]
                 composite = true;
                 out.push(Head::Composite)
             }
-            Type::Primitive(p) => primitive_heads(split, *p, &mut out),
+            Type::Primitive(p) => {
+                for typ in p.iter() {
+                    match typ {
+                        Typ::Bool => out.extend([Head::Bool(true), Head::Bool(false)]),
+                        Typ::Null => out.push(Head::Null),
+                        _ if out.contains(&Head::Rest) => (),
+                        _ => out.push(Head::Rest),
+                    }
+                }
+            }
             _ => return Ok(None),
         }
     }
-    for tv in cells {
-        let mut bound: SmallVec<[Type; 8]> = SmallVec::new();
-        let by_bound = match Type::TVar(tv).open_bound(env) {
-            Some(b) => {
-                union_members(env, &b, &mut bound)?;
-                !bound.is_empty() && bound.iter().all(|m| matches!(m, Type::Primitive(_)))
-            }
-            None => false,
-        };
-        match by_bound {
-            true => {
-                for m in bound.iter() {
-                    if let Type::Primitive(p) = m {
-                        primitive_heads(split, *p, &mut out)
-                    }
-                }
-            }
-            false if !out.contains(&Head::Open) => out.push(Head::Open),
-            false => (),
-        }
+    if open {
+        out.push(Head::Open)
     }
     Ok(Some(out))
-}
-
-/// The primitives but `bool` and `null` a select's written tests name,
-/// in classes no written primitive set splits: every set a test names
-/// holds each class whole or none of it, so a class is one head at every
-/// position. The others are one head, [`Head::Rest`].
-#[derive(Default)]
-struct Split(SmallVec<[BitFlags<Typ>; 4]>);
-
-impl Split {
-    /// Split every class by the primitives `p` a written test names.
-    fn by(&mut self, p: BitFlags<Typ>) {
-        let p = p & !(Typ::Bool | Typ::Null);
-        if p.is_empty() {
-            return;
-        }
-        let named: BitFlags<Typ> = self.0.iter().fold(BitFlags::empty(), |a, c| a | *c);
-        let mut out: SmallVec<[BitFlags<Typ>; 4]> = SmallVec::new();
-        for c in self.0.iter() {
-            out.extend([*c & p, *c & !p].into_iter().filter(|c| !c.is_empty()))
-        }
-        if !(p & !named).is_empty() {
-            out.push(p & !named)
-        }
-        self.0 = out
-    }
-
-    fn class_of(&self, typ: Typ) -> Option<BitFlags<Typ>> {
-        self.0.iter().find(|c| c.contains(typ)).copied()
-    }
-}
-
-/// Split `split` by the primitive sets `t`, a written test, names,
-/// through bound cells, an open cell's bound, each typedef application's
-/// arguments and each definition's body as written, whose sets make up
-/// every set an expansion [`heads`] reads.
-fn written_primitives(env: &Env, t: &Type, split: &mut Split) {
-    fn go(env: &Env, t: &Type, split: &mut Split, seen: &mut AHashSet<usize>) {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::Primitive(p) => split.by(*p),
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => go(env, &b, split, seen),
-                None => {
-                    if seen.insert(tv.cell_addr())
-                        && let Some(b) = t.open_bound(env)
-                    {
-                        go(env, &b, split, seen)
-                    }
-                }
-            },
-            Type::Ref(tr) => {
-                for p in tr.params.iter() {
-                    go(env, p, split, seen)
-                }
-                if let Some((key, body)) = t.lookup_ref_written(env)
-                    && seen.insert(key)
-                {
-                    go(env, &body, split, seen)
-                }
-            }
-            t => t.for_each_child(&mut |c| go(env, c, split, seen)),
-        })
-    }
-    go(env, t, split, &mut LPooled::take());
-}
-
-/// The heads of the primitives `p`, each once.
-fn primitive_heads(split: &Split, p: BitFlags<Typ>, out: &mut SmallVec<[Head; 4]>) {
-    for typ in p.iter() {
-        let h = match typ {
-            Typ::Bool => {
-                push_head(out, Head::Bool(true));
-                Head::Bool(false)
-            }
-            Typ::Null => Head::Null,
-            typ => match split.class_of(typ) {
-                Some(c) => Head::Prim(c),
-                None => Head::Rest,
-            },
-        };
-        push_head(out, h)
-    }
-}
-
-fn push_head(out: &mut SmallVec<[Head; 4]>, h: Head) {
-    if !out.contains(&h) {
-        out.push(h)
-    }
 }
 
 /// The head a pattern tests at one position, when it tests only a head:
@@ -1399,13 +1292,11 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 /// `Never` when it cannot match `m`.
 fn pooled_leaves(
     env: &Env,
-    split: &Split,
     sp: &StructPatternNode,
     m: &Type,
 ) -> Result<Result<SmallVec<[Leaf; 8]>, Miss>> {
     fn leaf(
         env: &Env,
-        split: &Split,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
@@ -1417,7 +1308,7 @@ fn pooled_leaves(
             | StructPatternNode::Struct { .. }
             | StructPatternNode::Abstract { .. } => {
                 return crate::stack::ensure_sufficient(|| {
-                    children(env, split, sp, t, path, out)
+                    children(env, sp, t, path, out)
                 });
             }
             StructPatternNode::Or { alts } => {
@@ -1431,7 +1322,7 @@ fn pooled_leaves(
                 None => return Ok(Some(Miss::Unread)),
             },
         };
-        let domain = heads(env, split, t)?;
+        let domain = heads(env, t)?;
         if let Some(hs) = &admitted {
             let held = match &domain {
                 Some(d)
@@ -1457,7 +1348,6 @@ fn pooled_leaves(
     }
     fn children(
         env: &Env,
-        split: &Split,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
@@ -1479,7 +1369,7 @@ fn pooled_leaves(
                 if !matches!(m, Type::Tuple(_) | Type::Struct(_)) {
                     return Ok(Some(Miss::Unread));
                 }
-                match heads(env, split, t)? {
+                match heads(env, t)? {
                     Some(domain) if domain.contains(&Head::Composite) => out.push(Leaf {
                         path: path.clone(),
                         heads: Some(smallvec![Head::Composite]),
@@ -1493,7 +1383,7 @@ fn pooled_leaves(
         let mut at =
             |i: usize, p: &StructPatternNode, t: &Type| -> Result<Option<Miss>> {
                 path.push(i as u32);
-                let r = leaf(env, split, p, t, path, out);
+                let r = leaf(env, p, t, path, out);
                 path.pop();
                 r
             };
@@ -1542,7 +1432,7 @@ fn pooled_leaves(
         }
     }
     let mut out = SmallVec::new();
-    Ok(match children(env, split, sp, m, &mut SmallVec::new(), &mut out)? {
+    Ok(match children(env, sp, m, &mut SmallVec::new(), &mut out)? {
         Some(miss) => Err(miss),
         None if out.iter().any(|l| l.heads.is_some()) => Ok(out),
         None => Err(Miss::Unread),
@@ -1629,9 +1519,9 @@ const MAX_POOL_COMBINATIONS: usize = 1024;
 /// scrutinee's member of that shape once some arm matches every
 /// combination of heads the member admits (`(true, `A) | (true, `B) |
 /// (false, _)` covers `(bool, [`A, `B])`).
+#[derive(Default)]
 struct LiteralPool {
     groups: Vec<PoolGroup>,
-    split: Split,
 }
 
 struct PoolGroup {
@@ -1639,111 +1529,6 @@ struct PoolGroup {
     member: Type,
     arms: Vec<SmallVec<[Leaf; 8]>>,
     done: bool,
-}
-
-// CR claude for claude: [bug/low] Two written-test coverages the pool still misses,
-// refused "missing match cases" on main and on the bool-beside-null-cover-01 repair
-// alike: a written test naming the declared variable at the position, `'b: [i64,
-// string] |x: (bool, ['b, null])|` with `(true, _)`, `(bool, 'b) as (false, v)` and
-// `(false, null)`; and written tests that narrow two positions at once, `([bool,
-// null], [i64, null])` split by `([bool, null], null) as (_, null)`, `(bool, i64) as
-// (true, n)`, `(bool, i64) as (false, n)` and `(null, i64) as (_, n)`. Both are well
-// typed and every value has an arm; not traced. Found by review r17 of lane s2.
-// probes: ~/ptmp/cr29/scratch/r17-m/{wc_s8,wc_s9}.gx (written-test-variable-cover-01)
-/// The positions at which written test `t`, a tuple or struct of the
-/// shape of `m`, holds only part of `m`'s values there, with the heads
-/// of the part it holds; `None` where `t` is another shape or holds a
-/// part by more than bool, null and primitive heads.
-fn written_part(
-    env: &Env,
-    split: &Split,
-    t: &Type,
-    m: &Type,
-) -> Result<Option<SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>>> {
-    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    union_members(env, t, &mut members)?;
-    let [t] = &members[..] else { return Ok(None) };
-    let (ts, ms): (SmallVec<[&Type; 8]>, SmallVec<[&Type; 8]>) = match (t, m) {
-        (Type::Tuple(ts), Type::Tuple(ms)) if ts.len() == ms.len() => {
-            (ts.iter().collect(), ms.iter().collect())
-        }
-        (Type::Struct(ts), Type::Struct(ms))
-            if ts.len() == ms.len()
-                && ts.iter().zip(ms.iter()).all(|((a, _, _), (b, _, _))| a == b) =>
-        {
-            (
-                ts.iter().map(|(_, t, _)| t).collect(),
-                ms.iter().map(|(_, t, _)| t).collect(),
-            )
-        }
-        _ => return Ok(None),
-    };
-    let mut out = SmallVec::new();
-    for (i, (t, m)) in ts.into_iter().zip(ms).enumerate() {
-        if t.contains_with_flags(BitFlags::empty(), env, m)? {
-            continue;
-        }
-        match heads(env, split, t)? {
-            Some(hs)
-                if hs
-                    .iter()
-                    .all(|h| matches!(h, Head::Bool(_) | Head::Null | Head::Prim(_))) =>
-            {
-                out.push((i as u32, hs))
-            }
-            _ => return Ok(None),
-        }
-    }
-    Ok(Some(out))
-}
-
-/// Narrow the heads `leaves` admit to the part `part` of `m` a written
-/// test holds; `Never` when that leaves an arm matching nothing of `m`,
-/// `Unread` when it holds part of an open cell's values.
-fn restrict_leaves(
-    env: &Env,
-    split: &Split,
-    m: &Type,
-    leaves: &mut SmallVec<[Leaf; 8]>,
-    part: SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>,
-) -> Result<Result<(), Miss>> {
-    for (i, held) in part {
-        let at = [i];
-        let leaf = match leaves.iter_mut().position(|l| l.path[..] == at) {
-            Some(j) => &mut leaves[j],
-            None => {
-                let t = match m {
-                    Type::Tuple(ts) => ts.get(i as usize),
-                    Type::Struct(fs) => fs.get(i as usize).map(|(_, t, _)| t),
-                    _ => None,
-                };
-                let domain = match t {
-                    Some(t) => heads(env, split, t)?,
-                    None => return Ok(Err(Miss::Unread)),
-                };
-                leaves.push(Leaf { path: at.into_iter().collect(), heads: None, domain });
-                leaves.last_mut().expect("pushed above")
-            }
-        };
-        let admitted: SmallVec<[Head; 2]> = match &leaf.heads {
-            Some(old) => held.into_iter().filter(|h| old.contains(h)).collect(),
-            None => held.into_iter().collect(),
-        };
-        match &leaf.domain {
-            Some(d) if d.contains(&Head::Open) => {
-                if !admitted.iter().all(|h| d.contains(h)) {
-                    return Ok(Err(Miss::Unread));
-                }
-            }
-            Some(d) if !admitted.iter().any(|h| d.contains(h)) => {
-                return Ok(Err(Miss::Never));
-            }
-            _ if admitted.is_empty() => return Ok(Err(Miss::Never)),
-            _ => (),
-        }
-        leaf.heads = Some(admitted);
-    }
-    Ok(Ok(()))
 }
 
 /// What pooling an atom decided.
@@ -1773,27 +1558,16 @@ impl LiteralPool {
         // under its type test, with a head each position admits
         let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
         for m in shape.members(env, scrut)? {
-            let mut held = None;
             if let Some(t) = explicit
                 && !t.contains_with_flags(BitFlags::empty(), env, &m)?
             {
-                match written_part(env, &self.split, t, &m)? {
-                    Some(part) => held = Some(part),
-                    None => continue,
-                }
+                continue;
             }
-            let mut leaves = match pooled_leaves(env, &self.split, sp, &m)? {
+            let leaves = match pooled_leaves(env, sp, &m)? {
                 Ok(leaves) => leaves,
                 Err(Miss::Never) => continue,
                 Err(Miss::Unread) => return Ok(Claim::Unpooled),
             };
-            if let Some(part) = held {
-                match restrict_leaves(env, &self.split, &m, &mut leaves, part)? {
-                    Ok(()) => (),
-                    Err(Miss::Never) => continue,
-                    Err(Miss::Unread) => return Ok(Claim::Unpooled),
-                }
-            }
             if reached.is_some() {
                 return Ok(Claim::Unpooled);
             }

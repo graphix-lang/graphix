@@ -3147,14 +3147,6 @@ impl Type {
         self.lookup_ref_def(env).map(|(def, t)| (def.def_key(), t))
     }
 
-    /// The definition a typedef application names, by its key, and its
-    /// body as written, over its own parameters; fills no resolution cell.
-    #[doc(hidden)]
-    pub fn lookup_ref_written(&self, env: &Env) -> Option<(usize, Type)> {
-        let Type::Ref(tr) = self else { return None };
-        tr.resolve_peek(env).map(|def| (def.def_key(), def.typ.clone()))
-    }
-
     /// [`Self::lookup_ref_probe`] with the place the definition was
     /// declared at in place of its key: two cells filled from one
     /// declaration name it alike.
