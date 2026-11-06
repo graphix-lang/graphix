@@ -1703,7 +1703,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         }
         .to_expr(pos),
     ));
-    // CR claude for eric: [bug/low] A seqq refuses a generalized holder its body reads
+    // CR claude for claude: [bug/low] A seqq refuses a generalized holder its body reads
     // at two types where the same seq body runs: `let s = {g: |x| x}; seqq t {
     // (s.g(1), s.g("s")) }` and `seqq t { let a = s.g(1); let b = s.g("s"); (a, b) }`
     // are refused at --check ("i64 does not contain string"), while `seq t { .. }`
@@ -1716,6 +1716,10 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // the captured binding's scheme, as a seq step's snapshot does: a lowering rule for
     // the queue's capture cells. probe: ~/ptmp/cr29/scratch/r16-Q/fix4/q1_seqq_outer_holder.gx,
     // q3_seqq_outer_holder_step2.gx (seqq-capture-generic-01)
+    // 2026-11-05 claude: Eric ruled (11-05, D3 follow-up 3): (b). A read of a dequeued seqq
+    // request's capture of a generalized binding carries its scheme, as a seq step's snapshot
+    // does (Q2 (b)): a lowering rule for the queue's capture cells. Nothing writes a queued
+    // capture, so the argument for Q2 holds.
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {
