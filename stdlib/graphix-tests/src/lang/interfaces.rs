@@ -2036,7 +2036,7 @@ run!(
 // own types, is refused.
 run!(
     mut_ref_to_a_generic_val_refused,
-    refused("a::f was made generic before this write compiled, and a writable reference to it would let a write narrow it"),
+    refused("a::f was made generic before this write compiled, and a writable reference to it would let a write narrow it: write it with <- a value as general; to write it at one type, write that type on its let"),
     "/test.gx" => "mod a; let rf = &mut a::f; let result = a::f(1)",
     "/test/a.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/a.gx" => "let f = |x| x"

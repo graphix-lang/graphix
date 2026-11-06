@@ -1104,38 +1104,12 @@ run!(
     "#
 );
 
-// A function body compiles after the parent's holder is checked: its
-// write finds the holder generic, so what it writes must be as general;
-// an annotation gives the holder its one type.
 run!(
     module_writes_a_holder_name_a_block_imports,
-    refused("made generic before this write compiled, so what is written to it must be as \
-             general, and { f: fn(x: i64) -> i64 } is not"),
-    "/test.gx" => r#"
-        let s = {f: |x| x};
-        let (a, b) = (s, s);
-        let w = b.f("w");
-        mod m;
-        let z = b.f("z");
-        let result = (w, z, m::n)
-    "#,
-    "/test/m.gx" => r#"
-        let f = |v: i64| -> i64 {
-            use super::a;
-            a <- never<{f: fn(x: i64) -> i64}>();
-            v
-        };
-        let n = f(1)
-    "#
-);
-
-run!(
-    module_writes_an_annotated_holder_name_a_block_imports,
     prints(r#"["w", "z", i64:1]"#),
     "/test.gx" => r#"
         let s = {f: |x| x};
-        let a: {f: fn(x: i64) -> i64} = s;
-        let b = s;
+        let (a, b) = (s, s);
         let w = b.f("w");
         mod m;
         let z = b.f("z");

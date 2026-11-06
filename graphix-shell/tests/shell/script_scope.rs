@@ -198,3 +198,44 @@ fn a_write_through_a_package_alias_names_the_modules_let() {
         r#"(1, "s")"#,
     );
 }
+
+/// A function body compiles after the lets it writes are checked: a write
+/// in one through `self::`, `package::`, a module's `super::` (a path, a
+/// `&mut`, an import) or under a nested block's glob that does not provide
+/// the name makes its let one instance, so a write at one type runs.
+#[test]
+fn a_function_body_s_write_makes_its_let_one_instance() {
+    let holder = "let s = {f: |x| x};\nlet j = s.f;\n";
+    let shows = format!("{EXIT}println((j(1), g(1)))\n");
+    for (case, write) in [("self", "self::j"), ("package", "package::j")] {
+        let main = format!(
+            "{holder}let g = |v: i64| {{ {write} <- |x: i64| x + 1; v }};\n{shows}"
+        );
+        accepted(case, &main, &[], "(1, 1)");
+    }
+    let main = format!(
+        "{holder}let r = {{ use array::*; let g = |v: i64| {{ j <- |x: i64| x + 1; v }}; \
+         g(1) }};\n{EXIT}println((j(1), r))\n"
+    );
+    accepted("nested glob", &main, &[], "(1, 1)");
+    let main = format!(
+        "let f = |x| x;\n{{ use array::*; let g = |v: i64| {{ f <- |x: i64| x + 1; v }}; \
+         println(g(1)) }};\n{EXIT}println(f(1))\n"
+    );
+    accepted("nested glob over a lambda", &main, &[], "1");
+    let main = format!("{holder}mod m;\n{EXIT}println((j(1), m::n))\n");
+    for (case, m) in [
+        ("super", "let g = |v: i64| { super::j <- |x: i64| x + 1; v };\nlet n = g(1)\n"),
+        (
+            "&mut super",
+            "let g = |v: i64| { let r = &mut super::j; *r <- |x: i64| x + 1; v };\n\
+             let n = g(1)\n",
+        ),
+        (
+            "import",
+            "use super::j;\nlet g = |v: i64| { j <- |x: i64| x + 1; v };\nlet n = g(1)\n",
+        ),
+    ] {
+        accepted(case, &main, &[("m.gx", m)], "(1, 1)");
+    }
+}

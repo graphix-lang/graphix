@@ -2784,8 +2784,9 @@ fn narrows_generic<R: Rt>(ctx: &CompileCtx<R>, r: &Ref) -> bool {
 fn narrowing_refusal(r: &Ref) -> anyhow::Error {
     anyhow::anyhow!(
         "{} was made generic before this write compiled, and a writable reference to it \
-         would let a write narrow it: write it with <-",
-        r.spec
+         would let a write narrow it: write it with <- a value as general; {}",
+        r.spec,
+        super::ONE_TYPE_HINT
     )
 }
 

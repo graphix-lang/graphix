@@ -455,8 +455,8 @@ macro_rules! written_after_the_check {
     ($($name:ident => $test:expr,)*) => {$(
         run!(
             $name,
-            refused("made generic before this write compiled, so what is written to \
-                     it must be as general"),
+            refused("it holds a type variable of the code around the write; to write \
+                     it at one type, write that type on its let"),
             "/test.gx" => $test,
             "/test/m.gx" => "let s = {g: |x| x}; let j = s.g"
         );

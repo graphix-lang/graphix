@@ -900,9 +900,12 @@ node graph IS the IR — there is no parallel typed IR
   own, as does a written name a pattern takes apart). A write compiled
   before the binding's check makes its check take one instance
   (`Bind::typecheck0`); a writer in its block, a lambda body's included
-  (a body compiles at its definition's check), keeps it from being
-  generalized at all (`node::written_lets`: lexical, the nearest binding
-  before the write, none under a nested block's glob). A binding
+  (a body compiles at its definition's check), and a module's in it
+  through `super::`, a name it imports from there or a `package::` path
+  through the block's module, `self::` in a module's top block, keeps it
+  from being generalized at all (`node::written_lets`: the nearest
+  binding before the write; under a nested block's glob only a lambda
+  body's write, the rest left to the resolver). A binding
   generalized before a write to it compiles (an earlier REPL input, or a
   function body's write the walk missed) stays generic: the
   write is held to a copy of its type with the variables rigid, a
