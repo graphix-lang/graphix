@@ -2026,6 +2026,6 @@ mod tests {
         let printed = format_with_flags(PrintFlag::DerefTVars, || {
             members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
         });
-        assert_eq!(printed, "`A, null, Error<`E>, `B, null");
+        assert_eq!(printed, "null, Error<`E>, `A, null, `B");
     }
 }
