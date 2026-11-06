@@ -315,6 +315,28 @@ fn program(shape: &str, d: usize) -> String {
                 "type T<'x> = Array<'x>;\nlet f = {bounds} |x: ({cells})| x;\nf(never())"
             )
         }
+        // The chain through a function type: the next variable its
+        // parameter, its result, or its parameter with only the first link
+        // on the definition's.
+        "chainboundsfn" | "chainboundsfnret" | "chainboundsfnheld" => {
+            let link = |i: usize| match shape {
+                "chainboundsfnret" => format!("'a{i}: fn(x: i64) -> 'a{}", i + 1),
+                _ => format!("'a{i}: fn(x: 'a{}) -> i64", i + 1),
+            };
+            let bounds = (0..d)
+                .map(link)
+                .chain([format!("'a{d}: Number")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cells = match shape {
+                "chainboundsfnheld" => String::from("'a0"),
+                _ => format!(
+                    "({})",
+                    (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            format!("let f = {bounds} |x: {cells}| x;\nf(never())")
+        }
         // Open cells, each the lower bound of the next, the last below a
         // rigid cell: the merge takes every one into it.
         "rigidchain" => {
@@ -709,6 +731,75 @@ fn a_chain_of_bounds_checks_in_linear_time() {
 // (gen.py impl[:rev] N OUT, genmod.py N DIR), lane_sweep1.txt, base_sweep1.txt,
 // cg/impl_*, cg/mod_*. Elaboration of the chain and of its typedef and union
 // neighbours: chainbounds-elab-01, chainbounds-elab-neighbours-01.
+// 2026-11-05 claude: Partly fixed. Function-type chains (parameter, result, and
+// held only through the first link's bound) and the interface val now check in
+// linear time; base-r17 against lane, --check --no-cache total G at 1000 links
+// (empty 0.95): fnchain 17.3 -> 1.30, fnret 17.3 -> 1.28, fn held by bound 9.26
+// -> 1.19, mod val 6.67 -> 1.33; fnchain 10000 links 4.4, mod 10000 6.1. What
+// changed: settle's reached/reach_new/settle_refs and FnType::reached_cells
+// walk a function type's positions only, since each cell's conjuncts are its
+// own edges (the conjunct pass re-walked the rest of the chain at every link);
+// FnType::check_quantifiers_held and collect_tvars keep one node set and one
+// NormCx for the walk (TVarsSeen); alias_tvars passes a cell's conjuncts once
+// per quantifier scope (ConjunctsPassed: later passes alias nothing);
+// Occurrences marks a node met again by span, each trail place once; sig_bounds
+// holds the signature rigid once across declared calls, finds a sig cell's
+// paired impl cells by an index the pairing grows, and trials a bound with
+// SigPairs::trial instead of cloning the pairing. Pins: deep_nesting
+// a_chain_of_bounds_through_function_types_checks_in_linear_time and
+// an_interface_val_with_a_chain_of_bounds_checks_in_linear_time (both fail
+// without the change: 8.1G over 8G, 10.0G over 10G). Census 2942 files: no
+// verdict or message change; GUI --check 43.39 -> 42.97 G. Still open: the impl
+// head 18.3 -> 7.26 G at 1000, still quadratic in TVar::merge_one's
+// would_cycle_inner and cycle_toward (the occurs check of each head cell merged
+// with its copy walks the rest of the chain) under the method's check_contains;
+// the valued call 7.20 -> 7.25 (commit_cell_bounds / conjuncts_admit probes);
+// the second conjunct 2.69 -> 2.68 (drain_pending_settles ->
+// Type::indiscernible -> rep_ambiguity once per cell, settle_witness); rank 2
+// 1.79 -> 1.65. probes: ~/ptmp/cr29/scratch/r17-hk/neighbours/
+// (final_sweep.txt, meas.sh, cgdiff.py)
+/// A chain of bounds through function types checks in time linear in its
+/// length: a walk meets each link's conjunct once however many function
+/// types name its variable, whether it aliases names, counts occurrences,
+/// collects quantifiers or reaches cells.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_through_function_types_checks_in_linear_time() {
+    for shape in ["chainboundsfn", "chainboundsfnret", "chainboundsfnheld"] {
+        checks_within(&program(shape, CHAIN_DEPTH), 8 * BILLION)
+    }
+}
+
+/// An interface `val` carrying a chain of bounds matches its
+/// implementation in time linear in the chain's length: the signature's
+/// variables are held rigid once for every bound judged, and each bound
+/// pairs its variable's cells by an index the pairing grows.
+#[test]
+#[cfg(target_os = "linux")]
+fn an_interface_val_with_a_chain_of_bounds_checks_in_linear_time() {
+    let d = CHAIN_DEPTH;
+    let bounds = (0..d)
+        .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
+        .chain([format!("'a{d}: Number")])
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+    let out = exits_within(
+        &["--check", "--no-cache"],
+        &[
+            ("main.gx", "mod m;\nm::f(never())\n"),
+            ("m.gxi", &format!("val f: fn<{bounds}>(x: ({cells})) -> ({cells});\n")),
+            ("m.gx", &format!("let f = {bounds} |x: ({cells})| x;\n")),
+        ],
+        10 * BILLION,
+    );
+    assert!(
+        out.status.success(),
+        "the module checks: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// The same chain declared last link first: seeding a conjunct walks no
 /// chain its successors' conjuncts already hold.
 #[test]

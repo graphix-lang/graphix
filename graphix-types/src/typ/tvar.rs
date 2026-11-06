@@ -6,8 +6,8 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, FnType, Mutability, NodePairs, PRINT_FLAGS, PrintFlag, RefKey, Type,
-        node_addr, setops::union_identical,
+        Bound, FnType, Mutability, NodePairs, PRINT_FLAGS, PrintFlag, RefKey, TVarsSeen,
+        Type, node_addr, setops::union_identical,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -27,7 +27,7 @@ use std::{
     collections::hash_map::Entry,
     fmt::{self, Debug},
     hash::Hash,
-    mem::ManuallyDrop,
+    mem::{self, ManuallyDrop},
     ops::{ControlFlow, Deref},
     sync::atomic::{self, AtomicU64},
 };
@@ -500,6 +500,24 @@ fn count_write() {
 #[derive(Debug, Default)]
 pub struct CellLock(RwLock<TCell>);
 
+/// The cells whose conjuncts an alias walk has passed under one scope of
+/// quantifier names: passing them again aliases nothing. Each cell is
+/// held, so its address stays its own while the walk lasts.
+pub(super) struct ConjunctsPassed(RefCell<LPooled<AHashMap<usize, Arc<CellLock>>>>);
+
+impl ConjunctsPassed {
+    pub(super) fn take() -> Self {
+        Self(RefCell::new(LPooled::take()))
+    }
+
+    /// Whether `tv`'s cell is passed for the first time.
+    pub(super) fn first(&self, tv: &TVar) -> bool {
+        let cell = tv.cell();
+        let addr = cell.data_ptr().addr();
+        self.0.borrow_mut().insert(addr, cell).is_none()
+    }
+}
+
 impl CellLock {
     pub(crate) fn new(cell: TCell) -> Self {
         Self(RwLock::new(cell))
@@ -969,27 +987,59 @@ pub struct TCell {
 }
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
-/// how often each cell occurs, a shared node's counted per sight.
+/// which cells occur more than once, a shared node's cells once per sight.
 #[derive(Default)]
 pub(crate) struct Occurrences {
     pub(crate) vars: Vec<TVar>,
-    count: AHashMap<usize, u32>,
-    /// The cells met, in order, a shared node's sights included.
+    /// Each cell met, and whether it occurs more than once.
+    many: AHashMap<usize, bool>,
+    /// The cells in the order first met.
     trail: Vec<usize>,
-    /// Per shared node walked, the cells beneath it.
-    nodes: AHashMap<usize, Arc<[usize]>>,
+    /// Per place in `trail`, a place at or after it that no
+    /// `met_again` has marked: an unmarked place names itself.
+    unmarked: Vec<usize>,
+    /// Per shared node walked, the span of `trail` its walk first met.
+    nodes: AHashMap<usize, (usize, usize)>,
 }
 
 impl Occurrences {
     fn met(&mut self, cell: usize) {
-        self.trail.push(cell);
-        let n = self.count.entry(cell).or_default();
-        *n = n.saturating_add(1);
+        match self.many.entry(cell) {
+            Entry::Occupied(mut e) => *e.get_mut() = true,
+            Entry::Vacant(e) => {
+                e.insert(false);
+                self.unmarked.push(self.trail.len());
+                self.trail.push(cell);
+            }
+        }
+    }
+
+    /// A node met again: every cell its walk first met occurs again, each
+    /// place of `trail` marked once whatever the spans that hold it.
+    fn met_again(&mut self, (start, end): (usize, usize)) {
+        let mut i = self.first_unmarked(start);
+        while i < end {
+            self.many.insert(self.trail[i], true);
+            self.unmarked[i] = i + 1;
+            i = self.first_unmarked(i + 1);
+        }
+    }
+
+    fn first_unmarked(&mut self, i: usize) -> usize {
+        let mut root = i;
+        while root < self.unmarked.len() && self.unmarked[root] != root {
+            root = self.unmarked[root];
+        }
+        let mut j = i;
+        while j < root {
+            j = mem::replace(&mut self.unmarked[j], root);
+        }
+        root
     }
 
     /// Whether `cell` occurs more than once.
     pub(crate) fn many(&self, cell: usize) -> bool {
-        self.count.get(&cell).is_some_and(|n| *n > 1)
+        self.many.get(&cell).is_some_and(|many| *many)
     }
 }
 
@@ -2935,10 +2985,8 @@ impl Type {
             }
             t => {
                 if let Some(n) = super::node_addr(t) {
-                    if let Some(cells) = out.nodes.get(&n).cloned() {
-                        for c in cells.iter() {
-                            out.met(*c)
-                        }
+                    if let Some(span) = out.nodes.get(&n).copied() {
+                        out.met_again(span);
                         return;
                     }
                     let start = out.trail.len();
@@ -2948,9 +2996,7 @@ impl Type {
                         }
                         t => t.for_each_child(&mut |c| c.tvar_occurrences(out)),
                     }
-                    let cells: Arc<[usize]> =
-                        Arc::from_iter(out.trail[start..].iter().copied());
-                    out.nodes.insert(n, cells);
+                    out.nodes.insert(n, (start, out.trail.len()));
                     return;
                 }
                 t.for_each_child(&mut |c| c.tvar_occurrences(out))
@@ -2960,6 +3006,14 @@ impl Type {
 
     /// Alias type variables with the same name to each other.
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        self.alias_tvars_in(known, &ConjunctsPassed::take())
+    }
+
+    pub(super) fn alias_tvars_in(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        passed: &ConjunctsPassed,
+    ) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
@@ -2976,7 +3030,7 @@ impl Type {
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
-                ft.alias_tvars(known);
+                ft.alias_tvars_in(known, &ConjunctsPassed::take());
                 for (q, tv) in outer {
                     known.remove(&q);
                     if let Some(tv) = tv {
@@ -2984,8 +3038,8 @@ impl Type {
                     }
                 }
             }
-            Type::Fn(ft) => ft.alias_tvars(known),
-            t => t.for_each_child(&mut |c| c.alias_tvars(known)),
+            Type::Fn(ft) => ft.alias_tvars_in(known, passed),
+            t => t.for_each_child(&mut |c| c.alias_tvars_in(known, passed)),
         })
     }
 
@@ -3047,19 +3101,17 @@ impl Type {
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.collect_tvars_seen(known, &mut LPooled::take())
+        self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
     /// [`Self::collect_tvars`], each shared node (`seen`) walked once.
-    /// `seen` holds each node, so a normalized conjunct dropped mid-walk
-    /// cannot lend its address to a node never walked.
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
-        seen: &mut AHashMap<usize, Type>,
+        seen: &mut TVarsSeen,
     ) {
         if let Some(n) = node_addr(self)
-            && seen.insert(n, self.clone()).is_some()
+            && seen.nodes.insert(n, self.clone()).is_some()
         {
             return;
         }

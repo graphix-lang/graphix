@@ -70,6 +70,41 @@ impl SigPairs {
         self.cells.get(&addr).map(|(_, t)| t)
     }
 
+    /// How many implementation cells are paired.
+    pub(super) fn paired_len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Each implementation cell paired since `from` pairs had been, by
+    /// address, with the signature's type at its place.
+    pub(super) fn paired_since(
+        &self,
+        from: usize,
+    ) -> impl Iterator<Item = (usize, &Type)> {
+        self.cells
+            .get_range(from..)
+            .into_iter()
+            .flatten()
+            .map(|(addr, (_, t))| (*addr, t))
+    }
+
+    /// `f` over the pairing, which keeps what `f` paired only where `f`
+    /// succeeds: a match only adds pairs.
+    pub(super) fn trial<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<R>,
+    ) -> Result<R> {
+        let (cells, deferred, fns) =
+            (self.cells.len(), self.deferred.len(), self.fns.len());
+        let r = f(self);
+        if r.is_err() {
+            self.cells.truncate(cells);
+            self.deferred.truncate(deferred);
+            self.fns.truncate(fns);
+        }
+        r
+    }
+
     /// End a signature match ([`Self::finish`]) and give what it paired.
     pub(super) fn finished(
         mut self,

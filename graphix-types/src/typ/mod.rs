@@ -371,6 +371,21 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
     }
 }
 
+/// A `collect_tvars` walk's state: each node walked (`nodes` holds it, so
+/// a normalized conjunct dropped mid-walk cannot lend its address to a
+/// node never walked), and one normal form for every conjunct it meets,
+/// so a conjunct met again is the node walked before.
+struct TVarsSeen {
+    nodes: LPooled<AHashMap<usize, Type>>,
+    norm: normalize::NormCx,
+}
+
+impl TVarsSeen {
+    fn take() -> Self {
+        Self { nodes: LPooled::take(), norm: normalize::NormCx::take() }
+    }
+}
+
 /// A relation's question about two types, by their [`RefHist::ref_id`]s.
 type RefPair = (Option<usize>, Option<usize>);
 

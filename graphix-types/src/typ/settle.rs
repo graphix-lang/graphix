@@ -296,7 +296,7 @@ fn settle_refs(
         }
         // a shared node's address is another allocation than any cell's
         t if t.shared_identity().is_some_and(|n| !visited.insert(n)) => (),
-        Type::Fn(ft) => ft.for_each_part(&mut |t, _| settle_refs(t, index, visited, out)),
+        Type::Fn(ft) => ft.for_each_type(&mut |t| settle_refs(t, index, visited, out)),
         t => t.for_each_child(&mut |c| settle_refs(c, index, visited, out)),
     })
 }
@@ -415,7 +415,8 @@ impl FnType {
     /// by address.
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
-        self.for_each_part(&mut |t, _| reached_cells(t, out))
+        let mut nodes: LPooled<AddrSet> = LPooled::take();
+        self.for_each_type(&mut |t| reached(t, out, &mut nodes))
     }
 }
 
@@ -487,9 +488,7 @@ fn reach_new(
             }
         }
         t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
-        Type::Fn(ft) => {
-            ft.for_each_part(&mut |t, _| reach_new(t, owner, seen, nodes, out))
-        }
+        Type::Fn(ft) => ft.for_each_type(&mut |t| reach_new(t, owner, seen, nodes, out)),
         t => t.for_each_child(&mut |c| reach_new(c, owner, seen, nodes, out)),
     })
 }
@@ -599,7 +598,7 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
             }
         }
         t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
-        Type::Fn(ft) => ft.for_each_part(&mut |t, _| reached(t, out, nodes)),
+        Type::Fn(ft) => ft.for_each_type(&mut |t| reached(t, out, nodes)),
         t => t.for_each_child(&mut |c| reached(c, out, nodes)),
     })
 }

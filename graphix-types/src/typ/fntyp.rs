@@ -7,7 +7,7 @@ use crate::{
     },
     format_with_flags, image,
     typ::{
-        Bound, Mutability, TVar, Type,
+        Bound, Mutability, TVar, TVarsSeen, Type,
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
@@ -799,6 +799,16 @@ impl FnType {
     /// conjuncts are guarded per `FnType` address: one can reach back.
     #[doc(hidden)]
     pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
+        self.for_each_part_passing(&mut |_| true, f)
+    }
+
+    /// [`Self::for_each_part`], passing the conjuncts only of the cells
+    /// `pass` admits.
+    fn for_each_part_passing(
+        &self,
+        pass: &mut impl FnMut(&TVar) -> bool,
+        f: &mut impl FnMut(&Type, bool),
+    ) {
         let _depth = PartsDepth::enter();
         let FnType {
             args,
@@ -823,7 +833,9 @@ impl FnType {
             let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
             self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells, &mut seen));
             for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
-                if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr()) {
+                if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr())
+                    && pass(&tv)
+                {
                     for tc in tv.cell_constraints() {
                         f(&tc, true);
                     }
@@ -947,7 +959,17 @@ impl FnType {
     }
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.for_each_part(&mut |t, _| t.alias_tvars(known))
+        self.alias_tvars_in(known, &tvar::ConjunctsPassed::take())
+    }
+
+    pub(super) fn alias_tvars_in(
+        &self,
+        known: &mut AHashMap<ArcStr, TVar>,
+        passed: &tvar::ConjunctsPassed,
+    ) {
+        self.for_each_part_passing(&mut |tv| passed.first(tv), &mut |t, _| {
+            t.alias_tvars_in(known, passed)
+        })
     }
 
     /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
@@ -1021,12 +1043,16 @@ impl FnType {
             return Ok(());
         }
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut held);
+        let mut seen = TVarsSeen::take();
+        self.collect_tvars_seen(&mut held, &mut seen);
         let mut todo: LPooled<Vec<TVar>> = held.values().cloned().collect();
         let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         while let Some(tv) = todo.pop() {
             for tc in tv.cell_constraints() {
-                tc.normalize().collect_tvars(&mut found);
+                match tc.normalize_int(&mut seen.norm) {
+                    Some(n) => n.collect_tvars_seen(&mut found, &mut seen),
+                    None => tc.collect_tvars_seen(&mut found, &mut seen),
+                }
             }
             for (name, tv) in found.drain() {
                 if !held.contains_key(&name) {
@@ -1158,19 +1184,16 @@ impl FnType {
     /// portion that normalizes away carries no constraint force, and
     /// identity must not depend on the stored form.
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.collect_tvars_seen(known, &mut LPooled::take())
+        self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
-        seen: &mut AHashMap<usize, Type>,
+        seen: &mut TVarsSeen,
     ) {
-        // one normal form for every conjunct: a cell its conjuncts share is
-        // normalized once
-        let mut cx = super::normalize::NormCx::take();
         self.for_each_part(&mut |t, constraint| match constraint {
-            true => match t.normalize_int(&mut cx) {
+            true => match t.normalize_int(&mut seen.norm) {
                 Some(n) => n.collect_tvars_seen(known, seen),
                 None => t.collect_tvars_seen(known, seen),
             },
@@ -1558,21 +1581,39 @@ impl FnType {
         // the signature declares need not be the implementation's. One the
         // implementation does carry pairs the variables inside it with the
         // signature's, as positions do.
+        // each signature cell's paired impl cells, by their place in
+        // `impl_cells`, as the pairing grows
+        let place: LPooled<AHashMap<usize, usize>> = impl_cells
+            .iter()
+            .enumerate()
+            .map(|(i, (_, tv))| (tv.cell_addr(), i))
+            .collect();
+        let mut paired_to: LPooled<AHashMap<usize, SmallVec<[usize; 1]>>> =
+            LPooled::take();
+        let mut indexed = 0;
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
             if *sig_tc == Type::Any {
                 continue;
             }
+            for (addr, t) in tvar_map.paired_since(indexed) {
+                if let Type::TVar(s) = t
+                    && let Some(i) = place.get(&addr)
+                {
+                    paired_to.entry(s.cell_addr()).or_default().push(*i);
+                }
+            }
+            indexed = tvar_map.paired_len();
             // the impl cells the signature's was matched with, else the
             // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way
-            let sig_addr = sig_tv.cell_addr();
-            let mut matched: LPooled<Vec<&TVar>> = impl_cells
-                .iter()
-                .filter(|(_, tv)| {
-                    matches!(tvar_map.sig_type(tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
-                })
-                .map(|(_, tv)| tv)
-                .collect();
+            let mut matched: LPooled<Vec<&TVar>> =
+                match paired_to.get_mut(&sig_tv.cell_addr()) {
+                    None => LPooled::take(),
+                    Some(places) => {
+                        places.sort_unstable();
+                        places.iter().map(|i| &impl_cells[*i].1).collect()
+                    }
+                };
             if matched.is_empty()
                 && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
             {
@@ -1580,9 +1621,8 @@ impl FnType {
             }
             for impl_tv in matched.iter() {
                 for c in impl_tv.cell_constraints().iter() {
-                    let mut scratch = tvar_map.clone();
-                    if sig_tc.sig_matches_int(env, c, &mut scratch, hist).is_ok() {
-                        *tvar_map = scratch;
+                    if tvar_map.trial(|m| sig_tc.sig_matches_int(env, c, m, hist)).is_ok()
+                    {
                         break;
                     }
                 }
@@ -1594,6 +1634,10 @@ impl FnType {
         // every conjunct of every impl cell must admit the signature's
         // concrete choice, or follow from the conjuncts of the signature
         // variable it stands for.
+        // the signature's variables held rigid while `declared` judges, from
+        // its first call to the next judgment of another kind
+        let sig_rigid: RefCell<Option<LPooled<Vec<RigidGate>>>> = RefCell::new(None);
+        let release_sig = || drop(sig_rigid.borrow_mut().take());
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
@@ -1607,8 +1651,13 @@ impl FnType {
             // the conjunct in the signature's terms, whose variables are
             // each caller's to pick
             let in_sig = impl_tc.swap_cells(&|a| tvar_map.sig_type(a).cloned());
-            let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-            self.for_each_part(&mut |t, _| super::contains::hold_rigid(t, &mut gates));
+            sig_rigid.borrow_mut().get_or_insert_with(|| {
+                let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+                self.for_each_part(&mut |t, _| {
+                    super::contains::hold_rigid(t, &mut gates)
+                });
+                gates
+            });
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -1648,6 +1697,7 @@ impl FnType {
                             }
                         }
                     }
+                    release_sig();
                     for impl_tc in tv.cell_constraints() {
                         let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
                         // the signature's variables are every caller's to
