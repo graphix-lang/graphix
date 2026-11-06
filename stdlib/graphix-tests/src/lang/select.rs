@@ -7937,7 +7937,7 @@ run!(
         let v: G<i64> = 1;
         select v { P as x => 0, _ => 1 }
     }"#,
-    refused("which hold P, whose parameters grow as it recurses");
+    refused("which hold G, whose parameters grow as it recurses");
     FuseExpect::None
 );
 
