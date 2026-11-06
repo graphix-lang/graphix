@@ -1441,6 +1441,14 @@ impl FnType {
     // body to it, so an impl's head variables are the impl's there too. Pins that fail without it:
     // lang::traits::{impl_method_built_by_a_call,default_body_built_by_a_call,impl_method_default_lambda}_variable_union_refused, impl_head_variables_in_a_block_lambda; guard
     // block_lambda_in_a_method_variable_union_refused. Probes ~/ptmp/cr29/scratch/r18d-d7/.
+    // 2026-11-06 claude: Review r16 d7-r2 fix (lane d7, a8fcb529a): only a method's own lambda (its value, through parentheses) holds an impl's head variables and self, through what
+    // its trait fills in; traits::written_method_unions now judges every other lambda a method's value writes outside a lambda's body (in a block, one a call building the method is
+    // handed, a labeled default's, one in a default's block) with every variable its own, as at the top level, since no definition encloses a method's scope. A lambda in the body of
+    // a lambda other than the method's own (a default lambda's body, a callback's body in a block) is judged by lambda.rs, where the head's names are generic, not an enclosing
+    // definition's (impl_head_variable_in_a_default_lambda_body_is_generic): those refusals stand. Pins that fail without it:
+    // lang::traits::impl_head_variables_in_a_block_lambda_are_its_own (inverts impl_head_variables_in_a_block_lambda), self_in_a_lambda_a_call_builds_the_method_from,
+    // impl_head_variables_in_a_method_default_lambda_are_its_own, impl_head_variables_in_a_default_block_lambda_are_its_own; twins impl_head_variable_in_a_block_lambda_is_generic,
+    // impl_method_lambda_writes_the_head_union. Probes ~/ptmp/cr29/scratch/r18e-d7/.
     // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
     // more bare type variables in a written function type, but a union of members that
     // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member
