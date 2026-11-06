@@ -505,6 +505,10 @@ pub struct SeqCapture<R: Rt> {
     pub(crate) live: Node<R>,
     pub(crate) live_id: BindId,
     pub(crate) is_live: AtomicBool,
+    /// The variable is a generalized binding, which nothing writes: the
+    /// capture is typed by `live`'s read, which carries its scheme, never
+    /// by the queue's one instance of it.
+    pub(crate) scheme: bool,
 }
 
 impl<R: Rt> SeqCapture<R> {
@@ -515,6 +519,7 @@ impl<R: Rt> SeqCapture<R> {
         live: Node<R>,
         live_id: BindId,
         is_live: bool,
+        scheme: bool,
     ) -> Node<R> {
         Node::new(Self {
             spec,
@@ -523,6 +528,7 @@ impl<R: Rt> SeqCapture<R> {
             live,
             live_id,
             is_live: AtomicBool::new(is_live),
+            scheme,
         })
     }
 
@@ -538,7 +544,8 @@ impl<R: Rt> SeqCapture<R> {
         let live = compile(ctx, flags, (*c.live).clone(), scope, top_id)?;
         let live_id = pc_id(&live)?;
         let machine = c.machine;
-        Ok(Self::with(spec, machine, snapshot, live, live_id, false))
+        let scheme = super::bind::reads_generic(&ctx.env, &live);
+        Ok(Self::with(spec, machine, snapshot, live, live_id, false, scheme))
     }
 
     pub(crate) fn image_decode(
@@ -551,7 +558,8 @@ impl<R: Rt> SeqCapture<R> {
         let live = decode_node(ctx, buf)?;
         let live_id = pc_id(&live).map_err(|_| PackError::InvalidFormat)?;
         let is_live = bool::decode(buf)?;
-        Ok(Self::with(spec, machine, snapshot, live, live_id, is_live))
+        let scheme = bool::decode(buf)?;
+        Ok(Self::with(spec, machine, snapshot, live, live_id, is_live, scheme))
     }
 
     fn chosen(&mut self) -> &mut Node<R> {
@@ -576,7 +584,8 @@ impl<R: Rt> Update<R> for SeqCapture<R> {
         self.machine.encode(buf)?;
         self.snapshot.image_encode(buf)?;
         self.live.image_encode(buf)?;
-        self.is_live.load(Relaxed).encode(buf)
+        self.is_live.load(Relaxed).encode(buf)?;
+        self.scheme.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -584,7 +593,10 @@ impl<R: Rt> Update<R> for SeqCapture<R> {
     }
 
     fn typ(&self) -> &Type {
-        self.snapshot.typ()
+        match self.scheme {
+            true => self.live.typ(),
+            false => self.snapshot.typ(),
+        }
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {

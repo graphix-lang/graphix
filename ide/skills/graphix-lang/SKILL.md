@@ -332,8 +332,9 @@ A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
 serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
 {f: fn(x: i64) -> i64} = s`) decides nothing of the others. Two lambdas
-in one array or list are one function type (`[|x| x, |y| y]`), and a
-`seqq` reads `s` once per request, so its steps share one type of it.
+in one array or list are one function type (`[|x| x, |y| y]`). A
+`seq` step or a `seqq` request reads `s` as generically as a `let` of
+it: `seqq t { (s.g(1), s.g("s")) }` checks, unless the seq writes `s`.
 A `let` nothing writes or annotates reads `s` once in its value,
 wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
 fn(x: i64) -> i64}` makes `t.a.f` take `i64` too.

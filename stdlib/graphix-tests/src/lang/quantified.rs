@@ -848,6 +848,57 @@ run!(
     FuseExpect::Jit
 );
 
+// A `seqq` request's capture of a generalized binding carries its scheme,
+// as a step's entry snapshot does: nothing writes a queued capture.
+run!(
+    an_outer_holder_read_in_a_seqq_step_is_generic,
+    "{ let s = {g: |x| x}; seqq 1 { (s.g(1), s.g(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    an_outer_holder_read_in_a_later_seqq_step_is_generic,
+    "{ let s = {g: |x| x}; seqq 1 { let a = s.g(1); let b = s.g(\"s\"); (a, b) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    each_queued_seqq_request_reads_an_outer_holder_generically,
+    "{ let s = {g: |x| x}; \
+       let r = seqq let n = array::iter([1, 2]) { let a = s.g(n); let b = s.g(\"s\"); (a, b, s.g(n * 10)) }; \
+       let acc: Array<(i64, string, i64)> = []; acc <- r ~ array::push(acc, r); \
+       select array::len(acc) { 2 => acc, _ => never() } }",
+    prints(r#"[[i64:1, "s", i64:10], [i64:2, "s", i64:20]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    an_outer_holder_read_in_a_flushed_seqq_is_generic,
+    "{ let s = {g: |x| x}; seqq 1; flush(never(s.g(false))) { let a = s.g(1); (a, s.g(\"s\")) } }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+// A capture a step writes, through a callee here, is read live: the binding
+// is written, so one instance.
+run!(
+    a_holder_a_seqq_step_writes_is_one_instance,
+    "{ let s = {g: |x| x}; let put = |v| { s <- v; 0 }; \
+       seqq 1 { put({g: |x| x}); (s.g(1), s.g(\"s\")) } }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_holder_a_seqq_step_writes_takes_its_one_type,
+    "{ let s: {g: fn(x: i64) -> i64} = {g: |x| x}; let put = |v| { s <- v; 0 }; \
+       seqq 1 { put({g: |x| x + 1}); (s.g(1), s.g(2)) } }",
+    prints("[i64:2, i64:3]");
+    FuseExpect::Jit
+);
+
 // A step's `let` of a generic function, a read of it or of a field of one,
 // is generic as it is outside a seq: the step's value carries the scheme.
 run!(

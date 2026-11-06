@@ -331,8 +331,15 @@ tracks a variable included. A step's `let` a later step writes is known
 written at its binding (`SeqMachine::compile` finds the writes among
 every step's items, once for the machine), so it is one instance, as
 a written `let` is anywhere. A holder with a call part is one instance in
-its step: a call's result is no binding's. A `seqq` reads a holder once
-per request, through the queue, one instance of it per request.
+its step: a call's result is no binding's. A `seqq` request's capture
+(`#seqqcap`, the dequeued request's snapshot of a variable, or the
+variable itself where a step writes it) is written by nothing either, so
+a capture of a generalized binding carries its scheme too: it is typed
+by its live read, a copy of the scheme (`SeqCapture::scheme`,
+`bind::Passing::Capture`, Eric 11-05), never by the queue's one instance
+of what it carries, and its value is still the request's snapshot. A
+variable a step writes, a callee's write included, is written, so its
+capture is one instance, read live.
 
 ## 6. The lowering
 

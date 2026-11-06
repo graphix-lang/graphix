@@ -1039,6 +1039,7 @@ fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool 
                 NodeView::Tuple(parts) => reads_generic(env, &parts.n[t.field]),
                 _ => false,
             },
+            (NodeView::SeqCapture(c), Some(Passing::Capture)) => c.scheme,
             _ => reads_generic(env, node),
         }
     }
@@ -1056,6 +1057,9 @@ enum Passing {
     EntryFire,
     /// A `{ .. }` statement's value, the last of its items': `(#seqb.., ..).n`.
     Statement,
+    /// A `seqq` request's capture of a variable, typed by its live read
+    /// where the variable is generalized ([`super::seq_machine::SeqCapture`]).
+    Capture,
 }
 
 fn passing<R: Rt>(env: &Env, node: &Node<R>) -> Option<Passing> {
@@ -1077,6 +1081,7 @@ fn passing<R: Rt>(env: &Env, node: &Node<R>) -> Option<Passing> {
             }
             _ => None,
         },
+        NodeView::SeqCapture(_) => Some(Passing::Capture),
         _ => None,
     }
 }
@@ -1123,6 +1128,11 @@ fn name_passed<R: Rt>(env: &Env, node: &mut Node<R>) {
                 pass(&mut parts.n[t.field])
             }
         }
+        Some(Passing::Capture) => {
+            if let Some(c) = node.downcast_mut::<super::seq_machine::SeqCapture<R>>() {
+                pass(&mut c.live)
+            }
+        }
         None => {
             if let Some(r) = node.downcast_mut::<Ref>() {
                 r.naming = Naming::Passed
@@ -1143,7 +1153,7 @@ fn name_passed<R: Rt>(env: &Env, node: &mut Node<R>) {
 
 /// Whether `node`, past grouping parentheses and a block's final
 /// expression, reads a generalized binding or a field or tuple of one.
-fn reads_generic<R: Rt>(env: &Env, node: &Node<R>) -> bool {
+pub(super) fn reads_generic<R: Rt>(env: &Env, node: &Node<R>) -> bool {
     match value_of(node).view() {
         NodeView::Ref(r) => env.poly_binds.contains(&r.id),
         NodeView::StructRef(s) => reads_generic(env, &s.source),

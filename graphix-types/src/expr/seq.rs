@@ -160,15 +160,21 @@ const ENTRY_INPUT: &str = "#seqsin";
 /// The prefix of a machine's program counter.
 const PC: &str = "#seqpc";
 
+/// The prefix of a `seqq` request's capture of a variable its body reads,
+/// `let #seqqcap<id>_<n> = capture(input.1.n or live v)`: the dequeued
+/// request's snapshot of `v`, or `v` itself where a step writes it.
+const CAPTURE: &str = "#seqqcap";
+
 /// Whether the lowering's binding `name` passes on what it reads whole,
 /// and nothing writes it: a step's entry snapshot ([`ENTRY_SNAPSHOT`]), a
-/// step's value ([`STEP_VALUE`]) or a statement item's
-/// ([`STATEMENT_VALUE`]). A read of a generalized binding through one
-/// carries the binding's scheme.
+/// step's value ([`STEP_VALUE`]), a statement item's ([`STATEMENT_VALUE`])
+/// or a `seqq` request's capture ([`CAPTURE`]). A read of a generalized
+/// binding through one carries the binding's scheme.
 pub fn passes_on(name: &str) -> bool {
     numbered(name, ENTRY_SNAPSHOT, &[2])
         || numbered(name, STEP_VALUE, &[1, 2])
         || is_statement_value(name)
+        || numbered(name, CAPTURE, &[2])
 }
 
 /// Whether `name` is a `{ .. }` statement's item value ([`STATEMENT_VALUE`]).
@@ -1541,7 +1547,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                         expr.kind = ExprKind::Ref { name: name.clone() };
                         (
                             expr,
-                            ArcStr::from(format_compact!("#seqqcap{id}_{n}").as_str()),
+                            ArcStr::from(format_compact!("{CAPTURE}{id}_{n}").as_str()),
                             bind.id,
                         )
                     });
@@ -1703,7 +1709,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         }
         .to_expr(pos),
     ));
-    // CR claude for claude: [bug/low] A seqq refuses a generalized holder its body reads
+    // XCR claude for claude: [bug/low] A seqq refuses a generalized holder its body reads
     // at two types where the same seq body runs: `let s = {g: |x| x}; seqq t {
     // (s.g(1), s.g("s")) }` and `seqq t { let a = s.g(1); let b = s.g("s"); (a, b) }`
     // are refused at --check ("i64 does not contain string"), while `seq t { .. }`
@@ -1720,6 +1726,19 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // request's capture of a generalized binding carries its scheme, as a seq step's snapshot
     // does (Q2 (b)): a lowering rule for the queue's capture cells. Nothing writes a queued
     // capture, so the argument for Q2 holds.
+    // 2026-11-05 claude: Built (b): a seqq capture binding (#seqqcap, expr::seq::CAPTURE) is
+    // one of seq::passes_on's lowering names, and bind::Passing::Capture passes the scheme on:
+    // SeqCapture::scheme (bind::reads_generic of its live read, decided at compile, imaged)
+    // types the capture by its live read, which name_passed makes a copy of the scheme
+    // (Naming::Passed), never by the queue's one instance; the value is still the request's
+    // snapshot. A variable a step writes (a callee's write included) is not generalized, so its
+    // capture stays one instance, read live. Pins
+    // lang::quantified::{an_outer_holder_read_in_a_seqq_step_is_generic (q1),
+    // an_outer_holder_read_in_a_later_seqq_step_is_generic (q3),
+    // each_queued_seqq_request_reads_an_outer_holder_generically,
+    // an_outer_holder_read_in_a_flushed_seqq_is_generic} fail without the change (16 of 16 mode
+    // tests); a_holder_a_seqq_step_writes_is_one_instance and its annotated twin pin what
+    // stays.
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {
