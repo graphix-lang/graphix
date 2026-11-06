@@ -2637,7 +2637,7 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            // CR claude for eric: [perf/low] A run-time bind fuses only a collection
+            // CR claude for claude: [perf/low] A run-time bind fuses only a collection
             // slot's instance and one an assertion it reaches covers (`asserted`): a
             // function value called with no attribute in reach, `let g = select b {
             // true => fib, .. }; g(20)`, runs every level of its recursion in the
@@ -2679,6 +2679,10 @@ impl<R: Rt> CallSite<R> {
             // annotations on a race. The admin TUI's first-bind cost was not measured.
             // Rec: settle quiet-refresh-op-01 first, then land the patch with the
             // FuseExpect change.
+            // 2026-11-05 claude: Eric ruled (11-05, D20 follow-up):
+            // quiet-refresh-op-01 (a), so a fused run-time bind and the node-walk
+            // agree. Build (b) with that change, and make FuseExpect count only what
+            // the build fused (its doc), which settles the 81 fixtures' flips.
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads

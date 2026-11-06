@@ -524,7 +524,7 @@ fn gather_in_order<'a, R: Rt>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 /// `$tag` is the join of the consumed productions.
-// CR claude for eric: [bug/medium] A quiet change of a standing value
+// CR claude for claude: [bug/medium] A quiet change of a standing value
 // reaches a bare read but not an operator over it: an operator whose
 // inputs did not fire rides its resident here, so in a closure whose
 // capture is a callee's formal refreshed standing at its arm's wake, `|y|
@@ -539,6 +539,11 @@ fn gather_in_order<'a, R: Rt>(
 // does (a bare read rides as well)? probes:
 // ~/ptmp/cr29/scratch/r17-o1/bound-bind-policy/sf.gx, sfp.gx
 // (quiet-refresh-op-01)
+// 2026-11-05 claude: Eric ruled (11-05, D20 follow-up): (a). A quiet change
+// reaches every reader as a stale value: an operator over a standing input
+// whose value changed without a fire recomputes (stale, no fire), as wake
+// catch-up already does. Build with D20 (b) (bound-bind-policy-01) and the
+// FuseExpect fix (count only what the build fused).
 macro_rules! dense_gate {
     ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
