@@ -544,6 +544,9 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
     Ok(())
 }
 
+/// An arm nothing reaches: its refusal.
+struct Dead(anyhow::Error);
+
 // CR claude for claude: [bug/low] A written test over an abstract parameter that is a
 // declared variable covers nothing of it: `'b: (i64, string) |x: W<'b>| select x {
 // W<(i64, string)> as W((n, s)) => n }` over `type W<'a> = Abstract<'a>` is refused
@@ -735,7 +738,7 @@ impl Reach {
     }
 
     /// The arm `pat`, whose body is `site`, against what reaches it
-    /// (refused when it is dead and `checking`), then less what it
+    /// (`Err(Dead)` when it is dead and `checking`), then less what it
     /// covers.
     fn arm<R: Rt>(
         &mut self,
@@ -744,28 +747,29 @@ impl Reach {
         pat: &PatternNode<R>,
         site: &Expr,
         checking: bool,
-    ) -> Result<()> {
+    ) -> Result<Result<(), Dead>> {
+        let dead_at =
+            |e: anyhow::Error| -> Result<Result<(), Dead>> { Ok(Err(Dead(e.at(site)))) };
         let empty = Type::Primitive(BitFlags::empty());
         if checking && (self.wildcard || self.atype == empty) {
-            bailat!(
-                site,
+            return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
                  unused match cases"
-            )
+            ));
         }
         if checking && !pat.type_predicate.could_match(env, &self.atype)? {
             let (tp, atype) = (&pat.type_predicate, &self.atype);
-            format_with_flags(PrintFlag::DerefTVars, || {
+            return dead_at(format_with_flags(PrintFlag::DerefTVars, || {
                 if pat.explicit_type_predicate && tp.has_bottom() {
-                    bailat!(
-                        site,
+                    anyhow!(
                         "pattern {tp} will never match {atype}, unused match cases (`_` in \
                          a type is bottom, the type of never(); a type test that admits any \
                          parameter is spelled with Any, e.g. Error<Any>)"
                     )
+                } else {
+                    anyhow!("pattern {tp} will never match {atype}, unused match cases")
                 }
-                bailat!(site, "pattern {tp} will never match {atype}, unused match cases")
-            })?
+            }));
         }
         let wild = pat.matches_every(env, scrut)?;
         let unguarded = pat.guard.is_none();
@@ -775,34 +779,32 @@ impl Reach {
         }
         let atoms = pat.atoms();
         let or_arm = atoms.len() > 1;
-        let dead = |what: &str| -> Result<()> {
-            match or_arm {
-                true => bailat!(
-                    site,
+        let dead = |what: &str| {
+            dead_at(match or_arm {
+                true => anyhow!(
                     "unreachable or-pattern alternative: {what}, unused match cases"
                 ),
-                false => bailat!(site, "unreachable arm: {what}, unused match cases"),
-            }
+                false => anyhow!("unreachable arm: {what}, unused match cases"),
+            })
         };
         let probe = BitFlags::empty();
         for (sp, at) in atoms.iter() {
             if checking && or_arm && !at.could_match(env, &self.atype)? {
                 let atype = &self.atype;
-                format_with_flags(PrintFlag::DerefTVars, || {
+                return dead_at(format_with_flags(PrintFlag::DerefTVars, || {
                     if *atype == empty {
-                        bailat!(
-                            site,
+                        anyhow!(
                             "unreachable or-pattern alternative: the earlier arms and \
                              alternatives already cover everything {at} matches, unused \
                              match cases"
                         )
+                    } else {
+                        anyhow!(
+                            "unreachable or-pattern alternative: {at} will never match \
+                             {atype}, unused match cases"
+                        )
                     }
-                    bailat!(
-                        site,
-                        "unreachable or-pattern alternative: {at} will never match \
-                         {atype}, unused match cases"
-                    )
-                })?
+                }));
             }
             // CR claude for claude: [bug/low] A slice arm whose lengths earlier
             // arms cover is found dead only where the slice is the whole pattern:
@@ -822,9 +824,9 @@ impl Reach {
                     }
                 }
                 if checking && any && all {
-                    dead(
+                    return dead(
                         "every array length this slice pattern can match is covered by earlier arms",
-                    )?
+                    );
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
                 if unguarded {
@@ -862,9 +864,11 @@ impl Reach {
             }
             let explicit = pat.explicit_type_predicate.then_some(&pat.type_predicate);
             match self.pool.claim(env, &self.members_of, sp, explicit)? {
-                Claim::Dead if checking => dead(
-                    "every combination of heads it matches is covered by earlier arms",
-                )?,
+                Claim::Dead if checking => {
+                    return dead(
+                        "every combination of heads it matches is covered by earlier arms",
+                    );
+                }
                 // a slice group covers its length of the member, on its ladder
                 Claim::Completes(m) => match sp.array_len_range() {
                     Some((k, exact)) => {
@@ -922,7 +926,7 @@ impl Reach {
                 }
             }
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Nothing that reaches `pat`'s arm can pass its test.
@@ -2427,19 +2431,12 @@ impl<R: Rt> Select<R> {
             }
             wrap!(n, child(n, ctx))?;
             let deciding = deciding.again();
-            let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking);
+            let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking)?;
             deciding.decided(&mut decided);
             // an arm dead for what an earlier arm's pattern decided is refused
             // for that decision
-            if let Err(e) = covered {
-                if checking {
-                    self.check_undecided(
-                        &ctx.env,
-                        &still_open(&outer),
-                        &decided,
-                        &reached,
-                    )?
-                }
+            if let Err(Dead(e)) = covered {
+                self.check_undecided(&ctx.env, &still_open(&outer), &decided, &reached)?;
                 return Err(e);
             }
         }
@@ -2786,6 +2783,10 @@ struct Decisions {
 // ((a, b), _) => .. } (i4f) is refused naming x. Not unsound (the arm decides x as a pair and no
 // later use decides it apart); main (base-r16) has the same split. probes:
 // ~/ptmp/cr29/scratch/review-r16/U-r1-1/r16U3/p/i4b.gx, i4c.gx, i4f.gx
+// 2026-11-05 claude: Review r16 part 3 (U-r2-1 low): Reach::arm now returns a dead arm as
+// Ok(Err(Dead)) and any other failure (a type walk's ?) as Err, so only a dead arm gets the D5
+// judgement; an internal error is the select's own. No program found reaches the internal
+// errors, so no pin; lang:: (11536) passes unchanged.
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
