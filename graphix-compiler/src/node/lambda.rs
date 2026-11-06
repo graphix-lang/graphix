@@ -2506,15 +2506,6 @@ impl<R: Rt> DefGate<R> {
         Ok(())
     }
 
-    // CR claude for eric: [structure/low] A function's own signature cells count
-    // as outside it once something writes the function, so `let t = 'a: Number |x:
-    // 'a| x; let r = &mut t; t(1)` is refused as an escape where nothing leaves the
-    // function, and `-> 'a` passes. Eric ruled (11-06) to keep the rule and name the
-    // annotation. The alternative left: those cells stay the definition's in a
-    // written binding, so inference gives what the annotation writes; it touches
-    // the written-binding level rule, and buys only not writing the annotation, the
-    // function being one instance either way. Reopen if programs meet this.
-    // (written-sig-cells-01)
     /// The annotation that keeps `tv` the definition's, where a part of the
     /// signature left unwritten holds it.
     fn unwritten_holding(&self, tv: &TVar) -> Option<CompactString> {
