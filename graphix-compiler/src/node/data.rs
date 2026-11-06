@@ -1173,6 +1173,17 @@ impl<R: Rt> StructWith<R> {
     // to find the written binding whose instance the cell is, which nothing records
     // today, so it is left. probes
     // ~/ptmp/cr29/scratch/r19-d12/p/{y4,y7,s2,m_arr_comp0,s1}.gx
+    // 2026-11-06 claude: Lane d12 (round 18, landed 7dbf474f3) closed the array, map,
+    // list and array-of-tuples forms of this hole (pins
+    // lang::types::{array_,list_,map_of_composites,array_of_tuples}_holding_a_written_name_shares_its_type)
+    // and the field-read forms. Still open, on main as before: x2/y4 (a struct update
+    // over a never() written later; tvar::lower keeps a scheme copy's generic cells
+    // under a binding by design, and lowering them broke 199 fixtures) and a select of
+    // composites holding a written name (n5: let k = |b| { let t = select b { true =>
+    // {f: |y| y}, false => {f: j} }; t.f("s") } with j <- |x: i64| x + 1; also
+    // ms1-ms11), the live-cell renaming Eric is asked about as D25
+    // (union-live-renaming-01). probes ~/ptmp/cr29/scratch/review-r16/d12-*/ and
+    // ~/ptmp/cr29/scratch/r20-d12/p/
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
