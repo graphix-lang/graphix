@@ -2445,6 +2445,13 @@ const MAX_GROWTH: usize = 4;
 // quadratic over typedef chains, mkgc, mkgp). What the CR says of grows_on stands
 // on main: arr6.gx is refused (unreachable arm) on base-r11 and cr48-X2 alike, with
 // one message.
+// 2026-11-06 claude: The growth cut was built in lane o3 r17 and parked after three
+// review rounds, each finding false refusals of finite values (a five-parameter
+// shift and a large literal type; a finite N value 4 levels deep; a non-recursive
+// typedef nested 5 deep beside a growing type). The commits stay on branch cr52-o3
+// (d8a2d0bc0, dffb87798, 1a3fe4519, 1ee02743f), with a Kennedy-Pierce expansiveness
+// test in typ/expansive.rs. Eric is asked as D24 whether to refuse expansive
+// typedefs at their definition. Probes: ~/ptmp/cr29/scratch/r17-hk/ and r17-hk/r3/.
 /// Whether an application of `def` with parameters of `size` grows at
 /// every level: `path`, the applications it is inside, holds
 /// [`MAX_GROWTH`] of `def` with smaller parameters.

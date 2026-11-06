@@ -1895,6 +1895,9 @@ pub(crate) fn write_bounds(
 // bindings the same way. The walks rename the quantifier apart (tvar::keep_quantifiers,
 // resolve-capture-01); the printer could do the same over the printed signature. probe:
 // ~/ptmp/cr29/scratch/r17-hk/s6.gx (print-capture-01)
+// 2026-11-06 claude: Its probe hands the lambda to a rank-2 formal (k: fn<'c: Any>(..)),
+// which main refuses since rank-2 types were removed (lane Q); the printer capture is
+// unshown on main and may need a declared signature to reach.
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let constraints = printed_quantifiers(self);

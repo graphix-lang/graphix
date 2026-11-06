@@ -3912,6 +3912,14 @@ impl Type {
     // no verdict or message change; GUI-suite --check instructions unchanged (43.05G vs
     // 43.04G). The printer's own capture is print-capture-01. probes:
     // ~/ptmp/cr29/scratch/r17-hk/{v3,v3b,v4}.gx
+    // 2026-11-06 claude: Landed on main after rank-2 types were removed (lane Q): the two
+    // graphix-tests pins (rank2_quantifier_beside_an_inlined_namesake,
+    // rank2_quantifier_beside_a_declared_namesake) wrote a quantified let annotation,
+    // which main now refuses, so they were dropped with main's other rank-2 tests. The
+    // walks' fix stays, pinned by
+    // typ::fntyp::tests::an_inlined_binding_captures_no_quantifier. Whether a declared
+    // signature (an interface val, a trait method, a lambda's own variables) still reaches
+    // the capture is not shown.
     /// `None` when no TVar is beneath.
     /// The bindings resolved, each open cell freshened as `how` says.
     pub(super) fn instantiate_int(
