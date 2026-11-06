@@ -2761,6 +2761,24 @@ struct Decisions {
 // an_earlier_body_over_a_part_a_later_arm_decides_is_its_error,
 // other_shape_than_an_earlier_arm_decided_is_dead, widened_open_element_refused,
 // lang::select::partial_struct_after_a_type_test_taking_a_decided_member.
+// 2026-11-05 claude: Round 16 part 3 (lane U), t3 and t5 (Eric's D5 follow-up 2 (b), per the
+// round's brief): a destructure is exempt only where it takes apart every value of the shape it
+// decides; at a position where the decided cell stands beside a member of that shape it chooses
+// between them, and is refused with D5's message naming the cell (StructurePattern::meets, the
+// decided-cell loop), whether the cell stays open (t1, t2, t4, as before) or the coverage merges
+// it into the member: t3 (W(a) beside W), t5 (the ladder ((a, b), 0), ((a, b), _)), and so t7
+// ([a, ..] beside Array<i64>, which main runs), qt3n, qt5n, qt5w. d10 ([a, b]) stays refused. In
+// the same walk (destructures' fits), an open cell inside the decided shape, the arm's own,
+// takes the shape a destructure there gives it: v38/v40 ([(a, b), ..] over x, element type ['r,
+// ('a, 'b)]) are no D5 test, and are refused by the runtime-form rule as on main. Pins:
+// lang::select_undecided::{abstract_payload_beside_an_undecided_member_refused,
+// destructure_ladder_beside_an_undecided_member_refused,
+// slice_with_a_rest_beside_an_undecided_member_refused,
+// destructure_under_a_slice_element_is_no_undecided_test} (16/16 fail without), annotated twins
+// abstract_payload_beside_an_annotated_member, destructure_ladder_beside_an_annotated_member,
+// slice_with_a_rest_beside_an_annotated_member, destructure_under_an_annotated_slice_element;
+// must-reject family 14's beside shape (graphix-fuzz
+// must_reject_families_are_refused_where_their_rules_say, the W(_) subject, fails without).
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {

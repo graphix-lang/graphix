@@ -635,8 +635,11 @@ impl StructurePattern {
                     },
                 )?;
                 for tv in rigid {
+                    // beside a member of its shape a destructure chooses
+                    // among members, so tests what it decided
                     if let Met::Decided(_) = met
                         && self.destructures(env, ids, &Type::TVar(tv.clone()))?
+                        && !members.iter().any(|m| self.parts_over(env, ids, m).is_some())
                     {
                         continue;
                     }
@@ -708,9 +711,9 @@ impl StructurePattern {
 
     /// Whether this pattern [only destructures](Self::only_destructures)
     /// and takes apart every value of `typ`, each of its parts of the shape
-    /// of every member there: it decides the shape of an open part as an
-    /// annotation would, and tests nothing a later arm could be told apart
-    /// by.
+    /// of every member there but open cells: it decides the shape of an
+    /// open part as an annotation would, and tests nothing a later arm
+    /// could be told apart by.
     fn destructures(&self, env: &Env, ids: &AbstractOf, typ: &Type) -> Result<bool> {
         fn fits(
             p: &StructurePattern,
@@ -723,8 +726,11 @@ impl StructurePattern {
             }
             crate::stack::ensure_sufficient(|| {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-                if union_members_open(env, typ, &mut members)? || members.is_empty() {
-                    return Ok(false);
+                // an open cell there, the arm's own, takes the shape it
+                // destructures
+                let open = union_members_open(env, typ, &mut members)?;
+                if members.is_empty() {
+                    return Ok(open);
                 }
                 for m in members.iter() {
                     let Some(parts) = p.parts_over(env, ids, m) else { return Ok(false) };

@@ -352,14 +352,18 @@ beside a wildcard is one the arms' settle does not decide); and, where
 an arm chooses a value (a literal, a tag, a length; not only a pattern
 that takes the value apart), the decide shape, `{ let tm__z = never();
 select (tm__z, 0) { (arm, _) .., _ => last } }`, where that arm would
-decide `tm__z`. Rule: an open cell the scrutinee held before the arms,
+decide `tm__z`; where every arm only takes the value apart, the beside
+shape, `{ let tm__z = never(); select (select true { true => s, false =>
+tm__z }, 0) { (arm, _) .., _ => last } }`, where an arm's destructure
+chooses between `tm__z` and `s`. Rule: an open cell the scrutinee held before the arms,
 still open at the select's end or decided by an arm's pattern, that an
 arm tests is refused (`Select::check_undecided`,
 `StructurePattern::meets_undecided`, `meets_decided`); a pattern that
 only takes apart every value of the shape it decides is no test of it
-(`StructurePattern::only_destructures`). Built (`undecided-part`), right
+(`StructurePattern::only_destructures`), except beside a member of that
+shape. Built (`undecided-part`), right
 site the select. Not generated: an arm that only destructures the open
-part, which decides its shape as an annotation would (pins
+part alone, which decides its shape as an annotation would (pins
 `lang::select_undecided::destructuring_*`); a name over the open part, typed beside
 the members' others (`TVar::narrow_per_member`), whose refusal comes at
 a later write (pins `lang::select_undecided::name_over_an_undecided_*`);

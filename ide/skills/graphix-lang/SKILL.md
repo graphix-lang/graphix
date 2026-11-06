@@ -483,7 +483,9 @@ across a bottom cycle).
   select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`);
   so is a literal, `null`, `[]`, a fixed-length slice or an or-pattern
   there. A pattern that only takes it apart decides its shape: `((a, b),
-  _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check.
+  _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check,
+  unless the part stands beside a member of that shape (`y` is `x` or a
+  pair): the destructure then chooses between them, refused.
   A rest leaves the other lengths to a later name or `_`: a later `([],
   _)` is a length choice, refused.
   Only a scrutinee wholly of such a type is the arms' to decide together

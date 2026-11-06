@@ -663,7 +663,9 @@ An arm that only takes a decided part apart is no test of it
 (`StructurePattern::only_destructures`, Eric 11-05, D5 follow-up 2 (b)):
 a tuple, a struct naming every field, a slice or list with a rest, an
 abstract payload, holding only names, `_` and such patterns, each part of
-the shape of every member of the part as decided (`destructures`). It
+the shape of every member of the part as decided but an open cell there,
+the arm's own, which takes the shape (`destructures`: `[(a, b), ..]`
+takes apart an element of `['r, ('a, 'b)]`). It
 decides the part's shape as an annotation would and tests nothing of it:
 a later arm meets the part as decided, so one written for the part's
 other values is unreachable, as under the annotation, and so is one of
@@ -675,9 +677,11 @@ lengths as a literal is among values. A rest leaves the lengths it does
 not take to a name or `_` in a later arm, or to the coverage; a later
 `[]` chooses a length and is refused.
 
-A destructure that decides nothing, a part still open after the arms
-(`((a, b), _)` over a `y` that is `'x` or `(i64, i64)`, whose member the
-pattern takes), is a test of an undecided part as above. It is refused
+Beside a member of its shape a destructure chooses between that member
+and the part (`((a, b), _)` over a `y` that is `'x` or `(i64, i64)`,
+`(W(a), _)` beside `W`, a ladder of such arms, `([a, ..], _)` beside an
+array), so it is a test of the part, refused whether the part stays open
+after the arms or the coverage merges it into the member. It is refused
 too where a later arm is found dead first: the dead arm's refusal judges
 the arms up to it, by what reaches each, against the cells still open
 (`still_open`) and those the arms' patterns decided.

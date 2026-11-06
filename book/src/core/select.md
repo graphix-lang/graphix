@@ -464,7 +464,9 @@ struct naming every field, a slice or list with a rest (`[a, ..]`,
 patterns. A literal, a tag, `null`, `[]`, a slice of a fixed length, an
 or-pattern or a written test chooses among the part's values, and is
 refused as above; so is a literal beside a member that holds its type,
-`(null, _)` over a `y` that is `x` or `null`. A rest
+`(null, _)` over a `y` that is `x` or `null`, and a destructure beside a
+member of its shape, `((a, b), _)` over a `y` that is `x` or a pair,
+which chooses between them. A rest
 leaves the lengths it does not take to a later name or `_`: after `([a,
 ..], _)`, a `([], _)` arm chooses a length and is refused. A scrutinee that is wholly
 such a type is the arms' to decide together: `|x| select x { `J => 1, `M

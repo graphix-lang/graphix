@@ -1370,7 +1370,8 @@ cycle, across workers; the compiler never pins threads.
   every value of the shape it decides (a tuple, a struct naming every
   field, a slice or list with a rest, an abstract payload, of names, `_`
   and such patterns: `StructurePattern::only_destructures`) decides that
-  shape as an annotation would and tests nothing. An arm the coverage
+  shape as an annotation would and tests nothing, except beside a member
+  of that shape, where it chooses between them. An arm the coverage
   finds dead has the arms up to it judged so first, against the cells
   still open and those decided (`still_open`); any other error in an
   arm's check is that error.

@@ -6085,10 +6085,13 @@ mod tests {
             );
         }
         // family 14 refuses its open cell beside the scrutinee's members and
-        // inside a tuple, where the first arm testing it would decide it
+        // inside a tuple, where the first arm testing it would decide it, or
+        // beside a member whose shape an arm only takes apart
         for prog in [
             "{ let v = 3; select v { 1 => \"a\", _ => \"b\" } }",
             "{ let v: [`A, `B] = `B; select v { `A => 1, `B => 2 } }",
+            "{ let v = (1, 2); select v { (_, _) => 1 } }",
+            "{ type W = Abstract<i64>; let v = W(1); select v { W(_) => 1 } }",
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             let up: Vec<_> = rep

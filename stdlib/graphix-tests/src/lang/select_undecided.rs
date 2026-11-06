@@ -784,3 +784,70 @@ run!(arms_after_a_destructuring_arm_run, r#"{
     };
     [f((4, 5), true), f((4, 5), false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3]); FuseExpect::Jit);
+
+// Beside a member of its shape a destructure chooses between that member
+// and the undecided part, so it tests the part, whether the part stays
+// open or takes the member's type: an abstract payload, a ladder of
+// arms, a slice with a rest.
+run!(abstract_payload_beside_an_undecided_member_refused, r#"{
+    type W = Abstract<i64>;
+    let f = |x, c| {
+        let y = select c { true => x, false => W(1) };
+        select (y, 0) { (W(a), _) => a, _ => 0 }
+    };
+    f(W(5), true)
+}"#, refused("(W(a), _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(abstract_payload_beside_an_annotated_member, r#"{
+    type W = Abstract<i64>;
+    let f = |x: [W, null], c| {
+        let y = select c { true => x, false => W(1) };
+        select (y, 0) { (W(a), _) => a, _ => 0 }
+    };
+    [f(W(5), true), f(null, true), f(null, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 0, 1]); FuseExpect::Jit);
+
+run!(destructure_ladder_beside_an_undecided_member_refused, r#"{
+    let f = |x, c| {
+        let y = select c { true => x, false => (1, 2) };
+        select (y, 0) { ((a, b), 0) => a + b, ((a, b), _) => a - b, _ => 0 }
+    };
+    f((5, 1), true)
+}"#, refused("((a, b), 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(destructure_ladder_beside_an_annotated_member, r#"{
+    let f = |x: [(i64, i64), null], c| {
+        let y = select c { true => x, false => (1, 2) };
+        select (y, 0) { ((a, b), 0) => a + b, ((a, b), _) => a - b, _ => 0 }
+    };
+    [f((5, 1), true), f(null, true), f(null, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 0, 3]); FuseExpect::Jit);
+
+run!(slice_with_a_rest_beside_an_undecided_member_refused, r#"{
+    let f = |x, c| {
+        let y = select c { true => x, false => [1, 2] };
+        select (y, 0) { ([a, ..], _) => a, _ => 0 }
+    };
+    f([5], true)
+}"#, refused("([a, ..], _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(slice_with_a_rest_beside_an_annotated_member, r#"{
+    let f = |x: [Array<i64>, null], c| {
+        let y = select c { true => x, false => [1, 2] };
+        select (y, 0) { ([a, ..], _) => a, _ => 0 }
+    };
+    [f([5], true), f(null, true), f(null, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 0, 1]); FuseExpect::Jit);
+
+// A structure under a slice's element only takes apart the element the
+// slice decides: no test of the part, which the element's runtime form
+// refuses instead.
+run!(destructure_under_a_slice_element_is_no_undecided_test, r#"{
+    let f = |x| select (x, 0) { ([(a, b), ..], _) => a, _ => 0 };
+    f([(1, 2)])
+}"#, refused("this pattern tests for ("); FuseExpect::None);
+
+run!(destructure_under_an_annotated_slice_element, r#"{
+    let f = |x: Array<(i64, i64)>| select (x, 0) { ([(a, b), ..], _) => a, _ => 0 };
+    [f([(1, 2)]), f([])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0]); FuseExpect::Jit);
