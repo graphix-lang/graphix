@@ -3,7 +3,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, ContainsFlags, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar,
-        Type, TypeRef, contains::on_copies, node_addr,
+        Type, TypeRef, contains::on_copies, fntyp::LambdaIds, node_addr,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -659,14 +659,17 @@ impl Type {
                     && inst.contains(env, &g)?
                     && g.contains(env, &inst)?
                 {
-                    // the member it meets stands for it, so the union holds one
-                    // and a call through it may be either definition
-                    if let Type::Fn(g) = &g {
-                        g.lambda_ids.link(&f.lambda_ids);
-                    }
+                    // one member stands for both, and a call through it may be
+                    // either definition; the definitions' own types are untouched
+                    let Type::Fn(g) = &g else { unreachable!("a function member") };
+                    let both = Type::Fn(Arc::new(FnType {
+                        lambda_ids: LambdaIds::joining(&[&g.lambda_ids, &f.lambda_ids]),
+                        ..(**g).clone()
+                    }));
                     let out = out
                         .get_or_insert_with(|| ts.iter().map(|t| (*t).clone()).collect());
-                    out[*i] = g;
+                    out[*i] = both.clone();
+                    out[fns[j].0] = both;
                     met[k] = true;
                     break;
                 }

@@ -257,6 +257,19 @@ impl LambdaIds {
         other.0.write().links.insert(self.as_link());
     }
 
+    /// A node that reaches every id `nodes` reach, which none of them
+    /// reaches back.
+    pub fn joining(nodes: &[&LambdaIds]) -> LambdaIds {
+        let joined = LambdaIds::default();
+        {
+            let mut inner = joined.0.write();
+            for n in nodes {
+                inner.links.insert(n.as_link());
+            }
+        }
+        joined
+    }
+
     fn as_link(&self) -> Link {
         Link(SArc::downgrade(&self.0))
     }

@@ -256,6 +256,16 @@ enum Judge {
 // and the second is refused at the call (i64 does not contain string). Pins that fail
 // without the fix: lang::functions::array_defaults_of_two_types (annotated twin
 // array_defaults_with_declared_types and one-type twin array_defaults_of_one_type pass).
+// 2026-11-05 claude: Repair (review r17): the link reached the definitions' own types, so
+// a direct call of a named member (f1 <- never(); fs = [f1, f2]; f1(7)) judged the other
+// member's default and was refused. meet_open_fns now gives the met member a fresh FnType
+// whose LambdaIds (LambdaIds::joining) reaches both definitions' ids one way, used for
+// both slots; the definitions' nodes are untouched. Pins that fail without the repair:
+// lang::functions::array_member_called_directly_keeps_its_default,
+// array_member_beside_a_literal_called_directly. Kept: an array of lambdas whose defaults
+// differ in type is refused wherever a formal holds it (array::len(fs) too), not only at a
+// call through it: the formal judges each default against the met label
+// (check_hidden_defaults); CLAUDE.md and the skill say so.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,

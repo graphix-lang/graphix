@@ -957,8 +957,9 @@ node graph IS the IR — there is no parallel typed IR
   (`bind::ValueReads::Shared`, `ReadCopies`), but an annotated `let`'s or
   one binding a written name copies at each read, and a `let` forwarding a
   holder gives each name a copy of its own beside a written one; two
-  lambda literals in one array or list meet, one type, and a call through it
-  judges each one's labeled defaults against that one label; a type written
+  lambda literals in one array or list meet, one type of the array's own (a
+  definition's type is untouched), whose label a call through it or a formal
+  holding it judges each one's labeled defaults against; a type written
   in a body (a `let`
   annotation, `never<T>`, a select arm's type test, a nested lambda's
   signature) names one

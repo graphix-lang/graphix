@@ -2816,6 +2816,24 @@ run!(array_defaults_of_two_types, r#"{
     fs[0]$(7)
 }"#, refused("i64 does not contain string"); FuseExpect::None);
 
+// The array's one member is a type of its own: a direct call of a named
+// member still judges only that member's default.
+run!(array_member_called_directly_keeps_its_default, r#"{
+    let f1 = |#d = 1, x: i64| cast<string>(d)$;
+    f1 <- never();
+    let f2 = |#d = "q", x: i64| cast<string>(d)$;
+    f2 <- never();
+    let fs = [f1, f2];
+    f1(7)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(array_member_beside_a_literal_called_directly, r#"{
+    let f2 = |#d = "q", x: i64| cast<string>(d)$;
+    f2 <- never();
+    let fs = [|#d = 1, x: i64| cast<string>(d)$, f2];
+    f2(7)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
 run!(array_defaults_with_declared_types, r#"{
     let fs = [
         |#d: [i64, string] = 1, x: i64| cast<string>(d)$,
