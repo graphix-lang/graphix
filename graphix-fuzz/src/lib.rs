@@ -6120,11 +6120,13 @@ mod tests {
                 rep.rejects
             );
         }
-        // over a scrutinee that is ⊥ (`never()`, a connect) family 14 writes
-        // only the decide shape: a union of it and tm__z is tm__z whole
+        // over a scrutinee that is ⊥ (`never()`, a connect) or a name bound
+        // over one, family 14 writes only the decide shape: a union of it and
+        // tm__z is tm__z whole
         for prog in [
             "{ let y = 0; select y <- 5 { 6 => 1, _ => 2 } }",
             "{ select never() { 0 => 0, 1 => 1, _ => 2 } }",
+            "{ select never() { `A | `B => -1, x => select x { `C => 2 } } }",
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             let up: Vec<_> = rep
@@ -6133,6 +6135,27 @@ mod tests {
                 .filter(|p| p.id.starts_with("undecided-part#"))
                 .collect();
             assert!(up.iter().all(|p| p.verdict.is_none()), "{prog}: {up:?}");
+        }
+        // a writer's refusal meets what a let's uses decided, and a widening
+        // what a connect decides: both are right sites
+        for (prog, family) in [
+            (
+                "{ let m = map::filter_map({1 => 2}, |(_, _)| null); let v = m{1}$; v + 1 }",
+                "retype#",
+            ),
+            (
+                "{ let s = never(); let n = 0; n <- s ~ s; let last = 0; last <- s; \
+                 n * 1000 + last }",
+                "widen-hop#",
+            ),
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            let up: Vec<_> =
+                rep.rejects.iter().filter(|p| p.id.starts_with(family)).collect();
+            assert!(
+                !up.is_empty() && up.iter().all(|p| p.verdict.is_none()),
+                "{prog}: {up:?}"
+            );
         }
         // family 8 refuses a literal and a function with a defaulted label
         let qf = "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }";

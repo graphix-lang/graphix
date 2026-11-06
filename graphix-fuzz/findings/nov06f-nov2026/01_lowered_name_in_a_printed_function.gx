@@ -1,0 +1,4 @@
+// A function a seq's body makes prints the name the lowering bound for its
+// capture, whose id a process's earlier compiles move: the oracle numbers such
+// names by first sight. Found by the nov06f soak (aieka).
+{ let pt = { x: 0, y: 2 }; seq let { x, y } = pt { |x| x + y } }

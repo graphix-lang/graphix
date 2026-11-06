@@ -113,8 +113,18 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
             Task::Visit(v) => {
                 out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>>>() {
                     Some(def) => match &def.origin {
+                        // CR claude for claude: [readability/low] A function a seq's body makes
+                        // prints what the lowering rewrote: `seq let {x, y} = pt { |x| x + y }`
+                        // prints `|x| x + #seqt4611686018427395399_y`, a name no program wrote,
+                        // whose id a process's earlier compiles move, so a printed function can
+                        // differ between two compiles in one process. The oracle numbers it
+                        // (`fresh_cells`); printing `y` is the fix, and `--expand` must keep the
+                        // lowered form. (print-lowered-name-01)
                         DefOrigin::Source { spec, .. } => {
-                            Value::String(ArcStr::from(spec.to_string()))
+                            let text = spec.to_string();
+                            Value::String(ArcStr::from(
+                                fresh_cells(&text).unwrap_or(text),
+                            ))
                         }
                         DefOrigin::Runtime => Value::String(literal!("<runtime>")),
                     },
@@ -147,34 +157,53 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
     out.pop().expect("normalize: empty result stack")
 }
 
-/// `text` with each fresh cell's name (`'_` and digits, the cell's id, as
-/// a type error prints an unbound cell) numbered by first sight in the text
-/// instead, or `None` where it names none: an error a program reads holds
-/// the ids of the compile that raised it, a run's.
+/// `text` with each name holding a run's id numbered by first sight in the
+/// text instead, or `None` where it names none: a fresh cell (`'_` and digits,
+/// as a type error prints an unbound cell) and a name a lowering binds (`#`,
+/// lowercase and digits, as a printed function reads a seq's). An error a
+/// program reads holds the ids of the compile that raised it, a run's.
 pub fn fresh_cells(text: &str) -> Option<String> {
-    cell_names(text).next()?;
+    run_names(text).next()?;
     let (mut out, mut seen, mut last) =
         (String::with_capacity(text.len()), Vec::new(), 0);
-    for (i, end) in cell_names(text) {
+    for (i, head, end) in run_names(text) {
         let n = first_sight(&mut seen, &text[i..end]);
         out.push_str(&text[last..i]);
-        out.push_str(&format_compact!("'_cell{n}"));
+        out.push_str(&text[i..head]);
+        out.push_str(&format_compact!(
+            "{}{n}",
+            if text.as_bytes()[i] == b'\'' { "cell" } else { "" }
+        ));
         last = end;
     }
     out.push_str(&text[last..]);
     Some(out)
 }
 
-/// Where `s` names a fresh cell: each `'_` followed by digits, start and end.
-fn cell_names(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+/// Where `s` names a run's id: each `'_` or `#` and lowercase followed by
+/// digits, its start, where the digits start, and its end.
+fn run_names(s: &str) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+    let b = s.as_bytes();
     let mut at = 0;
     std::iter::from_fn(move || {
-        let i = at + s[at..].find("'_")?;
-        let digits = s[i + 2..].bytes().take_while(u8::is_ascii_digit).count();
-        at = i + 2 + digits;
-        Some((i, at, digits))
+        loop {
+            let i = at + b[at..].iter().position(|c| matches!(c, b'\'' | b'#'))?;
+            at = i + 1;
+            let head = match b[i] {
+                b'\'' if b.get(i + 1) == Some(&b'_') => i + 2,
+                b'#' => {
+                    i + 1
+                        + b[i + 1..].iter().take_while(|c| c.is_ascii_lowercase()).count()
+                }
+                _ => continue,
+            };
+            let digits = b[head..].iter().take_while(|c| c.is_ascii_digit()).count();
+            if digits > 0 {
+                at = head + digits;
+                return Some((i, head, at));
+            }
+        }
     })
-    .filter_map(|(i, end, digits)| (digits > 0).then_some((i, end)))
 }
 
 fn first_sight<T: PartialEq>(seen: &mut Vec<T>, x: T) -> usize {
@@ -562,6 +591,13 @@ mod tests {
         );
         assert_ne!(fresh_cells(a), fresh_cells("'_1 and '_2 and '_2"));
         assert_eq!(fresh_cells("'_ and 'a, no cell"), None);
+        // a printed function reads a name a seq's lowering bound
+        let c = "|x| x + #seqt4611686018427390981_y + #seqt4611686018427390981_y";
+        let d = "|x| x + #seqt4611686018427391205_y + #seqt4611686018427391205_y";
+        assert_eq!(fresh_cells(c), fresh_cells(d));
+        assert_eq!(fresh_cells(c).as_deref(), Some("|x| x + #seqt0_y + #seqt0_y"));
+        assert_ne!(fresh_cells(c), fresh_cells("|x| x + #seqt1_y + #seqt2_y"));
+        assert_eq!(fresh_cells("# a header #tag and it's"), None);
     }
 
     /// At final strength an epoch's prints are a set: a print fired

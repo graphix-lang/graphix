@@ -212,10 +212,11 @@ argument decides that part of the result, so its first use does
 (`mustreject.rs::open_return`). The same judgment of an open value
 (`open_init`) skips family 3's argument, the hop's `let`, family 5's
 scrutinee, 9 (b)'s referent and family 11's value. Right site:
-for the writer, the writer or the `let`; for the retyped initializer,
-the `let` and every later statement that reads or writes `v` or a `let`
-built from it, since every one now meets the new type and the checker
-reports whichever it reaches first.
+both ways, the `let` and every later statement that reads or writes `v`,
+a `let` built from it, or what a connect relates to it (its target, and a
+cell it reads, which the connect decides), since every one now meets the
+new type and the checker reports whichever it reaches first. An initializer
+only its uses decided takes the writer's type, so a use refuses it.
 
 **7. Labeled and optional arguments.** The rules, as the checker has
 them:
@@ -348,9 +349,9 @@ arm tests is refused (`Select::check_undecided`,
 only takes apart every value of the shape it decides is no test of it
 (`StructurePattern::only_destructures`), except beside a member of that
 shape. Built (`undecided-part`), right
-site the select; over a `never()` or a connect scrutinee (`x <- e`) only the
-decide shape, since a union of ⊥ and `tm__z` is `tm__z` whole, which the arms
-decide together. Not generated: an arm that only destructures the open
+site the select; over a `never()` or a connect scrutinee (`x <- e`), or a read
+of a cell (a name bound over one), only the decide shape, since a union of ⊥ and
+`tm__z` is `tm__z` whole, which the arms decide together. Not generated: an arm that only destructures the open
 part alone, which decides its shape as an annotation would (pins
 `lang::select_undecided::destructuring_*`); a name over the open part, typed beside
 the members' others (`TVar::narrow_per_member`), whose refusal comes at

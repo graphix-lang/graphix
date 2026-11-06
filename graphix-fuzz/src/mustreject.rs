@@ -10,6 +10,7 @@
 use crate::{mutate, typemorph};
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
+use compact_str::CompactString;
 use enumflags2::BitFlags;
 use graphix_compiler::{
     SourcePosition,
@@ -492,11 +493,13 @@ fn undecided_part(
         }
         // a `never()` or a connect scrutinee adds nothing to a union beside
         // `tm__z`, which is then the whole scrutinee, one the arms decide
-        // together
-        let bottom = matches!(
-            se.arg.kind,
-            ExprKind::Never { typ: None, .. } | ExprKind::Connect { .. }
-        );
+        // together; a read of a cell, a name bound over such a scrutinee, is
+        // one cell with `tm__z`
+        let bottom = types.cell(&se.arg)
+            || matches!(
+                se.arg.kind,
+                ExprKind::Never { typ: None, .. } | ExprKind::Connect { .. }
+            );
         let binds = |p: &Pattern| {
             let mut any = false;
             p.structure_predicate.with_names(&mut |_| any = true);
@@ -1692,9 +1695,12 @@ fn retype(
         .to_expr_nopos();
         let mut with_writer: Vec<Expr> = block.to_vec();
         with_writer.insert(si + 1, write);
+        // an initializer only its uses decided takes the writer's type, and a
+        // use refuses it
+        let sites = affected_stmts(&with_writer, si, v);
         let cand = ExprKind::Block { exprs: Arc::from_iter(with_writer) }.to_expr_nopos();
         out.extend(finish(Family::Retype, at, &cand, |back, _| {
-            vec![nth_stmt(back, si).and_then(span), nth_stmt(back, si + 1).and_then(span)]
+            sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
         taken += 1;
         // the initializer retyped, where a reached use is pinned by a literal
@@ -1722,21 +1728,33 @@ fn retype(
 }
 
 /// The statement `si` (a `let v = ..`) and every later one, up to a
-/// rebinding of `v`, that reads or writes `v` or a `let` built from it: a
-/// change to `v`'s type meets all of them, and the checker reports
+/// rebinding of `v`, that reads or writes `v`, a `let` built from it, or what
+/// a connect relates to it (its target, and a cell it reads, which the connect
+/// decides): a change to `v`'s type meets all of them, and the checker reports
 /// whichever it reaches first.
 fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
-    let mut affected: Vec<&str> = vec![v];
+    let mut affected: Vec<CompactString> = vec![v.into()];
     let mut sites = vec![si];
     for (k, later) in stmts.iter().enumerate().skip(si + 1) {
         let mentions = later.fold(false, &mut |m, n| {
             m || matches!(&n.kind, ExprKind::Ref { name } | ExprKind::Connect { name, .. }
-                if affected.iter().any(|a| name.to_string() == *a))
+                if affected.iter().any(|a| name.to_string() == **a))
         });
         if mentions {
             sites.push(k);
-            if let ExprKind::Bind(lb) = &later.kind {
-                lb.pattern.with_names(&mut |n| affected.push(n.as_str()));
+            match &later.kind {
+                ExprKind::Bind(lb) => {
+                    lb.pattern.with_names(&mut |n| affected.push(n.as_str().into()))
+                }
+                ExprKind::Connect { name, value, .. } => {
+                    affected.push(name.to_string().into());
+                    value.fold((), &mut |(), n| {
+                        if let ExprKind::Ref { name } = &n.kind {
+                            affected.push(name.to_string().into());
+                        }
+                    });
+                }
+                _ => (),
             }
         }
         if typemorph::binds_after(later, v) {

@@ -272,6 +272,7 @@
 0	nov06a-nov2026/02_fresh_cell_in_a_visible_error.gx
 0	nov06d-nov2026/01_a_shared_result_under_arithmetic_stays_open.gx
 0	nov06e-nov2026/01_a_returned_generic_function_over_a_result.gx
+2	nov06f-nov2026/01_lowered_name_in_a_printed_function.gx
 0	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 1	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
 0	oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
