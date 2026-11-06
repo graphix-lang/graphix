@@ -65,7 +65,7 @@ fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
                 i,
                 |i| {
                     let index = |i: &mut Input| i.value_part(value_parser::int::<usize>);
-                    match i.rest().starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+                    match i.rest().starts_with(|c: char| c.is_ascii_digit()) {
                         true => i.attempt(|i| i.knot(index)),
                         false => i.attempt(index),
                     }

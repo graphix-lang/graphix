@@ -677,20 +677,29 @@ impl<'a> Input<'a> {
     }
 
     /// Whether `p` fails on the rest of the text having read no more than a
-    /// word, and its colon: a name, perhaps a reserved one, more than a
-    /// literal whose payload went wrong.
+    /// word, its colon and a name after it: a name, perhaps a reserved one,
+    /// and its annotation or field, more than a literal whose payload went
+    /// wrong.
     pub(super) fn fails_before_payload<T>(
         &self,
         p: impl FnOnce(&'a str) -> Result<(T, usize), Failure>,
     ) -> bool {
+        let word =
+            |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_');
         let rest = self.rest();
         match p(rest) {
             Ok(_) => false,
-            Err(f) => {
-                let read = rest[..f.offset.min(rest.len())].trim_end();
-                let word = read.strip_suffix(':').unwrap_or(read).trim_end();
-                !word.is_empty() && word.chars().all(|c| c.is_alphanumeric() || c == '_')
-            }
+            Err(f) => match rest[..f.offset.min(rest.len())].split_once(':') {
+                None => word(rest[..f.offset.min(rest.len())].trim()),
+                Some((head, payload)) => {
+                    let payload = payload.trim();
+                    word(head.trim())
+                        && (payload.is_empty()
+                            || word(payload)
+                                && payload
+                                    .starts_with(|c: char| c.is_alphabetic() || c == '_'))
+                }
+            },
         }
     }
 
@@ -735,6 +744,15 @@ impl<'a> Input<'a> {
         // literal speaks against it. Judgment: the spaced-label rule is a
         // heuristic, not a grammar fact; tight forms and non-item positions (`let
         // a = u8: 256;`) still speak. Diagnostics only, no soak.
+        // 2026-11-05 claude: Repair (review r17): the spaced-label rule read the
+        // text, and silenced real literals in arrays, tuples and calls, which
+        // only read as literals (`[u8: 300]`, `(error: "\q", 1)`, `f(duration:
+        // 5)`). Input::spaced_label is gone: struct_field (a struct literal's and
+        // a functional update's) marks where it read `name:`
+        // (Input::field_name_at), and a literal read from there
+        // (Input::literal_part) is quiet. Pin:
+        // parser::test::a_struct_field_name_is_no_literal; its array, tuple and
+        // call rows fail on the spaced-label rule, its brace rows on main.
         let at = self.mark_at(self.at.off + f.offset);
         if says {
             let token = !matches!(f.expected, Expected::Refused(_));

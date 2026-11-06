@@ -235,6 +235,22 @@ fn string_pattern(i: &mut Input) -> R<(Value, WrittenForm)> {
 // its payload, as the expression `f(bytes: x)` does (judged: the colon makes it
 // a literal). Pin that fails without the repair:
 // parser::test::a_word_short_of_a_literal_is_a_name.
+// 2026-11-05 claude: Repair (review r18): an annotated binder named bytes (let
+// bytes: i64 = 1, |bytes: bytes| .., |bytes: i64| ..) and the pattern forms
+// bytes: n, (bytes: n, 1), [bytes: n] and let (bytes: n, m) entered the bytes
+// literal, which read the name after the colon as base64 and said its failure,
+// where main names the keyword. Input::fails_before_payload now also takes a
+// word, its colon and a name after it (a letter or _ first) for a name, so
+// those read without the knot and keep the reserved-word refusal; a payload
+// that starts as a literal's (u8:300) still enters it. The tuple index enters
+// its knot only where a digit follows the dot, so x.-1 says Unexpected . at the
+// dot as main does. Pin that fails without the repair:
+// parser::test::a_word_short_of_a_literal_is_a_name (its new rows). The
+// judgment in the r17 note that bytes: n and (bytes: n, 1) say the literal's
+// failure is reversed; the expression f(bytes: x) still does. Left: `A(u8:300)
+// and {a: u8:300} in a pattern say the generic text with the range note, where
+// main says Expected , or ): the literal failure said in a pattern is this CR's
+// change.
 fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
     choice!(
         i,

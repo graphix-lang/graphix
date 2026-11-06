@@ -274,12 +274,6 @@ fn a_value_literal_failure_is_said_in_a_pattern_and_an_index() {
     let msg = parse_program("let x = 1;\nlet a = select x { u8:300 => 1, _ => 0 };");
     assert!(msg.contains("the parser could not continue past this point\n"), "{msg}");
     assert!(msg.contains("`300` is out of the range of u8"), "{msg}");
-    let msg =
-        parse_program("let x = 1;\nlet a = select x { (bytes: n, 1) => 1, _ => 0 };");
-    assert!(
-        msg.contains("Parse error at line: 2, column: 29\nbase64 decode failed\n"),
-        "{msg}"
-    );
 }
 
 // A literal that fails having read no more than a word is a name: a
@@ -291,6 +285,23 @@ fn a_word_short_of_a_literal_is_a_name() {
     for (src, at) in [
         ("let bytes = 1;", "line: 1, column: 10"),
         ("let x = 1;\nlet a = select x { bytes => 1, _ => 0 };", "line: 2, column: 25"),
+        ("let bytes: i64 = 1;", "line: 1, column: 10"),
+        ("let bytes: Array<u8> = [u8:1];", "line: 1, column: 10"),
+        ("let f = |bytes: bytes| bytes;", "line: 1, column: 15"),
+        ("let f = |bytes: i64| 1;", "line: 1, column: 15"),
+        (
+            "let x = 1;\nlet a = select x { bytes: n => 1, _ => 0 };",
+            "line: 2, column: 25",
+        ),
+        (
+            "let x = 1;\nlet a = select x { (bytes: n, 1) => 1, _ => 0 };",
+            "line: 2, column: 26",
+        ),
+        (
+            "let x = [1];\nlet a = select x { [bytes: n] => 1, _ => 0 };",
+            "line: 2, column: 26",
+        ),
+        ("let x = (1, 2);\nlet (bytes: n, m) = x;", "line: 2, column: 11"),
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(&format!("Parse error at {at}\n{keyword}")), "{src}: {msg}");
@@ -300,6 +311,7 @@ fn a_word_short_of_a_literal_is_a_name() {
         ("let x = (1, 2);\nlet a = x.0 + x.", "line: 2, column: 16"),
         ("let x = (1, 2);\nlet a = (x).", "line: 2, column: 12"),
         ("let a = 5..q", "line: 1, column: 10"),
+        ("let x = (1, 2);\nlet a = x.-1;", "line: 2, column: 10"),
     ] {
         let msg = parse_program(src);
         assert!(
