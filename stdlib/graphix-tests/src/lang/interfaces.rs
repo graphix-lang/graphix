@@ -2217,6 +2217,24 @@ run!(
 ; FuseExpect::Jit);
 
 run!(
+    write_through_an_alias_of_a_typedef_application_val_as_general,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
+    "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type P<'a, 'b> = {f: F<'a>, g: F<'b>}; type S<'a> = P<'a, 'a>; val c: S<'a>",
+    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+; FuseExpect::None);
+
+// Each application of a nest of typedefs doubling at every level is
+// copied as its expansion only so many times; the rest as one.
+run!(
+    write_through_a_deep_nest_of_typedef_applications_ends,
+    prints("i64:1"),
+    "/test.gx" => "mod m; m::c <- m::c; let result = 1",
+    "/test/m.gxi" => "type T0<'a> = fn(x: 'a) -> 'a; type T1<'a> = {f: T0<'a>, g: T0<'a>}; type T2<'a> = {f: T1<'a>, g: T1<'a>}; type T3<'a> = {f: T2<'a>, g: T2<'a>}; type T4<'a> = {f: T3<'a>, g: T3<'a>}; type T5<'a> = {f: T4<'a>, g: T4<'a>}; type T6<'a> = {f: T5<'a>, g: T5<'a>}; type T7<'a> = {f: T6<'a>, g: T6<'a>}; type T8<'a> = {f: T7<'a>, g: T7<'a>}; type T9<'a> = {f: T8<'a>, g: T8<'a>}; type T10<'a> = {f: T9<'a>, g: T9<'a>}; type T11<'a> = {f: T10<'a>, g: T10<'a>}; type T12<'a> = {f: T11<'a>, g: T11<'a>}; type T13<'a> = {f: T12<'a>, g: T12<'a>}; type T14<'a> = {f: T13<'a>, g: T13<'a>}; type T15<'a> = {f: T14<'a>, g: T14<'a>}; type T16<'a> = {f: T15<'a>, g: T15<'a>}; type T17<'a> = {f: T16<'a>, g: T16<'a>}; type T18<'a> = {f: T17<'a>, g: T17<'a>}; type T19<'a> = {f: T18<'a>, g: T18<'a>}; type T20<'a> = {f: T19<'a>, g: T19<'a>}; type T21<'a> = {f: T20<'a>, g: T20<'a>}; type T22<'a> = {f: T21<'a>, g: T21<'a>}; type T23<'a> = {f: T22<'a>, g: T22<'a>}; type T24<'a> = {f: T23<'a>, g: T23<'a>}; val c: T24<'a>",
+    "/test/m.gx" => "let c: T24<'a> = never()"
+; FuseExpect::None);
+
+run!(
     write_through_a_struct_of_functions_val_refused,
     refused("made generic by an earlier compile, so what is written to it must be as general, and { f: fn(x: 'a: unbound) -> 'a: unbound } is not"),
     "/test.gx" => r#"

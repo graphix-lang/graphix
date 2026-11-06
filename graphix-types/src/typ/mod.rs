@@ -60,7 +60,8 @@ pub use tval::member_of;
 pub mod tvar;
 
 pub use fntyp::{
-    FnArgKind, FnArgType, FnType, ReadCopies, check_bounds_acyclic, seed_conjuncts,
+    CopySites, FnArgKind, FnArgType, FnType, ReadCopies, check_bounds_acyclic,
+    seed_conjuncts,
 };
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;
@@ -3143,10 +3144,7 @@ impl Type {
     /// resolve or a parameter bound is violated.
     #[doc(hidden)]
     pub fn lookup_ref_probe(&self, env: &Env) -> Option<(usize, Type)> {
-        let Type::Ref(tr) = self else { return None };
-        let key = tr.resolve_peek(env)?.def_key();
-        let t = self.lookup_ref_by(env, false, TypeRef::resolve_peek).ok()??;
-        Some((key, t))
+        self.lookup_ref_def(env).map(|(def, t)| (def.def_key(), t))
     }
 
     /// [`Self::lookup_ref_probe`] with the place the definition was
@@ -3157,11 +3155,15 @@ impl Type {
         &self,
         env: &Env,
     ) -> Option<((ModPath, SourcePosition), Type)> {
+        self.lookup_ref_def(env)
+            .map(|(def, t)| ((def.canonical_scope.clone(), def.pos), t))
+    }
+
+    fn lookup_ref_def(&self, env: &Env) -> Option<(sync::Arc<ResolvedRef>, Type)> {
         let Type::Ref(tr) = self else { return None };
         let def = tr.resolve_peek(env)?;
-        let site = (def.canonical_scope.clone(), def.pos);
         let t = self.lookup_ref_by(env, false, TypeRef::resolve_peek).ok()??;
-        Some((site, t))
+        Some((def, t))
     }
 
     /// Whether a function type with quantifiers of its own may stand at a

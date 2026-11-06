@@ -1149,7 +1149,8 @@ node graph IS the IR — there is no parallel typed IR
   generalized binding, `let g = f`, holds an instance of its own), except
   one an earlier compile generalized (a REPL input): it stays generic, a
   later write is held to a copy of its type with the variables rigid, a
-  bound's included, each function type's apart whatever their names, and
+  bound's included, each function type's apart whatever their names (a
+  typedef application as its expansion, past 64 in one copy as one), and
   a later `&mut` of it, or of a place whose type holds one of them, is
   refused
   (`Env::poly_binds`); a `let` nothing writes whose value

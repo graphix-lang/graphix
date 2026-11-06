@@ -55,7 +55,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{Bound, FnType, Indiscernible, Open, ReadCopies, Type},
+    typ::{Bound, CopySites, FnType, Indiscernible, Open, ReadCopies, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -2174,6 +2174,7 @@ impl<R: Rt> CompileCtx<R> {
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
+        const MONOMORPHIC_EXPANSIONS: usize = 64;
         /// A shared node rebuilds once and stays shared, unless a function
         /// type beneath it instantiated: each occurrence of one takes its
         /// own variables.
@@ -2187,6 +2188,10 @@ impl<R: Rt> CompileCtx<R> {
             /// application is copied whole instead
             expanding: LPooled<Vec<(ModPath, SourcePosition)>>,
             cycle: usize,
+            sites: LPooled<CopySites>,
+            /// how many more applications may be copied as their expansions;
+            /// past it one is copied as one, which holds a val narrower
+            expansions: usize,
         }
         fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
             crate::stack::ensure_sufficient(|| {
@@ -2241,6 +2246,23 @@ impl<R: Rt> CompileCtx<R> {
                     // (sw8) and write_through_a_typedef_of_two_typedefs_val_as_general (sw6);
                     // write_through_a_recursive_typedef_of_two_functions_val_as_general pins
                     // the recursion guard. Needs a soak.
+                    // 2026-11-05 claude: Repair (review r17): (1) the split copy expanded every
+                    // nested application, so a nest of typedefs doubling at each level (T18
+                    // over T17 twice, ..) took time exponential in its depth (base 0.21 s, lane
+                    // 6.8 s at 18). CompileCtx::monomorphic now copies at most 64 applications
+                    // as their expansions, the rest as one (base's copy: narrower, never a
+                    // hole), and copied_in_two_places remembers each application's places by
+                    // its declaration and which arguments hold a copied cell (CopySites), so
+                    // its own walk ends too. (2) An application counts the places its expansion
+                    // holds, so an alias (type S<'a> = P<'a, 'a>) splits as P<'a, 'a> does.
+                    // lookup_ref_declared and lookup_ref_probe share lookup_ref_def; the walk's
+                    // sets are pooled. Pins that fail without the repair:
+                    // lang::interfaces::write_through_an_alias_of_a_typedef_application_val_as_general,
+                    // write_through_a_deep_nest_of_typedef_applications_ends (killed at 150 s
+                    // without it). Left: a refused hold of a split application prints the
+                    // expanded struct, not S<'a> (bnd1); printing the binding's type instead
+                    // loses the copy's normalized variables
+                    // (lang::types::written_after_generalized_is_held_to_it).
                     Type::Ref(_) if t.copied_outside_functions(m.open) => {
                         let apart =
                             t.lookup_ref_declared(m.env).and_then(|(key, body)| match m
@@ -2252,9 +2274,13 @@ impl<R: Rt> CompileCtx<R> {
                                     m.cycle = m.cycle.min(i);
                                     None
                                 }
-                                None => body
-                                    .copied_in_two_places(m.open)
-                                    .then_some((key, body)),
+                                None => (m.expansions > 0
+                                    && body.copied_in_two_places(
+                                        m.env,
+                                        m.open,
+                                        &mut m.sites,
+                                    ))
+                                .then_some((key, body)),
                             });
                         m.fresh = true;
                         let as_one =
@@ -2263,6 +2289,7 @@ impl<R: Rt> CompileCtx<R> {
                             None => Some(as_one(m.open)),
                             Some((key, body)) => {
                                 let depth = m.expanding.len();
+                                m.expansions -= 1;
                                 m.expanding.push(key);
                                 let r = instance(&body, m);
                                 m.expanding.pop();
@@ -2295,6 +2322,8 @@ impl<R: Rt> CompileCtx<R> {
             env: &self.env,
             expanding: LPooled::take(),
             cycle: usize::MAX,
+            sites: LPooled::take(),
+            expansions: MONOMORPHIC_EXPANSIONS,
         };
         instance(t, &mut m).unwrap_or_else(|| t.clone())
     }

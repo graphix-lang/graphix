@@ -1,5 +1,5 @@
 use crate::{
-    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag,
+    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag, SourcePosition,
     env::Env,
     expr::{
         ModPath,
@@ -2557,17 +2557,35 @@ impl Type {
     }
 }
 
+/// What [`Type::copied_in_two_places`] learned of typedef applications
+/// over one copy: the places (0, 1, or 2 for two or more) an application's
+/// expansion holds, by its declaration and which of its arguments hold a
+/// copied cell, anywhere and outside function types.
+#[doc(hidden)]
+pub type CopySites =
+    AHashMap<(ModPath, SourcePosition, SmallVec<[(bool, bool); 4]>), usize>;
+
 impl Type {
     /// Whether this type holds two places a copy takes apart: function
     /// types and typedef applications ([`Type::copied_outside_functions`])
     /// that hold a cell the open gates `open` copy, none inside another.
+    /// An application counts the places its expansion holds, one where
+    /// the expansion meets its own typedef.
     #[doc(hidden)]
-    pub fn copied_in_two_places(&self, open: &IntSet<LambdaId>) -> bool {
+    pub fn copied_in_two_places(
+        &self,
+        env: &Env,
+        open: &IntSet<LambdaId>,
+        memo: &mut CopySites,
+    ) -> bool {
         struct Walk<'a> {
+            env: &'a Env,
             open: &'a IntSet<LambdaId>,
+            memo: &'a mut CopySites,
             sites: usize,
-            empty: AHashSet<usize>,
-            path: AHashSet<usize>,
+            empty: LPooled<AHashSet<usize>>,
+            path: LPooled<AHashSet<usize>>,
+            expanding: LPooled<Vec<(ModPath, SourcePosition)>>,
         }
         impl Walk<'_> {
             fn go(&mut self, t: &Type) -> bool {
@@ -2588,10 +2606,11 @@ impl Type {
                             self.sites += copied_beneath(t, self.open, true) as usize;
                             self.sites > 1
                         }
-                        Type::Ref(_) => {
-                            self.sites += t.copied_outside_functions(self.open) as usize;
+                        Type::Ref(tr) if t.copied_outside_functions(self.open) => {
+                            self.sites += self.application(t, tr);
                             self.sites > 1
                         }
+                        Type::Ref(_) => false,
                         t => t
                             .try_for_each_child(&mut |c| match self.go(c) {
                                 true => ControlFlow::Break(()),
@@ -2608,12 +2627,45 @@ impl Type {
                     done
                 })
             }
+
+            fn application(&mut self, t: &Type, tr: &super::TypeRef) -> usize {
+                let Some(def) = tr.resolve_peek(self.env) else { return 1 };
+                let decl = (def.canonical_scope.clone(), def.pos);
+                if self.expanding.contains(&decl) {
+                    return 1;
+                }
+                let args = tr
+                    .params
+                    .iter()
+                    .map(|p| {
+                        (
+                            copied_beneath(p, self.open, true),
+                            copied_beneath(p, self.open, false),
+                        )
+                    })
+                    .collect();
+                let key = (decl.0.clone(), decl.1, args);
+                if let Some(n) = self.memo.get(&key) {
+                    return *n;
+                }
+                let Some((_, body)) = t.lookup_ref_probe(self.env) else { return 1 };
+                let outer = std::mem::replace(&mut self.sites, 0);
+                self.expanding.push(decl);
+                self.go(&body);
+                self.expanding.pop();
+                let n = std::mem::replace(&mut self.sites, outer).min(2);
+                self.memo.insert(key, n);
+                n
+            }
         }
         let mut w = Walk {
+            env,
             open,
+            memo,
             sites: 0,
-            empty: AHashSet::default(),
-            path: AHashSet::default(),
+            empty: LPooled::take(),
+            path: LPooled::take(),
+            expanding: LPooled::take(),
         };
         w.go(self)
     }
