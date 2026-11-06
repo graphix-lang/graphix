@@ -2208,6 +2208,20 @@ impl StructPatternNode {
     // repair; primitive_classes_follow_each_written_set (refused: a test holding i64 at
     // one position and u8 at another covers neither alone) and its covered twin pass both
     // ways. CLAUDE.md, design/must_reject.md and design/tvar_constraints.md say so.
+    // 2026-11-06 claude: Repair (review r19): written_primitives visited each typedef once
+    // per written test, by its definition's key, so O<i64> after O<[i64, u8]> in one test
+    // split nothing and the test's position claimed the class {i64, u8}: bn_td_twice.gx
+    // passed the check and aborted at run time (no arm matches). Each application's
+    // arguments are now walked, and each definition's body once as written
+    // (Type::lookup_ref_written), the sets every expansion's sets are made of, so the
+    // classes are sound for any application and the walk ends on recursive and growing
+    // typedefs. Pins that fail without the repair:
+    // lang::select_undecided::each_typedef_application_splits_the_classes (refused) and
+    // typedef_body_primitives_split_apart_from_arguments (refused; fails too where only
+    // the arguments are walked); their twins
+    // each_typedef_application_splits_the_classes_covered and
+    // typedef_body_primitives_split_apart_from_arguments_covered run.
+    // design/tvar_constraints.md says so.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members

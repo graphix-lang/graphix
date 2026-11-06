@@ -165,7 +165,9 @@ literal pool a position holding an open cell has a head of its own,
 of its own (a cell with one typed bound of primitives has that bound's
 heads instead, a `Head::Prim` for each class of the primitives the
 select's written tests name, primitives no written primitive set tells
-apart being one class (`select::Split`), the rest one `Head::Rest`, and a
+apart being one class (`select::Split`; a typedef application's
+arguments and its definition's body as written are each such sets, as
+every expansion's sets are made of them), the rest one `Head::Rest`, and a
 written test admits the `Head::Prim`s it holds:
 `(bool, i64) as (false, n)` and `(bool, string) as (false, s)` under
 `'b: [i64, string]` complete it), and a tuple or struct member beside the cell is never the

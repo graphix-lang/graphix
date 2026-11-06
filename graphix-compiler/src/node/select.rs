@@ -1320,8 +1320,9 @@ impl Split {
 }
 
 /// Split `split` by the primitive sets `t`, a written test, names,
-/// through typedefs, bound cells and an open cell's bound, as [`heads`]
-/// reads them.
+/// through bound cells, an open cell's bound, each typedef application's
+/// arguments and each definition's body as written, whose sets make up
+/// every set an expansion [`heads`] reads.
 fn written_primitives(env: &Env, t: &Type, split: &mut Split) {
     fn go(env: &Env, t: &Type, split: &mut Split, seen: &mut AHashSet<usize>) {
         crate::stack::ensure_sufficient(|| match t {
@@ -1336,8 +1337,11 @@ fn written_primitives(env: &Env, t: &Type, split: &mut Split) {
                     }
                 }
             },
-            Type::Ref(_) => {
-                if let Some((key, body)) = t.lookup_ref_probe(env)
+            Type::Ref(tr) => {
+                for p in tr.params.iter() {
+                    go(env, p, split, seen)
+                }
+                if let Some((key, body)) = t.lookup_ref_written(env)
                     && seen.insert(key)
                 {
                     go(env, &body, split, seen)
