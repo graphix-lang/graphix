@@ -282,6 +282,33 @@ fn a_value_literal_failure_is_said_in_a_pattern_and_an_index() {
     );
 }
 
+// A literal that fails having read no more than a word is a name: a
+// reserved one is refused as one, and a tuple index that is no number
+// leaves the `.` to what follows.
+#[test]
+fn a_word_short_of_a_literal_is_a_name() {
+    let keyword = "can't use keyword as a function or variable name\n";
+    for (src, at) in [
+        ("let bytes = 1;", "line: 1, column: 10"),
+        ("let x = 1;\nlet a = select x { bytes => 1, _ => 0 };", "line: 2, column: 25"),
+    ] {
+        let msg = parse_program(src);
+        assert!(msg.contains(&format!("Parse error at {at}\n{keyword}")), "{src}: {msg}");
+    }
+    for (src, at) in [
+        ("let x = (1, 2);\nlet a = x.", "line: 2, column: 10"),
+        ("let x = (1, 2);\nlet a = x.0 + x.", "line: 2, column: 16"),
+        ("let x = (1, 2);\nlet a = (x).", "line: 2, column: 12"),
+        ("let a = 5..q", "line: 1, column: 10"),
+    ] {
+        let msg = parse_program(src);
+        assert!(
+            msg.contains(&format!("Parse error at {at}\nUnexpected `.`\n")),
+            "{src}: {msg}"
+        );
+    }
+}
+
 // A value literal read where a struct literal's or a functional update's
 // field `name:` was read is that field's name: its failure is not said
 // there, at the point the report stands at all the same. Anywhere else, an

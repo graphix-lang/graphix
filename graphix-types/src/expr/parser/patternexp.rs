@@ -222,14 +222,31 @@ fn string_pattern(i: &mut Input) -> R<(Value, WrittenForm)> {
 // (fails without the fix). Census: 2942 files, one message change (the u8:300
 // pattern repro, now the expression's generic text plus note); no verdict
 // changes. Diagnostics only, no soak.
+// 2026-11-05 claude: Repair (review r17): (1) the knot around a pattern's
+// literal moved the report to where a reserved word, read as a literal's head,
+// failed: `let bytes = 1;` and `select x { bytes => 1 }` lost "can't use
+// keyword as a function or variable name". A pattern literal whose parser fails
+// having read no more than a word and its colon (Input::fails_before_payload)
+// is read without the knot, as before. (2) The tuple index's knot moved `x.`,
+// `x.0 + x.`, `(x).` and `5..q` to generic text a column on; it is entered only
+// where a digit or `-` follows the dot. The usize index pin asserts the
+// position only (netidx says "invalid signed integer" for it). `select x {
+// bytes: n => 1 }` and `(bytes: n, 1)` now say the bytes literal's failure at
+// its payload, as the expression `f(bytes: x)` does (judged: the colon makes it
+// a literal). Pin that fails without the repair:
+// parser::test::a_word_short_of_a_literal_is_a_name.
 fn literal_pattern(i: &mut Input) -> R<StructurePattern> {
     choice!(
         i,
         |i| {
             let start = i.mark();
             let (v, form) = choice!(i, string_pattern, |i| {
-                i.attempt(|i| i.knot(|i| i.literal_part(value_parser::value)))
-                    .map(|v| (v, WrittenForm::default()))
+                let literal = |i: &mut Input| i.literal_part(value_parser::value);
+                match i.fails_before_payload(value_parser::value) {
+                    true => i.attempt(literal),
+                    false => i.attempt(|i| i.knot(literal)),
+                }
+                .map(|v| (v, WrittenForm::default()))
             })?;
             not_prefix(i)?;
             finite(i, start, v).map(|v| StructurePattern::Literal(v, form))

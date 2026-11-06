@@ -63,9 +63,14 @@ fn postfix_op(i: &mut Input, key: bool) -> R<Post> {
             i.sptoken('.')?;
             choice!(
                 i,
-                |i| i
-                    .attempt(|i| i.knot(|i| i.value_part(value_parser::int::<usize>)))
-                    .map(Post::Index),
+                |i| {
+                    let index = |i: &mut Input| i.value_part(value_parser::int::<usize>);
+                    match i.rest().starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+                        true => i.attempt(|i| i.knot(index)),
+                        false => i.attempt(index),
+                    }
+                    .map(Post::Index)
+                },
                 |i| {
                     i.spaces();
                     let pos = i.pos();
