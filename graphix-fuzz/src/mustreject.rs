@@ -1835,11 +1835,17 @@ fn mono_reuse(
             break;
         }
         let ExprKind::Bind(b) = &stmt.kind else { continue };
-        let (StructurePattern::Bind(f), ExprKind::Lambda(_), false) =
+        let (StructurePattern::Bind(f), ExprKind::Lambda(l), false) =
             (&b.pattern, &b.value.kind, b.rec)
         else {
             continue;
         };
+        // in a written binding an unannotated parameter is a cell outside the
+        // definition, so meeting a declared variable is its escape, refused
+        // first
+        if !l.constraints.is_empty() && l.args.iter().any(|a| a.constraint.is_none()) {
+            continue;
+        }
         let (calls, values, _) = forwarded_uses(&stmts, si, f);
         // a call's argument types its parameter only where the definition
         // left the parameter open

@@ -6107,6 +6107,16 @@ mod tests {
                 .collect();
             assert!(up.len() >= 2 && up.iter().all(|p| p.verdict.is_none()), "{up:?}");
         }
+        // family 1 leaves a declared variable beside an unannotated parameter,
+        // whose escape a written binding refuses first
+        let declared = "{ let f = 'a: Number |a: 'a, b| -> bool a == b; \
+                        [f(3, 4), f(2.5, 1.5)] }";
+        let rep = typemorph_subject(declared, per, TM_CAP).await.unwrap();
+        assert!(
+            !rep.rejects.iter().any(|p| p.id.starts_with("mono-reuse#")),
+            "{:?}",
+            rep.rejects
+        );
         // over a scrutinee that is ⊥ (`never()`, a connect) family 14 writes
         // only the decide shape: a union of it and tm__z is tm__z whole
         for prog in [
