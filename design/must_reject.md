@@ -73,8 +73,8 @@ what disqualifies a site.
 at two uses whose instances take different primitive first parameters:
 a VALUE use's by the map's type of it, a call's by the map's type of its
 first positional argument where the lambda's first parameter is left
-open. Not a lambda that declares a variable and leaves a parameter
-unannotated: in a written binding that parameter is a cell outside the
+open. Not a lambda that declares a variable and leaves a parameter or its
+return unannotated: in a written binding that is a cell outside the
 definition, and meeting the variable is its escape, refused first.
 Mutation: route the lambda through a binding something writes, `let f =
 { let tm__0 = |..| ..; let tm__1 = &mut tm__0; tm__0 }`. Rule: a binding

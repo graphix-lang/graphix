@@ -1840,10 +1840,12 @@ fn mono_reuse(
         else {
             continue;
         };
-        // in a written binding an unannotated parameter is a cell outside the
-        // definition, so meeting a declared variable is its escape, refused
-        // first
-        if !l.constraints.is_empty() && l.args.iter().any(|a| a.constraint.is_none()) {
+        // in a written binding an unannotated parameter or return is a cell
+        // outside the definition, so meeting a declared variable is its
+        // escape, refused first
+        if !l.constraints.is_empty()
+            && (l.rtype.is_none() || l.args.iter().any(|a| a.constraint.is_none()))
+        {
             continue;
         }
         let (calls, values, _) = forwarded_uses(&stmts, si, f);
