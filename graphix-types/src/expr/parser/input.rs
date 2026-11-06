@@ -566,7 +566,7 @@ impl<'a> Input<'a> {
         r
     }
 
-    // CR claude for claude: [perf/low] Near the nesting limit a remembered
+    // CR claude for eric: [perf/low] Near the nesting limit a remembered
     // parse is still superlinear, bounded by the limit: an entry the limit
     // cut short replays only at the depth it started at, and `select x{ "[`
     // nested near the limit reaches each inner offset at about 50 depths, a
@@ -580,6 +580,25 @@ impl<'a> Input<'a> {
     // a string costs about a second, not a stall. Found by review r14 of lane
     // K. probes: ~/ptmp/cr29/scratch/review-r14/K-r1-2/deep/{fsp,ftp}_*.gx,
     // rt_tp_150.gx (probe-limit-cost-01)
+    // 2026-11-05 claude: Measured on main ed2e39816 (base-r17 fmt --stdout:
+    // fsp_150 1.23G, fsp_195 1.59G, ftp_195 2.52G instructions, as the CR
+    // says). The memo is at its floor: instrumenting Input::remembered over
+    // string_pattern_nest at n = 100/110/150/195 gives parses == distinct
+    // (offset, depth) pairs (594/6214/22694/29759), so no pair is parsed twice,
+    // and every parse the limit cut has lowest refused depth exactly one past
+    // its deepest passed depth (9798 of 9798 at n=195), so the knot and fold
+    // checks that steered it come out the same at its start depth alone. No
+    // rule exact without the parse can replay such an entry at another depth:
+    // the cost is inherent in counting the limit per parse path (a probe's path
+    // takes more knots a level than the arm path that rereads it), and lowering
+    // it changes which texts near the limit parse, e.g. a probe the limit
+    // refuses ends the parse instead of leaving the arms to the select
+    // (a_deep_pattern_after_an_unspaced_select_brace_parses pins the opposite),
+    // or the probe and the arm counting one depth for one source nesting.
+    // Recommendation: accept the cost (bounded by the limit, linear in the text
+    // past it, about 0.4 s per 4 KB of adversarial nesting, only within ~100
+    // levels of DEFAULT_MAX_NESTING, invalid programs in the probes) and delete
+    // this CR. Data: ~/ptmp/cr29/scratch/r17-hk/README-probe-limit-cost-01.txt
     /// `f`, an expression, parsed once where it starts when a lookahead or
     /// a probe parses it first: what follows them reads it again (a block,
     /// the arguments of an attribute a struct's lookahead read; a select's
