@@ -3779,6 +3779,17 @@ impl<R: Rt> CallSite<R> {
             Some((instance, first_update, refs)) => {
                 let held = !image::decoding(|d| d.ext::<image::Restored>().materializing)
                     .unwrap_or(false);
+                // CR claude for claude: [risk/low] The held reads of an imaged callee
+                // register as a plain reader, while the cold compile's Refs register as
+                // late readers (late-unread-01: only Ref, Deref and ConnectDeref are
+                // handed a fire the walk passed), so on a warm start a fire the walk
+                // passes before the body decodes schedules nothing where a cold start
+                // would. No effect found: the body decodes at the site's first dispatch,
+                // the instance's birth, which reads standing values as delivered; every
+                // warm run in review r17 lane M's 51 late-fire probes matched cold and
+                // --no-cache. Make this reader late, or state here why it need not be.
+                // probes: ~/ptmp/cr29/scratch/rvm-A/wprobes2.out, run.sh, p/
+                // (imaged-reader-late-01)
                 let reader = ctx.reader(top_id);
                 Callee::Imaged { instance, first_update, refs, reader, held }
             }
