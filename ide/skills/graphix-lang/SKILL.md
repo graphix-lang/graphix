@@ -10,6 +10,21 @@ graph; a node fires when a consumed input fires; nothing runs "again"
 unless an input does. Read the book (`book/src/`) and the examples
 (`book/src/examples/`) when this reference is not enough.
 
+## More of this skill, read when you need it
+
+These sit beside this file. Reading one costs little and a wrong program
+costs more: when in doubt, read it.
+
+| before you | read |
+|---|---|
+| write a `seq` or `seqq`, or debug one that stalls | `seq.md` |
+| write a generic function, or hold lambdas in data; or the check refuses a type variable, a bound, a quantifier, a union of variables or a "generic binding" | `generics.md` |
+| select over a declared type variable or a value still undecided; or the check says "tests inside a value of", "not decided at this select" or "same runtime form" | `select.md` |
+| write a `.gxi`, a module or a trait | `modules.md` |
+| read or write JSON, TOML or pack, cast, parse, or print a number | `data.md` |
+| write a TUI or GUI | `ui.md` |
+| call a package beyond core, `sys::net`'s rpc, or a line reader | `stdlib.md`, and the package's `.gxi` |
+
 ## Running and checking
 
 ```sh
@@ -285,75 +300,12 @@ greet(#greeting: "hi", "world")   // labeled always by name, before positionals
 let f = |@args: i64| args         // variadic (builtins only)
 ```
 
-A declared type variable must appear in the signature: on a parameter,
-the return type, the throws, or in the bound of another declared
-variable that does. `'a: Number |x: i64| -> i64 { let v: 'a = 1; x }`
-is refused (no call could choose `'a`), and so is a written
-`fn<'a: Number>(x: i64) -> i64`. A bound may not name its own variable,
-directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
-'b: 'a`): bound it by a recursive type, `type T = [i64, Array<T>]` and
-`'a: T`. Each call picks a declared variable anew, so a value of it
-may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
-{ y <- x; x }` is refused. Give `y` a type that holds every `'a` (the
-bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
-then one type, the first call's.
-
-A signature may not write a union of two of its type variables, `|x:
-['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
-trait method's alike, nor a function type a `let` annotation writes: no
-value's type says which variable it takes. Keep one variable there
-(`['a, null]` and a method's `[self, 'a]` are fine) or write the types
-(`[i64, string]`).
-
-A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
-'a`, or a trait as a parameter's type inside a written function type,
-`fn(c: Collection) -> i64`) stands only as a definition's signature: a
-`.gxi` `val`'s type, a trait method's, a lambda's own declared
-variables. As a parameter's type, a field, an element, a `let`
-annotation, a typedef, a return type or anywhere else inside a type it
-is refused: declare the variable on the definition, `'a: Number |f:
-fn(x: 'a) -> 'a, x: 'a| f(x)`, write the parameter as a trait, `|c:
-Collection| ..`, or bind the generic function with `let` and call it by
-name.
-
 A function stays generic only where a binding names it: a `let` of a
-lambda (or of a data literal holding lambdas, below), a `val`, a trait
-method, and a `let` of a generic name or of a field or tuple read of
-one (`let j = s.g`, `let j = t.0`), or of a block whose value is one of
-these (`let f = { let n = 1; |x| x }`). Anywhere else it is one
-instance, which its uses decide: `let fs = array::map([1], |r| |x| x);
-let g = fs[0]$` takes `g(1)` and then refuses `g("s")`, and so do a
-function a call returns (`let h = mk(0)` over `let mk = |z| |x| x`), a
-field of a call's result, `(id, 1).0`, a reference (`let r = &f`, then
-`(*r)(1)`) and a binding something writes (`let j = s.g; j <- ..`).
-Each call of `mk` is an instance of its own: `let a = mk(0); let b =
-mk(0)` takes `a(1)` and `b("s")`. Whatever holds such an instance beside
-a generic value is that instance too: with `let j = s.f; j <- ..`, a
-`{s with f: j}`, a `[s, {f: j}]` (an array, list or map of composites)
-or a `[(s.f, 0), (j, 1)]` takes `j`'s one type in every element. Not yet a `j`
-that starts as `never()`: `{s with f: j}` over it passes the check and fails
-at run time, so write its type on the `let` (`let j: fn(x: i64) -> i64 =
-never()`). A write the compiler meets only after
-the binding was made generic (a function body's `m::j <- ..` in the
-module's parent, a later REPL input) must be as general as the binding,
-and a `&mut` of it is refused: to write it at one type, write that type
-on its `let` (`let j: fn(x: i64) -> i64 = s.g`).
-
-A `let` nothing writes that holds lambdas in a struct, tuple, array or
-other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
-serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
-{f: fn(x: i64) -> i64} = s`) decides nothing of the others. Two lambdas
-in one array or list are one function type (`[|x| x, |y| y]`), and a
-call through it, or a function it is passed to, judges each one's labeled
-defaults against that one label (`[|#d = 1, x| x, |#d = "q", x| x]` is
-refused there, even by `array::len`: annotate the binding, `let fs:
-Array<fn(?#d: [i64, string], x: i64) -> i64> = ..`; a direct call of a
-named member judges its own). A
-`seq` step or a `seqq` request reads `s` as generically as a `let` of
-it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
-A `let` nothing writes or annotates reads `s` once in its value,
-wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
-fn(x: i64) -> i64}` makes `t.a.f` take `i64` too.
+lambda or of a data literal holding lambdas, a `val`, a trait method, a `let`
+of a generic name or of a field read of one. Anything else is one instance,
+which its uses decide: a function a call returns, an element, a reference, a
+binding something writes. A signature's variables, bounds and unions have
+rules the check enforces and names: `generics.md`.
 
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it
@@ -393,33 +345,6 @@ null }, ask)`. An event argument opens it (`up <- ask ~ true; sel <- ask ~
 cursor reset and a payload. When a function's body has grown sections,
 each section with its own lets is a candidate.
 
-A `val` in a `.gxi` declares exactly the type its implementation has:
-`val x: [i64, null]` over `let x = 3` is refused (`declared [i64, null]
-but implemented i64`). When a use needs the wider type, annotate the
-binding (`let x: [i64, null] = 3`); every module then sees the declared
-type, so the others take the null off with `a::x$`.
-A `val`'s type variable stands only inside a function type, where each
-use picks it: `val v: Array<'a>` is refused (declare it at one type,
-`Array<i64>`), and so is `val c: {f: fn(x: 'a) -> string, last: ['a,
-null]}`. The implementation must be as general as the val: under `val f:
-fn(x: 'a) -> 'a`, `let f = |x| { y <- x; x }` over an outer `let y =
-never()` is refused (`let y: Any`, or the val at one type), and so is a
-written `let f = |x| x; f <- |x| x` (declare the val at one type). A
-trait method alike: one that writes an
-outer binding, or whose value is no lambda and has a type its value
-fixed (`(store, 1).0` over a writer of an outer binding, `mk(0)`), is
-refused under a variable each call picks: write it as a lambda. A val that
-something writes (`m::f <- ..`, `&mut m::f`) must fit its
-implementation: `val f: fn(x: i64) -> i64` over a generic `let f = |x|
-x` takes no write until the `let` is annotated `fn(x: i64) -> i64`. A
-val generic in a variable (`val c: {f: fn(x: 'a) -> 'a}`, `val g:
-fn<'a: Any>(..)` at its top, `val h: F<'a>` over `type F<'a> = fn(x: 'a)
--> 'a`)
-is copied by each use, takes only a write as general as it, and no
-`&mut` of it or of a place holding its variable (`&mut m::c.f`; `&mut
-m::c.n` over `n: i64` is fine). `let g = m::c; g <- ..` makes `g` one
-instance of the val, which the write decides for every use of `g`.
-
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a
 partial application. A combinator takes everything it needs and returns
@@ -449,13 +374,9 @@ function's result (`h(1).v` over `|x: 'a| {v: x}`) with no `-> T`. To
 find the set: strip, `--check`, restore what it names.
 
 A generic function's variable that only data holds takes the widest
-argument, in either order, an omitted labeled default included (one
-that is neither wider nor narrower waits for the others to widen it). An
-argument or omitted default whose type is still open (a `str::parse`, a
-`let` over `never()`, `[]`) takes what the others decide:
-`opt::or_default(str::parse(s)$, 0)` reads an `i64`, and
-`f(str::parse(s), 1)` over `|x: 'a, y: 'a|` is refused, "annotate it"
-(`'a` is `i64`, which holds no parse error): annotate the read.
+argument, in either order; an argument still undecided (a `str::parse`, a
+`let` over `never()`, `[]`) takes what the others decide, or is refused,
+"annotate it": annotate the read. `generics.md` has the rest.
 
 ## Select
 
@@ -484,74 +405,11 @@ across a bottom cycle).
 - A written type test narrows its binds to the values reaching it:
   `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
   over `Array<[i64, string]>` gives `ns: Array<i64>`.
-- A pattern that tests or binds inside a value of a declared type
-  variable needs a written type test; a name or `_` over the whole value
-  keeps the variable. Under `'a: [{a: i64, b: string}, i64]`, `{a, ..} =>
-  a` is refused, naming the test: write `{a: i64, b: string} as {a, ..}
-  => a`, which covers the struct only, so an `i64 as n` arm (or a
-  catch-all) must follow. So too `null` over `['a, null]` (write `null as
-  _`), a literal or constructor at an element of `Array<['a, i64]>` that
-  `'a` may hold (bound `'a` apart), and a destructuring `let` (annotate
-  it: `let {x, y}: {x: i64, y: i64} = p`, or a parameter, `|(n, s):
-  (i64, string)|`). A variable with no bound is bounded first (`'a:
-  (bool, i64)`, then `(bool, i64) as (true, k)`). The test is a closed
-  type: `` `A(_) as `A(z) `` (`_` is bottom, through a typedef too:
-  `` `A(T) `` over `type T = _`) and `` 'c as `A(z) `` (an undeclared
-  variable) are refused. Under a written test a name over the
-  variable's value keeps it where the test holds the scrutinee around it:
-  `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`;
-  at the top, `[`A(i64), `B(i64)] as v` over `'b` types `v` by the test,
-  not as `'b`.
-  An abstract type's parameter takes no annotation wider than the
-  variable, and a type test of an abstract compares its parameters:
-  `W<(i64, string)> as ..` matches only a `W` built at exactly that
-  type, covering nothing of `W<'b>`. Bind the payload by a name and test
-  that, `W(p) => select p { (i64, string) as (n, s) => n }`, or declare
-  no `'b`. Beside other members (`(bool,
-  ['b, null])`, `'b: [i64, string]`) the
-  variable's values are covered by a name or `_` at its position, or by
-  written tests that split its bound: `(false, null)` leaves `(false, v)`
-  needing an arm of its own.
-- A type not decided yet where a select is checked (a `never()` let
-  written after it, a function's unannotated parameter) is one unknown
-  type there, equal only to itself. An arm that tests a value of it
-  reaching the arm is refused, naming the binding (an earlier arm that
-  takes its member whole, `` (`J, _) `` over `` [(`K, i64), (`J, z)] ``,
-  leaves the later arms free of it): over `let v = select b { true => {a: [1],
-  c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
-  An arm whose pattern would decide it is refused the same way: `|x|
-  select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`);
-  so is a literal, `null`, `[]`, a fixed-length slice or an or-pattern
-  there. A pattern that only takes it apart decides its shape: `((a, b),
-  _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check,
-  unless the part stands beside a member of that shape (`y` is `x` or a
-  pair): the destructure then chooses between them, refused.
-  A rest leaves the other lengths to a later name or `_`: a later `([],
-  _)` is a length choice, refused.
-  Only a scrutinee wholly of such a type is the arms' to decide together
-  (`|x| select x { `J => 1, `M => 2 }`), never by a partial struct
-  pattern (`{a, ..}`).
-  A part only a name or `_` meets passes, and a name there holds that
-  type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
-  `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
-  `A(i64)] as `A(n) `` with `'b` declared nowhere is refused, and a
-  written test that tests the undecided part is refused as a pattern is:
-  `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``.
-- A partial struct pattern over members whose left-out fields differ
-  only in types not decided at the select takes them for two members and
-  is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
-  `x` and `y` written later. Name every field (`{a, c: _}`), annotate the
-  member, or annotate `x` and `y`.
-- No arm may tell apart two types that share a runtime form: two
-  reference types, two function types. Wrap them in distinct variants.
-  Everything else is told apart: a string from a bare variant, an array
-  from a tuple, struct, variant or list, `[]` from `[<>]`. A type
-  variable may be any type, so a test beside one is refused where an
-  instance could share the tested form: `` `Keep(r) `` over `` ['b,
-  `Keep('b)] ``, and a slice element alike, `` [`Keep(r), ..] `` over
-  `` Array<['b, `Keep('b)]> `` (`[h, ..]` tests nothing and checks). Over
-  an unannotated parameter a slice's rest is such a variable: annotate
-  the parameter.
+- A pattern that tests inside a declared type variable needs a written
+  type test (`{a: i64, b: string} as {a, ..}`), and one over a type not yet
+  decided at the select is refused until the binding it names is annotated;
+  no arm may tell apart two types that share a runtime form (two references,
+  two function types). The check names the fix; the rules are in `select.md`.
 - References, functions and a type holding two numeric types cannot
   be ordered, sorted or used as map keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
@@ -589,7 +447,8 @@ For multi-step ceremonies (a request, then a reply, then a write).
 Straight-line only; no `if`/loops inside.
 
 ```graphix
-let r = seqq request {             // seqq queues triggers; seq drops while busy
+// seqq queues triggers; seq drops while busy
+let r = seqq request {
   let cfg = load(request);         // a call is issued once per entry over a snapshot of its args
   until live(ready);               // wait for a bool to be true; live: steps see their entry snapshot (never the last statement where its value is used)
   { a <- fetch(cfg); b <- probe(cfg) };  // a block: statements issued together, lets local
@@ -602,99 +461,9 @@ A step snapshots all variables its text names together, including untaken
 select arms and uncalled lambdas. If any is absent, the whole step waits:
 present variables are read only when the last absent input arrives.
 
-The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
-key) { .. }` runs once per burst of presses, not once per press.
-`seq let c = e { .. }` names the trigger's value for the body and nothing
-after it; `seq let {x, y} = pt { .. }` destructures. Under `seqq` it is
-the value that queued the run, including requests waiting for absent
-captures. Each request retains its trigger; waiting requests share the
-first complete external snapshot and run in arrival order.
-`seq let c = (*r)$ { .. c.f .. }`
-is how a nullable reference is consumed; `(*r).f` is refused.
-
-`seq go; abort(cancel) { .. }` ends the run in progress when `cancel`
-fires: silently (no value, no error, a `try` is not taken), and the next
-trigger starts fresh. The event is the run's first step, asleep between
-runs: `abort(sys::time::timer(duration:10.s, false))` is a budget per
-run, and a fire while idle aborts nothing. It reads the trigger's name as
-this run's trigger (`seq let c = go; abort(sys::time::after_idle(d, c))`).
-Nothing is undone: clean up outside on the same event (`busy <- cancel ~
-false`), and write a child that must die with the run to an outer
-variable, not a `let`. Under `seqq`, `abort` starts the next queued
-request and `flush(e)` (after `abort`, `seqq` only) also empties the
-queue. Its source stays active between runs and clears the queue even
-between short runs; only its abort of a running body is run-gated. A timer
-in `flush` therefore keeps running between requests. A seq whose select
-arm sleeps mid-run is idle when it wakes.
-A sample inside a step clears its banked triggers when the step is born
-for a new run; a trigger from an aborted run cannot complete the next run.
-A select in that step also starts fresh entry history: its arms are born
-on their first selection in each run, even after an asynchronous wait.
-
-A nested `seq` inside `seqq` takes its own entry snapshots of external
-variables. It retains the enclosing request's trigger and local bindings.
-
-A busy flag set on a trigger, a call sampled on that trigger, and the
-flag cleared on the result is a seq written by hand, three statements
-apart:
-
-```graphix
-busy <- go ~ true;  let r = f(go ~ x);  busy <- r ~ false      // never this
-let r = seqq go { busy <- true; let r = f(x); busy <- false; r }   // this
-```
-
-`seqq` when the result must track the latest input (a dropped trigger
-would leave `r` aligned with a stale `x`); `seq` when a re-trigger during
-a run is noise. Debounce the trigger when a burst should cost one run.
-
-An effect that follows a change takes the change as its trigger. A
-state write and a separate "go" pulse are two statements someone must
-keep paired, and the effect reads the state later, not the value that
-caused it:
-
-```graphix
-book <- upsert(book, x); save <- ev       // never this, at every writer
-let edit = never();  book <- edit;        // this: writers do `edit <- upsert(book, x)`
-seqq let b = edit { write(path, b)? }
-```
-
-To gate a seq on a nullable, put it in the trigger, sampled by the
-event: `seqq let (dir, b) = edit ~ (d$, edit) { .. }` runs once per
-edit, and an edit made while `d` is null is banked and paid when `d`
-arrives. The bare tuple `(d$, edit)` also runs at every change of `d`,
-re-saving the last edit (a tuple fires when either part does). A `d$`
-in a step stalls the run instead, and a stalled `seqq` queues every
-later trigger forever.
-
-A statement starts in the first cycle its predecessor's effect can be
-seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
-`n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);
-`a <- x; b <- y; let s = a + b` lands both writes in one cycle. The
-compiler follows calls into the functions they reach: a call waits for
-an earlier write only when its function reads it, and `put(5); let s =
-b`, where `let put = |v| { b <- v; v }` writes the `b` it captured,
-reads the new `b`. A read
-or write through a reference (`*r`), or a call through a function value
-the compiler cannot resolve, counts as touching everything and costs a
-cycle; a block is the override. `until` and `try` follow the same rule.
-A passed step is asleep: a `let` keeps the value its step produced. A
-step completes when it produces a NEW value after its entry, never on a
-value standing from an earlier run; a step that reads a level takes it
-as it stands at entry (under `seq`; `seqq` captured it with the
-request) and waits for it if absent. Each later step snapshots the
-seq-local `let` values it reads, so `v ~ x` can fire at each step's
-entry regardless of whether the planner placed it in a later cycle. A run whose last write targets its own trigger ends
-before the write lands, so the write starts the next run.
-A step whose value never fires stalls the run: `never()`, a select
-whose arms are connects (`select err { `Admin(m) => note <- m }`), a
-call to a function whose body ends in a connect (`|v| b <- v`). Put the
-connect outside, `note <- select err { `Admin(m) => m }`, or end the
-function with a value, `|v| { b <- v; v }`. The two
-branches of a `try .. with` must have one type; end both with `null`
-when they are only effects. A seq inside a step is a step: with
-no trigger it runs at every entry of its statement and the outer step
-waits for it (two cycles over inline). `graphix --expand` shows the machine.
-`range(i, j)` is the integer sequence builtin (throws `` `RangeError ``).
+A step whose value never fires stalls the run, and so does a `d$` in a step
+over a null; a stalled `seqq` queues every later trigger forever. Read
+`seq.md` before writing one: triggers, `abort`, `flush`, what a step waits for.
 
 ## Errors
 
@@ -749,12 +518,6 @@ joins the catch, including callback throws. A declared error parameter stays
 rigid: a function taking `Result<i64, 'e>` and catching only
 ``Error<ErrChain<`A>>`` must declare ``'e: `A``.
 
-## Abstract comparisons
-
-An abstract's `Eq` implementation bypasses representation checks for equality
-only; `Ord` bypasses them for ordering only. Without the relevant implementation,
-its representation must satisfy `Discernible` or `Ordered`, respectively.
-
 ## Field access
 
 A union of structs allows `.field` when every member has that name, even at
@@ -796,60 +559,7 @@ in names the reader cannot see arriving, and `{self, *}` on a widget
 module is a habit, not a need (`block::block` imports the function; add
 `self` only when the file writes `overlay::X`).
 
-```graphix
-use package::{AdminError, Target, ceremony::{questions, result}};
-use super::{Toast, admin_text, panels::{self, CloseReason}};
-use tui::{
-  line, span, style,
-  block::block,
-  input_handler::{Event, input_handler, on_press},
-  layout::{child, layout},
-  overlay::{self, Layer, layer},
-  paragraph::paragraph
-};
-```
-
-Types first, then values, then one line per module. An import nothing
-uses goes: it tells the reader the file does something it does not. A
-group names a widget module (`self`) or its function, not both:
-`overlay::{self, overlay}` is refused (both are `overlay`), so import
-what you would have qualified, `overlay::{Layer, layer, overlay}`. Two
-explicit imports of one name are an error where a glob silently lost to
-the explicit one. `use Collection::*` (a trait's methods) is the one
-glob the book teaches.
-
-Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
-`val`, `type`, `mod`, `trait`, `impl T for X;` declarations with `///`
-docs; types and mods from the gxi are in scope in the impl. A hidden
-type must be `Abstract<..>` or Rust-backed.
-
-A gxi `mod` or `use` the body does not repeat is spliced into the body
-after the body's last declaration of every gxi item listed before it,
-in whatever order the body declares them (at the top when the body
-declares none of them, at the end when one of them is a `val` the body
-lacks; a gxi-only type, or a trait with no default body, always goes to
-the top). So a gxi-only submodule sees every
-binding the gxi lists before it, and the body can use the submodule
-only once those are all declared: `let c = l::z` above the body's
-`let a` of a `val a` the gxi lists before `mod l` is `l::z not defined`.
-
-Traits: `trait Show { val show: fn(self) -> string; val twice: fn(self)
--> string = |s| "[show(s)] [show(s)]" }`, `impl Show for Counter { let
-show = |c| .. }`, `impl<'a: Show> Show for Array<'a> { .. }`, bounds
-`'a: Show + Eq`, `|x: Show|` sugar. A trait's methods live under its
-name: outside its default bodies and impls, call `Show::show(x)` (or
-`use Show::{show}`); a bare `show(x)` is "show not defined". Dispatch is
-static on the self
-argument's type; a union self compiles to a select. Core `Eq`/`Ord`/
-`Display` ride the value everywhere (map keys, sort, operators,
-printing); only abstract types may implement them outside core. The io
-traits `Read`/`Lines`/`Write`/`Close`/`Seek`/`Socket` describe streams
-whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
-
-A trait method's `#[pure]` or `#[sync]` holds for every implementation, even
-an uncalled one. Builds reject violating bodies; dynamic modules fail to load.
-Callback parameters retain caller-dependent effects, as in ordinary definitions.
-`--check` does not elaborate these body assertions.
+Interfaces, traits and how a `.gxi` splices into its body: `modules.md`.
 
 ## Standard library, briefly
 
@@ -861,12 +571,6 @@ Result, select on it. `never()` / `never<T>()` is SYNTAX: typed bottom,
 args stay live; an unannotated `let` over `never()` takes its type from
 its first use, a reader or a writer, and a later writer must fit it.
 
-`queuefn(#trigger, f)` returns a wrapper with `f`'s signature and a
-counting semaphore starting at one permit. Later trigger fires release
-waiting invocations or bank permits; unused permits accumulate, so later
-calls can run without a new trigger. A wrapper site releases one call per
-runtime cycle. `#count: &mut depth` observes queued invocations.
-
 `opt` (over `['a, null]`): `is_some is_none or_default or and map
 flat_map filter ok_or zip`. Unwrapping is the `$` operator, above. The
 ladder it replaces also hides in two steps: `let p = select d { null as
@@ -875,88 +579,7 @@ forward only to be dropped is unwrapped at the source, once: `let dir =
 d$`, and every reader (a later seq step included) takes `dir` (unless
 an event samples it: see the banking under `$` gates).
 
-`array`: map filter filter_map fold flatten find find_map concat push
-window(#n, arr, @v) len iter iterq sort enumerate zip (`window`'s second
-argument is the array windowed, usually `t ~ data`, and its values after
-it are variadic). `filter_map`'s callback returns `` [`Keep('b),
-null] ``: `null` drops the element and `` `Keep(v) `` keeps `v`, a null
-included; a bare `v` is refused. `|x| select x { null as _ => null, v =>
-`Keep(v) }` over `[1, null, 2]` gives `[1, 2]`. `list`
-(the same over `List<'a>`, plus `cons head tail uncons nth take drop
-to_array from_array ..`), `map`, `str` (`contains split trim replace
-join len parse ..`), `re`, `rand`, `db` (an embedded key-value store:
-`open`, `tree`, `get`, `insert`, cursors, transactions, subscriptions),
-`sqlite` (`open`, `exec`, `query`, `begin` /`commit`), `hbs` (`render`,
-handlebars templates), `args` (command-line parsing: `positional`,
-`option`, `flag`, `command`, `parse`), `xls` (`sheets`, `read`).
-
-`sys::time`: `timer(timeout: [duration, Number], repeat)` (a finite
-repeat count ends it; an arm's sleep pauses it), `after_idle(timeout, v)`,
-`now(trigger)`, and the pure arithmetic `add`, `sub`, `add_dur`,
-`sub_dur`, `diff`, `scale`. `sys::net`: `subscribe(path)`,
-`publish(path, v)`, `rpc`, `callq`, `call`, `list`, `write`, every path a
-`string`; an unselected arm tears a subscription or publication down and
-abandons its rpc calls in flight. `sys::fs`, `sys::tcp`, `sys::tls`, `sys::process`
-(`spawn`, `options`, `Proc`, `wait`), `http`. `json` and `toml`:
-`read(string | bytes)` (async), `write_str` and `write_bytes` (pure);
-`pack`: `read(bytes)` (async) and `write_bytes`. Pack and db values preserve
-composite kinds (tuple, struct, variant, list, array and map), including
-union members; abstract values still cross through `Cast`. Older unmarked
-data remains readable but cannot recover a kind that was erased.
-
-A sync variadic builtin called with no positional argument is a compile
-error (`str::concat()`); it could never fire.
-
-## UI
-
-GUI (iced) programs return `Array<&Window>`; TUI (ratatui) programs
-return one widget, usually under `input_handler(#handle: &f, &widget)`
-where `f: |e: Event| -> [`Stop, `Continue]`. Widget arguments are `&`
-references; import each widget by name, `use tui::{block::block, list::list}`.
-
-```graphix
-let handle = |e: Event| on_press(e, |k| select k.code {
-  kk@ `Up | kk@ `Char("k") if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop },
-  _ => `Continue
-});
-```
-
-`on_press(e, f)` (in `tui::input_handler`) calls `f` with the `KeyEvent`
-when `e` is a `` `Press `` and continues on everything else; it returns
-`` [`Stop, `Continue] ``, so it is a handler's body or a part of one.
-Never write the `` `Key(k) => select k.kind { `Press => .. } `` nest by
-hand: forgetting the kind runs every key twice where the terminal
-reports releases (Windows). A handler that also wants mouse, paste or
-resize selects on the `Event` and calls `on_press` in its `` `Key `` arm;
-a modal one that lets nothing through is `|e: Event| { on_press(e, keys);
-e ~ `Stop }`. The `e ~` is not optional: a handler whose result is a
-constant answers the first event and then never again (the `|v| k` rule),
-and the keys after it are lost.
-
-A guard over state other than the key is safe only when the handler sees
-every key. An inner handler under one that stops some keys keeps its
-last key standing, so a flip of the guarded level re-runs the select on
-that stale key, and an arm entered for the first time samples it as
-fired: `` `Tab if !in_tool => { front <- k ~ .. } `` switched tabs when
-an outer Esc closed the tool, though Tab had been pressed inside it.
-Sample the level with the key instead: `front <- select k ~ (in_tool,
-front) { (true, _) => never(), .. }`.
-
-Widget modules (each module's function has its name unless noted): gui —
-`window` (a function in `gui`) text button text_input checkbox toggler
-radio slider vertical_slider progress_bar pick_list combo_box column row
-container scrollable stack grid space rule (`horizontal_rule`,
-`vertical_rule`) tooltip canvas chart image markdown menu qr_code table
-data_table mouse_area keyboard_area text_editor clipboard (`read_text`,
-`write_text`, ..); tui — block paragraph text list table tabs gauge
-line_gauge sparkline barchart (`bar_chart`) canvas chart calendar
-browser scrollbar layout line_edit (`state`, `step`, `handle`, `view`)
-form style input_handler overlay(#layers, base) + layer, `line` and
-`span` (in `tui`), `tui::suspend(level)` (release the terminal to a
-child process while true), `tui::exit`.
-Layout: `` `Fill `Shrink `Fixed(f64) ``; padding `` `All(f) `Axis({x,
-y}) `Each({top, right, bottom, left}) ``; colors `` `Red .. `Rgb(r, g,
-b) ``.
+The packages, `queuefn`, RPC calls and line readers: `stdlib.md`.
 
 ## Idioms
 
@@ -992,61 +615,7 @@ known <- edit
 ```
 
 A guard cannot bind (`_ if !is_err(is_file(p)) => .. file ..` has no
-`file`): select on the Result. A type-directed read (`json::read`,
-`str::parse`) takes its target from the annotation it reaches, and the
-target must settle concrete (its `'b: Concrete` bound). `str::parse` reads
-what Graphix prints: a `string` target is the text itself; any other
-target reads the text as a Graphix literal (`(1, "a")`, `{x: 1}`,
-`` `B(3) ``, `[<1, 2>]`, `{"k" => 1}`) cast to it, else the bare text cast
-(`"42"`, an RFC3339 datetime). `json::read` into a target holding an
-integer or `decimal` reads a number's text exactly (past `i64` is an
-`InvalidCast`); a read into neither, `Array<Any>`, gives `f64`. A struct
-target reads a field the data omits as null where the field's type
-admits null. Excess decimal fractional precision rounds to the nearest
-representable decimal in JSON reads, string casts and `str::parse`.
-JSON/TOML write a map as an object/table only when its key type is
-`string`; any other key type writes an array of `[key, value]` pairs. TOML
-requires a table at the document root, so `toml::write_str` refuses such a
-map as the document (wrap it in a struct field), and has no null: a null struct
-field is left out, a null anywhere else is refused when written. An
-abstract value is written as an object its type's name keys
-(`{"Port":80}`), and read only so; the abstract values inside that data
-are bare where the type's `from_value` reads it (a cast of data), else
-wrapped too; bare, they carry no tag, so a union in a `from_value`'s data
-holds an abstract type only beside null. `Transparent(p)` (core's `Transparent<T>`) writes `p`'s
-data bare. `hbs::render`'s data writes abstract values bare and a map
-whose keys are scalars as an object. Every union a json/toml read or
-write holds is one member beside null, or variants and abstract types
-under distinct tags: `[i64, string]`, `[Port, u8]` and `` [string, `A] ``
-are refused (`JsonData`/`TomlData`); tag the members, `` [`N(i64),
-`S(string)] ``.
-
-A whole float prints with its point (`3.0`) in interpolation, `println` and
-`cast<string>`, so the text reads back as a float (`cast<[i64, f64]>("3.0")`
-is 3.0); a scale-zero decimal prints plainly without a trailing point,
-and a decimal cast from a float is the number its shortest text names,
-`decimal:0.30000000000000004` for `0.1 + 0.2`, rounded to 28 places, a
-whole one keeping its point (`decimal:3.0`) and a zero, one too small for
-28 places included, `decimal:0.0` with the float's sign. A
-union cast takes a member of the value's own kind first, however much of
-it that keeps: `cast<[f32, string]>(0.1)` is f32, `cast<[i64,
-string]>(3.5)` is 3; text tries the kind it parses as next
-(`cast<[duration, decimal]>("3.0")` is the decimal). Within a kind, an
-exact member beats one that rounds, which beats one that drops a part
-(`cast<[i64, f32]>(0.1)` is f32 0.1), and a float or decimal, value or
-text, goes to an integer member only where no `f32`/`f64`/`decimal`
-member holds it exactly (`cast<[i64, decimal]>(3.0)` is the decimal,
-`cast<[i64, datetime]>("3.0")` the integer). An integer likewise goes to
-a real member only where no integer member holds it, however the union
-names its members; a bool is held exactly by 1 or 0 (`cast<[f32,
-u8]>(true)` is u8 1). A number too large for a float member reads as its
-infinity only when no member of any kind holds it (`cast<[f32,
-string]>(1e300)` is the string, `cast<f32>(1e300)` inf).
-Printed composites escape brackets in strings and retain numeric type prefixes
-except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
-reads printed UTC datetimes, every printed duration unit and bare
-NaN/inf/-inf. These do not extend source syntax.
-Error diagnostics keep unescaped brackets in their strings.
+`file`): select on the Result. Reads, casts and printing: `data.md`.
 
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after
@@ -1094,35 +663,3 @@ away the element it had in hand. Build the final row there:
   leaves in a binding (`let j = s.g`) stays generic: each later use
   copies it, `j(1)` and `app(j)` alike.
 - `--check` a witness before arguing about a semantics question.
-
-## Line reader retries
-
-`sys::io::Lines::lines` and `lines_batched` stop at EOF or an error.
-Re-delivering the same handle afterward, or after a seek/TLS upgrade,
-starts reading at its current position. Seek explicitly before rereading
-a file from the beginning; re-delivery does not rewind. A delivery while
-the same reader is active leaves it running.
-
-## RPC calls
-
-`sys::net::callq(path, args)` is the usual call: its result is the
-reply or an error, with no id. Each fire of an argument starts a call at
-once, any number run side by side, and the answers come in the order the
-calls were made, one a cycle (an early answer waits for the earlier
-calls'). Nothing aborts a `callq` call; an arm's sleep drops its calls in
-flight and the answers waiting behind them. A fan-out over `callq` can run
-in parallel; one over `call` runs in order.
-
-`sys::net::call(path, args)` is `(RpcId, result)`: take the pair, `let
-(_, r) = sys::net::call(..)`, or its `.1`. Each fire of an argument
-starts a call, and calls run side by side: each answers once, its reply,
-an error or `` `Aborted ``, in the order the answers come, one a cycle,
-tagged with its id. Name a call with `#id: id` (`let id =
-sys::net::call_id(e)` mints a fresh id at each fire of `e`) and a new call
-under that id replaces the one still in flight, which answers
-`` `Aborted ``: one id for a search box keeps only the latest query.
-`sys::net::abort_call(id)` aborts a call from anywhere. Aborting stops the
-wait, not the server: its handler still runs. An arm's sleep abandons its
-calls silently (no `` `Aborted ``); the last completed result survives,
-and waking sends nothing. To observe a result, keep the call outside a
-sleeping arm or in a seq step that waits for it.
