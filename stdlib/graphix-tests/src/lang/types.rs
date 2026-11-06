@@ -7357,3 +7357,47 @@ run!(
     is(Value::I64(15));
     FuseExpect::None
 );
+
+// A written binding holds one instance of each function its value holds
+// once, wherever the value's type repeats it: a value of `mk(g)` is one
+// instance of `g` twice, as a `let` of it is; two reads are two.
+run!(
+    written_value_sharing_a_node_holds_one_instance,
+    r#"{
+  let g = |x| x;
+  let mk = |f| (f, f);
+  let p = (|x: i64| x, |x: string| x);
+  p <- mk(g);
+  (p.0(1), p.1("s"))
+}"#,
+    refused("cannot hold (fn(x: i64) -> i64, fn(x: i64) -> i64)");
+    FuseExpect::None
+);
+
+run!(
+    written_holder_sharing_a_node_holds_one_instance,
+    r#"{
+  let h = {f: |x| x};
+  let hh = (h, h);
+  let q: ({f: fn(x: i64) -> i64}, {f: fn(x: string) -> string}) = hh;
+  q <- never();
+  (q.0.f(1), q.1.f("a"))
+}"#,
+    refused("does not contain ({ f: fn(x: i64) -> i64 }, { f: fn(x: i64) -> i64 })");
+    FuseExpect::None
+);
+
+run!(
+    written_value_of_two_reads_holds_two_instances,
+    r#"{
+  let g = |x| x;
+  let h = {f: |x| x};
+  let p = (|x: i64| x, |x: string| x);
+  p <- (g, g);
+  let q: ({f: fn(x: i64) -> i64}, {f: fn(x: string) -> string}) = (h, h);
+  q <- never();
+  (p.0(1), p.1("s"), q.0.f(2), q.1.f("a"))
+}"#,
+    prints(r#"[i64:1, "s", i64:2, "a"]"#);
+    FuseExpect::None
+);

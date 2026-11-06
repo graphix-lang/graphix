@@ -1047,6 +1047,36 @@ fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
     completes_within(&["--no-cache"], &program, 10 * BILLION)
 }
 
+/// A chain of written holders, each link a pair of the last, checks in
+/// time linear in its length: a written binding holds one instance of each
+/// node its value's type shares, so the instance keeps the value's DAG, where
+/// an instance at each occurrence takes 2^depth.
+#[test]
+#[cfg(target_os = "linux")]
+fn written_holder_chains_check_in_linear_time() {
+    const LINKS: usize = 40;
+    let chain = |link: &dyn Fn(usize) -> String| {
+        let mut s = String::from("let x0 = (|x| x, 1);\n");
+        for i in 1..=LINKS {
+            s.push_str(&link(i));
+        }
+        s.push_str("0\n");
+        s
+    };
+    let connected = chain(&|i| {
+        format!("let x{i} = (x{p}, x{p}); x{i} <- (x{p}, x{p});\n", p = i - 1)
+    });
+    let apart = chain(&|i| {
+        format!(
+            "let (a{i}, w{i}) = (x{p}, x{p}); w{i} <- never(); let x{i} = (a{i}, a{i});\n",
+            p = i - 1
+        )
+    });
+    for program in [connected, apart] {
+        checks_within(&program, 4 * BILLION)
+    }
+}
+
 /// A pair DAG named through a typedef builds in time linear in its depth:
 /// a call's argument checked against its formal compares and welds two
 /// equal DAGs, in different allocations, once per pair of nodes.

@@ -941,9 +941,11 @@ node graph IS the IR — there is no parallel typed IR
 - **`let rec` is monomorphic-recursive**, and a binding something writes
   (a `<-` target, a `&mut`'s referent, as the resolver names it) is not
   generalized: its uses and writers share one instance of each function
-  it holds (the value restriction, `CompileCtx::monomorphic`; a name
-  aliasing a generalized binding, `let g = f`, holds an instance of its
-  own, as does a written name a pattern takes apart). A write compiled
+  it holds (the value restriction, `CompileCtx::monomorphic`; a node its
+  value's type shares is one instance wherever it stands, so the instance
+  keeps the value's sharing; a name aliasing a generalized binding, `let g
+  = f`, holds an instance of its own, as does a written name a pattern
+  takes apart). A write compiled
   before the binding's check makes its check take one instance
   (`Bind::typecheck0`); a writer in its block, a lambda body's included
   (a body compiles at its definition's check), and a module's in it

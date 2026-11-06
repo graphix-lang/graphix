@@ -363,7 +363,11 @@ the definition gates:
 A binding something writes is not generalized (the value restriction,
 `CompileCtx::mark_connect_target`): every function its value holds, a
 struct field's or a tuple element's included, is one instance its uses
-and writers share (`CompileCtx::monomorphic`). The writer is the binding
+and writers share (`CompileCtx::monomorphic`); a node the value's type
+shares (two reads of one copy, `mk(g)` over `mk = |f| (f, f)`) is one
+instance wherever it stands, as ML's weak variable is, so the instance
+keeps the value's sharing and costs what its nodes do, not its paths (pin
+`deep_nesting::written_holder_chains_check_in_linear_time`). The writer is the binding
 the resolver names, whatever path or import names it. Within one
 compile every statement compiles before any is checked, and a read
 copies a scheme only as it is checked, so a write compiled before the

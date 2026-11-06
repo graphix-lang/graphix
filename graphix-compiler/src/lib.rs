@@ -2135,7 +2135,7 @@ impl<R: Rt> CompileCtx<R> {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
 
-    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
+    // XCR claude for claude: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -2242,17 +2242,33 @@ impl<R: Rt> CompileCtx<R> {
     // 2026-11-05 claude: Eric ruled (2026-11-05) on the D11/D12 follow-up: (a). Split
     // D12 (one instance per shared node) out of cr50-M-parked (fb0072ecd), re-review and
     // land it now.
+    // 2026-11-06 claude: Built D12 (a) alone on main 187fd838d (lane d12, round 18):
+    // CompileCtx::monomorphic memoizes every shared node (the memo is no longer skipped
+    // below an instantiated function or a typedef application copied as its expansion),
+    // so a written binding holds one instance per node its value's type shares and keeps
+    // the value's DAG. --check instructions:u (one eval thread, --no-cache; empty
+    // program 0.74G), base-r18 / lane: w-conn-12 16.09G / 0.75G; w-conn-16, w-conn-18
+    // and o-apart2-18 killed at 150 s / 0.75G, 0.75G, 0.76G; t-ownone-18 and
+    // u-wsingle-18 0.75G on the lane. Pin graphix-shell
+    // deep_nesting::written_holder_chains_check_in_linear_time (40 links of the w-conn
+    // and o-apart2 shapes within 4G; 0.9G and 1.0G with the change, over 4G without it).
+    // On this main the verdicts already agree with the let form: lane Q's call-result
+    // rule refuses p <- mk(g) and the annotated q over hh = (h, h) without this change
+    // (lang::types::written_value_sharing_a_node_holds_one_instance,
+    // written_holder_sharing_a_node_holds_one_instance and the twin
+    // written_value_of_two_reads_holds_two_instances pass on both), and the review-r9
+    // m5/mono probes check alike on base-r18 and the lane. Needs a soak.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
         const MONOMORPHIC_EXPANSIONS: usize = 64;
-        /// A shared node rebuilds once and stays shared, unless a function
-        /// type beneath it instantiated: each occurrence of one takes its
-        /// own variables.
+        /// A shared node rebuilds once and stays shared: every occurrence
+        /// of it holds the one instance of each function beneath it.
         struct Memo<'a> {
             open: &'a nohash::IntSet<LambdaId>,
+            /// each entry keeps its node alive, so no other node takes its
+            /// address
             done: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
-            fresh: bool,
             env: &'a Env,
             /// the typedefs being expanded, and the lowest of them a
             /// nested application met: an expansion holding its own
@@ -2272,13 +2288,9 @@ impl<R: Rt> CompileCtx<R> {
                 {
                     return r.clone();
                 }
-                let outer = mem::replace(&mut m.fresh, false);
                 let r = match t {
                     Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
-                    Type::Fn(ft) => {
-                        m.fresh = true;
-                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
-                    }
+                    Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate(m.open)))),
                     // a typedef's arguments stand for what its body holds:
                     // instantiated as one, or, where the body holds two
                     // places a copy takes apart, as its expansion would be
@@ -2353,7 +2365,6 @@ impl<R: Rt> CompileCtx<R> {
                                     ))
                                 .then_some((key, body)),
                             });
-                        m.fresh = true;
                         let as_one =
                             |open| t.instantiate_with(&mut LPooled::take(), open);
                         match apart {
@@ -2377,19 +2388,15 @@ impl<R: Rt> CompileCtx<R> {
                     }
                     t => t.cow_children(&mut |c| instance(c, m)),
                 };
-                if let Some(k) = key
-                    && !m.fresh
-                {
+                if let Some(k) = key {
                     m.done.insert(k, (t.clone(), r.clone()));
                 }
-                m.fresh |= outer;
                 r
             })
         }
         let mut m = Memo {
             open: &self.rec_defs,
             done: LPooled::take(),
-            fresh: false,
             env: &self.env,
             expanding: LPooled::take(),
             cycle: usize::MAX,
