@@ -7697,11 +7697,12 @@ run!(
     FuseExpect::Jit
 );
 
-// The advice names a test that checks: the abstract member alone beside
-// the variable, and no annotation where an abstract parameter holds it.
+// Beside the variable, a pattern inside an abstract's parameter that
+// holds it is told to test the payload: a test of the abstract at the
+// bound matches only that instance.
 run!(
     abstract_pattern_beside_a_declared_variable_advice,
-    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `W<[`A(i64), `B(i64)]> as W(`A(z))`"),
+    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts; an abstract type's parameter holds the variable, and a type test of the abstract matches only the parameters it writes: bind the payload by a name and test that, `[`A(i64), `B(i64)] as ..`"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: ['b, W<'b>]| select x {
@@ -7756,6 +7757,82 @@ run!(
         g(`A(7))
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(7)));
+    FuseExpect::Jit
+);
+
+// An abstract member's pattern is refused over the whole union, so beside
+// one the advice is the member's test, nullable or not.
+run!(
+    nullable_variable_beside_an_abstract_member_advice,
+    r#"{
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [W<i64>, `B] |x: ['b, null]| -> i64 select x {
+            null => 0,
+            W(n) => n,
+            `B => 1
+        };
+        g(W(3))
+    }"#,
+    refused("write the type it tests, `W<i64> as W(n)`");
+    FuseExpect::None
+);
+
+run!(
+    nullable_variable_beside_an_abstract_member_written,
+    r#"{
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [W<i64>, `B] |x: ['b, null]| -> i64 select x {
+            null => 0,
+            W<i64> as W(n) => n,
+            [null, W<i64>, `B] as `B => 1
+        };
+        g(W(3))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
+    FuseExpect::None
+);
+
+// A variable the bound holds that the advised test does not is not
+// asked to be bounded.
+run!(
+    bound_holding_a_variable_the_test_leaves_out_advice,
+    r#"{
+        let g = 'b: [`A(i64), `B('c)] |x: 'b, y: 'c| -> i64 select x {
+            `A(z) => z,
+            _ => 0
+        };
+        let o: [`A(i64), `B(string)] = `A(3);
+        g(o, "s")
+    }"#,
+    refused("write the type it tests, ``A(i64) as `A(z)`");
+    FuseExpect::None
+);
+
+run!(
+    bound_holding_a_variable_bounded_by_any_advice,
+    r#"{
+        let g = 'c: Any, 'b: [`A(i64), `B('c)] |x: 'b, y: 'c| -> i64 select x {
+            `A(z) => z,
+            _ => 0
+        };
+        let o: [`A(i64), `B(string)] = `A(3);
+        g(o, "s")
+    }"#,
+    refused("write the type it tests, ``A(i64) as `A(z)`");
+    FuseExpect::None
+);
+
+run!(
+    bound_holding_a_variable_the_test_leaves_out_written,
+    r#"{
+        let g = 'b: [`A(i64), `B('c)] |x: 'b, y: 'c| -> i64 select x {
+            `A(i64) as `A(z) => z,
+            _ => 0
+        };
+        let o: [`A(i64), `B(string)] = `A(3);
+        g(o, "s")
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
     FuseExpect::Jit
 );
 

@@ -19,6 +19,7 @@ use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
+use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::fmt::Debug;
 use triomphe::Arc;
@@ -347,6 +348,21 @@ pub(super) enum Holder {
 // bound_naming_an_unbounded_variable_advice, unnamed_variable_advice_names_its_bound,
 // abstract_parameter_in_a_struct_field_advice, plus the three written_test_* pins
 // reworded; each has a passing twin. Messages only, no new refusals; needs no soak.
+// 2026-11-05 claude: Repair (review r17): (1) over a nullable variable beside an
+// abstract member the advice was the whole-scrutinee test, `[null, W<i64>, `B] as W(n)`,
+// which is refused (an abstract pattern over a union); rigid_written takes the whole
+// form only when no member the pattern may hold is abstract (is_abstract), else the
+// member's, `W<i64> as W(n)`. (2) The bound-it advice fired whenever a typed bound named
+// a variable with no bound, `'c: Any` included, though the test asked for does not hold
+// it: rigid_written no longer gives up on a bound holding a variable, and the advice
+// names one only where the test it would write names it (or there is none), and only one
+// with neither a typed bound nor a declared constraint. The control's abstract-parameter
+// advice now also reaches `['b, W<'b>]` (in_abstract_param expands names):
+// lang::select::abstract_pattern_beside_a_declared_variable_advice asserts it. Pins that
+// fail without the repair:
+// lang::select::nullable_variable_beside_an_abstract_member_advice,
+// bound_holding_a_variable_the_test_leaves_out_advice,
+// bound_holding_a_variable_bounded_by_any_advice; twins _written pass.
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
@@ -403,7 +419,13 @@ pub(super) fn rigid_refusal(
              its bound in its place"
         );
     }
-    if let Some(c) = unbounded_in_bounds(env, tv) {
+    let written = rigid_written(env, ids, pat, typ, tv);
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    if let Some(t) = &written {
+        t.collect_tvars(&mut named);
+    }
+    let in_test = |c: &TVar| written.is_none() || named.contains_key(&c.name);
+    if let Some(c) = unbounded_in_bounds(env, tv, &in_test) {
         let (head, fix) = match holder {
             Holder::Arm => (
                 format_compact!("{pat} tests inside {what}"),
@@ -426,7 +448,7 @@ pub(super) fn rigid_refusal(
         );
     }
     let or_bound = or_bound(tv, &var);
-    match (holder, rigid_written(env, ids, pat, typ, tv)) {
+    match (holder, written) {
         (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
             "{pat} tests inside {what}, and no type test holds its function type: \
              declare no {var}, writing its bound in its place"
@@ -534,19 +556,29 @@ fn or_bound(tv: &TVar, var: &str) -> CompactString {
     }
 }
 
-/// A variable a program wrote that a bound of `tv` holds, held rigid
-/// with no bound of its own: a test written over `tv` cannot name it.
-fn unbounded_in_bounds(env: &Env, tv: &TVar) -> Option<TVar> {
-    tv.typed_bounds(env).iter().find_map(|b| {
-        b.first_open(&|c| {
-            c.is_rigid() && c.written_open().is_some() && c.typed_bounds(env).is_empty()
-        })
-    })
+/// Whether `c` is a variable a program wrote, held rigid with no bound of
+/// its own: a test written over it cannot name it.
+fn unbounded(env: &Env, c: &TVar) -> bool {
+    c.is_rigid()
+        && c.written_open().is_some()
+        && c.typed_bounds(env).is_empty()
+        && c.cell_constraints().is_empty()
 }
 
-/// Whether `typ` is `tv` beside `null`, whose test fuses written over the
-/// whole of it and not over the members `pat` may hold.
-fn nullable_variable(env: &Env, typ: &Type, tv: &TVar) -> bool {
+/// A variable a bound of `tv` holds that is [`unbounded`] and `wanted`.
+fn unbounded_in_bounds(
+    env: &Env,
+    tv: &TVar,
+    wanted: &dyn Fn(&TVar) -> bool,
+) -> Option<TVar> {
+    tv.typed_bounds(env)
+        .iter()
+        .find_map(|b| b.first_open(&|c| unbounded(env, c) && wanted(c)))
+}
+
+/// Whether `typ` is a variable beside `null`, whose test fuses written over
+/// the whole of it and not over the members a pattern may hold.
+fn nullable_variable(env: &Env, typ: &Type) -> bool {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members_with(env, typ, &mut members, &mut |_| ()).is_ok()
         && !members.is_empty()
@@ -568,14 +600,8 @@ fn rigid_written(
     let bounds = tv.typed_bounds(env);
     let [bound] = &bounds[..] else { return None };
     let bound = rigid_as_bounds(env, bound)?;
-    if bound.has_free() {
-        return None;
-    }
     let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
     let t = typ.written_form(&mut |t| is_tv(t).then(|| bound.clone()))?;
-    if !is_alone(typ, tv) && nullable_variable(env, typ, tv) {
-        return Some(t);
-    }
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, &t, &mut members).ok()?;
     let held: SmallVec<[Type; 8]> = members
@@ -583,12 +609,30 @@ fn rigid_written(
         .filter(|m| pat.may_hold(env, ids, m).unwrap_or(true))
         .cloned()
         .collect();
+    if !is_alone(typ, tv)
+        && nullable_variable(env, typ)
+        && !held.iter().any(|m| is_abstract(env, m))
+    {
+        return Some(t);
+    }
     Some(match &held[..] {
         [] => t,
         _ if held.len() == members.len() => t,
         [m] => m.clone(),
         _ => Type::Set(Arc::from_iter(held)),
     })
+}
+
+/// Whether `t` is an abstract type, written or named: an abstract
+/// pattern over a union holding it is refused, so its test is the member.
+fn is_abstract(env: &Env, t: &Type) -> bool {
+    match t {
+        Type::Abstract { .. } => true,
+        Type::Ref(_) => {
+            matches!(t.lookup_ref_probe(env), Some((_, Type::Abstract { .. })))
+        }
+        _ => false,
+    }
 }
 
 /// Whether `t` holds `tv` in an abstract type's parameter, which no
