@@ -61,8 +61,20 @@ pub(crate) fn standing_stamp(e: Option<&(TagValue, u64)>, cycle: u64) -> u64 {
 /// its interface's join, the binding implementing a `val` is the val's
 /// ([`crate::StaticCallees::join`]). Every read, delivery, store entry,
 /// registration and waiting write of either is the val's.
-#[derive(Debug, Clone, Default)]
-pub struct VarAliases(Option<Arc<Aliases>>);
+#[derive(Debug, Clone)]
+pub struct VarAliases {
+    /// The smallest and the largest alias, so most ids are none by two
+    /// compares; with no aliases `lo > hi`.
+    lo: u64,
+    hi: u64,
+    aliases: Option<Arc<Aliases>>,
+}
+
+impl Default for VarAliases {
+    fn default() -> Self {
+        Self { lo: u64::MAX, hi: 0, aliases: None }
+    }
+}
 
 /// The aliases, and a filter of their ids that answers most ids that are
 /// none without a probe of the map.
@@ -82,37 +94,37 @@ fn filter_bit(id: BindId) -> (usize, u64) {
 
 impl VarAliases {
     pub(crate) fn new(map: IntMap<BindId, BindId>) -> Self {
-        if map.is_empty() {
-            return Self(None);
-        }
+        let (Some(lo), Some(hi)) =
+            (map.keys().map(BindId::inner).min(), map.keys().map(BindId::inner).max())
+        else {
+            return Self::default();
+        };
         let mut filter = Box::new([0u64; FILTER_WORDS]);
         for id in map.keys() {
             let (w, b) = filter_bit(*id);
             filter[w] |= b
         }
-        Self(Some(Arc::new(Aliases { filter, map })))
+        Self { lo, hi, aliases: Some(Arc::new(Aliases { filter, map })) }
     }
 
     /// The variable `id` names.
-    #[inline]
+    #[inline(always)]
     pub fn var(&self, id: BindId) -> BindId {
-        match &self.0 {
-            None => id,
-            Some(a) => {
-                let (w, b) = filter_bit(id);
-                if a.filter[w] & b == 0 {
-                    id
-                } else {
-                    a.map.get(&id).copied().unwrap_or(id)
-                }
-            }
-        }
+        let n = id.inner();
+        if n < self.lo || n > self.hi { id } else { self.var_between(id) }
+    }
+
+    #[inline(never)]
+    fn var_between(&self, id: BindId) -> BindId {
+        let Some(a) = &self.aliases else { return id };
+        let (w, b) = filter_bit(id);
+        if a.filter[w] & b == 0 { id } else { a.map.get(&id).copied().unwrap_or(id) }
     }
 
     /// These with every alias of `kept` it lacks for which `keep` holds.
     pub fn with_kept(&self, kept: &Self, mut keep: impl FnMut(&BindId) -> bool) -> Self {
-        let Some(old) = &kept.0 else { return self.clone() };
-        let mut m = self.0.as_ref().map(|a| a.map.clone()).unwrap_or_default();
+        let Some(old) = &kept.aliases else { return self.clone() };
+        let mut m = self.aliases.as_ref().map(|a| a.map.clone()).unwrap_or_default();
         let mut grew = false;
         for (inner, outer) in old.map.iter() {
             if !m.contains_key(inner) && keep(inner) {
@@ -124,7 +136,7 @@ impl VarAliases {
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {
-        match (&self.0, &other.0) {
+        match (&self.aliases, &other.aliases) {
             (None, None) => true,
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             _ => false,
@@ -202,10 +214,11 @@ unsafe impl<R: Rt + Sync> Send for ForkRt<R> {}
 unsafe impl<R: Rt + Sync> Sync for ForkRt<R> {}
 
 impl<R: Rt> ForkRt<R> {
-    /// Under `GRAPHIX_PAR_AUDIT`, note that this branch read `id`.
+    /// Under `GRAPHIX_PAR_AUDIT`, note that this branch read the
+    /// variable `id` names.
     pub(crate) fn note_read(&self, id: BindId) {
         if let Some(reads) = &self.reads {
-            reads.lock().insert(id);
+            reads.lock().insert(self.aliases.var(id));
         }
     }
 
@@ -1572,4 +1585,35 @@ fn shared_across_branches<R: Rt>() {
     sync::<Layered<TagValue>>();
     sync::<RtView<'static, R>>();
     sync::<Event>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn var_aliases_name_their_variables_only() {
+        let ids: Vec<BindId> =
+            (0..FILTER_WORDS * 64 + 8).map(|_| BindId::new()).collect();
+        let outer = ids[0];
+        // ids[2] and ids[FILTER_WORDS * 64 + 2] share a filter bit
+        let inner = [ids[2], ids[6], ids[FILTER_WORDS * 64 + 5]];
+        let aliases = VarAliases::new(inner.iter().map(|id| (*id, outer)).collect());
+        for id in inner {
+            assert_eq!(aliases.var(id), outer)
+        }
+        for id in [
+            ids[0],
+            ids[1],
+            ids[3],
+            ids[FILTER_WORDS * 64 + 2],
+            ids[FILTER_WORDS * 64 + 7],
+        ] {
+            assert_eq!(aliases.var(id), id)
+        }
+        let none = VarAliases::default();
+        for id in inner.iter().chain([&outer]) {
+            assert_eq!(none.var(*id), *id)
+        }
+    }
 }

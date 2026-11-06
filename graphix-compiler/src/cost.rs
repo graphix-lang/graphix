@@ -830,6 +830,11 @@ impl SlotSite {
                     // cost::tests::slots_whose_forks_lose_run_in_order,
                     // a_fork_pays_its_overhead_in_each_half,
                     // dear_slots_are_estimated_past_the_last_bucket.
+                    // 2026-11-05 claude: Review r17 round 2: reviewer 2 measured the
+                    // heavy-collection repeat as instructions (load 22-60): per cycle Auto
+                    // against Off is in line with base once D18's alias cost is fitted
+                    // out; that cost is fixed under iface-pair-one-var-01. The quiet-box
+                    // wall-clock repeat is not done.
                     SlotPlan::Fork { grain: grain(cal, cost, n, RANGES_PER_WORKER) }
                 }
             }

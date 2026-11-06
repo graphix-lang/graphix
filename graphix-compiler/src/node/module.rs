@@ -449,6 +449,18 @@ struct Proxy {
 // a_write_through_an_interface_lands_across_a_reload (d4). The seq planner still closes
 // write sets over the joined names (add_joined): the checker's two bindings are one
 // variable's two names. Needs a soak.
+// 2026-11-05 claude: Review r17 round 2: VarAliases::var cost 37 instructions a call in the
+// dev build (an out-of-line call through triomphe's Arc::ptr to an 8KB filter, about 160M
+// calls in fixed.gx), which callgrind put at 710M of the +981M D18 added to a 40-cycle
+// fixed.gx; perf's instruction samples had skidded it into Layered::get and the store
+// probes, whose own counts did not move. VarAliases now carries its smallest and largest
+// alias and var is an inlined two-compare range test, the filter and map out of line
+// (var_between). fixed.gx (64 slots folding 400, 300 cycles, --no-fusion), instructions:u:
+// GRAPHIX_PAR=off base-r17 77.7G, D18 85.0G, now 79.3G (pre-D18 78.1G); auto 105.5G /
+// 116.8G / 108.1G; vars.gx 2.34G / 2.39G / 2.33G. Pin:
+// branch::tests::var_aliases_name_their_variables_only. ForkRt::note_read now notes the
+// variable (aliases.var), so GRAPHIX_PAR_AUDIT matches a read of an implementing binding
+// against the val-keyed event and store; no planner witness exists to pin it.
 impl Proxy {
     /// A private inner binding is the outer one's variable at run time
     /// ([`crate::branch::VarAliases`]), and one `<-` target with it: a
