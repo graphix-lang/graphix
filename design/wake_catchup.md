@@ -365,6 +365,14 @@ As built:
   after no re-raise visits no statement for it. The reactive fuzzer found the
   gap (`findings/wake-resume-seq-abort-oct2026/`): the constants that
   used to fire at a wake had papered over it.
+- **A birth owes no such fire.** A `let` entered under a born view (a seq
+  step's next run, an arm's first entry in it) does not re-raise a write that
+  landed while it slept: the write is the previous run's. It stands, stale, as
+  the `let`'s other values do. `let x = 0` always hid this, its constant firing
+  over the write; `let x = never()` did not, so the last write of a run fired
+  into the next one, and a nested `seqq`'s last credit paid its newborn queue
+  twice. Pins: `lang::seqq::{a_rerun_keeps_every_request,
+  a_write_a_run_left_does_not_fire_in_the_next}`.
 - **The initializer's catch-up replaces such a write.** Catch-up keeps
   no order inside the sleep: when the `let`'s initializer fires at the
   wake by catch-up, it replaces the re-raised write (`Bind::update` holds

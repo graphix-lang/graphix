@@ -747,6 +747,11 @@ old value. A taken `with` branch is not an abort: the run continues
 and returns its credit at completion; an abort from the with body is
 the machine's abort.
 
+A new birth pays one credit, the activation's. The credit a previous run
+wrote as its step completed lands while the step sleeps and never reaches
+it (`design/wake_catchup.md`, a birth owes no such fire): a second credit
+would hand the next request to a busy machine, which drops it.
+
 A nested `seq` inside `seqq` drops queued external-value redirects when
 its body is rewritten, so its steps snapshot external variables at their
 own entry. Trigger-value redirects and local cells stay tied to the

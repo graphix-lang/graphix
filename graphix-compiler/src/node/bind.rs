@@ -257,7 +257,8 @@ impl<R: Rt> Bind<R> {
     /// sleep, a seq machine's reset) was seen by none of the readers that
     /// slept with it: deliver it to them fired, once, at the wake. A reader
     /// outside (a `&mut` that escaped) saw it live, so the enclosing block
-    /// takes the delivery back after its last statement.
+    /// takes the delivery back after its last statement. A birth owes nothing:
+    /// such a write is the previous run's, which stands but does not fire.
     fn reraise_writes_while_asleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let slept_at = self.slept_at;
         let mut late: SmallVec<[(BindId, TagValue); 2]> = SmallVec::new();
@@ -760,7 +761,7 @@ impl<R: Rt> Update<R> for Bind<R> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
-        if woke {
+        if woke && !ctx.event.born() {
             self.reraise_writes_while_asleep(ctx);
         }
         let tv = self.node.update(ctx);

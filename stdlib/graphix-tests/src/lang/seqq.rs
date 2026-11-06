@@ -384,3 +384,79 @@ async fn delayed_capture_keeps_each_request(mode: Mode) -> Result<()> {
 }
 
 modes!(delayed_capture_keeps_each_request);
+
+/// The body's period is 11 cycles, so one of these `t` ends a request in the
+/// cycle its step completes, wherever the lowering moves that cycle.
+const NESTED_RERUN: &str = r#"{
+        let c = 0;
+        c <- select c < 180 { true => c + 1, false => never() };
+        let n = select c { 0 => 0, 80 => 1, _ => never() };
+        let f = 0;
+        f <- select c % 7 { 0 => c ~ f + 1, _ => never() };
+        let probe = |t: i64| seq let k = n {
+            {
+                let v = seqq let j = f {
+                    until live(c) % 11 == 0;
+                    println("[t] [k] [j]");
+                    j
+                };
+                let w = select live(c) >= t + k * 80 { true => true, false => never() };
+                v
+            };
+            k
+        };
+        [probe(24), probe(25), probe(26), probe(27), probe(28), probe(29),
+         probe(30), probe(31), probe(32), probe(33), probe(34)]
+    }"#;
+
+async fn a_rerun_keeps_every_request(mode: Mode) -> Result<()> {
+    use poolshark::local::LPooled;
+    let (_, out) = run_delta(NESTED_RERUN, mode).await?;
+    let lines: LPooled<Vec<(i64, i64, i64)>> = out
+        .lines()
+        .map(|l| {
+            let mut n = l.split(' ').map(|n| n.parse::<i64>().unwrap());
+            (n.next().unwrap(), n.next().unwrap(), n.next().unwrap())
+        })
+        .collect();
+    for t in 24..=34 {
+        for k in 0..=1 {
+            let run: LPooled<Vec<i64>> = lines
+                .iter()
+                .filter(|(a, b, _)| *a == t && *b == k)
+                .map(|(_, _, j)| *j)
+                .collect();
+            assert!(run.len() >= 2, "t {t} run {k} ran {:?}: {out}", &run[..]);
+            assert!(
+                run.windows(2).all(|w| w[0] + 1 == w[1]),
+                "t {t} run {k} lost a request, {:?}: {out}",
+                &run[..]
+            );
+        }
+    }
+    Ok(())
+}
+
+modes!(a_rerun_keeps_every_request);
+
+async fn a_write_a_run_left_does_not_fire_in_the_next(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let c = 0;
+        c <- select c < 40 { true => c + 1, false => never() };
+        let n = select c { 0 => 0, 20 => 1, _ => never() };
+        let fires = 0;
+        let body = |k: i64| {
+            let x = never<i64>();
+            x <- select c { 6 => 7, _ => never() };
+            fires <- x ~ fires + 1;
+            select c >= 6 + k * 20 { true => k, false => never() }
+        };
+        let runs = seq let k = n { body(k); k };
+        select c { 40 => (runs, fires), _ => never() }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(values, [Value::Array(ValArray::from([Value::I64(1), Value::I64(0)]))]);
+    Ok(())
+}
+
+modes!(a_write_a_run_left_does_not_fire_in_the_next);
