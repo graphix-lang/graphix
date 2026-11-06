@@ -386,6 +386,24 @@ run!(written_test_beside_bool_head_covers, r#"{
     [u((true, null)), u((false, 7)), u((false, null)), u((true, 3))]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 1, 0]); FuseExpect::None);
 
+// The primitives no written test names are one head, so seven bool
+// positions beside a union of eight primitives and null stay under the
+// pool's limit.
+run!(unsplit_primitives_are_one_head, r#"{
+    let u = |x: (bool, bool, bool, bool, bool, bool, bool, [i64, u8, i32, u32, string, f64, f32, bytes, null])| select x {
+        (_, _, _, _, _, _, _, null) => 0,
+        (true, _, _, _, _, _, _, _) => 1,
+        (false, true, _, _, _, _, _, _) => 2,
+        (false, false, true, _, _, _, _, _) => 3,
+        (false, false, false, true, _, _, _, _) => 4,
+        (false, false, false, false, true, _, _, _) => 5,
+        (false, false, false, false, false, true, _, _) => 6,
+        (false, false, false, false, false, false, true, _) => 7,
+        (false, false, false, false, false, false, false, _) => 99
+    };
+    u((false, false, false, false, false, false, false, 3))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))); FuseExpect::Jit);
+
 run!(written_tests_split_a_primitive_member, r#"{
     let u = |x: (bool, [i64, string, null])| select x {
         (true, _) => 0,

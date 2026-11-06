@@ -2118,6 +2118,18 @@ impl StructPatternNode {
     // written_test_leaves_a_member_part_refused,
     // written_test_leaves_a_declared_variable_part_refused. Census of every .gx/.gxi here
     // and in ../netidx: no difference against base-r17. Needs a soak.
+    // 2026-11-05 claude: Repair (review r17): one Head::Prim per primitive raised a
+    // position's heads past the pool's 1024 combinations, so seven bool positions beside
+    // [i64, u8, i32, u32, string, f64, f32, bytes, null] were refused "missing match
+    // cases" (main runs them). The primitives a select's written tests name
+    // (written_primitives, the Split) are heads of their own; the rest are one Head::Rest,
+    // which only a name or `_` admits, at a position and in a cell's primitive bound
+    // alike. Pin that fails without the repair:
+    // lang::select_undecided::unsplit_primitives_are_one_head. design/must_reject.md,
+    // design/tvar_constraints.md and CLAUDE.md say so. The commit's dead-arm refusals
+    // (wc_dead, wc_dead2: a written-test arm whose part earlier arms claim) stand: the
+    // arms are dead. Two gaps remain refused on main and lane alike, now CR
+    // written-test-variable-cover-01.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members

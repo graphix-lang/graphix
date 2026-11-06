@@ -1342,8 +1342,10 @@ cycle, across workers; the compiler never pins threads.
   position is a head of its own that only a name or `_` there admits,
   `Head::Open`, unless it has one typed bound of primitives (a declared
   variable's), whose heads it has instead; each primitive member but
-  `bool` and `null` is a head `Head::Prim`, which a name or `_` admits
-  and so does a written test holding that primitive), and an arm under
+  `bool` and `null` that a written test of the select names is a head
+  `Head::Prim`, which a name or `_` admits and so does a written test
+  holding that primitive, the others one head, `Head::Rest`, which only a
+  name or `_` admits), and an arm under
   a type test pools the member the test holds, or, where the test is
   a tuple or struct of the member's shape holding only part of a
   position by `bool`, `null` and primitives, that part of it

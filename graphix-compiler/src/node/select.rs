@@ -24,7 +24,7 @@ use crate::{
     typ::{AbstractId, InfiniteType, ShallowScrutinee, TVar, Type, TypeMismatch},
     wrap,
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -694,11 +694,15 @@ impl Reach {
         let atype = scrut.normalize();
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());
         let ladders = Ladder::of(env, &members_of)?;
+        let mut split = Split::empty();
+        for (pat, _) in arms.iter().filter(|(p, _)| p.explicit_type_predicate) {
+            written_primitives(env, &pat.type_predicate, &mut split)
+        }
         Ok(Self {
             atype,
             members_of,
             ladders,
-            pool: LiteralPool::default(),
+            pool: LiteralPool { groups: Vec::new(), split },
             bools: (false, false),
             covered: SmallVec::new(),
             wildcard: false,
@@ -1159,9 +1163,13 @@ enum Head {
     /// A value of an open cell the position holds, which only a name or
     /// `_` there matches.
     Open,
-    /// The values of one primitive member but `bool` and `null`, which
-    /// only a name or `_` there, or a written test holding them, matches.
+    /// The values of one primitive member but `bool` and `null` that a
+    /// written test of the select names, which only a name or `_` there,
+    /// or a written test holding them, matches.
     Prim(Typ),
+    /// The values of the other primitive members but `bool` and `null`,
+    /// which only a name or `_` there matches.
+    Rest,
 }
 
 /// One position of a composite pattern, keyed by its path into the
@@ -1237,7 +1245,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 /// cell, [`Head::Prim`] for each of its other primitives and
 /// [`Head::Open`] for the open cells among them, an open cell whose one
 /// typed bound is a union of primitives having those as its heads.
-fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
+fn heads(env: &Env, split: Split, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let mut cells: SmallVec<[TVar; 2]> = SmallVec::new();
     union_members_with(env, t, &mut members, &mut |tv| cells.push(tv.clone()))?;
@@ -1253,7 +1261,7 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
                 composite = true;
                 out.push(Head::Composite)
             }
-            Type::Primitive(p) => primitive_heads(*p, &mut out),
+            Type::Primitive(p) => primitive_heads(split, *p, &mut out),
             _ => return Ok(None),
         }
     }
@@ -1270,7 +1278,7 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
             true => {
                 for m in bound.iter() {
                     if let Type::Primitive(p) = m {
-                        primitive_heads(*p, &mut out)
+                        primitive_heads(split, *p, &mut out)
                     }
                 }
             }
@@ -1281,13 +1289,43 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     Ok(Some(out))
 }
 
+/// The primitives a select's written tests name, each a head of its own
+/// at every position; the others are one head, [`Head::Rest`].
+type Split = BitFlags<Typ>;
+
+/// The primitives `t`, a written test, names, through typedefs and bound
+/// cells.
+fn written_primitives(env: &Env, t: &Type, split: &mut Split) {
+    fn go(env: &Env, t: &Type, split: &mut Split, seen: &mut AHashSet<usize>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::Primitive(p) => *split |= *p,
+            Type::TVar(tv) => {
+                if let Some(b) = tv.binding() {
+                    go(env, &b, split, seen)
+                }
+            }
+            Type::Ref(_) => {
+                if let Some((key, body)) = t.lookup_ref_probe(env)
+                    && seen.insert(key)
+                {
+                    go(env, &body, split, seen)
+                }
+            }
+            t => t.for_each_child(&mut |c| go(env, c, split, seen)),
+        })
+    }
+    go(env, t, split, &mut LPooled::take());
+    *split &= !(Typ::Bool | Typ::Null);
+}
+
 /// The heads of the primitives `p`, each once.
-fn primitive_heads(p: BitFlags<Typ>, out: &mut SmallVec<[Head; 4]>) {
+fn primitive_heads(split: Split, p: BitFlags<Typ>, out: &mut SmallVec<[Head; 4]>) {
     for typ in p.iter() {
         let hs: &[Head] = match typ {
             Typ::Bool => &[Head::Bool(true), Head::Bool(false)],
             Typ::Null => &[Head::Null],
-            typ => &[Head::Prim(typ)],
+            typ if split.contains(typ) => &[Head::Prim(typ)],
+            _ => &[Head::Rest],
         };
         for h in hs {
             if !out.contains(h) {
@@ -1319,11 +1357,13 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 /// `Never` when it cannot match `m`.
 fn pooled_leaves(
     env: &Env,
+    split: Split,
     sp: &StructPatternNode,
     m: &Type,
 ) -> Result<Result<SmallVec<[Leaf; 8]>, Miss>> {
     fn leaf(
         env: &Env,
+        split: Split,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
@@ -1335,7 +1375,7 @@ fn pooled_leaves(
             | StructPatternNode::Struct { .. }
             | StructPatternNode::Abstract { .. } => {
                 return crate::stack::ensure_sufficient(|| {
-                    children(env, sp, t, path, out)
+                    children(env, split, sp, t, path, out)
                 });
             }
             StructPatternNode::Or { alts } => {
@@ -1349,7 +1389,7 @@ fn pooled_leaves(
                 None => return Ok(Some(Miss::Unread)),
             },
         };
-        let domain = heads(env, t)?;
+        let domain = heads(env, split, t)?;
         if let Some(hs) = &admitted {
             let held = match &domain {
                 Some(d)
@@ -1375,6 +1415,7 @@ fn pooled_leaves(
     }
     fn children(
         env: &Env,
+        split: Split,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
@@ -1396,7 +1437,7 @@ fn pooled_leaves(
                 if !matches!(m, Type::Tuple(_) | Type::Struct(_)) {
                     return Ok(Some(Miss::Unread));
                 }
-                match heads(env, t)? {
+                match heads(env, split, t)? {
                     Some(domain) if domain.contains(&Head::Composite) => out.push(Leaf {
                         path: path.clone(),
                         heads: Some(smallvec![Head::Composite]),
@@ -1410,7 +1451,7 @@ fn pooled_leaves(
         let mut at =
             |i: usize, p: &StructPatternNode, t: &Type| -> Result<Option<Miss>> {
                 path.push(i as u32);
-                let r = leaf(env, p, t, path, out);
+                let r = leaf(env, split, p, t, path, out);
                 path.pop();
                 r
             };
@@ -1459,7 +1500,7 @@ fn pooled_leaves(
         }
     }
     let mut out = SmallVec::new();
-    Ok(match children(env, sp, m, &mut SmallVec::new(), &mut out)? {
+    Ok(match children(env, split, sp, m, &mut SmallVec::new(), &mut out)? {
         Some(miss) => Err(miss),
         None if out.iter().any(|l| l.heads.is_some()) => Ok(out),
         None => Err(Miss::Unread),
@@ -1546,9 +1587,9 @@ const MAX_POOL_COMBINATIONS: usize = 1024;
 /// scrutinee's member of that shape once some arm matches every
 /// combination of heads the member admits (`(true, `A) | (true, `B) |
 /// (false, _)` covers `(bool, [`A, `B])`).
-#[derive(Default)]
 struct LiteralPool {
     groups: Vec<PoolGroup>,
+    split: Split,
 }
 
 struct PoolGroup {
@@ -1558,12 +1599,22 @@ struct PoolGroup {
     done: bool,
 }
 
+// CR claude for claude: [bug/low] Two written-test coverages the pool still misses,
+// refused "missing match cases" on main and on the bool-beside-null-cover-01 repair
+// alike: a written test naming the declared variable at the position, `'b: [i64,
+// string] |x: (bool, ['b, null])|` with `(true, _)`, `(bool, 'b) as (false, v)` and
+// `(false, null)`; and written tests that narrow two positions at once, `([bool,
+// null], [i64, null])` split by `([bool, null], null) as (_, null)`, `(bool, i64) as
+// (true, n)`, `(bool, i64) as (false, n)` and `(null, i64) as (_, n)`. Both are well
+// typed and every value has an arm; not traced. Found by review r17 of lane s2.
+// probes: ~/ptmp/cr29/scratch/r17-m/{wc_s8,wc_s9}.gx (written-test-variable-cover-01)
 /// The positions at which written test `t`, a tuple or struct of the
 /// shape of `m`, holds only part of `m`'s values there, with the heads
 /// of the part it holds; `None` where `t` is another shape or holds a
 /// part by more than bool, null and primitive heads.
 fn written_part(
     env: &Env,
+    split: Split,
     t: &Type,
     m: &Type,
 ) -> Result<Option<SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>>> {
@@ -1590,7 +1641,7 @@ fn written_part(
         if t.contains_with_flags(BitFlags::empty(), env, m)? {
             continue;
         }
-        match heads(env, t)? {
+        match heads(env, split, t)? {
             Some(hs)
                 if hs
                     .iter()
@@ -1609,6 +1660,7 @@ fn written_part(
 /// `Unread` when it holds part of an open cell's values.
 fn restrict_leaves(
     env: &Env,
+    split: Split,
     m: &Type,
     leaves: &mut SmallVec<[Leaf; 8]>,
     part: SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>,
@@ -1624,7 +1676,7 @@ fn restrict_leaves(
                     _ => None,
                 };
                 let domain = match t {
-                    Some(t) => heads(env, t)?,
+                    Some(t) => heads(env, split, t)?,
                     None => return Ok(Err(Miss::Unread)),
                 };
                 leaves.push(Leaf { path: at.into_iter().collect(), heads: None, domain });
@@ -1683,18 +1735,18 @@ impl LiteralPool {
             if let Some(t) = explicit
                 && !t.contains_with_flags(BitFlags::empty(), env, &m)?
             {
-                match written_part(env, t, &m)? {
+                match written_part(env, self.split, t, &m)? {
                     Some(part) => held = Some(part),
                     None => continue,
                 }
             }
-            let mut leaves = match pooled_leaves(env, sp, &m)? {
+            let mut leaves = match pooled_leaves(env, self.split, sp, &m)? {
                 Ok(leaves) => leaves,
                 Err(Miss::Never) => continue,
                 Err(Miss::Unread) => return Ok(Claim::Unpooled),
             };
             if let Some(part) = held {
-                match restrict_leaves(env, &m, &mut leaves, part)? {
+                match restrict_leaves(env, self.split, &m, &mut leaves, part)? {
                     Ok(()) => (),
                     Err(Miss::Never) => continue,
                     Err(Miss::Unread) => return Ok(Claim::Unpooled),
