@@ -8929,7 +8929,7 @@ run!(
   let f = 'a: [i64, string], 'c: ['a, null], 'b: ['c, `X] |x: 'b| -> [`X, null, i64] x;
   f(`X)
 }"#,
-    refused("[i64, null, `X] does not contain 'b: unbound within ['c: unbound within [null, 'a: unbound within [i64, string]], `X]");
+    refused("[i64, null, `X] does not contain 'b");
     FuseExpect::None
 );
 
