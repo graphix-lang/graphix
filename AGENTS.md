@@ -474,7 +474,7 @@ element, and a fold's quiet accumulator are written to the store alone
 (`design/dense_delivery.md`). A
 module's interface pair is the `val`'s one variable at run time from
 its join (`branch::VarAliases`; `Rt`'s store, reader and notify calls
-take the `branch::Var` an id names, resolved once per read or delivery):
+take the `branch::Var` an id names):
 the body's `let` publishes to it, and
 every read, write, store entry and registration through the
 implementing binding is the val's, in one queue; a reload drops the

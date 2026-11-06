@@ -516,6 +516,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         self.store_get_var(self.var_of(*id))
     }
 
+    #[inline]
     pub fn store_get_var(&self, var: Var) -> Option<&(TagValue, u64)> {
         let mut view: &RtView<'_, R> = self;
         loop {
@@ -805,6 +806,7 @@ impl<V: Clone> Layered<V> {
         self.get_var(self.aliases.var_of(*id))
     }
 
+    #[inline]
     pub fn get_var(&self, var: Var) -> Option<&V> {
         let id = &var.0;
         let mut layer = self;
@@ -831,6 +833,7 @@ impl<V: Clone> Layered<V> {
         self.insert_var(self.aliases.var_of(id), v)
     }
 
+    #[inline]
     pub fn insert_var(&mut self, var: Var, v: V) -> Option<V> {
         let id = var.0;
         let prev = self.map.insert(id, v);
@@ -958,6 +961,13 @@ impl<V: Clone> Layered<V> {
     // so no wrong answer is known; ExecCtx::deliver and read_var resolve the event and the
     // runtime each by its own table because of it. A merge that unions the child's table
     // over this one (VarAliases::with_kept) would keep them one table. (var-alias-merge-01)
+    // 2026-11-06 claude: late_fire (node/mod.rs) is a second consumer of the lagging table
+    // that no store read covers: it resolves the id by the event's table,
+    // ctx.event.variables.var_of, and looks that key up in event.late, which is filled from
+    // Rt::late under the key ExecCtx::deliver resolved by the runtime's table. Where the
+    // event's table lags, a late fire to a val's reader is missed. Not a regression (the
+    // event's table was used there before); no witness built, it needs a dynamic module
+    // joined inside a forked sibling. The fix of the merge covers it too. (review r17 o2)
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
         if !self.aliases.same(&child.aliases) {
