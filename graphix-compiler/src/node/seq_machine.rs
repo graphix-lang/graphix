@@ -233,8 +233,7 @@ impl<R: Rt> SeqMachine<R> {
         // write them
         let writers: SmallVec<[&Expr; 32]> =
             m.steps.iter().flat_map(|s| s.items.iter()).collect();
-        let top = super::block_top(ctx, scope);
-        ctx.written.enter(&writers, top);
+        ctx.written.enter(&writers);
         let steps = Self::compile_steps(ctx, flags, top_id, m, &scopes);
         ctx.written.exit();
         let steps = steps?;

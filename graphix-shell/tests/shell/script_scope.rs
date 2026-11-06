@@ -157,3 +157,44 @@ fn a_holder_written_through_self_or_its_package_path() {
         accepted(&case, &main, &[], "w z 1");
     }
 }
+
+fn refused(case: &str, main: &str, files: &[(&str, &str)], says: &str) {
+    let [check, _] = verdicts(main, files);
+    let e = check.err().unwrap_or_else(|| panic!("{case}: --check passed"));
+    assert!(e.contains(says), "{case}: refused with {e}");
+}
+
+/// A module aliased through `package::` from the script or a module
+/// beside it is written through the alias, so its generic let is one
+/// instance.
+#[test]
+fn a_write_through_a_package_alias_names_the_modules_let() {
+    let m = ("m.gx", "let s = {g: |x| x};\nlet j = s.g;\nlet w = s.g\n");
+    let uses = format!("{EXIT}println((m::j(1), m::j(\"s\")))\n");
+    refused(
+        "parent",
+        &format!(
+            "mod m;\nuse package::m as q;\nlet r = &mut q::j;\n*r <- |x: i64| x + 1;\n{uses}"
+        ),
+        &[m],
+        "does not contain string",
+    );
+    refused(
+        "sibling",
+        &format!("mod m;\nmod n;\n{uses}"),
+        &[
+            m,
+            ("n.gx", "use package::m as q;\nlet r = &mut q::j;\n*r <- |x: i64| x + 1\n"),
+        ],
+        "does not contain string",
+    );
+    accepted(
+        "sibling-other",
+        &format!("mod m;\nmod n;\n{uses}"),
+        &[
+            m,
+            ("n.gx", "use package::m as q;\nlet r = &mut q::w;\n*r <- |x: i64| x + 1\n"),
+        ],
+        r#"(1, "s")"#,
+    );
+}

@@ -258,7 +258,7 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
         Accept(SETF),
         Refuse(
             "setf(&mut j)",
-            "j was made generic by an earlier compile, and a writable reference to it \
+            "j was made generic before this write compiled, and a writable reference to it \
              would let a write narrow it",
         ),
         Produce("j(2.5)", Value::F64(5.0)),
@@ -314,7 +314,7 @@ async fn write_as_general_decides_nothing() -> Result<()> {
         Accept("let j2 = s2.g"),
         Refuse(
             "j2 <- |x: i64| -> i64 x",
-            "made generic by an earlier compile, so what is written to it must be as \
+            "made generic before this write compiled, so what is written to it must be as \
              general",
         ),
         Produce("j2(\"s\")", Value::String(arcstr::literal!("s"))),

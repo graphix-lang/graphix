@@ -1858,9 +1858,10 @@ impl<R: Rt> CompileCtx<R> {
 
     /// Record `id` as a `<-` target, of this batch and for good. A
     /// binding something writes is never generalized: its uses share one
-    /// type, which every value written takes (the value restriction). One
-    /// an earlier compile generalized stays so, its uses having relied on
-    /// it, and a write is held to its type (`Connect::typecheck0_with`).
+    /// type, which every value written takes (the value restriction): one
+    /// not yet checked takes one instance at its check (`Bind::typecheck0`).
+    /// One already generalized stays so, its uses having relied on it, and
+    /// a write is held to its type (`Connect::typecheck0_with`).
     /// The bindings `id` is one variable with ([`StaticCallees::join`]),
     /// each a target with it.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
@@ -2021,8 +2022,9 @@ impl<R: Rt> CompileCtx<R> {
         StaticCallees::hold(&self.static_callees, id, call)
     }
 
-    /// Whether `id` is a binding an earlier compile generalized: its
-    /// check already made variables of a function it holds generic.
+    /// Whether `id` is a binding generalized before the write being
+    /// compiled: its check already made variables of a function it holds
+    /// generic.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }

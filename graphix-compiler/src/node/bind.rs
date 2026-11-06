@@ -573,7 +573,8 @@ impl<R: Rt> Bind<R> {
         self.type_leaves(ctx, leaves, apart)
     }
 
-    /// Type each name by its part, a copy of its own when `apart`.
+    /// Type each name by its part, a copy of its own when `apart`: of the
+    /// scheme, or for a name something writes, one instance.
     fn type_leaves(
         &self,
         ctx: &CompileCtx<R>,
@@ -583,9 +584,12 @@ impl<R: Rt> Bind<R> {
         let spec = &self.spec;
         for leaf in leaves {
             if let Some(b) = ctx.env.by_id.get(&leaf.id) {
-                let part = match apart {
-                    true => leaf.typ.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
-                    false => None,
+                let part = match (apart, ctx.connect_targets.contains(&leaf.id)) {
+                    (true, false) => {
+                        leaf.typ.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft))
+                    }
+                    (true, true) => Some(ctx.monomorphic(&leaf.typ)),
+                    (false, _) => None,
                 };
                 b.typ
                     .clone()
@@ -596,7 +600,7 @@ impl<R: Rt> Bind<R> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A name a destructuring `let` binds out of a
+    // XCR claude for claude: [bug/medium] A name a destructuring `let` binds out of a
     // generalized holder, which something later writes, passes --check and its run
     // refuses a call through it: `let s = {f: |x| x, n: 1}; let {f, n} = s;
     // println(f("a")); f <- t ~ |x: i64| x + 1` runs to "a run-time bind at f(\"a\") did
@@ -620,6 +624,19 @@ impl<R: Rt> Bind<R> {
     // pattern takes apart passes the literal's scheme on, so this is the
     // destructured-generalized-holder shape (outside a seq the literal's names are
     // refused). probe ~/ptmp/cr29/scratch/r16-Q/p3/z1_seq_destr_lambda_after_write.gx
+    // 2026-11-05 claude: Lane Q r16 part 4: a name something writes takes one instance
+    // at its let's check: Bind::typecheck0 reads a written pattern's value with reads of
+    // its own (a single name's as an instance, not a scheme), and Bind::type_leaves
+    // gives a written name a pattern takes apart an instance of its part
+    // (ctx.monomorphic) while the pattern's other names keep the scheme. u9, u10, u11,
+    // u4, z1, s06, s07b, g07 and r16-Q/p4's shapes are refused by the check. Pins that
+    // fail with it undone: lang::quantified::destructured_and_written's five
+    // (a_struct_name_taken_from_a_holder_and_written_is_one_instance and the field,
+    // element, capture and seq-step forms), a_step_s_written_capture_is_one_instance,
+    // a_lambda_over_a_step_s_written_capture_is_its_one_instance; twins
+    // a_name_taken_from_a_holder_beside_a_written_one_is_generic,
+    // a_struct_name_taken_from_a_holder_and_written_takes_its_one_type,
+    // a_step_s_written_capture_is_its_write_after_it (now at one type).
     /// Whether the binding forwards its value's scheme (`let g = f`): a
     /// single name something writes holds an instance of its own instead.
     fn forwards(&self, ctx: &CompileCtx<R>) -> bool {
@@ -996,6 +1013,15 @@ impl<R: Rt> Update<R> for Bind<R> {
             && b.typ.is_some()
         {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec)?;
+        }
+        // every write compiled before this check is a target by now, the
+        // ones no block's walk found included: the value's reads are its own,
+        // and a written single name's are one instance of what they read
+        if written(ctx, &self.pattern) {
+            self.reads = ValueReads::Own;
+            if self.pattern.single_bind_id().is_some() {
+                mark_value(&mut self.node, true, Naming::Unnamed)
+            }
         }
         let node = &mut self.node;
         self.reads.within(ctx, |ctx| wrap!(node, node.typecheck0(ctx)))?;
@@ -1714,28 +1740,34 @@ fn written<R: Rt>(ctx: &CompileCtx<R>, pattern: &StructPatternNode) -> bool {
 /// binding a field or tuple read reads, and where `data`, every part of the
 /// data literals it is built of ([`holds_function`]'s walk).
 pub(crate) fn name_value<R: Rt>(node: &mut Node<R>, data: bool) {
+    mark_value(node, data, Naming::Named)
+}
+
+/// [`name_value`]'s walk, giving each reference it reaches `naming`; a
+/// lambda is named only by [`Naming::Named`].
+fn mark_value<R: Rt>(node: &mut Node<R>, data: bool, naming: Naming) {
     if let Some(l) = node.downcast_mut::<super::lambda::Lambda>() {
-        return l.named = true;
+        return l.named |= naming == Naming::Named;
     }
     if let Some(r) = node.downcast_mut::<Ref>() {
-        return r.naming = Naming::Named;
+        return r.naming = naming;
     }
     if let Some(p) = node.downcast_mut::<super::ExplicitParens<R>>() {
-        return name_value(&mut p.n, data);
+        return mark_value(&mut p.n, data, naming);
     }
     if let Some(b) = node.downcast_mut::<super::Block<R>>() {
         if !b.module
             && let Some(last) = b.children.last_mut()
         {
-            name_value(last, data)
+            mark_value(last, data, naming)
         }
         return;
     }
     if let Some(s) = node.downcast_mut::<super::data::StructRef<R>>() {
-        return name_value(&mut s.source, false);
+        return mark_value(&mut s.source, false, naming);
     }
     if let Some(t) = node.downcast_mut::<super::data::TupleRef<R>>() {
-        return name_value(&mut t.source, false);
+        return mark_value(&mut t.source, false, naming);
     }
     let literal = matches!(
         node.view(),
@@ -1748,7 +1780,7 @@ pub(crate) fn name_value<R: Rt>(node: &mut Node<R>, data: bool) {
             | NodeView::Map(_)
     );
     if data && literal {
-        node.for_each_child_mut(&mut |c| name_value(c, true))
+        node.for_each_child_mut(&mut |c| mark_value(c, true, naming))
     }
 }
 
@@ -1829,6 +1861,21 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // 1's mutation now routes the lambda through a written binding (let f = { let tm__0 =
 // ..; let tm__1 = &mut tm__0; tm__0 }), since a block alone generalizes. Pins
 // lang::quantified::a_block_whose_value_is_a_lambda_is_generic and neighbours.
+// CR claude for claude: [bug/medium] A holder whose data holds a call's result, a
+// closure over a cell its maker writes, passes --check and its run refuses the bind:
+// `let mk = || { let v = never(); |x| { v <- x; v } }; let s = {f: |x| x, g: |y| y};
+// let t = {s with g: mk()}; (t.g(1), t.g("s"))` runs to "a run-time bind at
+// t.g(\"s\") did not type: an instance at fn(y: string) -> string of a definition
+// typed fn(x: _) -> _" (GRAPHIX_ELAB_AUDIT); so do an array of such composites read
+// by index (t[1]$.f, t.a[1]$.f), a struct update over a reference holder, and a
+// module's s.h. The holder's reads copy every closed definition's signature its type
+// holds (Type::scheme_read), the maker's inner lambda's included, whose cells are the
+// maker instance's written `v`; under the ML rule a function value leaving a call
+// is one instance, so a read should copy only what a binding names. Main 038729af4
+// and lane Q's HEAD the same; not the write path item 1 closes. probes
+// ~/ptmp/cr29/scratch/review-r16/Q-r3-1/{a3_structwith_call,
+// b2_array_of_composites_direct,b4_holder_holds_array,b5b_structwith_outer_wrongval,
+// b6_structwith_ref_holder,b7_structwith_wrongval}.gx, Q-r3-1/m4 (holder-call-result-01)
 /// Whether the value `node` builds holds, in a data literal (a struct, its
 /// update, a tuple, a variant, an array, a list or a map), a part a `let`
 /// of it would name ([`names_generic`]), each seen past grouping
@@ -2728,15 +2775,15 @@ impl<R: Rt> Update<R> for Deref<R> {
     }
 }
 
-/// Whether a writable reference to `r` could narrow a binding an earlier
-/// compile generalized.
+/// Whether a writable reference to `r` could narrow a binding generalized
+/// before the reference compiled.
 fn narrows_generic<R: Rt>(ctx: &CompileCtx<R>, r: &Ref) -> bool {
     ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id)
 }
 
 fn narrowing_refusal(r: &Ref) -> anyhow::Error {
     anyhow::anyhow!(
-        "{} was made generic by an earlier compile, and a writable reference to it \
+        "{} was made generic before this write compiled, and a writable reference to it \
          would let a write narrow it: write it with <-",
         r.spec
     )

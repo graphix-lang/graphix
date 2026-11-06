@@ -356,31 +356,32 @@ the definition gates:
 A binding something writes is not generalized (the value restriction,
 `CompileCtx::mark_connect_target`): every function its value holds, a
 struct field's or a tuple element's included, is one instance its uses
-and writers share (`CompileCtx::monomorphic`). Its writers are known
-before its uses are checked: a block collects the names its lets bind
+and writers share (`CompileCtx::monomorphic`). The writer is the binding
+the resolver names, whatever path or import names it. Within one
+compile every statement compiles before any is checked, and a read
+copies a scheme only as it is checked, so a write compiled before the
+binding's check reaches it in time: the binding's check finds it a `<-`
+target and takes its value as one instance (`Bind::typecheck0`: its
+reads are its own, a single name's value is read as an instance, not a
+scheme, and a name a pattern takes apart beside others takes an
+instance of its part while the others keep the scheme,
+`Bind::type_leaves`). A function body compiles later, as its definition
+is checked, so a write in it would find a binding checked before it
+already generic; a block therefore also collects the names its lets bind
 that a `<-` or `&mut` in it writes, lambda bodies included, where no
-nearer binding of the name stands between (`node::written_lets`), and
-such a let is a `<-` target from its binding on. A module in the block is
-read for the names it may write there (`node::module_writes`, one walk of
-each module's body per compile, its own modules' writes folded in as it
-meets them, kept for the blocks inside: `node::ModuleWrites`): a `super::`
-path that reaches the block, a name it imports from it (a glob imports
-each name the module does not bind itself), and, where the block is its
-module's top block, a `package::` path or import through that module's
-path below the package root (`package::a` at the root, a script's top
-level included; `package::p::a` in module `p`). A `self::` write in a
-module's top block names that block's binding of the name, past any
-nearer one. A module's write names the nearest binding before it as a block's does, so
-its own `let` of a name it imports writes nothing outside. So the block's
-reads of a holder a module writes copy at each read whether they stand
-before or after the `mod` statement (pins
-`lang::modules::module_writes_a_holder_name_*`,
-`module_writing_its_own_let_over_*`, the shell's
-`script_scope::a_module_writes_a_holder_through_package` and
-`a_holder_written_through_self_or_its_package_path`). A binding an earlier
-compile already generalized, which only a later input to the same
-runtime can see (the REPL, `GXHandle::compile`), had its uses checked
-against the scheme, so it stays one: a write is checked against a copy
+nearer binding of the name stands between and no nested block's glob
+may provide it (`node::written_lets`, lexical, its own module only), and
+such a let is a `<-` target from its binding on and never generalized.
+A write neither finds is one compiled after the binding's check, which
+is held as an earlier compile's is, below (pins `lang::quantified::
+a_module_*`, `a_submodule_*`, `a_let_a_nested_block_*`,
+`*_written_is_one_instance`, `a_parent_s_let_a_nested_glob_*`,
+`lang::modules::module_writes_a_holder_name_*`, the shell's
+`script_scope`). A binding generalized before a write to it compiles
+(by an earlier input to the same runtime, the REPL or
+`GXHandle::compile`, or earlier in this compile's check, for a function
+body's write the walk did not find) had its uses checked against the
+scheme, so it stays one: a write is checked against a copy
 of it with every variable rigid (`Connect::typecheck0_with`), and a
 `&mut` of it is refused, since a reference cannot hold the variables
 rigid.

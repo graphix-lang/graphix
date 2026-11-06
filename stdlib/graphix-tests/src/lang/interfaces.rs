@@ -2018,7 +2018,7 @@ run!(
 // rigid against what is written.
 run!(
     write_through_a_val_deciding_a_bound_variable_refused,
-    refused("made generic by an earlier compile, so what is written to it must be as general, and fn(x: [i64, null]) -> i64 is not"),
+    refused("made generic before this write compiled, so what is written to it must be as general, and fn(x: [i64, null]) -> i64 is not"),
     "/test.gx" => "mod m; m::f <- |x: [i64, null]| -> i64 x$ + 1; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn<'b: ['a, null]>(x: 'b) -> i64",
     "/test/m.gx" => "let f = 'b: ['a, null] |x: 'b| -> i64 0"
@@ -2036,7 +2036,7 @@ run!(
 // own types, is refused.
 run!(
     mut_ref_to_a_generic_val_refused,
-    refused("a::f was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    refused("a::f was made generic before this write compiled, and a writable reference to it would let a write narrow it"),
     "/test.gx" => "mod a; let rf = &mut a::f; let result = a::f(1)",
     "/test/a.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/a.gx" => "let f = |x| x"
@@ -2046,7 +2046,7 @@ run!(
 // unquantified val's variables are.
 run!(
     mut_ref_to_a_quantified_val_refused,
-    refused("a::f was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    refused("a::f was made generic before this write compiled, and a writable reference to it would let a write narrow it"),
     "/test.gx" => r#"
         mod a;
         let set = |r: &mut fn(x: i64) -> i64, v| { *r <- v; null };
@@ -2062,7 +2062,7 @@ run!(
 // be as general, and a writable reference to it is refused.
 run!(
     write_through_a_typedef_val_refused,
-    refused("f is F<'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    refused("f is F<'a: unbound>, made generic before this write compiled, so what is written to it must be as general"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::f <- x; x };
@@ -2083,7 +2083,7 @@ run!(
 
 run!(
     write_through_a_struct_of_functions_val_refused,
-    refused("made generic by an earlier compile, so what is written to it must be as general, and { f: fn(x: 'a: unbound) -> 'a: unbound } is not"),
+    refused("made generic before this write compiled, so what is written to it must be as general, and { f: fn(x: 'a: unbound) -> 'a: unbound } is not"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::c <- x; x };
@@ -2104,7 +2104,7 @@ run!(
 
 run!(
     write_through_an_array_of_functions_val_refused,
-    refused("v is Array<fn(x: 'a: unbound) -> 'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    refused("v is Array<fn(x: 'a: unbound) -> 'a: unbound>, made generic before this write compiled, so what is written to it must be as general"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::v <- x; x };
@@ -2117,7 +2117,7 @@ run!(
 
 run!(
     mut_ref_to_a_struct_of_functions_val_refused,
-    refused("m::c was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    refused("m::c was made generic before this write compiled, and a writable reference to it would let a write narrow it"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { let r = &mut m::c; *r <- x; x };
@@ -2160,7 +2160,7 @@ run!(
 
 run!(
     narrow_write_through_a_val_of_alike_named_functions_refused,
-    refused("g: fn(x: 'a: unbound) -> 'a: unbound }, made generic by an earlier compile, so what is written to it must be as general"),
+    refused("g: fn(x: 'a: unbound) -> 'a: unbound }, made generic before this write compiled, so what is written to it must be as general"),
     "/test.gx" => r#"
         mod m;
         m::c <- {f: |x| x, g: |x: i64| -> i64 x + 100};
@@ -2243,7 +2243,7 @@ run!(
 
 run!(
     write_through_a_typedef_val_after_an_annotated_read_refused,
-    refused("f is F<'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    refused("f is F<'a: unbound>, made generic before this write compiled, so what is written to it must be as general"),
     "/test.gx" => r#"
         mod m;
         let s: string = m::f("s");
@@ -2257,7 +2257,7 @@ run!(
 
 run!(
     write_through_a_typedef_val_after_a_call_takes_it_refused,
-    refused("f is F<'a: unbound>, made generic by an earlier compile, so what is written to it must be as general"),
+    refused("f is F<'a: unbound>, made generic before this write compiled, so what is written to it must be as general"),
     "/test.gx" => r#"
         mod m;
         let s: string = m::f("s");
@@ -2299,7 +2299,7 @@ run!(
 
 run!(
     mut_ref_to_a_function_field_of_a_generic_val_refused,
-    refused("m::c was made generic by an earlier compile, and a writable reference to it would let a write narrow it"),
+    refused("m::c was made generic before this write compiled, and a writable reference to it would let a write narrow it"),
     "/test.gx" => r#"
         mod m;
         let r = &mut m::c.f;

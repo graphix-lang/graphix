@@ -333,6 +333,326 @@ run!(
         let f = s.g
     "#; FuseExpect::None);
 
+// A let of a module without an interface that a write from outside names
+// (`&mut m::j`, `m::j <-`, through an import) is written, so one instance,
+// whatever generic form its value takes.
+macro_rules! written_from_outside {
+    ($($name:ident => $body:expr, $test:expr,)*) => {$(
+        run!(
+            $name,
+            refused("does not contain string"),
+            "/test.gx" => $test,
+            "/test/m.gx" => $body
+        );
+    )*};
+}
+
+const WRITTEN_J: &str = "mod m; let r = &mut m::j; *r <- |x: i64| x + 1; \
+     let result = (m::j(1), m::j(\"s\"))";
+
+written_from_outside! {
+    a_module_s_field_alias_a_parent_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g", WRITTEN_J,
+    a_module_s_function_alias_a_parent_writes_is_one_instance =>
+        "let f = |x| x; let j = f", WRITTEN_J,
+    a_module_s_block_alias_a_parent_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = { let n = 1; s.g }", WRITTEN_J,
+    a_module_s_holder_a_parent_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s",
+        "mod m; let r = &mut m::j; *r <- {g: |x: i64| x + 1}; \
+         let result = (m::j.g(1), m::j.g(\"s\"))",
+    a_module_s_alias_a_parent_imports_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g",
+        "mod m; use m::j; let r = &mut j; *r <- |x: i64| x + 1; \
+         let result = (j(1), j(\"s\"))",
+    a_module_a_parent_aliases_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g",
+        "mod m; use m as q; let r = &mut q::j; *r <- |x: i64| x + 1; \
+         let result = (m::j(1), m::j(\"s\"))",
+    a_module_a_parent_aliases_through_self_and_writes_is_one_instance =>
+        "let f = |x| x; let j = f",
+        "mod m; use self::m as q; let r = &mut q::j; *r <- |x: i64| x + 1; \
+         let result = (m::j(1), m::j(\"s\"))",
+    a_module_s_holder_a_parent_aliases_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s",
+        "mod m; use m as q; let r = &mut q::j; *r <- {g: |x: i64| x + 1}; \
+         let result = (m::j.g(1), m::j.g(\"s\"))",
+    a_module_a_parent_s_block_aliases_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g",
+        "mod m; let z = { use m as q; let r = &mut q::j; *r <- |x: i64| x + 1; 0 }; \
+         let result = (m::j(1), m::j(\"s\"))",
+    a_module_a_parent_s_seq_step_aliases_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g",
+        "mod m; use m as q; let result = seq { let rj = &mut q::j; \
+         *rj <- |x: i64| x + 1; let a = 0; (m::j(1), m::j(\"s\")) }",
+    a_module_a_parent_s_block_globs_over_a_let_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g",
+        "mod m; let j = |x: i64| x; \
+         let z = { use m::*; let r = &mut j; *r <- |x: i64| x + 1; 0 }; \
+         let result = (m::j(1), m::j(\"s\"))",
+    a_module_s_function_alias_a_parent_s_block_globs_over_a_let_and_writes_is_one_instance =>
+        "let f = |x| x; let j = f",
+        "mod m; let j = |x: i64| x; \
+         let z = { use m::*; let r = &mut j; *r <- |x: i64| x + 1; 0 }; \
+         let result = (m::j(1), m::j(\"s\"))",
+    a_module_a_parent_s_seq_statement_globs_over_a_let_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g",
+        "mod m; let j = |x: i64| x; let result = seq { \
+         { use m::*; let r = &mut j; *r <- |x: i64| x + 1 }; (m::j(1), m::j(\"s\")) }",
+}
+
+// A name a pattern takes out of a generalized binding, which something
+// writes, is one instance its uses and writers share; the pattern's other
+// names keep the scheme.
+macro_rules! destructured_and_written {
+    ($($name:ident => $test:expr, $says:expr,)*) => {$(
+        run!($name, $test, refused($says); FuseExpect::None);
+    )*};
+}
+
+destructured_and_written! {
+    a_struct_name_taken_from_a_holder_and_written_is_one_instance =>
+        "{ let s = {f: |x| x, n: 1}; let {f, n} = s; let a = f(\"a\"); \
+           f <- |x: i64| x + 1; a }",
+        "f is fn(x: string) -> string and cannot hold fn(x: i64) -> i64",
+    a_name_taken_from_a_holder_s_field_and_written_is_one_instance =>
+        "{ let s = {a: {f: |x| x, n: 1}}; let {f, n} = s.a; let a = f(\"a\"); \
+           f <- |x: i64| x + 1; a }",
+        "f is fn(x: string) -> string and cannot hold fn(x: i64) -> i64",
+    a_name_taken_from_a_holder_s_element_and_written_is_one_instance =>
+        "{ let s = ((|x| x, 1), 2); let (f, n) = s.0; let a = f(\"a\"); \
+           f <- |x: i64| x + 1; a }",
+        "f is fn(x: string) -> string and cannot hold fn(x: i64) -> i64",
+    a_capture_of_a_holder_written_is_one_instance =>
+        "{ let s = {f: |x| x, n: 1}; let u@ {f, n} = s; let a = u.f(\"a\"); \
+           u <- {f: |x: i64| x + 1, n: 2}; a }",
+        "u is { f: fn(x: string) -> string, n: i64 } and cannot hold",
+    a_seq_step_s_name_taken_from_a_literal_and_written_is_one_instance =>
+        "seq { let (g, k) = (|x| x, |y| y); let h = |z| g(z); let a = h(\"s\"); \
+           let rg = &mut g; *rg <- |x: i64| x + 100; let b = 1; let c = 2; (a, h(\"t\")) }",
+        "does not contain fn(x: i64) -> i64",
+}
+
+run!(
+    a_name_taken_from_a_holder_beside_a_written_one_is_generic,
+    "{ let s = {f: |x| x, g: |y| y}; let {f, g} = s; f <- |x: i64| x + 1; \
+       (f(1), g(\"s\"), g(2)) }",
+    prints(r#"[i64:1, "s", i64:2]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_struct_name_taken_from_a_holder_and_written_takes_its_one_type,
+    "{ let s = {f: |x| x, n: 1}; let {f, n} = s; f <- |x: i64| x + 1; (f(1), n) }",
+    prints("[i64:1, i64:1]");
+    FuseExpect::None
+);
+
+// A function body compiles after the definitions it reads are checked: a
+// write in it the block's walk does not see finds the binding generic, so
+// what it writes must be as general.
+macro_rules! written_after_the_check {
+    ($($name:ident => $test:expr,)*) => {$(
+        run!(
+            $name,
+            refused("made generic before this write compiled, so what is written to \
+                     it must be as general"),
+            "/test.gx" => $test,
+            "/test/m.gx" => "let s = {g: |x| x}; let j = s.g"
+        );
+    )*};
+}
+
+written_after_the_check! {
+    a_module_s_alias_a_parent_s_lambda_writes_is_held_to_its_scheme =>
+        "mod m; let set = |v| { m::j <- v; null }; let z = set(|x: i64| x + 1); \
+         let result = (m::j(1), m::j(\"s\"))",
+    a_module_s_alias_a_parent_s_lambda_writes_through_an_alias_is_held_to_its_scheme =>
+        "mod m; use m as q; let set = |v| { q::j <- v; null }; \
+         let z = set(|x: i64| x + 1); let result = (m::j(1), m::j(\"s\"))",
+}
+
+run!(
+    a_module_s_annotated_alias_a_parent_s_lambda_writes_takes_its_one_type,
+    prints("[i64:1, i64:0]"),
+    "/test.gx" => "mod m; let set = |v| { m::j <- v; 0 }; let z = set(|x: i64| x + 1); \
+                   let result = (m::j(1), z)",
+    "/test/m.gx" => "let s = {g: |x| x}; let j: fn(x: i64) -> i64 = s.g"; FuseExpect::None
+);
+
+// A glob in a nested block names what it provides before a let outside
+// the block: the module's let, not the parent's, is written.
+run!(
+    a_parent_s_let_a_nested_glob_shadows_is_generic,
+    prints(r#"[i64:1, "s", i64:5]"#),
+    "/test.gx" => "mod m; let s = {g: |x| x}; let j = s.g; \
+                   let z = { use m::*; let r = &mut j; *r <- |x: i64| x; 0 }; \
+                   let result = (j(1), j(\"s\"), m::j(5))",
+    "/test/m.gx" => "let j = |x: i64| x"; FuseExpect::None
+);
+
+run!(
+    a_parent_s_let_a_nested_glob_of_an_interface_shadows_is_generic,
+    prints(r#"[i64:1, "s", i64:0]"#),
+    "/test.gx" => "mod m; let s = {g: |x| x}; let j = s.g; \
+                   let z = { use m::*; let r = &mut j; *r <- |x: i64| x + 1; 0 }; \
+                   let result = (j(1), j(\"s\"), z)",
+    "/test/m.gxi" => "val j: fn(x: i64) -> i64",
+    "/test/m.gx" => "let j = |x: i64| x"; FuseExpect::None
+);
+
+// A `use` of a value named like a module leaves the module's name alone.
+run!(
+    a_module_a_value_import_shares_the_name_of_is_written_through_it,
+    refused("does not contain string"),
+    "/test.gx" => "mod m; mod n; use n::m; let r = &mut m::j; *r <- |x: i64| x + 1; \
+                   let result = (m::j(1), m::j(\"s\"), m)",
+    "/test/m.gx" => "let s = {g: |x| x}; let j = s.g",
+    "/test/n.gx" => "let m = 3"
+);
+
+run!(
+    a_module_a_value_import_shares_the_name_of_takes_its_one_type,
+    prints("[i64:1, i64:2, i64:3]"),
+    "/test.gx" => "mod m; mod n; use n::m; let r = &mut m::j; *r <- |x: i64| x; \
+                   let result = (m::j(1), m::j(2), m)",
+    "/test/m.gx" => "let s = {g: |x| x}; let j = s.g",
+    "/test/n.gx" => "let m = 3"; FuseExpect::None
+);
+
+// A nested block's `self::` import names the module's own let.
+macro_rules! written_through_self {
+    ($($name:ident => $test:expr,)*) => {$(
+        run!($name, refused("does not contain string"), "/test.gx" => $test);
+    )*};
+}
+
+written_through_self! {
+    a_let_a_nested_block_imports_through_self_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g; \
+         let z = { use self::j as k; let r = &mut k; *r <- |x: i64| x + 1; 0 }; \
+         let result = (j(1), j(\"s\"), z)",
+    a_let_a_nested_block_globs_through_self_and_writes_is_one_instance =>
+        "let s = {g: |x| x}; let j = s.g; \
+         let z = { let j = 2; { use self::*; let r = &mut j; *r <- |x: i64| x + 1; 0 } }; \
+         let result = (j(1), j(\"s\"), z)",
+}
+
+// A write in a `seqq`'s flush is a writer as any other.
+run!(
+    a_holder_a_seqq_flush_writes_is_one_instance,
+    "{ let s = {g: |x| x}; let j = s.g; \
+       let v = seqq 1; flush({ let r = &mut j; *r <- |x: i64| x + 1; never<bool>() }) { 1 }; \
+       (j(1), j(\"s\"), v) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_holder_a_seqq_flush_writes_takes_its_one_type,
+    "{ let s = {g: |x| x}; let j = s.g; \
+       let v = seqq 1; flush({ let r = &mut j; *r <- |x: i64| x; never<bool>() }) { 1 }; \
+       (j(1), j(2), v) }",
+    prints("[i64:1, i64:2, i64:1]");
+    FuseExpect::Jit
+);
+
+// The same through a submodule a parent imports, or a glob that brings
+// it in.
+macro_rules! written_into_submodule {
+    ($($name:ident => $test:expr,)*) => {$(
+        run!(
+            $name,
+            refused("does not contain string"),
+            "/test.gx" => $test,
+            "/test/m.gx" => "mod k",
+            "/test/m/k.gx" => "let s = {g: |x| x}; let j = s.g"
+        );
+    )*};
+}
+
+written_into_submodule! {
+    a_submodule_a_parent_imports_and_writes_is_one_instance =>
+        "mod m; use m::k; let r = &mut k::j; *r <- |x: i64| x + 1; \
+         let result = (m::k::j(1), m::k::j(\"s\"))",
+    a_submodule_a_parent_globs_and_writes_is_one_instance =>
+        "mod m; use m::*; let r = &mut k::j; *r <- |x: i64| x + 1; \
+         let result = (m::k::j(1), m::k::j(\"s\"))",
+}
+
+// A module without an interface inside one with an interface.
+run!(
+    a_submodule_of_an_interface_module_a_parent_writes_is_one_instance,
+    refused("does not contain string"),
+    "/test.gx" => "mod m; let r = &mut m::k::j; *r <- |x: i64| x + 1; \
+                   let result = (m::k::j(1), m::k::j(\"s\"))",
+    "/test/m.gxi" => "mod k",
+    "/test/m.gx" => "mod k",
+    "/test/m/k.gx" => "let f = |x| x; let j = f"
+);
+
+// And from a module beside it, by any import of it.
+macro_rules! written_by_a_sibling {
+    ($($name:ident => $sibling:expr,)*) => {$(
+        run!(
+            $name,
+            refused("does not contain string"),
+            "/test.gx" => "mod m; mod n; let result = (m::j(1), m::j(\"s\"))",
+            "/test/m.gx" => "let s = {g: |x| x}; let j = s.g",
+            "/test/n.gx" => $sibling
+        );
+    )*};
+}
+
+written_by_a_sibling! {
+    a_module_a_sibling_globs_and_writes_is_one_instance =>
+        "use super::m::*; let r = &mut j; *r <- |x: i64| x + 1",
+    a_module_a_sibling_imports_and_writes_is_one_instance =>
+        "use super::m; let r = &mut m::j; *r <- |x: i64| x + 1",
+    a_module_a_sibling_aliases_and_writes_is_one_instance =>
+        "use super::m as q; let r = &mut q::j; *r <- |x: i64| x + 1",
+    a_module_a_sibling_globs_its_parent_and_writes_is_one_instance =>
+        "use super::*; let r = &mut m::j; *r <- |x: i64| x + 1",
+    a_module_a_sibling_writes_through_chained_globs_is_one_instance =>
+        "use super::*; use array::*; use list::*; use map::*; use str::*; \
+         use re::*; use rand::*; let r = &mut m::j; *r <- |x: i64| x + 1",
+    a_module_a_sibling_s_block_globs_over_a_let_and_writes_is_one_instance =>
+        "let j = |x: i64| x; \
+         let go = { use super::m::*; let r = &mut j; *r <- |x: i64| x + 1; 1 }",
+}
+
+run!(
+    a_module_s_alias_beside_one_a_sibling_writes_through_an_alias_is_generic,
+    prints(r#"[i64:1, "s", i64:2]"#),
+    "/test.gx" => "mod m; mod n; let result = (m::j(1), m::j(\"s\"), m::w(2))",
+    "/test/m.gx" => "let s = {g: |x| x}; let j = s.g; let w = s.g",
+    "/test/n.gx" => "use super::m as q; let r = &mut q::w; *r <- |x: i64| x"; FuseExpect::None
+);
+
+run!(
+    a_module_s_alias_a_parent_writes_takes_its_one_type,
+    prints("[i64:1, i64:2]"),
+    "/test.gx" => "mod m; let r = &mut m::j; *r <- |x: i64| x; \
+                   let result = (m::j(1), m::j(2))",
+    "/test/m.gx" => "let s = {g: |x| x}; let j = s.g"; FuseExpect::None
+);
+
+run!(
+    a_module_s_alias_beside_one_a_parent_writes_is_generic,
+    prints(r#"[i64:1, "s", i64:2]"#),
+    "/test.gx" => "mod m; let r = &mut m::w; *r <- |x: i64| x; \
+                   let result = (m::j(1), m::j(\"s\"), m::w(2))",
+    "/test/m.gx" => "let s = {g: |x| x}; let j = s.g; let w = s.g"; FuseExpect::None
+);
+
+run!(
+    a_module_s_alias_beside_one_a_parent_writes_through_an_alias_is_generic,
+    prints(r#"[i64:1, "s", i64:2]"#),
+    "/test.gx" => "mod m; use m as q; let r = &mut q::w; *r <- |x: i64| x; \
+                   let result = (m::j(1), m::j(\"s\"), m::w(2))",
+    "/test/m.gx" => "let s = {g: |x| x}; let j = s.g; let w = s.g"; FuseExpect::None
+);
+
 // A let in a seq step names what it holds as a let outside one does.
 run!(
     a_holder_bound_in_a_seq_step_is_generic,
@@ -447,20 +767,39 @@ run!(
     FuseExpect::Jit
 );
 
+// A written capture is one instance, which its readers and writers share,
+// a lambda's read through its step's entry snapshot included.
+run!(
+    a_lambda_over_a_step_s_written_capture_is_its_one_instance,
+    "seq { let u@ (g, k) = (|x| x, |y| y); let h = |z| u.0(z); let ru = &mut u; \
+     *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; h(\"t\") }",
+    refused("does not contain");
+    FuseExpect::None
+);
+
 run!(
     a_lambda_over_a_step_s_written_capture_reads_it_at_its_step_s_entry,
     "seq { let u@ (g, k) = (|x| x, |y| y); let h = |z| u.0(z); let ru = &mut u; \
-     *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; h(\"t\") }",
-    is(Value::from("t"));
+     *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; h(7) }",
+    is(Value::I64(7));
     FuseExpect::Jit
 );
 
 run!(
-    a_step_s_written_capture_is_its_write_after_it,
+    a_step_s_written_capture_is_one_instance,
     "seq { let u@ (g, k) = (|x| x, |y| y); let h = |z| u.0(z); let a = h(\"s\"); \
      let ru = &mut u; *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; \
      (a, h(\"t\"), u.0(1)) }",
-    prints(r#"["s", "t", i64:101]"#);
+    refused("does not contain");
+    FuseExpect::None
+);
+
+run!(
+    a_step_s_written_capture_is_its_write_after_it,
+    "seq { let u@ (g, k) = (|x| x, |y| y); let h = |z| u.0(z); let a = h(5); \
+     let ru = &mut u; *ru <- (|x: i64| x + 100, |y: i64| y); let b = 1; let c = 2; \
+     (a, h(6), u.0(1)) }",
+    prints("[i64:5, i64:6, i64:101]");
     FuseExpect::Jit
 );
 

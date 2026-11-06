@@ -1101,18 +1101,21 @@ node graph IS the IR — there is no parallel typed IR
   `Value::edges`; design/place_references.md). Pins:
   `lang::functions::closure_outlives_collection_slot*`, `lang::orphans`.
 - **`let rec` is monomorphic-recursive**, and a binding something writes
-  (a `<-` target, a `&mut`'s referent; a writer anywhere in its block,
-  a lambda body's included, and a module's in it through `super::`, a
-  name it imports from there or a `package::` path through the block's
-  module; `self::` in a module's top block; a write names the nearest
-  binding before it, `node::written_lets`) is not generalized:
-  its uses and writers share one instance of each function it holds (the
-  value restriction, `CompileCtx::monomorphic`; a name aliasing a
-  generalized binding, `let g = f`, holds an instance of its own), except
-  one an earlier compile generalized (a REPL input): it stays generic, a
-  later write is held to a copy of its type with the variables rigid, a
+  (a `<-` target, a `&mut`'s referent, as the resolver names it) is not
+  generalized: its uses and writers share one instance of each function
+  it holds (the value restriction, `CompileCtx::monomorphic`; a name
+  aliasing a generalized binding, `let g = f`, holds an instance of its
+  own, as does a written name a pattern takes apart). A write compiled
+  before the binding's check makes its check take one instance
+  (`Bind::typecheck0`); a writer in its block, a lambda body's included
+  (a body compiles at its definition's check), keeps it from being
+  generalized at all (`node::written_lets`: lexical, the nearest binding
+  before the write, none under a nested block's glob). A binding
+  generalized before a write to it compiles (an earlier REPL input, or a
+  function body's write the walk missed) stays generic: the
+  write is held to a copy of its type with the variables rigid, a
   bound's included, each function type's apart whatever their names, and
-  a later `&mut` of it, or of a place whose type holds one of them, is
+  a `&mut` of it, or of a place whose type holds one of them, is
   refused
   (`Env::poly_binds`); a `let` nothing writes whose value
   holds a lambda or a generalized binding's value in a data literal (a
