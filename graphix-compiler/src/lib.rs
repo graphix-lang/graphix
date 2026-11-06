@@ -1950,6 +1950,13 @@ impl<R: Rt> CompileCtx<R> {
         // 1) and a_siblings_write_through_a_generic_interface_builds (base: refused). Left: a
         // sibling's write against an alias let h = f in the body is still judged at the
         // alias's check (Bind::aliased_lambda runs in typecheck0), as before.
+        // 2026-11-06 claude: Rebased onto cr29-staging (lane Q, rank-2 removed, Eric's D3
+        // follow-up ruling (b) of 11-05): the pin
+        // a_siblings_write_through_a_generic_interface_builds wrote through a rank-2
+        // parameter, which the check now refuses (QUANTIFIED_FN), so its sibling writes the
+        // generic val from a lambda with no quantified type: let set = |u| { super::a::f <-
+        // |x| x; u }; let z = set(t ~ null). base-r17 refuses it 12/12 ('f cannot be written:
+        // an earlier compile calls it as a fixed function'); the lane prints 1 s 3 q 12/12.
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
             let name =

@@ -2154,8 +2154,8 @@ run!(
     "/test/w.gxi" => "val z: null",
     "/test/w.gx" => r#"
         use super::t;
-        let set = |k: fn<'b: Any>(x: 'b) -> 'b| { super::a::f <- t ~ k; null };
-        let z = set(|x| x)
+        let set = |u| { super::a::f <- |x| x; u };
+        let z = set(t ~ null)
     "#; FuseExpect::Jit
 );
 
