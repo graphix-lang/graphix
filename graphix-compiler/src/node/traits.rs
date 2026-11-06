@@ -31,8 +31,8 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{
-        CoreTrait, FnArgKind, FnArgType, FnType, TVar, TraitId, Type, TypeRef,
-        check_bounds_acyclic, seed_conjuncts,
+        CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
+        seed_conjuncts,
     },
     wrap,
 };
@@ -247,33 +247,23 @@ pub(crate) fn impl_outside_functions(
 /// types its trait's declaration fills in were judged at the trait, and an
 /// impl's `head` variables and `self` are the implementation's.
 fn written_method_unions(typ: Option<&Type>, value: &Expr, head: &[TVar]) -> Result<()> {
+    let own = |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
+    if let Some(t) = typ {
+        t.variable_union(&own)?
+    }
     let mut lambda = value;
     while let ExprKind::ExplicitParens(inner) = &lambda.kind {
         lambda = inner
     }
-    let written = match &lambda.kind {
-        ExprKind::Lambda(l) => {
-            let written = l
-                .args
-                .iter()
-                .filter_map(|a| a.constraint.clone())
-                .chain(l.constraints.iter().map(|(_, t)| t.clone()));
-            let args = Arc::from_iter(written.map(|typ| FnArgType {
-                kind: FnArgKind::Positional { name: None },
-                typ,
-            }));
-            Some(Type::Fn(Arc::new(FnType {
-                args,
-                rtype: l.rtype.clone().unwrap_or(Type::Bottom),
-                throws: l.throws.clone().unwrap_or(Type::Bottom),
-                ..FnType::default()
-            })))
+    if let ExprKind::Lambda(l) = &lambda.kind {
+        let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
+        let written = written
+            .chain(l.constraints.iter().map(|(_, t)| t))
+            .chain(l.rtype.iter())
+            .chain(l.throws.iter());
+        for t in written {
+            t.signature_variable_union(&own)?
         }
-        _ => None,
-    };
-    let own = |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
-    for t in typ.into_iter().chain(written.as_ref()) {
-        t.variable_union(&own)?
     }
     Ok(())
 }

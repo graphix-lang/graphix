@@ -857,16 +857,6 @@ impl FnType {
         self.for_each_part_passing(&mut |_| true, f)
     }
 
-    /// [`Self::for_each_part`], passing each cell's conjuncts once under
-    /// `passed`, however many function types name it.
-    pub(super) fn for_each_part_once(
-        &self,
-        passed: &tvar::ConjunctsPassed,
-        f: &mut impl FnMut(&Type, bool),
-    ) {
-        self.for_each_part_passing(&mut |tv| passed.first(tv), f)
-    }
-
     /// [`Self::for_each_part`], passing the conjuncts only of the cells
     /// `pass` admits.
     fn for_each_part_passing(

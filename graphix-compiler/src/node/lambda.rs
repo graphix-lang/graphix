@@ -50,6 +50,7 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    cell::OnceCell,
     fmt,
     hash::Hash,
     mem,
@@ -783,18 +784,6 @@ pub(crate) fn body_annotation<R: Rt>(
         t.variable_union(&|tv| !enclosing.contains(&tv.name))?
     }
     Ok(())
-}
-
-/// The variables `t` names as written, through no cell's binding or
-/// conjuncts.
-fn written_names(t: &Type, out: &mut AHashSet<ArcStr>) {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            out.insert(tv.name.clone());
-        }
-        Type::Fn(ft) => ft.for_each_type(&mut |t| written_names(t, out)),
-        t => t.for_each_child(&mut |c| written_names(c, out)),
-    })
 }
 
 /// How many of the variables `known` names a type wrote, not one of
@@ -2429,8 +2418,32 @@ impl Lambda {
             .chain(l.rtype.iter())
             .chain(l.throws.iter())
             .chain(l.constraints.iter().map(|(_, tc)| tc));
-        for t in signature {
+        for t in signature.clone() {
             crate::warn_later_block_names(ctx, flags, &t.scope_refs(&scope.lexical))?;
+        }
+        // a method's lambda is judged over what it writes itself, its impl
+        // or trait filling in the rest (traits::written_method_unions)
+        let method = || {
+            netidx_core::path::Path::basename(&*scope.lexical)
+                .is_some_and(crate::is_method_block)
+        };
+        let outer: OnceCell<LPooled<AHashMap<ArcStr, TVar>>> = OnceCell::new();
+        let own = |tv: &TVar| {
+            l.constraints.iter().any(|(c, _)| c.name == tv.name)
+                || !outer
+                    .get_or_init(|| {
+                        let mut known = LPooled::take();
+                        enclosing_tvars(ctx, &mut known);
+                        known
+                    })
+                    .contains_key(&tv.name)
+        };
+        for t in signature {
+            if let Err(e) = t.signature_variable_union(&own)
+                && !method()
+            {
+                return Err(e.into());
+            }
         }
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")
@@ -2576,23 +2589,9 @@ impl Lambda {
                         .iter()
                         .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
             });
-            let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
             ft.alias_tvars(&mut known);
             let ft = ft.declaring(&constraints);
             ft.check_quantifiers_held()?;
-            let mut bounds: LPooled<AHashSet<ArcStr>> = LPooled::take();
-            for (_, tc) in constraints.iter() {
-                written_names(tc, &mut bounds)
-            }
-            let in_bounds = bounds.iter().filter(|n| !enclosing.contains(*n)).count();
-            // a method's lambda is judged over what it writes itself, where
-            // its impl or trait fills in the rest (traits::written_method_unions)
-            let method = netidx_core::path::Path::basename(&*scope.lexical)
-                .is_some_and(crate::is_method_block);
-            if !method && written_own(&known, &enclosing) + in_bounds > 1 {
-                Type::Fn(Arc::new(ft.clone()))
-                    .variable_union(&|tv| !enclosing.contains(&tv.name))?;
-            }
             Arc::new(ft)
         };
         typ.lambda_ids.set_id(id);

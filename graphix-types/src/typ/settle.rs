@@ -11,7 +11,7 @@ use crate::{
         Bound, FnType, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
-        tvar::{CellFact, ConjunctsPassed, Fresh, Level, would_cycle_open},
+        tvar::{CellFact, Fresh, Level, would_cycle_open},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -549,60 +549,157 @@ impl Error for VariableUnion {}
 impl Type {
     /// Refuse the first union written in a function type this written type
     /// holds (itself included), in a part, its parameters, result, throws
-    /// and bounds, under any constructor, two or more of whose members are
-    /// distinct variables `own` admits. A typedef is not looked through.
+    /// and its declared variables' bounds, under any constructor, two or
+    /// more of whose members are distinct variables `own` admits. A typedef
+    /// is not looked through.
     #[doc(hidden)]
     pub fn variable_union(
         &self,
         own: &dyn Fn(&TVar) -> bool,
     ) -> Result<(), VariableUnion> {
-        match written_variable_union(self, own, &ConjunctsPassed::take(), false) {
-            None => Ok(()),
-            Some(e) => Err(e),
+        match self.holds_no_union() {
+            true => Ok(()),
+            false => WrittenUnions::new(own).walk(self, false, false, 0),
+        }
+    }
+
+    /// [`Self::variable_union`] of a written part of a function type: a
+    /// parameter's, the result's, the throws' or a bound's type, the
+    /// definition's own bounds walked by the caller.
+    #[doc(hidden)]
+    pub fn signature_variable_union(
+        &self,
+        own: &dyn Fn(&TVar) -> bool,
+    ) -> Result<(), VariableUnion> {
+        match self.holds_no_union() {
+            true => Ok(()),
+            false => WrittenUnions::new(own).walk(self, true, false, 0),
+        }
+    }
+
+    /// A type that holds no union and no function type, judged at its top.
+    fn holds_no_union(&self) -> bool {
+        match self {
+            Type::Bottom
+            | Type::Any
+            | Type::Primitive(_)
+            | Type::Hole
+            | Type::Bound(_)
+            | Type::TVar(_) => true,
+            Type::Ref(tr) => tr.params.is_empty(),
+            _ => false,
         }
     }
 }
 
-fn written_variable_union(
-    t: &Type,
-    own: &dyn Fn(&TVar) -> bool,
-    passed: &ConjunctsPassed,
-    in_fn: bool,
-) -> Option<VariableUnion> {
-    crate::stack::ensure_sufficient(|| {
-        let mut found = None;
+/// [`Type::variable_union`]'s walk: under a function type that declares
+/// variables (`quantified`) it walks each cell's bounds (its conjuncts)
+/// once, `bounded` those cells (a set past `few` of them).
+struct WrittenUnions<'a> {
+    own: &'a dyn Fn(&TVar) -> bool,
+    few: SmallVec<[usize; 8]>,
+    bounded: Option<LPooled<AHashSet<usize>>>,
+}
+
+impl<'a> WrittenUnions<'a> {
+    fn new(own: &'a dyn Fn(&TVar) -> bool) -> Self {
+        Self { own, few: SmallVec::new(), bounded: None }
+    }
+
+    /// Whether the cell at `addr` is met for the first time.
+    fn first(&mut self, addr: usize) -> bool {
+        match &mut self.bounded {
+            Some(set) => set.insert(addr),
+            None if self.few.contains(&addr) => false,
+            None if self.few.len() < self.few.inline_size() => {
+                self.few.push(addr);
+                true
+            }
+            None => {
+                let mut set: LPooled<AHashSet<usize>> = LPooled::take();
+                set.extend(self.few.drain(..));
+                set.insert(addr);
+                self.bounded = Some(set);
+                true
+            }
+        }
+    }
+
+    /// The stack is checked every 16 levels: a level's frame is small.
+    fn walk(
+        &mut self,
+        t: &Type,
+        in_fn: bool,
+        quantified: bool,
+        depth: u8,
+    ) -> Result<(), VariableUnion> {
         match t {
-            Type::TVar(_) => (),
-            Type::Fn(ft) => ft.for_each_part_once(passed, &mut |t, _| {
-                if found.is_none() {
-                    found = written_variable_union(t, own, passed, true)
-                }
+            Type::Bottom
+            | Type::Any
+            | Type::Primitive(_)
+            | Type::Hole
+            | Type::Bound(_) => Ok(()),
+            Type::TVar(_) if !quantified => Ok(()),
+            t if depth == 15 => crate::stack::ensure_sufficient(|| {
+                self.walk_node(t, in_fn, quantified, 0)
             }),
+            t => self.walk_node(t, in_fn, quantified, depth + 1),
+        }
+    }
+
+    fn walk_node(
+        &mut self,
+        t: &Type,
+        in_fn: bool,
+        quantified: bool,
+        depth: u8,
+    ) -> Result<(), VariableUnion> {
+        match t {
+            Type::TVar(tv) => {
+                if !self.first(tv.cell_addr()) {
+                    return Ok(());
+                }
+                tv.cell_constraints()
+                    .iter()
+                    .try_for_each(|b| self.walk(b, true, true, depth))
+            }
+            Type::Fn(ft) => {
+                let quantified = quantified || !ft.quantifiers.is_empty();
+                let mut res = Ok(());
+                ft.for_each_type(&mut |t| {
+                    if res.is_ok() {
+                        res = self.walk(t, true, quantified, depth)
+                    }
+                });
+                res
+            }
             t => {
                 if in_fn && let Type::Set(ms) = t {
-                    let mut vars: SmallVec<[ArcStr; 4]> = SmallVec::new();
+                    let mut vars: SmallVec<[&ArcStr; 4]> = SmallVec::new();
                     for m in ms.iter() {
                         if let Type::TVar(tv) = m
-                            && own(tv)
-                            && !vars.contains(&tv.name)
+                            && (self.own)(tv)
+                            && !vars.contains(&&tv.name)
                         {
-                            vars.push(tv.name.clone())
+                            vars.push(&tv.name)
                         }
                     }
                     if vars.len() > 1 {
                         vars.sort();
-                        return Some(VariableUnion { union: t.clone(), vars });
+                        let vars = vars.into_iter().cloned().collect();
+                        return Err(VariableUnion { union: t.clone(), vars });
                     }
                 }
+                let mut res = Ok(());
                 t.for_each_child(&mut |c| {
-                    if found.is_none() {
-                        found = written_variable_union(c, own, passed, in_fn)
+                    if res.is_ok() {
+                        res = self.walk(c, in_fn, quantified, depth)
                     }
-                })
+                });
+                res
             }
         }
-        found
-    })
+    }
 }
 
 /// The typedefs a walk is expanding, by key, with their parameters.
