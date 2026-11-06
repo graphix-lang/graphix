@@ -30,8 +30,8 @@ use graphix_compiler::{
     typ::Naked,
 };
 use graphix_package::Package;
-use graphix_package_core::testing::{TestCtx, config};
-use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
+use graphix_package_core::testing::{TestCtx, TestState, config};
+use graphix_rt::{CompRes, GXConfigBuilder, GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
 use parking_lot::Mutex;
@@ -201,7 +201,8 @@ impl Containment {
 /// compiles neither hides nor fakes a diagnostic difference: tvar numbers
 /// (`'_6070` -> `'_N`) and ids after a `#` (`<abstract#12>`, the block
 /// scopes `#do123`, `#fn45`, the names a lowering binds, `#seqv4611_1` ->
-/// `#seqvN_1`).
+/// `#seqvN_1`), a place-named scope's whole place (`#do3.5.1~9fa2` ->
+/// `#doN`).
 fn normalize_diag(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -221,6 +222,22 @@ fn normalize_diag(s: &str) -> String {
                 out.push_str(&s[flushed..j]);
                 while b.get(j).is_some_and(u8::is_ascii_digit) {
                     j += 1;
+                }
+                while b.get(j) == Some(&b'.')
+                    && b.get(j + 1).is_some_and(u8::is_ascii_digit)
+                {
+                    j += 2;
+                    while b.get(j).is_some_and(u8::is_ascii_digit) {
+                        j += 1;
+                    }
+                }
+                if b.get(j) == Some(&b'~')
+                    && b.get(j + 1).is_some_and(u8::is_ascii_hexdigit)
+                {
+                    j += 2;
+                    while b.get(j).is_some_and(u8::is_ascii_hexdigit) {
+                        j += 1;
+                    }
                 }
                 out.push('N');
                 (flushed, i) = (j, j);
@@ -421,9 +438,6 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
     match compile_with_stats(code, mode, Duration::from_secs(60)).await {
         CompileOutcome::Compiled(_) => None,
         CompileOutcome::Rejected(e, _) | CompileOutcome::Failed(e) => Some(e),
-        CompileOutcome::BudgetAborted => {
-            Some("stack budget exceeded: the runtime aborted".to_string())
-        }
     }
 }
 
@@ -458,14 +472,11 @@ pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
 
 /// A compile-only measurement. `Rejected` is the compiler's verdict on
 /// the program, still carrying the stats of whatever did compile;
-/// `Failed` is the measurement failing (init, stats read, wedged
-/// compile), from which nothing about the program follows.
+/// `Failed` is the measurement failing (init, wedged compile), from
+/// which nothing about the program follows.
 enum CompileOutcome {
     Compiled(FusionStats),
     Rejected(String, FusionStats),
-    /// The first update cycle recursed past the stack budget, which
-    /// aborts the runtime before its stats can be read.
-    BudgetAborted,
     Failed(String),
 }
 
@@ -487,6 +498,33 @@ struct Limits {
     activations: Option<u64>,
 }
 
+/// `subj`'s runtime under `mode`: its VFS, the fuzzer's fork and prune
+/// policy, `limits` and `seed` run over the context.
+fn session_config(
+    subj: &Subject,
+    mode: Mode,
+    registration: RegistrationImage,
+    limits: Limits,
+    sub: mpsc::Sender<poolshark::global::GPooled<Vec<GXEvent>>>,
+    seed: impl FnOnce(&mut TestState),
+) -> anyhow::Result<GXConfigBuilder<NoExt>> {
+    let resolver = VfsResolver::new(subj.table.clone());
+    let cfg = config(sub, REGISTER, vec![resolver], move |ctx| {
+        seed(ctx);
+        ctx.control.set_par_mode(fuzz_par(mode));
+        ctx.control.set_prune_mode(mode.prune());
+        if let Some(n) = limits.activations {
+            ctx.control.set_activation_budget(n);
+        }
+    })?
+    .flags(mode.flags())
+    .registration(registration);
+    Ok(match limits.trace {
+        Some(trace) => cfg.trace(trace),
+        None => cfg,
+    })
+}
+
 /// Start `subj` under `mode` over its VFS, with a print sink, an exit
 /// request and the fuzzer's fork policy. The program compiles (or
 /// restores) at construction under `timeout`; a construction abandoned
@@ -501,30 +539,20 @@ async fn start_session(
     timeout: Duration,
 ) -> Result<Started, Outcome> {
     let (tx, rx) = mpsc::channel(64);
-    let resolver = VfsResolver::new(subj.table.clone());
     let sink = graphix_package_core::PrintSink::default();
     let (exit_req, exit) = graphix_package_core::ExitRequest::new();
     let seeded = sink.clone();
+    let cfg = session_config(subj, mode, registration, limits, tx, move |ctx| {
+        ctx.libstate.set(seeded);
+        ctx.libstate.set(exit_req);
+    });
     let init = async move {
-        let mut cfg = config(tx, REGISTER, vec![resolver], move |ctx| {
-            ctx.libstate.set(seeded);
-            ctx.libstate.set(exit_req);
-            ctx.control.set_par_mode(fuzz_par(mode));
-            ctx.control.set_prune_mode(mode.prune());
-            if let Some(n) = limits.activations {
-                ctx.control.set_activation_budget(n);
-            }
-        })?
-        .flags(mode.flags())
-        .registration(registration);
+        let mut cfg = cfg?;
         if let Some(p) = program {
             cfg = cfg.program(p);
         }
         if let Some(tx) = program_image {
             cfg = cfg.program_image(tx);
-        }
-        if let Some(trace) = limits.trace {
-            cfg = cfg.trace(trace);
         }
         async { TestCtx::start(cfg).await }.await
     };
@@ -536,61 +564,45 @@ async fn start_session(
 }
 
 /// Compile-only core behind [`compile_program`] and [`run_fusecheck`]:
-/// compile the full drive text under a fresh ctx and return the
-/// program's own compile-time [`FusionStats`] delta. The timeout covers
-/// the construction, where the program compiles, and the first cycle's
-/// result. A stats value is never synthesized from a failure.
+/// compile the full drive text as a session's construction does and run
+/// no cycle, so what the program does when it runs (a budget abort
+/// included) cannot reach the verdict or the program's compile-time
+/// [`FusionStats`]. The compile has a thread of its own, abandoned at
+/// `timeout`. A stats value is never synthesized from a failure.
 async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
         Err(e) => return CompileOutcome::Rejected(e, FusionStats::default()),
     };
     let registration = registration_image_source().await;
-    let program = Some(subj.program());
-    let Started { ctx, .. } = match start_session(
-        &subj,
-        mode,
-        registration,
-        program,
-        None,
-        Limits::default(),
-        timeout,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(Outcome::Timeout(_)) => {
-            return CompileOutcome::Failed("compile timed out".to_string());
-        }
-        Err(o) => return CompileOutcome::Failed(render(&o)),
+    let (tx, _rx) = mpsc::channel(64);
+    let limits = Limits { activations: Some(ACTIVATION_BUDGET), ..Limits::default() };
+    let cfg = session_config(&subj, mode, registration, limits, tx, |_| {})
+        .and_then(|cfg| Ok(cfg.program(subj.program()).build()?));
+    let cfg = match cfg {
+        Ok(cfg) => cfg,
+        Err(e) => return CompileOutcome::Failed(format!("runtime init failed: {e:?}")),
     };
-    let run = async {
+    let (res_tx, res) = oneshot::channel();
+    let handle = tokio::runtime::Handle::current();
+    let spawned = std::thread::Builder::new()
+        .name("graphix-fuzz-compile".into())
+        .stack_size(graphix_compiler::WORKER_STACK)
+        .spawn(move || {
+            let _ = res_tx.send(handle.block_on(cfg.compile_counted()));
+        });
+    if let Err(e) = spawned {
+        return CompileOutcome::Failed(format!("spawning the compile: {e}"));
+    }
+    match tokio::time::timeout(timeout, res).await {
         // Debug format is the anyhow chain; gen-check buckets on the
         // last line, the innermost cause.
-        let verdict = program_result(&ctx).await;
-        if ctx.rt.budget_aborted() {
-            return CompileOutcome::BudgetAborted;
-        }
-        match ctx.fusion_stats().await {
-            Ok(s) => match verdict {
-                Ok(_) => CompileOutcome::Compiled(s),
-                Err(e) => CompileOutcome::Rejected(format!("{e:?}"), s),
-            },
-            // the first cycle's abort can land between the check above and
-            // the read
-            Err(_) if ctx.rt.budget_aborted() => CompileOutcome::BudgetAborted,
-            Err(e) => CompileOutcome::Failed(format!("fusion stats read: {e:?}")),
-        }
-    };
-    let res = match tokio::time::timeout(timeout, run).await {
-        Ok(r) => r,
-        Err(_) => {
-            ctx.rt.interrupt();
-            CompileOutcome::Failed("compile timed out (wedged evaluator)".to_string())
-        }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
-    res
+        Ok(Ok(Ok((Ok(()), s)))) => CompileOutcome::Compiled(s),
+        Ok(Ok(Ok((Err(e), s)))) => CompileOutcome::Rejected(format!("{e:?}"), s),
+        Ok(Ok(Err(e))) => CompileOutcome::Failed(format!("runtime init failed: {e:?}")),
+        Ok(Err(_)) => CompileOutcome::Failed("the compile panicked".to_string()),
+        Err(_) => CompileOutcome::Failed("compile timed out".to_string()),
+    }
 }
 
 /// The program a runtime compiled or restored at construction, as a
@@ -4148,62 +4160,28 @@ pub fn regression_corpus_len() -> usize {
 }
 
 /// The checked-in fusion-coverage manifest: one `count<TAB>name` line
-/// per corpus program, `count` a [`FuseCount`]. `regress` diffs live
+/// per corpus program, `count` its fused regions. `regress` diffs live
 /// counts against it so a silent de-fusion regression fails loud;
 /// `fusecheck --bless` rewrites the file (then rebuild to embed).
 pub static FUSECHECK_MANIFEST: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fusecheck.manifest"));
 
-/// What a compile-only measurement of a corpus program records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FuseCount {
-    /// Regions that fused.
-    Fused(u64),
-    /// The program's first cycle aborts the runtime by the stack budget,
-    /// so it has no count; that it aborts is what the manifest pins.
-    BudgetAbort,
-}
-
-impl fmt::Display for FuseCount {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FuseCount::Fused(n) => write!(f, "{n}"),
-            FuseCount::BudgetAbort => write!(f, "abort"),
-        }
-    }
-}
-
-impl FromStr for FuseCount {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, ()> {
-        match s {
-            "abort" => Ok(FuseCount::BudgetAbort),
-            n => n.parse().map(FuseCount::Fused).map_err(|_| ()),
-        }
-    }
-}
-
 /// Fused-region count per corpus program, in corpus order. Jit mode,
 /// compile only, so the count cannot depend on run-time pacing. A count
 /// that could not be measured is `Err` and must be treated as a gate
 /// failure, never as 0.
-pub async fn run_fusecheck(
-    timeout: Duration,
-) -> Vec<(String, Result<FuseCount, String>)> {
+pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, Result<u64, String>)> {
     let entries = corpus::REGRESSION_CORPUS;
-    let mut counts: Vec<Result<FuseCount, String>> =
+    let mut counts: Vec<Result<u64, String>> =
         vec![Err("never measured".to_string()); entries.len()];
     let job = |i: usize| async move {
         match compile_with_stats(entries[i].1, Mode::Jit, timeout).await {
             CompileOutcome::Compiled(s) | CompileOutcome::Rejected(_, s) => {
-                Ok(FuseCount::Fused(s.fused as u64))
+                Ok(s.fused as u64)
             }
-            CompileOutcome::BudgetAborted => Ok(FuseCount::BudgetAbort),
             CompileOutcome::Failed(e) => Err(e),
         }
     };
-    // the budget-aborting pins run away in this process toward the cap
     windowed(entries.len(), regress_parallelism(), job, |i, r| {
         counts[i] = r.and_then(|r| r)
     })
@@ -4217,8 +4195,9 @@ pub async fn run_fusecheck(
 /// means the manifest holds.
 pub fn fusecheck_mismatches(
     manifest: &str,
-    counts: &[(String, Result<FuseCount, String>)],
+    counts: &[(String, Result<u64, String>)],
 ) -> Vec<String> {
+    use std::cmp::Ordering;
     let live = counts.iter().map(|(n, c)| {
         let m = match c {
             Ok(c) => Measured::Value(c),
@@ -4226,12 +4205,10 @@ pub fn fusecheck_mismatches(
         };
         (n.as_str(), m)
     });
-    manifest_diff(manifest, live, |n, r: &FuseCount, c| match (r, c) {
-        _ if r == c => None,
-        (FuseCount::Fused(r), FuseCount::Fused(c)) if c < r => {
-            Some(format!("LOST fusion: {n}: {r} -> {c}"))
-        }
-        _ => Some(format!("changed fusion: {n}: {r} -> {c}")),
+    manifest_diff(manifest, live, |n, r: &u64, c| match r.cmp(c) {
+        Ordering::Equal => None,
+        Ordering::Greater => Some(format!("LOST fusion: {n}: {r} -> {c}")),
+        Ordering::Less => Some(format!("changed fusion: {n}: {r} -> {c}")),
     })
 }
 
@@ -5914,6 +5891,7 @@ mod tests {
             "`let [h, ..] = #seqvN_1` in #seqpcN"
         );
         assert_eq!(n("'_6070 <abstract#12> #do123 #fn45"), "'_N <abstract#N> #doN #fnN");
+        assert_eq!(n("`#do3.5~9fa2::#sel7.1.2~9fa2` x"), "`#doN::#selN` x");
         assert_eq!(n("myseqv12 seq x2 'a1 s3"), "myseqv12 seq x2 'a1 s3");
     }
 
@@ -6105,6 +6083,23 @@ mod tests {
                 "{prog}: {:?}",
                 rep.rejects
             );
+        }
+        // family 14 refuses its open cell beside the scrutinee's members and
+        // inside a tuple, where the first arm testing it would decide it, or
+        // beside a member whose shape an arm only takes apart
+        for prog in [
+            "{ let v = 3; select v { 1 => \"a\", _ => \"b\" } }",
+            "{ let v: [`A, `B] = `B; select v { `A => 1, `B => 2 } }",
+            "{ let v = (1, 2); select v { (_, _) => 1 } }",
+            "{ type W = Abstract<i64>; let v = W(1); select v { W(_) => 1 } }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            let up: Vec<_> = rep
+                .rejects
+                .iter()
+                .filter(|p| p.id.starts_with("undecided-part#"))
+                .collect();
+            assert!(up.len() >= 2 && up.iter().all(|p| p.verdict.is_none()), "{up:?}");
         }
         // family 8 refuses a literal and a function with a defaulted label
         let qf = "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }";
@@ -7992,15 +7987,12 @@ mod fusecheck_test {
 
     #[test]
     fn mismatches_name_every_way_the_manifest_can_be_wrong() {
-        let manifest =
-            "3\tholds\n2\tlost\n1\tgained\n4\tnow_aborts\nabort\tstill_aborts\n0\tgone\n";
+        let manifest = "3\tholds\n2\tlost\n1\tgained\n0\tgone\n";
         let live = [
-            ("holds", Ok(FuseCount::Fused(3))),
-            ("lost", Ok(FuseCount::Fused(1))),
-            ("gained", Ok(FuseCount::Fused(2))),
-            ("now_aborts", Ok(FuseCount::BudgetAbort)),
-            ("still_aborts", Ok(FuseCount::BudgetAbort)),
-            ("unrecorded", Ok(FuseCount::Fused(5))),
+            ("holds", Ok(3)),
+            ("lost", Ok(1)),
+            ("gained", Ok(2)),
+            ("unrecorded", Ok(5)),
             ("wedged", Err("runtime init failed\ncompile timed out".to_string())),
         ]
         .map(|(n, c)| (n.to_string(), c));
@@ -8009,14 +8001,32 @@ mod fusecheck_test {
             [
                 "LOST fusion: lost: 2 -> 1",
                 "changed fusion: gained: 1 -> 2",
-                "changed fusion: now_aborts: 4 -> abort",
                 "unrecorded: unrecorded (5) — bless to record",
                 "unreadable: wedged: compile timed out",
                 "stale manifest row: gone (0) — bless to drop",
             ]
         );
-        for c in [FuseCount::Fused(7), FuseCount::BudgetAbort] {
-            assert_eq!(c.to_string().parse(), Ok(c));
+    }
+
+    /// A program whose run a budget stops, at its birth or at the cycle
+    /// its first input arrives, has its count: the measurement runs no
+    /// cycle, so no abort can land before the count is read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_budget_abort_leaves_the_count() {
+        let at_birth = "{let rec f = |n: i64| -> i64 n + f(n + {let s = i64:0; \
+                        s <- i64:0}); f(i64:0)}";
+        let at_first_input = "{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); \
+                              let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, \
+                              _ => i64:4 - f(n - i64:1)}; f(x - i64:1)}";
+        for (code, fused) in [(at_birth, 0), (at_first_input, 1)] {
+            for _ in 0..8 {
+                match compile_with_stats(code, Mode::Jit, Duration::from_secs(60)).await {
+                    CompileOutcome::Compiled(s) => assert_eq!(s.fused, fused, "{code}"),
+                    CompileOutcome::Rejected(e, _) | CompileOutcome::Failed(e) => {
+                        panic!("{code}: {e}")
+                    }
+                }
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-abort	abort-seam-jul2026/01_depth_trip_settled_taint.gx
+1	abort-seam-jul2026/01_depth_trip_settled_taint.gx
 0	abstract-opaque-overtag-jul2026/00_het_list_fn_fold.gx
 0	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
 2	abstract-ord-mixed-types-sep2026/00_map_key_union.gx
@@ -69,7 +69,7 @@ abort	abort-seam-jul2026/01_depth_trip_settled_taint.gx
 1	composite-qop-jun2026/02_borrowed_inner_qop.gx
 0	concrete-refusal-order-sep2026/00_open_parse_target.gx
 0	connect-instance-identity-aug2026/01_write_only_let_in_slot_callback.gx
-abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
+0	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 5	connect-instance-identity-aug2026/03_self_connect_in_rec_arm.gx
 2	const-body-firing-jul2026/p1_empty_static.gx
 2	const-body-firing-jul2026/p4_no_taint.gx
@@ -309,7 +309,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	recursion-fires-like-chain-aug2026/00_same_args_quiet.gx
 1	recursion-fires-like-chain-aug2026/01_capture_fires_through_chain.gx
 1	recursion-fires-like-chain-aug2026/02_nontail_const_base.gx
-abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
+1	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	recursive-activation-blocks-aug2026/00_recursive_ride_needs_own_block.gx
 1	recursive-activation-blocks-aug2026/01_hand_inlined_twin.gx
 1	recursive-activation-blocks-aug2026/02_tail_position_ride.gx
@@ -461,7 +461,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 4	strict-bottom-collections-aug2026/00_loop_op_poison.gx
 5	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
 1	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
-2	table-typedef-scope-oct2026/00_body_typedef_alias.gx
+1	table-typedef-scope-oct2026/00_body_typedef_alias.gx
 0	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 1	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
@@ -473,7 +473,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	tail-loop-internal-connect-aug2026/03_nontail_twin.gx
 4	tail-loop-io-oct2026/01_callee_constant_io.gx
 1	tail-quiet-poll-rederivation-aug2026/00_iter_fed_const_loop.gx
-abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
+1	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 1	tail-scrut-fire-jul2026/01_const_base_arm_framed.gx
 1	tail-scrut-fire-jul2026/02_const_base_arm_unframed_first_pass.gx
 1	tail-select-bottom-out-aug2026/00_nested_scrut_rides_past_base.gx
@@ -484,14 +484,14 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 1	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 1	tailloop-firing-jul2026/02_const_chain_capture.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
-4	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
+2	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
 1	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 1	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx
 1	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
 18	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
-abort	trip-poison-extent-aug2026/01_ride_too_narrow_residue_trip.gx
-abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
+1	trip-poison-extent-aug2026/01_ride_too_narrow_residue_trip.gx
+1	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	trycatch-rtype-orphan-aug2026/01_struct_add_admission.gx
 3	tval-union-blind-print-jul2026/00_group_tuple_render.gx
 2	tval-union-blind-print-jul2026/01_never_union_tuple_render.gx

@@ -5,8 +5,8 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{FutureExt, Stream, StreamExt, stream::SelectAll};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
-    TagValue, View, WriteTarget, diagnostic_site,
+    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, FusionStats, Late, Node,
+    Rt, Saved, Scope, TagValue, View, WriteTarget, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, Load, ModPath, Origin, Probes, ResolverRef,
         Resolvers, RootFile, Sig, Source, join_in_order,
@@ -396,6 +396,10 @@ impl<X: GXExt> GX<X> {
         }
     }
 
+    pub(super) fn fusion_stats(&self) -> FusionStats {
+        self.ctx.fusion.stats()
+    }
+
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
         let st_new = Instant::now();
         cfg.resolvers.extend(crate::search_path(
@@ -464,7 +468,7 @@ impl<X: GXExt> GX<X> {
             if probes.is_some() {
                 t.ctx.env.record_warnings();
             }
-            let loaded = t.load_program(&source, probes.as_ref()).await;
+            let loaded = t.load_program(&source, probes.as_ref(), 0).await;
             let warnings = t.ctx.env.recorded_warnings();
             match loaded {
                 Ok(root) => {
@@ -522,39 +526,6 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
-    // CR claude for eric: [bug/medium] A production reaches only readers that run after it
-    // in its cycle, and nothing delivers it to one that ran before, so a reader holding a
-    // function value from later in the program never sees what that function reads move.
-    // A script: `let h: fn(x: i64) -> i64 = never(); let r = h(1); let t = timer(50.ms, 5);
-    // let w = count(t); h <- |x| x + w` never prints r (w is absent when h lands, and each
-    // later w is made after r's statement ran); with the reader after `let w` it prints
-    // 4, 5, 6. REPL inputs alike: input 1 holds `select hs { [f, ..] => f(1), _ => 0 }`, a
-    // later one `let w = count(timer)` and `hs <- [|x| x + w]`, and `out` stays at its first
-    // value while a fresh `k(1)` moves (e5; GRAPHIX_PRUNE=off and audit alike), and a
-    // dynamic module's reload read that way (e4). Here notify_set only schedules roots past
-    // the one running, and `updated` is cleared at the cycle's end; a block runs its
-    // statements in text order. Writes are not affected: they land as the cycle starts
-    // (an interface pair's on both, ExecCtx::deliver_pair_writes). Options: run again, in
-    // the same cycle, a root or statement a production notified after it ran (a fixpoint;
-    // a statement can run twice in a cycle), or deliver the production to it next cycle as
-    // a write (a value a cycle late, and a second fire). Main a084f9887 and base 432e34ac6
-    // alike. probe: ~/ptmp/cr29/scratch/r6-W/r38/{sc/main.gx, e4, e5} (wrepl.sh lane e5
-    // e5/in.txt) (root-order-production-01)
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D19 (b) in ~/ptmp/cr-discuss.md: a value
-    // made in a cycle reaches an earlier reader (one that ran before it in the root order)
-    // in the next cycle, as a write does; forward readers unchanged.
-    // 2026-11-04 claude: Round 15 lane W built D16 (b) and D19 (b) on branch cr50-W-parked
-    // (e64fdff5d..1fb17e606) and was parked. D16: a write that landed during the sleep
-    // stands over catch-up, but an input that fires live in the wake's own cycle must still
-    // replace it (the scrutinee that wakes the arm), and every static test of liveness
-    // failed review in a new way: by the initializer's text (a pattern bind, an alias), then
-    // by triggering inputs (a sample paying its bank, an imaged callee's reads, a cold/warm
-    // image divergence), and a uniq'd scrutinee or an untaken inner arm needs a per-fire
-    // liveness bit in both engines. D19 held up after fixes (Walk deliveries, moved
-    // references, the fork rule) but breaks its ruling's premise: a backward data cycle
-    // through a function value now runs a cycle at a time forever where main settles
-    // (late-loop-01 on the branch). Back to Eric as the D16/D19 follow-up in
-    // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/W-r*/.
     /// One cycle's updates of the scheduled roots; what fired goes into
     /// `batch`.
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
@@ -574,9 +545,11 @@ impl<X: GXExt> GX<X> {
         };
         let mut due = scheduled(self, None);
         let mut known = self.ctx.rt.updated.len();
+        self.ctx.rt.running = true;
         while let Some((i, init)) = due.pop() {
             let (id, n) = self.nodes.at_mut(i).expect("scheduled root");
             self.ctx.event.view = if init { View::Birth } else { View::Cycle };
+            self.ctx.event.root = Some(id);
             // Only a FIRED production becomes an event.
             let tv = n.update(&mut self.ctx.view());
             if tv.is_fired() {
@@ -586,10 +559,71 @@ impl<X: GXExt> GX<X> {
                 }
                 batch.push(GXEvent::Updated(id, v))
             }
+            self.readers_in_other_roots(i);
             if self.ctx.rt.updated.len() != known {
                 known = self.ctx.rt.updated.len();
                 due = scheduled(self, Some(i));
             }
+        }
+        self.ctx.rt.running = false;
+        self.ctx.event.root = None;
+    }
+
+    /// The readers in other roots of what root `i` fired: one in a root
+    /// before it, which the cycle passed, reads the fire next cycle; one
+    /// in a root after it runs this cycle.
+    fn readers_in_other_roots(&mut self, i: u64) {
+        let rt = &mut self.ctx.rt;
+        for id in rt.produced.drain(..) {
+            let (Some(readers), Some((tv, _))) = (rt.by_ref.get(&id), rt.store.get(&id))
+            else {
+                continue;
+            };
+            for (r, _) in readers.iter() {
+                match self.nodes.seq(&r.root) {
+                    Some(s) if s < i => rt.late.push((id, tv.clone(), r.clone())),
+                    Some(s) if s > i => {
+                        rt.updated.entry(r.root).or_default();
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }
+
+    // CR claude for claude: [bug/low] A late fire for a reader in an arm that is still
+    // asleep next cycle is never delivered: the select's catch-up bits never record it
+    // (TrackedFires::observe reads read_var, not Event::late), so at the wake the reader
+    // reads the value standing, unfired. Main loses that fire too. Record a late fire in
+    // the waking select's bits as a fire of its input. probe: a function value read in an
+    // arm asleep the cycle after the later binding fires (late-asleep-01)
+    // CR claude for claude: [perf/low] Every passed reader gets a late entry, a scheduled
+    // root and a marked boundary, though only Ref, Deref and ConnectDeref read Event::late:
+    // a catch's receipts, a select's tracked fires, a seq machine's and Payments' readers of
+    // the same id are walked next cycle for nothing (no value changes). Telling them apart
+    // needs the reader's kind in its registration. (late-unread-01)
+    /// Deliver last cycle's late fires ([`GXRt::late`]) to their readers:
+    /// each reader's root runs and its boundary is marked, unless a write
+    /// delivered the variable already this cycle.
+    fn deliver_late(&mut self) {
+        if self.ctx.rt.late.is_empty() {
+            return;
+        }
+        let cycle = self.ctx.rt.cycle;
+        let mut late = Late::default();
+        for (id, tv, r) in self.ctx.rt.late.drain(..) {
+            if self.ctx.event.variables.contains_key(&id) {
+                continue;
+            }
+            self.ctx.rt.updated.entry(r.root).or_insert(false);
+            r.mark(cycle);
+            let (_, readers) = late.entry(id).or_insert_with(|| (tv, SmallVec::new()));
+            if !readers.contains(&r) {
+                readers.push(r)
+            }
+        }
+        if !late.is_empty() {
+            self.ctx.event.late = Some(Arc::new(late));
         }
     }
 
@@ -650,6 +684,7 @@ impl<X: GXExt> GX<X> {
             }
         }
         self.ctx.view().deliver_pair_writes();
+        self.deliver_late();
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
             || !self.ctx.event.custom.lock().is_empty();
@@ -1007,10 +1042,11 @@ impl<X: GXExt> GX<X> {
             || !self.ctx.rt.updated.is_empty()
             || !self.ctx.rt.var_updates.is_empty()
             || !self.ctx.rt.custom_updates.is_empty()
+            || !self.ctx.rt.late.is_empty()
     }
 
     async fn compile_root(&mut self, flags: BitFlags<CFlag>, text: ArcStr) -> Result<()> {
-        let ori = Origin { parent: None, source: Source::Unspecified, text };
+        let ori = Origin::new(None, Source::Unspecified, text);
         let exprs = expr::parser::parse(ori.clone())
             .with_context(|| format!("parsing the root module {ori}"))?;
         let exprs =
@@ -1041,7 +1077,8 @@ impl<X: GXExt> GX<X> {
     /// Compile and install the statements of `text`, all or none: a
     /// failure leaves the session as it was.
     async fn compile(&mut self, rt: GXHandle<X>, text: ArcStr) -> Result<CompRes<X>> {
-        let ori = Origin { parent: None, source: Source::Unspecified, text };
+        let load = self.ctx.env.block_types.next_load();
+        let ori = Origin::new(None, Source::Unspecified, text).loaded(load);
         let exprs = expr::parser::parse(ori.clone())?;
         let exprs =
             join_in_order(exprs.iter().map(|e| e.resolve_modules(&self.resolvers, None)))
@@ -1097,11 +1134,12 @@ impl<X: GXExt> GX<X> {
         source: &Load,
         resolvers: &Resolvers,
         probes: Option<&Probes>,
+        load: u32,
     ) -> Result<(Origin, Arc<[Expr]>, Option<Sig>)> {
         let (ori, exprs, sig) = match source {
             Load::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
-                let root = RootFile::load(file, overrides.as_ref(), probes).await?;
+                let root = RootFile::load(file, overrides.as_ref(), probes, load).await?;
                 (root.ori, root.exprs, root.sig)
             }
             Load::Netidx(_) => {
@@ -1116,12 +1154,11 @@ impl<X: GXExt> GX<X> {
                     anyhow!("no module resolver can load {source:?}")
                 })?;
                 let src = fetch.await?;
-                let ori = Origin { parent: None, source, text: src };
+                let ori = Origin::new(None, source, src).loaded(load);
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
             Load::Text(src) => {
-                let ori =
-                    Origin { parent: None, source: Source::Program, text: src.clone() };
+                let ori = Origin::new(None, Source::Program, src.clone()).loaded(load);
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
         };
@@ -1136,6 +1173,7 @@ impl<X: GXExt> GX<X> {
         expr_types: bool,
     ) -> Result<crate::CheckResult> {
         let env = self.ctx.env.clone();
+        let load = self.ctx.env.block_types.next_load();
         // a check runs nothing: everything it compiled is rolled back
         let saved = Saved::take(&mut self.ctx.cx);
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
@@ -1162,7 +1200,8 @@ impl<X: GXExt> GX<X> {
                     // a package this binary was not built with is still
                     // the root `package::` names
                     self.ctx.env.package_roots.insert(name.clone());
-                    let root = RootFile::load(file, overrides.as_ref(), None).await?;
+                    let root =
+                        RootFile::load(file, overrides.as_ref(), None, load).await?;
                     let ori = root.ori.clone();
                     (
                         ori,
@@ -1175,7 +1214,7 @@ impl<X: GXExt> GX<X> {
                 (Some(_), _) => bail!("only a file can be checked as a package root"),
                 (None, _) => {
                     let (ori, exprs, sig) =
-                        self.load_exprs(source, &resolvers_for_call, None).await?;
+                        self.load_exprs(source, &resolvers_for_call, None, load).await?;
                     (ori, exprs, ModPath::root(), false, sig)
                 }
             };
@@ -1261,7 +1300,9 @@ impl<X: GXExt> GX<X> {
     }
 
     async fn load(&mut self, rt: GXHandle<X>, source: &Load) -> Result<CompRes<X>> {
-        let ProgramRoot { id, output, typ, .. } = self.load_program(source, None).await?;
+        let load = self.ctx.env.block_types.next_load();
+        let ProgramRoot { id, output, typ, .. } =
+            self.load_program(source, None, load).await?;
         let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
@@ -1292,10 +1333,12 @@ impl<X: GXExt> GX<X> {
         &mut self,
         source: &Load,
         probes: Option<&Probes>,
+        load: u32,
     ) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
-        let (ori, exprs, sig) = self.load_exprs(source, &self.resolvers, probes).await?;
+        let (ori, exprs, sig) =
+            self.load_exprs(source, &self.resolvers, probes, load).await?;
         info!("parse time: {:?}", st.elapsed());
         let st = Instant::now();
         let exprs = join_in_order(

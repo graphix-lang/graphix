@@ -499,9 +499,13 @@ template that turned ill-typed wastes subjects no finding reports, and a
 campaign's progress lines count the subjects both builds refused.
 `regress` also compiles every pin once more in JIT mode, compile only,
 and compares its fused-region count with `graphix-fuzz/fusecheck.manifest`
-(one `count<TAB>name` row per pin; `abort` for a pin whose first cycle
-trips the stack budget, which kills the runtime before its stats can be
-read). The oracle cannot see a region that quietly falls back to the
+(one `count<TAB>name` row per pin). The compile is a runtime's
+construction with no cycle after it (`GXConfig::compile_counted`): the
+count is a fact of the compile, read before anything runs, so a pin
+whose run a budget stops has a count like any other, and whether it is
+contained is `outcome.manifest`'s to say. A count read from a running
+runtime would race its cycles: the abort could land before the read
+or after it. The oracle cannot see a region that quietly falls back to the
 node-walk, since both engines then agree; the manifest can. A count that
 moves is a finding until the change is understood, and an intended one is
 re-recorded with `fusecheck --bless` (then rebuild: the compare reads the

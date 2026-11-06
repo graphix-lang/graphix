@@ -1903,6 +1903,19 @@ fn instance_summaries<R: Rt>(
     sums
 }
 
+// CR claude for claude: [bug/medium] A closure chain through a recursion forks a branch
+// that reads what its left sibling publishes in the same cycle, so the forked node-walk
+// differs from the serial one, on main as well. `let rec f = |n, g| { let y = x * 100 + n;
+// select n { 0 => g(0), n => f(n - 1, |u| y + g(u)) } }; (x, f(3, |u| u))` with x counting
+// 0..4: serial 0:(0,6) 1:(1,306) .. 4:(4,1206); forked 1:(1,206) .. 4:(4,1106), one
+// level's y a cycle behind and the first cycle's output lost (graphix-fuzz check:
+// DIVERGENCE, parallel evaluation bug). GRAPHIX_PAR_AUDIT=1 GRAPHIX_PAR=force --no-fusion
+// on cl_small.gx panics: "a forked branch read BindId(..), which its left sibling published
+// in the same cycle"; under the default Auto a depth-500 chain printed 150249 before
+// 150250. A fork point inside the chain (a call's arguments, a constructor's fields) is
+// missed by plan_block's summaries, analysis::escaping or hands_out_callee_binds: the
+// closure handed down captures y, which the callee's own call reads. probe:
+// ~/ptmp/cr29/scratch/r16-W/{fz_cl.gx,cl_small.gx} (par-closure-chain-01)
 /// A block's statements as runs for forking (`design/parallel_eval.md`
 /// §3.3): `(start, end)` ranges over `children`, catches left out. A run
 /// is contiguous and holds no catch, and no statement in it reads what
@@ -2057,6 +2070,7 @@ impl<'g, 'a, R: Rt> ForkCx<'g, 'a, R> {
             ids_verdict(
                 children.iter().copied(),
                 &with_callees(&locals, self.sums(Detail::Ids)),
+                &escaping(children.iter().copied()),
             )
         })
     }
@@ -2185,6 +2199,91 @@ fn publishes<R: Rt>(n: &Node<R>, published: &mut Vars) {
     });
 }
 
+/// What a read through a reference or an unresolved call may reach of
+/// what `children` publish: each variable a reference names, each
+/// reference's cell, and each variable a lambda captures; any other `let`
+/// is named by its scope alone, which no earlier statement or sibling is
+/// in.
+fn escaping<'a, R: Rt>(children: impl Iterator<Item = &'a Node<R>>) -> Vars {
+    let mut esc = Vars::default();
+    for n in children {
+        fusion::for_each_node(n, &mut |x| match x.view() {
+            NodeView::ByRef(b) => {
+                esc.ids.insert(b.id);
+                let mut refs = Refs::without_callees();
+                x.refs(&mut refs);
+                esc.ids.extend(refs.refed.iter().copied());
+            }
+            NodeView::Lambda(l) => match l.def_value().downcast_ref::<LambdaDef<R>>() {
+                Some(def) if def.table.get().is_some() => def.captured_ids(&mut |id| {
+                    esc.ids.insert(id);
+                }),
+                _ => esc.all = true,
+            },
+            _ => (),
+        });
+    }
+    esc
+}
+
+/// Whether a binding a call in `n` fires (a callee's formal, `let`,
+/// pattern bind or slot element) may reach a reader no name in `n`
+/// shows: a callee body, a collection's callback included, that makes a
+/// reference or a lambda, or a call with no static target, whose body no
+/// walk sees.
+fn hands_out_callee_binds<R: Rt>(n: &Node<R>) -> bool {
+    let opaque =
+        |cs: &CallSite<R>| matches!(cs.resolved_apply(), None | Some(ApplyView::Opaque));
+    let makes_handles = |body: &Node<R>| {
+        let mut any = false;
+        fusion::for_each_reachable_node(body, &mut |x| {
+            any |= match x.view() {
+                NodeView::ByRef(_) | NodeView::Lambda(_) => true,
+                NodeView::CallSite(cs) => opaque(cs),
+                _ => false,
+            }
+        });
+        any
+    };
+    let mut any = false;
+    fusion::for_each_node(n, &mut |x| {
+        let NodeView::CallSite(cs) = x.view() else { return };
+        any = any
+            || match cs.resolved_apply() {
+                Some(ApplyView::Lambda(g)) => {
+                    makes_handles(g.body())
+                        || g.inline_callback().is_some_and(|c| makes_handles(c.body()))
+                }
+                Some(ApplyView::BuiltIn(_)) => false,
+                None | Some(ApplyView::Opaque) => true,
+            }
+    });
+    any
+}
+
+/// Where reads made earlier meet what `n`, publishing `publishing`, fires
+/// this cycle, which reaches them only next cycle: a variable they name,
+/// or through a reference or an unresolved call (`None`) one in
+/// `escaping` or one a call in `n` hands out.
+fn read_before<R: Rt>(
+    reads: &Vars,
+    n: &Node<R>,
+    publishing: &Vars,
+    escaping: &Vars,
+) -> Option<Option<BindId>> {
+    if let Some(id) = reads.ids.iter().find(|id| publishing.ids.contains(id)) {
+        return Some(Some(*id));
+    }
+    if !reads.unknown() {
+        return None;
+    }
+    let reached = match escaping.all {
+        true => !publishing.is_empty(),
+        false => publishing.ids.iter().any(|id| escaping.ids.contains(id)),
+    };
+    (reached || hands_out_callee_binds(n)).then_some(None)
+}
+
 /// Whether siblings forked at a fork point other than a block's (a
 /// constructor's fields, a call's arguments, an operator's operands, a
 /// collection's slots) compute in parallel what they do in order: none
@@ -2219,7 +2318,8 @@ pub(crate) fn independent<'a, R: Rt>(
     shallow_verdict(&shallow).unwrap_or_else(|| {
         ids_verdict(
             children.clone(),
-            &accesses(children, &graph, ctx, Detail::Ids, sites),
+            &accesses(children.clone(), &graph, ctx, Detail::Ids, sites),
+            &escaping(children),
         )
     })
 }
@@ -2283,18 +2383,24 @@ fn shallow_verdict(siblings: &[Shallow]) -> Option<Option<bool>> {
 fn ids_verdict<'a, R: Rt>(
     children: impl Iterator<Item = &'a Node<R>>,
     accesses: &[Summary],
+    escaping: &Vars,
 ) -> Option<bool> {
     let mut published = Vars::default();
+    let mut read = Vars::default();
     let mut made_refs = false;
     let mut ordered = false;
     for (n, access) in children.zip(accesses.iter()) {
+        let mut publishing = Vars::default();
+        publishes(n, &mut publishing);
         if access.reads.meeting(&published).is_some()
+            || read_before(&read, n, &publishing, escaping).is_some()
             || (access.reads.refs && made_refs)
             || (access.ordered && ordered)
         {
             return unbound_or_dependent(accesses.iter().any(|a| a.unbound));
         }
-        publishes(n, &mut published);
+        published.union(&publishing);
+        read.union(&access.reads);
         made_refs |= access.makes_refs;
         ordered |= access.ordered;
     }
@@ -2358,6 +2464,10 @@ pub(crate) enum RunBreak {
     /// It reads what an earlier statement of the run publishes: that
     /// variable, or `None` through a reference or an unresolved call.
     Reads(Option<BindId>),
+    /// It publishes what an earlier statement of the run reads, which a
+    /// fire reaches only next cycle: that variable, or `None` where the
+    /// earlier one reads through a reference or an unresolved call.
+    ReadBefore(Option<BindId>),
     /// It and an earlier statement of the run both make ordered calls.
     Ordered,
 }
@@ -2385,6 +2495,8 @@ fn plan_runs<R: Rt>(
     let mut runs: LPooled<Vec<(u32, u32)>> = LPooled::take();
     let mut start: Option<usize> = None;
     let mut published = Vars::default();
+    let mut run_reads = Vars::default();
+    let escaping = escaping(children.iter());
     let mut made_refs = false;
     let mut run_ordered = false;
     let mut after_module = false;
@@ -2408,10 +2520,15 @@ fn plan_runs<R: Rt>(
             None if access.reads.refs && made_refs => Some(None),
             met => met,
         };
+        let mut publishing = Vars::default();
+        publishes(n, &mut publishing);
+        let read_before = read_before(&run_reads, n, &publishing, &escaping);
         let why = if module || after_module {
             Some(RunBreak::Module)
         } else if let Some(id) = met {
             Some(RunBreak::Reads(id))
+        } else if let Some(id) = read_before {
+            Some(RunBreak::ReadBefore(id))
         } else if access.ordered && run_ordered {
             Some(RunBreak::Ordered)
         } else {
@@ -2424,10 +2541,12 @@ fn plan_runs<R: Rt>(
                 explain(i, why.expect("a break has a reason"));
             }
             published = Vars::default();
+            run_reads = Vars::default();
             made_refs = false;
             run_ordered = false;
         }
-        publishes(n, &mut published);
+        published.union(&publishing);
+        run_reads.union(&access.reads);
         made_refs |= access.makes_refs;
         run_ordered |= access.ordered;
         after_module = module;
@@ -2672,6 +2791,16 @@ pub(crate) fn check_parallel<R: Rt>(
             RunBreak::Reads(None) => {
                 "reads through a reference or a call the compiler cannot resolve".into()
             }
+            RunBreak::ReadBefore(Some(id)) => {
+                let name = ctx.env.by_id.get(&id).map(|b| b.name.clone());
+                let name = name.as_deref().unwrap_or("a variable");
+                compact_str::format_compact!(
+                    "publishes `{name}`, which an earlier statement reads"
+                )
+            }
+            RunBreak::ReadBefore(None) => "publishes what an earlier statement may read \
+                 through a reference or a call the compiler cannot resolve"
+                .into(),
             RunBreak::Ordered => "makes an ordered call after another one".into(),
             RunBreak::Module => "is, or follows, a module, trait or impl".into(),
             RunBreak::Catch => "is a catch, which runs after what it covers".into(),

@@ -235,6 +235,17 @@ enum Judge {
 /// the instance runs with; where the site hides the label, against `f`'s
 /// own parameter, and then against the label of `value`, the function as
 /// the site holds it, which it narrows.
+// CR claude for claude: [bug/low] Two lambdas in one array whose labeled defaults have
+// different types pass the check and fail at every dynamic bind: `let fs = [|#d = 1, x:
+// i64| cast<string>(d)$, |#d = "q", x: i64| cast<string>(d)$]` and `fs[i]$(7)` (i from a
+// timer) passes --check, then each dispatch logs "binding the callee failed: type mismatch
+// string does not contain i64" in every mode (main eb0989d33 and lane N r15 alike). Not
+// traced: the meet of the two function types seems to keep one label type, against which
+// the default the site compiles is judged here. The check should refuse the meet (or the
+// site keep each definition's own label type). With block types instead of i64/string (two
+// defaults declaring different `type L`s) it fails the same way. probes:
+// ~/ptmp/cr29/scratch/r15-N/fix/two_defaults_plain.gx, two_blocks.gx
+// (array-defaults-meet-01)
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -249,157 +260,6 @@ fn checked_default<R: Rt>(
     value: Option<&FnType>,
     judge: Judge,
 ) -> Result<Node<R>> {
-    // CR claude for eric: [bug/medium] A labeled default compiled at a bind is checked
-    // in full here at the instance's types, so a select in it over an enclosing
-    // definition's variable is judged for coverage there: `let outer = 'a: [(bool, i64),
-    // i64] |x: 'a| -> i64 { let f = |#d = select x { (true, n) => n, (false, n) => 0 - n,
-    // i64 as n => n * 10 }, y: i64| d + y; f(1) }; outer((true, 3))` is refused "cannot
-    // compute [] * i64" (the arm `i64 as n` reaches nothing at (bool, i64)), while
-    // `outer(v)` with `v: [(bool, i64), i64]` prints 51 and the same select in outer's body
-    // rather than a default checks at both (lane E on 6441a6d70, main a084f9887 alike).
-    // The definition's check owns the coverage verdicts, as for a GRAPHIX_NO_SUBST
-    // re-check (no-subst-dead-arm-01). probe: ~/ptmp/cr29/scratch/r6-E/r6G2/ns3.gx
-    // (default-bind-coverage-01)
-    // 2026-11-02 claude: checked_default runs a bind's default check (Judge::Bind) under
-    // node::rechecking_instance, as an instance's body is checked again under
-    // GRAPHIX_NO_SUBST: the definition's check (check_defaults) judged the default's
-    // selects at the types written, so an arm the instance's narrower type leaves unreached
-    // binds at bottom and never runs. ns3.gx prints 4 (main 8beb0735a refuses its build
-    // 'cannot compute [] * i64'). Pin
-    // lang::select::default_at_a_bind_takes_its_definitions_coverage: outer((true, 3)) 4,
-    // outer((false, 4)) -3, the control outer(v) with v: [(bool, i64), i64] = 5 51; refused
-    // in every mode without the change, passes under GRAPHIX_NO_SUBST=1.
-    // 2026-11-02 claude: Review B5-r3-1 (medium): 8e561fcf3 is incomplete. What it makes
-    // work (each refused by main 8beb0735a's build): ns3 and the pin
-    // lang::select::default_at_a_bind_takes_its_definitions_coverage, d_slot (a collection
-    // slot's bind: [4, -3] [51, 61]), d_dyn (a dynamic call's bind: 4 -3 71), d_guard
-    // (guarded arms: 4 102 -3 51 -4 51), d_nested (a default inside a default: 4 -3 61 51).
-    // What still fails (--check passes, the build refuses): an arm nothing reaches at the
-    // instance binds at bottom under the recheck, so a body that reads its bind is refused,
-    // d_tuple 'reading a tuple needs its type known here', d_ref, d_field, d_fn alike
-    // (main: 'unreachable arm'); and a reached arm whose bind is narrower at the instance
-    // than at the definition, d_opt (`S(o) => o$ at `S(i64): 'cannot use the $ operator on
-    // i64', main the same). Two ways out (the reviewer's): take the default's types from
-    // the definition's DefTable, as an instance body does (closes both), or leave an
-    // unreached arm's body unchecked under the recheck (closes d_tuple, d_ref, d_field,
-    // d_fn, not d_opt). The GRAPHIX_NO_SUBST failures the log records (24:
-    // union_bound_open_cell_accepts, cast_of_a_reference_beside_a_filled_application,
-    // cast_of_a_reference_in_an_instance, generic_select_telling_quantifier_bound_told,
-    // generic_slice_binds_beside_keep_check,
-    // partial_struct_empty_cells_a_definition_returns_are_one_member, four modes each) are
-    // d_opt's half of the gap, not d_tuple's: each is a rule the definition's check decided
-    // judged again at the instance's narrower types ($ over i64, a cast whose source holds
-    // a reference, what reaches an arm and its binds' types, a partial struct's member
-    // count); none is an unreached arm reading its bottom bind. So only the first way
-    // closes the default's form; NO_SUBST, which checks every instance again by design,
-    // keeps them. Probes ~/ptmp/cr29/scratch/review-r7/B5-r3-1/i3/d_*.gx.
-    // 2026-11-02 claude: Taken the reviewer's first way out (lane G r8): a default compiled
-    // at a call's bind takes its types from its definition's check, as an instance body
-    // does. check_defaults hands its checked nodes back and DefTable::record_defaults
-    // records their rows in the definition's table (DefTable::settle_open leaves them open,
-    // so a bind narrows them by its own view of the label); checked_default at Judge::Bind
-    // compiles and types the default through InstanceTypes::of_default (each open cell the
-    // definition owns copied, an enclosing instance's renamed through its map), and checks
-    // it in full only where there are no rows (a builtin's default, GRAPHIX_NO_SUBST).
-    // d_tuple d_ref d_field d_fn d_opt now print 5 1 (main bbb06c0c6's build refuses each);
-    // d_dyn d_slot d_guard d_nested ns3 as before. Pins
-    // lang::select::default_at_a_bind_reads_an_unreached_arms_binds and
-    // default_at_a_bind_keeps_its_definitions_bind_types fail in all four modes with the
-    // bind's typing switched back to the recheck;
-    // default_at_a_bind_takes_its_definitions_coverage holds. Under GRAPHIX_NO_SUBST=1 the
-    // two new pins fail as the d_*_body forms do (an instance rechecked at its narrower
-    // types, the known NO_SUBST class).
-    // 2026-11-02 claude: A default whose block declares a recursive type
-    // (review-r6/B2-r1-1/d1j.gx, d1.gx) was refused at the bind under the first cut
-    // ('undefined type L': the label check expanded the type the bind's compile declared,
-    // whose own references only that compile's environment holds). checked_default now
-    // seeds the typedefs under the callee's scope in that environment before it leaves it
-    // (Env::seed_typedef_refs_under), as a module seeds its own; record_defaults seeds the
-    // rows in the environment each default compiled in. Pin
-    // lang::select::default_at_a_bind_declares_a_recursive_type fails in all four modes
-    // without the seed (it logs default-typedef-outlived-01's 'outlived its definition'
-    // line, as main does for d1j).
-    // 2026-11-02 claude: Narrowed after a probe comparison (lane G r8, base bbb06c0c6 vs
-    // lane over review-r6/B2-r1-1, E4-*, review-r7/B5-r3-1): typing a default from rows
-    // also moved the defaults that write a type name into the instance path's late fill of
-    // names, which finds the wrong definition or none: type M = string; let f = |#d = {
-    // type M = [i64, null]; let q: M = 3; q }, x: M| (d, x) crashed under fusion
-    // (misaligned pointer: the JIT read 3 as the outer string), as did a default naming a
-    // type the enclosing body declares over an outer one of that name. That is
-    // default-typedef-outlived-01's class (Eric's 'type names in a scope that ends'; an
-    // ordinary instance body crashes the same way on main: new CR scope-shadow-crash-01).
-    // So DefTable::record_defaults keeps no rows for a default any of whose rows holds a
-    // type name, and the bind checks that one in full as main does; the bind-time seeding
-    // of the previous note is gone. d_tuple d_ref d_field d_fn d_opt keep their fix (no
-    // names); the E4 shapes behave as on main. Pins
-    // default_at_a_bind_names_a_block_type_over_an_outer_one (crashes the test binary with
-    // every default on rows) and default_at_a_bind_declares_a_recursive_type pin the
-    // fallback.
-    // 2026-11-02 claude: Cost: the names test now walks the default's checked tree
-    // (lambda::names_type_anywhere: node types, arm and catch binds; a callee's signature
-    // does not count, it is written nowhere in the default) before any row is recorded, and
-    // the kept rows, naming no type, are neither seeded nor owned. guicheck
-    // (instructions:u, GUI examples --check): base bbb06c0c6 92.92G/92.95G, lane
-    // 93.15G/93.08G (first cut 93.06G; rows tested after recording, 93.69G).
-    // 2026-11-02 claude: Cost (lane G r8 review): the names test walked every type as a
-    // tree, remembering only cells, so a default whose types share nodes (let a1 = (a0,
-    // a0), doubled d times) cost 2^d at the definition's check, --check and the LSP
-    // included (review-r8/G-r1-2 dbl2_22_0: 16.2G vs main 1.31G). lambda::names_type now
-    // walks each shared node once (Type::shared_identity, as seed_refs_seen does);
-    // dbl2_18_0 and dbl2_22_0 --check 1.31G on the lane as on main. Pin
-    // graphix-shell/tests/default_check_cost.rs (depth 20 against depth 2 under 0.3G more)
-    // fails without it (3.74G more).
-    // 2026-11-02 claude: Back to a CR (lane G r8 review, reviewer 2, medium): the fix is
-    // partial. A default whose checked types hold no type name takes its types from its
-    // definition's check (d_tuple d_ref d_field d_fn d_opt print 5 1 and stay pinned), but
-    // the exception for a default typed with a type name fires on any name, a stable
-    // top-level typedef's included, so such a default keeps main's recheck at the bind and
-    // its bug: review-r8/G-r1-2/p/dnm4.gx (type P = (i64, i64) at top level, the default's
-    // arm reading let k: P) is refused 'reading a tuple needs its type known here' on main
-    // and the lane, while dnm4_inline.gx (let k: (i64, i64)) prints (6, 1); which spellings
-    // keep a name in the checked types (dnm1's P as t does not) is not one a reader can
-    // predict. What remains: narrow the exception to a name that resolves to a typedef a
-    // block declares (a scope with a generated component, where the crash class of
-    // scope-shadow-crash-01 and default-typedef-outlived-01 lives), keeping rows for a
-    // default naming only module and top-level types. That needs each name resolved in the
-    // environment the default compiled in (inside check_defaults' with_restored, where its
-    // block's typedefs still stand; TypeRef::resolve_peek is crate-private to
-    // graphix-types) and the kept rows seeded and their definitions owned as
-    // DefTable::record does a body's; left for that change. The block class itself waits on
-    // Eric's 'type names in a scope that ends'.
-    // 2026-11-02 claude: Landed from lane G (round 7): a default whose checked types name
-    // no type takes its definition's rows at a bind (c878ad6ad, c9eccf6db, eec7d0c59,
-    // 5b8d6008f; pins lang::select::default_at_a_bind_reads_an_unreached_arms_binds,
-    // default_at_a_bind_keeps_its_definitions_bind_types;
-    // graphix-shell/tests/default_check_cost.rs for the names test's cost). A default
-    // naming any type, a top-level typedef included, keeps no rows and is checked in full
-    // at the bind, so the bug stands for those (dnm4): rows for them need the type names to
-    // outlive the scope that wrote them, which is default-typedef-outlived-01's question
-    // (next-discuss: type names in a scope that ends).
-    // 2026-11-02 claude: What remains (a default naming a type keeps no rows and is checked
-    // in full at the bind) waits on the next-discuss item "Type names in a scope that
-    // ends": rows for such a default need its type names to outlive the scope that wrote
-    // them (default-typedef-outlived-01, scope-shadow-crash-01). Readdressed to eric until
-    // then.
-    // 2026-11-03 claude: Readdressed to claude (round-6 discussion merge): a default naming
-    // only top-level or module types never outlives its names, so it can keep rows now;
-    // narrow the no-rows exception to a name that resolves to a typedef a block declares,
-    // as the first 11-02 note says (pin: review-r8/G-r1-2/p/dnm4.gx, which passes --check
-    // and whose build refuses on main 387c29e60). The block-type half is the question D10
-    // in ~/ptmp/cr-discuss.md (default-typedef-outlived-01).
-    // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
-    // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are fixed
-    // at the root (a registry of block typedefs that outlive their block, a block's name
-    // meaning its type throughout the block), census 0 changes, gate green, and guicheck
-    // drops from 94G to 42G instructions (DefTable::record now fills rows in an env with
-    // the import tables). Left: the registry is keyed by scope names holding ExprIds, which
-    // a restore renumbers, so a block compiled again in a warm session declares a second
-    // definition; a function above a block's typedef that outlives its slot runs cold and
-    // fails warm ("type L outlived its definition"), including programs main runs (an outer
-    // type of the same name; an abstract constructor), and one shape binds warm and reads a
-    // wrong value. CR block-type-image-scope-01 on the branch. Back to Eric as the D10
-    // follow-up in ~/ptmp/cr29/next-discuss.md; probes
-    // ~/ptmp/cr29/scratch/review-r15/N-r*/.
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
@@ -1397,7 +1257,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for eric: [bug/medium] An argument whose type holds a cell its uses decide
+// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -1441,6 +1301,8 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // union decided by later writes, a callback parameter's union. Back to Eric as the D7/D8
 // follow-up in ~/ptmp/cr29/next-discuss.md; probes
 // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
+// 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7 alone:
+// split D7's part out of cr50-R-parked (544862d33) and re-review it.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument, whatever the order. An argument that does not
 /// fit is probed once against its formal with those variables open; it
@@ -2273,7 +2135,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for eric: [risk/medium] An omitted labeled default only narrows: it is
+    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -2324,6 +2186,8 @@ impl<R: Rt> CallSite<R> {
     // result union decided by later writes, a callback parameter's union. Back to Eric
     // as the D7/D8 follow-up in ~/ptmp/cr29/next-discuss.md; probes
     // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7
+    // alone: split D7's part out of cr50-R-parked (544862d33) and re-review it.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

@@ -301,6 +301,13 @@ pub struct GXRt<X: GXExt> {
     _keepalive_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
     _keepalive_var_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
     pub(super) updated: IntMap<ExprId, bool>,
+    /// Whether a root is being updated: what it fires goes in `produced`.
+    pub(super) running: bool,
+    /// The variables the root being updated fired that a reader in
+    /// another root reads ([`Rt::produced`]).
+    pub(super) produced: Vec<BindId>,
+    /// The fires to deliver next cycle to readers that met them late.
+    pub(super) late: Vec<(BindId, TagValue, Reader)>,
     pub ext: X,
 }
 
@@ -349,6 +356,9 @@ impl<X: GXExt> GXRt<X> {
             ref_paths: IntMap::default(),
             custom_updates: Waiting::default(),
             updated: IntMap::default(),
+            running: false,
+            produced: Vec::new(),
+            late: Vec::new(),
             ext: X::default(),
             tasks,
             timers: IntMap::default(),
@@ -497,6 +507,16 @@ impl<X: GXExt> Rt for GXRt<X> {
             for (r, _) in refed.iter() {
                 self.updated.entry(r.root).or_default();
             }
+        }
+    }
+
+    fn late(&mut self, id: BindId, tv: TagValue, reader: Reader) {
+        self.late.push((id, tv, reader))
+    }
+
+    fn produced(&mut self, id: BindId) {
+        if self.running {
+            self.produced.push(id)
         }
     }
 

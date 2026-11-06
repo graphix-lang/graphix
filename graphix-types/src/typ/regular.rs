@@ -77,48 +77,6 @@ impl Graph {
                 Some(b) => self.node(&b),
                 None => self.leaf(b'v', &[]),
             },
-            // CR claude for eric: [bug/low] A reference that does not expand here is
-            // keyed by its written name, and a nested reference in an inline written
-            // type argument reaches the key unresolved: with `type R<'a> = [`Nil,
-            // `Cons('a, R<'a>)]; type B<'x> = Abstract<i64>`, `B<R<i64>>` and
-            // `B<[`Nil, `Cons(i64, R<i64>)]>` are equal types whose values compare
-            // unequal (`c == e` false), where the same argument through an alias `type
-            // E = [`Nil, `Cons(i64, R<i64>)]` compares equal; a map keyed by such
-            // values takes two entries for one key. Main a084f9887 hangs on these
-            // programs (regular-grows-01), so nothing saw it before. Resolve the nested
-            // reference where the written argument is seeded, or key an unexpanded
-            // reference by the definition it names. probes:
-            // ~/ptmp/cr29/scratch/review-r6/B2-r1-1/rg8.gx, rg9.gx (regular-inline-ref-01)
-            // 2026-11-02 claude: Parked with default-typedef-outlived-01 (for eric). Lane
-            // E filled written names at the check's end: a let's annotation first
-            // (ada956703), then every type outside a definition (6e09af91c,
-            // seed_node_types, about +0.2% on a build). Reviews found values of one
-            // written type keyed apart by the road that decided them (E4-r1-2 ri11: false
-            // 2 1 where main gives true 1 1), and names filled in the wrong scope. Keying
-            // an unexpanded reference by the definition it names needs that name resolved
-            // where it was written, which is the parked question.
-            // 2026-11-02 claude: Waits on Eric's ruling of the next-discuss item "Type
-            // names in a scope that ends" (~/ptmp/cr29/next-discuss.md). Readdressed to
-            // eric until then.
-            // 2026-11-03 claude: Eric ruled (2026-11-03): D10 (b) in ~/ptmp/cr-discuss.md:
-            // keep a block's type definitions findable after the block while anything
-            // names them (they sit under a scope unique to the block), so a late lookup
-            // finds the right definition and every default can take its definition's
-            // types; a short design pass first, then a lane.
-            // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
-            // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts
-            // are fixed at the root (a registry of block typedefs that outlive their
-            // block, a block's name meaning its type throughout the block), census 0
-            // changes, gate green, and guicheck drops from 94G to 42G instructions
-            // (DefTable::record now fills rows in an env with the import tables). Left:
-            // the registry is keyed by scope names holding ExprIds, which a restore
-            // renumbers, so a block compiled again in a warm session declares a second
-            // definition; a function above a block's typedef that outlives its slot runs
-            // cold and fails warm ("type L outlived its definition"), including programs
-            // main runs (an outer type of the same name; an abstract constructor), and one
-            // shape binds warm and reads a wrong value. CR block-type-image-scope-01 on
-            // the branch. Back to Eric as the D10 follow-up in
-            // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/N-r*/.
             Type::Ref(tr) => match Self::expand(t) {
                 None => {
                     let name = format_compact!("{}", tr.name);

@@ -9,7 +9,7 @@ use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue,
     analysis::Sites,
     cost::{ForkSite, Meter, Plan, Siblings},
-    expr::Expr,
+    expr::{Expr, ExprId},
     node::{
         callsite::CallNode,
         place::{Path, RefPath},
@@ -67,6 +67,8 @@ enum RtOp {
     PatchVar(BindId, Path, Value, Option<Arc<Expr>>),
     PatchLevel(BindId, Path, Value),
     NotifySet(BindId),
+    Late(BindId, TagValue, Reader),
+    Produced(BindId),
     ForgetWrites(BindId),
     SetTimer(BindId, Duration),
     CancelTimer(BindId),
@@ -87,6 +89,8 @@ impl RtOp {
             RtOp::PatchVar(..) => "patch_var",
             RtOp::PatchLevel(..) => "patch_level",
             RtOp::NotifySet(..) => "notify_set",
+            RtOp::Late(..) => "late",
+            RtOp::Produced(..) => "produced",
             RtOp::ForgetWrites(..) => "forget_writes",
             RtOp::SetTimer(..) => "set_timer",
             RtOp::CancelTimer(..) => "cancel_timer",
@@ -199,7 +203,7 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// Each reader of `id`: the runtime's and those the branches above
     /// registered this cycle.
-    fn each_reader(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
+    pub(crate) fn each_reader(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
         let mut view: &RtView<'_, R> = self;
         loop {
             match view {
@@ -275,7 +279,21 @@ impl<'a, R: Rt> RtView<'a, R> {
     #[inline]
     pub fn notify_set(&mut self, id: BindId) {
         self.mark_readers(id);
+        self.notify_marked(id)
+    }
+
+    /// [`Self::notify_set`] of an `id` whose readers are marked already.
+    #[inline]
+    pub fn notify_marked(&mut self, id: BindId) {
         logged!(self, notify_set(id), RtOp::NotifySet(id))
+    }
+
+    pub fn late(&mut self, id: BindId, tv: TagValue, by: Reader) {
+        logged!(self, late(id, tv, by), RtOp::Late(id, tv, by))
+    }
+
+    pub fn produced(&mut self, id: BindId) {
+        logged!(self, produced(id), RtOp::Produced(id))
     }
 
     pub fn set_timer(&mut self, id: BindId, timeout: Duration) {
@@ -343,13 +361,43 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     #[inline]
     pub fn store_insert(&mut self, id: BindId, tv: TagValue) {
+        self.store_insert_unmarked(id, tv);
+        self.mark_readers(id)
+    }
+
+    #[inline]
+    fn store_insert_unmarked(&mut self, id: BindId, tv: TagValue) {
         match self {
             Self::Root(r) => r.store_insert(id, tv),
             Self::Fork(f) => {
                 f.store.insert(id, Some((tv, f.cycle)));
             }
         }
-        self.mark_readers(id)
+    }
+
+    /// [`Self::store_insert`] of a fire made in the root `root` by a walk
+    /// now inside `at`: each reader of `id` in `root` the walk has passed
+    /// goes into `passed`; whether a reader is in another root.
+    pub fn store_fire(
+        &mut self,
+        id: BindId,
+        tv: TagValue,
+        root: ExprId,
+        at: Option<&BoundaryRef>,
+        passed: &mut Option<SmallVec<[Reader; 2]>>,
+    ) -> bool {
+        self.store_insert_unmarked(id, tv);
+        let cycle = self.cycle();
+        let mut elsewhere = false;
+        self.each_reader(&id, &mut |r| {
+            r.mark(cycle);
+            if r.root != root {
+                elsewhere = true
+            } else if r.passed_by(at, cycle) {
+                passed.get_or_insert_default().push(r.clone())
+            }
+        });
+        elsewhere
     }
 
     /// See [`Rt::store_insert_standing`].
@@ -455,6 +503,8 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::PatchVar(id, p, v, w) => r.patch_var(id, p, v, w),
                         RtOp::PatchLevel(id, p, v) => r.patch_level(id, p, v),
                         RtOp::NotifySet(id) => r.notify_set(id),
+                        RtOp::Late(id, tv, by) => r.late(id, tv, by),
+                        RtOp::Produced(id) => r.produced(id),
                         RtOp::ForgetWrites(id) => r.forget_writes(id),
                         RtOp::SetTimer(id, d) => r.set_timer(id, d),
                         RtOp::CancelTimer(id) => r.cancel_timer(id),

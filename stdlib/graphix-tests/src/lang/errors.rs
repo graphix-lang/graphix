@@ -1280,3 +1280,246 @@ run!(
 }"#,
     prints(r#""s""#)
 );
+
+// A large named operand takes its error out exactly: `$` strips the
+// error, so null passes, and a raise of the error joins the handler, which
+// must cover it.
+run!(
+    a_large_named_operand_strips_its_error,
+    r#"{
+    type W<'a> = [Error<`E>, `V(('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a))];
+    let f = |x: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, null]| select x$ { null => 1, `V(_) => 2 };
+    f(null)
+}"#,
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    a_large_named_operand_raises_its_error,
+    r#"{
+    type W<'a> = [Error<`E>, i64, ('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)];
+    let go = |v: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, string], z: [i64, Error<`Other>]| -> i64 {
+        catch(e) println(select e.0.error { `Other => "other" });
+        let a = v?;
+        let b = z?;
+        0
+    };
+    go(1, 1)
+}"#,
+    refused("missing match cases: no arm covers `E");
+    FuseExpect::None
+);
+
+run!(
+    a_large_named_operand_raises_to_a_covering_handler,
+    r#"{
+    type W<'a> = [Error<`E>, i64, ('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)];
+    let go = |v: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, string], z: [i64, Error<`Other>]| -> i64 {
+        catch(e) println(select e.0.error { `Other => "other", `E => "e" });
+        let a = v?;
+        let b = z?;
+        0
+    };
+    go(1, 1)
+}"#,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
+
+/// A block declaring `n` named tags `N0`, .., then `decls` with `{names}`
+/// listing them, then `body`.
+fn with_named_tags(n: usize, decls: &str, body: &str) -> String {
+    let names: Vec<String> = (0..n).map(|i| format!("N{i}")).collect();
+    let mut code = String::from("{\n");
+    for n in &names {
+        code.push_str(&format!("type {n} = `{n};\n"))
+    }
+    code.push_str(&decls.replace("{names}", &names.join(", ")));
+    code.push_str(&format!("\n{body}\n}}"));
+    code
+}
+
+/// A block over an operand of more named members than diff's pair budget,
+/// beside an error and null: `x` is that operand, `kept` the type holding
+/// its members but the error, and `body` reads both.
+fn past_the_pair_budget(body: &str) -> String {
+    with_named_tags(
+        1100,
+        "type Zerr = Error<`E>;\ntype Kept = [{names}, null];\ntype X = [{names}, Zerr, null];",
+        body,
+    )
+}
+
+// Past the pair budget a `?` or `$` result type is still the operand less
+// its error.
+run!(
+    an_operand_past_the_pair_budget_strips_its_error_with_q,
+    past_the_pair_budget(
+        "let f = |x: X| -> i64 { catch(e) println(\"[e]\"); let v = x?; let w: Kept = v; 1 }; f(null)"
+    ),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_operand_past_the_pair_budget_strips_its_error_with_dollar,
+    past_the_pair_budget("let f = |x: X| { let v = x$; let w: Kept = v; 1 }; f(null)"),
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
+/// `n` named tags beside null (`X`) and alone (`Tags`), and a function over
+/// an open member beside `X` whose body is `strip`, which takes the null.
+fn open_beside_named_tags(n: usize, strip: &str) -> String {
+    with_named_tags(
+        n,
+        "type Tags = [{names}];\ntype X = [{names}, null];",
+        &format!(
+            "let f = 'a: Any |x: ['a, X]| -> ['a, Tags] {strip};\n\
+             let s: [X, i64] = `N1;\n\
+             select f(s) {{ `N1 => 1, _ => 2 }}"
+        ),
+    )
+}
+
+// Past the pair budget an operand with no error member still takes the
+// null strip: the strip is chosen by the operand's members.
+run!(
+    an_open_operand_past_the_pair_budget_takes_its_null_with_dollar,
+    open_beside_named_tags(1100, "x$"),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_open_operand_past_the_pair_budget_takes_its_null_with_q,
+    open_beside_named_tags(
+        1100,
+        "{ catch(e) println(select e.0.error { `NullError(s) => s }); x? }"
+    ),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_open_operand_inside_the_pair_budget_takes_its_null_with_dollar,
+    open_beside_named_tags(900, "x$"),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_open_operand_inside_the_pair_budget_takes_its_null_with_q,
+    open_beside_named_tags(
+        900,
+        "{ catch(e) println(select e.0.error { `NullError(s) => s }); x? }"
+    ),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+/// `n` named tags (`Tags`) beside one name applied to two open cells,
+/// `F<'a>` and `F<'b>` with `F<'t> = ['t, null]`, which `strip` takes the
+/// null from; the call decides `'b` as string, which `ann` must hold.
+fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
+    with_named_tags(
+        n,
+        "type Tags = [{names}];\ntype F<'t> = ['t, null];",
+        &format!(
+            "let f = 'a: Any, 'b: Any |p: [Tags, F<'a>, F<'b>]| {strip};\n\
+             let s: [Tags, F<i64>, F<string>] = \"hello\";\n\
+             let r: {ann} = f(s);\n\
+             select r {{ string as v => v, _ => \"other\" }}"
+        ),
+    )
+}
+
+// Past the pair budget a `?` or `$` result keeps every cell its operand's
+// names are applied to.
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_stay_two_with_dollar,
+    two_cells_beside_named_tags(1100, "p$", "[Tags, i64]"),
+    refused("'b: string");
+    FuseExpect::None
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_stay_two_with_q,
+    two_cells_beside_named_tags(1100, "p?", "[Tags, i64]"),
+    refused("'b: string");
+    FuseExpect::None
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_hold_both_with_dollar,
+    two_cells_beside_named_tags(1100, "p$", "[Tags, i64, string]"),
+    is(Value::String("hello".into()));
+    FuseExpect::Jit
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_hold_both_with_q,
+    two_cells_beside_named_tags(
+        1100,
+        "{ catch(e) println(\"[e]\"); p? }",
+        "[Tags, i64, string]"
+    ),
+    is(Value::String("hello".into()));
+    FuseExpect::Jit
+);
+
+/// `n` named tags (`Tags`) beside one name applied to two open cells,
+/// `G<'a>` and `G<'b>` with `G<'t> = Error<'t>`, which `?` raises to a
+/// handler with `arms`; the call decides them as `A and `B.
+fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
+    with_named_tags(
+        n,
+        "type Tags = [{names}];\ntype G<'t> = Error<'t>;",
+        &format!(
+            "let f = 'a: Any, 'b: Any |p: [Tags, G<'a>, G<'b>]| p?;\n\
+             let s: [Tags, G<`A>, G<`B>] = error(`B);\n\
+             let caught = never();\n\
+             let r = {{ catch(e) caught <- select e.0.error {{ {arms} }}; f(s) }};\n\
+             caught"
+        ),
+    )
+}
+
+// Past the pair budget `?` raises every cell its operand's names are
+// applied to.
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_raise_both,
+    two_raised_cells_beside_named_tags(1100, "`A => 1"),
+    refused("missing match cases: no arm covers `B");
+    FuseExpect::None
+);
+
+run!(
+    two_cells_behind_one_name_past_the_pair_budget_raise_both_caught,
+    two_raised_cells_beside_named_tags(1100, "`A => 1, `B => 2"),
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+/// Past the pair budget, `$` over names that each name the two before
+/// them: the paths to the first double at every level.
+fn named_dag_past_the_pair_budget(depth: usize) -> String {
+    let mut decls =
+        String::from("type L0 = [`A, null, Error<`E>];\ntype M0 = [`B, null];\n");
+    for i in 1..=depth {
+        decls.push_str(&format!(
+            "type L{i} = [L{p}, M{p}];\ntype M{i} = [M{p}, L{p}];\n",
+            p = i - 1
+        ));
+    }
+    decls.push_str(&format!("type W = [{{names}}, L{depth}];"));
+    with_named_tags(1100, &decls, "let x: W = `A;\nlet y = x$;\ny ~ 1")
+}
+
+run!(
+    a_dag_of_names_past_the_pair_budget_strips_once_per_name,
+    named_dag_past_the_pair_budget(24),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);

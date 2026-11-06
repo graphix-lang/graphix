@@ -32,13 +32,98 @@ struct MatchingTypes {
 struct DiffHist {
     hist: RefHist<AHashMap<RefPair, Type>>,
     done: Lazy<AHashMap<RefPair, Kept<Type>>>,
-    /// The current walk met a pair in progress.
+    unfoldings: Unfoldings,
+    pairs: Pairs,
+    /// The current walk met a pair in progress, or stopped unfolding.
     cycled: bool,
+    /// A budget made the walk subtract less than it would have.
+    widened: bool,
 }
 
 impl DiffHist {
     fn new() -> Self {
-        DiffHist { hist: RefHist::new(), done: Lazy::new(), cycled: false }
+        DiffHist {
+            hist: RefHist::new(),
+            done: Lazy::new(),
+            unfoldings: Unfoldings::default(),
+            pairs: Pairs::default(),
+            cycled: false,
+            widened: false,
+        }
+    }
+}
+
+/// How many pairs one walk (a top-level `diff` or `could_match`) unfolds,
+/// a pair any side of which is a named type. Past it diff subtracts
+/// nothing and could_match answers an overlap, wherever a pair is met: the
+/// walk's work is bounded whatever the types, branching recursive unions
+/// whose paths multiply with their depth included
+/// (`design/tvar_constraints.md`, Unfolding a pair of definitions).
+pub(super) const WALK_PAIRS: usize = 1000;
+
+/// The pairs a walk has unfolded, a side of each a named type, counted
+/// against [`WALK_PAIRS`].
+#[derive(Default)]
+pub(super) struct Pairs(usize);
+
+impl Pairs {
+    /// Count one more unfolding; false once the walk has used them all.
+    pub(super) fn unfold(&mut self) -> bool {
+        let more = self.0 < WALK_PAIRS;
+        self.0 += more as usize;
+        more
+    }
+}
+
+/// The definitions of a pair of named types a walk unfolds, their
+/// arguments ignored.
+pub(super) type DefPair = (usize, usize);
+
+/// The pair [`Unfoldings`] counts: none unless both sides are named types.
+/// A side that is not walks into its own parts, smaller at every step, until
+/// it meets a name, so a pattern written as a type, a name's alias
+/// included, is unfolded against the other side as deep as it goes.
+pub(super) fn def_pair(env: &Env, t0: &Type, t1: &Type) -> Option<DefPair> {
+    let def = |t: &Type| match t {
+        Type::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
+        _ => None,
+    };
+    Some((def(t0)?, def(t1)?))
+}
+
+/// How many unfoldings of one pair of definitions a walk's path may
+/// hold; the next is the pair met again. Types a walk builds as it goes (a
+/// union less each member in turn, parameters that grow) are new keys at
+/// every level, and an exact difference may repeat only after the lcm of
+/// the cycles it walks. Each more unfolding multiplies a walk's cost
+/// (`design/tvar_constraints.md`, Unfolding a pair of definitions).
+pub(super) const UNFOLDINGS: usize = 1;
+
+/// The pairs of definitions a walk is inside, each with its unfoldings'
+/// pairs in progress, innermost last.
+#[derive(Default)]
+pub(super) struct Unfoldings(LPooled<AHashMap<DefPair, SmallVec<[RefPair; 1]>>>);
+
+impl Unfoldings {
+    /// The innermost pair in progress of `defs` when the walk has unfolded
+    /// it [`UNFOLDINGS`] times.
+    pub(super) fn again(&self, defs: Option<DefPair>) -> Option<RefPair> {
+        self.0
+            .get(&defs?)
+            .filter(|ks| ks.len() >= UNFOLDINGS)
+            .and_then(|ks| ks.last().copied())
+    }
+
+    pub(super) fn enter(&mut self, defs: Option<DefPair>, key: RefPair) {
+        if let Some(defs) = defs {
+            self.0.entry(defs).or_default().push(key)
+        }
+    }
+
+    pub(super) fn leave(&mut self, defs: Option<DefPair>) {
+        if let Some(ks) = defs.and_then(|defs| self.0.get_mut(&defs)) {
+            ks.pop();
+        }
     }
 }
 
@@ -586,7 +671,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for eric: [bug/medium] diff does not end over some names that recur
+    // XCR claude for claude: [bug/medium] diff does not end over some names that recur
     // through Error payloads: main bbb06c0c6's --check of `type At = [Error<Bt>,
     // Error<Ct>, `R]; type Bt = [Error<At>, `P]; type Ct = [Array<Ct>, Error<Bt>]; type H
     // = [Error<Error<K>>, `Q]; type K = [Error<H>, Error<K>, `P]; let v: At = `R; select
@@ -621,7 +706,156 @@ impl Type {
     // ~/ptmp/cr29/scratch/review-r11/X-r1-1/x2/lcm/, X-r3-1/x2/, X-r3-2/x2/,
     // ~/ptmp/cr29/scratch/r11-X/x2r13b/ (sh235e2.gx); the branch's own note on cr48-X2
     // has the three directions tried on paper.
+    // 2026-11-05 claude: Eric ruled (2026-11-05): (b). diff keys a pair met again by its
+    // two definitions, arguments ignored, and allows k unfoldings per definition pair, as
+    // cast::grows_on counts; past them the pair subtracts nothing (a wider residual:
+    // fewer dead arms found, an occasional missing-case refusal). k starts at 1 and is
+    // chosen from the census of both repos, the 1600 generated selects and the review's
+    // grow/lcm families. could_match's missing bound goes in the same lane. Analysis:
+    // ~/ptmp/cr-discuss.md, Ruled 11-05.
+    // 2026-11-05 claude: Built (lane U, round 16) at k = 1: diff and could_match key a
+    // pair met again by its two definitions (setops::DefPair, arguments ignored) and
+    // allow one unfolding per pair on a path (setops::UNFOLDINGS, Unfoldings); past it
+    // diff subtracts nothing and could_match answers an overlap resting on the innermost
+    // pair in progress. Chosen from the 1600 generated selects (perf instructions,
+    // --no-cache --check, 30 s): main's 53 timeouts -> 2 (r669 and r1088, both in
+    // matching_type's contains: matching-type-contains-dag-01); of the 1547 main
+    // finishes, 24 dead-arm refusals become accepted, 17 become missing-case refusals, 3
+    // refuse a later dead arm, none accepted is refused; k = 2 moves 10 and k = 3 3, but
+    // rnd13 costs 2.24G / 12.01G / 533G at k = 1 / 2 / 3. Families (cy, ec, n, p, sh,
+    // sh235e2) keep every verdict; ecs400x32 4.35G -> 4.40G; grow1, grow4-6, gr1-7, hd1,
+    // name1 now end refused by rep_collision's growth rule; grow2 and grow3 still time
+    // out, now in contains' set_covers_by_distribution. Pins:
+    // typ::setops::tests::diff_over_error_cycles_unfolds_each_pair_of_definitions_once
+    // (pairs 12/18/32/61; 12/24/43/178 without),
+    // diff_over_names_recurring_through_errors_ends and
+    // typ::matches::tests::could_match_unfolds_growing_definitions_once (hang without);
+    // lang::select::coverage_over_{names_recurring_through_errors,generated_error_cycles,growing_parameters}_ends
+    // (mainhang, rnd13, grow5: killed on base-r16),
+    // dead_arm_over_shared_tag_cycles_refused (sh235e2 stays refused).
+    // 2026-11-05 claude: Review r16 (U-r1-2) found the k = 1 bound limits how deep a path goes but not how many
+    // paths there are: a cut sets cycled, so done never keeps the answer, and (Set, Set) walks every member pair
+    // at each level. Two families of n definitions T_i = [Error<T_i+1>, Error<T_i+2>, `A_i] (and U_i) give
+    // diff(T0, U0) 24 / 1323 / 65,580 pairs at n = 2-4, n = 5 unfinished at 120 s; one arrays-only family T_i =
+    // [Array<T_i+1>, Array<T_i+2>, `A_i], diff(T0, T1), 30 / 1137 / 196,404 at n = 3-5 (main finishes neither at
+    // n = 2; the lcm pin walks branching-1 chains only, so it cannot see this). Tried (not committed): keeping a
+    // cut pair's answer in done. Pairs become polynomial (w2 n = 4-7: 99 / 150 / 219 / 467), but the residual
+    // itself grows exponentially (w2 n = 7 prints 15.6 MB in 7.2 s; w2a n = 9 223 MB, 110 s), and the memo then
+    // changes answers, wider (typ::setops::tests::diff_and_could_match_memos_change_no_answer fails: [At, Bt] -
+    // At keeps Error<[Error<[Error<Bt>, Array<Ct>]>, `R]> the walk without the memo subtracts). So the ruling's
+    // bound alone does not make diff polynomial over branching recursive unions: it needs a further rule (a cut
+    // answer reused off its path, and a bound or a shared form for the residual), which goes to Eric. The k = 1
+    // commit stands for what it pins (mainhang, rnd13, grow5, the lcm chains). Evidence:
+    // ~/ptmp/cr29/scratch/review-r16/U-r1-2/ (rv_tests.rs, rv-k123.txt),
+    // ~/ptmp/cr29/scratch/r16-U/review-fix/memo-cut-experiment.txt.
+    // 2026-11-05 claude: Review r16 re-review (U-r2-2) found the k = 1 key cut finite patterns: def_pair keyed a
+    // side that is no named type as None, so a pattern met against the scrutinee's definition a second time on a
+    // path answered an overlap (could_match) or subtracted nothing (diff), where main keys that side by its
+    // content and ends because it shrinks. l3, l5, t1, t2, e2 (a misspelled tag two levels deep over a list, tree
+    // or expression type) were accepted and e1 refused for a missing case. Fixed: def_pair counts no pair where a
+    // side names no type (setops::names_a_type). Pins (each fails without the fix, in all four modes):
+    // lang::select::{misspelled_tag_deep_in_a_list_pattern_refused,
+    // misspelled_tag_deep_in_a_tree_pattern_refused, impossible_error_nesting_in_a_type_test_refused,
+    // nested_error_tests_cover_a_recursive_scrutinee}. Generated 1600 against base-r16: 0 accepted refused; 18
+    // dead-arm refusals accepted, 13 become missing-case (were 21 and 17; c48, c142, r256 refused again as main
+    // refuses them); timeouts 53 -> 2 as before. The builder's 54 families keep every verdict and message. Still
+    // open, unchanged: the exponential path count over branching recursive unions (the U-r1-2 note above), which
+    // needs a rule beyond the ruling's bound; readdressed to eric for that.
+    // 2026-11-05 claude: Eric ruled (11-05, diff-cycle-hang-01 follow-up 2): (b), a counted work budget per diff
+    // call. Built (lane U, round 16 part 2), k stays 1: one walk (a top-level diff or could_match) unfolds at
+    // most setops::WALK_PAIRS (1000) pairs of named types, past which diff subtracts nothing and could_match
+    // answers an overlap (Pairs); and a pair's difference of more than setops::RESIDUAL_PARTS (1000) parts, read
+    // as a tree, is its minuend, kept in done like any answer (larger_than). Both, measured: over T = [Error<T>,
+    // Error<U>, `A] a test d deep walks under 100 pairs while the residual's merge is exponential (dq16 133.5G on
+    // base-r16, 1.34G now; dp64/dq64 end at 2.4G/1.4G), and the n-definition family walks exponentially many
+    // pairs with a small residual. Also (no ruling needed): a pair is counted only where both sides are named
+    // types (DefPair is two definitions), so a pattern side naming an alias or the scrutinee's own recursive name
+    // walks as deep as it goes, as on main: m12, n3, n4 refused will never match, m16 runs (names_a_type deleted;
+    // termination of the rest rests on the budget). 1600 generated selects vs base-r16: every one of main's 1547
+    // finishes keeps its verdict and message kind (r425, r598 print another form of the missing case), 52 of 53
+    // timeouts end (r1088 still times out, matching_type's contains); 54 families: verdicts as base where base
+    // ends, grow2/grow3 still time out in contains. Tried 100/10000 pairs and 30/100 parts (100 pairs moves r114,
+    // r696; 30 parts moves 21 messages; 10000 pairs costs rnd13 3.4G vs 1.7G). Pins (each hangs or fails
+    // without): typ::setops::tests::{diff_over_branching_unions_is_bounded (steps 99/195 at d = 8/16, 14001 at n
+    // = 8/16), could_match_over_branching_unions_is_bounded, diff_over_names_recurring_through_errors_ends,
+    // diff_over_error_cycles_walks_pairs_by_their_lengths},
+    // typ::matches::tests::could_match_keeps_the_node_pairs_found_apart,
+    // lang::select::{deep_error_test_over_branching_unions_ends, coverage_over_*_ends,
+    // alias_deep_in_a_list_pattern_refused, alias_in_nested_error_tests_covers,
+    // recursive_name_deep_in_a_list_type_test_refused, alias_deep_in_a_list_type_test_refused}. Left: the
+    // select-level w2/w3/arr families (review-r16 U-r1-2 fam) still time out at n >= 4 in matching_type's
+    // contains, as on base (matching-type-contains-dag-01). probes: ~/ptmp/cr29/scratch/r16-U2/
+    // 2026-11-05 claude: Correction to the note above: diff_over_error_cycles_walks_pairs_by_their_lengths pins
+    // counts (12/24/43/178) that the budgets do not reach; it does not fail without them. The others hang without
+    // the budgets (diff_over_branching_unions_is_bounded, diff_over_names_recurring_through_errors_ends,
+    // coverage_over_*_ends, deep_error_test_over_branching_unions_ends) or fail without the both-named pair rule
+    // (the four alias/recursive-name select pins, 16/16).
+    // 2026-11-05 claude: Review r16 (U-r1-2) fixes. RESIDUAL_PARTS counted every node of the difference read as a
+    // tree, type arguments included, so a residual over a definition whose parameters grow (G<('a, 'a)>) passed
+    // it at depth 5 and the widened rest refused the arm (rep_collision, can't be decided): greach5-8 refused,
+    // gdead5-10 lost their dead arm. It now counts union members, as a tree, each shared node walked once
+    // (setops::members): greach5-7 check as on main, gdead5-7 will never match as on main; greach8 (main 2.3G)
+    // and gdead8 still meet it, greach10 meets WALK_PAIRS (2^10 pairs). And the select's running residual was
+    // capped only per pair, so arms testing a level deeper each doubled it (darms: 429G at 14 arms, timeout at
+    // 16, on main and lane): a top-level diff whose result has more members than RESIDUAL_PARTS and than its
+    // minuend is now its minuend (setops::grown, Type::diff), so darms2..20 at d4/d8/d12 end at most 43G (2000
+    // members: 150G, 4000: 700G, so 1000 stays), arms16-d12 56G. 1600 generated: as before (1547 keep verdict and
+    // message kind, r425/r598 another form, 52 of 53 timeouts end); the 54 families and the review families as
+    // the lane's earlier final. Pins (fail without):
+    // typ::setops::tests::running_residual_over_branching_unions_is_bounded (85..725 then flat; 1365, 2901, ..
+    // without), lang::select::{deep_test_over_growing_parameters_reaches,
+    // deep_test_over_growing_parameters_dead}. Docs now say WALK_PAIRS counts every pair a side of which is a
+    // named type. Results: ~/ptmp/cr29/scratch/r16-U3/.
+    // 2026-11-05 claude: Review r16 (U-r2-1, U-r2-2) high: the residual cap compared a difference with an
+    // unexpanded minuend, whose name counted only its arguments, so any named type of more than 1000 union
+    // members subtracted nothing on every diff; ?/$ then picked the null strip over [R, null] and a raise of R's
+    // error missed its handler (a coverage hole at run time), and a dead arm was lost. Now setops::members counts
+    // the minuend with each definition it names where diff takes one apart (a union member, an error's payload)
+    // read once, at its arguments; the difference is still counted inline. And the callers that read what a
+    // difference left out (Strip::of, the raised type) take Type::diff_held, the whole operand where
+    // Type::diff_exact says a budget widened it. Pins (fail without):
+    // lang::errors::{a_large_named_operand_strips_its_error, a_large_named_operand_raises_its_error,
+    // a_large_named_operand_raises_to_a_covering_handler},
+    // lang::select::{an_arm_after_one_over_a_large_named_type_is_dead,
+    // an_arm_after_one_over_a_large_named_error_payload_is_dead},
+    // typ::setops::tests::{diff_of_a_large_named_type_is_exact, diff_held_past_the_budget_is_the_minuend}. 1600
+    // generated selects, the 54 families, the review families (darms, dq, dp, w2/w3, greach) as at e05f3b675.
+    // Left: greach8/10/12 stay refused and gdead8/10 lose their dead-arm message: their residuals hold more than
+    // 1000 distinct members (3 per expansion, both branches at every level), not a counting artifact; 2000
+    // members would cost darms 150G.
+    // 2026-11-05 claude: Round 16 part 3 (lane U): the residual cap (RESIDUAL_PARTS, setops::members, grown) is
+    // deleted after failing review three times (diff-residual-depth-01 lists how). What is landed: the k = 1
+    // unfolding per pair of definitions, the both-named def_pair rule, and the counted pair budget WALK_PAIRS
+    // (1000) per walk, with Type::diff_exact / diff_held where the pair budget widens a difference; ?/$ past it
+    // take the operand's members less what they strip (Strip::kept; pins
+    // lang::errors::an_operand_past_the_pair_budget_strips_its_error_with_{q,dollar}, 8/8 fail with a plain diff
+    // there). What it pins stands: mainhang, rnd13, grow5, the lcm chains and the branching pair-budget families
+    // (typ::setops::tests::diff_over_branching_unions_is_bounded, could_match_over_branching_unions_is_bounded).
+    // Not covered: the depth families whose residual doubles in fewer pairs than the budget (dq, dp, darms,
+    // arms16) are exponential again, as on main (diff-residual-depth-01). 1600 generated selects: 52 of main's 53
+    // timeouts end, no change of verdict kind against 338e2916f; the 54 families as 338e2916f.
+    // 2026-11-05 claude: Review r16 part 3 (U-r1-2) fixes: past the pair budget the whole operand
+    // (Type::diff_held, now deleted) made ?/$ take the error strip for an operand with no error member (['a, X],
+    // X = 1100 named tags + null: $ let the null through, ? was refused); and Strip::kept flattened names with no
+    // memo, 2^n members over a DAG of names (wd16 40.8G, wd20/wd26 killed, main 1.8G). Now, where diff_exact says
+    // the budget widened, ?/$ split the operand by its members, each named type expanded once
+    // (Type::distinct_members; Strip::taken decides the strip and is the raised type, Strip::left the result
+    // type). Pins (fail without):
+    // lang::errors::an_open_operand_past_the_pair_budget_takes_its_null_with_{dollar,q} (8/8 fail with the whole
+    // operand), lang::errors::a_dag_of_names_past_the_pair_budget_strips_once_per_name (hangs with
+    // dispatch_members), typ::setops::tests::distinct_members_expand_each_name_once; twins
+    // lang::errors::an_open_operand_inside_the_pair_budget_*.
+    // 2026-11-05 claude: Review r16 part 3 (U-r2-2, high): Type::distinct_members keyed a named type by
+    // (definition, parameters) under binding equality, so F<'a> and F<'b> over two open cells were one key and
+    // F<'b>'s members were dropped from ?/$'s result and raised types past the pair budget (cell1100 ran a string
+    // into an i64 kernel slot). It now tells parameter lists apart with strictly_identical (contains.rs
+    // first_expansion), and computes no key on the dispatch_members path. Pins that fail without it:
+    // typ::setops::tests::distinct_members_expand_a_name_per_open_cell,
+    // lang::errors::two_cells_behind_one_name_past_the_pair_budget_{stay_two_with_dollar,stay_two_with_q,raise_both}
+    // (16 of 24 modes fail without it); twins *_hold_both_* and *_raise_both_caught run.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
+        #[cfg(test)]
+        DIFF_STEPS.with(|n| n.set(n.get() + 1));
         ensure_sufficient(|| self.diff_inner(env, hist, t))
     }
 
@@ -643,15 +877,27 @@ impl Type {
                     hist.cycled = true;
                     return Ok(r.clone());
                 }
+                // a pair met again inside its own difference subtracts
+                // nothing: assuming it covered would drop what it did not
+                let defs = def_pair(env, t0, t1);
+                if hist.unfoldings.again(defs).is_some() {
+                    hist.cycled = true;
+                    return Ok(self.clone());
+                }
+                if !hist.pairs.unfold() {
+                    hist.cycled = true;
+                    hist.widened = true;
+                    return Ok(self.clone());
+                }
                 #[cfg(test)]
                 DIFF_PAIRS.with(|n| n.set(n.get() + 1));
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                // a pair met again inside its own difference subtracts
-                // nothing: assuming it covered would drop what it did not
                 hist.hist.insert(key, self.clone());
+                hist.unfoldings.enter(defs, key);
                 let outer = mem::replace(&mut hist.cycled, false);
                 let r = t0.diff_int(env, hist, &t1);
+                hist.unfoldings.leave(defs);
                 hist.hist.remove(&key);
                 let cycled = mem::replace(&mut hist.cycled, outer);
                 hist.cycled |= cycled;
@@ -943,6 +1189,48 @@ impl Type {
     // in progress, as could_match's Rests holds them) and walks that do not read
     // which cells earlier walks filled. Evidence:
     // ~/ptmp/cr29/scratch/review-r11/X-r1-1/, X-r1-2/, X-r2-1/.
+    // 2026-11-05 claude: Lane U (round 16, diff-cycle-hang-01 at k = 1): generated
+    // p1088 still times out at 30 s, in Select::typecheck0_with ->
+    // PatternNode::capture_type -> matching_type -> contains
+    // (set_covers_by_distribution); so does generated r669 (gen_rnd.py seed 669), on
+    // the same path. grow2.gx and grow3.gx (r11-X/fix) now time out in contains'
+    // set_covers_by_distribution too, where base-r16 timed out in diff.
+    // 2026-11-05 claude: Review r16 (U-r1-2): small mutually recursive families hang
+    // here on base-r16 and on lane U alike (60 s caps), in Select::typecheck0_with ->
+    // PatternNode::capture_type -> matching_type -> contains_with_flags ->
+    // set_covers_by_distribution (diff under 0.5% of the profile): two Error families
+    // of 4 definitions each, branching 2 (w2-4.gx, w2s-4.gx) or 3 (w3-3.gx), and a
+    // more ordinary shape, five definitions recurring through Array alone, `type T0 =
+    // [Array<T1>, Array<T2>, `A0]; ...` with `select x { T1 as t => 1, _ => 2 }`
+    // (arr-5.gx; arr-4.gx ends at 86.2G instructions on base, 86.3G on the lane).
+    // probes: ~/ptmp/cr29/scratch/r16-U/review-fix/fam/ (mk.py writes them),
+    // ~/ptmp/cr29/scratch/review-r16/U-r1-2/fam/.
+    // 2026-11-05 claude: Review r16 re-review (U-r2-2) adds shapes on the same path
+    // (set_covers_by_distribution about 77% of the profile, diff and could_match
+    // under 1%): a union scrutinee over two branching Error families (w2u), shared
+    // tags (w2s), and an arrays-only family selected with a capture or with as _
+    // alike (arr, arrs), so the capture does not trigger it. n = 2 ends; n = 3 ends
+    // at 13-29G instructions (arr-4 86G); every n >= 4 (arr: n >= 5) is killed at 60
+    // s, on lane U and on base-r16. probes:
+    // ~/ptmp/cr29/scratch/review-r16/U-r2-2/fam/*-4-u.gx (mk.py KIND n CAP),
+    // head-fam.txt.
+    // 2026-11-05 claude: Lane U (round 16 part 2, diff budgets): with diff and
+    // could_match bounded (setops::WALK_PAIRS, RESIDUAL_PARTS), the review-r16 U-r1-2
+    // select families still time out at 60 s in this path, as on base-r16: w2/w2s/w2x
+    // n >= 4, w3/w3s/w3x n >= 3 (w3s-3 ends at 134.6G), arr n >= 5 (arr-4 86.3G);
+    // generated r1088 still times out; r669 now ends. The Error-nesting dp/dq
+    // families end (dp64 2.4G). Results:
+    // ~/ptmp/cr29/scratch/r16-U2/wp/rfam-1000-100.txt, rfam-base.txt.
+    // 2026-11-05 claude: At the lane's final constants (RESIDUAL_PARTS 1000) w3s-3
+    // times out at 60 s as on base-r16; the 134.6G above was measured at 100 parts.
+    // ~/ptmp/cr29/scratch/r16-U2/wp/rfam-final-x.txt.
+    // 2026-11-05 claude: Review r16 (U-r1-2, budgets) adds cm4: four T and four U
+    // branching definitions, a select over T0 with arms U0 as u0 .. U3 as u3 then _,
+    // times out at 120 s on base-r16 and on lane U alike, 99.6% in Type::contains
+    // under set_commit and set_covers_by_distribution, outside diff's and
+    // could_match's budgets (cm8-cm64 and the shared-tag cms* too). probe:
+    // ~/ptmp/cr29/scratch/review-r16/U-r1-2/r16U2/p2/cm4.gx; out/cm-head.txt,
+    // cm-base.txt
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
@@ -1081,9 +1369,61 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [perf/medium] A residual that doubles while the walk takes
+    // few pairs is exponential in depth, as on main: the pair budget (WALK_PAIRS) never
+    // meets it. Over `type T = [Error<T>, Error<U>, `A]; type U = [Error<T>, Error<U>,
+    // `B]`, a type test d deep (dq) costs, --no-cache --check, instructions, main
+    // (base-r16) / lane U HEAD: dq8 1.66G / 1.67G, dq12 8.15G / 13.9G, dq14 31.5G /
+    // 59.3G, dq16 134G / 260G, dq32 and dq64 past 60 s on both; dp16 15.2G / 15.2G, dp32
+    // and dp64 past 60 s on both; a select whose n arms each test a level deeper (darms
+    // n-dd): darms6-d12 486G / 486G, darms10-d8 457G / 457G, darms8-d12 and every darms
+    // at n >= 12 (d8, d12) or n >= 16 (d4) past 60 s on both; arms16-d12 253G / 253G.
+    // (HEAD's dq costs about twice main's from d = 12; not traced.) Three residual caps
+    // were built and each failed review: (1) a pair's difference of more than 1000 parts,
+    // every node of the tree counted, type arguments included, was its minuend: a
+    // definition whose parameters grow (`G<('a, 'a)>`) passed it at depth 5, and the
+    // widened rest refused arms main accepts (greach5-8) and lost dead arms (gdead5-10);
+    // (2) counting union members instead, and capping a top-level diff too: a named
+    // minuend counted only its arguments, so a named type of more than 1000 members
+    // subtracted nothing on every diff, `?`/`$` took the null strip over an error and a
+    // raise missed its handler; (3) counting the minuend with each definition it names
+    // expanded once at its arguments: quadratic, dp800 49G and dp800_240 181G against
+    // main's 4.3G and 10.2G, a 600-tag type argument still widened (wsel600, wstrip600,
+    // wstrips600 refused, which main runs), and greach8 still refused. A count of
+    // distinct nodes instead of a tree took dq16 to 260G and dq32 past the cap. A fix
+    // needs the residual held in a form that does not double (shared, or bounded by
+    // what the arms can tell apart), not another count. With the cap (338e2916f) every
+    // probe above ended within 56G. probes: ~/ptmp/cr29/scratch/review-r16/U-r3-2/p/,
+    // U-r3-2/x/k/, U-r1-2/r16U2/p2/; results ~/ptmp/cr29/scratch/r16-U5/named-table.txt
+    // (diff-residual-depth-01)
+    // 2026-11-05 claude: Review r16 part 3 (U-r1-2) correction: the pair budget does meet
+    // these families, in the arm after the deep test. Over dq's residual of 2^d members
+    // the next arm's diff takes about 2^(d+1) named pairs, past WALK_PAIRS from d = 9, so
+    // it subtracts nothing: a repeated Error<U> as e arm after the first (ddu9..ddu12),
+    // which main refuses 'will never match' at every d, is accepted from d = 9 (sound, a
+    // verdict change against main), and the arm after it walks the unreduced residual
+    // again, which is HEAD's dq doubling (dq12 arm bisection, main 3.0/8.15/8.15G, HEAD
+    // 3.0/9.13/13.88G; ddu12 8.15G main, 14.9G HEAD). design/tvar_constraints.md now says
+    // so. probes: ~/ptmp/cr29/scratch/review-r16/U-r1-2/p3/ (ddu*.gx, q12a-d.gx, dq12.gx)
+    /// The values of `self` that are not values of `t`, or more where the
+    /// walk's pair budget stopped it subtracting.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
-        let r = self.diff_int(env, &mut DiffHist::new(), t)?;
-        if diff_already_normal(self, &r) { Ok(r) } else { Ok(r.normalize()) }
+        Ok(self.diff_walk(env, t)?.0)
+    }
+
+    /// The values of `self` that are not values of `t`, `None` where a
+    /// budget left [`Self::diff`] wider: a caller that reads what a
+    /// difference left out needs this one.
+    pub fn diff_exact(&self, env: &Env, t: &Self) -> Result<Option<Self>> {
+        let (d, widened) = self.diff_walk(env, t)?;
+        Ok((!widened).then_some(d))
+    }
+
+    fn diff_walk(&self, env: &Env, t: &Self) -> Result<(Self, bool)> {
+        let mut hist = DiffHist::new();
+        let r = self.diff_int(env, &mut hist, t)?;
+        let r = if diff_already_normal(self, &r) { r } else { r.normalize() };
+        Ok((r, hist.widened))
     }
 }
 
@@ -1126,6 +1466,7 @@ fn same_resolved<'a, 'b>(
 #[cfg(test)]
 thread_local! {
     pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DIFF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -1149,6 +1490,7 @@ mod tests {
             Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
+            setops::WALK_PAIRS,
         },
     };
     use ahash::AHashMap;
@@ -1521,6 +1863,124 @@ mod tests {
         assert_eq!(SPLIT_STEPS.with(|n| n.get()), 174);
     }
 
+    /// Error cycles `C<l>_j = [Error<C<l>_j+1 mod l>, tag]` of the lengths
+    /// `ls`, position 0 tagged `` `Mm `` where `shared`, `S` the union of
+    /// their heads, and `M0 = [Error<M0>, `Mm]`.
+    fn error_cycles(ls: &[usize], shared: bool) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for &l in ls {
+            for j in 0..l {
+                let tag = match j == 0 && shared {
+                    true => "`Mm".to_string(),
+                    false => format!("`K{l}_{j}"),
+                };
+                defs.push((
+                    format!("C{l}_{j}"),
+                    format!("[Error<C{l}_{}>, {tag}]", (j + 1) % l),
+                ));
+            }
+        }
+        let heads: Vec<String> = ls.iter().map(|l| format!("C{l}_0")).collect();
+        defs.push(("S".into(), format!("[{}]", heads.join(", "))));
+        defs.push(("M0".into(), "[Error<M0>, `Mm]".into()));
+        defs
+    }
+
+    fn diff_pairs(defs: &[(String, String)], t: &str, less: &str) -> (String, usize) {
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, t);
+        super::DIFF_PAIRS.with(|n| n.set(0));
+        let rest = t.diff(&env, &parsed(&env, less)).unwrap();
+        (rest.to_string(), super::DIFF_PAIRS.with(|n| n.get()))
+    }
+
+    // Over Error cycles of coprime lengths, whose exact residual repeats
+    // only after their lcm, the pairs diff walks grow with the lengths, not
+    // with their lcm.
+    #[test]
+    fn diff_over_error_cycles_walks_pairs_by_their_lengths() {
+        let pairs =
+            |ls: &[usize], shared| diff_pairs(&error_cycles(ls, shared), "M0", "S").1;
+        let sets: [&[usize]; 4] =
+            [&[2, 3], &[2, 3, 5], &[2, 3, 5, 7], &[2, 3, 5, 7, 11, 13]];
+        let apart: Vec<usize> = sets.iter().map(|ls| pairs(ls, false)).collect();
+        let shared: Vec<usize> = sets.iter().map(|ls| pairs(ls, true)).collect();
+        assert_eq!((apart, shared), (vec![12, 24, 43, 178], vec![12, 24, 43, 178]));
+    }
+
+    // Names recurring through Error payloads, and a definition whose
+    // parameters grow as it recurses, end: the first within the walk's pair
+    // budget, the second unfolding its pair once.
+    #[test]
+    fn diff_over_names_recurring_through_errors_ends() {
+        let defs: Vec<(String, String)> = [
+            ("At", "[Error<Bt>, Error<Ct>, `R]"),
+            ("Bt", "[Error<At>, `P]"),
+            ("Ct", "[Array<Ct>, Error<Bt>]"),
+            ("H", "[Error<Error<K>>, `Q]"),
+            ("K", "[Error<H>, Error<K>, `P]"),
+            ("G<'a>", "[i64, Error<G<Array<'a>>>]"),
+            ("P", "[i64, Error<P>]"),
+        ]
+        .iter()
+        .map(|(n, b)| (n.to_string(), b.to_string()))
+        .collect();
+        let ends = |t: &str, less: &str| diff_pairs(&defs, t, less).1;
+        assert_eq!((ends("At", "K"), ends("G<i64>", "P")), (WALK_PAIRS, 1));
+    }
+
+    /// `T0 .. Tn-1`, each `[Error<Ti+1>, Error<Ti+2>, `Ai]` (indices mod
+    /// n), and `U0 .. Un-1` alike with `` `Bi ``: unions whose paths
+    /// branch at every level.
+    fn branching(n: usize) -> Vec<(String, String)> {
+        let mut defs = vec![];
+        for (name, tag) in [("T", "A"), ("U", "B")] {
+            for i in 0..n {
+                let (a, b) = ((i + 1) % n, (i + 2) % n);
+                let body = format!("[Error<{name}{a}>, Error<{name}{b}>, `{tag}{i}]");
+                defs.push((format!("{name}{i}"), body));
+            }
+        }
+        defs
+    }
+
+    /// The steps diff takes (every part pair it walks) for `t` less `less`.
+    fn diff_steps(defs: &[(String, String)], t: &str, less: &str) -> usize {
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, t);
+        super::DIFF_STEPS.with(|n| n.set(0));
+        t.diff(&env, &parsed(&env, less)).unwrap();
+        super::DIFF_STEPS.with(|n| n.get())
+    }
+
+    // Over branching recursive unions, an Error nesting `d` deep takes steps
+    // linear in `d`, and a family of `n` definitions stays within the pairs
+    // the walk may unfold.
+    #[test]
+    fn diff_over_branching_unions_is_bounded() {
+        let nested = |d: usize| format!("{}`C{}", "Error<".repeat(d), ">".repeat(d));
+        let deep: Vec<usize> = [8, 16]
+            .iter()
+            .map(|&d| diff_steps(&branching(2), "T0", &nested(d)))
+            .collect();
+        let wide: Vec<usize> =
+            [8, 16].iter().map(|&n| diff_steps(&branching(n), "T0", "U0")).collect();
+        assert_eq!((deep, wide), (vec![99, 195], vec![14001, 14001]));
+    }
+
+    // could_match over a branching family answers an overlap once it has
+    // unfolded its pairs.
+    #[test]
+    fn could_match_over_branching_unions_is_bounded() {
+        let defs: Vec<(String, String)> = branching(16);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "T0");
+        MATCH_PAIRS.with(|n| n.set(0));
+        let could = t.could_match(&env, &parsed(&env, "U0")).unwrap();
+        let pairs = MATCH_PAIRS.with(|n| n.get());
+        assert_eq!((could, pairs), (true, 14));
+    }
+
     // A select over a DAG of named unions (Li = [Li-1, Mi-1], Mi = [Mi-1,
     // Li-1]) takes an arm's test off each name once, and refutes a test
     // nothing the names hold could match once per name, not once per path.
@@ -1536,5 +1996,57 @@ mod tests {
         MATCH_PAIRS.with(|n| n.set(0));
         assert!(!parsed(&env, "`D(i64)").could_match(&env, &t).unwrap());
         assert_eq!(MATCH_PAIRS.with(|n| n.get()), 39);
+    }
+
+    // Past the walk's budget a difference is wider than exact, and what it
+    // left out is no measure of what the subtrahend holds (the difference
+    // from it loses the error behind a name): diff_exact says so.
+    #[test]
+    fn diff_exact_past_the_budget_is_none() {
+        let names: Vec<(String, String)> = (0..WALK_PAIRS + 100)
+            .map(|i| (format!("N{i}"), format!("`N{i}")))
+            .chain([("Zerr".to_string(), "Error<`E>".to_string())])
+            .collect();
+        let defs: Vec<(&str, &str)> = names.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let all = names.iter().map(|(n, _)| &**n).collect::<Vec<_>>().join(", ");
+        let (env, t) = typed(&defs, &format!("[{all}, null]"));
+        let error = Type::Primitive(Typ::Error.into());
+        assert!(t.diff_exact(&env, &error).unwrap().is_none());
+        let twice = t.diff(&env, &t.diff(&env, &error).unwrap()).unwrap();
+        assert!(!twice.to_string().contains("Zerr"));
+    }
+
+    // Over names that each name the two before them, the paths to the
+    // first double at every level: each name is expanded once.
+    #[test]
+    fn distinct_members_expand_each_name_once() {
+        let mut names = vec![
+            ("L0".to_string(), "[`A, null, Error<`E>]".to_string()),
+            ("M0".to_string(), "[`B, null]".to_string()),
+        ];
+        for i in 1..=40 {
+            names.push((format!("L{i}"), format!("[L{}, M{}]", i - 1, i - 1)));
+            names.push((format!("M{i}"), format!("[M{}, L{}]", i - 1, i - 1)));
+        }
+        let defs: Vec<(&str, &str)> = names.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "L40");
+        let members = Type::distinct_members(&env, &t).unwrap();
+        let printed = format_with_flags(PrintFlag::DerefTVars, || {
+            members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+        });
+        assert_eq!(printed, "null, Error<`E>, `A, null, `B");
+    }
+
+    // One definition applied to two open cells is two types, each
+    // expanded; applied to one cell twice, it is expanded once.
+    #[test]
+    fn distinct_members_expand_a_name_per_open_cell() {
+        let (env, t) = typed(&[("F<'t>", "['t, null]")], "[F<'a>, F<'b>, F<'a>]");
+        t.alias_tvars(&mut AHashMap::default());
+        let members = Type::distinct_members(&env, &t).unwrap();
+        let printed = format_with_flags(PrintFlag::DerefTVars, || {
+            members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+        });
+        assert_eq!(printed, "null, 'a: unbound, null, 'b: unbound");
     }
 }

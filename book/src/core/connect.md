@@ -54,6 +54,22 @@ happen yet, because it didn't. In the above case the event loop would never
 wait, because there is always work to do adding 1 to `x`, however it will still
 check for other events every cycle.
 
+A cycle evaluates statements in the order they are written, and REPL
+inputs in the order they were entered. A reader can sit before the value it
+reads only through a function value that names a later binding (one of its
+parameters or pattern bindings included), a reference to a later binding,
+an earlier REPL input, or a module reloaded later; such a reader gets each
+new value the same way a connect delivers one, in the next cycle, while
+readers after it see the value in the cycle it is made. A reader that sits
+before a value and feeds it back (`let r = h(1); let w = r + 1; h <- |x| x +
+w`) is a loop like `x <- x + 1`: it takes one step per cycle and never stops.
+One case is not delivered today: a reference read in the same statement as a
+nested block or a call, after the read, that makes its target's new value:
+`(*r, { let v = ..; r <- &v; v })`, or `(*r, mk(t))` where `mk` makes it. It
+never gets the new value itself; when the statement runs again it reads the
+value standing from the cycle before, and the last value not at all. Read it
+in a statement of its own.
+
 When combined with other operations, specifically select, connect becomes a
 looping construct that runs one step per cycle: connect is the only way to
 make a cycle in the graph. To iterate over a collection, use the collection

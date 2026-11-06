@@ -11,8 +11,8 @@ pub use graphix_types::{
     AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
     SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env, err, errf,
     expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block,
-    is_lowered, is_method_block, list, mod_root, reference, rep, shared_map, tracked,
-    typ, valarray_of,
+    is_lowered, is_method_block, list, mod_root, place_component, reference, rep,
+    shared_map, tracked, typ, valarray_of,
 };
 pub(crate) use graphix_types::{
     AddrMap, AddrSet, CAST_ERR, CAST_ERR_TAG, Restore, profile, stack,
@@ -207,7 +207,15 @@ pub struct Event {
     /// The cycle's custom deliveries, each taken by its consumer; one
     /// map for every branch of the cycle.
     pub custom: Arc<Mutex<IntMap<BindId, Box<dyn CustomBuiltinType>>>>,
+    /// The root the runtime is updating.
+    pub root: Option<ExprId>,
+    /// Last cycle's fires each delivered now to the readers the walk had
+    /// passed when it was made ([`Rt::late`]).
+    pub late: Option<Arc<Late>>,
 }
+
+/// Fires delivered a cycle late, each to its readers alone.
+pub type Late = IntMap<BindId, (TagValue, SmallVec<[prune::Reader; 1]>)>;
 
 impl Event {
     pub fn new() -> Self {
@@ -215,6 +223,8 @@ impl Event {
             view: View::Cycle,
             variables: branch::Layered::default(),
             custom: Arc::new(Mutex::new(IntMap::default())),
+            root: None,
+            late: None,
         }
     }
 
@@ -260,20 +270,24 @@ impl Event {
             // SAFETY: the caller's contract
             variables: unsafe { self.variables.fork() },
             custom: self.custom.clone(),
+            root: self.root,
+            late: self.late.clone(),
         }
     }
 
     /// Apply what the forked branch's event `child` delivered.
     pub(crate) fn merge(&mut self, child: Self) {
-        let Self { view: _, variables, custom: _ } = child;
+        let Self { view: _, variables, custom: _, root: _, late: _ } = child;
         self.variables.merge(variables);
     }
 
     pub fn clear(&mut self) {
-        let Self { view, variables, custom } = self;
+        let Self { view, variables, custom, root, late } = self;
         *view = View::Cycle;
         variables.clear();
         custom.lock().clear();
+        *root = None;
+        *late = None;
     }
 }
 
@@ -1252,6 +1266,15 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// nodes must be updated.
     fn notify_set(&mut self, id: BindId);
 
+    /// `reader` meets this cycle's fire `tv` of `id` after the walk passed
+    /// it: deliver the fire to it alone next cycle ([`Event::late`]).
+    fn late(&mut self, id: BindId, tv: TagValue, reader: prune::Reader);
+
+    /// The root being updated fired `id`, which a reader in another root
+    /// reads: one in a root the cycle passed reads it next cycle
+    /// ([`Self::late`]), one in a later root this cycle.
+    fn produced(&mut self, id: BindId);
+
     /// Deliver a variable event for `id` carrying the current time after
     /// `timeout`.
     fn set_timer(&mut self, id: BindId, timeout: Duration);
@@ -2029,7 +2052,7 @@ impl<R: Rt> CompileCtx<R> {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
     }
 
-    // CR claude for eric: [perf/medium] A chain of lets holding functions, where each
+    // CR claude for claude: [perf/medium] A chain of lets holding functions, where each
     // link binds a written name or carries an annotation, checks in time exponential in
     // its length: each occurrence of a shared node holding a function takes its own
     // copy here, so a DAG of holders becomes a tree. `let (a, w) = (x, 0); w <- 1; let
@@ -2133,6 +2156,9 @@ impl<R: Rt> CompileCtx<R> {
     // (main runs those). The lane also refuses some well-typed arrays of composites with
     // "expected fn not [fn, fn]". Back to Eric as the D11/D12 follow-up in
     // ~/ptmp/cr29/next-discuss.md; probes ~/ptmp/cr29/scratch/review-r15/M-r*/.
+    // 2026-11-05 claude: Eric ruled (2026-11-05) on the D11/D12 follow-up: (a). Split
+    // D12 (one instance per shared node) out of cr50-M-parked (fb0072ecd), re-review and
+    // land it now.
     /// A value's type as a written binding holds it: each function's
     /// generalized signature it holds, as one instance of it.
     pub(crate) fn monomorphic(&self, t: &Type) -> Type {
@@ -2537,9 +2563,29 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             false => tv.clone(),
         };
         if tag.triggers() {
-            self.rt.store_insert(id, stored);
+            match self.event.root {
+                None => self.rt.store_insert(id, stored),
+                Some(root) => {
+                    let mut passed = None;
+                    let elsewhere = self.rt.store_fire(
+                        id,
+                        stored,
+                        root,
+                        self.boundary.as_ref(),
+                        &mut passed,
+                    );
+                    if let Some(passed) = passed {
+                        for r in passed {
+                            self.rt.late(id, tv.clone(), r)
+                        }
+                    }
+                    if elsewhere {
+                        self.rt.produced(id)
+                    }
+                }
+            }
             if notify == Notify::Roots {
-                self.rt.notify_set(id)
+                self.rt.notify_marked(id)
             }
         } else {
             self.rt.store_insert_standing(id, stored)
@@ -3222,9 +3268,17 @@ impl Scope {
         Self { lexical: ModPath(self.lexical.append(s)), dynamic: self.dynamic.clone() }
     }
 
-    /// Append a generated block-scope component (do/fn/sel/ca level).
+    /// Append a generated block-scope component a scope Rust builds at
+    /// run time names by a fresh id.
     pub fn append_block(&self, kind: &str, id: u64) -> Self {
         self.append(block_component(kind, id).as_str())
+    }
+
+    /// Append the component of the scope `spec` opens (do/fn/sel/ca
+    /// level), named by where it is written; `ordinal` tells apart the
+    /// scopes one expression opens.
+    pub fn append_place(&self, kind: &str, spec: &Expr, ordinal: Option<usize>) -> Self {
+        self.append(place_component(kind, &spec.ori, spec.pos, ordinal).as_str())
     }
 
     /// The scope covered by a handler of `kind` installed here.
@@ -3563,57 +3617,8 @@ fn check_and_fuse_inner<R: Rt>(
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
-    // CR claude for eric: [bug/high] An instance body that names a type its block
-    // declares over an outer type of the same name crashes the process under fusion: `type
-    // L = string; let g = |z: i64| { type L = [i64, null]; let f = |x: i64| { let b: L =
-    // 3; (b, x) }; f(z) }; println(g(1))` aborts with "misaligned pointer dereference:
-    // address must be a multiple of 0x8 but is 0x3" (a non-unwinding panic: the kernel
-    // reads 3 as the outer string), main bbb06c0c6 alike; --no-fusion prints (3, 1) and
-    // --check passes; the body's own `type M` over an outer M does the same (d3b.gx). Not
-    // located: the instance's compile writes `L` afresh, takes its types from the
-    // definition's rows, and no check fills the fresh reference in the scope it was
-    // written in, so a later fill or fusion's freeze resolves the name where the block is
-    // gone. The class of default-typedef-outlived-01 (next-discuss 'type names in a scope
-    // that ends'); a labeled default took the same road under default-bind-coverage-01's
-    // first cut. probes: ~/ptmp/cr29/scratch/r8-G/i1/e3.gx, d3b.gx (scope-shadow-crash-01)
-    // 2026-11-02 claude: Lane G r8 review (reviewer 1): another shape, with no default and
-    // no type written in the instance body; the block's type reaches the instance only
-    // through the declared variable's bound and the argument's type: type L = string; let
-    // top = |w: i64| { type L = [i64, null]; let outer = 'a: L |x: 'a| -> i64 select x {
-    // i64 as n => n + 1, null => 0 }; let v: L = w; (outer(w), outer(v), outer(null)) };
-    // top(5) aborts under fusion 'misaligned pointer dereference ... 0x5' on main
-    // bbb06c0c6 and the lane alike; --no-fusion prints (6, 6, 0). n1.gx is the same with a
-    // default. probes: ~/ptmp/cr29/scratch/r8-G/fz/n1b.gx, n1.gx (graphix-fuzz check, or a
-    // run without --no-fusion).
-    // 2026-11-03 claude: The outer type need not come first (main 387c29e60, round-6
-    // discussion merge): a `type L = string` declared after g also aborts under fusion
-    // (~/ptmp/cr29/scratch/discuss-merge/later.gx, later2.gx), and in the REPL g(1) prints
-    // (3, 1), then an input `type L = string`, then g(2) aborts (later_repl2.txt). A
-    // stopgap that refuses a shadowing block typedef must therefore judge later
-    // declarations too, at the check's end and against later REPL inputs. Question D2 in
-    // ~/ptmp/cr-discuss.md.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D2 (a) in ~/ptmp/cr-discuss.md: no
-    // stopgap; this waits for D10 (type names in a scope that ends), whose ruling is the
-    // real fix. Stays for eric until D10 is ruled.
-    // 2026-11-03 claude: Eric ruled (2026-11-03): D10 (b) in ~/ptmp/cr-discuss.md: keep a
-    // block's type definitions findable after the block while anything names them (they
-    // sit under a scope unique to the block), so a late lookup finds the right definition
-    // and every default can take its definition's types; a short design pass first, then a
-    // lane.
-    // 2026-11-04 claude: Round 15 lane N built D10 (b) on branch cr50-N-parked
-    // (b7bb932ee..d20bed90e) and was parked one finding short: D2's fusion aborts are
-    // fixed at the root (a registry of block typedefs that outlive their block, a block's
-    // name meaning its type throughout the block), census 0 changes, gate green, and
-    // guicheck drops from 94G to 42G instructions (DefTable::record now fills rows in an
-    // env with the import tables). Left: the registry is keyed by scope names holding
-    // ExprIds, which a restore renumbers, so a block compiled again in a warm session
-    // declares a second definition; a function above a block's typedef that outlives its
-    // slot runs cold and fails warm ("type L outlived its definition"), including programs
-    // main runs (an outer type of the same name; an abstract constructor), and one shape
-    // binds warm and reads a wrong value. CR block-type-image-scope-01 on the branch. Back
-    // to Eric as the D10 follow-up in ~/ptmp/cr29/next-discuss.md; probes
-    // ~/ptmp/cr29/scratch/review-r15/N-r*/.
     ctx.env.seed_typedef_refs();
+    seed_node_types(&ctx.env, node, &mut LPooled::take());
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
@@ -3625,6 +3630,21 @@ fn check_and_fuse_inner<R: Rt>(
         analysis::check_tail_loops(tail_loops, node)?;
     }
     Ok(())
+}
+
+/// Fill the resolution cell of every name the types of `node` and the
+/// nodes under it hold, once the check has ended, as a definition's table
+/// seeds its body's rows (`DefTable::record`): a value carries the types
+/// it was built at (`typ::regular`). A module's statements are seeded
+/// under the module's own env (`Module::typecheck1_nodes`).
+pub(crate) fn seed_node_types<R: Rt>(env: &Env, node: &Node<R>, seen: &mut AddrSet) {
+    stack::ensure_sufficient(|| {
+        if let NodeView::Module(_) = node.view() {
+            return;
+        }
+        node.typ().seed_names_seen(env, seen);
+        fusion::for_each_child(node, &mut |c| seed_node_types(env, c, seen))
+    })
 }
 
 /// Whether a compile under `flags` asks for fusion.
@@ -3729,6 +3749,32 @@ pub(crate) fn defer_unresolved_names<R: Rt>(
     let mut names = Vec::new();
     let res = t.unresolved_names(&ctx.env, &mut names).at(spec);
     ctx.pending_names.extend(names.into_iter().map(|tr| Pending::Name(tr, spec.clone())));
+    res
+}
+
+/// Warn at each name the written type `t` holds that means a type its
+/// block declares below it while another of the name is in view there
+/// ([`env::Env::later_block_type_note`]): in a definition's check, never
+/// again in an instance's body.
+pub(crate) fn warn_later_block_names<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    t: &Type,
+) -> Result<()> {
+    if ctx.body.as_ref().is_some_and(|b| !b.checking) {
+        return Ok(());
+    }
+    let mut res = Ok(());
+    t.for_each_written_name(&mut |tr| {
+        if res.is_ok()
+            && let (Some(pos), Some(ori)) = (tr.pos, &tr.ori)
+            && let Some(note) = ctx.env.later_block_type_note(tr)
+        {
+            let width = tr.name.chars().count() as i32;
+            let end = SourcePosition { column: pos.column + width, ..pos };
+            res = ctx.env.warn_at(flags, ori, pos, end, note)
+        }
+    });
     res
 }
 

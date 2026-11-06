@@ -3222,7 +3222,7 @@ fn ts_accepts_what_the_parser_does() {
 /// the byte-order mark and `#!` line every reader skips.
 fn parser_takes(s: &str) -> bool {
     let text = parser::without_shebang(&ArcStr::from(s));
-    let ori = || Origin { parent: None, source: Source::Unspecified, text: text.clone() };
+    let ori = || Origin::new(None, Source::Unspecified, text.clone());
     parser::parse(ori()).is_ok() || parser::parse_sig(ori()).is_ok()
 }
 
@@ -3252,10 +3252,8 @@ fn ts_refuses_what_the_parser_does() {
 /// never takes their source.
 #[test]
 fn a_unit_leaves_no_origin_behind() {
-    let unit = |name: &str, text: &str| Origin {
-        parent: None,
-        source: Source::Vfs(ArcStr::from(name)),
-        text: ArcStr::from(text),
+    let unit = |name: &str, text: &str| {
+        Origin::new(None, Source::Vfs(ArcStr::from(name)), ArcStr::from(text))
     };
     let unscoped = || ExprKind::NoOp.to_expr_nopos().ori.source.clone();
     let exprs = parser::parse(unit("parsed", "1; 2")).unwrap();
@@ -3272,10 +3270,8 @@ fn a_unit_leaves_no_origin_behind() {
 /// comes from the interface.
 #[test]
 fn an_interface_module_has_the_interface_origin() {
-    let intf = |text: &str| Origin {
-        parent: None,
-        source: Source::Vfs(ArcStr::from("m.gxi")),
-        text: ArcStr::from(text),
+    let intf = |text: &str| {
+        Origin::new(None, Source::Vfs(ArcStr::from("m.gxi")), ArcStr::from(text))
     };
     let sig = parser::parse_sig(intf("mod sub")).unwrap();
     let ori = Arc::new(intf("mod sub"));

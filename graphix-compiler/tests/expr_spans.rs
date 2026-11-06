@@ -83,11 +83,7 @@ fn check(
 /// The expressions of a file: a program's, or an interface's trait
 /// defaults.
 fn file_exprs(path: &Path, text: &ArcStr) -> anyhow::Result<Vec<Expr>> {
-    let ori = Origin {
-        parent: None,
-        source: Source::File(path.to_owned()),
-        text: text.clone(),
-    };
+    let ori = Origin::new(None, Source::File(path.to_owned()), text.clone());
     if path.extension().is_some_and(|e| e == "gxi") {
         let sig = parser::parse_sig(ori)?;
         let defaults = sig.items.iter().flat_map(|si| match &si.kind {

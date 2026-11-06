@@ -359,7 +359,13 @@ writes, a typedef body's included, must name something by the check's
 end, expanded or not (`design/env_independent_typerefs.md`). A pattern
 naming a type a later statement of its block declares binds at that
 type as the block ends, and one that tests or takes such a type apart
-is refused (`node::later_typedef`). A top-level input (a REPL input, each
+is refused (`node::later_typedef`); a name a block declares is its type
+throughout the block (an annotation, a test, a cast, an abstract
+constructor, pattern or payload read), never an outer type of the name
+or one a `use` brings, and a statement above the declaration that needs
+it as it compiles is refused (`Lexical::block_names`); where another of
+the name is in view, the definition's check warns at the name
+(`Env::later_block_type_note`). A top-level input (a REPL input, each
 statement of its line one; a script; a dynamic module's load) is checked
 and run alone, as a compile task of its own (`Input`): at its end every
 open top-level cell its bindings' and value's types reach settles, ⊥
@@ -446,7 +452,19 @@ pending write. A node's production to a binding is delivered through
 `ExecCtx::deliver`: into the event; a fire stored as delivered, stamped
 this cycle, a quiet production standing with its old stamp, so a wake
 owes no fire for one, whether or not it changed the value; `Notify`
-picks whether a fire schedules the roots that read it. A wake's
+picks whether a fire schedules the roots that read it. A fire, `Roots`
+or `Walk`, reaches the readers the walk has not passed in its cycle, and
+each one it has (in an earlier root, or in a boundary of its own root
+the walk left, `Reader::passed_by`: a reader through a function value or
+a reference, an earlier REPL input or a reloaded module) alone in the
+next, as a write lands (`RtView::store_fire`, `Rt::late`, `Event::late`,
+`read_var_by`, a `*p <-`'s reference included; a write to the binding in
+that cycle supersedes it): a reader before its producer runs a cycle
+behind, and none runs twice in a cycle; one feeding its producer back
+is a self-loop, a step a cycle, as `x <- x + 1` is. Order is judged by
+boundary: a reader in a boundary the walk is still inside is ahead, so a
+reference read earlier in its producer's own boundary misses the fire
+(CR late-same-boundary-01). A wake's
 re-raise, catch-up's inject, a priming from the store and a born
 callee's quiet arguments are fires in the event alone, never stored; an
 error raised to a catch is stored as any write is, delivered the cycle
@@ -639,7 +657,8 @@ file outside every project. A root at `<crate>/src/graphix/mod.gx` of a
 `graphix-package-<x>` crate is a package root, checked as the body of
 `mod <x>` over the copy registered at startup: `Env::
 unbind_scope_subtree` must drop everything a package registers, so a new
-global registry is cleared there. `--check` and the server share one
+global registry is cleared there (the block-type registry, shared by every
+copy of the env, is not: each load names its blocks apart). `--check` and the server share one
 path (`GXRt::check`), which runs the check alone (`CFlag::CheckOnly`:
 no elaboration, no fusion, so `#[native]`, `#[parallel]` and the def
 assertions are verified by a build; `--expand` builds) and checks a script's file as one block, as it
@@ -706,13 +725,26 @@ is), never overwrite a filled cell; the cell holds the definition
 weakly and the `TypeDef` owns it (a recursive body reaches its own
 cell), so a type outliving its definition's env entry is refused,
 never re-resolved, and what outlives the entry owns the definitions
-its types name (a definition's check table, a kernel's type constant,
-an abstract type's registration, the block's `TypeDef` node, which a
-labeled default compiled at a call outlives the env clone with:
+its types name (a definition's check table, a kernel's type
+constant, an abstract type's registration, the block's `TypeDef` node:
 `DefTable::typedefs`, `record::KernelType`, `AbstractRep::named`,
-`node::TypeDef`); `Env::seed_typedef_refs` runs at the
-check's end (an instance elaborates under its definition's env) and
-again right before fusion in both modes. A bound's ref resolves the same way, its
+`node::TypeDef`). A typedef a block declares (a scope ending in a
+generated component) stays findable after the block in `Env::
+block_types`, by scope and name, held weakly and shared by every copy
+of the env: a lookup at a block level no lexical map holds reads it, so
+does one at a compiling block's level (or a snapshot of it) for a name
+the block declares later (`Env::open_block`), and one
+that meets a dead entry is refused, never continued outward; a block compiled again declares the live definition, so one
+source typedef is one definition; an image carries the live entries. A
+scope an expression opens is named by where it is written and its
+source's load (`place_component`, `Origin::tag`), never by an id, so a
+restore names a block as the cold compile did (design/program_image.md,
+Scope names).
+`Env::seed_typedef_refs` (block types included) runs at the check's end
+(an instance elaborates under its definition's env) and again right
+before fusion in both modes, and every node outside a definition has
+its type's names filled then (`seed_node_types`; a definition's rows at
+its check, `DefTable::record`). A bound's ref resolves the same way, its
 cell holding the trait (`Resolution::Trait`), filled by the seed walk at
 a definition's check. Substitution by name (`Type::replace_tvars`: a
 typedef's expansion, an abstract's representation, a trait method's
@@ -1009,7 +1041,11 @@ node graph IS the IR — there is no parallel typed IR
   the block around it, whose later statements read its names); a `let`
   that re-raises marks its block (`node::Lets`), which reads the mark as
   its update ends, so an update after no re-raise visits no `let`. A
-  reader outside (an escaped `&mut`) sees the write once. State
+  reader outside (an escaped `&mut`) sees the write once. At the wake
+  the initializer's fire by catch-up replaces such a write, whichever
+  came first (a sample whose argument alone fired asleep does not fire;
+  a late fire the sleeping arm missed is lost, CR late-asleep-01); a
+  write landing after the wake's cycle stands. State
   survives an arm's sleep (`Held` residents at the select scrutinee,
   pattern guard and `~`'s arg; `CachedVals` staging; collection slots;
   a `<-` target's value, which only a fired input of its initializer
@@ -1174,10 +1210,7 @@ node graph IS the IR — there is no parallel typed IR
   hides, which the default narrows; compiled at a bind, it takes its
   types from its definition's check, as an instance's body does (the
   definition's `DefTable` holds the defaults' rows,
-  `InstanceTypes::of_default`), except one whose checked types name any
-  type (`lambda::names_type_anywhere`): that one keeps no rows and is
-  checked again there (`DefTable::record_defaults`; CR
-  default-bind-coverage-01). A default whose type holds an enclosing
+  `InstanceTypes::of_default`, `DefTable::record_defaults`). A default whose type holds an enclosing
   definition's open cell requires a closed parameter type (annotate the
   factory's parameter or the defaulted parameter); an enclosing definition's
   declared variable is closed: such a default fits its parameter whole, for
@@ -1361,9 +1394,13 @@ loops (chunks, `fusion/par_loop.rs`).
 Branches see the runtime through branch views (`RtView`/`ForkRt`,
 `Layered`, `CxView`) and merge back in program order, so a forked cycle
 computes what the serial node-walk does. Siblings are independent iff
-no later one reads what an earlier one publishes (`analysis::
-plan_block`; a module, trait or impl statement is a run of its own and
-a catch runs last) and they do not both reach an `ORDERED` builtin
+neither reads what the other publishes (`analysis::plan_block`, an
+earlier reader taking a later fire next cycle, through a reference or an
+unresolved call only one a reference names or a lambda captures,
+`analysis::escaping`, or one a call fires in a callee whose body makes a
+reference or a lambda, or that has no static target; a module, trait or impl
+statement is a run of its own and a catch runs last) and they do not
+both reach an `ORDERED` builtin
 (in-language state shared across nodes, `queuefn`; a call with no static
 target counts as one, a slot site's own call excepted). External effects in
 parallel branches happen when they run, unordered. A seq machine runs
@@ -1421,8 +1458,9 @@ cycle, across workers; the compiler never pins threads.
   committed `findings/` corpus is the regression gate: `regress` runs
   every pin through `check` and also compares each pin's fused-region
   count with `graphix-fuzz/fusecheck.manifest`, so a de-fusion fails
-  loud; a program whose first cycle aborts the runtime by the stack
-  budget records `abort`. After an INTENDED fusion change, `fusecheck
+  loud; the count is the program's compile alone, which runs no cycle
+  (`GXConfig::compile_counted`), so a budget abort has its count too.
+  After an INTENDED fusion change, `fusecheck
   --bless` rewrites the manifest (rebuild to embed it) and the diff is
   reviewed like code. `regress` also compares each pin's verdict
   (`trace`/`contained`/`reject`/`excluded`/`unsure`) with
@@ -1515,9 +1553,35 @@ cycle, across workers; the compiler never pins threads.
   that takes such a member only whatever the cell becomes, not with the
   cell one type of its own (`written_tests_undecided`); a name over it takes
   the open part beside the members' others (`TVar::narrow_per_member`).
+  A cell an arm's pattern decided (the arms' settle, a completion, the
+  narrowing, the coverage) counts as one still open there, a binding the
+  decision rewrote read as it was (`Deciding`,
+  `StructurePattern::meets_decided`, `written_tests_decided`), except a
+  whole open scrutinee, which the arms decide together, unless an arm
+  holds a partial struct pattern; a pattern there that only takes apart
+  every value of the shape it decides (a tuple, a struct naming every
+  field, a slice or list with a rest, an abstract payload, of names, `_`
+  and such patterns: `StructurePattern::only_destructures`) decides that
+  shape as an annotation would and tests nothing, except beside a member
+  of that shape, where it chooses between them. An arm the coverage
+  finds dead has the arms up to it judged so first, against the cells
+  still open and those decided (`still_open`); any other error in an
+  arm's check is that error.
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
-  whatever it becomes, else where the cover decides them. A partial
+  whatever it becomes, else where the cover decides them. What reaches
+  the next arm (`Type::diff`) and `could_match` unfold a pair of
+  named types' definitions (arguments ignored) once on a path, a pair
+  with a side that is no named type uncounted; met again, diff
+  subtracts nothing and could_match answers an overlap
+  (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs
+  (either side named) in one walk: a wider residual, so fewer dead arms
+  are found and a missing case may be refused that `_` fixes. What reads
+  the part a difference left out (`?`'s strip and raised type) and
+  `?`/`$`'s result type split the operand by its members, each name
+  expanded once per parameter list (open cells by identity), where the
+  budget widened it (`Strip::taken`,
+  `Strip::left`). A partial
   struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
   by undecided cells are two members, refused unless what reaches the

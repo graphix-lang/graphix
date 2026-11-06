@@ -58,6 +58,16 @@ constant argument to `exit` runs at init — always gate it).
   `spawn(options(#args: a, go ~ prog))` — a call fires when ANY argument
   fires, so the second re-issues the spawn when `a` moves on its own.
 - **`<-` lands next cycle.** You do not see the new value this cycle.
+- **A value made later in the cycle reaches an earlier reader next
+  cycle.** A cycle runs statements in text order and REPL inputs in input
+  order; a reader that sits before what it reads (through a function value
+  or a reference to a later binding, an earlier REPL input) gets each new
+  value a cycle late, as a write. A backward reader that feeds what it
+  reads runs a cycle at a time, as `x <- x + 1` does. A `*r` in the same
+  statement as a nested block or a call that makes its target, after the
+  `*r`, is never delivered its values (it reads the one standing from the
+  cycle before when the statement runs again): read it in a statement of
+  its own.
 - **A function returning a level it does not derive from its argument
   fires nothing when re-called** (`|v| k`); write `|v| v ~ k`. This is
   what makes `f(trigger)` a sequencing tool only when `f` uses its arg.
@@ -477,6 +487,18 @@ across a bottom cycle).
   takes its member whole, `` (`J, _) `` over `` [(`K, i64), (`J, z)] ``,
   leaves the later arms free of it): over `let v = select b { true => {a: [1],
   c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
+  An arm whose pattern would decide it is refused the same way: `|x|
+  select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`);
+  so is a literal, `null`, `[]`, a fixed-length slice or an or-pattern
+  there. A pattern that only takes it apart decides its shape: `((a, b),
+  _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check,
+  unless the part stands beside a member of that shape (`y` is `x` or a
+  pair): the destructure then chooses between them, refused.
+  A rest leaves the other lengths to a later name or `_`: a later `([],
+  _)` is a length choice, refused.
+  Only a scrutinee wholly of such a type is the arms' to decide together
+  (`|x| select x { `J => 1, `M => 2 }`), never by a partial struct
+  pattern (`{a, ..}`).
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
@@ -1025,6 +1047,12 @@ away the element it had in hand. Build the final row there:
   problem: `select b { true => x, false => 1 }` is `['a, i64]`, and `[]`
   against `[1]` is `Array<i64>`.
 - Labeled arguments are never positional, even without a default.
+- A `type` a block declares is that type throughout the block, above its
+  declaration too, never an outer type of the name: in `type L = i64; {
+  let f = |x: i64| { let b: L = 3; b }; type L = string; f(1) }` the `L` in
+  `f` is the string, and so is an abstract `W(v)` or pattern `W(p)` there.
+  A statement above the declaration that needs the type at once (`let a =
+  W(1)`, a cast) is refused. Declare a block's types first.
 - Each REPL statement, a script and a dynamic module's load is checked
   alone, and what it leaves undecided is `_` from its end: after `let e
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),

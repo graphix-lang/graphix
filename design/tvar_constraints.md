@@ -141,8 +141,10 @@ the scrutinee's part there, as on the same test with no variable inside
 member and over a whole value of it in another
 (`StructPatternNode::binds_inside_rigid`) is the union of both types. An
 abstract pattern names the type its compile resolved, an alias's
-included (`CompiledAbstracts`: a lookup at the check would find a type a
-later statement of the block declares under the name).
+included (`CompiledAbstracts`); a name a later statement of the block
+declares is that type there, in a function above the declaration too, and
+refused in a statement above it (`design/env_independent_typerefs.md`,
+Block types).
 At a union holding the cell beside other members a part meets it where
 it may hold one of its values, by its typed bounds, any value without
 one, inside a member the whole pattern may hold (a pattern that cannot
@@ -613,6 +615,64 @@ would meet no value of it. The cost is one walk per arm, plus for a
 written test one containment per member reaching it that holds an
 undecided cell.
 
+An arm's pattern may decide such a cell instead of leaving it open: the
+arms' settle (`Reach::new`) binds an open part inside a structure to the
+first arm's predicate, a partial struct pattern completes against a
+sibling member, a literal or a tag narrows it. Nothing is open at the
+end then, and a later arm is refused as dead or a later write as
+mismatched, naming nothing the program wrote. So the cells the scrutinee
+held open are noted before each step that runs a pattern (the settle and
+completion before the arms, each arm's completion and narrowing; never a
+guard or a body), and a cell such a step bound counts as undecided
+(`Deciding`, Eric 11-05, D5 follow-up (b)): `meets_decided` walks it as
+the open cell it was (`union_members_stopping` stops at it), and a
+written test is judged by `written_tests_undecided` over a copy of what
+reaches it with those cells open again (`written_tests_decided`). An
+arm the coverage finds dead (`Reach::arm`), which an earlier arm's
+decision may have made so, first has the arms up to it judged by this
+rule, so the message names the binding; any other error in an arm's
+check, its pattern's, guard's or body's, is that error, and no arm is
+judged. A whole
+scrutinee that is one open cell is not counted: the arms decide it
+together, as `select x { `J => 1, `M => 2 }` makes `x` a `` [`J, `M] ``;
+except where an arm holds a partial struct pattern, whose completion
+against an open cell is the struct of the fields it names, a type the
+program never wrote.
+
+A decision may rewrite a binding that held the cell: `y` bound to `['x,
+`J]` becomes `` `J `` once `(`J, _)` decides `'x`. So a bound cell of
+the scrutinee whose binding holds an open cell is noted with that binding,
+and one a step rewrote is walked as it was (`Decisions::held`), where the
+decided `'x` stands beside the member that holds the literal's type.
+Coverage (`Reach::arm`) is a pattern step too.
+
+An arm that only takes a decided part apart is no test of it
+(`StructurePattern::only_destructures`, Eric 11-05, D5 follow-up 2 (b)):
+a tuple, a struct naming every field, a slice or list with a rest, an
+abstract payload, holding only names, `_` and such patterns, each part of
+the shape of every member of the part as decided but an open cell there,
+the arm's own, which takes the shape (`destructures`: `[(a, b), ..]`
+takes apart an element of `['r, ('a, 'b)]`). It
+decides the part's shape as an annotation would and tests nothing of it:
+a later arm meets the part as decided, so one written for the part's
+other values is unreachable, as under the annotation, and so is one of
+another shape. A literal, a tag, `null`, `[]`, an
+or-pattern, a written test, a partial struct (its completion is the
+struct of the fields it names) and a slice of a fixed length choose among
+the part's values, and stay refused: a fixed length is a choice among
+lengths as a literal is among values. A rest leaves the lengths it does
+not take to a name or `_` in a later arm, or to the coverage; a later
+`[]` chooses a length and is refused.
+
+Beside a member of its shape a destructure chooses between that member
+and the part (`((a, b), _)` over a `y` that is `'x` or `(i64, i64)`,
+`(W(a), _)` beside `W`, a ladder of such arms, `([a, ..], _)` beside an
+array), so it is a test of the part, refused whether the part stays open
+after the arms or the coverage merges it into the member. It is refused
+too where a later arm is found dead first: the dead arm's refusal judges
+the arms up to it, by what reaches each, against the cells still open
+(`still_open`) and those the arms' patterns decided.
+
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes
 that cell beside the other members' parts (`TVar::narrow_per_member`:
@@ -630,6 +690,74 @@ members (`strictly_identical`), refused as any ambiguous completion is,
 unless what reaches the arm leaves one: annotate the cells, the member,
 or name every field; a program whose cells end up equal is refused
 until annotated.
+
+### Unfolding a pair of definitions
+
+`Type::diff` (what reaches the next arm) and `could_match` walk two
+named types into their definitions. A pair met again inside its own walk
+is answered by assumption: diff subtracts nothing there (the residual is
+the minuend), could_match answers an overlap that rests on the pair in
+progress (`Rests`). Keyed by the types themselves, a walk that subtracts
+a union member by member, or a definition whose parameters grow as it
+recurses, meets a new key at every level and does not end, and the exact
+difference over Error cycles of coprime lengths repeats only after their
+lcm. So a pair of two named types is also keyed by its two definitions,
+arguments ignored (`setops::DefPair`), and a path may hold
+`setops::UNFOLDINGS` (one) unfoldings of it (`Unfoldings`; Eric 11-05,
+diff-cycle-hang-01 (b)). A pair with a side that is no named type is not
+counted: that side walks into its own parts, smaller at every step, until
+it meets a name, so a pattern written as a type, an alias or the
+scrutinee's own recursive name in it included, is walked as deep as it
+goes and a tag it cannot hold is found dead however deep it sits.
+
+Within that bound, unions that branch at every level still multiply the
+walk's paths: a family of `n` definitions `T_i = [Error<T_i+1>,
+Error<T_i+2>, `A_i]` gives an exponential number of pairs. So one walk
+unfolds at most `setops::WALK_PAIRS` (1000) pairs, a side of each a named
+type, counted, never timed (Eric 11-05, diff-cycle-hang-01 follow-up 2
+(b)), past which diff subtracts nothing and could_match answers an overlap
+wherever a pair is met (pins
+`typ::setops::tests::diff_over_branching_unions_is_bounded`,
+`could_match_over_branching_unions_is_bounded`). The pair budget does not
+bound a residual that grows while one walk takes few pairs: over `T =
+[Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep leaves a
+residual of `2^d` union members, and a select's running residual doubles
+at each arm testing a level deeper than the last. Those selects stay
+exponential in their depth, as before the budget
+(diff-residual-depth-01). The next arm's walk over that residual takes
+about `2^(d+1)` pairs, past the budget from `d = 9`: it subtracts nothing
+there, so a dead arm after it is not found (a repeated `Error<U> as e`
+arm, which main refuses, is accepted) and the arm after that walks the
+unreduced residual again.
+
+A wider residual is sound: fewer dead arms are found, a missing case may
+be refused that a `_` arm fixes, a later arm's bind is wider. It is not
+sound for a caller that reads what a difference left out: `?` and `$`
+pick their strip by whether `t - (t - error)` holds a member, and `?`
+raises that part to its handler, so a widened inner difference would
+read as nothing taken. `Type::diff_exact` says where the budget widened a
+difference (pin `typ::setops::tests::diff_exact_past_the_budget_is_none`).
+There `?` and `$` split the operand by its members instead, read through
+cells and through names, each name expanded once per parameter list,
+whose open cells are told apart by identity (`F<'a>` and `F<'b>` are two)
+(`Type::distinct_members`): an error member (or the null) is what the
+strip takes, which decides the strip and is the raised type, and the rest
+is the result type (`Strip::taken`, `Strip::left`; pins
+`lang::errors::an_operand_past_the_pair_budget_*`,
+`two_cells_behind_one_name_past_the_pair_budget_*`). One unfolding and
+1000 pairs were chosen from the 1600 generated selects (review-r8
+X-r1-1): of main's 1547 finishes none changes verdict or the kind of its
+message, 52 of its 53 timeouts end, the last in matching_type's
+containment; 100 pairs moved two of main's verdicts (a dead arm accepted, a
+dead-arm refusal become a missing case), 10000 pairs cost a generated
+select (rnd13) 3.4G instructions where 1000 cost 1.7G. Where the widened
+residual meets a type whose parameters grow, the arm's test against it can
+no longer be decided (`Type::rep_collision`) and the arm is refused: a
+test 10 levels deep in `G<'a> = [Error<G<Array<'a>>>, Error<G<('a,
+'a)>>, `A('a)]`, which main accepts. Over Error cycles
+of coprime lengths diff walks pairs that grow with the lengths, not their
+lcm (pin
+`typ::setops::tests::diff_over_error_cycles_walks_pairs_by_their_lengths`).
 
 ### The occurs check
 
@@ -805,20 +933,15 @@ gave it and never runs, and a reached arm's bind keeps its type (pins
 `default_at_a_bind_reads_an_unreached_arms_binds`,
 `default_at_a_bind_keeps_its_definitions_bind_types`). Those rows stay
 open at the definition's settle (`DefTable::settle_open` leaves them): the
-bind narrows them by its own view of the label. A default typed with a
-type name (in a node's own type, an arm's predicates and binds or a
-catch's binds; a callee's signature is its definition's and does not
-count, `lambda::names_type_anywhere`) keeps no rows, whatever the name: a
-name a block declares resolves only in the environment of the compile that
-declared it, which typing from rows never reaches, and a later fill finds
-the wrong definition or none (a block's type, or an outer one of the same
-name: the class of CR default-typedef-outlived-01), and the test does not
-tell such a name from a stable top-level typedef, which keeps no rows too
-(CR default-bind-coverage-01). The bind checks such a default in full, as
-it does a default with no rows at all (a builtin's, or under `GRAPHIX_NO_SUBST`;
-`node::rechecking_instance`; pins
-`default_at_a_bind_declares_a_recursive_type`,
-`default_at_a_bind_names_a_block_type_over_an_outer_one`).
+bind narrows them by its own view of the label. Every default keeps its
+rows, one typed with a type name included: a name a block declares is
+found after the block (`Env::block_types`, `design/env_independent_typerefs.md`),
+so the rows the definition's check filled mean at the bind what they meant
+there (pins `default_at_a_bind_declares_a_recursive_type`,
+`default_at_a_bind_names_a_block_type_over_an_outer_one`,
+`lang::block_types::default_naming_a_block_type_takes_its_definitions_types`).
+The bind checks a default in full only where there are no rows (a
+builtin's, or under `GRAPHIX_NO_SUBST`; `node::rechecking_instance`).
 
 A signature finds its quantifiers by name (`FnType::quantifiers`). A
 parameter the body unifies with a declared quantifier (`x` in `'a:

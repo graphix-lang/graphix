@@ -24,7 +24,9 @@ use netidx_core::{
     path::Path,
 };
 use netidx_derive::Pack;
+use parking_lot::RwLock;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     fmt,
     hash::Hash,
@@ -158,6 +160,149 @@ impl TypeDef {
 
     pub fn ori(&self) -> &Arc<Origin> {
         self.def.ori()
+    }
+}
+
+/// The typedefs blocks declare, findable after their block
+/// (`design/env_independent_typerefs.md`, Block types): a block's typedef
+/// is in the lexical maps only while the block compiles, and a name
+/// naming it may be looked up after. A block's scope names one source
+/// occurrence, so an entry means one thing from wherever it is reached.
+/// Each definition is held weakly. Global like the import tables: every
+/// copy of the env, a compile task's included, shares it.
+#[derive(Clone, Debug, Default)]
+pub struct BlockTypes(Arc<RwLock<BlockRegistry>>);
+
+#[derive(Debug, Default)]
+struct BlockRegistry {
+    by_name: AHashMap<CompactString, SmallVec<[BlockType; 1]>>,
+    entries: usize,
+    /// `entries` after the last sweep of dead entries.
+    swept_at: usize,
+    /// The loads numbered so far ([`BlockTypes::next_load`]).
+    loads: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockType {
+    pub scope: ModPath,
+    pub def: std::sync::Weak<ResolvedRef>,
+    pub seeded: Arc<AtomicBool>,
+}
+
+/// What the registry holds for a name at a scope.
+pub(crate) enum BlockHit {
+    Live(std::sync::Arc<ResolvedRef>),
+    Dead,
+}
+
+fn same_origin(a: &Arc<Origin>, b: &Arc<Origin>) -> bool {
+    Arc::ptr_eq(a, b) || a == b
+}
+
+/// Whether `scope` is a block's own: its last component is generated.
+/// A module a block declares is not: its scope ends in its name, which
+/// a reload declares again with other text.
+pub(crate) fn is_block_scope(scope: &str) -> bool {
+    Path::basename(scope).is_some_and(crate::is_block_component)
+}
+
+impl BlockTypes {
+    fn entry<T>(
+        &self,
+        scope: &str,
+        name: &str,
+        f: impl FnOnce(&BlockType) -> T,
+    ) -> Option<T> {
+        let reg = self.0.read();
+        reg.by_name.get(name)?.iter().find(|e| &*e.scope.0 == scope).map(f)
+    }
+
+    pub(crate) fn find(&self, scope: &str, name: &str) -> Option<BlockHit> {
+        self.entry(scope, name, |e| match e.def.upgrade() {
+            Some(def) => BlockHit::Live(def),
+            None => BlockHit::Dead,
+        })
+    }
+
+    /// The live definition of `name` at `scope`, with its seeded flag,
+    /// else the one `new` makes, recorded there in place of a dead entry:
+    /// one step under the lock, so compiles of one block declare one
+    /// definition.
+    fn declare(
+        &self,
+        scope: &ModPath,
+        name: &str,
+        new: impl FnOnce() -> std::sync::Arc<ResolvedRef>,
+    ) -> (std::sync::Arc<ResolvedRef>, Arc<AtomicBool>) {
+        let mut reg = self.0.write();
+        let reg = &mut *reg;
+        let es = reg.by_name.entry(CompactString::from(name)).or_default();
+        let live = |e: &BlockType| Some((e.def.upgrade()?, e.seeded.clone()));
+        let at = es.iter().position(|e| e.scope == *scope);
+        if let Some(live) = at.and_then(|i| live(&es[i])) {
+            return live;
+        }
+        let def = new();
+        let seeded = Arc::new(AtomicBool::new(false));
+        let entry = BlockType {
+            scope: scope.clone(),
+            def: std::sync::Arc::downgrade(&def),
+            seeded: seeded.clone(),
+        };
+        match at {
+            Some(i) => es[i] = entry,
+            None => {
+                es.push(entry);
+                reg.entries += 1;
+            }
+        }
+        if reg.entries >= 2 * reg.swept_at.max(16) {
+            reg.by_name.retain(|_, es| {
+                es.retain(|e| e.def.strong_count() > 0);
+                !es.is_empty()
+            });
+            reg.entries = reg.by_name.values().map(|es| es.len()).sum();
+            reg.swept_at = reg.entries;
+        }
+        (def, seeded)
+    }
+
+    /// The number of a load of a source the session may load again (a
+    /// REPL input, a `load`, a check, a dynamic module's source): its
+    /// origin's [`crate::expr::Origin::load`], so the scopes it opens are
+    /// named apart from every other load's, and a block it declares is
+    /// never an earlier load's live definition.
+    pub fn next_load(&self) -> u32 {
+        let mut reg = self.0.write();
+        reg.loads += 1;
+        reg.loads
+    }
+
+    /// Every live entry at `scope` or below, with its name.
+    pub fn live_under(&self, scope: &str) -> Vec<(CompactString, BlockType)> {
+        let reg = self.0.read();
+        let mut out = Vec::new();
+        for (n, es) in reg.by_name.iter() {
+            for e in es.iter() {
+                if e.def.strong_count() > 0 && scope_is_under(&e.scope, scope) {
+                    out.push((n.clone(), e.clone()))
+                }
+            }
+        }
+        out
+    }
+
+    pub fn from_entries(
+        entries: impl IntoIterator<Item = (CompactString, BlockType)>,
+    ) -> Self {
+        let mut reg = BlockRegistry::default();
+        for (n, e) in entries {
+            reg.by_name.entry(n).or_default().push(e);
+            reg.entries += 1;
+        }
+        reg.swept_at = reg.entries;
+        Self(Arc::new(RwLock::new(reg)))
     }
 }
 
@@ -433,6 +578,14 @@ pub(crate) enum TypeName {
     Trait(TraitId),
 }
 
+/// Why a block's type name has no definition where it is looked up.
+enum Unseen {
+    /// Its definition is gone.
+    Dead,
+    /// Its block declares it in a statement not compiled yet.
+    Later,
+}
+
 /// Where a scope is, for a message: the root is the top level.
 fn in_scope(scope: &ModPath) -> CompactString {
     match &*scope.0 {
@@ -534,6 +687,11 @@ pub struct Lexical {
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     pub traits: Map<ModPath, Map<CompactString, TraitId>>,
+    /// The type names each compiling block declares, by the block's
+    /// scope. A name there is the block's type before its declaration
+    /// too: through `Env::block_types` where an earlier compile declared
+    /// it, else it is refused, never an outer type of the name.
+    pub block_names: Map<ModPath, Map<CompactString, ()>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -567,6 +725,8 @@ pub struct Env {
     /// Whether compiles serve an editor, and the IDE side-channels
     /// ([`Ide`]) a check records into.
     pub ide: IdeMode,
+    /// The typedefs blocks declare, past their blocks.
+    pub block_types: BlockTypes,
     /// The modules whose undeclared impls this compile task does not
     /// see: its siblings in a run of module checks, which reach each
     /// other only through their interfaces.
@@ -596,6 +756,7 @@ impl Env {
             impls: self.impls.fork(),
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
+            block_types: self.block_types.clone(),
             ide: self.ide.fork(),
             lexical: self.lexical.clone(),
             hidden_impls: self.hidden_impls.clone(),
@@ -617,6 +778,7 @@ impl Env {
             impls,
             poly_binds,
             package_roots,
+            block_types: _,
             ide,
             hidden_impls: _,
             recorded: _,
@@ -774,7 +936,7 @@ impl Env {
     /// names `td`.
     pub fn push_typedef_ref(
         &self,
-        td: &TypeDef,
+        td: &ResolvedRef,
         name: &ModPath,
         scope: &ModPath,
         pos: SourcePosition,
@@ -786,7 +948,7 @@ impl Env {
                 ori: ori.clone(),
                 scope: scope.clone(),
                 name: name.clone(),
-                canonical_scope: td.def.canonical_scope().clone(),
+                canonical_scope: td.canonical_scope().clone(),
             })
         }
     }
@@ -1168,13 +1330,17 @@ impl Env {
         })
     }
 
+    /// The typedef a name in type position means at `scope`, as
+    /// [`Self::resolve_type_name`] reads it; `None` where it names a trait
+    /// or nothing.
     pub fn lookup_typedef(
         &self,
         scope: &ModPath,
         name: &ModPath,
-    ) -> Result<Option<&TypeDef>> {
-        self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
-            self.lexical.typedefs.get(scope).and_then(|m| m.get(name))
+    ) -> Result<Option<std::sync::Arc<ResolvedRef>>> {
+        Ok(match self.resolve_type_name(scope, name)? {
+            Some(TypeName::Def(d)) => Some(d),
+            Some(TypeName::Trait(_)) | None => None,
         })
     }
 
@@ -1225,17 +1391,91 @@ impl Env {
         scope: &ModPath,
         name: &ModPath,
     ) -> Result<Option<TypeName>> {
-        self.resolve_visible(scope, name, NameNs::Type, |s, n| {
-            match self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
-                Some(d) => Some(TypeName::Def(d.def.clone())),
-                None => self
-                    .lexical
-                    .traits
-                    .get(s)
-                    .and_then(|m| m.get(n))
-                    .map(|id| TypeName::Trait(*id)),
+        let hit = self
+            .resolve_visible(scope, name, NameNs::Type, |s, n| self.type_name_at(s, n))?;
+        match hit {
+            None => Ok(None),
+            Some(Ok(t)) => Ok(Some(t)),
+            Some(Err(Unseen::Dead)) => {
+                bail!("type `{name}` outlived its definition in `{scope}`")
             }
-        })
+            Some(Err(Unseen::Later)) => bail!(
+                "{name} names the type a later statement of this block declares: \
+                 declare it before its first use"
+            ),
+        }
+    }
+
+    /// The typedef or trait `n` names at the one level `s`.
+    fn type_name_at(&self, s: &str, n: &str) -> Option<Result<TypeName, Unseen>> {
+        if let Some(d) = self.lexical.typedefs.get(s).and_then(|m| m.get(n)) {
+            return Some(Ok(TypeName::Def(d.def.clone())));
+        }
+        if let Some(id) = self.lexical.traits.get(s).and_then(|m| m.get(n)) {
+            return Some(Ok(TypeName::Trait(*id)));
+        }
+        if !is_block_scope(s) {
+            return None;
+        }
+        let later = match self.lexical.block_names.get(s) {
+            Some(names) if names.get(n).is_none() => return None,
+            Some(_) => true,
+            None => false,
+        };
+        match self.block_types.find(s, n) {
+            Some(BlockHit::Live(def)) => Some(Ok(TypeName::Def(def))),
+            Some(BlockHit::Dead) => Some(Err(Unseen::Dead)),
+            None => later.then_some(Err(Unseen::Later)),
+        }
+    }
+
+    /// Where the written name `tr` means a type its block declares below
+    /// it while the name means something else at the block's door (an
+    /// outer type or trait, or an import): what its reader is told.
+    pub fn later_block_type_note(&self, tr: &TypeRef) -> Option<CompactString> {
+        let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) else { return None };
+        let mut level = CompactString::default();
+        let hit = self
+            .resolve_visible(&tr.scope, &tr.name, NameNs::Type, |s, n| {
+                let hit = self.type_name_at(s, n)?;
+                level = CompactString::from(s);
+                Some(hit)
+            })
+            .ok()??;
+        let declared = match hit {
+            Err(Unseen::Later) => None,
+            Ok(TypeName::Def(d))
+                if is_block_scope(&level)
+                    && same_origin(d.ori(), ori)
+                    && d.pos() > pos =>
+            {
+                Some(d.pos())
+            }
+            Ok(_) | Err(Unseen::Dead) => return None,
+        };
+        let other = self
+            .resolve_visible(&tr.scope, &tr.name, NameNs::Type, |s, n| {
+                if s == level { None } else { self.type_name_at(s, n)?.ok() }
+            })
+            .ok()??;
+        let (opos, oori) = match &other {
+            TypeName::Def(o) => (o.pos(), o.ori().clone()),
+            TypeName::Trait(id) => {
+                let t = self.trait_def(*id)?;
+                (t.pos, t.ori.clone())
+            }
+        };
+        let at = declared.map(|p| format_compact!(", at {p}")).unwrap_or_default();
+        let elsewhere = match same_origin(&oori, ori) {
+            true => CompactString::default(),
+            false => format_compact!(" in {}", oori.source),
+        };
+        let name = &tr.name;
+        Some(format_compact!(
+            "`{name}` here names the type this block declares below it{at}, not the \
+             `{name}` declared at {opos}{elsewhere}: a name a block declares is its \
+             type throughout the block"
+        ))
     }
 
     /// Declare trait `name` in `scope`: one dispatcher per method at
@@ -1963,24 +2203,24 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
-        let def = std::sync::Arc::new(ResolvedRef::new(
-            scope.clone(),
-            pos,
-            ori,
-            params.clone(),
-            typ.clone(),
-        ));
+        let new = || {
+            std::sync::Arc::new(ResolvedRef::new(
+                scope.clone(),
+                pos,
+                ori,
+                params.clone(),
+                typ.clone(),
+            ))
+        };
+        let (def, seeded) = if defer && is_block_scope(scope) {
+            self.block_types.declare(scope, name, new)
+        } else {
+            (new(), Arc::new(AtomicBool::new(false)))
+        };
         let key = def.def_key();
+        let td = TypeDef { def, rep: rep.clone(), doc, seeded };
         let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
-        defs.insert_cow(
-            name.into(),
-            TypeDef {
-                def,
-                rep: rep.clone(),
-                doc,
-                seeded: Arc::new(AtomicBool::new(false)),
-            },
-        );
+        defs.insert_cow(name.into(), td);
         // compared with the definition in scope, where a self-reference in
         // the representation resolves
         let mut deferred = None;
@@ -2116,11 +2356,23 @@ impl Env {
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
         let r = self.abstract_reps.get(&id)?;
-        let visible = r.public || chain_levels(from).any(|scope| {
-            self.lexical.typedefs.get(scope).and_then(|defs| defs.get(r.name.as_str())).is_some_and(|def| {
-                def.rep.is_some() && matches!(def.typ(), Type::Abstract { id: declared, .. } if *declared == id)
-            })
-        });
+        let declares = |t: &Type| matches!(t, Type::Abstract { id: d, .. } if *d == id);
+        let visible = r.public
+            || chain_levels(from).any(|scope| {
+                match self
+                    .lexical
+                    .typedefs
+                    .get(scope)
+                    .and_then(|m| m.get(r.name.as_str()))
+                {
+                    Some(def) => def.rep.is_some() && declares(def.typ()),
+                    None => {
+                        is_block_scope(scope)
+                            && matches!(self.block_types.find(scope, &r.name),
+                                Some(BlockHit::Live(def)) if declares(def.typ()))
+                    }
+                }
+            });
         visible.then_some(&**r)
     }
 
@@ -2150,6 +2402,16 @@ impl Env {
                 if complete {
                     td.seeded.store(true, Ordering::Relaxed);
                 }
+            }
+        }
+        for (_, bt) in self.block_types.live_under(scope) {
+            if bt.seeded.load(Ordering::Relaxed) {
+                continue;
+            }
+            if let Some(def) = bt.def.upgrade()
+                && def.typ().seed_refs(self)
+            {
+                bt.seeded.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -2203,6 +2465,24 @@ impl Env {
             .map(|td| td.def.clone())
     }
 
+    /// Record the type names the block at `scope` declares before its
+    /// statements compile: a name a block declares means its type
+    /// throughout the block, so before its declaration it is never an
+    /// outer type of the name ([`Lexical::block_names`]).
+    pub fn open_block<'a>(
+        &mut self,
+        scope: &ModPath,
+        names: impl IntoIterator<Item = &'a str>,
+    ) {
+        let mut names = names.into_iter().peekable();
+        if is_block_scope(scope) && names.peek().is_some() {
+            let m = self.lexical.block_names.get_or_default_cow(scope.clone());
+            for n in names {
+                m.insert_cow(CompactString::from(n), ());
+            }
+        }
+    }
+
     /// Drop the name `name` at `scope`. An abstract type's
     /// representation stays: every compile of one source typedef
     /// registers the same one, and a live compile still constructs it.
@@ -2234,6 +2514,7 @@ impl Env {
         }
         self.lexical.modules =
             retain_set(&self.lexical.modules, |s| !scope_is_under(s, scope));
+        drop_scopes(&mut self.lexical.block_names, scope);
         drop_scopes(&mut self.lexical.binds, scope)
             + drop_scopes(&mut self.lexical.typedefs, scope)
             + drop_scopes(&mut self.lexical.traits, scope)
@@ -2262,6 +2543,8 @@ impl Env {
             poly_binds,
             // a package stays registered across its recheck
             package_roots: _,
+            // each load names its blocks apart
+            block_types: _,
             ide: _,
             hidden_impls: _,
             recorded: _,
@@ -2561,6 +2844,35 @@ mod test {
         assert!(!env.abstract_minted(id));
         register(&mut env, &TypeDefBody::Abstract(None));
         assert!(!env.abstract_minted(id));
+    }
+
+    /// Unbinding a package from a clone of the env (a check, rolled back
+    /// by restoring the original) leaves the original's block types.
+    #[test]
+    fn unbinding_a_clone_keeps_the_block_types() {
+        let mut env = Env::default();
+        let pkg = ModPath::from(["pkg"]);
+        let block = ModPath(pkg.0.append("#do1.1~0"));
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        let pos = SourcePosition::default();
+        let ori = Arc::new(Origin::default());
+        env.deftype_in_block(
+            &block,
+            "L",
+            Arc::from_iter([]),
+            &TypeDefBody::Alias(i64),
+            pos,
+            pos,
+            ori,
+        )
+        .unwrap();
+        let live = |env: &Env| {
+            matches!(env.block_types.find(&block.0, "L"), Some(BlockHit::Live(_)))
+        };
+        assert!(live(&env));
+        let mut check = env.clone();
+        check.unbind_scope_subtree(&pkg);
+        assert!(live(&env));
     }
 
     fn at(env: &mut Env, scope: &ModPath, name: &str) -> BindId {

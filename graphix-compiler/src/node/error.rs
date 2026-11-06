@@ -312,7 +312,7 @@ impl<R: Rt> Catch<R> {
         if let Some(t) = &c.constraint {
             t.refuse_quantified_fns(&ctx.env).at(&spec)?;
         }
-        let catch_scope = scope.append_block("ca", spec.id.inner());
+        let catch_scope = scope.append_place("ca", &spec, None);
         // an ascribed catch takes its type now, so a raise it covers writes
         // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();
@@ -634,6 +634,17 @@ impl Strip {
                 }
             })?
         }
+        // CR claude for claude: [perf/medium] This test flattens the operand with
+        // Type::dispatch_members, which expands a name once per path to it: over a DAG of
+        // names (L_i = [L_i-1, M_i-1], M_i = [M_i-1, L_i-1]) that is 2^n members. `x?` over
+        // `[<1100 named tags>, L_n]` costs, --no-cache --check, instructions, on main
+        // (base-r16): n = 16 2.1G, 20 7.2G, 24 88G, and n = 600 without the tags is
+        // killed at 120 s (`$`, which skips the test, 1.8G at every n with the tags,
+        // 9.5G at 600 without). Type::distinct_members expands each name once and would
+        // do here; the union trait dispatch (traits.rs lower_trait_union's members) and
+        // the contains callers of dispatch_members walk the same way. probes:
+        // ~/ptmp/cr29/scratch/r16-U6/wq20.gx, wq24.gx, dagq600.gx
+        // (strip-any-members-dag-01)
         // what `?` raises is the operand's error part, which Any does not say
         if op == '?'
             && Type::dispatch_members(&ctx.env, typ)?
@@ -653,8 +664,7 @@ impl Strip {
         // an open member holds both: the strip is the one that takes a
         // member out, the error form when neither does (`Any`)
         let takes = |strip: Self| -> Result<bool> {
-            let rest = typ.diff(&ctx.env, &strip.removed())?;
-            Ok(!typ.diff(&ctx.env, &rest)?.is_uninhabited())
+            Ok(!strip.taken(&ctx.env, typ)?.is_uninhabited())
         };
         if holds(&err)? && holds(&null)? && !takes(Self::Error)? && takes(Self::Null)? {
             Ok(Self::Null)
@@ -681,6 +691,36 @@ impl Strip {
             Self::Error => Type::Primitive(Typ::Error.into()),
             Self::Null => Type::Primitive(Typ::Null.into()),
         }
+    }
+
+    /// What this strip takes out of `typ`.
+    fn taken(self, env: &Env, typ: &Type) -> Result<Type> {
+        match typ.diff_exact(env, &self.removed())? {
+            Some(rest) => typ.diff(env, &rest),
+            None => self.members(env, typ, true),
+        }
+    }
+
+    /// What this strip leaves of `typ`.
+    fn left(self, env: &Env, typ: &Type) -> Result<Type> {
+        match typ.diff_exact(env, &self.removed())? {
+            Some(rest) => Ok(rest),
+            None => self.members(env, typ, false),
+        }
+    }
+
+    /// The members of `typ`, read through names and cells, that this strip
+    /// takes (or leaves): where the pair budget left a difference wider,
+    /// which says neither.
+    fn members(self, env: &Env, typ: &Type, taken: bool) -> Result<Type> {
+        let removed = self.removed();
+        let takes = |m: &Type| match self {
+            Self::Error => matches!(m, Type::Error(_)) || *m == removed,
+            Self::Null => *m == removed,
+        };
+        let ms =
+            Type::distinct_members(env, typ)?.into_iter().filter(|m| takes(m) == taken);
+        Ok(Type::Set(Arc::from_iter(ms)).normalize())
     }
 
     fn strips(self, v: &Value) -> bool {
@@ -714,7 +754,7 @@ fn strip_typ<R: Rt>(
         Some(strip) => strip,
         None => Strip::of(ctx, op, operand)?,
     };
-    let rtyp = operand.diff(&ctx.env, &strip.removed())?;
+    let rtyp = strip.left(&ctx.env, operand)?;
     Ok((strip, if rtyp.is_uninhabited() { Type::Bottom } else { rtyp }))
 }
 
@@ -1561,7 +1601,7 @@ impl<R: Rt> Qop<R> {
         }
         if let Some(handler) = self.handler() {
             let etyp = match self.strip {
-                Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
+                Strip::Error => Strip::Error.taken(&ctx.env, self.n.typ())?,
                 Strip::Null => NULL_ERR.clone(),
             };
             // an instance's operand may be narrower than its definition's

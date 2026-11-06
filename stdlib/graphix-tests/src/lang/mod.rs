@@ -4,6 +4,7 @@ mod arrays;
 mod async_restart;
 mod attributes;
 mod basics;
+mod block_types;
 mod byref;
 mod cast_trait;
 mod collection;

@@ -66,11 +66,11 @@ mod tests {
     use triomphe::Arc;
 
     fn ori(path: &str) -> Arc<Origin> {
-        Arc::new(Origin {
-            parent: None,
-            source: Source::File(PathBuf::from_str(path).unwrap()),
-            text: literal!(""),
-        })
+        Arc::new(Origin::new(
+            None,
+            Source::File(PathBuf::from_str(path).unwrap()),
+            literal!(""),
+        ))
     }
 
     fn expr_at(line: i32, column: i32, ori: Arc<Origin>) -> Expr {

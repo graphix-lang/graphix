@@ -328,11 +328,40 @@ impl AbstractTypeRegistry {
     }
 }
 
-/// Format a generated block-scope component. The `#` prefix marks a
-/// non-module level (identifiers cannot start with `#`); [`mod_root`]
-/// strips them.
+/// Format a generated block-scope component for a scope Rust builds at
+/// run time, named by a fresh id. The `#` prefix marks a non-module level
+/// (identifiers cannot start with `#`); [`mod_root`] strips them.
 pub fn block_component(kind: &str, id: u64) -> CompactString {
     compact_str::format_compact!("#{kind}{id}")
+}
+
+/// Format the generated component of a scope an expression opens, named
+/// by where the expression is written: `#do12.5~<tag>` for line 12,
+/// column 5 of the source whose [`expr::Origin::tag`] is `<tag>`, and
+/// `#sel12.5.2~<tag>` for the third scope one expression there opens. A
+/// lowering's expression carries the position of what it stands for. So
+/// every compile of one source names a scope alike, cold or restored from
+/// an image, and two sources, or two loads of one, never do.
+pub fn place_component(
+    kind: &str,
+    ori: &expr::Origin,
+    pos: SourcePosition,
+    ordinal: Option<usize>,
+) -> CompactString {
+    let SourcePosition { line, column } = pos;
+    let tag = ori.tag() & 0xffff_ffff_ffff;
+    match ordinal {
+        None => compact_str::format_compact!("#{kind}{line}.{column}~{tag:x}"),
+        Some(i) => compact_str::format_compact!("#{kind}{line}.{column}.{i}~{tag:x}"),
+    }
+}
+
+/// True iff `part` is a generated component of `kind`: `#<kind>` and a
+/// digit, by an id or by a place.
+fn is_block_kind(part: &str, kind: &str) -> bool {
+    part.strip_prefix('#')
+        .and_then(|p| p.strip_prefix(kind))
+        .is_some_and(|rest| rest.bytes().next().is_some_and(|b| b.is_ascii_digit()))
 }
 
 /// True iff `name` is one a lowering built (`#seqpc12`): it starts with
@@ -350,21 +379,19 @@ pub fn is_block_component(part: &str) -> bool {
 /// True iff `part` is a function body's scope component, which every
 /// instance of the function compiles again.
 pub fn is_fn_block(part: &str) -> bool {
-    part.strip_prefix("#fn").is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
+    is_block_kind(part, "fn")
 }
 
 /// True iff `part` is a `do` block's scope component: a loaded
 /// script's top level is one.
 pub fn is_do_block(part: &str) -> bool {
-    part.strip_prefix("#do").is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
+    is_block_kind(part, "do")
 }
 
 /// True iff `part` is an impl's or a trait's default methods' scope
 /// component: a `let` directly in one binds a method.
 pub fn is_method_block(part: &str) -> bool {
-    ["#impl", "#trait"].iter().any(|kind| {
-        part.strip_prefix(kind).is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
-    })
+    ["impl", "trait"].iter().any(|kind| is_block_kind(part, kind))
 }
 
 /// A lexical scope as the source names it: every generated block

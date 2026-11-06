@@ -1542,7 +1542,8 @@ impl<R: Rt> Module<R> {
         text: ArcStr,
         replaced: &mut SetAside<R>,
     ) -> Result<()> {
-        let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
+        let load = ctx.env.block_types.next_load();
+        let ori = Arc::new(Origin::new(None, Source::Unspecified, text).loaded(load));
         let exprs = add_interface_modules(parser::parse((*ori).clone())?, &self.sig);
         // saved before the scrub, so a failure puts back the imports the
         // body that keeps running registered
@@ -1756,6 +1757,8 @@ impl<R: Rt> Module<R> {
             ctx.env.seed_typedef_refs_under(&scope.lexical);
             let r = super::typecheck1_statements(ctx, nodes, catches, false);
             ctx.env.seed_typedef_refs_under(&scope.lexical);
+            let seen = &mut LPooled::take();
+            nodes.iter().for_each(|n| crate::seed_node_types(&ctx.env, n, seen));
             r
         })
     }

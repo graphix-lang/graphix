@@ -434,6 +434,54 @@ fn shares_bare_cell(s0: &[Type]) -> bool {
         })
 }
 
+/// The named types a member walk expanded: each definition's parameter
+/// lists, told apart by [`strictly_identical`], so two open cells are two.
+type Expanded = IntMap<usize, SmallVec<[Arc<[Type]>; 1]>>;
+
+/// Whether `params` of `def` is not in `seen` yet; adds it.
+fn first_expansion(seen: &mut Expanded, def: usize, params: &Arc<[Type]>) -> bool {
+    let applied = seen.entry(def).or_default();
+    let same = |ps: &Arc<[Type]>| {
+        ps.len() == params.len()
+            && ps.iter().zip(params.iter()).all(|(p0, p1)| strictly_identical(p0, p1))
+    };
+    if applied.iter().any(same) {
+        return false;
+    }
+    applied.push(params.clone());
+    true
+}
+
+/// The walk of [`Type::dispatch_members`]; with `seen`, a named type
+/// already expanded is skipped.
+fn flatten_members(
+    env: &Env,
+    t: &Type,
+    mut seen: Option<&mut Expanded>,
+    out: &mut SmallVec<[Type; 8]>,
+) -> Result<()> {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => match tv.binding() {
+            Some(b) => flatten_members(env, &b, seen, out),
+            None => Ok(out.push(t.clone())),
+        },
+        Type::Set(ts) => {
+            ts.iter().try_for_each(|t| flatten_members(env, t, seen.as_deref_mut(), out))
+        }
+        Type::Ref(tr) => {
+            if let Some(seen) = seen.as_deref_mut()
+                && let Some(r) = tr.resolve_in(env)
+                && !first_expansion(seen, r.def_key(), &tr.params)
+            {
+                return Ok(());
+            }
+            flatten_members(env, &t.lookup_ref(env)?, seen, out)
+        }
+        Type::Primitive(p) => Ok(out.extend(p.iter().map(|b| Type::Primitive(b.into())))),
+        t => Ok(out.push(t.clone())),
+    })
+}
+
 /// How deep `t` nests constructors.
 fn nesting(t: &Type) -> usize {
     ensure_sufficient(|| {
@@ -1970,22 +2018,17 @@ impl Type {
     /// its type references, a union of primitives split into its
     /// primitives and an open cell kept as one member.
     pub fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
-        fn go(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
-            ensure_sufficient(|| match t {
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => go(env, &b, out),
-                    None => Ok(out.push(t.clone())),
-                },
-                Type::Set(ts) => ts.iter().try_for_each(|t| go(env, t, out)),
-                Type::Ref(_) => go(env, &t.lookup_ref(env)?, out),
-                Type::Primitive(p) => {
-                    Ok(out.extend(p.iter().map(|b| Type::Primitive(b.into()))))
-                }
-                t => Ok(out.push(t.clone())),
-            })
-        }
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        go(env, t, &mut members)?;
+        flatten_members(env, t, None, &mut members)?;
+        Ok(members)
+    }
+
+    /// [`Self::dispatch_members`] with each named type expanded once,
+    /// however many of the names it reaches name it.
+    pub fn distinct_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
+        let mut seen: LPooled<Expanded> = LPooled::take();
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        flatten_members(env, t, Some(&mut seen), &mut members)?;
         Ok(members)
     }
 

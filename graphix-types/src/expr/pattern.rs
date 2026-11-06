@@ -546,6 +546,20 @@ impl StructurePattern {
         Ok(self.meets(env, ids, typ, None, met)?.map(|(tv, _)| tv))
     }
 
+    /// The first cell `decided` admits, read as still open though bound,
+    /// whose value this pattern, over a value of `typ`, tests or binds
+    /// inside, met as [`Self::meets_undecided`] meets an open one.
+    pub fn meets_decided(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        typ: &Type,
+        decided: &Decided,
+    ) -> Result<Option<TVar>> {
+        let met = Met::Decided(decided);
+        Ok(self.meets(env, ids, typ, None, met)?.map(|(tv, _)| tv))
+    }
+
     /// [`Self::meets_rigid`] under `written`, the written test over a value
     /// of `typ`: the first variable met where the test's part over it,
     /// returned with it, holds `_` or an open cell, so types nothing
@@ -589,7 +603,7 @@ impl StructurePattern {
     ) -> Result<Option<(TVar, Option<Type>)>> {
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(None),
-            Self::Or(alts) => {
+            Self::Or(alts) if !matches!(met, Met::Decided(_)) => {
                 for a in alts.iter() {
                     if let Some(r) = a.meets(env, ids, typ, written, met)? {
                         return Ok(Some(r));
@@ -600,12 +614,35 @@ impl StructurePattern {
             _ => {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 let mut rigid: SmallVec<[TVar; 2]> = SmallVec::new();
-                union_members_with(env, typ, &mut members, &mut |tv| {
-                    if let Some(c) = tv.open_cell().filter(|c| met.counts(c)) {
-                        rigid.push(c)
-                    }
-                })?;
+                let (stop, held) = met.decided();
+                union_members_stopping(
+                    env,
+                    typ,
+                    &mut members,
+                    &stop,
+                    &held,
+                    &mut |tv| match met {
+                        Met::Decided(_) => {
+                            if stop(tv) {
+                                rigid.push(tv.clone())
+                            }
+                        }
+                        _ => {
+                            if let Some(c) = tv.open_cell().filter(|c| met.counts(c)) {
+                                rigid.push(c)
+                            }
+                        }
+                    },
+                )?;
                 for tv in rigid {
+                    // beside a member of its shape a destructure chooses
+                    // among members, so tests what it decided
+                    if let Met::Decided(_) = met
+                        && self.destructures(env, ids, &Type::TVar(tv.clone()))?
+                        && !members.iter().any(|m| self.parts_over(env, ids, m).is_some())
+                    {
+                        continue;
+                    }
                     if members.is_empty() || self.may_hold_value_of(env, ids, &tv)? {
                         match written {
                             None => return Ok(Some((tv, None))),
@@ -616,8 +653,16 @@ impl StructurePattern {
                         }
                     }
                 }
+                if let Self::Or(alts) = self {
+                    for a in alts.iter() {
+                        if let Some(r) = a.meets(env, ids, typ, written, met)? {
+                            return Ok(Some(r));
+                        }
+                    }
+                    return Ok(None);
+                }
                 for m in members.iter() {
-                    if !self.may_hold(env, ids, m)? {
+                    if !self.may_hold_met(env, ids, m, met)? {
                         continue;
                     }
                     let Some(parts) = self.parts_over(env, ids, m) else { continue };
@@ -638,6 +683,67 @@ impl StructurePattern {
                 Ok(None)
             }
         })
+    }
+
+    /// Whether this pattern only takes a value apart: a tuple, a struct
+    /// naming every field, a slice or list with a rest, an abstract
+    /// payload, holding only names, `_` and such patterns. It chooses no
+    /// value, tag or length.
+    pub fn only_destructures(&self) -> bool {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Ignore | Self::Bind(_) => true,
+            Self::Literal(..)
+            | Self::Variant { .. }
+            | Self::Or(_)
+            | Self::Slice { .. }
+            | Self::Struct { exhaustive: false, .. } => false,
+            Self::SlicePrefix { .. }
+            | Self::SliceSuffix { .. }
+            | Self::Tuple { .. }
+            | Self::Struct { .. }
+            | Self::Abstract { .. } => {
+                let mut only = true;
+                self.for_each_sub(&mut |p| only &= p.only_destructures());
+                only
+            }
+        })
+    }
+
+    /// Whether this pattern [only destructures](Self::only_destructures)
+    /// and takes apart every value of `typ`, each of its parts of the shape
+    /// of every member there but open cells: it decides the shape of an
+    /// open part as an annotation would, and tests nothing a later arm
+    /// could be told apart by.
+    fn destructures(&self, env: &Env, ids: &AbstractOf, typ: &Type) -> Result<bool> {
+        fn fits(
+            p: &StructurePattern,
+            env: &Env,
+            ids: &AbstractOf,
+            typ: &Type,
+        ) -> Result<bool> {
+            if matches!(p, StructurePattern::Ignore | StructurePattern::Bind(_)) {
+                return Ok(true);
+            }
+            crate::stack::ensure_sufficient(|| {
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                // an open cell there, the arm's own, takes the shape it
+                // destructures
+                let open = union_members_open(env, typ, &mut members)?;
+                if members.is_empty() {
+                    return Ok(open);
+                }
+                for m in members.iter() {
+                    let Some(parts) = p.parts_over(env, ids, m) else { return Ok(false) };
+                    for (q, t) in parts {
+                        if !fits(q, env, ids, &t)? {
+                            return Ok(false);
+                        }
+                    }
+                }
+                Ok(true)
+            })
+        }
+        Ok(self.only_destructures() && fits(self, env, ids, typ)?)
     }
 
     /// The part of `written`, a written test, each of this pattern's `n`
@@ -682,12 +788,26 @@ impl StructurePattern {
     /// member of `typ` has the constructor, tag, arity or fields it tests,
     /// or the type of a literal it tests, here or below.
     pub fn may_hold(&self, env: &Env, ids: &AbstractOf, typ: &Type) -> Result<bool> {
+        self.may_hold_met(env, ids, typ, Met::Rigid)
+    }
+
+    /// [`Self::may_hold`], a cell `met` reads as decided taken as the open
+    /// cell it was.
+    fn may_hold_met(
+        &self,
+        env: &Env,
+        ids: &AbstractOf,
+        typ: &Type,
+        met: Met,
+    ) -> Result<bool> {
+        let (stop, held) = met.decided();
         crate::stack::ensure_sufficient(|| match self {
             Self::Ignore | Self::Bind(_) => Ok(true),
+            Self::Literal(..) if matches!(typ, Type::TVar(tv) if stop(tv)) => Ok(true),
             Self::Literal(v, _) => Type::of_literal(v)?.could_match(env, typ),
             Self::Or(alts) => {
                 for a in alts.iter() {
-                    if a.may_hold(env, ids, typ)? {
+                    if a.may_hold_met(env, ids, typ, met)? {
                         return Ok(true);
                     }
                 }
@@ -695,7 +815,16 @@ impl StructurePattern {
             }
             _ => {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-                if union_members_open(env, typ, &mut members)? {
+                let mut open = false;
+                union_members_stopping(
+                    env,
+                    typ,
+                    &mut members,
+                    &stop,
+                    &held,
+                    &mut |_| open = true,
+                )?;
+                if open {
                     return Ok(true);
                 }
                 'members: for m in members.iter() {
@@ -704,7 +833,7 @@ impl StructurePattern {
                     }
                     let Some(parts) = self.parts_over(env, ids, m) else { continue };
                     for (p, t) in parts {
-                        if !p.may_hold(env, ids, &t)? {
+                        if !p.may_hold_met(env, ids, &t, met)? {
                             continue 'members;
                         }
                     }
@@ -801,15 +930,41 @@ impl StructurePattern {
 enum Met<'a> {
     Rigid,
     Undecided(&'a dyn Fn(&TVar) -> bool),
+    /// Bound cells, each met as the open cell it was.
+    Decided(&'a Decided<'a>),
 }
 
-impl Met<'_> {
+impl<'a> Met<'a> {
+    /// The cells read as the open cells they were, and the bindings read
+    /// as they were.
+    fn decided(
+        self,
+    ) -> (impl Fn(&TVar) -> bool + 'a, impl Fn(&TVar) -> Option<Type> + 'a) {
+        let d = match self {
+            Self::Decided(d) => Some(d),
+            Self::Rigid | Self::Undecided(_) => None,
+        };
+        (
+            move |tv: &TVar| d.is_some_and(|d| (d.cell)(tv)),
+            move |tv: &TVar| d.and_then(|d| (d.held)(tv)),
+        )
+    }
+
     fn counts(self, c: &TVar) -> bool {
         match self {
             Self::Rigid => c.is_rigid(),
             Self::Undecided(f) => !c.is_rigid() && f(c),
+            Self::Decided(_) => false,
         }
     }
+}
+
+/// The cells a select's arms decided, read as they stood before.
+pub struct Decided<'a> {
+    /// A cell that was open.
+    pub cell: &'a dyn Fn(&TVar) -> bool,
+    /// The binding a cell held before a decision beneath rewrote it.
+    pub held: &'a dyn Fn(&TVar) -> Option<Type>,
 }
 
 fn slice_type(list: bool, elem: Type) -> Type {
@@ -846,13 +1001,37 @@ pub fn union_members_with(
     out: &mut SmallVec<[Type; 8]>,
     open: &mut dyn FnMut(&TVar),
 ) -> Result<()> {
+    union_members_stopping(env, t, out, &|_| false, &|_| None, open)
+}
+
+/// [`union_members_with`], where a tvar `stop` takes is handed to `open`
+/// as it stands, bound or not, and one `held` reads is that binding.
+fn union_members_stopping(
+    env: &Env,
+    t: &Type,
+    out: &mut SmallVec<[Type; 8]>,
+    stop: &dyn Fn(&TVar) -> bool,
+    held: &dyn Fn(&TVar) -> Option<Type>,
+    open: &mut dyn FnMut(&TVar),
+) -> Result<()> {
     fn go(
         env: &Env,
         t: &Type,
         out: &mut SmallVec<[Type; 8]>,
         unfolded: &mut Unfolded,
+        stop: &dyn Fn(&TVar) -> bool,
+        held: &dyn Fn(&TVar) -> Option<Type>,
         open: &mut dyn FnMut(&TVar),
     ) -> Result<()> {
+        if let Type::TVar(tv) = t {
+            if stop(tv) {
+                open(tv);
+                return Ok(());
+            }
+            if let Some(b) = held(tv) {
+                return go(env, &b, out, unfolded, stop, held, open);
+            }
+        }
         crate::stack::ensure_sufficient(|| match t.deref_cloned() {
             None => {
                 if let Type::TVar(tv) = t {
@@ -861,13 +1040,15 @@ pub fn union_members_with(
                 Ok(())
             }
             Some(t) => match &t {
-                Type::Set(ts) => {
-                    ts.iter().try_for_each(|t| go(env, t, out, unfolded, open))
-                }
+                Type::Set(ts) => ts
+                    .iter()
+                    .try_for_each(|t| go(env, t, out, unfolded, stop, held, open)),
                 Type::Ref(tr) => {
                     tr.resolve_in(env);
                     match unfolded.first(&t) {
-                        true => go(env, &t.lookup_ref(env)?, out, unfolded, open),
+                        true => {
+                            go(env, &t.lookup_ref(env)?, out, unfolded, stop, held, open)
+                        }
                         false => Ok(()),
                     }
                 }
@@ -878,7 +1059,7 @@ pub fn union_members_with(
             },
         })
     }
-    go(env, t, out, &mut Unfolded::default(), open)
+    go(env, t, out, &mut Unfolded::default(), stop, held, open)
 }
 
 /// A struct pattern's fields in the order they print (as written when

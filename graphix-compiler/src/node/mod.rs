@@ -107,6 +107,44 @@ pub(crate) fn read_var<'a, R: Rt>(
     }
 }
 
+/// [`read_var`] by a reader at the root `root`, inside the walk's
+/// boundary: a fire made last cycle after the walk passed it is delivered
+/// to it now ([`crate::Event::late`]).
+#[inline]
+pub(crate) fn read_var_by<'a, R: Rt>(
+    ctx: &'a ExecCtx<'_, R>,
+    id: &BindId,
+    root: ExprId,
+) -> Option<VarRead<'a>> {
+    if ctx.event.late.is_some()
+        && let Some(tv) = late_fire(ctx, id, root)
+    {
+        return Some(VarRead::Delivered(tv));
+    }
+    read_var(ctx, id)
+}
+
+/// The fire of `id` made last cycle after the walk passed a reader at the
+/// root `root`, inside the walk's boundary, delivered to it now
+/// ([`crate::Event::late`]).
+fn late_fire<'a, R: Rt>(
+    ctx: &'a ExecCtx<'_, R>,
+    id: &BindId,
+    root: ExprId,
+) -> Option<&'a TagValue> {
+    let late = ctx.event.late.as_ref()?;
+    let (tv, readers) = late.get(id)?;
+    if ctx.event.variables.contains_key(id)
+        || !readers.iter().any(|r| r.root == root && r.boundary == ctx.boundary)
+    {
+        return None;
+    }
+    if let crate::branch::RtView::Fork(f) = &ctx.rt {
+        f.note_read(*id);
+    }
+    Some(tv)
+}
+
 /// A standing entry as a reader sees it: fresh at a birth only. A wake
 /// or a step reads it stale: its value is a past event the graph
 /// already consumed.
@@ -573,9 +611,8 @@ pub struct TypeDef {
     /// at the check, once the typedefs it names are declared.
     unchanged_from: Option<Arc<env::AbstractRep>>,
     /// The definition, kept while the node lives: a block compiled in an
-    /// environment it does not outlive (a labeled default's, at each call
-    /// that omits it) still names it.
-    _definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
+    /// environment it does not outlive still names it.
+    definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
 }
 
 impl TypeDef {
@@ -584,9 +621,9 @@ impl TypeDef {
         scope: ModPath,
         name: ArcStr,
         unchanged_from: Option<Arc<env::AbstractRep>>,
-        _definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
+        definition: Option<std::sync::Arc<crate::typ::ResolvedRef>>,
     ) -> Node<R> {
-        Node::new(Self { spec, scope, name, unchanged_from, _definition })
+        Node::new(Self { spec, scope, name, unchanged_from, definition })
     }
 
     /// A registration this definition made owns what its representation
@@ -647,7 +684,11 @@ impl TypeDef {
         let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
-        Ok(Self::with(spec, scope, name, None, None))
+        let definition = match bool::decode(buf)? {
+            false => None,
+            true => Some(crate::image::resolved_decode(buf)?),
+        };
+        Ok(Self::with(spec, scope, name, None, definition))
     }
 }
 
@@ -676,7 +717,12 @@ impl<R: Rt> Update<R> for TypeDef {
         put_tag(NodeTag::TypeDef, buf);
         self.spec.encode(buf)?;
         self.scope.encode(buf)?;
-        self.name.encode(buf)
+        self.name.encode(buf)?;
+        self.definition.is_some().encode(buf)?;
+        match &self.definition {
+            None => Ok(()),
+            Some(def) => crate::image::resolved_encode(def, buf),
+        }
     }
 
     fn update(&mut self, _ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -1083,6 +1129,13 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     if declares_types {
         ctx.block_typedefs.push((scope.lexical.clone(), typedefs));
     }
+    ctx.env.open_block(
+        &scope.lexical,
+        exprs.iter().filter_map(|e| match &e.kind {
+            ExprKind::TypeDef(td) => Some(td.name.name.as_str()),
+            _ => None,
+        }),
+    );
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
@@ -2896,7 +2949,12 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
         // a reference that arrived naming no place (a place whose address
         // is bottom) has nowhere to write
         let mut addressless = false;
-        if let Some(tv) = ctx.event.variables.get(&self.src_id) {
+        if let Some(tv) = ctx
+            .event
+            .variables
+            .get(&self.src_id)
+            .or_else(|| late_fire(ctx, &self.src_id, self.top_id))
+        {
             self.cell = Self::cell(tv);
             addressless = self.cell.is_none();
         } else if self.cell.is_none() || woke {
@@ -3025,6 +3083,7 @@ impl<R: Rt> TypeCast<R> {
     ) -> Result<Node<R>> {
         let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let target = typ.scope_refs(&scope.lexical);
+        crate::warn_later_block_names(ctx, flags, &target)?;
         target.refuse_quantified_fns(&ctx.env).at(&spec)?;
         target.check_cast(&ctx.env).at(&spec)?;
         let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
@@ -3158,7 +3217,9 @@ impl<R: Rt> Never<R> {
             .collect::<Result<Box<[_]>>>()?;
         let typ = match typ {
             Some(t) => {
-                let t = t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?;
+                let t = t.scope_refs(&scope.lexical);
+                crate::warn_later_block_names(ctx, flags, &t)?;
+                let t = t.rewrite_trait_args(&ctx.env)?;
                 lambda::body_annotation(ctx, &t);
                 t
             }
@@ -3997,11 +4058,7 @@ mod test {
     use triomphe::Arc;
 
     fn parse(text: &str) -> Arc<[Expr]> {
-        let ori = Origin {
-            parent: None,
-            source: Source::Unspecified,
-            text: ArcStr::from(text),
-        };
+        let ori = Origin::new(None, Source::Unspecified, ArcStr::from(text));
         parser::parse(ori).expect("parses")
     }
 

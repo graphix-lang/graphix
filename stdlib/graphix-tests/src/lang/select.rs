@@ -2666,7 +2666,7 @@ run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, prints(r#"[[i64:0
 // `~` banks one trigger however many find `v` absent, and pays it with
 // `v`'s first value: `v` lands alone at step 5, paying the three banked
 // triggers with one write, and the live trigger at step 6 writes again;
-// `~!` drops the banked ones and writes only at step 6 (x-engine-firing-05).
+// `~!` drops the banked ones and writes only at step 6.
 const STRICT_SAMPLE_NO_BANK: &str = r#"
 {
   let step = 0;
@@ -3124,8 +3124,8 @@ run!(
     wake_constant_keeps_target,
     WAKE_CONSTANT_KEEPS_TARGET,
     prints(
-        "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], [i64:-1, i64:-1], \
-            [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
+        "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], \
+            [i64:-1, i64:-1], [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
     )
 );
 
@@ -3158,6 +3158,211 @@ async fn wake_keeps_target_of_unpublished_let(mode: Mode) -> Result<()> {
 }
 
 modes!(wake_keeps_target_of_unpublished_let);
+
+// At a wake a `let`'s initializer catch-up replaces a write that landed on
+// it during the sleep, whatever the order of the two in the sleep; with no
+// initializer input fired during the sleep the write stands, and a write
+// landing after the wake's cycle stands as any write does. `inp` fires at
+// INPUT, the write through `h` lands at WRITE + 1, the arm sleeps for
+// c = 3..5 and wakes at 6.
+const WAKE_ORDER: &str = r#"
+{
+  let c = 0;
+  c <- select c { k if k < 9 => k + 1, _ => never() };
+  let sel = select c { 3 => false, 4 => false, 5 => false, _ => true };
+  let inp = 0;
+  inp <- select c { INPUT => c ~ 100, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let inner = select sel {
+    true => { let x = inp; holder <- &mut x; x },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select c { WRITE => c ~ 555, _ => never() };
+  let hv = *h;
+  let seen = [];
+  seen <- c ~ array::push(seen, [c, inner, hv]);
+  select c { 9 => c ~ seen, _ => never() }
+}
+"#;
+
+fn wake_order(input: &str, write: &str) -> String {
+    WAKE_ORDER.replace("INPUT", input).replace("WRITE", write)
+}
+
+run!(
+    wake_catchup_replaces_a_later_write,
+    wake_order("3", "4"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:555], \
+            [i64:6, i64:100, i64:100], [i64:7, i64:100, i64:100], \
+            [i64:8, i64:100, i64:100]]"
+    )
+);
+
+run!(
+    wake_catchup_replaces_a_write_landing_at_the_wake,
+    wake_order("3", "5"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:0], \
+            [i64:6, i64:100, i64:100], [i64:7, i64:100, i64:100], \
+            [i64:8, i64:100, i64:100]]"
+    )
+);
+
+run!(
+    wake_write_after_the_wake_stands,
+    wake_order("3", "6"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:0], \
+            [i64:6, i64:100, i64:100], [i64:7, i64:555, i64:555], \
+            [i64:8, i64:555, i64:555]]"
+    )
+);
+
+run!(
+    wake_write_stands_with_no_input_fired_asleep,
+    wake_order("7", "4"),
+    prints(
+        "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
+            [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:555], \
+            [i64:6, i64:555, i64:555], [i64:7, i64:555, i64:555], \
+            [i64:8, i64:100, i64:100]]"
+    )
+);
+
+// The initializer reads its input through a `let` of the arm: its catch-up
+// replaces the write as a direct read does.
+const WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let input = 0;
+  input <- select step { 3 => 100, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let result = select step < 3 || step > 5 {
+    true => {
+      let alias = input + 0;
+      let target = alias;
+      holder <- &mut target;
+      target
+    },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select step { 4 => 555, _ => never() };
+  select step { 8 => result, _ => never() }
+}
+"#;
+
+run!(
+    wake_catchup_through_an_alias_replaces_a_write,
+    WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE,
+    prints("i64:100")
+);
+
+// The sample's trigger fired during the sleep: its catch-up replaces the
+// write with the argument as it stands at the wake.
+const WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
+  let trigger = 0;
+  trigger <- select step { 3 => 1, _ => never() };
+  let argument = 100;
+  argument <- select step { 5 => 200, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let result = select step < 3 || step > 7 {
+    true => {
+      let target = trigger ~ argument;
+      holder <- &mut target;
+      target
+    },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select step { 4 => 555, _ => never() };
+  select step { 10 => result, _ => never() }
+}
+"#;
+
+run!(
+    wake_sample_catchup_replaces_a_write,
+    WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE,
+    prints("i64:200")
+);
+
+// Only the sample's argument fired during the sleep, not its trigger: the
+// initializer does not fire at the wake, and the write stands.
+const WAKE_SAMPLE_ARGUMENT_ALONE_LEAVES_A_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
+  let trigger = 0;
+  trigger <- select step { 1 => 1, _ => never() };
+  let argument = 100;
+  argument <- select step { 5 => 200, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let result = select step < 3 || step > 7 {
+    true => {
+      let target = trigger ~ argument;
+      holder <- &mut target;
+      target
+    },
+    false => -1
+  };
+  let h = holder$;
+  *h <- select step { 4 => 555, _ => never() };
+  select step { 10 => result, _ => never() }
+}
+"#;
+
+run!(
+    wake_sample_argument_alone_leaves_a_write,
+    WAKE_SAMPLE_ARGUMENT_ALONE_LEAVES_A_WRITE,
+    prints("i64:555")
+);
+
+// Two writes queued in the arm's last awake cycle land during its sleep,
+// after the initializer's input fired: at the wake the catch-up replaces
+// them (an arm that never slept ends on the later write, 2).
+const WAKE_CATCHUP_REPLACES_QUEUED_WRITES: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 16 => s + 1, _ => never() };
+  let x = 100;
+  x <- select step { s if s == 10 => 200, _ => never() };
+  let on = uniq(step < 11 || step > 13);
+  let no = 0 - 1;
+  let out = select on {
+    true => {
+      let z = x;
+      z <- select step { 10 => 1, _ => never() };
+      z <- select step { 10 => 2, _ => never() };
+      [step, z]
+    },
+    false => [no, no]
+  };
+  let seen = [];
+  seen <- out ~ array::push(seen, out);
+  select step { 16 => step ~ seen, _ => never() }
+}
+"#;
+
+run!(
+    wake_catchup_replaces_queued_writes,
+    WAKE_CATCHUP_REPLACES_QUEUED_WRITES,
+    prints(
+        "[[i64:0, i64:100], [i64:1, i64:100], [i64:2, i64:100], \
+            [i64:3, i64:100], [i64:4, i64:100], [i64:5, i64:100], [i64:6, i64:100], \
+            [i64:7, i64:100], [i64:8, i64:100], [i64:9, i64:100], \
+            [i64:10, i64:100], [i64:-1, i64:-1], [i64:14, i64:200], \
+            [i64:15, i64:200]]"
+    )
+);
 
 // A restart builtin over a constant passes nothing at a wake, where the
 // constant stands, so a `<-` target it initialises keeps its value after
@@ -4179,7 +4384,8 @@ run!(
     wake_recomputes_a_targets_siblings,
     WAKE_RECOMPUTES_A_TARGETS_SIBLINGS,
     prints(
-        "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], [i64:2, i64:105]]"
+        "[[i64:0, i64:100], [i64:-1, i64:5], [i64:1, i64:105], [i64:-1, i64:5], \
+            [i64:2, i64:105]]"
     )
 );
 
@@ -4475,8 +4681,8 @@ run!(partial_struct_empty_beside_a_decided_cell_named_fields, r#"{
     "[r] [s]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == r#"[1] ["s"]"#); FuseExpect::Jit);
 
-// A written test takes no member whose cells are not decided: both still
-// reach the partial pattern.
+// A partial pattern after a written test of a member whose cells are not
+// decided reaches both members, told apart by those cells alone.
 run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     let x = never();
     let y = never();
@@ -4488,13 +4694,25 @@ run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     x <- 1;
     y <- "w";
     "[r] [s]"
-}"#, refused("told apart by types not decided at this select"); FuseExpect::None);
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: Array<string>, c: 'y }"); FuseExpect::None);
 
-// A written test over a member decides its cells, so the other member
-// alone reaches the partial pattern.
-run!(partial_struct_after_a_type_test_taking_the_first_member, r#"{
+// A written test that would decide a member's undecided cells tests them;
+// over the cells annotated, the other member alone reaches the partial
+// pattern.
+run!(partial_struct_after_a_type_test_deciding_the_first_member_refused, r#"{
     let b = true;
     let x = never();
+    let y = never();
+    let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let r = select v { {a: Array<i64>, c: i64} as s => "first [s.c]", {a, ..} => "[a]" };
+    x <- 1;
+    y <- "w";
+    r
+}"#, refused("{ a: Array<i64>, c: i64 } as s tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(partial_struct_after_a_type_test_taking_the_first_member, r#"{
+    let b = true;
+    let x: i64 = never();
     let y = never();
     let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
     let r = select v { {a: Array<i64>, c: i64} as s => "first [s.c]", {a, ..} => "[a]" };
@@ -6429,9 +6647,10 @@ run!(
     prints("[i64:5, i64:1, i64:5, i64:1, i64:5, i64:1, i64:5, i64:1]")
 );
 
-// A default typed with a type name is checked again at the bind, where the
-// names it writes resolve: a recursive type its block declares, and a
-// block's type over an outer one of the same name.
+// A default typed with a type name takes its types at a bind from its
+// definition's check, where the names it writes mean what they meant there:
+// a recursive type its block declares, and a block's type over an outer one
+// of the same name.
 run!(
     default_at_a_bind_declares_a_recursive_type,
     r#"{
@@ -6669,6 +6888,15 @@ run!(
     settle_shapes_an_open_part_and_runs,
     r#"{
         let f = |v| select (v, 0) { ([x, ..], _) => x + 1, (_, _) => 0 };
+        [f([3, 4]), f([])]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])
+);
+
+run!(
+    an_annotated_field_a_slice_arm_tests_runs,
+    r#"{
+        let f = |v: Array<i64>| select {a: v, b: 0} { {a: [x, ..], b: _} => x + 1, {a: _, b: _} => 0 };
         [f([3, 4]), f([])]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0])
@@ -7260,11 +7488,12 @@ run!(
     FuseExpect::None
 );
 
-// An abstract pattern holds the type its compile resolved, not one a
-// later statement of its block declares under the name.
+// A name a later statement of the block declares is that type throughout
+// the block, so an abstract pattern over the outer type of the name is
+// refused above the declaration.
 run!(
     abstract_pattern_renamed_by_a_later_typedef_refused,
-    refused("W(`A(z)) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `W<[`A(i64), `B(i64)]> as W(`A(z))`"),
+    refused("W names the type a later statement of this block declares"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
@@ -7280,12 +7509,28 @@ run!(
 
 run!(
     abstract_pattern_renamed_by_a_later_typedef_written,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    refused("W names the type a later statement of this block declares"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
             let r = select x { W<[`A(i64), `B(i64)]> as W(`A(z)) => z + 1, _ => 0 };
             type W = i64;
+            r
+        };
+        let o: [`A(i64), `B(i64)] = `A(3);
+        let result = g(W(o))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    abstract_pattern_beside_a_later_typedef_of_another_name,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        type W<'a> = Abstract<'a>;
+        let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
+            let r = select x { W<[`A(i64), `B(i64)]> as W(`A(z)) => z + 1, _ => 0 };
+            type V = i64;
             r
         };
         let o: [`A(i64), `B(i64)] = `A(3);
@@ -7434,4 +7679,219 @@ run!(
         let result = g(W(o))
     "#;
     FuseExpect::Jit
+);
+
+// What reaches the next arm unfolds a pair of definitions once on a path,
+// then subtracts nothing there: names that recur through Error payloads,
+// and a definition whose parameters grow, end.
+run!(
+    coverage_over_names_recurring_through_errors_ends,
+    r#"{
+        type At = [Error<Bt>, Error<Ct>, `R];
+        type Bt = [Error<At>, `P];
+        type Ct = [Array<Ct>, Error<Bt>];
+        type H = [Error<Error<K>>, `Q];
+        type K = [Error<H>, Error<K>, `P];
+        let v: At = `R;
+        select v { K as k => 0, _ => 1 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
+run!(
+    coverage_over_generated_error_cycles_ends,
+    r#"{
+        type At = [Error<[Array<Bt>, `Q]>, List<Bt>];
+        type Bt = [Error<[Array<At>, i64]>, Error<[string, Ct]>, `Q];
+        type Ct = [Array<Dt>, Error<Bt>, Error<Et>];
+        type Dt = [Error<[Array<At>, Error<Et>]>, Et, List<Et>];
+        type Et = [Error<Ct>, Error<Dt>];
+        let v: Bt = `Q;
+        select v { Ct as x0 => 0, Et as x1 => 1, Bt as x2 => 2 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);
+
+run!(
+    coverage_over_growing_parameters_ends,
+    r#"{
+        type G<'a> = [i64, Error<G<Array<'a>>>];
+        type P = [i64, Error<P>];
+        let v: G<i64> = 1;
+        select v { P as x => 0, _ => 1 }
+    }"#,
+    refused("which hold P, whose parameters grow as it recurses");
+    FuseExpect::None
+);
+
+// Over Error cycles sharing the minuend's tag, the arm the first arm
+// covers is still found dead.
+run!(
+    dead_arm_over_shared_tag_cycles_refused,
+    r#"{
+        type C2_0 = [Error<C2_1>, `Mm];
+        type C2_1 = [Error<C2_0>, `K2_1];
+        type C3_0 = [Error<C3_1>, `Mm];
+        type C3_1 = [Error<C3_2>, `K3_1];
+        type C3_2 = [Error<C3_0>, `K3_2];
+        type C5_0 = [Error<C5_1>, `Mm];
+        type C5_1 = [Error<C5_2>, `K5_1];
+        type C5_2 = [Error<C5_3>, `K5_2];
+        type C5_3 = [Error<C5_4>, `K5_3];
+        type C5_4 = [Error<C5_0>, `K5_4];
+        type S = [C2_0, C3_0, C5_0];
+        type M0 = [Error<M0>, `Mm];
+        let v: M0 = `Mm;
+        select v { S as x => 0, Error<Error<`Mm>> as z => 2, _ => 1 }
+    }"#,
+    refused("pattern Error<Error<`Mm>> will never match");
+    FuseExpect::None
+);
+
+// A pattern written as a type is finite: a tag it cannot hold, however deep
+// in a recursive scrutinee, is found dead.
+run!(
+    misspelled_tag_deep_in_a_list_pattern_refused,
+    r#"{
+        type L = [`Cons(i64, L), `Nil];
+        let x: L = `Cons(1, `Cons(2, `Nil));
+        select x {
+            `Nil => 0,
+            `Cons(a, `Nil) => a,
+            `Cons(a, `Cons(b, `Nul)) => a + b,
+            `Cons(a, _) => a
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    misspelled_tag_deep_in_a_tree_pattern_refused,
+    r#"{
+        type Tree = [`Leaf(i64), `Node(Tree, Tree)];
+        let x: Tree = `Node(`Leaf(1), `Leaf(2));
+        select x {
+            `Leaf(n) => n,
+            `Node(`Leaf(a), `Node(`Lef(b), _)) => a + b,
+            `Node(_, _) => 0
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    impossible_error_nesting_in_a_type_test_refused,
+    r#"{
+        type T = [Error<T>, `A];
+        let x: T = `A;
+        select x { Error<Error<`B>> as e => 3, _ => 1 }
+    }"#,
+    refused("pattern Error<Error<`B>> will never match");
+    FuseExpect::None
+);
+
+run!(
+    nested_error_tests_cover_a_recursive_scrutinee,
+    r#"{
+        type T = [Error<T>, `A];
+        let x: T = error(error(`A));
+        select x {
+            Error<Error<`A>> as e => 3,
+            `A => 1,
+            Error<`A> as e => 2,
+            Error<Error<Error<T>>> as e => 4
+        }
+    }"#,
+    is(Value::I64(3));
+    FuseExpect::Jit
+);
+
+// A pattern that is no named type is walked against a recursive scrutinee
+// as deep as it goes, a name it holds included, whether an alias or the
+// scrutinee's own recursive name.
+run!(
+    alias_deep_in_a_list_pattern_refused,
+    r#"{
+        type Item = {v: i64};
+        type L = [`Cons(Item, L), `Nil];
+        let x: L = `Cons({v: 1}, `Cons({v: 2}, `Nil));
+        select x { `Cons(Item, `Cons(Item, `Cons(Item, `Nul))) as c => 2, _ => 3 }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    alias_in_nested_error_tests_covers,
+    r#"{
+        type UA = `A;
+        type T = [Error<T>, `A];
+        let x: T = `A;
+        select x {
+            Error<Error<Error<UA>>> as e => 3,
+            `A => 1,
+            Error<`A> as e => 2,
+            Error<Error<`A>> as e => 5,
+            Error<Error<Error<Error<T>>>> as e => 4
+        }
+    }"#,
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    recursive_name_deep_in_a_list_type_test_refused,
+    r#"{
+        type L = [`Cons(i64, L), `Nil];
+        let x: L = `Cons(5, `Cons(6, `Cons(7, `Nil)));
+        select x {
+            `Nil => 0,
+            `Cons(i64, `Cons(i64, `Cons(string, L))) as v => 1,
+            `Cons(a, _) => a
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    alias_deep_in_a_list_type_test_refused,
+    r#"{
+        type N = `Nul;
+        type L = [`Cons(i64, L), `Nil];
+        let x: L = `Cons(5, `Cons(6, `Cons(7, `Nil)));
+        select x {
+            `Nil => 0,
+            `Cons(i64, `Cons(i64, `Cons(i64, N))) as v => 1,
+            `Cons(a, _) => a
+        }
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+// A large named scrutinee leaves an exact residual after an arm: the arm
+// after it testing what it took is dead.
+run!(
+    an_arm_after_one_over_a_large_named_type_is_dead,
+    r#"{
+        type W<'a> = [i64, string, ('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)];
+        let x: [W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>, null] = 3;
+        select x { i64 as a => a, i64 as b => b, _ => 2 }
+    }"#,
+    refused("pattern i64 will never match");
+    FuseExpect::None
+);
+
+run!(
+    an_arm_after_one_over_a_large_named_error_payload_is_dead,
+    r#"{
+        type W<'a> = [`P(('a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a, 'a)), `Q];
+        let x: [Error<W<[`K0, `K1, `K2, `K3, `K4, `K5, `K6, `K7, `K8, `K9, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39]>>, null] = null;
+        select x { Error<`Q> as e => 1, Error<`Q> as f => 2, _ => 3 }
+    }"#,
+    refused("pattern Error<`Q> will never match");
+    FuseExpect::None
 );

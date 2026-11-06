@@ -9,7 +9,8 @@ use super::{
 use crate::{
     BindId,
     env::{
-        AbstractRep, Bind, Env, ImplDef, ImportEntry, Lexical, Map, TraitDef, TypeDef,
+        AbstractRep, Bind, BlockType, BlockTypes, Env, ImplDef, ImportEntry, Lexical,
+        Map, TraitDef, TypeDef,
     },
     expr::ModPath,
     shared_map::{self, RelocatedMap, RelocatedSet, SharedMap, SharedSet},
@@ -86,6 +87,51 @@ impl Pack for TypeDef {
             doc: Pack::decode(buf)?,
             seeded: Arc::new(AtomicBool::new(bool::decode(buf)?)),
         })
+    }
+}
+
+/// The live entries: a dead one names nothing a restored session holds.
+impl Pack for BlockTypes {
+    fn encoded_len(&self) -> usize {
+        let live = self.live_under("/");
+        varint_len(live.len() as u64)
+            + live
+                .iter()
+                .map(|(name, bt)| {
+                    let def = bt.def.upgrade().expect("live");
+                    name.encoded_len()
+                        + bt.scope.encoded_len()
+                        + image::resolved_len(&def)
+                        + bt.seeded.load(Ordering::Relaxed).encoded_len()
+                })
+                .sum::<usize>()
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        let live = self.live_under("/");
+        encode_varint(live.len() as u64, buf);
+        for (name, bt) in live.iter() {
+            let def = bt.def.upgrade().expect("live");
+            name.encode(buf)?;
+            bt.scope.encode(buf)?;
+            image::resolved_encode(&def, buf)?;
+            bt.seeded.load(Ordering::Relaxed).encode(buf)?;
+        }
+        Ok(())
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let n = image::count_decode(buf)?;
+        let entries = (0..n)
+            .map(|_| {
+                let name = CompactString::decode(buf)?;
+                let scope = ModPath::decode(buf)?;
+                let def = std::sync::Arc::downgrade(&image::resolved_decode(buf)?);
+                let seeded = Arc::new(AtomicBool::new(bool::decode(buf)?));
+                Ok((name, BlockType { scope, def, seeded }))
+            })
+            .collect::<Result<Vec<_>, PackError>>()?;
+        Ok(BlockTypes::from_entries(entries))
     }
 }
 
@@ -291,20 +337,22 @@ where
 /// A definition's or a module's snapshot: only the lexical fields are
 /// ever read from it (`Env::swap_lexical`), so only they travel.
 pub(crate) fn lexical_len(lex: &Lexical) -> usize {
-    let Lexical { binds, modules, typedefs, traits } = lex;
+    let Lexical { binds, modules, typedefs, traits, block_names } = lex;
     shared_map::map_len(binds)
         + SharedSet(modules.clone()).encoded_len()
         + shared_map::map_len(typedefs)
         + shared_map::map_len(traits)
+        + shared_map::map_len(block_names)
 }
 
 #[doc(hidden)]
 pub fn lexical_encode(lex: &Lexical, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let Lexical { binds, modules, typedefs, traits } = lex;
+    let Lexical { binds, modules, typedefs, traits, block_names } = lex;
     nested_encode(binds, buf)?;
     SharedSet(modules.clone()).encode(buf)?;
     nested_encode(typedefs, buf)?;
-    nested_encode(traits, buf)
+    nested_encode(traits, buf)?;
+    nested_encode(block_names, buf)
 }
 
 #[doc(hidden)]
@@ -318,6 +366,7 @@ pub fn lexical_decode(buf: &mut impl Buf) -> Result<Lexical, PackError> {
             }
         })?,
         traits: nested_decode(buf, &|_, _| ())?,
+        block_names: nested_decode(buf, &|_, _| ())?,
     })
 }
 
@@ -337,6 +386,7 @@ impl Pack for Env {
             impls,
             poly_binds,
             package_roots,
+            block_types,
             ide: _,
             hidden_impls: _,
             recorded: _,
@@ -351,6 +401,7 @@ impl Pack for Env {
             + SharedMap((**impls).clone()).encoded_len()
             + RelocatedSet(poly_binds.to_set()).encoded_len()
             + SharedSet(package_roots.to_set()).encoded_len()
+            + block_types.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -365,6 +416,7 @@ impl Pack for Env {
             impls,
             poly_binds,
             package_roots,
+            block_types,
             ide: _,
             hidden_impls: _,
             recorded: _,
@@ -378,7 +430,8 @@ impl Pack for Env {
         RelocatedMap((**trait_methods).clone()).encode(buf)?;
         SharedMap((**impls).clone()).encode(buf)?;
         RelocatedSet(poly_binds.to_set()).encode(buf)?;
-        SharedSet(package_roots.to_set()).encode(buf)
+        SharedSet(package_roots.to_set()).encode(buf)?;
+        block_types.encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -393,6 +446,7 @@ impl Pack for Env {
             impls: SharedMap::decode(buf)?.0.into(),
             poly_binds: RelocatedSet::decode(buf)?.0.into(),
             package_roots: SharedSet::decode(buf)?.0.into(),
+            block_types: BlockTypes::decode(buf)?,
             lexical,
             ..Env::default()
         })

@@ -356,7 +356,7 @@ impl<R: Rt> Trait<R> {
                 spec.ori.clone(),
             )
             .at(&spec)?;
-        let dscope = scope.append_block("trait", spec.id.inner());
+        let dscope = scope.append_place("trait", &spec, None);
         ctx.env.import_glob(&dscope.lexical, Glob::Module(def.path.clone()));
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         for (m, d) in t.methods.iter().zip(def.methods.iter()) {
@@ -776,7 +776,7 @@ impl<R: Rt> Impl<R> {
         }
         let (target, params) =
             impl_head(&ctx.env, &scope.lexical, &trait_def, &im.head, false).at(&spec)?;
-        let bscope = scope.append_block("impl", spec.id.inner());
+        let bscope = scope.append_place("impl", &spec, None);
         ctx.env.import_glob(&bscope.lexical, Glob::Module(trait_def.path.clone()));
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         let mut provided: LPooled<AHashSet<ArcStr>> = LPooled::take();

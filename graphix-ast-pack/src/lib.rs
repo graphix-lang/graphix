@@ -81,11 +81,11 @@ pub fn emit() -> Result<()> {
             fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?,
         );
         let key = vfs_path(&package, rel);
-        let ori = Origin {
-            parent: None,
-            source: Source::Vfs(ArcStr::from(rel.to_string_lossy().as_ref())),
-            text: source.clone(),
-        };
+        let ori = Origin::new(
+            None,
+            Source::Vfs(ArcStr::from(rel.to_string_lossy().as_ref())),
+            source.clone(),
+        );
         let packed = if is_gx {
             let exprs =
                 parser::parse(ori).with_context(|| format!("parsing {path:?}"))?;
