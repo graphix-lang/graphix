@@ -344,10 +344,10 @@ run!(
         let result = inner::f(1, |n: i64| n, 1, "s")
     "#,
     "/test/inner.gxi" => r#"
-        val f: fn(x: ['a, 'b], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64
+        val f: fn(x: ['a, string], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64
     "#,
     "/test/inner.gx" => r#"
-        let f = |x: ['c, 'd], g: fn(n: i64) -> i64, y: 'd, z: 'c| -> i64 0
+        let f = |x: ['d, string], g: fn(n: i64) -> i64, y: 'd, z: 'c| -> i64 0
     "#
 ; FuseExpect::Jit);
 
@@ -1286,24 +1286,42 @@ run!(
     "/test/m.gx" => "let parse = 'b: Any |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
 ; FuseExpect::None);
 
-// A union of variables pairs with the implementation's however either side
-// orders it, as the rest of the signature decides.
+// A union of members holding variables pairs with the implementation's
+// however either side orders it, as the rest of the signature decides.
 run!(
     open_union_pairs_by_the_rest_of_the_signature,
     is(Value::I64(2)),
-    "/test.gx" => "mod m; let result = m::f(1, 2)",
-    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a) -> 'a;",
-    "/test/m.gx" => "let f = |x: ['b, 'a], y: 'a| -> 'a y"
+    "/test.gx" => "mod m; let result = m::f([1], 2)",
+    "/test/m.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], y: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [Array<'b>, Array<'a>], y: 'a| -> 'a y"
 ; FuseExpect::Jit);
 
 // No pairing of the union fits the rest of the signature: refused.
 run!(
     open_union_without_a_pairing_is_refused,
     refused("type variable usage mismatch"),
-    "/test.gx" => "mod m; let result = m::f(1, 2)",
-    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a, z: 'a) -> 'a;",
-    "/test/m.gx" => "let f = |x: ['b, 'a], y: 'a, z: 'b| -> 'a y"
+    "/test.gx" => "mod m; let result = m::f([1], 2, 3)",
+    "/test/m.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], y: 'a, z: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [Array<'b>, Array<'a>], y: 'a, z: 'b| -> 'a y"
 ; FuseExpect::None);
+
+// A val may not write a union of two of its variables: no value's type
+// says which of them it takes.
+run!(
+    val_variable_union_refused,
+    refused("val f: ['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => "mod m; let result = m::f(1, 2)",
+    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [i64, string], y: i64| -> i64 y"
+; FuseExpect::None);
+
+run!(
+    val_union_of_written_types,
+    is(Value::I64(2)),
+    "/test.gx" => "mod m; let result = m::f(1, 2)",
+    "/test/m.gxi" => "val f: fn(x: [i64, string], y: i64) -> i64;",
+    "/test/m.gx" => "let f = |x: [i64, string], y: i64| -> i64 y"
+);
 
 // A ground union matches its signature as a set, whatever normal form
 // either side holds: primitives folded into one, or a binding never
@@ -1384,8 +1402,8 @@ run!(
     unpairable_union_refused_without_retrying_the_others,
     refused("signature has string, implementation has f64"),
     "/test.gx" => "mod m; let result = 0",
-    "/test/m.gxi" => "val f: fn(x0: ['a0, 'a1, 'a2, 'a3, 'a4, string], x1: ['b0, 'b1, 'b2, 'b3, 'b4, i64], x2: ['c0, 'c1, 'c2, 'c3, 'c4, i64], x3: ['d0, 'd1, 'd2, 'd3, 'd4, i64]) -> i64;",
-    "/test/m.gx" => "let f = |x0: ['a0, 'a1, 'a2, 'a3, 'a4, f64], x1: ['b0, 'b1, 'b2, 'b3, 'b4, i64], x2: ['c0, 'c1, 'c2, 'c3, 'c4, i64], x3: ['d0, 'd1, 'd2, 'd3, 'd4, i64]| -> i64 0"
+    "/test/m.gxi" => "val f: fn(x0: [Array<'a0>, Array<'a1>, Array<'a2>, Array<'a3>, Array<'a4>, string], x1: [Array<'b0>, Array<'b1>, Array<'b2>, Array<'b3>, Array<'b4>, i64], x2: [Array<'c0>, Array<'c1>, Array<'c2>, Array<'c3>, Array<'c4>, i64], x3: [Array<'d0>, Array<'d1>, Array<'d2>, Array<'d3>, Array<'d4>, i64]) -> i64;",
+    "/test/m.gx" => "let f = |x0: [Array<'a0>, Array<'a1>, Array<'a2>, Array<'a3>, Array<'a4>, f64], x1: [Array<'b0>, Array<'b1>, Array<'b2>, Array<'b3>, Array<'b4>, i64], x2: [Array<'c0>, Array<'c1>, Array<'c2>, Array<'c3>, Array<'c4>, i64], x3: [Array<'d0>, Array<'d1>, Array<'d2>, Array<'d3>, Array<'d4>, i64]| -> i64 0"
 ; FuseExpect::None);
 
 // A mismatch names the implemented type, not its cells.

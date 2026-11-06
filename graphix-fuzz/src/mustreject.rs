@@ -47,10 +47,11 @@ pub enum Family {
     SameForm,
     AbstractParam,
     UndecidedPart,
+    VariableUnion,
 }
 
 impl Family {
-    pub const ALL: [Family; 18] = [
+    pub const ALL: [Family; 19] = [
         Family::MonoReuse,
         Family::RigidVar,
         Family::RigidPattern,
@@ -69,6 +70,7 @@ impl Family {
         Family::SameForm,
         Family::AbstractParam,
         Family::UndecidedPart,
+        Family::VariableUnion,
     ];
 }
 
@@ -110,6 +112,7 @@ impl Family {
             Family::RefWiden => &["does not contain &mut"],
             Family::SameForm => &["the same runtime form"],
             Family::UndecidedPart => &["a type not decided at this select"],
+            Family::VariableUnion => &["is a union of the type variables"],
         };
         says.iter().any(|s| head.contains(s))
     }
@@ -136,6 +139,7 @@ impl std::fmt::Display for Family {
             Family::SameForm => "same-form",
             Family::AbstractParam => "abstract-param",
             Family::UndecidedPart => "undecided-part",
+            Family::VariableUnion => "variable-union",
         })
     }
 }
@@ -360,6 +364,7 @@ pub fn probes(
     mono_reuse(&root, &pre, types, cap, &mut out);
     rigid_var(&root, cap, &mut out);
     rigid_pattern(&root, cap, &mut out);
+    variable_union(&root, cap, &mut out);
     shared_var(&root, &pre, types, cap, Family::SharedVar, &mut out);
     shared_var(&root, &pre, types, cap, Family::OpenArg, &mut out);
     labels(&root, &pre, types, cap, &mut out);
@@ -1135,6 +1140,47 @@ fn rigid_pattern(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     with_first_statement(root, cap, Family::RigidPattern, out, |l, _| {
         rigid_pattern_probe(l)
     })
+}
+
+/// Family 15. A top-level `let` of a lambda whose first positional
+/// parameter is a name, written with no type or with one variable `'v`,
+/// gets that parameter written `['tm__a, 'tm__b]`, or `['v, 'tm__b]`: a
+/// written function type may hold no union of two of its own variables
+/// (`Type::variable_union`). Right site: the definition.
+fn variable_union(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
+    let sizes = mutate::sizes(root);
+    let stmts = mutate::top_statements(root, &sizes);
+    let mut taken = 0usize;
+    for k in spread(stmts.len()) {
+        let (si, at, stmt) = stmts[k];
+        if taken >= cap {
+            break;
+        }
+        let ExprKind::Bind(b) = &stmt.kind else { continue };
+        let ExprKind::Lambda(l) = &b.value.kind else { continue };
+        let Some(i) = l.args.iter().position(|a| !a.kind.is_labeled()) else { continue };
+        if !matches!(l.args[i].pattern, StructurePattern::Bind(_)) {
+            continue;
+        }
+        let union = match &l.args[i].constraint {
+            None => "['tm__a, 'tm__b]".to_string(),
+            Some(Type::TVar(tv)) => format!("['{}, 'tm__b]", tv.name),
+            Some(_) => continue,
+        };
+        let Ok(union) = parser::parse_type(&union) else { continue };
+        let mut args: Vec<_> = l.args.iter().cloned().collect();
+        args[i].constraint = Some(union);
+        let lambda = ExprKind::Lambda(Arc::new(LambdaExpr {
+            args: Arc::from_iter(args),
+            ..(**l).clone()
+        }))
+        .to_expr_nopos();
+        let cand = mutate::replace(root, at + 1, &lambda);
+        out.extend(finish(Family::VariableUnion, at, &cand, |back, _| {
+            vec![nth_stmt(back, si).and_then(span)]
+        }));
+        taken += 1;
+    }
 }
 
 /// Each top-level `let` of a lambda `probe` gives a first statement for

@@ -6076,6 +6076,9 @@ mod tests {
             // an argument the call leaves undecided takes the others' join
             ("{ let g = |x: 'a, y: 'a| -> 'a y; let r = g(1, 2); r }", "open-arg#"),
             ("{ let g = |x: 'a, y: 'a, z: 'a| -> 'a z; g(1, 2, 3) }", "open-arg#"),
+            // a written function type holds no union of two of its variables
+            ("{ let g = |x: 'a, y: 'a| -> 'a y; g(1, 2) }", "variable-union#"),
+            ("{ let g = |x| x; g(1) }", "variable-union#"),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");

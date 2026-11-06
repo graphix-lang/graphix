@@ -6,4 +6,4 @@
 // registration image refused it. The gate holds the cells it counted,
 // and the gate now refuses the merge itself: `+` needs 'a = 'b, which
 // the signature does not promise. Both engines refuse at compile.
-{let f = 'a: Number, 'b: Number|x: 'a, y: 'b| -> ['a, 'b] x + y; f}
+{let f = 'a: Number, 'b: Number|x: 'a, y: 'b| -> 'a x + y; f}

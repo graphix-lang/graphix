@@ -298,6 +298,12 @@ may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
 bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
 then one type, the first call's.
 
+A signature may not write a union of two of its type variables, `|x:
+['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
+trait method's alike, nor a function type a `let` annotation writes: no
+value's type says which variable it takes. Keep one variable there
+(`['a, null]` is fine) or write the types (`[i64, string]`).
+
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
 `fn(c: Collection) -> i64`) stands only as a definition's signature: a

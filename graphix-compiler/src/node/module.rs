@@ -771,13 +771,13 @@ fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
 /// function type ([`Type::variable_outside_functions`]): that is one type
 /// all the val's uses share, which no declaration may leave open.
 fn check_val_variable(env: &Env, name: &str, typ: &Type) -> Result<()> {
-    match typ.variable_outside_functions(env) {
-        None => Ok(()),
-        Some(v) => bail!(
+    if let Some(v) = typ.variable_outside_functions(env) {
+        bail!(
             "val {name} has its type variable {v} outside a function type, one type \
              all its uses share: declare the val at one type"
-        ),
+        )
     }
+    typ.variable_union(env, &|_| true).map_err(|e| anyhow!("val {name}: {e}"))
 }
 
 /// [`check_val_variable`] for each `val` of `sig`, whose binding is

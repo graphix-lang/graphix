@@ -305,6 +305,26 @@ use comes first, as any cell is. A variable a callback also holds is
 not widenable: the first argument decides it, an undecided one
 included.
 
+### A union of variables in a signature
+
+A written function type may not hold a union of two or more distinct bare
+type variables of its own (`['a, 'b]`, `['a, 'b, null]`), at any part (a
+parameter, a callback's parameter, the result, the throws, a bound) and
+under any constructor or typedef's expansion (`Array<['a, 'b]>`, `{v:
+['a, 'b]}`, `E<'a, 'b>` over `type E<'p, 'q> = ['p, 'q]`):
+`Type::variable_union`, judged where the type is written: a lambda's
+signature as it compiles (a variable an enclosing definition declares is
+not its own), a `.gxi` val (`module::check_val_variable`), a trait
+method's declaration (`traits::method_decl`) and a function type a body's
+annotation writes (`lambda::body_annotation`: a `let`'s, a select's type
+test, `never<T>`). No value's type says which variable such a member
+takes, so whichever relation meets it first would decide (a call's
+argument first, an instance's signature last), and the refusal names the
+annotation that passes: one variable there, or written types (`[i64,
+string]`). One variable beside written types (`['a, null]`) is a member
+a value's type picks, and a data union in an annotation (`let v: ['r,
+'q] = ..`) is no signature.
+
 ### Function types with variables of their own
 
 A function type with type variables of its own stands only as a
@@ -975,10 +995,13 @@ cells (`crate::holds_generic` refuses it). Pins: `lang::quantified`
 
 `instance_sig` holds an instance's signature to a copy of the
 definition's by `FnType` containment, which decides a parameter or a
-result typed by a union of two open cells (`x: ['a, 'b]`) only after
-every other position (`fntyp::holds_open_union`): the positions that hold
-each member alone decide it, a parameter's or the result's, and the union
-then holds what they left (pins `lang::types::formal_union_of_two_variables_*`).
+result typed by a union of two open cells only after every other position
+(`fntyp::holds_open_union`): the positions that hold each member alone
+decide it, a parameter's or the result's, and the union then holds what
+they left. A written function type holds no such union (below, A union of
+variables in a signature), so only an inferred one meets that order (`|c,
+a, b| select c { true => a, false => b }`), where a call relates its
+arguments first: the split formal-union-order-01 keeps open.
 
 A type written in a body names the variables of the definitions around
 it (`lambda::body_annotation`); a labeled default is written in its

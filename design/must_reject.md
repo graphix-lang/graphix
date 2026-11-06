@@ -354,6 +354,20 @@ test of the undecided part (`written_tests_undecided`, pins
 told apart only by undecided cells under a partial struct pattern
 (`UndecidedMembers`; pins `lang::select::partial_struct_*_two_members`).
 
+**15. A union of variables in a signature.** Site: a top-level `let`
+of a lambda whose first positional parameter is a name, written with no
+type or with one variable `'v`. Mutation: that parameter written
+`['tm__a, 'tm__b]`, or `['v, 'tm__b]`. Rule: a written function type
+holds no union of two or more of its own bare variables, under any
+constructor or typedef's expansion (`Type::variable_union`). Built
+(`variable-union`), right site the definition. Not generated: the
+other places the rule reads (a callback's parameter, the result, a
+bound, a typedef application, a `.gxi` val, a trait method, a `let`
+annotation's function type), pinned by
+`lang::types::variable_union_*_refused`,
+`lang::interfaces::val_variable_union_refused` and
+`lang::traits::trait_method_variable_union_refused`.
+
 **Interface vals.** Not generated: the module generator writes every
 `val` at one type. A val's variable outside a function type is refused
 by a rule that reads the written type alone (`Type::

@@ -11,7 +11,7 @@ use crate::{
         Bound, FnType, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
-        tvar::{CellFact, Fresh, Level, would_cycle_open},
+        tvar::{CellFact, ConjunctsPassed, Fresh, Level, would_cycle_open},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -23,6 +23,7 @@ use smallvec::SmallVec;
 use std::{
     error::Error,
     fmt::{self, Write},
+    mem,
 };
 
 #[derive(Debug)]
@@ -513,6 +514,193 @@ impl Type {
             .walk(self, &mut out);
         out.values().min_by(|a, b| a.name.cmp(&b.name)).cloned()
     }
+}
+
+/// A union a written function type holds, under any constructor or
+/// typedef's expansion, with two or more of the variables `own` admits as
+/// members of their own: which of them a value takes, no type says
+/// ([`Type::variable_union`]).
+#[derive(Debug)]
+pub struct VariableUnion {
+    pub union: Type,
+    pub vars: SmallVec<[ArcStr; 4]>,
+}
+
+impl fmt::Display for VariableUnion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} is a union of the type variables ", self.union)?;
+        for (i, v) in self.vars.iter().enumerate() {
+            let sep = match i {
+                0 => "",
+                i if i + 1 == self.vars.len() => " and ",
+                _ => ", ",
+            };
+            write!(f, "{sep}'{v}")?
+        }
+        write!(
+            f,
+            " in a function's signature: no value's type says which of them it takes; keep \
+             one variable there, or write the types in their place (a union of \
+             written types, such as [i64, string])"
+        )
+    }
+}
+
+impl Error for VariableUnion {}
+
+impl Type {
+    /// Refuse the first union a function type this written type holds
+    /// (itself included) has in a part, its parameters, result, throws and
+    /// bounds, under any constructor or typedef's expansion, two or more of
+    /// whose members are distinct variables `own` admits.
+    #[doc(hidden)]
+    pub fn variable_union(
+        &self,
+        env: &Env,
+        own: &dyn Fn(&TVar) -> bool,
+    ) -> Result<(), VariableUnion> {
+        if !may_unite(self, own, &ConjunctsPassed::take()) {
+            return Ok(());
+        }
+        let passed = ConjunctsPassed::take();
+        let mut walk = VariableUnions {
+            env,
+            own,
+            passed: &passed,
+            in_fn: false,
+            expanding: Expanding::default(),
+            nodes: LPooled::take(),
+        };
+        match walk.walk(self) {
+            None => Ok(()),
+            Some(e) => Err(e),
+        }
+    }
+}
+
+/// [`Type::variable_union`]'s walk: each shared composite once.
+struct VariableUnions<'a> {
+    env: &'a Env,
+    own: &'a dyn Fn(&TVar) -> bool,
+    passed: &'a ConjunctsPassed,
+    /// Whether the walk is inside a function type.
+    in_fn: bool,
+    expanding: Expanding,
+    nodes: LPooled<AddrSet>,
+}
+
+impl VariableUnions<'_> {
+    fn walk(&mut self, t: &Type) -> Option<VariableUnion> {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(_) => None,
+            t if t.shared_identity().is_some_and(|n| !self.nodes.insert(n)) => None,
+            Type::Fn(ft) => {
+                let outside = !mem::replace(&mut self.in_fn, true);
+                let mut found = None;
+                let passed = self.passed;
+                ft.for_each_part_once(passed, &mut |t, _| {
+                    if found.is_none() {
+                        found = self.walk(t)
+                    }
+                });
+                if outside {
+                    self.in_fn = false
+                }
+                found
+            }
+            Type::Ref(tr) => {
+                if !tr.params.iter().any(|p| may_unite(p, self.own, self.passed)) {
+                    if bare_vars(&tr.params, self.own) < 2 {
+                        return None;
+                    }
+                    // only a union of the body's own parameters can become one
+                    if let Some(def) = tr.resolve_peek(self.env) {
+                        let param =
+                            |tv: &TVar| def.params.iter().any(|(p, _)| p.name == tv.name);
+                        if !may_unite(&def.typ, &param, &ConjunctsPassed::take()) {
+                            return None;
+                        }
+                    }
+                }
+                match t.lookup_ref_probe(self.env) {
+                    Some((key, whole)) => match self.expanding.meets(key, &tr.params) {
+                        Meeting::Again => None,
+                        Meeting::Grown => tr.params.iter().find_map(|p| self.walk(p)),
+                        Meeting::Fresh => {
+                            self.expanding.0.push((key, tr.params.clone()));
+                            let found = self.walk(&whole);
+                            self.expanding.0.pop();
+                            found
+                        }
+                    },
+                    None => tr.params.iter().find_map(|p| self.walk(p)),
+                }
+            }
+            t => {
+                if self.in_fn
+                    && let Type::Set(ms) = t
+                    && bare_vars(ms, self.own) > 1
+                {
+                    let mut vars: SmallVec<[ArcStr; 4]> = SmallVec::new();
+                    for m in ms.iter() {
+                        if let Type::TVar(tv) = m
+                            && (self.own)(tv)
+                            && !vars.contains(&tv.name)
+                        {
+                            vars.push(tv.name.clone())
+                        }
+                    }
+                    return Some(VariableUnion { union: t.clone(), vars });
+                }
+                let mut found = None;
+                t.for_each_child(&mut |c| {
+                    if found.is_none() {
+                        found = self.walk(c)
+                    }
+                });
+                found
+            }
+        })
+    }
+}
+
+/// How many distinct variables `own` admits `ts` holds as members of
+/// their own (a union's members, a typedef's parameters).
+fn bare_vars(ts: &[Type], own: &dyn Fn(&TVar) -> bool) -> usize {
+    let mut vars: SmallVec<[&ArcStr; 4]> = SmallVec::new();
+    for t in ts {
+        if let Type::TVar(tv) = t
+            && own(tv)
+            && !vars.contains(&&tv.name)
+        {
+            vars.push(&tv.name)
+        }
+    }
+    vars.len()
+}
+
+/// Whether `t`, as written, holds a union of two of the variables `own`
+/// admits, or a typedef applied to two of them, the only ways a
+/// [`VariableUnions`] walk can find one: a typedef's body reaches no
+/// variable its parameters do not hold.
+fn may_unite(t: &Type, own: &dyn Fn(&TVar) -> bool, passed: &ConjunctsPassed) -> bool {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(_) => false,
+        Type::Set(ms) if bare_vars(ms, own) > 1 => true,
+        Type::Ref(tr) if bare_vars(&tr.params, own) > 1 => true,
+        Type::Fn(ft) => {
+            let mut any = false;
+            ft.for_each_part_once(passed, &mut |c, _| {
+                any = any || may_unite(c, own, passed)
+            });
+            any
+        }
+        t => {
+            let mut any = false;
+            t.for_each_child(&mut |c| any = any || may_unite(c, own, passed));
+            any
+        }
+    })
 }
 
 /// The typedefs a walk is expanding, by key, with their parameters.

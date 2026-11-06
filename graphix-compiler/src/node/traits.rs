@@ -176,10 +176,14 @@ pub(crate) fn method_decl(
         }
         requires.push(a.name.clone());
     }
+    let typ = method_sig(env, &m.typ, tref, scope)?;
+    Type::Fn(Arc::new(typ.clone()))
+        .variable_union(env, &|_| true)
+        .map_err(|e| anyhow!("trait method {}: {e}", m.name.name))?;
     Ok(TraitMethodSig {
         name: m.name.name.clone(),
         pos: m.name.pos_or(pos),
-        typ: Arc::new(method_sig(env, &m.typ, tref, scope)?),
+        typ: Arc::new(typ),
         self_index: m.self_index,
         requires: Arc::from_iter(requires),
     })

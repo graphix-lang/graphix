@@ -3130,3 +3130,27 @@ run!(
     prints(r#"["a", i64:1]"#);
     FuseExpect::Jit
 );
+
+// A trait method's signature may not write a union of two of its type
+// variables: no value's type says which of them it takes.
+run!(
+    trait_method_variable_union_refused,
+    refused("trait method pick: ['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait Pick { val pick: fn(self, x: ['a, 'b], y: 'a) -> 'a };
+        type C = Abstract<i64>;
+        impl Pick for C { let pick = |c, x, y| y };
+        let result = Pick::pick(C(1), 2, 3)
+    "#
+; FuseExpect::None);
+
+run!(
+    trait_method_union_of_written_types,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        trait Pick { val pick: fn(self, x: [i64, string], y: 'a) -> 'a };
+        type C = Abstract<i64>;
+        impl Pick for C { let pick = |c, x, y| y };
+        let result = Pick::pick(C(1), 2, 3)
+    "#
+);

@@ -92,7 +92,7 @@ against that promise, so a body that only works when the two are the
 same type is refused at the definition rather than at some later call,
 
 ```graphix
-〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ['a, 'b] x + y
+〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y
 error: ... cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
 ```
 

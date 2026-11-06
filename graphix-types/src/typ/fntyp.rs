@@ -857,6 +857,16 @@ impl FnType {
         self.for_each_part_passing(&mut |_| true, f)
     }
 
+    /// [`Self::for_each_part`], passing each cell's conjuncts once under
+    /// `passed`, however many function types name it.
+    pub(super) fn for_each_part_once(
+        &self,
+        passed: &tvar::ConjunctsPassed,
+        f: &mut impl FnMut(&Type, bool),
+    ) {
+        self.for_each_part_passing(&mut |tv| passed.first(tv), f)
+    }
+
     /// [`Self::for_each_part`], passing the conjuncts only of the cells
     /// `pass` admits.
     fn for_each_part_passing(
@@ -1395,6 +1405,39 @@ impl FnType {
     // union of two or more bare type variables of its definition (also under
     // constructors), refused naming the annotation, census first. This CR stays open for
     // the inferred result-union split ((a), deferring, is dropped).
+    // 2026-11-06 claude: Lane d7 (round 18) built (b): a written function type (a
+    // lambda's signature, its bounds included; a .gxi val; a trait method; a function
+    // type a let annotation, a select type test or never<T> writes in a body) may not
+    // hold a union of two or more distinct bare type variables of its own, under any
+    // constructor or typedef's expansion (Type::variable_union, settle.rs); a variable of
+    // an enclosing definition does not count, and a data union in a body's annotation
+    // (let v: ['r, 'q]) stands. Pins:
+    // lang::types::variable_union_{in_a_parameter,beside_a_written_type,under_an_array,in_a_struct_field,in_the_result,in_a_bound,through_a_typedef,in_an_annotated_function}_refused,
+    // lang::interfaces::val_variable_union_refused,
+    // lang::traits::trait_method_variable_union_refused; twins
+    // variable_union_written_as_types, one_variable_beside_written_types,
+    // typedef_union_at_a_written_type, annotated_function_at_written_types,
+    // data_union_of_variables_in_an_annotation, enclosing_variable_beside_an_own_one,
+    // val_union_of_written_types, trait_method_union_of_written_types. This CR stays open
+    // for the inferred result-union case (|c, a, b| select c { true => a, false => b }, a
+    // call's result union decided by later writes), which (b) does not reach; the
+    // nested-member form is formal-union-nested-01.
+    // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
+    // more bare type variables in a written function type, but a union of members that
+    // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member
+    // a value takes, and order answers it: over `let f = |x: [Array<'c>, Array<'d>], y:
+    // 'd, z: 'c| -> i64 0`, `f([1], 1, "s")` is refused ("'c: i64 does not contain
+    // string": `[1]` took the first member, naming nothing to annotate), while the same
+    // function with `x` last, `f(1, "s", [1])`, runs and prints 0; through an interface
+    // (`val f: fn(x: [Array<'a>, Array<'b>], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64`
+    // over an implementation naming them `'c`/`'d` the other way) the check accepts and
+    // the build refuses the instance ("an instance at .. of a definition typed .."). Main
+    // 187fd838d alike. Options: (a) extend (b): a written union two of whose members hold
+    // distinct variables of the definition under one constructor is refused too (census
+    // first); (b) leave it as it is. Found by lane d7
+    // (round 18) rewriting lang::interfaces::union_pairing_waits_for_later_parameters.
+    // Probes: ~/ptmp/cr29/scratch/r18-d7/nest3.gx, nest4.gx, nest/test.gx.
+    // (formal-union-nested-01)
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,

@@ -43,7 +43,7 @@ run!(two_rigid_vars_independent, TWO_RIGID_VARS_INDEPENDENT, is(Value::I64(3)); 
 
 const TWO_RIGID_VARS_UNIFIED: &str = r#"
 {
-  let add = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ['a, 'b] x + y;
+  let add = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y;
   add(1, 2)
 }
 "#;

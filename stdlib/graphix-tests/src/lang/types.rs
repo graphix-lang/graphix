@@ -91,7 +91,7 @@ run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, is(Value::I64(2)); FuseExpect::Ji
 
 const EXPLICIT_TYPE_VARS3: &str = r#"
 {
-  let f = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ['a, 'b] x + y;
+  let f = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y;
   select f(u32:1, u64:1) {
     [u32, u64] as t => t
   }
@@ -5710,12 +5710,29 @@ async fn holder_chain_stays_a_dag() -> Result<()> {
     Ok(())
 }
 
-// A formal union of two variables is decided by the positions that hold
-// each alone, in an instance's signature as in a written function type.
+// A written function type may not hold a union of two of its definition's
+// type variables: no value's type says which of them it takes. One
+// variable beside written types, a union of written types and a data union
+// in a body's annotation stand.
+const VARIABLE_UNION: &str =
+    "is a union of the type variables 'a and 'b in a function's signature";
+
 run!(
-    formal_union_of_two_variables_instance,
+    variable_union_in_a_parameter_refused,
     r#"{
   let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]);
+  let u = never();
+  let r = f(u, 1, "s");
+  u <- "t";
+  r
+}"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_written_as_types,
+    r#"{
+  let f = |x: [i64, string], y: i64, z: string| -> (Array<i64>, Array<string>) ([y], [z]);
   let u = never();
   let r = f(u, 1, "s");
   u <- "t";
@@ -5725,63 +5742,115 @@ run!(
     FuseExpect::Jit
 );
 run!(
-    formal_union_of_two_variables_written,
-    r#"{
-  let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]);
-  let g: fn(x: [i64, string], y: i64, z: string) -> (Array<i64>, Array<string>) = f;
-  g("t", 1, "s")
-}"#,
-    prints(r#"[[i64:1], ["s"]]"#);
+    variable_union_beside_a_written_type_refused,
+    r#"{ let f = |x: i64, k: fn(z: ['a, 'b, null]) -> i64| -> i64 x; f(1, |z| 0) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    one_variable_beside_written_types,
+    r#"{ let f = |x: i64, k: fn(z: ['a, string, null]) -> i64| -> i64 x; f(1, |z| 0) }"#,
+    prints("i64:1");
     FuseExpect::Jit
 );
-
-// The result decides them as well as a parameter does: an instance's
-// signature holds each member only after every other position is held.
 run!(
-    formal_union_of_two_variables_decided_by_the_result,
-    r#"{
-  let f = |x: ['a, 'b]| -> (Array<'a>, Array<'b>) ([], []);
-  let g = |x: ['a, 'b]| -> Array<'a> [];
-  let u = never();
-  let r = (f(u), g(u));
-  u <- "t";
-  u <- 1;
-  r
-}"#,
-    prints("[[[], []], []]");
+    variable_union_under_an_array_refused,
+    r#"{ let f = |x: Array<['a, 'b]>, y: 'a| -> 'a y; f([1], 2) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_in_a_struct_field_refused,
+    r#"{ let f = |x: {v: ['a, 'b]}, y: 'a| -> 'a y; f({v: 1}, 2) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_in_the_result_refused,
+    r#"{ let f = |c: bool, x: 'a, y: 'b| -> ['a, 'b] select c { true => x, false => y }; f(true, 1, "s") }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_in_a_bound_refused,
+    r#"{ let f = 'c: ['a, 'b] |x: 'c| x; f(1) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    variable_union_through_a_typedef_refused,
+    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    typedef_union_at_a_written_type,
+    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<i64, 'a>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    prints("i64:2");
     FuseExpect::Jit
 );
-
-// Every position is held, whichever round checks it: a result whose union
-// the parameter's binding closes is checked all the same.
 run!(
-    formal_union_of_two_variables_every_position_held,
+    variable_union_in_an_annotated_function_refused,
     r#"{
-  let f = |x: ['a, 'b]| -> ['a, 'b] x;
+  let f: fn(x: ['a, 'b]) -> (Array<'a>, Array<'b>) = |x| ([], []);
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+run!(
+    annotated_function_at_written_types,
+    r#"{
+  let f: fn(x: [i64, string]) -> (Array<i64>, Array<string>) = |x| ([], []);
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    prints("[[], []]")
+);
+run!(
+    data_union_of_variables_in_an_annotation,
+    r#"{ let v: ['r, 'q] = select true { true => 1, false => "s" }; v }"#,
+    prints("i64:1")
+);
+// A variable of the definition around stands beside one of its own: the
+// enclosing definition's check holds it rigid, its instances closed.
+run!(
+    enclosing_variable_beside_an_own_one,
+    r#"{ let f = 'a: Any |x: 'a| { let g = |y: ['a, 'b]| -> ['a, 'b] y; g(x) }; f(1) }"#,
+    prints("i64:1")
+);
+
+// Every position is held, whichever round checks it: a result whose
+// variable the parameter's binding closes is checked all the same.
+run!(
+    function_type_every_position_held,
+    r#"{
+  let f = |x: 'a| -> 'a x;
   let g: fn(x: bool) -> i64 = f;
   g(true) + 1
 }"#,
-    refused("fn(x: bool) -> i64 does not contain fn(x: ['a: bool, 'b: unbound]) -> ['a: bool, 'b: unbound]");
+    refused("fn(x: bool) -> i64 does not contain fn(x: 'a: bool) -> 'a: bool");
     FuseExpect::None
 );
 run!(
-    formal_union_of_two_variables_every_position_held_in_a_union,
+    function_type_every_position_held_in_a_union,
     r#"{
-  let f = |x: ['a, 'b]| -> ['a, 'b] x;
+  let f = |x: 'a| -> 'a x;
   let g: fn(x: bool) -> [i64, string] = f;
   g(true)
 }"#,
-    refused("fn(x: bool) -> [i64, string] does not contain fn(x: ['a: bool, 'b: unbound])");
+    refused("fn(x: bool) -> [i64, string] does not contain fn(x: 'a: bool) -> 'a: bool");
     FuseExpect::None
 );
 run!(
-    formal_union_of_two_variables_every_position_held_in_a_field,
+    function_type_every_position_held_in_a_field,
     r#"{
-  let f = |x: ['a, 'b], y: 'a, z: 'b| -> ['a, 'b] x;
+  let f = |x: 'a, y: 'a, z: 'a| -> 'a x;
   let s: {k: fn(x: bool, y: i64, z: string) -> [i64, string]} = {k: f};
   s.k(true, 1, "s")
 }"#,
-    refused("does not contain { k: fn(x: ['a: i64, 'b: string], y: 'a: i64, z: 'b: string)");
+    refused("does not contain { k: fn(x: 'a: bool, y: 'a: bool, z: 'a: bool)");
     FuseExpect::None
 );
 

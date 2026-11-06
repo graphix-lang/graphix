@@ -763,8 +763,9 @@ pub struct BodyShared {
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's; any other
-/// is the written type's own (`Level::Written`).
-pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
+/// is the written type's own (`Level::Written`). A function type it writes
+/// holds no union of two of its own variables ([`Type::variable_union`]).
+pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) -> Result<()> {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
     let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
@@ -772,6 +773,28 @@ pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) {
     for (_, tv) in known.iter().filter(|(name, _)| !enclosing.contains(*name)) {
         tv.own_written()
     }
+    if written_own(&known, &enclosing) > 1 {
+        t.variable_union(&ctx.env, &|tv| !enclosing.contains(&tv.name))?
+    }
+    Ok(())
+}
+
+/// The variables `t` names as written, through no cell's binding or
+/// conjuncts.
+fn written_names(t: &Type, out: &mut AHashSet<ArcStr>) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            out.insert(tv.name.clone());
+        }
+        Type::Fn(ft) => ft.for_each_type(&mut |t| written_names(t, out)),
+        t => t.for_each_child(&mut |c| written_names(c, out)),
+    })
+}
+
+/// How many of the variables `known` names a type wrote, not one of
+/// `enclosing`: a union of two of them needs two.
+fn written_own(known: &AHashMap<ArcStr, TVar>, enclosing: &AHashSet<ArcStr>) -> usize {
+    known.keys().filter(|n| !n.starts_with('_') && !enclosing.contains(*n)).count()
 }
 
 /// The variables the definitions around the body being compiled declare,
@@ -2547,9 +2570,19 @@ impl Lambda {
                         .iter()
                         .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
             });
+            let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
             ft.alias_tvars(&mut known);
             let ft = ft.declaring(&constraints);
             ft.check_quantifiers_held()?;
+            let mut bounds: LPooled<AHashSet<ArcStr>> = LPooled::take();
+            for (_, tc) in constraints.iter() {
+                written_names(tc, &mut bounds)
+            }
+            let in_bounds = bounds.iter().filter(|n| !enclosing.contains(*n)).count();
+            if written_own(&known, &enclosing) + in_bounds > 1 {
+                let own = |tv: &TVar| !enclosing.contains(&tv.name);
+                Type::Fn(Arc::new(ft.clone())).variable_union(&ctx.env, &own)?;
+            }
             Arc::new(ft)
         };
         typ.lambda_ids.set_id(id);
