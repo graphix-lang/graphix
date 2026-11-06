@@ -800,15 +800,29 @@ fn judge_variable_unions<R: Rt>(
     pos: SourcePosition,
 ) -> Result<()> {
     let judged = t.variable_union(&ctx.env, &|tv| !enclosing.contains(&tv.name))?;
+    defer_variable_unions(ctx, judged, t, enclosing.iter().cloned(), ori, pos);
+    Ok(())
+}
+
+/// Judge `t`, written at `pos` in `ori`, again as the check ends where
+/// [`Type::variable_union`] could not judge it whole, its variables all
+/// but `enclosing`'s its own ([`crate::Pending::VariableUnion`]).
+pub(crate) fn defer_variable_unions<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    judged: Judged,
+    t: &Type,
+    enclosing: impl Iterator<Item = ArcStr>,
+    ori: &Arc<Origin>,
+    pos: SourcePosition,
+) {
     if judged == Judged::Unresolved && ctx.body.as_ref().is_none_or(|b| b.checking) {
         ctx.pending_names.push(crate::Pending::VariableUnion(
             t.clone(),
-            enclosing.iter().cloned().collect(),
+            enclosing.collect(),
             ori.clone(),
             pos,
         ))
     }
-    Ok(())
 }
 
 /// The variables `t` names as written, through no cell's binding or

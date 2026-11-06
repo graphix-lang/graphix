@@ -312,6 +312,7 @@ fn bind_sig_item(
                 .iter()
                 .map(|m| {
                     traits::method_decl(env, m, &tref, &scope.lexical, &t.name, si.pos)
+                        .map(|(sig, _)| sig)
                 })
                 .collect::<Result<LPooled<Vec<_>>>>()?;
             env.deftrait(

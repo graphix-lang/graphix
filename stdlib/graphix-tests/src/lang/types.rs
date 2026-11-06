@@ -5887,6 +5887,34 @@ run!(
     prints("i64:0")
 );
 
+/// A block of 40 typedefs, each naming the one below twice, its parameters
+/// swapped in the second (`A0` is `base`), then `rest`.
+fn typedef_diamond(base: &str, rest: &str) -> arcstr::ArcStr {
+    use std::fmt::Write;
+    let mut src = poolshark::local::LPooled::<String>::take();
+    writeln!(src, "{{\ntype A0<'x, 'y> = {base};").unwrap();
+    for k in 1..=40 {
+        writeln!(src, "type A{k}<'x, 'y> = [A{j}<'x, 'y>, A{j}<'y, 'x>];", j = k - 1)
+            .unwrap();
+    }
+    write!(src, "{rest}\n}}").unwrap();
+    arcstr::ArcStr::from(src.as_str())
+}
+
+// The judgment expands each application of a typedef once, so a DAG of
+// typedefs is judged in time linear in its size, whichever way it ends.
+run!(
+    variable_union_judges_a_typedef_dag_once_per_application,
+    typedef_diamond("('x, 'y)", "let f = |x: [A40<'a, 'b>, null]| -> i64 0;\n1"),
+    prints("i64:1")
+);
+run!(
+    variable_union_in_a_typedef_dag_refused,
+    typedef_diamond("['x, 'y]", "let f = |x: [A40<'a, 'b>, null]| -> i64 0;\n1"),
+    refused(VARIABLE_UNION);
+    FuseExpect::None
+);
+
 // Every position is held, whichever round checks it: a result whose
 // variable the parameter's binding closes is checked all the same.
 run!(

@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        Bound, FnType, TVar, Type,
+        AppKey, Bound, FnType, TVar, Type, TypeRef,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
         tvar::{CellFact, ConjunctsPassed, Fresh, Level, would_cycle_open},
@@ -21,6 +21,7 @@ use enumflags2::BitFlags;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
+    collections::hash_map::Entry,
     error::Error,
     fmt::{self, Write},
     mem,
@@ -581,6 +582,9 @@ impl Type {
             in_fn: false,
             expanding: Expanding::default(),
             nodes: LPooled::take(),
+            unfolded: LPooled::take(),
+            members: LPooled::take(),
+            member_stack: SmallVec::new(),
             judged: Judged::Whole,
         };
         match walk.walk(self) {
@@ -590,7 +594,8 @@ impl Type {
     }
 }
 
-/// [`Type::variable_union`]'s walk: each shared composite once.
+/// [`Type::variable_union`]'s walk: each shared composite once, and
+/// each typedef application once inside function types and once outside.
 struct VariableUnions<'a> {
     env: &'a Env,
     own: &'a dyn Fn(&TVar) -> bool,
@@ -599,6 +604,14 @@ struct VariableUnions<'a> {
     in_fn: bool,
     expanding: Expanding,
     nodes: LPooled<AddrSet>,
+    /// The applications expanded, by key and `in_fn`, each held so its
+    /// key stays its own.
+    unfolded: LPooled<AHashMap<(AppKey, bool), Type>>,
+    /// The variables each application holds as union members
+    /// ([`Self::app_members`]), the application held.
+    members: LPooled<AHashMap<AppKey, (Type, SmallVec<[ArcStr; 4]>)>>,
+    /// The typedefs [`Self::app_members`] is expanding, by key.
+    member_stack: SmallVec<[usize; 4]>,
     judged: Judged,
 }
 
@@ -635,22 +648,26 @@ impl VariableUnions<'_> {
                         }
                     }
                 }
-                match t.lookup_ref_probe(self.env) {
-                    Some((key, whole)) => match self.expanding.meets(key, &tr.params) {
-                        Meeting::Again => None,
-                        Meeting::Grown => tr.params.iter().find_map(|p| self.walk(p)),
-                        Meeting::Fresh => {
-                            self.expanding.0.push((key, tr.params.clone()));
-                            let found = self.walk(&whole);
-                            self.expanding.0.pop();
-                            found
+                let Some(key) = tr.resolve_peek(self.env).map(|def| def.def_key()) else {
+                    return self.unresolved(tr);
+                };
+                match self.expanding.meets(key, &tr.params) {
+                    Meeting::Again => None,
+                    Meeting::Grown => tr.params.iter().find_map(|p| self.walk(p)),
+                    Meeting::Fresh => {
+                        match self.unfolded.entry((tr.app_key(key), self.in_fn)) {
+                            Entry::Occupied(_) => return None,
+                            Entry::Vacant(e) => {
+                                e.insert(t.clone());
+                            }
                         }
-                    },
-                    None => {
-                        if var_members(&tr.params, self.own) > 1 {
-                            self.judged = Judged::Unresolved
-                        }
-                        tr.params.iter().find_map(|p| self.walk(p))
+                        let Some((_, whole)) = t.lookup_ref_probe(self.env) else {
+                            return self.unresolved(tr);
+                        };
+                        self.expanding.0.push((key, tr.params.clone()));
+                        let found = self.walk(&whole);
+                        self.expanding.0.pop();
+                        found
                     }
                 }
             }
@@ -660,8 +677,7 @@ impl VariableUnions<'_> {
                     && var_members(ms, self.own) > 1
                 {
                     let mut vars: SmallVec<[ArcStr; 4]> = SmallVec::new();
-                    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-                    self.member_vars(ms, &mut seen, &mut vars);
+                    self.member_vars(ms, &mut vars);
                     vars.sort();
                     if vars.len() > 1 {
                         return Some(VariableUnion { union: t.clone(), vars });
@@ -678,15 +694,22 @@ impl VariableUnions<'_> {
         })
     }
 
-    /// The distinct variables `own` admits that the union `ms` holds as
-    /// members: written there, or a member typedef's expansion, or a member
-    /// of a union it expands to; `seen` the typedefs being expanded.
-    fn member_vars(
-        &mut self,
-        ms: &[Type],
-        seen: &mut AHashSet<usize>,
-        vars: &mut SmallVec<[ArcStr; 4]>,
-    ) {
+    /// An application that does not resolve: its parameters, and a
+    /// verdict short of [`Judged::Whole`] where its expansion may unite two.
+    fn unresolved(&mut self, tr: &TypeRef) -> Option<VariableUnion> {
+        if var_members(&tr.params, self.own) > 1 {
+            self.judged = Judged::Unresolved
+        }
+        tr.params.iter().find_map(|p| self.walk(p))
+    }
+
+    /// Add to `vars` the distinct variables `own` admits that the union
+    /// `ms` holds as members: written there, or a member typedef's
+    /// expansion, or a member of a union it expands to. The depth in
+    /// [`Self::member_stack`] of the outermost typedef met again inside
+    /// itself, `usize::MAX` for none.
+    fn member_vars(&mut self, ms: &[Type], vars: &mut SmallVec<[ArcStr; 4]>) -> usize {
+        let mut low = usize::MAX;
         for m in ms {
             match m {
                 Type::TVar(tv) if (self.own)(tv) => {
@@ -695,23 +718,59 @@ impl VariableUnions<'_> {
                     }
                 }
                 Type::Ref(tr) if tr.params.iter().any(|p| may_be_var(p, self.own)) => {
-                    match m.lookup_ref_probe(self.env) {
-                        None => self.judged = Judged::Unresolved,
-                        Some((key, whole)) if seen.insert(key) => {
-                            match &whole {
-                                Type::Set(ms) => self.member_vars(ms, seen, vars),
-                                t => {
-                                    self.member_vars(std::slice::from_ref(t), seen, vars)
-                                }
-                            }
-                            seen.remove(&key);
-                        }
-                        Some(_) => (),
-                    }
+                    low = low.min(self.app_members(m, tr, vars))
                 }
                 _ => (),
             }
         }
+        low
+    }
+
+    /// [`Self::member_vars`] of the application `t` of `tr`, once per
+    /// application: an answer cut short by a typedef met inside itself is
+    /// kept only by that typedef's own application.
+    fn app_members(
+        &mut self,
+        t: &Type,
+        tr: &TypeRef,
+        vars: &mut SmallVec<[ArcStr; 4]>,
+    ) -> usize {
+        let Some(key) = tr.resolve_peek(self.env).map(|def| def.def_key()) else {
+            self.judged = Judged::Unresolved;
+            return usize::MAX;
+        };
+        if let Some(depth) = self.member_stack.iter().position(|k| *k == key) {
+            return depth;
+        }
+        let app = tr.app_key(key);
+        let merge = |vars: &mut SmallVec<[ArcStr; 4]>, held: &[ArcStr]| {
+            for v in held {
+                if !vars.contains(v) {
+                    vars.push(v.clone())
+                }
+            }
+        };
+        if let Some((_, held)) = self.members.get(&app) {
+            merge(vars, held);
+            return usize::MAX;
+        }
+        let Some((_, whole)) = t.lookup_ref_probe(self.env) else {
+            self.judged = Judged::Unresolved;
+            return usize::MAX;
+        };
+        let depth = self.member_stack.len();
+        self.member_stack.push(key);
+        let mut held: SmallVec<[ArcStr; 4]> = SmallVec::new();
+        let low = match &whole {
+            Type::Set(ms) => self.member_vars(ms, &mut held),
+            t => self.member_vars(std::slice::from_ref(t), &mut held),
+        };
+        self.member_stack.pop();
+        merge(vars, &held);
+        if low >= depth {
+            self.members.insert(app, (t.clone(), held));
+        }
+        low
     }
 }
 

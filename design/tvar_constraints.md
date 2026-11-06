@@ -324,16 +324,20 @@ is a typedef naming a variable, or a union holding one, counting as that
 variable (`['a, Id<'b>]` over `type Id<'x> = 'x`, `['a, M<'b>]` over
 `type M<'x> = ['x, null]`): `Type::variable_union`, judged where the type
 is written: a lambda's signature as it compiles (a variable an enclosing
-definition declares is not its own; a method's lambda in an impl or a
-trait is judged over the types it writes itself, the rest being its
-trait's declaration, and an impl's head variables are the impl's:
-`traits::written_method_unions`), a `.gxi` val (`module::check_val_variable`), a trait method's
+definition declares is not its own; a method in an impl or a trait's
+default body is judged over the types it writes itself, its lambda's and
+an impl `let`'s annotation, the rest being its trait's declaration, and
+an impl's head variables are the impl's: `traits::written_method_unions`), a `.gxi` val (`module::check_val_variable`), a trait method's
 declaration (`traits::method_decl`, where `self`, a written type at every
 impl, is no variable) and a function type a body's annotation writes
 (`lambda::body_annotation`: a `let`'s, a select's type test,
 `never<T>`). A typedef its block declares below the definition does not
 resolve there: the judgment waits for the check's end
-(`Pending::VariableUnion`, `settle::Judged`). No value's type says which
+(`Pending::VariableUnion`, `settle::Judged`), a trait's and an impl's
+included. The walk expands each typedef application once inside
+function types and once outside, and gathers the variables an
+application holds as union members once (`VariableUnions::app_members`),
+so a DAG of typedefs is judged in time linear in its size. No value's type says which
 variable such a member takes, so whichever relation meets it first would decide (a call's
 argument first, an instance's signature last), and the refusal names the
 annotation that passes: one variable there, or written types (`[i64,

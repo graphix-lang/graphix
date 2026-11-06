@@ -13,7 +13,7 @@ use super::{
     callsite::{ArgKey, CallSite},
     coretraits::method_ftype,
     genn::SynthCall,
-    lambda::LambdaDef,
+    lambda::{LambdaDef, defer_variable_unions},
     module::{self, Holder},
 };
 use crate::{
@@ -32,7 +32,7 @@ use crate::{
     },
     typ::{
         CoreTrait, FnArgKind, FnArgType, FnType, TVar, TraitId, Type, TypeRef,
-        check_bounds_acyclic, seed_conjuncts,
+        check_bounds_acyclic, seed_conjuncts, settle::Judged,
     },
     wrap,
 };
@@ -150,7 +150,7 @@ pub(crate) fn method_decl(
     scope: &ModPath,
     trait_name: &str,
     pos: SourcePosition,
-) -> Result<TraitMethodSig> {
+) -> Result<(TraitMethodSig, Judged)> {
     if m.self_index.is_none()
         && CoreTrait::of_id(TraitId::of(scope, trait_name)).is_none()
     {
@@ -176,17 +176,18 @@ pub(crate) fn method_decl(
         }
         requires.push(a.name.clone());
     }
-    let typ = method_sig(env, &m.typ, tref, scope)?;
-    Type::Fn(Arc::new(typ.clone()))
+    let typ = Arc::new(method_sig(env, &m.typ, tref, scope)?);
+    let judged = Type::Fn(typ.clone())
         .variable_union(env, &|tv| &*tv.name != "self")
         .map_err(|e| anyhow!("trait method {}: {e}", m.name.name))?;
-    Ok(TraitMethodSig {
+    let sig = TraitMethodSig {
         name: m.name.name.clone(),
         pos: m.name.pos_or(pos),
-        typ: Arc::new(typ),
+        typ,
         self_index: m.self_index,
         requires: Arc::from_iter(requires),
-    })
+    };
+    Ok((sig, judged))
 }
 
 /// `requires` as the attributes that assert it of a body.
@@ -245,39 +246,51 @@ pub(crate) fn impl_outside_functions(
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
-/// Refuse a union of two variables a method's lambda `value` writes itself
-/// ([`Type::variable_union`]): the types its trait's declaration fills in
-/// were judged at the trait, and an impl's `head` variables and `self`
-/// are the implementation's.
-fn written_method_unions(
-    env: &Env,
+/// Refuse a union of two variables a method writes itself, in its lambda
+/// `value` or its `let`'s annotation `typ` ([`Type::variable_union`]): the
+/// types its trait's declaration fills in were judged at the trait, and an
+/// impl's `head` variables and `self` are the implementation's.
+fn written_method_unions<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    typ: Option<&Type>,
     value: &Expr,
     scope: &ModPath,
     head: &[TVar],
 ) -> Result<()> {
-    let l = match &value.kind {
-        ExprKind::Lambda(l) => l,
-        ExprKind::ExplicitParens(inner) => {
-            return written_method_unions(env, inner, scope, head);
+    let mut lambda = value;
+    while let ExprKind::ExplicitParens(inner) = &lambda.kind {
+        lambda = inner
+    }
+    let written = match &lambda.kind {
+        ExprKind::Lambda(l) => {
+            let written = l
+                .args
+                .iter()
+                .filter_map(|a| a.constraint.clone())
+                .chain(l.constraints.iter().map(|(_, t)| t.clone()));
+            let args = Arc::from_iter(written.map(|typ| FnArgType {
+                kind: FnArgKind::Positional { name: None },
+                typ,
+            }));
+            Some(Type::Fn(Arc::new(FnType {
+                args,
+                rtype: l.rtype.clone().unwrap_or(Type::Bottom),
+                throws: l.throws.clone().unwrap_or(Type::Bottom),
+                ..FnType::default()
+            })))
         }
-        _ => return Ok(()),
-    };
-    let written = l
-        .args
-        .iter()
-        .filter_map(|a| a.constraint.clone())
-        .chain(l.constraints.iter().map(|(_, t)| t.clone()));
-    let args = Arc::from_iter(
-        written.map(|typ| FnArgType { kind: FnArgKind::Positional { name: None }, typ }),
-    );
-    let ft = FnType {
-        args,
-        rtype: l.rtype.clone().unwrap_or(Type::Bottom),
-        throws: l.throws.clone().unwrap_or(Type::Bottom),
-        ..FnType::default()
+        _ => None,
     };
     let own = |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
-    Type::Fn(Arc::new(ft)).scope_refs(scope).variable_union(env, &own)?;
+    let enclosing =
+        || std::iter::once(literal!("self")).chain(head.iter().map(|h| h.name.clone()));
+    for (t, at) in
+        typ.map(|t| (t, value)).into_iter().chain(written.as_ref().map(|t| (t, lambda)))
+    {
+        let t = t.scope_refs(scope);
+        let judged = t.variable_union(&ctx.env, &own)?;
+        defer_variable_unions(ctx, judged, &t, enclosing(), &at.ori, at.pos);
+    }
     Ok(())
 }
 
@@ -379,12 +392,16 @@ impl<R: Rt> Trait<R> {
             )
         }
         let tref = trait_ref(&scope.lexical, &t.name, spec.pos, &spec.ori);
-        let mut sigs = t
-            .methods
-            .iter()
-            .map(|m| method_decl(&ctx.env, m, &tref, &scope.lexical, &t.name, spec.pos))
-            .collect::<Result<LPooled<Vec<_>>>>()
-            .at(&spec)?;
+        let mut sigs: LPooled<Vec<TraitMethodSig>> = LPooled::take();
+        for m in t.methods.iter() {
+            let (sig, judged) =
+                method_decl(&ctx.env, m, &tref, &scope.lexical, &t.name, spec.pos)
+                    .at(&spec)?;
+            let typ = Type::Fn(sig.typ.clone());
+            let enclosing = std::iter::once(literal!("self"));
+            defer_variable_unions(ctx, judged, &typ, enclosing, &spec.ori, sig.pos);
+            sigs.push(sig);
+        }
         let def = ctx
             .env
             .deftrait(
@@ -403,7 +420,7 @@ impl<R: Rt> Trait<R> {
             // bound under a name no method call reaches (`#show`): a
             // bare `show` in a sibling default is the dispatcher
             if let Some(body) = &m.default {
-                written_method_unions(&ctx.env, body, &dscope.lexical, &[]).at(body)?;
+                written_method_unions(ctx, None, body, &dscope.lexical, &[]).at(body)?;
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
                 let name =
@@ -835,7 +852,14 @@ impl<R: Rt> Impl<R> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
-            written_method_unions(&ctx.env, &b.value, &bscope.lexical, &params).at(m)?;
+            written_method_unions(
+                ctx,
+                b.typ.as_ref(),
+                &b.value,
+                &bscope.lexical,
+                &params,
+            )
+            .at(m)?;
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
                 rec: b.rec,

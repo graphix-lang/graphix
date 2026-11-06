@@ -1431,6 +1431,13 @@ impl FnType {
     // lang::traits::trait_method_self_beside_a_variable, impl_head_union_of_variables; guards impl_method_written_variable_union_refused, default_body_written_variable_union_refused.
     // The pair-budget fixtures lang::errors::two_cells_behind_one_name_past_the_pair_budget_* wrote [Tags, F<'a>, F<'b>] over F<'t> = ['t, null], now refused: rewritten to F<'t> =
     // [Array<'t>, null]. Probes ~/ptmp/cr29/scratch/r19-d7/r2/.
+    // 2026-11-06 claude: Repair 2 (review r20 of lane d7) of (b): the judgment's walk expands each typedef application once inside function types and once outside, and gathers an
+    // application's union-member variables once (settle.rs VariableUnions::unfolded, members, app_members), so a DAG of typedefs (A_k<'x,'y> = [A_{k-1}<'x,'y>, A_{k-1}<'y,'x>]) is
+    // judged in linear time where it was n*2^n; a trait's method declaration, a default body and an impl method through a typedef the block declares below them wait for the check's
+    // end as a lambda's do (lambda::defer_variable_unions); an impl method's let annotation is judged as its lambda's is (traits::written_method_unions). Pins that fail without it:
+    // lang::types::variable_union_judges_a_typedef_dag_once_per_application and variable_union_in_a_typedef_dag_refused (40 levels; hung past 9 minutes without it),
+    // lang::traits::{trait_method,default_body,impl_method}_through_a_later_typedef_refused, impl_method_let_annotation_variable_union_refused; twins
+    // trait_method_through_a_later_typedef_at_a_written_type, impl_method_let_annotation_one_variable.
     // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
     // more bare type variables in a written function type, but a union of members that
     // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member
