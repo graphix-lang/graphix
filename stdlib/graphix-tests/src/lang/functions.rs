@@ -2874,6 +2874,21 @@ run!(array_defaults_passed_on_annotated, r#"{
     "[array::len(fs)] [fs[1]$(7)] [fs[0]$(7)]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "2 q 1"); FuseExpect::None);
 
+// Only one of the functions met has the default: no annotation of the
+// label holds it, so the refusal names none.
+run!(one_met_default_names_no_annotation, r#"{
+    let f = |#x = 1, y| x == y;
+    let g = |y: string| y == "s";
+    let t = sys::time::timer(duration:10.ms, false);
+    let b = select t { _ => true };
+    let pick: fn(y: string) -> bool = g;
+    pick <- select b { true => f, false => g };
+    pick(t ~ "s")
+}"#, |v: Result<&Value>| matches!(v, Err(e) if {
+    let e = format!("{e:#}");
+    e.contains("string does not contain i64") && !e.contains("share one")
+}); FuseExpect::None);
+
 run!(array_defaults_with_declared_types, r#"{
     let fs = [
         |#d: [i64, string] = 1, x: i64| cast<string>(d)$,

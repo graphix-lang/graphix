@@ -278,6 +278,14 @@ enum Judge {
 // array_defaults_of_three_named; the note: array_defaults_passed_on_name_the_annotation,
 // its annotated twin array_defaults_passed_on_annotated passes. Nested arrays are
 // array-defaults-nested-01.
+// 2026-11-06 claude: Repair (review r19): met_default_note named the annotation wherever
+// the value's type met two or more definitions, so x-typecheck-generics-04b (f = |#x = 1,
+// y| x == y met with g, which has no #x) was told to widen #x, which no annotation makes
+// pass. The note now needs two or more of the met definitions to have a default for the
+// label. Pin that fails without it: lang::functions::one_met_default_names_no_annotation.
+// Left: ad_write.gx (two met defaults where the first body adds d) still gets the note,
+// whose annotation its body refuses; telling that apart needs the bodies checked at the
+// union, more than a message is worth.
 #[allow(clippy::too_many_arguments)]
 fn checked_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -370,9 +378,9 @@ fn judge_hidden_defaults<R: Rt>(
     value: &FnType,
 ) -> Result<()> {
     let ids = value.lambda_ids.ids();
-    let met = ids.len() > 1;
-    for id in ids.iter() {
-        let def = ctx.lambda_defs.get(id).cloned();
+    let defs: SmallVec<[Option<Value>; 2]> =
+        ids.iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
+    for def in defs.iter() {
         let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()) else {
             continue;
         };
@@ -398,17 +406,31 @@ fn judge_hidden_defaults<R: Rt>(
                 Judge::Check,
                 None,
             )
-            .map_err(|e| met_default_note(e, met, name))?;
+            .map_err(|e| met_default_note::<R>(e, &defs, name))?;
             ctx.discard(node);
         }
     }
     Ok(())
 }
 
-/// A refused default of one of several functions met into one type names
-/// the annotation that holds them all.
-fn met_default_note(e: anyhow::Error, met: bool, name: &ArcStr) -> anyhow::Error {
-    if !met {
+/// A refused default of one of several functions met into one type,
+/// two or more of `defs` with a default for `name`, names the annotation
+/// that holds them all.
+fn met_default_note<R: Rt>(
+    e: anyhow::Error,
+    defs: &[Option<Value>],
+    name: &ArcStr,
+) -> anyhow::Error {
+    let defaulted =
+        defs.iter()
+            .filter_map(|d| d.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()))
+            .filter(|f| {
+                f.typ.args.iter().zip(f.argspec.iter()).any(|(a, spec)| {
+                    a.label() == Some(name) && spec.kind.default().is_some()
+                })
+            })
+            .count();
+    if defaulted < 2 {
         return e;
     }
     e.context(format_compact!(
@@ -2924,7 +2946,7 @@ impl<R: Rt> CallSite<R> {
                         Judge::Check,
                         Some(&mut *held_in),
                     )
-                    .map_err(|e| met_default_note(e, ids.len() > 1, name))?;
+                    .map_err(|e| met_default_note::<R>(e, &defs, name))?;
                 if carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
                 }
