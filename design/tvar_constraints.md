@@ -344,9 +344,12 @@ walk that warns of a later block's names (`warn_written`; a variable an
 enclosing definition declares is not its own; a method in an impl or a
 trait's default body is judged over the types it writes itself, an impl
 `let`'s annotation and every lambda its value writes outside a lambda's
-body (its own, one a call that builds it is handed, a labeled default's),
-the rest being its trait's declaration, and an impl's head variables are
-the impl's: `traits::written_method_unions`), a `.gxi` val in the walk that resolves
+body: in its own lambda's signature, the rest being its trait's
+declaration, an impl's head variables and `self` are the impl's, and every
+other lambda there (one a call that builds it is handed, a labeled
+default's, one in a block) names variables of its own, as at the top
+level, since no definition encloses a method's scope:
+`traits::written_method_unions`), a `.gxi` val in the walk that resolves
 its names in the interface (`module::check_interface_names`), a trait
 method's declaration in the walk that defers its names (`Trait::typecheck0`,
 where `self`, a written type at every impl, is no variable) and a

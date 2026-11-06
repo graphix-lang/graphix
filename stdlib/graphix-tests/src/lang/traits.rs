@@ -3243,19 +3243,104 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A lambda in a block of a method's value is the method's too: an impl's
-// head variables are the impl's there.
+// Only the method's own lambda holds an impl's head variables and `self`:
+// every other lambda its value writes outside a lambda's body names
+// variables of its own, as at the top level.
 run!(
-    impl_head_variables_in_a_block_lambda,
-    is(Value::I64(0)),
+    impl_head_variables_in_a_block_lambda_are_its_own,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> i64 };
         impl<'a, 'b> T for Array<['a, 'b]> {
-            let m = { let g = |x: ['a, 'b]| -> i64 0; |s| 0 }
+            let m = { let g = |x: ['a, 'b], y: 'b, z: 'a| -> i64 0; |s| g(1, 1, "s") }
         };
         let result = T::m([1])
     "#
 ; FuseExpect::None);
+
+run!(
+    impl_head_variable_in_a_block_lambda_is_generic,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> {
+            let m = { let g = |x: 'a| -> i64 0; |s| g(1) + g("s") }
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+run!(
+    self_in_a_lambda_a_call_builds_the_method_from,
+    refused("[self, 'b] is a union of the type variables 'b and 'self"),
+    "/test.gx" => r#"
+        let mk = |f: fn(x: [i64, string], y: string) -> i64| |s: i64, n: i64| -> i64 f(n, "s");
+        trait Sz { val sz: fn(self, n: i64) -> i64 };
+        impl Sz for i64 { let sz = mk(|x: [self, 'b], y: 'b| -> i64 0) };
+        let result = Sz::sz(1, 2)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_head_variables_in_a_method_default_lambda_are_its_own,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#g: fn(x: Array<i64>) -> i64, self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> {
+            let m = |#g = |x: Array<['a, 'b]>| -> i64 0, s| array::len(s)
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_head_variables_in_a_default_block_lambda_are_its_own,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#g: fn(x: i64) -> i64, self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> {
+            let m = |#g = { let h = |z: ['a, 'b]| -> i64 0; |x: i64| -> i64 x }, s| array::len(s)
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+// In the body of a lambda other than the method's own, the head's names
+// are that lambda's or its own.
+run!(
+    impl_head_variables_in_a_default_lambda_body_are_its_own,
+    refused("['a, 'b] is a union of the type variables 'a and 'b"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#g: fn(x: i64) -> i64, self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> {
+            let m = |#g = |x: i64| -> i64 { let h = |z: ['a, 'b]| -> i64 0; x }, s| array::len(s)
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_head_variable_in_a_default_lambda_body_is_generic,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#g: fn(x: i64) -> i64, self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> {
+            let m = |#g = |x: i64| -> i64 { let h = |z: 'a| -> i64 0; h(1) + h("s") + x }, s| array::len(s)
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::Jit);
+
+// The method's own lambda writes the head's variables.
+run!(
+    impl_method_lambda_writes_the_head_union,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a, 'b> T for Array<['a, 'b]> { let m = |s: Array<['a, 'b]>| array::len(s) };
+        let result = T::m([1])
+    "#
+; FuseExpect::Jit);
 
 run!(
     block_lambda_in_a_method_variable_union_refused,

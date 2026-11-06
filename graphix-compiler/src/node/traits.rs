@@ -243,38 +243,56 @@ pub(crate) fn impl_outside_functions(
 /// annotation `typ` or a lambda its `value` writes outside every lambda's
 /// body, a labeled default's included ([`Type::variable_union`]): those
 /// lambdas compile in the method's scope, which a lambda's own check
-/// leaves to this one. The types its trait's declaration fills in were
-/// judged at the trait, and an impl's `head` variables and `self` are the
-/// implementation's.
+/// leaves to this one. The method's own lambda (the value, through
+/// parentheses) holds what its trait's declaration fills in, judged at the
+/// trait, and there an impl's `head` variables and `self` are the
+/// implementation's; every variable of any other is its own, since no
+/// definition encloses a method's scope.
 fn written_method_unions(typ: Option<&Type>, value: &Expr, head: &[TVar]) -> Result<()> {
-    let own = |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
+    let implements =
+        |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
     if let Some(t) = typ {
-        t.variable_union(&own)?
+        t.variable_union(&implements)?
     }
-    method_scope_lambdas(value, &own)
-}
-
-fn method_scope_lambdas(e: &Expr, own: &dyn Fn(&TVar) -> bool) -> Result<()> {
-    ensure_sufficient(|| match &e.kind {
+    let method = value.unparen();
+    match &method.kind {
         ExprKind::Lambda(l) => {
-            let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
-            let written = written
-                .chain(l.constraints.iter().map(|(_, t)| t))
-                .chain(l.rtype.iter())
-                .chain(l.throws.iter());
-            for t in written {
-                t.signature_variable_union(own).map_err(anyhow::Error::from).at(e)?
-            }
+            signature_unions(method, l, &implements)?;
             l.args
                 .iter()
                 .filter_map(|a| a.kind.default())
-                .try_for_each(|d| method_scope_lambdas(d, own))
+                .try_for_each(method_scope_lambdas)
+        }
+        _ => method_scope_lambdas(value),
+    }
+}
+
+fn signature_unions(e: &Expr, l: &LambdaExpr, own: &dyn Fn(&TVar) -> bool) -> Result<()> {
+    let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
+    let written = written
+        .chain(l.constraints.iter().map(|(_, t)| t))
+        .chain(l.rtype.iter())
+        .chain(l.throws.iter());
+    for t in written {
+        t.signature_variable_union(own).map_err(anyhow::Error::from).at(e)?
+    }
+    Ok(())
+}
+
+fn method_scope_lambdas(e: &Expr) -> Result<()> {
+    ensure_sufficient(|| match &e.kind {
+        ExprKind::Lambda(l) => {
+            signature_unions(e, l, &|_| true)?;
+            l.args
+                .iter()
+                .filter_map(|a| a.kind.default())
+                .try_for_each(method_scope_lambdas)
         }
         _ => {
             let mut res = Ok(());
             e.for_each_child(&mut |c| {
                 if res.is_ok() {
-                    res = method_scope_lambdas(c, own)
+                    res = method_scope_lambdas(c)
                 }
             });
             res

@@ -2439,8 +2439,8 @@ impl Lambda {
             })?;
         }
         // a lambda in a method's value outside every lambda's body is judged
-        // over what it writes itself, its impl or trait filling in the rest
-        // (traits::written_method_unions)
+        // at its method (traits::written_method_unions), where the method's
+        // own lambda is told from what its trait fills in
         let in_method = || {
             Path::parts(&*scope.lexical)
                 .filter(|p| crate::is_fn_block(p) || crate::is_method_block(p))
