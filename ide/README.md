@@ -148,9 +148,10 @@ colors at all — the whole query is refused), the regex ones die quiet
    `editors/vscode/syntaxes/graphix.tmLanguage.json` and
    `book/theme/graphix-highlight.js` — regex highlighters, no grammar
    to check them against.
-5. `skills/graphix-lang/SKILL.md` — the quietest of all: an agent
-   reading a stale rule writes the old form, and `--check` is the only
-   thing that tells it. Fix the rule, and when awkward code came from a
+5. `skills/graphix-lang/` — the quietest of all: an agent reading a
+   stale rule writes the old form, and `--check` is the only thing that
+   tells it. Its `graphix,cases` fences fail the gate when they go stale;
+   its prose does not. Fix the rule, and when awkward code came from a
    rule that was missing rather than wrong, add the rule.
 
 The gate for 1–3 is `cargo test -p graphix-types queries_compile`

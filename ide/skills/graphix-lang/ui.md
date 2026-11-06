@@ -5,7 +5,7 @@ return one widget, usually under `input_handler(#handle: &f, &widget)`
 where `f: |e: Event| -> [`Stop, `Continue]`. Widget arguments are `&`
 references; import each widget by name, `use tui::{block::block, list::list}`.
 
-```graphix
+```graphix,fragment
 let handle = |e: Event| on_press(e, |k| select k.code {
   kk@ `Up | kk@ `Char("k") if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop },
   _ => `Continue

@@ -25,6 +25,11 @@ costs more: when in doubt, read it.
 | write a TUI or GUI | `ui.md` |
 | call a package beyond core, `sys::net`'s rpc, or a line reader | `stdlib.md`, and the package's `.gxi` |
 
+A ```` ```graphix,cases ```` fence holds one program a line, as `--check`
+judges it: `ok`, or `no "text"`, refused with that text in its message. The
+gate checks every line (`examples_compile.rs`), so these are the claims you
+can trust as written. A claim about what the check does goes in one.
+
 ## Running and checking
 
 ```sh
@@ -180,12 +185,16 @@ Expression-oriented; the last expression of a file or block is its value;
 `;` separates statements inside blocks; blocks need two or more
 elements (`{x + 1}` is a syntax error; `(x)` is grouping, not a 1-tuple).
 
-```graphix
-let x = 42
-let x: i64 = 42
-let (a, b) = (1, 2)
-let {x, y} = point
-let rec f = |n| ...            // recursive binding (monomorphic)
+```graphix,cases
+no "at least 2 expressions" {x + 1}
+```
+
+```graphix,fragment
+let x = 42;
+let x: i64 = 42;
+let (a, b) = (1, 2);
+let {x, y} = point;
+let rec f = |n| f(n);          // recursive binding (monomorphic)
 let result = { let tmp = compute(); tmp + 1 }
 ```
 
@@ -203,7 +212,7 @@ the one that leaves fewer names live in the function's scope.
 
 Structural: same shape, same type.
 
-```graphix
+```graphix,ignore
 bool string bytes null  i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 decimal
 datetime duration  v32 v64 z32 z64
 Array<i64>  Map<string, i64>  List<i64>   // List: [<1, 2>] literals, O(1) tail
@@ -234,7 +243,7 @@ refused as a written value or a read target.
 
 ## Literals
 
-```graphix
+```graphix,ignore
 42  3.14  true  false  null   u8:100  f32:3.14   // non-i64/f64 numbers are typ:value
 "hello [name]!"                 // interpolation; escape \[ \] in literals
 """bare " [ ] ok, splice \[x]"""  // template: brackets are content, \[expr] interpolates
@@ -243,6 +252,13 @@ r"verbatim"  r#"has "quotes""#
 `Foo  `Bar(42)
 datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns us ms s m h d M y
 {s with field: v}               // functional update
+```
+
+```graphix,cases
+ok [duration:1.0s, duration:500.ms]
+ok let x = 1; """bare " [ ] ok, splice \[x]"""
+ok [r"verbatim", r#"has "quotes""#]
+ok {"a" => 1}
 ```
 
 ## Operators (highest first)
@@ -289,14 +305,31 @@ Access: `s.f`, `t.0`, `mod::name`. `a[i]`, `a[-1]`, `a[1..3]` and
 `m{"k"}` are Results (`[T, Error<`ArrayIndexError(string)>]` and the
 like), so `a[1] + 1` is refused: unwrap, `a[i]$` or `a[i]?`.
 
+```graphix,cases
+no "cannot compare" let x: [i64, null] = 3; x == 3
+no "cannot compare" let v: [`Green, `Red] = `Red; v == `Red
+ok let a: [i64, f64] = i64:3; let b: [i64, f64] = f64:3.0; a == b
+no "can't order values" let a: [i64, f64] = i64:3; let b: [i64, f64] = f64:3.0; a < b
+no "more than one numeric type" |a: Number, b: Number| a + b
+ok let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
+no "cannot compute" let x: [i64, null] = 3; x + 1
+ok let x: [i64, null] = 3; x$ + 1
+no "cannot compute" let a = [1, 2]; a[1] + 1
+ok let a = [1, 2]; a[1]$ + 1
+no "Number does not contain datetime" let d = datetime:"2020-01-01T00:00:00Z"; d - d
+ok let d = datetime:"2020-01-01T00:00:00Z"; sys::time::diff(d, d)
+no "not known here" |r| r?
+ok |r: Result<i64, `E>| r?
+```
+
 ## Functions
 
-```graphix
-let f = |x| x + 1
-let h = |x: i64, y: i64| -> i64 x + y
-let add = 'a: Number |x: 'a, y: 'a| -> 'a x + y
-let greet = |#greeting = "hello", name| "[greeting], [name]!"   // labeled args
-greet(#greeting: "hi", "world")   // labeled always by name, before positionals
+```graphix,fragment
+let f = |x| x + 1;
+let h = |x: i64, y: i64| -> i64 x + y;
+let add = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+let greet = |#greeting = "hello", name| "[greeting], [name]!";   // labeled args
+greet(#greeting: "hi", "world");   // labeled always by name, before positionals
 let f = |@args: i64| args         // variadic (builtins only)
 ```
 
@@ -306,6 +339,15 @@ of a generic name or of a field read of one. Anything else is one instance,
 which its uses decide: a function a call returns, an element, a reference, a
 binding something writes. A signature's variables, bounds and unions have
 rules the check enforces and names: `generics.md`.
+
+```graphix,cases
+ok let f = { let n = 1; |x| x }; (f(1), f("s"))
+ok let s = {f: |x| x}; (s.f(1), s.f("a"))
+ok let s = {g: |x| x}; let j = s.g; (j(1), j("s"))
+no "i64 does not contain string" let mk = |z| |x| x; let h = mk(0); (h(1), h("s"))
+ok let mk = |z| |x| x; let a = mk(0); let b = mk(0); (a(1), b("s"))
+no "i64 does not contain string" let s = {g: |x| x}; let j = s.g; let r = &mut j; (j(1), j("s"))
+```
 
 Calls resolve statically where the compiler can trace the function. A
 function-variable write fires its call's current result even when it
@@ -352,6 +394,10 @@ the value, `on_press(e, f) -> [`Stop, `Continue]`, never a function to
 be applied later: `|e: Event| on_press(e, f)` at the use site is the
 partial application, written out.
 
+```graphix,cases
+no "missing required argument" let add = |a: i64, b: i64| a + b; add(1)
+```
+
 ## Annotations
 
 Do not write a type annotation unless the checker asks for one. It
@@ -373,10 +419,21 @@ inferred return crosses modules, and a caller reads a field of a generic
 function's result (`h(1).v` over `|x: 'a| {v: x}`) with no `-> T`. To
 find the set: strip, `--check`, restore what it names.
 
+```graphix,cases
+no "type mismatch fn(acc" array::fold([1], null, |acc, x| x)
+ok let init: [i64, null] = null; array::fold([1], init, |acc, x| x)
+ok let h = |x: 'a| {v: x}; h(1).v
+```
+
 A generic function's variable that only data holds takes the widest
 argument, in either order; an argument still undecided (a `str::parse`, a
 `let` over `never()`, `[]`) takes what the others decide, or is refused,
 "annotate it": annotate the read. `generics.md` has the rest.
+
+```graphix,cases
+ok let s = "1"; opt::or_default(str::parse(s)$, 0)
+no "undecided at this" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
+```
 
 ## Select
 
@@ -413,7 +470,7 @@ across a bottom cycle).
 - References, functions and a type holding two numeric types cannot
   be ordered, sorted or used as map keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
-```graphix
+```graphix,fragment
 select x {
   i64 as n => n + 1,              // type test
   (f64, f64) as (n, a) => n / a,  // the WHOLE type comes before the structure pattern;
@@ -434,6 +491,15 @@ select x {
 }
 ```
 
+```graphix,cases
+ok let x: [i64, string] = 1; select x { Number as n => n + 1, s => 0 }
+no "a `,` separates" let x = (1.0, 2.0); select x { (f64 as n, f64 as a) => 1 }
+ok let v: [`A(i64), `B(i64), `C] = `C; select v { `A(m) | `B(m) => m, _ => 0 }
+no "unreachable arm" let b = true; let r = select b { true => never(), false => error(`E) }; select r { error as e => 1, v => 2 }
+ok let b = true; let r: [i64, Error<`E>] = select b { true => never(), false => error(`E) }; select r { error as e => 1, v => 2 }
+no "unreachable arm" |x| select x { null as _ => 0, v => v }
+```
+
 ## Connect
 
 `x <- e` is the only way to make a cycle; the write lands next cycle.
@@ -446,7 +512,7 @@ to pause; an arm with a `<-` sleeps when unselected.
 For multi-step ceremonies (a request, then a reply, then a write).
 Straight-line only; no `if`/loops inside.
 
-```graphix
+```graphix,fragment
 // seqq queues triggers; seq drops while busy
 let r = seqq request {
   let cfg = load(request);         // a call is issued once per entry over a snapshot of its args
@@ -465,10 +531,15 @@ A step whose value never fires stalls the run, and so does a `d$` in a step
 over a null; a stalled `seqq` queues every later trigger forever. Read
 `seq.md` before writing one: triggers, `abort`, `flush`, what a step waits for.
 
+```graphix,cases
+no "means nothing outside a seq" let x = 1; live(x)
+no "catch is not allowed inside a seq" let t = 1; seq t { catch(e) 1; 2 }
+```
+
 ## Errors
 
-```graphix
-error(`NotFound("missing"))?     // raise to the nearest catch
+```graphix,fragment
+error(`NotFound("missing"))?;    // raise to the nearest catch
 { catch(e) msg <- "[e.0.error]"; risky()?; more()? }   // catch INSTALLS a handler for the rest of its block
 ```
 
@@ -477,6 +548,11 @@ raised `E`: the raised value is `e.0.error` (`e.0` also holds the site,
 `pos` and `ori`, and the `cause`). Match on that, `` select e.0.error {
 `NotFound(s) => .. } ``; `` select e { `NotFound(s) => .. } `` is refused
 as never matching.
+
+```graphix,cases
+no "will never match" { catch(e) select e { `NotFound(s) => 1, _ => 2 }; error(`NotFound("m"))? }
+ok { catch(e) select e.0.error { `NotFound(s) => 1 }; error(`NotFound("m"))? }
+```
 
 `catch` is not control flow: the handler is a reactive expression.
 Read its binder to drive it on errors: `catch(e) failed <- e ~ true`.
@@ -581,20 +657,25 @@ an event samples it: see the banking under `$` gates).
 
 The packages, `queuefn`, RPC calls and line readers: `stdlib.md`.
 
+```graphix,cases
+ok range(0, 3)
+no "sync variadic" str::concat()
+```
+
 ## Idioms
 
-```graphix
-let clock = sys::time::timer(duration:1.s, true)
-let count = 0
-count <- clock ~ count + 1                        // driven counter
-data <- array::window(#n: 60, v ~ data, cast<f64>(v)?)   // sliding window
-select x { n if n < limit => x <- x + 1, _ => never() }  // state that stops
+```graphix,fragment
+let clock = sys::time::timer(duration:1.s, true);
+let count = 0;
+count <- clock ~ count + 1;                       // driven counter
+data <- array::window(#n: 60, v ~ data, cast<f64>(v)?);  // sliding window
+select x { n if n < limit => x <- x + 1, _ => never() };  // state that stops
 // first element passing a test: filter_map, then an emptiness select —
 // never map to options and find the non-null one
 select array::filter_map(xs, |x| select probe(x) { error as _ => null, v if ok(v) => `Keep(x), _ => null }) {
   [] => `Absent,
   [a, ..] => `Present(a)
-}
+};
 let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
 ```
 
@@ -602,7 +683,7 @@ State loaded once is a triggerless `seq` whose value is the state, and
 the state's absence is the sequencing: every reader (an edit's
 `upsert(known, ..)` in a seq step) waits for the load, with no flag.
 
-```graphix
+```graphix,ignore
 let known: Book = seq {
   let blank: Book = { domains: [] };
   let book = select sys::fs::is_file(path) {
@@ -622,7 +703,7 @@ variable race when one replaces it wholesale (a file load landing after
 a seed erases the seed). State holds only what is written; the merged
 view is a pure select over its sources:
 
-```graphix
+```graphix,fragment
 let known = select local_domain(true) { null as _ => book, own => upsert(book, own) }
 ```
 
@@ -663,3 +744,10 @@ away the element it had in hand. Build the final row there:
   leaves in a binding (`let j = s.g`) stays generic: each later use
   copies it, `j(1)` and `app(j)` alike.
 - `--check` a witness before arguing about a semantics question.
+
+```graphix,cases
+ok {type: 1}
+no "declare it before its first use" { let a = W(1); type W = Abstract<i64>; a }
+ok let e = []; e <- [1]; e
+ok let f = |x: i64| #[native] x + 1; 1
+```

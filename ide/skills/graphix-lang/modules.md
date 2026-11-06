@@ -2,7 +2,7 @@
 
 Beyond the import rules in `SKILL.md`.
 
-```graphix
+```graphix,fragment
 use package::{AdminError, Target, ceremony::{questions, result}};
 use super::{Toast, admin_text, panels::{self, CloseReason}};
 use tui::{

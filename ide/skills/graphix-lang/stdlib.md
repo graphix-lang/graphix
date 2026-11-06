@@ -71,3 +71,11 @@ wait, not the server: its handler still runs. An arm's sleep abandons its
 calls silently (no `` `Aborted ``); the last completed result survives,
 and waking sends nothing. To observe a result, keep the call outside a
 sleeping arm or in a seq step that waits for it.
+
+## Claims
+
+```graphix,cases
+no "type mismatch fn(x" array::filter_map([1], |x| x)
+ok array::filter_map([1, null, 2], |x| select x { null as _ => null, v => `Keep(v) })
+ok let v = 1; let data = [1.0]; array::window(#n: 60, v ~ data, cast<f64>(v)?)
+```

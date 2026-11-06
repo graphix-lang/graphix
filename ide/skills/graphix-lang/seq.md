@@ -12,6 +12,10 @@ first complete external snapshot and run in arrival order.
 `seq let c = (*r)$ { .. c.f .. }`
 is how a nullable reference is consumed; `(*r).f` is refused.
 
+```graphix,cases
+no "expected a reference not null" let v = {f: 1}; let r: [&{f: i64}, null] = &v; (*r).f
+```
+
 `seq go; abort(cancel) { .. }` ends the run in progress when `cancel`
 fires: silently (no value, no error, a `try` is not taken), and the next
 trigger starts fresh. The event is the run's first step, asleep between
@@ -38,8 +42,8 @@ A busy flag set on a trigger, a call sampled on that trigger, and the
 flag cleared on the result is a seq written by hand, three statements
 apart:
 
-```graphix
-busy <- go ~ true;  let r = f(go ~ x);  busy <- r ~ false      // never this
+```graphix,fragment
+busy <- go ~ true;  let r = f(go ~ x);  busy <- r ~ false;     // never this
 let r = seqq go { busy <- true; let r = f(x); busy <- false; r }   // this
 ```
 
@@ -52,8 +56,8 @@ state write and a separate "go" pulse are two statements someone must
 keep paired, and the effect reads the state later, not the value that
 caused it:
 
-```graphix
-book <- upsert(book, x); save <- ev       // never this, at every writer
+```graphix,fragment
+book <- upsert(book, x); save <- ev;      // never this, at every writer
 let edit = never();  book <- edit;        // this: writers do `edit <- upsert(book, x)`
 seqq let b = edit { write(path, b)? }
 ```

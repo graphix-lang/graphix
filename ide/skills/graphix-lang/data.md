@@ -55,3 +55,8 @@ except for i64/f64. Bytes print as `bytes:` literals. Only `str::parse` also
 reads printed UTC datetimes, every printed duration unit and bare
 NaN/inf/-inf. These do not extend source syntax.
 Error diagnostics keep unescaped brackets in their strings.
+
+```graphix,cases
+no "JsonData refuses" let v: [i64, string] = 1; json::write_str(v)
+ok let v: [`N(i64), `S(string)] = `N(1); json::write_str(v)
+```

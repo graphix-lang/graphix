@@ -16,12 +16,27 @@ may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
 bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
 then one type, the first call's.
 
+```graphix,cases
+no "declared but the signature does not hold" 'a: Number |x: i64| -> i64 { let v: 'a = 1; x }
+no "declared but the signature does not hold" let f: fn<'a: Number>(x: i64) -> i64 = |x| x; f(1)
+no "bound names" 'a: [i64, Array<'a>] |x: 'a| x
+no "bound reaches" 'a: 'b, 'b: 'a |x: 'a, y: 'b| x
+no "escapes the definition" let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f(1)
+ok let y = never(); let f = |x: 'a| -> 'a { y <- x; x }; f(1)
+```
+
 A signature may not write a union of two of its type variables, `|x:
 ['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
 trait method's alike, nor a function type a `let` annotation writes: no
 value's type says which variable it takes. Keep one variable there
 (`['a, null]` and a method's `[self, 'a]` are fine) or write the types
 (`[i64, string]`).
+
+```graphix,cases
+no "union of the type variables" |x: ['a, 'b]| 1
+no "union of the type variables" |x: Array<['a, 'b]>| 1
+ok |x: ['a, null]| 1
+```
 
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
@@ -33,6 +48,14 @@ is refused: declare the variable on the definition, `'a: Number |f:
 fn(x: 'a) -> 'a, x: 'a| f(x)`, write the parameter as a trait, `|c:
 Collection| ..`, or bind the generic function with `let` and call it by
 name.
+
+```graphix,cases
+no "type variables of its own" |f: fn<'a: Number>(x: 'a) -> 'a| 1
+no "type variables of its own" let g: fn<'a: Number>(x: 'a) -> 'a = |x| x; g(1)
+no "type variables of its own" let f = |g: fn(c: Collection) -> i64| 1; 1
+ok let g = 'a: Number |f: fn(x: 'a) -> 'a, x: 'a| f(x); g(|x| x, 1)
+ok |c: Collection| 1
+```
 
 A function stays generic only where a binding names it: a `let` of a
 lambda (or of a data literal holding lambdas, below), a `val`, a trait
@@ -57,6 +80,13 @@ module's parent, a later REPL input) must be as general as the binding,
 and a `&mut` of it is refused: to write it at one type, write that type
 on its `let` (`let j: fn(x: i64) -> i64 = s.g`).
 
+```graphix,cases
+no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
+ok let fs = array::map([1], |r| |x| x); let g = fs[0]$; g(1)
+no "i64 does not contain string" let id = |x| x; let g = (id, 1).0; (g(1), g("s"))
+no "i64 does not contain string" let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
+```
+
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
 serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
@@ -73,6 +103,13 @@ A `let` nothing writes or annotates reads `s` once in its value,
 wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
 fn(x: i64) -> i64}` makes `t.a.f` take `i64` too.
 
+```graphix,cases
+ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
+no "i64 does not contain string" let fs = [|#d = 1, x: i64| x, |#d = "q", x: i64| x]; array::len(fs)
+ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
+ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
+```
+
 A sample is no binding: under a binding made generic before the write,
 `m::c <- t ~ {f: |x| x}` holds one instance and is refused, where the direct
 `m::c <- {f: |x| x}` names its lambda. Write it on a trigger by giving the
@@ -85,6 +122,12 @@ closed defaulted parameter type. Annotate the factory's parameter
 variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
 y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`; a type written
 inside the default (`= |q: i64| -> 'a z`) names it too.
+
+```graphix,cases
+no "enclosing open type" |z| { let g = |#d = z, x| (d, x); g }
+ok |z: i64| { let g = |#d = z, x| (d, x); g }
+ok |z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }
+```
 
 A generic function's variable that only data holds takes the widest
 argument, in either order, an omitted labeled default included (one

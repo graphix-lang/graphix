@@ -71,3 +71,17 @@ select, and runtime forms. Each rule refuses and names the fix.
   `` Array<['b, `Keep('b)]> `` (`[h, ..]` tests nothing and checks). Over
   an unannotated parameter a slice's rest is such a variable: annotate
   the parameter.
+
+```graphix,cases
+no "tests inside" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a, _ => 0 }
+ok 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a: i64, b: string} as {a, ..} => a, i64 as n => n }
+no "tests inside" |x: ['a, null]| select x { null => 0, _ => 1 }
+ok |x: ['a, null]| select x { null as _ => 0, _ => 1 }
+no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { 'c as `A(z) => 1, _ => 2 }
+no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { `A(_) as `A(z) => 1, _ => 2 }
+no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
+ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
+ok |x| select (x, 0) { ((a, b), _) => a }
+ok |x| select x { `J => 1, `M => 2 }
+no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
+```

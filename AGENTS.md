@@ -618,6 +618,11 @@ refusing what the check accepted), `GRAPHIX_DBG_BIND=1` (every tvar bind and
   `examples_test` renders every TUI example and drives some with keys,
   and the GUI examples are run by hand
   (`cargo run --bin graphix -- examples/gui/<name>.gx`).
+- The `graphix-lang` skill (`ide/skills/graphix-lang/`) is tested the same way:
+  `examples_compile.rs` checks every fence in it. A claim about what the check
+  does goes in a ```` ```graphix,cases ```` fence, one program a line, `ok` or
+  `no "text"`, so the text is the test. What fails silently goes in `SKILL.md`,
+  what the check refuses and names in the topic file.
 - A new compiler walk must name the loss without it before it is added;
   the typechecker must stay instant (measure the GUI suite after typing
   changes); predictable fusion is a core value — push on de-fuse corner

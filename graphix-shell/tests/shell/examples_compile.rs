@@ -91,6 +91,7 @@ async fn examples_compile() -> Result<()> {
 struct Fence {
     page: PathBuf,
     at: String,
+    line: usize,
     tag: String,
     body: String,
     shown: Option<String>,
@@ -130,6 +131,7 @@ fn page_fences(page: &Path, text: &str, fences: &mut Vec<Fence>) {
                     Some(tag) => Open::Graphix(Fence {
                         page: page.to_path_buf(),
                         at: format!("{}:{}", page.display(), n + 1),
+                        line: n + 1,
                         tag: tag.trim().to_string(),
                         body: String::new(),
                         shown: None,
@@ -196,6 +198,10 @@ enum Claim {
     Fragment,
     /// `refused`: a program the check refuses.
     Refused,
+    /// `cases`: one program a line, each `ok <program>`, which the check
+    /// accepts, or `no "<text>" <program>`, which it refuses with `text` in
+    /// its message ([`Case`]).
+    Cases,
     /// untagged: a program the check accepts, or a REPL transcript whose
     /// inputs are checked in their page's REPL session.
     Accepted,
@@ -210,6 +216,7 @@ impl Claim {
             () if has("sig") => Self::Sig,
             () if has("fragment") => Self::Fragment,
             () if has("refused") => Self::Refused,
+            () if has("cases") => Self::Cases,
             () => Self::Accepted,
         }
     }
@@ -395,12 +402,67 @@ fn inline_code_opens_no_fence() {
     assert_eq!(fences[0].shown.as_deref(), Some("no"));
 }
 
+/// One line of a `cases` fence.
+enum Case<'a> {
+    Accepted(&'a str),
+    Refused { text: &'a str, program: &'a str },
+}
+
+impl<'a> Case<'a> {
+    fn parse(line: &'a str) -> Result<Self> {
+        if let Some(program) = line.strip_prefix("ok ") {
+            return Ok(Case::Accepted(program.trim()));
+        }
+        let (text, program) =
+            line.strip_prefix("no \"").and_then(|rest| rest.split_once('"')).ok_or_else(
+                || anyhow!("a case is `ok <program>` or `no \"<text>\" <program>`"),
+            )?;
+        Ok(Case::Refused { text, program: program.trim() })
+    }
+
+    /// Why the line's claim is false, if it is false.
+    async fn failure(&self) -> Option<anyhow::Error> {
+        // a parse error is a refusal too, of a program written wrong on purpose
+        let verdict = |r: Result<Result<()>>| r.and_then(|r| r).err();
+        match self {
+            Case::Accepted(program) => verdict(check(program).await),
+            Case::Refused { text, program } => match verdict(check(program).await) {
+                None => Some(anyhow!("the case says refused, but the check accepts it")),
+                Some(e) if !format!("{e:#}").contains(text) => {
+                    Some(anyhow!("the case says `{text}`, the check says {e:#}"))
+                }
+                Some(_) => None,
+            },
+        }
+    }
+}
+
+/// Every false line of a `cases` fence, each at its own line.
+async fn case_failures(f: &Fence) -> Option<String> {
+    let mut failed = vec![];
+    for (i, line) in f.body.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let failure = match Case::parse(line) {
+            Ok(case) => case.failure().await,
+            Err(e) => Some(e),
+        };
+        if let Some(e) = failure {
+            failed.push(format!(
+                "{}:{}: {line}\n    {e:#}",
+                f.page.display(),
+                f.line + 1 + i
+            ));
+        }
+    }
+    (!failed.is_empty()).then(|| failed.join("\n"))
+}
+
 /// Why the page's claim about `f` is false, if it is false: the fence
 /// must hold what its tag says, and a `refused` fence must show which
 /// refusal.
 async fn fence_failure(f: &Fence) -> Option<String> {
     let failed = match Claim::of(&f.tag) {
         Claim::Nothing => return None,
+        Claim::Cases => return case_failures(f).await,
         Claim::Sig => parser::parse_sig(Origin::unspecified(&f.body)).err(),
         Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
         Claim::ReplSetup => return None,
@@ -424,6 +486,59 @@ async fn fence_failure(f: &Fence) -> Option<String> {
         },
     };
     failed.map(|e| format!("{}: {e:#}", f.at))
+}
+
+/// A `cases` line is judged by its verdict and, when refused, its text.
+#[tokio::test(flavor = "multi_thread")]
+async fn cases_fences_judge_each_line() -> Result<()> {
+    let failures = |body: &str| {
+        let page = format!("```graphix,cases\n{body}\n```\n");
+        async move {
+            let mut fences = vec![];
+            page_fences(Path::new("page.md"), &page, &mut fences);
+            assert_eq!(fences.len(), 1);
+            fence_failure(&fences[0]).await
+        }
+    };
+    let good = "ok let x = 1; x + 1\n\nno \"does not contain\" let x: i64 = \"a\"; x";
+    assert_eq!(failures(good).await, None);
+    let accepted = failures("no \"anything\" let x = 1; x").await.expect("accepted");
+    assert!(accepted.contains("the check accepts it"), "{accepted}");
+    let refused = failures("ok let x: i64 = \"a\"; x").await.expect("refused");
+    assert!(refused.contains("page.md:2:"), "{refused}");
+    let other =
+        failures("no \"cannot compare\" let x: i64 = \"a\"; x").await.expect("text");
+    assert!(other.contains("the case says `cannot compare`"), "{other}");
+    let parse = failures("ok let x = ;").await.expect("does not parse");
+    assert!(parse.contains("page.md:2:"), "{parse}");
+    let form = failures("yes let x = 1; x").await.expect("no such form");
+    assert!(form.contains("a case is"), "{form}");
+    Ok(())
+}
+
+/// Every claim the graphix-lang skill makes in a fence holds: the skill's
+/// text is the test's only input, so the two cannot drift.
+#[tokio::test(flavor = "multi_thread")]
+async fn skill_fences_check() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide/skills/graphix-lang");
+    let mut fences = vec![];
+    book_fences(&root, &mut fences)?;
+    let cases =
+        fences.iter().filter(|f| matches!(Claim::of(&f.tag), Claim::Cases)).count();
+    assert!(cases >= 20, "the skill looks wrong: only {cases} cases fences");
+    let failures: Vec<String> = stream::iter(fences.iter())
+        .map(|f| fence_failure(f))
+        .buffer_unordered(8)
+        .filter_map(|r| async move { r })
+        .collect()
+        .await;
+    assert!(
+        failures.is_empty(),
+        "{} skill fence(s) failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    Ok(())
 }
 
 /// Every ```graphix fence in the book holds what its tag claims
