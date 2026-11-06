@@ -1071,7 +1071,9 @@ node graph IS the IR — there is no parallel typed IR
   union collapse requires strict tvar identity (two function types pair
   their cells as a renaming, generic with generic or live with live, never
   a generic cell with a live one, `setops::Identity::cells`;
-  a field read of a union meets its function members); a merge takes the
+  a field read of a union and a select's arms meet their function
+  members, through a copy of a member's generic cells, binding its live
+  ones, `Type::union_of_alternatives`); a merge takes the
   lower of its two cells' levels, a generic survivor included
   (`TVar::merge_one`), so a relation against a scheme instantiates it first
   (`callsite::checked_default`, `Impl::build_prototypes`); in a union checked against

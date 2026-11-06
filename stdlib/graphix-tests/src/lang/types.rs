@@ -7556,3 +7556,47 @@ run!(
     prints("[i64:2, i64:2]");
     FuseExpect::Jit
 );
+
+run!(
+    field_read_of_a_select_of_differing_lambdas_in_a_definition,
+    r#"{
+  let k = |v| {
+    let t = select v > 0 { true => {f: |x| x}, false => {f: |y| y + 1} };
+    let u = select v > 0 { true => (|x| x, 1), false => (|y| y * 3, 2) };
+    let w = select v > 0 { true => {g: {f: |x| x}}, false => {g: {f: |y| y + 1}} };
+    let a = select v > 0 { true => `A({f: |x| x}), false => `A({f: |y| y + 1}) };
+    let g = t.f;
+    [t.f(v), u.0(v) + u.1, w.g.f(v), select a { `A(r) => r.f(v) }, g(v), t.f(3)]
+  };
+  (k(2), k(-2))
+}"#,
+    prints("[[i64:2, i64:3, i64:2, i64:2, i64:2, i64:3], [i64:-1, i64:-4, i64:-1, i64:-1, i64:-1, i64:4]]");
+    FuseExpect::Jit
+);
+
+run!(
+    field_read_of_a_select_passed_to_a_function_in_a_definition,
+    r#"{
+  let k = |v| {
+    let t = select v > 0 { true => {f: |x| x}, false => {f: |y| y + 1} };
+    array::map([v, v + 1], t.f)
+  };
+  (k(2), k(-2))
+}"#,
+    prints("[[i64:2, i64:3], [i64:-1, i64:0]]");
+    FuseExpect::Jit
+);
+
+run!(
+    select_of_lambdas_in_a_definition_called_at_both_branches,
+    r#"{
+  let k = |v| {
+    let s = select v > 0 { true => |x| x, false => |y| y };
+    let t = select v > 0 { true => |x| x, false => |y| y + 1 };
+    (s(v), t(v), array::map([v], t))
+  };
+  (k(2), k(-2))
+}"#,
+    prints("[[i64:2, i64:2, [i64:2]], [i64:-2, i64:-1, [i64:-1]]]");
+    FuseExpect::Jit
+);

@@ -343,7 +343,10 @@ the definition gates:
   its two cells' levels, a generic survivor included (`TVar::merge_one`),
   so a scheme's copy that meets a live cell is that cell's: a struct
   update, an array, list or map of composites, or a tuple holding a
-  written name beside a holder's read is the name's one instance. What a
+  written name beside a holder's read is the name's one instance, where
+  the name's cells meet the copy's; a name over `never()`, whose open
+  cell is bound to the copy and never merged, is not
+  (holder-structwith-written-01). What a
   merge may lower must never be a scheme's own cell, so a relation
   against a scheme instantiates it first: an omitting site outside a
   definition compiles its default among generic cells and judges a copy
@@ -353,7 +356,10 @@ the definition gates:
   with generic or live with live; a scheme's copy never pairs with a live
   cell, which keeps that cell's instance (`setops::Identity::cells`), and
   a field read of a union meets the function members it reads
-  (`data::struct_field_type`, `tuple_field_type`). A written cell is: an enclosing
+  (`data::struct_field_type`, `tuple_field_type`), as a select meets its
+  arms (`Type::union_of_alternatives`): a member's generic cells meet
+  through a copy, and its live cells bind, so a lambda literal in an arm
+  is the instance the call through the union makes. A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
   Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
   of the enclosing definition's inner functions shares.

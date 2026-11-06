@@ -3,7 +3,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, ContainsFlags, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar,
-        Type, TypeRef, contains::on_copies, fntyp::LambdaIds, node_addr,
+        Type, TypeRef, contains::on_copies, fntyp::LambdaIds, node_addr, tvar::Fresh,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -284,6 +284,24 @@ impl Identity {
     // unifies a conditional's branches), or (b) live cells never pair and every pattern
     // bind over a union meets its function members as a field read does. probes:
     // ~/ptmp/cr29/scratch/r19-d12/p/{r8e,h7,h8,u2*}.gx (union-live-renaming-01)
+    // 2026-11-06 claude: Lane d12 round 20: r8e was not live pairing but
+    // Type::meet_open_fns copying the members' live Def-level cells (FnType::instantiate
+    // with no open gates copies every Def cell), so the lambda's own cells learned
+    // nothing; the meet now copies generic cells alone (Fresh::Generic) and binds live
+    // ones, which closes r8e and a select of differing lambdas (pin
+    // lang::types::select_of_lambdas_in_a_definition_called_at_both_branches) and the
+    // field-read forms of review r20 (c1, c2, c7-c10, e5, e7; pins
+    // field_read_of_a_select_of_differing_lambdas_in_a_definition,
+    // field_read_of_a_select_passed_to_a_function_in_a_definition). What this CR still
+    // holds is composites of lambdas that pair as a renaming, which no meet reaches:
+    // inside a definition, picking one of two structs or tuples of lambdas (c5, c6:
+    // (t.f(v), t.f(w)), select t { {f, n} => .. }; e4: array::map(.., t.f) over
+    // identical bodies; reviewer 2's g1: let k = |b| select b { true => s, false => {f:
+    // |y| y} } then k(false).f(2); g8, the tuple form; r8: the identical-body pin called
+    // at both signs) passes --check and fails the run-time bind, main 187fd838d alike:
+    // the plain way of picking one of two handler structs reaches it. h7/h8 unchanged
+    // (NO_SUBST-only). probes
+    // ~/ptmp/cr29/scratch/r20-d12/p/{c5,c6,e4,r2-g1,r2-g8,r2-r8}.gx
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
         if a.same_cell(b) {
             return true;
@@ -669,7 +687,6 @@ impl Type {
         if fns.len() < 2 {
             return Ok(None);
         }
-        let open = nohash::IntSet::default();
         // `group[k]` names the member each of `fns` met into, and `base`
         // holds that group's last met type
         let mut group: SmallVec<[usize; 4]> = (0..fns.len()).collect();
@@ -680,7 +697,9 @@ impl Type {
             if Type::Fn(f.clone()).tvar_free() {
                 continue;
             }
-            let inst = Type::Fn(Arc::new(f.instantiate(&open)));
+            let inst = Type::Fn(Arc::new(
+                f.reset_tvars_int(&mut LPooled::take(), Fresh::Generic),
+            ));
             for (j, (_, g)) in fns.iter().enumerate() {
                 if j == k || met[j] {
                     continue;
