@@ -2779,6 +2779,13 @@ struct Decisions {
 // slice_with_a_rest_beside_an_annotated_member, destructure_under_an_annotated_slice_element;
 // must-reject family 14's beside shape (graphix-fuzz
 // must_reject_families_are_refused_where_their_rules_say, the W(_) subject, fails without).
+// 2026-11-05 claude: Review r16 part 3 (U-r1-1) low: the beside-shape rule follows where the
+// union sits: y = select c { true => (x, 1), false => ((1, 2), 1) } with select y { ((a, b), _)
+// => a + b } (i4c) and i4b over (y, 0) are accepted, since x has no member of its shape beside
+// it at its own position inside the tuple member, while y = x or (1, 2) with select (y, 0) {
+// ((a, b), _) => .. } (i4f) is refused naming x. Not unsound (the arm decides x as a pair and no
+// later use decides it apart); main (base-r16) has the same split. probes:
+// ~/ptmp/cr29/scratch/review-r16/U-r1-1/r16U3/p/i4b.gx, i4c.gx, i4f.gx
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
@@ -2911,6 +2918,13 @@ fn written_tests_decided(
 // that took it apart. None is in the census. probes:
 // ~/ptmp/cr29/scratch/review-r16/U-r1-1/part2/p4/n01.gx, n02.gx, n04.gx, n05.gx;
 // p4.out
+// 2026-11-05 claude: Review r16 part 3 (U-r1-1): two more instances: nm1 (the t5
+// ladder over a cell that is part of y's type, y = x[0]$ or (1, 2), arms ((a, b),
+// 0), ((a, b), _), _), refused by the beside-shape rule with the message that names
+// no binding, where the annotation goes on x; and x8 (a part a pattern bind took
+// apart, ((a, b), _) => select (a, 0) { (1, _) => .. }), refused the same nameless
+// way, where main runs it and prints 2. probes:
+// ~/ptmp/cr29/scratch/review-r16/U-r1-1/r16U3/p/nm1.gx, x8.gx
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is.
 fn undecided_refusal(
