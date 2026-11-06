@@ -1438,6 +1438,14 @@ impl FnType {
     // lang::types::variable_union_judges_a_typedef_dag_once_per_application and variable_union_in_a_typedef_dag_refused (40 levels; hung past 9 minutes without it),
     // lang::traits::{trait_method,default_body,impl_method}_through_a_later_typedef_refused, impl_method_let_annotation_variable_union_refused; twins
     // trait_method_through_a_later_typedef_at_a_written_type, impl_method_let_annotation_one_variable.
+    // 2026-11-06 claude: Lane d7 round 18 part 2 (coordinator's cut): (b) is now the written-form rule alone. Type::variable_union walks the union nodes the source writes in a
+    // function type (under any constructor, a typedef's argument included, M<['a, 'b]>) and looks through no typedef; the expansion judgment (VariableUnions, app_members, the
+    // later-typedef deferral Pending::VariableUnion, the trait and impl deferrals) is deleted. Still open here, typedef-hidden forms, which pass the check and meet in order as on
+    // main: E<'a, 'b> over type E<'p, 'q> = ['p, 'q] (a later block typedef: check accepts, the build refuses the instance, x/t_later.gx), E<'a, Id<'b>> and ['p, Id<'q>] bodies (the
+    // test harness's build refuses the instance the check accepts: 'an instance at fn(x: E<string, Id<i64>>) .. of a definition typed fn(x: E<'a, Id<'b>>)'), ['a, Id<'b>], ['a,
+    // Id<Id<'b>>], ['a, Opt<'b>], ['a, Opt<Opt<'b>>]. Pins that the typedef is not looked through:
+    // lang::types::{typedef_union_of_variables,identity_member,option_member}_is_not_looked_through,
+    // lang::traits::{trait_method,default_body,impl_method}_typedef_is_not_looked_through. Probes ~/ptmp/cr29/scratch/r18b-d7/{x,m,a}/ (a/ is the review's d7-r3-2 a01..a10).
     // CR claude for eric: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
     // more bare type variables in a written function type, but a union of members that
     // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member

@@ -5777,11 +5777,19 @@ run!(
     refused(VARIABLE_UNION);
     FuseExpect::None
 );
+// The union the source writes is judged, a typedef's argument included; a
+// typedef applied in a signature is not looked through, and its own body's
+// union is its parameters', not the definition's.
 run!(
-    variable_union_through_a_typedef_refused,
-    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    variable_union_as_a_typedef_argument_refused,
+    r#"{ type M<'x> = ['x, null]; let f = |x: M<['a, 'b]>, y: 'a| -> 'a y; f(null, 2) }"#,
     refused(VARIABLE_UNION);
     FuseExpect::None
+);
+run!(
+    typedef_union_of_variables_is_not_looked_through,
+    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    prints("i64:2")
 );
 run!(
     typedef_union_at_a_written_type,
@@ -5820,19 +5828,6 @@ run!(
     r#"{ let f = 'a: Any |x: 'a| { let g = |y: ['a, 'b]| -> ['a, 'b] y; g(x) }; f(1) }"#,
     prints("i64:1")
 );
-// A typedef the block declares below the definition is judged as one
-// declared above it.
-run!(
-    variable_union_through_a_later_typedef_refused,
-    r#"{
-  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
-  type E<'p, 'q> = ['p, 'q];
-  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
-  g(1, "s")
-}"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
 run!(
     later_typedef_at_a_written_type,
     r#"{
@@ -5843,76 +5838,20 @@ run!(
 }"#,
     prints("[]")
 );
-// A typedef that names a variable is that variable in a union, as a
-// member, an argument or its body's member.
 run!(
-    variable_union_through_an_identity_member_refused,
+    identity_member_is_not_looked_through,
     r#"{ type Id<'x> = 'x; let f = |x: ['a, Id<'b>]| -> i64 0; f(1) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
+    prints("i64:0")
 );
 run!(
-    variable_union_through_an_identity_argument_refused,
-    r#"{
-  type E<'p, 'q> = ['p, 'q];
-  type Id<'x> = 'x;
-  let f = |x: E<'a, Id<'b>>| -> (Array<'a>, Array<'b>) ([], []);
-  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
-  g(1, "s")
-}"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
-run!(
-    variable_union_through_an_identity_in_a_body_refused,
-    r#"{
-  type Id<'x> = 'x;
-  type E<'p, 'q> = ['p, Id<'q>];
-  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
-  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
-  g(1, "s")
-}"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
-run!(
-    variable_union_through_an_option_member_refused,
+    option_member_is_not_looked_through,
     r#"{ type M<'x> = ['x, null]; let f = |x: ['a, M<'b>]| -> i64 0; f(1) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
+    prints("i64:0")
 );
 run!(
     identity_member_at_a_written_type,
     r#"{ type Id<'x> = 'x; let f = |x: ['a, Id<i64>]| -> i64 0; f(1) }"#,
     prints("i64:0")
-);
-
-/// A block of 40 typedefs, each naming the one below twice, its parameters
-/// swapped in the second (`A0` is `base`), then `rest`.
-fn typedef_diamond(base: &str, rest: &str) -> arcstr::ArcStr {
-    use std::fmt::Write;
-    let mut src = poolshark::local::LPooled::<String>::take();
-    writeln!(src, "{{\ntype A0<'x, 'y> = {base};").unwrap();
-    for k in 1..=40 {
-        writeln!(src, "type A{k}<'x, 'y> = [A{j}<'x, 'y>, A{j}<'y, 'x>];", j = k - 1)
-            .unwrap();
-    }
-    write!(src, "{rest}\n}}").unwrap();
-    arcstr::ArcStr::from(src.as_str())
-}
-
-// The judgment expands each application of a typedef once, so a DAG of
-// typedefs is judged in time linear in its size, whichever way it ends.
-run!(
-    variable_union_judges_a_typedef_dag_once_per_application,
-    typedef_diamond("('x, 'y)", "let f = |x: [A40<'a, 'b>, null]| -> i64 0;\n1"),
-    prints("i64:1")
-);
-run!(
-    variable_union_in_a_typedef_dag_refused,
-    typedef_diamond("['x, 'y]", "let f = |x: [A40<'a, 'b>, null]| -> i64 0;\n1"),
-    refused(VARIABLE_UNION);
-    FuseExpect::None
 );
 
 // Every position is held, whichever round checks it: a result whose

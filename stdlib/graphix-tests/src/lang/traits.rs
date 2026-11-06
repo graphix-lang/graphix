@@ -3207,11 +3207,11 @@ run!(
     "#
 );
 
-// A trait's declaration, a default body and an impl's method through a
-// typedef the block declares below them are judged as the check ends.
+// A typedef a trait's declaration, a default body or an impl's method
+// applies is not looked through.
 run!(
-    trait_method_through_a_later_typedef_refused,
-    refused("is a union of the type variables 'a and 'b"),
+    trait_method_typedef_is_not_looked_through,
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: E<'a, 'b>) -> i64 = |s, x| 0 };
@@ -3220,11 +3220,11 @@ run!(
             T::m(0, 1)
         }
     "#
-; FuseExpect::None);
+);
 
 run!(
-    default_body_through_a_later_typedef_refused,
-    refused("is a union of the type variables 'a and 'b"),
+    default_body_typedef_is_not_looked_through,
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: 'a) -> i64 = |s, x: E<'a, 'b>| 0 };
@@ -3233,29 +3233,16 @@ run!(
             T::m(0, 1)
         }
     "#
-; FuseExpect::None);
+);
 
 run!(
-    impl_method_through_a_later_typedef_refused,
-    refused("is a union of the type variables 'a and 'b"),
+    impl_method_typedef_is_not_looked_through,
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: 'a) -> i64 };
             impl T for i64 { let m = |s, x: E<'a, 'b>| -> i64 0 };
             type E<'p, 'q> = ['p, 'q];
-            T::m(0, 1)
-        }
-    "#
-; FuseExpect::None);
-
-run!(
-    trait_method_through_a_later_typedef_at_a_written_type,
-    is(Value::I64(0)),
-    "/test.gx" => r#"
-        let result = {
-            trait T { val m: fn(self, x: E<'a, i64>) -> i64 = |s, x| 0 };
-            type E<'p, 'q> = ['p, 'q];
-            impl T for i64 {};
             T::m(0, 1)
         }
     "#

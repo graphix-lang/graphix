@@ -315,15 +315,17 @@ included.
 
 ### A union of variables in a signature
 
-A written function type may not hold a union of two or more distinct bare
-type variables of its own (`['a, 'b]`, `['a, 'b, null]`), at any part (a
-parameter, a callback's parameter, the result, the throws, a bound) and
-under any constructor or typedef's expansion (`Array<['a, 'b]>`, `{v:
-['a, 'b]}`, `E<'a, 'b>` over `type E<'p, 'q> = ['p, 'q]`), a member that
-is a typedef naming a variable, or a union holding one, counting as that
-variable (`['a, Id<'b>]` over `type Id<'x> = 'x`, `['a, M<'b>]` over
-`type M<'x> = ['x, null]`): `Type::variable_union`, judged where the type
-is written: a lambda's signature as it compiles (a variable an enclosing
+A written function type may not hold a union written with two or more
+distinct bare type variables of its own (`['a, 'b]`, `['a, 'b, null]`),
+at any part (a parameter, a callback's parameter, the result, the throws,
+a bound) and under any constructor as the source writes it
+(`Array<['a, 'b]>`, `{v: ['a, 'b]}`, `M<['a, 'b]>`): `Type::variable_union`
+walks the written type and looks through no typedef, so `E<'a, 'b>` over
+`type E<'p, 'q> = ['p, 'q]`, `['a, Id<'b>]` over `type Id<'x> = 'x` and
+`['a, M<'b>]` over `type M<'x> = ['x, null]` stand (a typedef's own body
+writes a union of its parameters, not of the definition's variables;
+those forms still meet in order, formal-union-order-01). It is judged
+where the type is written: a lambda's signature as it compiles (a variable an enclosing
 definition declares is not its own; a method in an impl or a trait's
 default body is judged over the types it writes itself, its lambda's and
 an impl `let`'s annotation, the rest being its trait's declaration, and
@@ -331,13 +333,7 @@ an impl's head variables are the impl's: `traits::written_method_unions`), a `.g
 declaration (`traits::method_decl`, where `self`, a written type at every
 impl, is no variable) and a function type a body's annotation writes
 (`lambda::body_annotation`: a `let`'s, a select's type test,
-`never<T>`). A typedef its block declares below the definition does not
-resolve there: the judgment waits for the check's end
-(`Pending::VariableUnion`, `settle::Judged`), a trait's and an impl's
-included. The walk expands each typedef application once inside
-function types and once outside, and gathers the variables an
-application holds as union members once (`VariableUnions::app_members`),
-so a DAG of typedefs is judged in time linear in its size. No value's type says which
+`never<T>`). No value's type says which
 variable such a member takes, so whichever relation meets it first would decide (a call's
 argument first, an instance's signature last), and the refusal names the
 annotation that passes: one variable there, or written types (`[i64,

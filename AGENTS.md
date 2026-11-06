@@ -1208,10 +1208,9 @@ node graph IS the IR — there is no parallel typed IR
   another's bound (`'a: 'a`, `'a: Array<'a>`, `'a: 'b, 'b: 'a`;
   `check_bounds_acyclic`): a recursive bound is a recursive type; a
   written function type (a lambda's signature, a `.gxi` val, a trait
-  method, one a body's annotation writes) holds no union of two or more of
-  its own bare variables (`['a, 'b]`, under any constructor or typedef's
-  expansion, a typedef that names a variable counting as it, one its block
-  declares below judged as the check ends; `self` and an impl's head are no
+  method, one a body's annotation writes) holds no union written with two
+  or more of its own bare variables (`['a, 'b]`, under any constructor as
+  written; a typedef is not looked through; `self` and an impl's head are no
   method's own), refused, naming one variable or written types as the fix
   (`Type::variable_union`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥, no

@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        AppKey, Bound, FnType, TVar, Type, TypeRef,
+        Bound, FnType, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
         tvar::{CellFact, ConjunctsPassed, Fresh, Level, would_cycle_open},
@@ -21,10 +21,8 @@ use enumflags2::BitFlags;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    collections::hash_map::Entry,
     error::Error,
     fmt::{self, Write},
-    mem,
 };
 
 #[derive(Debug)]
@@ -517,10 +515,9 @@ impl Type {
     }
 }
 
-/// A union a written function type holds, under any constructor or
-/// typedef's expansion, with two or more of the variables `own` admits as
-/// members of their own: which of them a value takes, no type says
-/// ([`Type::variable_union`]).
+/// A union written in a function type with two or more of the variables
+/// `own` admits as members of their own: which of them a value takes, no
+/// type says ([`Type::variable_union`]).
 #[derive(Debug)]
 pub struct VariableUnion {
     pub union: Type,
@@ -549,278 +546,62 @@ impl fmt::Display for VariableUnion {
 
 impl Error for VariableUnion {}
 
-/// How far [`Type::variable_union`] could judge a written type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Judged {
-    /// Every part of it.
-    Whole,
-    /// All but a typedef applied to variables that does not resolve yet,
-    /// whose expansion may hold such a union.
-    Unresolved,
-}
-
 impl Type {
-    /// Refuse the first union a function type this written type holds
-    /// (itself included) has in a part, its parameters, result, throws and
-    /// bounds, under any constructor or typedef's expansion, two or more of
-    /// whose members are distinct variables `own` admits, a member that is
-    /// a typedef naming a variable, or a union holding one, counting as it.
+    /// Refuse the first union written in a function type this written type
+    /// holds (itself included), in a part, its parameters, result, throws
+    /// and bounds, under any constructor, two or more of whose members are
+    /// distinct variables `own` admits. A typedef is not looked through.
     #[doc(hidden)]
     pub fn variable_union(
         &self,
-        env: &Env,
         own: &dyn Fn(&TVar) -> bool,
-    ) -> Result<Judged, VariableUnion> {
-        if !may_unite(self, own, &ConjunctsPassed::take()) {
-            return Ok(Judged::Whole);
-        }
-        let passed = ConjunctsPassed::take();
-        let mut walk = VariableUnions {
-            env,
-            own,
-            passed: &passed,
-            in_fn: false,
-            expanding: Expanding::default(),
-            nodes: LPooled::take(),
-            unfolded: LPooled::take(),
-            members: LPooled::take(),
-            member_stack: SmallVec::new(),
-            judged: Judged::Whole,
-        };
-        match walk.walk(self) {
-            None => Ok(walk.judged),
+    ) -> Result<(), VariableUnion> {
+        match written_variable_union(self, own, &ConjunctsPassed::take(), false) {
+            None => Ok(()),
             Some(e) => Err(e),
         }
     }
 }
 
-/// [`Type::variable_union`]'s walk: each shared composite once, and
-/// each typedef application once inside function types and once outside.
-struct VariableUnions<'a> {
-    env: &'a Env,
-    own: &'a dyn Fn(&TVar) -> bool,
-    passed: &'a ConjunctsPassed,
-    /// Whether the walk is inside a function type.
+fn written_variable_union(
+    t: &Type,
+    own: &dyn Fn(&TVar) -> bool,
+    passed: &ConjunctsPassed,
     in_fn: bool,
-    expanding: Expanding,
-    nodes: LPooled<AddrSet>,
-    /// The applications expanded, by key and `in_fn`, each held so its
-    /// key stays its own.
-    unfolded: LPooled<AHashMap<(AppKey, bool), Type>>,
-    /// The variables each application holds as union members
-    /// ([`Self::app_members`]), the application held.
-    members: LPooled<AHashMap<AppKey, (Type, SmallVec<[ArcStr; 4]>)>>,
-    /// The typedefs [`Self::app_members`] is expanding, by key.
-    member_stack: SmallVec<[usize; 4]>,
-    judged: Judged,
-}
-
-impl VariableUnions<'_> {
-    fn walk(&mut self, t: &Type) -> Option<VariableUnion> {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(_) => None,
-            t if t.shared_identity().is_some_and(|n| !self.nodes.insert(n)) => None,
-            Type::Fn(ft) => {
-                let outside = !mem::replace(&mut self.in_fn, true);
-                let mut found = None;
-                let passed = self.passed;
-                ft.for_each_part_once(passed, &mut |t, _| {
-                    if found.is_none() {
-                        found = self.walk(t)
-                    }
-                });
-                if outside {
-                    self.in_fn = false
+) -> Option<VariableUnion> {
+    crate::stack::ensure_sufficient(|| {
+        let mut found = None;
+        match t {
+            Type::TVar(_) => (),
+            Type::Fn(ft) => ft.for_each_part_once(passed, &mut |t, _| {
+                if found.is_none() {
+                    found = written_variable_union(t, own, passed, true)
                 }
-                found
-            }
-            Type::Ref(tr) => {
-                if !tr.params.iter().any(|p| may_unite(p, self.own, self.passed)) {
-                    if var_members(&tr.params, self.own) < 2 {
-                        return None;
-                    }
-                    // only a union of the body's own parameters can become one
-                    if let Some(def) = tr.resolve_peek(self.env) {
-                        let param =
-                            |tv: &TVar| def.params.iter().any(|(p, _)| p.name == tv.name);
-                        if !may_unite(&def.typ, &param, &ConjunctsPassed::take()) {
-                            return None;
-                        }
-                    }
-                }
-                let Some(key) = tr.resolve_peek(self.env).map(|def| def.def_key()) else {
-                    return self.unresolved(tr);
-                };
-                match self.expanding.meets(key, &tr.params) {
-                    Meeting::Again => None,
-                    Meeting::Grown => tr.params.iter().find_map(|p| self.walk(p)),
-                    Meeting::Fresh => {
-                        match self.unfolded.entry((tr.app_key(key), self.in_fn)) {
-                            Entry::Occupied(_) => return None,
-                            Entry::Vacant(e) => {
-                                e.insert(t.clone());
-                            }
-                        }
-                        let Some((_, whole)) = t.lookup_ref_probe(self.env) else {
-                            return self.unresolved(tr);
-                        };
-                        self.expanding.0.push((key, tr.params.clone()));
-                        let found = self.walk(&whole);
-                        self.expanding.0.pop();
-                        found
-                    }
-                }
-            }
+            }),
             t => {
-                if self.in_fn
-                    && let Type::Set(ms) = t
-                    && var_members(ms, self.own) > 1
-                {
+                if in_fn && let Type::Set(ms) = t {
                     let mut vars: SmallVec<[ArcStr; 4]> = SmallVec::new();
-                    self.member_vars(ms, &mut vars);
-                    vars.sort();
+                    for m in ms.iter() {
+                        if let Type::TVar(tv) = m
+                            && own(tv)
+                            && !vars.contains(&tv.name)
+                        {
+                            vars.push(tv.name.clone())
+                        }
+                    }
                     if vars.len() > 1 {
+                        vars.sort();
                         return Some(VariableUnion { union: t.clone(), vars });
                     }
                 }
-                let mut found = None;
                 t.for_each_child(&mut |c| {
                     if found.is_none() {
-                        found = self.walk(c)
+                        found = written_variable_union(c, own, passed, in_fn)
                     }
-                });
-                found
-            }
-        })
-    }
-
-    /// An application that does not resolve: its parameters, and a
-    /// verdict short of [`Judged::Whole`] where its expansion may unite two.
-    fn unresolved(&mut self, tr: &TypeRef) -> Option<VariableUnion> {
-        if var_members(&tr.params, self.own) > 1 {
-            self.judged = Judged::Unresolved
-        }
-        tr.params.iter().find_map(|p| self.walk(p))
-    }
-
-    /// Add to `vars` the distinct variables `own` admits that the union
-    /// `ms` holds as members: written there, or a member typedef's
-    /// expansion, or a member of a union it expands to. The depth in
-    /// [`Self::member_stack`] of the outermost typedef met again inside
-    /// itself, `usize::MAX` for none.
-    fn member_vars(&mut self, ms: &[Type], vars: &mut SmallVec<[ArcStr; 4]>) -> usize {
-        let mut low = usize::MAX;
-        for m in ms {
-            match m {
-                Type::TVar(tv) if (self.own)(tv) => {
-                    if !vars.contains(&tv.name) {
-                        vars.push(tv.name.clone())
-                    }
-                }
-                Type::Ref(tr) if tr.params.iter().any(|p| may_be_var(p, self.own)) => {
-                    low = low.min(self.app_members(m, tr, vars))
-                }
-                _ => (),
+                })
             }
         }
-        low
-    }
-
-    /// [`Self::member_vars`] of the application `t` of `tr`, once per
-    /// application: an answer cut short by a typedef met inside itself is
-    /// kept only by that typedef's own application.
-    fn app_members(
-        &mut self,
-        t: &Type,
-        tr: &TypeRef,
-        vars: &mut SmallVec<[ArcStr; 4]>,
-    ) -> usize {
-        let Some(key) = tr.resolve_peek(self.env).map(|def| def.def_key()) else {
-            self.judged = Judged::Unresolved;
-            return usize::MAX;
-        };
-        if let Some(depth) = self.member_stack.iter().position(|k| *k == key) {
-            return depth;
-        }
-        let app = tr.app_key(key);
-        let merge = |vars: &mut SmallVec<[ArcStr; 4]>, held: &[ArcStr]| {
-            for v in held {
-                if !vars.contains(v) {
-                    vars.push(v.clone())
-                }
-            }
-        };
-        if let Some((_, held)) = self.members.get(&app) {
-            merge(vars, held);
-            return usize::MAX;
-        }
-        let Some((_, whole)) = t.lookup_ref_probe(self.env) else {
-            self.judged = Judged::Unresolved;
-            return usize::MAX;
-        };
-        let depth = self.member_stack.len();
-        self.member_stack.push(key);
-        let mut held: SmallVec<[ArcStr; 4]> = SmallVec::new();
-        let low = match &whole {
-            Type::Set(ms) => self.member_vars(ms, &mut held),
-            t => self.member_vars(std::slice::from_ref(t), &mut held),
-        };
-        self.member_stack.pop();
-        merge(vars, &held);
-        if low >= depth {
-            self.members.insert(app, (t.clone(), held));
-        }
-        low
-    }
-}
-
-/// Whether `t`, a union member or a typedef's argument, may be a variable
-/// `own` admits: one, or a typedef applied to one, which may name it.
-fn may_be_var(t: &Type, own: &dyn Fn(&TVar) -> bool) -> bool {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(tv) => own(tv),
-        Type::Ref(tr) => tr.params.iter().any(|p| may_be_var(p, own)),
-        _ => false,
-    })
-}
-
-/// How many of `ts` (a union's members, a typedef's arguments) may be
-/// distinct variables `own` admits: each one written, and each typedef
-/// that may name one ([`may_be_var`]).
-fn var_members(ts: &[Type], own: &dyn Fn(&TVar) -> bool) -> usize {
-    let mut vars: SmallVec<[&ArcStr; 4]> = SmallVec::new();
-    let mut refs = 0;
-    for t in ts {
-        match t {
-            Type::TVar(tv) if own(tv) && !vars.contains(&&tv.name) => vars.push(&tv.name),
-            Type::Ref(_) if may_be_var(t, own) => refs += 1,
-            _ => (),
-        }
-    }
-    vars.len() + refs
-}
-
-/// Whether `t`, as written, holds a union of two of the variables `own`
-/// admits, or a typedef applied to two of them, the only ways a
-/// [`VariableUnions`] walk can find one: a typedef's body reaches no
-/// variable its parameters do not hold.
-fn may_unite(t: &Type, own: &dyn Fn(&TVar) -> bool, passed: &ConjunctsPassed) -> bool {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(_) => false,
-        Type::Set(ms) if var_members(ms, own) > 1 => true,
-        Type::Ref(tr) if var_members(&tr.params, own) > 1 => true,
-        Type::Fn(ft) => {
-            let mut any = false;
-            ft.for_each_part_once(passed, &mut |c, _| {
-                any = any || may_unite(c, own, passed)
-            });
-            any
-        }
-        t => {
-            let mut any = false;
-            t.for_each_child(&mut |c| any = any || may_unite(c, own, passed));
-            any
-        }
+        found
     })
 }
 

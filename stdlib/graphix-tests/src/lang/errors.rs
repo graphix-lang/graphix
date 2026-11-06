@@ -1420,18 +1420,17 @@ run!(
 );
 
 /// `n` named tags (`Tags`) beside one name applied to two open cells,
-/// `F<'a>` and `F<'b>` with `F<'t> = [Array<'t>, null]`, which `strip`
-/// takes the null from; the call decides `'b` as string, which `ann` must
-/// hold.
+/// `F<'a>` and `F<'b>` with `F<'t> = ['t, null]`, which `strip` takes the
+/// null from; the call decides `'b` as string, which `ann` must hold.
 fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
     with_named_tags(
         n,
-        "type Tags = [{names}];\ntype F<'t> = [Array<'t>, null];",
+        "type Tags = [{names}];\ntype F<'t> = ['t, null];",
         &format!(
             "let f = 'a: Any, 'b: Any |p: [Tags, F<'a>, F<'b>]| {strip};\n\
-             let s: [Tags, F<i64>, F<string>] = [\"hello\"];\n\
+             let s: [Tags, F<i64>, F<string>] = \"hello\";\n\
              let r: {ann} = f(s);\n\
-             select r {{ Array<string> as v => v[0]$, _ => \"other\" }}"
+             select r {{ string as v => v, _ => \"other\" }}"
         ),
     )
 }
@@ -1440,21 +1439,21 @@ fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
 // names are applied to.
 run!(
     two_cells_behind_one_name_past_the_pair_budget_stay_two_with_dollar,
-    two_cells_beside_named_tags(1100, "p$", "[Tags, Array<i64>]"),
+    two_cells_beside_named_tags(1100, "p$", "[Tags, i64]"),
     refused("'b: string");
     FuseExpect::None
 );
 
 run!(
     two_cells_behind_one_name_past_the_pair_budget_stay_two_with_q,
-    two_cells_beside_named_tags(1100, "p?", "[Tags, Array<i64>]"),
+    two_cells_beside_named_tags(1100, "p?", "[Tags, i64]"),
     refused("'b: string");
     FuseExpect::None
 );
 
 run!(
     two_cells_behind_one_name_past_the_pair_budget_hold_both_with_dollar,
-    two_cells_beside_named_tags(1100, "p$", "[Tags, Array<i64>, Array<string>]"),
+    two_cells_beside_named_tags(1100, "p$", "[Tags, i64, string]"),
     is(Value::String("hello".into()));
     FuseExpect::Jit
 );
@@ -1464,7 +1463,7 @@ run!(
     two_cells_beside_named_tags(
         1100,
         "{ catch(e) println(\"[e]\"); p? }",
-        "[Tags, Array<i64>, Array<string>]"
+        "[Tags, i64, string]"
     ),
     is(Value::String("hello".into()));
     FuseExpect::Jit
