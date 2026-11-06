@@ -504,8 +504,7 @@ impl Type {
                     && tr0.same_definition(tr1, env) =>
             {
                 Ok(tr0.params.len() == tr1.params.len()
-                    && tr0.hold_bounds_in(env, true)?
-                    && tr1.hold_bounds_in(env, true)?
+                    && tr0.hold_bounds_with(tr1, env, true)?
                     && tr0
                         .params
                         .iter()
@@ -799,8 +798,7 @@ impl Type {
                     && r0.same_definition(r1, env)
                     && r0.params.len() == r1.params.len() =>
             {
-                r0.hold_bounds_in(env, true)?;
-                r1.hold_bounds_in(env, true)?;
+                r0.hold_bounds_with(r1, env, true)?;
                 for (t0, t1) in r0.params.iter().zip(r1.params.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }

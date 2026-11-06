@@ -2250,7 +2250,7 @@ impl Type {
                         .zip(tr1.params.iter())
                         .all(|(a, b)| identical_linked(a, b, commit)) =>
             {
-                Ok(tr0.hold_bounds_in(env, commit)? && tr1.hold_bounds_in(env, commit)?)
+                tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 // CR claude for claude: [bug/low] Taking two instances of one definition as
@@ -2284,8 +2284,7 @@ impl Type {
                     };
                     let probe = flags & !BitFlags::from(ContainsFlags::Commit);
                     if equal(probe, hist)? && (!commit || equal(flags, hist)?) {
-                        return Ok(tr0.hold_bounds_in(env, commit)?
-                            && tr1.hold_bounds_in(env, commit)?);
+                        return tr0.hold_bounds_with(tr1, env, commit);
                     }
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));

@@ -1242,6 +1242,20 @@ impl TypeRef {
     // contains' shortcut). Census of both repos: no verdict changes, one message names
     // the interface's 'b: Any + NoError (x-typecheck-generics-03b). guicheck +0.3%
     // instructions vs base-r17. probes: ~/ptmp/cr29/scratch/r17-o3/
+    // 2026-11-05 claude: Review r17 (o3-r1-1's root-load flake): hold_bounds_in filled
+    // an open cell from the env of whatever walk took the shortcut, and a sibling
+    // module's parallel check, whose env does not see /gui/data_table, filled
+    // ColumnSpec's nested Source with core's Source (the name's outer shadow), so
+    // data_table's text_column was refused 'ColumnSpec does not contain {..}' about
+    // once in 450 cold starts (13/6000 --no-cache starts at 8 side by side; 0/6000 on
+    // base-r17; bisected to this CR's commit; 0/6000 with GRAPHIX_EVAL_THREADS=1). The
+    // shortcuts now call TypeRef::hold_bounds_with: an open cell takes its twin's
+    // filled definition, as the expansion it replaces filled it, and two open cells
+    // stay open (resolve_peek). 0/12000 failures after. Pins:
+    // typ::setops::tests::a_shortcut_fills_no_open_pair (fails with the env fill),
+    // lang::types::annotation_names_from_a_later_module (fails with no fill at all).
+    // Left: the x-typecheck-generics-03b message naming the declared val's 'b: Any +
+    // NoError (review r17 low; the bound is Result's and the verdict is base-r17's).
     /// Whether two references name one definition: an open cell names
     /// what its name means in `env`, so the answer does not depend on
     /// which cells a walk filled; two that name nothing, by the written
@@ -1266,17 +1280,6 @@ impl TypeRef {
             (None, None) => self.scope == other.scope && self.name == other.name,
             _ => false,
         }
-    }
-
-    /// The filled cell's definition, else the name's in `env`, filling
-    /// the cell as [`Self::resolve_in`] does.
-    fn definition_in(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
-        match &*self.resolved.lock() {
-            Resolution::Def(w) => return w.upgrade(),
-            Resolution::Trait(_) => return None,
-            Resolution::Open => (),
-        }
-        self.resolve_in(env)
     }
 
     /// Hold the arguments to `def`'s parameter bounds, as an expansion
@@ -1311,14 +1314,43 @@ impl TypeRef {
         Ok(true)
     }
 
-    /// [`Self::hold_bounds_of`] the definition this reference names in
-    /// `env`, filling an open cell: what a walk that takes two
-    /// applications of one definition by their arguments owes each, as
-    /// their expansions would.
-    pub(crate) fn hold_bounds_in(&self, env: &Env, commit: bool) -> Result<bool> {
-        match self.definition_in(env) {
-            Some(def) => self.hold_bounds_of(env, &def, commit),
+    /// Hold this reference and `twin`, which name one definition, to its
+    /// parameter bounds ([`Self::hold_bounds_of`]): what a walk that takes
+    /// two applications of one definition by their arguments owes each, as
+    /// their expansions would. An open cell takes its twin's definition,
+    /// as an expansion would have filled it. Two open cells stay open: the
+    /// walk may run under an env that does not see their scope, where the
+    /// name means an outer shadow.
+    pub(crate) fn hold_bounds_with(
+        &self,
+        twin: &Self,
+        env: &Env,
+        commit: bool,
+    ) -> Result<bool> {
+        let def = match (self.resolved(), twin.resolved()) {
+            (Some(d), None) => {
+                twin.fill(&d);
+                Some(d)
+            }
+            (None, Some(d)) => {
+                self.fill(&d);
+                Some(d)
+            }
+            (Some(d), Some(_)) => Some(d),
+            (None, None) => self.resolve_peek(env),
+        };
+        match def {
+            Some(def) => Ok(self.hold_bounds_of(env, &def, commit)?
+                && twin.hold_bounds_of(env, &def, commit)?),
             None => Ok(true),
+        }
+    }
+
+    /// Fill an open cell with `def`.
+    fn fill(&self, def: &sync::Arc<ResolvedRef>) {
+        let mut cell = self.resolved.lock();
+        if let Resolution::Open = &*cell {
+            *cell = Resolution::Def(sync::Arc::downgrade(def))
         }
     }
 

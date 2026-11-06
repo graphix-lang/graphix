@@ -454,8 +454,7 @@ impl Type {
             (Type::Ref(t0), Type::Ref(t1))
                 if t0.same_definition(t1, env) && t0.params.len() == t1.params.len() =>
             {
-                t0.hold_bounds_in(env, true)?;
-                t1.hold_bounds_in(env, true)?;
+                t0.hold_bounds_with(t1, env, true)?;
                 self.union_ref_params(env, hist, merge, t0, t1, t)
             }
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
@@ -864,8 +863,7 @@ impl Type {
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(env, tr0, tr1) => {
-                tr0.hold_bounds_in(env, true)?;
-                tr1.hold_bounds_in(env, true)?;
+                tr0.hold_bounds_with(tr1, env, true)?;
                 Ok(Type::Primitive(BitFlags::empty()))
             }
             (t0 @ Type::Ref(_), t1) | (t0, t1 @ Type::Ref(_)) => {
@@ -1543,6 +1541,22 @@ mod tests {
             let u = Type::union(&env, &[&t0, &t1]).unwrap();
             assert_eq!(u.to_string(), "R<i64>");
             assert!(t0.diff(&env, &t1).unwrap().is_uninhabited());
+        }
+    }
+
+    // Two open references a walk takes as one by their arguments stay
+    // open: the walk may run under an env that does not see their scope,
+    // where their name means an outer shadow, which a fill would keep for
+    // every later walk.
+    #[test]
+    fn a_shortcut_fills_no_open_pair() {
+        let (env, _) = typed(&[("S<'a>", "['a, `X]"), ("I", "i64")], "null");
+        let open = |t: &str| parse_type(t).unwrap().scope_refs(&ModPath::root());
+        let (t0, t1) = (open("S<i64>"), open("S<I>"));
+        t0.check_contains(&env, &t1).unwrap();
+        for t in [&t0, &t1] {
+            let Type::Ref(tr) = t else { panic!("{t} is a reference") };
+            assert!(tr.is_open(), "{t} was filled")
         }
     }
 
