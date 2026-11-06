@@ -287,17 +287,25 @@ holding no undecided cell take part in that join, the defaults the call
 omits included, joined as written ones (`Widening::join_default`). An
 argument holding an undecided cell (a read target, a `let` over
 `never()`, `[]`'s element) pre-unifies with a copy of its formal in
-which those variables are open (`Widening::opening`), so it decides
-none of them, and is checked at the end of the argument loop, when the
-join is known (`CallSite::check_waiting`); its cells take what the join
-leaves them. Order can then decide only between a value and a refusal,
-never between two types: where the join does not hold the argument
-(`f(str::parse(s), 1)` over `|x: 'a, y: 'a|`: `'a` is `i64`, which
-holds no parse error), the mismatch is refused, "annotate it", naming
-the bindings the argument reads whose types are undecided
-(`callsite::undecided_note`), in either order. Two undecided arguments
-at one variable: the second meets what the first gave it, and its
-refusal says the same.
+which those variables are open and every other cell is the formal's own
+(`Widening::opening`), so it decides none of them, and decides the
+others, a variable a callback after it reads included, as it meets
+them; it is checked at the end of the argument loop, when the join is
+known (`CallSite::check_waiting`); its cells take what the join leaves
+them. A written argument or an omitted default that is neither wider
+nor narrower than what the others gave a variable waits too, and is
+checked once they have widened it. Order can then decide only between a
+value and a refusal, never between two types: where the join does not
+hold the argument (`f(str::parse(s), 1)` over `|x: 'a, y: 'a|`: `'a` is
+`i64`, which holds no parse error), the mismatch is refused, in either
+order, and where some decision of the argument's cells outside function
+types could fit (`callsite::annotation_may_fit`: on copies, it fits the
+formal with the variables fresh and what it gives each holds or is held
+by what the call gave it), the refusal says "annotate it", naming the
+bindings the argument reads whose types are undecided
+(`callsite::undecided_note`); `f(1, [])` is a plain mismatch. Two
+undecided arguments at one variable: the second meets what the first
+gave it, and its refusal says the same.
 
 An argument with an undecided cell and nothing else at its variable
 (`id(u)`) takes the variable as it is: one cell, decided by whichever

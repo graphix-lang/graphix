@@ -448,7 +448,8 @@ function's result (`h(1).v` over `|x: 'a| {v: x}`) with no `-> T`. To
 find the set: strip, `--check`, restore what it names.
 
 A generic function's variable that only data holds takes the widest
-argument, in either order, an omitted labeled default included. An
+argument, in either order, an omitted labeled default included (one
+that is neither wider nor narrower waits for the others to widen it). An
 argument whose type is still open (a `str::parse`, a `let` over
 `never()`, `[]`) takes what the others decide:
 `opt::or_default(str::parse(s)$, 0)` reads an `i64`, and

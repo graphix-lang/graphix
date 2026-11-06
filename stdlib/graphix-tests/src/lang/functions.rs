@@ -2366,6 +2366,60 @@ run!(
     FuseExpect::None
 );
 
+// An omitted default that neither holds nor is held by what the others
+// gave the variable waits for the rest to widen it, as a written one does,
+// whichever label comes first.
+run!(
+    omitted_incomparable_default_waits,
+    r#"{
+  let f = |#a: 'a = "s", #b: Array<'a> = [1, "s"], y: 'a| -> 'a y;
+  let g = |#z: 'a = "s", #b: Array<'a> = [1, "s"], y: 'a| -> 'a y;
+  (f(1), f(#a: "s", #b: [1, "s"], 1), g(1))
+}"#,
+    prints("[i64:1, i64:1, i64:1]")
+);
+
+// A waiting argument decides at once the variables of its formal that do
+// not widen, so a callback after it reads them.
+run!(
+    waiting_argument_decides_its_callback_variable,
+    r#"{
+  let f = |x: {p: 'a, q: 'c}, y: 'a, k: fn(v: 'c) -> string| -> ('a, string) (y, k(x.q));
+  let g = |x: Array<{p: 'a, q: 'c}>, y: 'a, k: fn(v: 'c) -> string| -> 'a y;
+  (f({p: [], q: {name: "s"}}, [2], |v| v.name), g([{p: [], q: {name: "t"}}], [3], |v| v.name))
+}"#,
+    prints(r#"[[[i64:2], "s"], [i64:3]]"#)
+);
+
+/// A refusal that asks for no annotation.
+fn refused_naming_nothing(v: Result<&Value>) -> bool {
+    matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        e.contains("does not contain") && !e.contains("annotate")
+    })
+}
+
+// A refusal no annotation of the undecided argument passes names none,
+// nor does one of an argument undecided only inside a function type.
+run!(
+    undecided_mismatch_names_no_annotation,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(1, []) }"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
+    closed_mismatch_names_no_annotation,
+    r#"{
+  let f = |x: 'a, y: 'a| -> 'a y;
+  let k = |v: i64| -> i64 v;
+  let w: [i64, null] = null;
+  f({n: 1, k}, {n: w, k}).n
+}"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
 // A variable a callback holds does not widen: the callback was checked
 // at the type the variable had when it was reached.
 run!(

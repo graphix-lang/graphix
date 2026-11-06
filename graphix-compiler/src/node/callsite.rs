@@ -233,7 +233,7 @@ enum Judge {
 /// How an omitted default meets its formal at a call: given the formal
 /// and the default's type, it checks the default as the call's widening
 /// checks a written argument.
-type Join<'a> = dyn FnMut(&Env, &Type, &Type) -> Result<()> + 'a;
+type Join<'a> = dyn FnMut(&Env, &ArcStr, &Type, &Type, &Expr) -> Result<()> + 'a;
 
 /// A labeled default of `f` compiled in `f`'s environment, where its
 /// names are, and judged in the site's, where the site's types are:
@@ -347,7 +347,7 @@ fn checked_default<R: Rt>(
     };
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
         Some(t) => match join {
-            Some(join) => join(&ctx.env, &t, typ),
+            Some(join) => join(&ctx.env, name, &t, typ, expr),
             None => t.check_contains(&ctx.env, typ),
         },
         None => {
@@ -420,6 +420,15 @@ fn met_default_note<R: Rt>(
     defs: &[Option<Value>],
     name: &ArcStr,
 ) -> anyhow::Error {
+    match met_defaults::<R>(defs, name) {
+        Some(note) => e.context(note),
+        None => e,
+    }
+}
+
+/// The annotation [`met_default_note`] names, where two or more of `defs`
+/// have a default for `name`.
+fn met_defaults<R: Rt>(defs: &[Option<Value>], name: &ArcStr) -> Option<CompactString> {
     let defaulted =
         defs.iter()
             .filter_map(|d| d.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()))
@@ -429,13 +438,12 @@ fn met_default_note<R: Rt>(
                 })
             })
             .count();
-    if defaulted < 2 {
-        return e;
-    }
-    e.context(format_compact!(
-        "the functions met here share one #{name}: annotate the binding that \
-         holds them with a function type whose #{name} holds every default"
-    ))
+    (defaulted >= 2).then(|| {
+        format_compact!(
+            "the functions met here share one #{name}: annotate the binding that \
+             holds them with a function type whose #{name} holds every default"
+        )
+    })
 }
 
 /// Whose cells a hidden default's judgment may narrow.
@@ -1402,6 +1410,18 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // side annotated_argument_joins_either_order, undecided_argument_takes_the_closed_join.
 // A variable a callback also holds is outside the rule (widen-callback-open-01). Probes
 // ~/ptmp/cr29/scratch/r18-d7/w_order_{a,b}.gx. Needs a soak.
+// 2026-11-06 claude: Repair (review r19 of lane d7): Widening::opening copied every cell
+// of the formal, so a waiting argument decided none of its formal's other variables and a
+// callback after it met them unbound (f({p: [], q: {name: "s"}}, [2], |v| v.name) over
+// |x: {p: 'a, q: 'c}, y: 'a, k: fn(v: 'c) -> string| was refused, main ran it). The
+// opening copy now shares every cell but the widenable ones, so the argument decides the
+// others as it meets them; the y-first order (c2y), which main refused, runs too. The
+// 'annotate it' note is now added only where a decision of the argument's cells outside
+// function types could fit (callsite::annotation_may_fit): f(1, []) and a closed argument
+// holding an annotated lambda get the plain mismatch. Pins that fail without the repair:
+// lang::functions::waiting_argument_decides_its_callback_variable,
+// undecided_mismatch_names_no_annotation, closed_mismatch_names_no_annotation. Probes
+// ~/ptmp/cr29/scratch/r19-d7/{c1,c2,c2y,c6,m1,m6,nm3}.gx.
 // CR claude for eric: [bug/medium] D7 (b) closes order only for a variable no callback
 // holds: one a callback also holds is not widenable (round 5 D1: such a variable binds
 // as on main, the first argument deciding), so an undecided data argument there still
@@ -1417,6 +1437,12 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // (b) an undecided data argument waits there too, census first. Found by the review of
 // lane R's round 15 (cr50-R-parked). Probes: ~/ptmp/cr29/scratch/r18-d7/cb_wa.gx,
 // cb_wb.gx. (widen-callback-open-01)
+// 2026-11-06 claude: Lane d7 review r19: a waiting argument now decides at once the
+// variables of its formal that do not widen (Widening::opening shares them), so c2 (x,
+// y, k) and c2y (y, x, k) run; c2k, with the callback before the argument (|k: fn(v:
+// 'c) -> string, x: {p: 'a, q: 'c}, y: 'a|), is still refused at v.name, as on main:
+// the callback is checked before any argument decides 'c. That order is this CR's
+// question. Probe ~/ptmp/cr29/scratch/r19-d7/c2k.gx.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument holding no undecided cell, the omitted defaults
 /// included, whatever the order. An argument that does not fit is probed
@@ -1427,17 +1453,20 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 struct Widening {
     fresh: bool,
     cells: Option<LPooled<AHashMap<ArcStr, TVar>>>,
-    /// The arguments checked at the end of the argument loop, at their
-    /// formals.
-    deferred: LPooled<Vec<(ArgKey, Type, Waits)>>,
+    /// What is checked at the end of the argument loop, at its formal.
+    deferred: LPooled<Vec<(Waiter, Type)>>,
 }
 
-/// Why an argument waits for the end of a call's argument loop.
-enum Waits {
-    /// It holds a cell nothing has decided ([`ArgFit::Open`]).
-    Undecided,
-    /// It is neither wider nor narrower than a variable it holds.
-    Incomparable,
+/// What waits for the end of a call's argument loop, and why.
+enum Waiter {
+    /// An argument holding a cell nothing has decided ([`ArgFit::Open`]).
+    Undecided(ArgKey),
+    /// An argument neither wider nor narrower than a variable it holds.
+    Incomparable(ArgKey),
+    /// An omitted default of this type, written at this expression,
+    /// neither wider nor narrower than a variable it holds, with the note
+    /// a refusal of it takes ([`met_defaults`]).
+    Default(Type, Expr, Option<CompactString>),
 }
 
 impl Widening {
@@ -1495,11 +1524,12 @@ impl Widening {
     }
 
     /// The formal an argument is pre-unified with where `formal` holds a
-    /// widenable variable: the copy with those variables open, so no
-    /// argument decides one before the closed arguments join. An argument
-    /// holding a cell nothing has decided then waits for the end of the
-    /// argument loop, to take the variables as the closed arguments
-    /// settle them.
+    /// widenable variable: a copy with those variables open and every other
+    /// cell the formal's own, so no argument decides a widenable one before
+    /// the closed arguments join, and each decides the others as it meets
+    /// them. An argument holding a cell nothing has decided then waits for
+    /// the end of the argument loop, to take the widenable variables as the
+    /// closed arguments settle them.
     fn opening(
         &mut self,
         env: &Env,
@@ -1508,7 +1538,25 @@ impl Widening {
         formal: &Type,
     ) -> Option<Type> {
         let held = self.held(env, def, inst, formal);
-        (!held.is_empty()).then(|| Self::open(formal, held.keys()).0)
+        if held.is_empty() {
+            return None;
+        }
+        let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        formal.collect_tvars(&mut all);
+        let kept: AHashMap<ArcStr, Type> = all
+            .drain()
+            .filter(|(name, _)| !held.contains_key(name))
+            .map(|(name, tv)| (name, Type::TVar(tv)))
+            .collect();
+        let open = formal.replace_tvars(&kept);
+        let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        open.collect_tvars(&mut opened);
+        for name in held.keys() {
+            if let Some(tv) = opened.get(name) {
+                tv.unbind()
+            }
+        }
+        Some(open)
     }
 
     /// The argument for `key` met `formal`: widen, wait, or the mismatch
@@ -1526,19 +1574,22 @@ impl Widening {
         match fit {
             ArgFit::Fits => Ok(()),
             ArgFit::Open => {
-                Ok(self.deferred.push((key.clone(), formal.clone(), Waits::Undecided)))
+                Ok(self.deferred.push((Waiter::Undecided(key.clone()), formal.clone())))
             }
             ArgFit::Misfit => {
                 if !wrap!(n, self.widen(env, def, inst, formal, n.typ()))? {
-                    self.deferred.push((key.clone(), formal.clone(), Waits::Incomparable))
+                    self.deferred
+                        .push((Waiter::Incomparable(key.clone()), formal.clone()))
                 }
                 Ok(())
             }
         }
     }
 
-    /// An omitted default of type `typ` meets `formal` as a written
-    /// argument does: it decides or widens the variables it holds.
+    /// An omitted default of type `typ`, written at `at`, meets `formal` as
+    /// a written argument does: it decides or widens the variables it
+    /// holds, or waits; `met` names the annotation a refusal asks for.
+    #[allow(clippy::too_many_arguments)]
     fn join_default(
         &mut self,
         env: &Env,
@@ -1546,11 +1597,14 @@ impl Widening {
         inst: &FnType,
         formal: &Type,
         typ: &Type,
+        at: &Expr,
+        met: Option<CompactString>,
     ) -> Result<()> {
-        if formal.contains(env, typ)? || self.widen(env, def, inst, formal, typ)? {
-            return Ok(());
+        if !formal.contains(env, typ)? && !self.widen(env, def, inst, formal, typ)? {
+            let waiter = Waiter::Default(typ.clone(), at.clone(), met);
+            self.deferred.push((waiter, formal.clone()))
         }
-        formal.check_contains(env, typ)
+        Ok(())
     }
 
     /// An argument of type `typ` did not fit `formal`: widen the variables
@@ -1609,6 +1663,67 @@ impl Widening {
         }
         check()
     }
+}
+
+/// Whether some decision of the undecided cells the type `arg` holds outside
+/// function types could fit it to `formal`, whose widenable variables are
+/// `held`: on copies, it fits the formal with them fresh, and what it gives
+/// each holds or is held by what the call gave it, which an argument
+/// decided so would widen.
+fn annotation_may_fit(
+    env: &Env,
+    formal: &Type,
+    held: &AHashMap<ArcStr, TVar>,
+    arg: &Type,
+) -> Result<bool> {
+    if !free_in_data(arg) {
+        return Ok(false);
+    }
+    let fresh: AHashMap<ArcStr, TVar> =
+        held.keys().map(|name| (name.clone(), TVar::empty_named(name.clone()))).collect();
+    let open: AHashMap<ArcStr, Type> =
+        fresh.iter().map(|(name, tv)| (name.clone(), Type::TVar(tv.clone()))).collect();
+    let open = formal.replace_tvars(&open);
+    let arg = arg.reset_tvars();
+    if !open.contains(env, &arg)? {
+        return Ok(false);
+    }
+    for (name, tv) in held.iter() {
+        let (Some(given), Some(new)) =
+            (tv.binding(), fresh.get(name).and_then(|c| c.binding()))
+        else {
+            continue;
+        };
+        let given = given.reset_tvars();
+        if !new.contains(env, &given)? && !given.contains(env, &new)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// An open cell not held rigid beneath `t`, through bindings, outside every
+/// function type.
+fn free_in_data(t: &Type) -> bool {
+    fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                seen.insert(tv.cell_addr())
+                    && match tv.binding() {
+                        Some(b) => go(&b, seen),
+                        None => !tv.is_rigid(),
+                    }
+            }
+            Type::Fn(_) => false,
+            t => {
+                let mut any = false;
+                t.for_each_child(&mut |c| any = any || go(c, seen));
+                any
+            }
+        })
+    }
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    go(t, &mut seen)
 }
 
 /// What to annotate where the argument `n` is undecided at its call: the
@@ -2413,6 +2528,15 @@ impl<R: Rt> CallSite<R> {
     // lang::functions::omitted_default_joins_as_written,
     // omitted_default_widens_the_result. Probes
     // ~/ptmp/cr29/scratch/r18-d7/d1_{omit,written}.gx. Needs a soak.
+    // 2026-11-06 claude: Repair (review r19 of lane d7): an omitted default neither wider
+    // nor narrower than what the others gave its variable was refused at once in
+    // Widening::join_default, while the same value written waited and ran (f(1) over |#a:
+    // 'a = "s", #b: Array<'a> = [1, "s"], y: 'a| refused, f(#a: "s", #b: [1, "s"], 1)
+    // printed 1; the defaults' parameter order flipped the verdict). It now waits as a
+    // written argument does (Waiter::Default) and is checked once the others have widened
+    // the variable, its refusal keeping met_default_note's annotation. Pin that fails
+    // without the repair: lang::functions::omitted_incomparable_default_waits (both label
+    // orders). Probes ~/ptmp/cr29/scratch/r19-d7/{i1,i1w,i4,i5}.gx.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the
@@ -2449,9 +2573,11 @@ impl<R: Rt> CallSite<R> {
             defs.push(Some(fv.clone()));
         }
         let callee = self.fnode.typ();
-        let mut join = |env: &Env, formal: &Type, typ: &Type| {
-            widening.join_default(env, callee, ftype, formal, typ)
-        };
+        let mut join =
+            |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, at: &Expr| {
+                let met = met_defaults::<R>(&defs, name);
+                widening.join_default(env, callee, ftype, formal, typ, at, met)
+            };
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
@@ -2506,26 +2632,41 @@ impl<R: Rt> CallSite<R> {
     ) -> Result<()> {
         let deferred = mem::take(&mut *widening.deferred);
         let mut met: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        for (key, formal, waits) in deferred {
-            let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) else {
-                continue;
-            };
-            let res = match waits {
-                Waits::Undecided => {
-                    let held = widening.held(&ctx.env, self.fnode.typ(), ftype, &formal);
+        let env = &ctx.env;
+        let arg = |key: &ArgKey| self.args.get(key).and_then(|a| a.node.as_ref());
+        for (waiter, formal) in deferred {
+            match waiter {
+                Waiter::Undecided(key) => {
+                    let Some(n) = arg(&key) else { continue };
+                    let held = widening.held(env, self.fnode.typ(), ftype, &formal);
                     let joined =
                         held.iter().any(|(name, tv)| tv.is_bound() || met.contains(name));
                     met.extend(held.keys().cloned());
-                    // named before the check, which may decide what it names
-                    let note = joined.then(|| undecided_note(ctx, n));
-                    match (formal.check_contains(&ctx.env, n.typ()), note) {
+                    // judged before the check, which may decide what it reads
+                    let note = match joined
+                        && annotation_may_fit(env, &formal, &held, n.typ())?
+                    {
+                        true => Some(undecided_note(ctx, n)),
+                        false => None,
+                    };
+                    let res = match (formal.check_contains(env, n.typ()), note) {
                         (Err(e), Some(note)) => Err(anyhow!("{e}: {note}")),
                         (res, _) => res,
-                    }
+                    };
+                    wrap!(n, res)?
                 }
-                Waits::Incomparable => formal.check_contains(&ctx.env, n.typ()),
-            };
-            wrap!(n, res)?;
+                Waiter::Incomparable(key) => {
+                    let Some(n) = arg(&key) else { continue };
+                    wrap!(n, formal.check_contains(env, n.typ()))?
+                }
+                Waiter::Default(typ, at, met) => formal
+                    .check_contains(env, &typ)
+                    .map_err(|e| match met {
+                        Some(met) => e.context(met),
+                        None => e,
+                    })
+                    .at(&at)?,
+            }
         }
         Ok(())
     }

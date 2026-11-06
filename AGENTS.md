@@ -1243,10 +1243,13 @@ node graph IS the IR — there is no parallel typed IR
   data positions or read-only references hold settles to the widest of the
   arguments holding no undecided cell and the defaults the call omits,
   whatever the order; an argument holding an undecided cell (a read target,
-  a `let` over `never()`, `[]`'s element) waits for that join and takes the
-  variable it settles, and is refused, "annotate it", naming the bindings it
-  reads, where the join, or an undecided argument before it, decided the
-  variable and does not hold it (`Widening::opening`, `check_waiting`). One a
+  a `let` over `never()`, `[]`'s element) decides its formal's other
+  variables at once, waits for that join and takes the variable it settles,
+  and is refused where the join, or an undecided argument before it, decided
+  the variable and does not hold it, "annotate it", naming the bindings it
+  reads, where a decision of its cells could fit (`Widening::opening`,
+  `check_waiting`); a written argument or an omitted default neither wider
+  nor narrower waits for the others to widen it. One a
   callback holds settles to the first argument, and one an abstract
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
