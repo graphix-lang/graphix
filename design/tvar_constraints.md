@@ -723,64 +723,45 @@ scrutinee's own recursive name in it included, is walked as deep as it
 goes and a tag it cannot hold is found dead however deep it sits.
 
 Within that bound, unions that branch at every level still multiply the
-walk's paths, and the difference's parts, with depth: two definitions
-`T = [Error<T>, Error<U>, `A]`, `U` alike, give a test nested `d` deep a
-residual of `2^d` union members, and a family of `n` such definitions an
-exponential number of pairs. So a walk has two budgets, counted, never
-timed (Eric 11-05, diff-cycle-hang-01 follow-up 2 (b)). One walk unfolds
-at most `setops::WALK_PAIRS` (1000) pairs, a side of each a named type,
-past which diff subtracts nothing and could_match answers an overlap
-wherever a pair is met. And a difference with more union members than
-`setops::RESIDUAL_PARTS` (1000) and than its minuend is its minuend: a
-pair's, kept in diff's memo as any answer is, so the walk meets it once,
-and a top-level diff's, so a select's running residual, which doubles at
-each arm testing a level deeper than the last, stops growing. Members
-are counted as a tree, every union's at every level, over the type's
-shared nodes once each (`setops::members`): a parameter that grows as its
-definition recurses (`G<('a, 'a)>`, doubling at each level) counts only
-the unions it holds, so its size alone does not widen a residual. The
-minuend's count reads each named type where diff takes one apart (a
-union member, an error's payload, through bound cells) as its definition
-at its arguments, the first time the count meets that definition: a
-difference that only takes members out of a large named type is no
-larger than what it was taken from, while one that unfolds a recursive
-definition again at each level of a test is. The
-pair count alone does not bound the depth case (under 100 pairs, the
-residual's merging exponential), nor does the residual's size the family
-case (14001 steps at n = 8 and 16 alike only because the pair budget
-cuts it): pins `typ::setops::tests::diff_over_branching_unions_is_bounded`,
-`running_residual_over_branching_unions_is_bounded`,
-`could_match_over_branching_unions_is_bounded`,
-`lang::select::deep_error_test_over_branching_unions_ends`,
-`deep_test_over_growing_parameters_reaches`.
+walk's paths: a family of `n` definitions `T_i = [Error<T_i+1>,
+Error<T_i+2>, `A_i]` gives an exponential number of pairs. So one walk
+unfolds at most `setops::WALK_PAIRS` (1000) pairs, a side of each a named
+type, counted, never timed (Eric 11-05, diff-cycle-hang-01 follow-up 2
+(b)), past which diff subtracts nothing and could_match answers an overlap
+wherever a pair is met (pins
+`typ::setops::tests::diff_over_branching_unions_is_bounded`,
+`could_match_over_branching_unions_is_bounded`). The pair budget does not
+bound a residual that grows while the walk takes few pairs: over `T =
+[Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep walks under
+100 pairs and leaves a residual of `2^d` union members, and a select's
+running residual doubles at each arm testing a level deeper than the last.
+Those selects stay exponential in their depth, as before the budget
+(diff-residual-depth-01).
 
 A wider residual is sound: fewer dead arms are found, a missing case may
 be refused that a `_` arm fixes, a later arm's bind is wider. It is not
 sound for a caller that reads what a difference left out: `?` and `$`
 pick their strip by whether `t - (t - error)` holds a member, and `?`
 raises that part to its handler, so a widened inner difference would
-read as nothing taken. `Type::diff_exact` says where a budget widened a
+read as nothing taken. `Type::diff_exact` says where the budget widened a
 difference, and `Type::diff_held`, the part of `t` that its subtrahend
 holds, is all of `t` there (pin
-`typ::setops::tests::diff_held_past_the_budget_is_the_minuend`,
-`lang::errors::a_large_named_operand_*`). Where a
-widened residual meets a type whose parameters grow, the arm's test of
-it against the rest can no longer be decided (`Type::rep_collision`) and
-the arm is refused: a test 8 levels deep in `G<'a> = [Error<G<Array<'a>>>,
-Error<G<('a, 'a)>>, `A('a)]` (main: 2.3G instructions), where 7 levels
-check as on main. One unfolding, 1000 pairs and 1000 members were chosen
-from the 1600 generated selects (review-r8 X-r1-1): of main's 1547
-finishes none changes verdict or the kind of its message (two
-missing-case messages print another form of the residual), 52 of its 53
-timeouts end, the last in matching_type's containment; 100 pairs moved
-two (a dead arm accepted, a dead-arm refusal become a missing case),
-10000 pairs cost a generated select (rnd13) 3.4G instructions where 1000
-cost 1.7G. Over 2 to 20 arms each testing a level deeper than the last
-(review-r16 U-r1-2 darms), the check costs at most 43G instructions at
-1000 members (main: 429G at 14 arms, past 120 s at 16), 2000 members 150G,
-4000 members 700G. Over
-Error cycles of coprime lengths diff walks pairs that grow with the
-lengths, not their lcm (pin
+`typ::setops::tests::diff_held_past_the_budget_is_the_minuend`). There
+the result type of `?` and `$` is the operand's members, read through
+names and cells, less those the strip takes (`Strip::kept`; pins
+`lang::errors::an_operand_past_the_pair_budget_*`). One unfolding and
+1000 pairs were chosen from the 1600 generated selects (review-r8
+X-r1-1): of main's 1547 finishes none changes verdict or the kind of its
+message, 52 of its 53 timeouts end, the last in matching_type's
+containment; 100 pairs moved two of main's verdicts (a dead arm accepted, a
+dead-arm refusal become a missing case), 10000 pairs cost a generated
+select (rnd13) 3.4G instructions where 1000 cost 1.7G. Where the widened
+residual meets a type whose parameters grow, the arm's test against it can
+no longer be decided (`Type::rep_collision`) and the arm is refused: a
+test 10 levels deep in `G<'a> = [Error<G<Array<'a>>>, Error<G<('a,
+'a)>>, `A('a)]`, which main accepts. Over Error cycles
+of coprime lengths diff walks pairs that grow with the lengths, not their
+lcm (pin
 `typ::setops::tests::diff_over_error_cycles_walks_pairs_by_their_lengths`).
 
 ### The occurs check

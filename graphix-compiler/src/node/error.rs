@@ -679,6 +679,17 @@ impl Strip {
         }
     }
 
+    /// The members of `typ`, read through names and cells, that this strip
+    /// leaves: the result type where a difference's budget left it wider.
+    fn kept(self, env: &Env, typ: &Type) -> Result<Type> {
+        let removed = self.removed();
+        let kept = Type::dispatch_members(env, typ)?.into_iter().filter(|m| match self {
+            Self::Error => !matches!(m, Type::Error(_)) && *m != removed,
+            Self::Null => *m != removed,
+        });
+        Ok(Type::Set(Arc::from_iter(kept)).normalize())
+    }
+
     fn strips(self, v: &Value) -> bool {
         match self {
             Self::Error => matches!(v, Value::Error(_)),
@@ -710,7 +721,10 @@ fn strip_typ<R: Rt>(
         Some(strip) => strip,
         None => Strip::of(ctx, op, operand)?,
     };
-    let rtyp = operand.diff(&ctx.env, &strip.removed())?;
+    let rtyp = match operand.diff_exact(&ctx.env, &strip.removed())? {
+        Some(rtyp) => rtyp,
+        None => strip.kept(&ctx.env, operand)?,
+    };
     Ok((strip, if rtyp.is_uninhabited() { Type::Bottom } else { rtyp }))
 }
 

@@ -1281,9 +1281,9 @@ run!(
     prints(r#""s""#)
 );
 
-// A named operand larger than the residual budget takes its error out
-// exactly: `$` strips the error, so null passes, and a raise of the error
-// joins the handler, which must cover it.
+// A large named operand takes its error out exactly: `$` strips the
+// error, so null passes, and a raise of the error joins the handler, which
+// must cover it.
 run!(
     a_large_named_operand_strips_its_error,
     r#"{
@@ -1325,4 +1325,38 @@ run!(
 }"#,
     is(Value::I64(0));
     FuseExpect::Jit
+);
+
+/// A block over an operand of more named members than diff's pair budget,
+/// beside an error and null: `x` is that operand, `kept` the type holding
+/// its members but the error, and `body` reads both.
+fn past_the_pair_budget(body: &str) -> String {
+    let names: Vec<String> = (0..1100).map(|i| format!("N{i}")).collect();
+    let mut code = String::from("{\n");
+    for n in &names {
+        code.push_str(&format!("type {n} = `{n};\n"))
+    }
+    let names = names.join(", ");
+    code.push_str(&format!(
+        "type Zerr = Error<`E>;\ntype Kept = [{names}, null];\ntype X = [{names}, Zerr, null];\n{body}\n}}"
+    ));
+    code
+}
+
+// Past the pair budget a `?` or `$` result type is still the operand less
+// its error.
+run!(
+    an_operand_past_the_pair_budget_strips_its_error_with_q,
+    past_the_pair_budget(
+        "let f = |x: X| -> i64 { catch(e) println(\"[e]\"); let v = x?; let w: Kept = v; 1 }; f(null)"
+    ),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_operand_past_the_pair_budget_strips_its_error_with_dollar,
+    past_the_pair_budget("let f = |x: X| { let v = x$; let w: Kept = v; 1 }; f(null)"),
+    is(Value::I64(1));
+    FuseExpect::None
 );
