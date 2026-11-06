@@ -2866,7 +2866,7 @@ impl Type {
     }
 
     /// `self` without the members a value of which may be an error, its
-    /// type references expanded; `None` when nothing is left or `Any`
+    /// type references expanded, ⊥ when nothing is left; `None` when `Any`
     /// is a member.
     pub(crate) fn without_errors(&self, env: &Env) -> Result<Option<Type>> {
         fn go(t: &Type, env: &Env, out: &mut LPooled<Vec<Type>>) -> Result<bool> {
@@ -2906,8 +2906,11 @@ impl Type {
             })
         }
         let mut out: LPooled<Vec<Type>> = LPooled::take();
-        if !go(self, env, &mut out)? || out.is_empty() {
+        if !go(self, env, &mut out)? {
             return Ok(None);
+        }
+        if out.is_empty() {
+            return Ok(Some(Type::Bottom));
         }
         Ok(Some(match out.len() {
             1 => out.pop().unwrap(),

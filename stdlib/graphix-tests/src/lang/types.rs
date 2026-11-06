@@ -5250,6 +5250,43 @@ run!(
     FuseExpect::None
 );
 
+// A `NoError` cell below a union of errors alone takes ⊥, what is left of it:
+// `Result<⊥, E> ⊇ Result<'a, E>`, as an instance's signature asks of a function
+// value its definition returns and nothing calls.
+run!(
+    a_returned_generic_function_over_a_result_nothing_calls,
+    r#"{
+        let i = |x: 'a| -> Result<'a, string> never();
+        let f = |y| i;
+        f(5);
+        7
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7)));
+    FuseExpect::None
+);
+
+run!(
+    a_result_holding_only_an_error_is_an_error,
+    r#"{
+        let g = || -> Result<'a, `E> error(`E);
+        let f = |e: Error<`E>| e;
+        f(g())
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)));
+    FuseExpect::Jit
+);
+
+// A read's target is `Concrete` as well, which refuses ⊥.
+run!(
+    a_read_target_is_not_decided_by_an_error_annotation,
+    r#"{
+        let e: Error<`ParseError(string)> = str::parse("1");
+        e
+    }"#,
+    refused("does not contain");
+    FuseExpect::None
+);
+
 // A select's two arms meeting under arithmetic merge a cell with one
 // above an array of it.
 const MERGE_UNDER_A_CONSTRUCTOR: &str = r#"

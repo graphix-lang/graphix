@@ -1,0 +1,6 @@
+// A function value its definition returns and nothing calls settles to ⊥, so
+// the instance's signature asks `Result<⊥, E> ⊇ Result<'a, E>`: the open
+// `'a: NoError` was offered only the error member and refused, and the build
+// refused what the check passed. It takes ⊥, what is left of a union without
+// its errors. Found by the nov06e soak (ryouko).
+{ let f = |c: Collection, y| opt::ok_or; let v = 5; let r = f([1, 2], v); 7 }

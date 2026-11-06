@@ -1223,6 +1223,10 @@ it in its signature.
   is no member. An open cell is admitted.
 - A bind of a `NoError` cell hands the conjunct to its binding's open
   members (`Type::require_no_error`).
+- A `NoError` cell below a union holding errors takes the union without
+  them (`Primitive ⊇ 'r` gives `'r` every primitive but `error`), and ⊥
+  where errors are all it holds (`Result<⊥, E> ⊇ Result<'a, E>`); a read
+  target, `Concrete` as well, refuses that ⊥.
 - Like `Singleton`, it is never a witness, travels as a conjunct and
   refuses no open or ⊥ cell at the terminal settle.
 

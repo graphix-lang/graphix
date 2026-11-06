@@ -271,6 +271,7 @@ reject	N: undefined type Act at line: N, column: N in module /test	never-type-na
 trace	nov06a-nov2026/01_parametric_abstract_in_a_body.gx
 trace	nov06a-nov2026/02_fresh_cell_in_a_visible_error.gx
 trace	nov06d-nov2026/01_a_shared_result_under_arithmetic_stays_open.gx
+trace	nov06e-nov2026/01_a_returned_generic_function_over_a_result.gx
 trace	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 trace	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
 trace	oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
