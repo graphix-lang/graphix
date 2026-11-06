@@ -6073,6 +6073,9 @@ mod tests {
                  type B<'a> = Abstract<'a>;\nlet mkb = |x| B(x);\nlet unb = |b: B<'a>| b.0\n",
                 "abstract-param#",
             ),
+            // an argument the call leaves undecided takes the others' join
+            ("{ let g = |x: 'a, y: 'a| -> 'a y; let r = g(1, 2); r }", "open-arg#"),
+            ("{ let g = |x: 'a, y: 'a, z: 'a| -> 'a z; g(1, 2, 3) }", "open-arg#"),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");

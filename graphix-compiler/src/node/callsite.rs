@@ -35,7 +35,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
-        tvar::{AtLevel, Level, RigidGate},
+        tvar::{AtLevel, BoundAt, Level, RigidGate},
     },
     wrap,
 };
@@ -47,7 +47,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use indexmap::{IndexMap, map::Entry as ArgEntry};
 use log::warn;
@@ -58,7 +58,8 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     collections::hash_map::Entry,
-    fmt, mem,
+    fmt::{self, Write as _},
+    mem,
     sync::{
         OnceLock,
         atomic::{AtomicBool, Ordering::Relaxed},
@@ -229,6 +230,11 @@ enum Judge {
     Bind,
 }
 
+/// How an omitted default meets its formal at a call: given the formal
+/// and the default's type, it checks the default as the call's widening
+/// checks a written argument.
+type Join<'a> = dyn FnMut(&Env, &Type, &Type) -> Result<()> + 'a;
+
 /// A labeled default of `f` compiled in `f`'s environment, where its
 /// names are, and judged in the site's, where the site's types are:
 /// against the site's view of the label, which the default narrows and
@@ -296,6 +302,7 @@ fn checked_default<R: Rt>(
     site: Option<&FnType>,
     value: Option<&FnType>,
     judge: Judge,
+    join: Option<&mut Join<'_>>,
 ) -> Result<Node<R>> {
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope =
@@ -338,8 +345,11 @@ fn checked_default<R: Rt>(
         None => Ok(()),
         Some(t) => t.check_contains(&ctx.env, typ),
     };
-    let res = res.and_then(|()| match site.filter(|s| label(*s).is_some()) {
-        Some(site) => held(site),
+    let res = res.and_then(|()| match site.and_then(|s| label(s)) {
+        Some(t) => match join {
+            Some(join) => join(&ctx.env, &t, typ),
+            None => t.check_contains(&ctx.env, typ),
+        },
         None => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
             held(&callee_instance(ctx, f, name, site, &mut gates))?;
@@ -393,6 +403,7 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(formal),
                 Some(value),
                 Judge::Check,
+                None,
             )
             .map_err(|e| met_default_note::<R>(e, &defs, name))?;
             ctx.discard(node);
@@ -762,19 +773,19 @@ enum ArgFit {
     Fits,
     /// It does not fit the formal as it stands.
     Misfit,
-    /// It holds a cell nothing has decided, and the formal asked it to
-    /// wait: checked now it would take what the formal holds so far.
+    /// It holds a cell nothing has decided, at a formal the call opened:
+    /// checked now it would take what the formal holds so far.
     Open,
 }
 
 /// Check a call's argument node against its formal's type `typ`,
-/// answering how it fit; an argument holding an undecided cell is
-/// [`ArgFit::Open`] when `waits`.
+/// answering how it fit. Where the call opens the formal
+/// ([`Widening::opening`]) the argument pre-unifies with the open copy,
+/// and one holding an undecided cell is [`ArgFit::Open`].
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
-    hint: Option<&Type>,
-    waits: bool,
+    opening: Option<&Type>,
     n: &mut Node<R>,
 ) -> Result<ArgFit> {
     // A reference instantiates its signature in its own typecheck0,
@@ -782,9 +793,9 @@ fn typecheck_arg<R: Rt>(
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
+    Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ())?;
     wrap!(n, n.typecheck0(ctx))?;
-    Ok(if waits && n.typ().has_free() {
+    Ok(if opening.is_some() && n.typ().has_free() {
         ArgFit::Open
     } else if typ.contains(&ctx.env, n.typ())? {
         ArgFit::Fits
@@ -1328,7 +1339,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
+// XCR claude for claude: [bug/medium] An argument whose type holds a cell its uses decide
 // (a read target such as str::parse's or sys::net::subscribe's, an unwritten `let x =
 // never()`, an empty `[]`'s element) is not widened over: its cell is decided by
 // whichever argument the loop meets first, so "the widest argument, whatever the
@@ -1374,15 +1385,59 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
 // 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7 alone:
 // split D7's part out of cr50-R-parked (544862d33) and re-review it.
+// 2026-11-06 claude: D7 alone carried onto main by lane d7 (round 18), split out of
+// cr50-R-parked 46a8eba9e/84833ebeb without D8: every argument at a formal holding a
+// widenable variable pre-unifies with the copy that leaves those variables open
+// (Widening::opening), so an argument holding an undecided cell decides none of them and
+// waits for CallSite::check_waiting, after the written arguments and the omitted
+// defaults have joined; where the join, or an undecided argument before it, decided a
+// variable and does not hold the argument, the refusal says 'annotate it', naming the
+// bindings it reads (callsite::undecided_note, computed before the check decides them).
+// f(str::parse("5"), 1) and f(1, str::parse("5")) are both refused (main runs the
+// first); opt::or_default(str::parse(s)$, 0) still reads an i64. Pins that fail without
+// it: lang::functions::undecided_argument_{first,last}_refused,
+// undecided_binding_{first,last}_named, two_undecided_arguments_{first,last}_refused,
+// lang::types::merge_under_a_constructor_in_a_call_array_first, must-reject family
+// open-arg (graphix-fuzz must_reject_families_are_refused_where_their_rules_say); admit
+// side annotated_argument_joins_either_order, undecided_argument_takes_the_closed_join.
+// A variable a callback also holds is outside the rule (widen-callback-open-01). Probes
+// ~/ptmp/cr29/scratch/r18-d7/w_order_{a,b}.gx. Needs a soak.
+// CR claude for eric: [bug/medium] D7 (b) closes order only for a variable no callback
+// holds: one a callback also holds is not widenable (round 5 D1: such a variable binds
+// as on main, the first argument deciding), so an undecided data argument there still
+// decides it by its place. Over `let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y`,
+// `f(str::parse("5"), 1, |v| 0)` runs and prints 1 ('a takes the parse's Result, which
+// holds 1), while `f(1, str::parse("5"), |v| 0)` is refused with a plain "i64 does not
+// contain Result<..>" that names nothing to annotate; main 187fd838d behaves the same.
+// Making an undecided argument wait there too (Widening::opening over every call
+// variable a data position holds) would let it decide nothing, but a callback beside it
+// would then be checked against a variable no argument has decided yet, which changes
+// every HOF call taking an open argument and is not D7's ruling. Which rule wins: (a)
+// keep the first argument deciding where a callback holds the variable (docs say so),
+// (b) an undecided data argument waits there too, census first. Found by the review of
+// lane R's round 15 (cr50-R-parked). Probes: ~/ptmp/cr29/scratch/r18-d7/cb_wa.gx,
+// cb_wb.gx. (widen-callback-open-01)
 /// How a fresh instance's arguments settle its [`widenable`] variables:
-/// to the widest argument, whatever the order. An argument that does not
-/// fit is probed once against its formal with those variables open; it
-/// widens the variables it holds wider, and waits for the end of the
-/// argument loop when it is neither wider nor narrower.
+/// to the widest argument holding no undecided cell, the omitted defaults
+/// included, whatever the order. An argument that does not fit is probed
+/// once against its formal with those variables open; it widens the
+/// variables it holds wider, and waits for the end of the argument loop
+/// when it is neither wider nor narrower. An argument holding an undecided
+/// cell decides none of them: it waits, and takes what the others settle.
 struct Widening {
     fresh: bool,
     cells: Option<LPooled<AHashMap<ArcStr, TVar>>>,
-    deferred: LPooled<Vec<(ArgKey, Type)>>,
+    /// The arguments checked at the end of the argument loop, at their
+    /// formals.
+    deferred: LPooled<Vec<(ArgKey, Type, Waits)>>,
+}
+
+/// Why an argument waits for the end of a call's argument loop.
+enum Waits {
+    /// It holds a cell nothing has decided ([`ArgFit::Open`]).
+    Undecided,
+    /// It is neither wider nor narrower than a variable it holds.
+    Incomparable,
 }
 
 impl Widening {
@@ -1404,16 +1459,16 @@ impl Widening {
         })
     }
 
-    /// A copy of `formal` with the widenable variables it holds unbound,
-    /// and the copy's variables by name.
-    fn open(
+    /// A copy of `formal` with the variables `names` unbound, and the
+    /// copy's variables by name.
+    fn open<'a>(
         formal: &Type,
-        cells: &AHashMap<ArcStr, TVar>,
+        names: impl Iterator<Item = &'a ArcStr>,
     ) -> (Type, LPooled<AHashMap<ArcStr, TVar>>) {
         let open = formal.reset_tvars();
         let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         open.collect_tvars(&mut opened);
-        for name in cells.keys() {
+        for name in names {
             if let Some(tv) = opened.get(name) {
                 tv.unbind()
             }
@@ -1421,40 +1476,39 @@ impl Widening {
         (open, opened)
     }
 
-    /// The formal an argument is pre-unified with: once an earlier
-    /// argument settled a widenable variable `formal` holds, the copy
-    /// with it open, so the hint cannot refuse a wider argument before
-    /// [`Self::misfit`] probes it.
-    fn hint(
+    /// The widenable variables `formal` holds.
+    fn held(
+        &mut self,
+        env: &Env,
+        def: &Type,
+        inst: &FnType,
+        formal: &Type,
+    ) -> LPooled<AHashMap<ArcStr, TVar>> {
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        if !self.fresh {
+            return held;
+        }
+        formal.collect_tvars(&mut held);
+        let cells = Self::cells(&mut self.cells, env, def, inst);
+        held.retain(|name, _| cells.contains_key(name));
+        held
+    }
+
+    /// The formal an argument is pre-unified with where `formal` holds a
+    /// widenable variable: the copy with those variables open, so no
+    /// argument decides one before the closed arguments join. An argument
+    /// holding a cell nothing has decided then waits for the end of the
+    /// argument loop, to take the variables as the closed arguments
+    /// settle them.
+    fn opening(
         &mut self,
         env: &Env,
         def: &Type,
         inst: &FnType,
         formal: &Type,
     ) -> Option<Type> {
-        if !self.fresh {
-            return None;
-        }
-        let cells = Self::cells(&mut self.cells, env, def, inst);
-        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        formal.collect_tvars(&mut held);
-        held.iter()
-            .any(|(name, tv)| cells.contains_key(name) && tv.is_bound())
-            .then(|| Self::open(formal, cells).0)
-    }
-
-    /// Whether an argument at `formal` holding a cell nothing has decided
-    /// waits for the end of the argument loop: `formal` holds a widenable
-    /// variable, which the argument would take as it stands so far, not
-    /// as the widest argument settles it.
-    fn waits(&mut self, env: &Env, def: &Type, inst: &FnType, formal: &Type) -> bool {
-        if !self.fresh {
-            return false;
-        }
-        let cells = Self::cells(&mut self.cells, env, def, inst);
-        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        formal.collect_tvars(&mut held);
-        held.keys().any(|name| cells.contains_key(name))
+        let held = self.held(env, def, inst, formal);
+        (!held.is_empty()).then(|| Self::open(formal, held.keys()).0)
     }
 
     /// The argument for `key` met `formal`: widen, wait, or the mismatch
@@ -1471,34 +1525,58 @@ impl Widening {
     ) -> Result<()> {
         match fit {
             ArgFit::Fits => Ok(()),
-            ArgFit::Open => Ok(self.deferred.push((key.clone(), formal.clone()))),
-            ArgFit::Misfit => self.misfit(env, def, inst, key, formal, n),
+            ArgFit::Open => {
+                Ok(self.deferred.push((key.clone(), formal.clone(), Waits::Undecided)))
+            }
+            ArgFit::Misfit => {
+                if !wrap!(n, self.widen(env, def, inst, formal, n.typ()))? {
+                    self.deferred.push((key.clone(), formal.clone(), Waits::Incomparable))
+                }
+                Ok(())
+            }
         }
     }
 
-    /// The argument `n` for `key` did not fit `formal`: widen, defer, or
-    /// the mismatch error.
-    fn misfit<R: Rt>(
+    /// An omitted default of type `typ` meets `formal` as a written
+    /// argument does: it decides or widens the variables it holds.
+    fn join_default(
         &mut self,
         env: &Env,
         def: &Type,
         inst: &FnType,
-        key: &ArgKey,
         formal: &Type,
-        n: &Node<R>,
+        typ: &Type,
     ) -> Result<()> {
-        let check = || wrap!(n, formal.check_contains(env, n.typ()));
-        if !self.fresh || n.typ().has_unbound() {
+        if formal.contains(env, typ)? || self.widen(env, def, inst, formal, typ)? {
+            return Ok(());
+        }
+        formal.check_contains(env, typ)
+    }
+
+    /// An argument of type `typ` did not fit `formal`: widen the variables
+    /// it holds wider and check it, or the mismatch error. False when it
+    /// is neither wider nor narrower than a variable, to be checked once
+    /// the other arguments have widened it.
+    fn widen(
+        &mut self,
+        env: &Env,
+        def: &Type,
+        inst: &FnType,
+        formal: &Type,
+        typ: &Type,
+    ) -> Result<bool> {
+        let check = || formal.check_contains(env, typ).map(|()| true);
+        if !self.fresh || typ.has_unbound() {
             return check();
         }
         let cells = Self::cells(&mut self.cells, env, def, inst);
         if cells.is_empty() {
             return check();
         }
-        let (open, opened) = Self::open(formal, cells);
-        if !open.contains(env, n.typ())? {
-            return match open.discernible_refusal(env, n.typ()) {
-                Some(e) => wrap!(n, Err(e)),
+        let (open, opened) = Self::open(formal, cells.keys());
+        if !open.contains(env, typ)? {
+            return match open.discernible_refusal(env, typ) {
+                Some(e) => Err(e),
                 None => check(),
             };
         }
@@ -1527,10 +1605,48 @@ impl Widening {
             cell.bind(t)
         }
         if incomparable {
-            self.deferred.push((key.clone(), formal.clone()));
-            return Ok(());
+            return Ok(false);
         }
         check()
+    }
+}
+
+/// What to annotate where the argument `n` is undecided at its call: the
+/// bindings it reads whose types are undecided, else the argument.
+fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
+    let mut refs = Refs::without_callees();
+    n.refs(&mut refs);
+    let mut binds: SmallVec<[_; 2]> = SmallVec::new();
+    refs.with_external_refs(|id| {
+        if let Some(b) = ctx.env.by_id.get(&id)
+            && !crate::is_lowered(&b.name)
+            && !b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+            && b.typ.has_free()
+        {
+            binds.push(b)
+        }
+    });
+    binds.sort_by_key(|b| b.id);
+    match &*binds {
+        [] => CompactString::const_new(
+            "this argument is undecided at this call; annotate it (bind it to a `let` \
+             with its type written)",
+        ),
+        [b] => format_compact!(
+            "`{}` is undecided at this call; annotate `{}` ({})",
+            b.name,
+            b.name,
+            BoundAt(b, None)
+        ),
+        binds => {
+            let mut names = CompactString::new("");
+            for (i, b) in binds.iter().enumerate() {
+                let sep = if i == 0 { "" } else { ", " };
+                write!(names, "{sep}`{}` ({})", b.name, BoundAt(b, None)).unwrap();
+            }
+            write!(names, " are undecided at this call; annotate them").unwrap();
+            names
+        }
     }
 }
 
@@ -2112,6 +2228,7 @@ impl<R: Rt> CallSite<R> {
                 expr,
                 defaults,
                 Judge::Bind,
+                None,
             )?;
             let typ = default_node.typ().clone();
             let id = BindId::new();
@@ -2135,7 +2252,8 @@ impl<R: Rt> CallSite<R> {
     /// it: compiled in `f`'s environment under the site's handlers, and
     /// checked against the site's view of the parameter, else, where the
     /// site's fn type hides the label, `f`'s own parameter as that type
-    /// instantiates it.
+    /// instantiates it; `join` meets it with the site's view of the
+    /// parameter, else it is checked against it.
     #[allow(clippy::too_many_arguments)]
     fn checked_default(
         &self,
@@ -2147,6 +2265,7 @@ impl<R: Rt> CallSite<R> {
         expr: &Expr,
         defaults: &mut Refs,
         judge: Judge,
+        join: Option<&mut Join<'_>>,
     ) -> Result<Node<R>> {
         let entered = ctx.enter_default(f.id, name);
         let node = checked_default(
@@ -2161,6 +2280,7 @@ impl<R: Rt> CallSite<R> {
             self.ftype.as_deref(),
             None,
             judge,
+            join,
         );
         if entered {
             ctx.leave_default(f.id, name)
@@ -2232,7 +2352,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
+    // XCR claude for claude: [risk/medium] An omitted labeled default only narrows: it is
     // checked after Widening::settle has set the call's widenable variables, so a
     // default wider than the arguments is refused when omitted and accepted when
     // written. Over `let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y`, `f(#x: [1,
@@ -2285,15 +2405,25 @@ impl<R: Rt> CallSite<R> {
     // ~/ptmp/cr29/scratch/review-r15/R-r3-{1,2}/.
     // 2026-11-05 claude: Eric ruled (2026-11-05) on the D7/D8 follow-up: (c), land D7
     // alone: split D7's part out of cr50-R-parked (544862d33) and re-review it.
+    // 2026-11-06 claude: D7 alone carried onto main by lane d7 (round 18): an omitted
+    // default joins the widening as a written argument does (Widening::join_default,
+    // through checked_default's join), before the waiting arguments are checked. f(1)
+    // over |#x: Array<'a> = [1, null], y: 'a| prints 1 as f(#x: [1, null], 1) does, and
+    // both type the result [i64, null]. Pins that fail without it:
+    // lang::functions::omitted_default_joins_as_written,
+    // omitted_default_widens_the_result. Probes
+    // ~/ptmp/cr29/scratch/r18-d7/d1_{omit,written}.gx. Needs a soak.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the
     /// labels whose default can carry a value of a cell its type holds.
+    /// Each default joins `widening` as a written argument does.
     fn check_omitted_defaults(
         &self,
         ctx: &mut CompileCtx<R>,
         ftype: &FnType,
         carriers: &mut SmallVec<[ArcStr; 2]>,
+        widening: &mut Widening,
     ) -> Result<bool> {
         let omitted = |name: &ArcStr| {
             self.args
@@ -2318,6 +2448,10 @@ impl<R: Rt> CallSite<R> {
         {
             defs.push(Some(fv.clone()));
         }
+        let callee = self.fnode.typ();
+        let mut join = |env: &Env, formal: &Type, typ: &Type| {
+            widening.join_default(env, callee, ftype, formal, typ)
+        };
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
@@ -2348,6 +2482,7 @@ impl<R: Rt> CallSite<R> {
                         expr,
                         &mut Refs::default(),
                         Judge::Check,
+                        Some(&mut join),
                     )
                     .map_err(|e| met_default_note::<R>(e, &defs, name))?;
                 if carries(&ctx.env, node.typ()) {
@@ -2357,6 +2492,42 @@ impl<R: Rt> CallSite<R> {
             }
         }
         Ok(known)
+    }
+
+    /// Check the arguments `widening` held back at their formals, once the
+    /// written arguments and the omitted defaults have joined. One holding
+    /// an undecided cell that the join, or an undecided argument before
+    /// it, decided a variable of is refused, naming what to annotate.
+    fn check_waiting(
+        &self,
+        ctx: &CompileCtx<R>,
+        ftype: &FnType,
+        widening: &mut Widening,
+    ) -> Result<()> {
+        let deferred = mem::take(&mut *widening.deferred);
+        let mut met: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        for (key, formal, waits) in deferred {
+            let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) else {
+                continue;
+            };
+            let res = match waits {
+                Waits::Undecided => {
+                    let held = widening.held(&ctx.env, self.fnode.typ(), ftype, &formal);
+                    let joined =
+                        held.iter().any(|(name, tv)| tv.is_bound() || met.contains(name));
+                    met.extend(held.keys().cloned());
+                    // named before the check, which may decide what it names
+                    let note = joined.then(|| undecided_note(ctx, n));
+                    match (formal.check_contains(&ctx.env, n.typ()), note) {
+                        (Err(e), Some(note)) => Err(anyhow!("{e}: {note}")),
+                        (res, _) => res,
+                    }
+                }
+                Waits::Incomparable => formal.check_contains(&ctx.env, n.typ()),
+            };
+            wrap!(n, res)?;
+        }
+        Ok(())
     }
 
     /// Cells the result and throws do not hold, and no argument this
@@ -4186,9 +4357,9 @@ impl<R: Rt> CallSite<R> {
         for (_, farg, key) in formals {
             let Some(arg) = self.args.get_mut(&key) else { continue };
             if let Some(n) = arg.node.as_mut() {
-                let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let fit = typecheck_arg(ctx, &farg.typ, hint.as_ref(), waits, n)?;
+                let opening =
+                    widening.opening(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
+                let fit = typecheck_arg(ctx, &farg.typ, opening.as_ref(), n)?;
                 widening.fit(
                     &ctx.env,
                     self.fnode.typ(),
@@ -4205,44 +4376,40 @@ impl<R: Rt> CallSite<R> {
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
                 if let Some(n) = arg.node.as_mut() {
-                    let waits = widening.waits(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let hint = widening.hint(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let fit = typecheck_arg(ctx, typ, hint.as_ref(), waits, n)?;
+                    let opening =
+                        widening.opening(&ctx.env, self.fnode.typ(), ftype, typ);
+                    let fit = typecheck_arg(ctx, typ, opening.as_ref(), n)?;
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }
         }
-        for (key, formal) in widening.deferred.drain(..) {
-            if let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) {
-                wrap!(n, formal.check_contains(&ctx.env, n.typ()))?;
-            }
-        }
-        self.check_value_defaults(ctx, ftype)?;
-        let mut unread_callbacks = SmallVec::new();
+        let mut carriers = SmallVec::new();
         // a recursive call shares its definition's cells, which the
         // defaults it omits narrow as a fresh instance's
         if fresh || self_call {
-            let mut carriers = SmallVec::new();
             self.defaults_open =
-                !self.check_omitted_defaults(ctx, ftype, &mut carriers)?;
-            if fresh && !self.defaults_open {
-                if static_builtin(ctx, self).is_some() {
-                    self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
-                        if ftype.quantifiers.contains(name) {
-                            tv.settle_unread();
-                        }
-                    });
-                } else {
-                    let mut callbacks: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                    for arg in ftype.args.iter().filter(|a| a.typ.holds_fn(&ctx.env)) {
-                        arg.typ.reached_cells(&mut callbacks);
+                !self.check_omitted_defaults(ctx, ftype, &mut carriers, &mut widening)?;
+        }
+        self.check_waiting(ctx, ftype, &mut widening)?;
+        self.check_value_defaults(ctx, ftype)?;
+        let mut unread_callbacks = SmallVec::new();
+        if fresh && !self.defaults_open {
+            if static_builtin(ctx, self).is_some() {
+                self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
+                    if ftype.quantifiers.contains(name) {
+                        tv.settle_unread();
                     }
-                    self.for_each_unread(&ctx.env, ftype, &carriers, |_, tv| {
-                        if callbacks.contains_key(&tv.cell_addr()) {
-                            unread_callbacks.push(tv.clone());
-                        }
-                    });
+                });
+            } else {
+                let mut callbacks: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                for arg in ftype.args.iter().filter(|a| a.typ.holds_fn(&ctx.env)) {
+                    arg.typ.reached_cells(&mut callbacks);
                 }
+                self.for_each_unread(&ctx.env, ftype, &carriers, |_, tv| {
+                    if callbacks.contains_key(&tv.cell_addr()) {
+                        unread_callbacks.push(tv.clone());
+                    }
+                });
             }
         }
         // A constrained cell reachable from the rtype/throws but no arg is

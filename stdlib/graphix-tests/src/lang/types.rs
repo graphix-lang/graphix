@@ -5241,7 +5241,7 @@ const MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL: &str = r#"
     let y = never();
     let b = B([y]);
     let g = |a, z| { let u = select c { true => a, false => z }; u + u };
-    let r = g(b.0, y);
+    let r = g(y, b.0);
     y <- t ~ 1;
     r
 }
@@ -5251,6 +5251,30 @@ run!(
     merge_under_a_constructor_in_a_call,
     MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL,
     refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
+// The same arguments the other way round: neither is decided, so each
+// waits for the call's end and meets the parameter in order; the array
+// meets the numeric bound first.
+const MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL_ARRAY_FIRST: &str = r#"
+{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let c = true;
+    let y = never();
+    let b = B([y]);
+    let g = |a, z| { let u = select c { true => a, false => z }; u + u };
+    let r = g(b.0, y);
+    y <- t ~ 1;
+    r
+}
+"#;
+
+run!(
+    merge_under_a_constructor_in_a_call_array_first,
+    MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL_ARRAY_FIRST,
+    refused("within Number & Singleton does not contain Array<");
     FuseExpect::None
 );
 

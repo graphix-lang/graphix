@@ -1027,8 +1027,14 @@ node graph IS the IR — there is no parallel typed IR
   every instance of the variable (an unannotated parameter takes its type),
   and a site outside that definition judges it over a copy of the scheme
   (`callsite::Judge`). A call's type variable that only
-  data positions or read-only references hold settles to the widest argument
-  whatever the order, one a callback holds to the first, and one an abstract
+  data positions or read-only references hold settles to the widest of the
+  arguments holding no undecided cell and the defaults the call omits,
+  whatever the order; an argument holding an undecided cell (a read target,
+  a `let` over `never()`, `[]`'s element) waits for that join and takes the
+  variable it settles, and is refused, "annotate it", naming the bindings it
+  reads, where the join, or an undecided argument before it, decided the
+  variable and does not hold it (`Widening::opening`, `check_waiting`). One a
+  callback holds settles to the first argument, and one an abstract
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
   transparent typedef is its expansion)

@@ -2286,6 +2286,86 @@ run!(
     FuseExpect::None
 );
 
+// An argument whose type is undecided takes the variable the closed
+// arguments decide, whatever the order; where that refuses it, the
+// refusal asks for an annotation, in either order.
+run!(
+    undecided_argument_first_refused,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("5"), 1) }"#,
+    refused("this argument is undecided at this call; annotate it");
+    FuseExpect::None
+);
+
+run!(
+    undecided_argument_last_refused,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(1, str::parse("5")) }"#,
+    refused("this argument is undecided at this call; annotate it");
+    FuseExpect::None
+);
+
+run!(
+    undecided_binding_first_named,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; let p = str::parse("5"); f(p, 1) }"#,
+    refused("`p` is undecided at this call; annotate `p`");
+    FuseExpect::None
+);
+
+run!(
+    undecided_binding_last_named,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; let p = str::parse("5"); f(1, (p, 0).0) }"#,
+    refused("`p` is undecided at this call; annotate `p`");
+    FuseExpect::None
+);
+
+run!(
+    annotated_argument_joins_either_order,
+    r#"{
+  let f = |x: 'a, y: 'a| -> 'a y;
+  let p: [i64, Error<`ParseError(string)>] = str::parse("5");
+  (f(p, 1), f(1, p))
+}"#,
+    prints("[i64:1, i64:5]")
+);
+
+run!(
+    undecided_argument_takes_the_closed_join,
+    r#"{ let s = "5"; let d = opt::or_default(str::parse(s)$, 0); d + 1 }"#,
+    prints("i64:6")
+);
+
+// Two undecided arguments at one variable: the second meets what the
+// first gave it, so either order asks for an annotation.
+run!(
+    two_undecided_arguments_first_refused,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("5"), str::parse("6")$) }"#,
+    refused("this argument is undecided at this call; annotate it");
+    FuseExpect::None
+);
+
+run!(
+    two_undecided_arguments_last_refused,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a x; f(str::parse("6")$, str::parse("5")) }"#,
+    refused("this argument is undecided at this call; annotate it");
+    FuseExpect::None
+);
+
+// An omitted labeled default joins the other arguments as written.
+run!(
+    omitted_default_joins_as_written,
+    r#"{
+  let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y;
+  (f(1), f(#x: [1, null], 1))
+}"#,
+    prints("[i64:1, i64:1]")
+);
+
+run!(
+    omitted_default_widens_the_result,
+    r#"{ let f = |#x: Array<'a> = [1, null], y: 'a| -> 'a y; let r: i64 = f(1); r }"#,
+    refused("type mismatch i64 does not contain [i64, null]");
+    FuseExpect::None
+);
+
 // A variable a callback holds does not widen: the callback was checked
 // at the type the variable had when it was reached.
 run!(

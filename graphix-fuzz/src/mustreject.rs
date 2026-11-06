@@ -33,6 +33,7 @@ pub enum Family {
     RigidVar,
     RigidPattern,
     SharedVar,
+    OpenArg,
     WidenConsumer,
     WidenHop,
     VariantWiden,
@@ -49,11 +50,12 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 17] = [
+    pub const ALL: [Family; 18] = [
         Family::MonoReuse,
         Family::RigidVar,
         Family::RigidPattern,
         Family::SharedVar,
+        Family::OpenArg,
         Family::LabelUnknown,
         Family::LabelMissing,
         Family::LabelDefault,
@@ -80,6 +82,7 @@ impl Family {
             Family::RigidVar => &["unbound"],
             Family::RigidPattern => &["tests inside a value of", "matches no value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
+            Family::OpenArg => &["is undecided at this call"],
             Family::LabelUnknown => &["unknown labeled argument"],
             Family::LabelMissing => &["missing required argument"],
             Family::LabelDefault => {
@@ -119,6 +122,7 @@ impl std::fmt::Display for Family {
             Family::RigidVar => "rigid-var",
             Family::RigidPattern => "rigid-pattern",
             Family::SharedVar => "shared-var",
+            Family::OpenArg => "open-arg",
             Family::LabelUnknown => "label-unknown",
             Family::LabelMissing => "label-missing",
             Family::LabelDefault => "label-default",
@@ -356,7 +360,8 @@ pub fn probes(
     mono_reuse(&root, &pre, types, cap, &mut out);
     rigid_var(&root, cap, &mut out);
     rigid_pattern(&root, cap, &mut out);
-    shared_var(&root, &pre, types, cap, &mut out);
+    shared_var(&root, &pre, types, cap, Family::SharedVar, &mut out);
+    shared_var(&root, &pre, types, cap, Family::OpenArg, &mut out);
     labels(&root, &pre, types, cap, &mut out);
     widen_consumer(&root, &pre, types, modules, cap, &mut out);
     widen_through_let(&root, &pre, types, cap, &mut out);
@@ -1187,11 +1192,19 @@ fn with_first_statement(
 /// variable a callback holds keeps the first (`callsite.rs::Widening`). A
 /// call where one of them has a type its uses decide (`open_init`) is
 /// skipped. Right site: the call.
+///
+/// `open-arg`, at the same sites where the variable stands in no function,
+/// abstract type, application or writable reference: the FIRST argument
+/// there becomes `str::parse("1")`, whose type the call leaves undecided:
+/// it takes the variable the other arguments decide, a primitive, which
+/// cannot hold the parse's error, so it is refused whatever its place,
+/// asking for an annotation (`callsite.rs::undecided_note`).
 fn shared_var(
     root: &Expr,
     pre: &[Expr],
     types: &TypeMap,
     cap: usize,
+    family: Family,
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
@@ -1221,6 +1234,26 @@ fn shared_var(
             ((a + 1)..params.len()).find(|b| same(params[a], params[*b])).map(|b| (a, b))
         });
         let Some((a, b)) = pair else { continue };
+        let fixed = |t: &Type| {
+            holds(t, &|d| {
+                matches!(
+                    d,
+                    Type::Fn(_)
+                        | Type::Abstract { .. }
+                        | Type::App(..)
+                        | Type::ByRef(Mutability::Mut, _)
+                )
+            })
+        };
+        let replaced = match family {
+            Family::OpenArg
+                if ft.args.iter().any(|p| fixed(&p.typ)) || fixed(&ft.rtype) =>
+            {
+                continue;
+            }
+            Family::OpenArg => a,
+            _ => b,
+        };
         let si = stmts
             .iter()
             .find(|(_, at, _)| (*at..*at + sizes[*at]).contains(&i))
@@ -1228,7 +1261,7 @@ fn shared_var(
         // every other argument of the variable takes part in the widest-argument
         // rule; one whose type this call decided meets nothing
         let held = (0..params.len())
-            .filter(|c| *c != b && same(params[a], params[*c]))
+            .filter(|c| *c != replaced && same(params[a], params[*c]))
             .map(|c| {
                 let arg = &ap.args[c].1;
                 if open_init(types, block, si, arg) {
@@ -1238,12 +1271,19 @@ fn shared_var(
             })
             .try_fold(BitFlags::empty(), |acc, p| Some(acc | p?));
         let Some(held) = held else { continue };
-        let Some(u) = disjoint_literal(&Type::Primitive(held)) else { continue };
-        let at = arg_indices(i, &sizes, ap.args.len())[b];
+        if family == Family::OpenArg && held.contains(Typ::Error) {
+            continue;
+        }
+        let u = match family {
+            Family::OpenArg => parser::parse_one(r#"str::parse("1")"#).expect("a call"),
+            _ => match disjoint_literal(&Type::Primitive(held)) {
+                Some(u) => u,
+                None => continue,
+            },
+        };
+        let at = arg_indices(i, &sizes, ap.args.len())[replaced];
         let cand = mutate::replace(root, at, &u);
-        out.extend(finish(Family::SharedVar, i, &cand, |_, pre| {
-            vec![pre.get(i).and_then(span)]
-        }));
+        out.extend(finish(family, i, &cand, |_, pre| vec![pre.get(i).and_then(span)]));
         taken += 1;
     }
 }

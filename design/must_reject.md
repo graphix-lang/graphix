@@ -133,6 +133,15 @@ every other one there a concrete primitive (each takes part in the
 widest-argument rule), the literal disjoint from them all, right site
 the call; (a) is family 4's argument case.
 
+`open-arg`, at (b)'s sites where the variable stands in no function,
+abstract type, application or writable reference: the FIRST argument
+there becomes `str::parse("1")`, whose type the call leaves undecided.
+Rule: an argument holding an undecided cell takes the variable the
+other arguments join to, whatever its place, and is refused, "annotate
+it", where the join does not hold it (`callsite::undecided_note`): a
+primitive join holds no parse error (a join admitting `error` is
+skipped). Built, right site the call.
+
 **4. Widening into a rigid consumer.** Site: a use of a value `v: T`
 whose parent is one of:
 - an arithmetic operand (exactly one numeric type, each operand

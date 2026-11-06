@@ -441,6 +441,14 @@ inferred return crosses modules, and a caller reads a field of a generic
 function's result (`h(1).v` over `|x: 'a| {v: x}`) with no `-> T`. To
 find the set: strip, `--check`, restore what it names.
 
+A generic function's variable that only data holds takes the widest
+argument, in either order, an omitted labeled default included. An
+argument whose type is still open (a `str::parse`, a `let` over
+`never()`, `[]`) takes what the others decide:
+`opt::or_default(str::parse(s)$, 0)` reads an `i64`, and
+`f(str::parse(s), 1)` over `|x: 'a, y: 'a|` is refused, "annotate it"
+(`'a` is `i64`, which holds no parse error): annotate the read.
+
 ## Select
 
 The only branching construct. Arms are consulted top down, structure

@@ -334,7 +334,7 @@ trace	rigid-bottom-read-nov2026/01_null_arm_under_a_written_test.gx
 reject	N: type mismatch 'a: iN does not contain [iN, 'r: unbound]	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 reject	N: type mismatch fn(x: 'a: string) -> 'a: string does not contain fn(s: string) -> bytes	rigid-commit-sep2026/01_annotation_variable_split.gx
 reject	N: cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
-reject	N: type mismatch '_N: unbound does not contain 'b: unbound	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
+reject	N: type mismatch 'a: unbound does not contain '_N: unbound	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
 reject	N: type mismatch 'a: unbound does not contain string	rigid-param-call-sep2026/00_param_called_with_a_string.gx
 reject	N: st is { last: iN, n: iN } and cannot hold { b: fN, y: iN }; declare st: [{ b: fN, y: iN }, { last: iN, n: iN }] where it is bound (line N, column N)	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
 trace	scalar-read-widen-sep2026/00_nullable_f64_let.gx

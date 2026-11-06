@@ -278,6 +278,33 @@ cells. Bound cells stay bound: a def-time unification is a settled
 fact, and erasing it made the static type lie about the runtime value
 (the JIT marshal-panic class).
 
+### A call's widening
+
+A fresh instance's variable that only data positions hold
+(`callsite::widenable`) settles to the widest argument, whatever the
+order the call writes them in (`callsite::Widening`). Only arguments
+holding no undecided cell take part in that join, the defaults the call
+omits included, joined as written ones (`Widening::join_default`). An
+argument holding an undecided cell (a read target, a `let` over
+`never()`, `[]`'s element) pre-unifies with a copy of its formal in
+which those variables are open (`Widening::opening`), so it decides
+none of them, and is checked at the end of the argument loop, when the
+join is known (`CallSite::check_waiting`); its cells take what the join
+leaves them. Order can then decide only between a value and a refusal,
+never between two types: where the join does not hold the argument
+(`f(str::parse(s), 1)` over `|x: 'a, y: 'a|`: `'a` is `i64`, which
+holds no parse error), the mismatch is refused, "annotate it", naming
+the bindings the argument reads whose types are undecided
+(`callsite::undecided_note`), in either order. Two undecided arguments
+at one variable: the second meets what the first gave it, and its
+refusal says the same.
+
+An argument with an undecided cell and nothing else at its variable
+(`id(u)`) takes the variable as it is: one cell, decided by whichever
+use comes first, as any cell is. A variable a callback also holds is
+not widenable: the first argument decides it, an undecided one
+included.
+
 ### Function types with variables of their own
 
 A function type with type variables of its own stands only as a
