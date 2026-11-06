@@ -34,7 +34,7 @@ use crate::{
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use graphix_types::tracked::SameValue;
 use netidx_core::pack::{Pack, PackError, encode_varint};
@@ -2285,7 +2285,7 @@ impl<R: Rt> ByRef<R> {
                         typ: referent.clone(),
                         doc: None,
                         scope: scope.lexical.clone(),
-                        name: compact_str::format_compact!("{spec}"),
+                        name: format_compact!("{spec}"),
                         pos: spec.pos,
                         ori: spec.ori.clone(),
                         binder: None,
@@ -2306,7 +2306,7 @@ impl<R: Rt> ByRef<R> {
             };
             if let Some(r) = named {
                 if !place && narrows_generic(ctx, r) {
-                    return Err(narrowing_refusal(r).at(&spec));
+                    return Err(narrowing_refusal(ctx, r).at(&spec));
                 }
                 ctx.mark_connect_target(r.id).map_err(|e| e.at(&spec))?;
             }
@@ -2781,12 +2781,14 @@ fn narrows_generic<R: Rt>(ctx: &CompileCtx<R>, r: &Ref) -> bool {
     ctx.env.poly_binds.contains(&r.id) && ctx.generalized_earlier(r.id)
 }
 
-fn narrowing_refusal(r: &Ref) -> anyhow::Error {
+fn narrowing_refusal<R: Rt>(ctx: &CompileCtx<R>, r: &Ref) -> anyhow::Error {
+    let (name, hint) = match ctx.env.by_id.get(&r.id) {
+        Some(bind) => super::generic_target(&ctx.env, bind),
+        None => (format_compact!("{}", r.spec), ""),
+    };
     anyhow::anyhow!(
-        "{} was made generic before this write compiled, and a writable reference to it \
-         would let a write narrow it: write it with <- a value as general; {}",
-        r.spec,
-        super::ONE_TYPE_HINT
+        "{name} is generic, and a writable reference to it would let a write narrow it: \
+         write it with <- a value as general{hint}"
     )
 }
 
@@ -2845,7 +2847,7 @@ impl<R: Rt> ByRef<R> {
                     && narrows_generic(ctx, r)
                     && crate::holds_generic(&t)
                 {
-                    return Err(narrowing_refusal(r).at(&*self.spec));
+                    return Err(narrowing_refusal(ctx, r).at(&*self.spec));
                 }
                 t
             }

@@ -456,12 +456,32 @@ macro_rules! written_after_the_check {
         run!(
             $name,
             refused("it holds a type variable of the code around the write; to write \
-                     it at one type, write that type on its let"),
+                     it at one type, write that type on its let (on its val, where an \
+                     interface declares it)"),
             "/test.gx" => $test,
             "/test/m.gx" => "let s = {g: |x| x}; let j = s.g"
         );
     )*};
 }
+
+// A refused write names the binding it reached by its module path, and a
+// package's binding, which the program cannot annotate, gets no hint.
+run!(
+    a_write_a_glob_sends_to_a_package_s_binding_names_it,
+    r#"{
+        let s = {f: |x| x};
+        let len = s.f;
+        let r = { use array::*; let g = |v: i64| { len <- |x: i64| x + 1; v }; g(1) };
+        (len("a"), r)
+    }"#,
+    |v: Result<&Value>| matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        e.contains("array::len is fn(a: Array<'a: unbound>) -> i64, a generic binding, \
+                    so what is written to it must be as general, and fn(x: i64) -> i64 \
+                    is not")
+            && !e.contains("to write it at one type")
+    })
+);
 
 written_after_the_check! {
     a_module_s_alias_a_parent_s_lambda_writes_is_held_to_its_scheme =>

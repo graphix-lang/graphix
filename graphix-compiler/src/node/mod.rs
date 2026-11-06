@@ -2593,8 +2593,33 @@ fn params_union(env: &env::Env, held: &Type, written: &Type) -> Option<Type> {
     }
 }
 
-pub(crate) const ONE_TYPE_HINT: &str =
-    "to write it at one type, write that type on its let";
+/// What a refusal of a write to `bind`, a generic binding, calls it (its
+/// module path, where a module holds it) and the hint that ends the
+/// refusal: the annotation that lets the write pass, none for a package's
+/// binding, which the program cannot annotate.
+pub(crate) fn generic_target(
+    env: &env::Env,
+    bind: &env::Bind,
+) -> (CompactString, &'static str) {
+    let mut parts = netidx_core::path::Path::parts(&bind.scope.0)
+        .filter(|p| !graphix_types::is_block_component(p))
+        .peekable();
+    let package = parts.peek().is_some_and(|p| env.package_roots.contains(*p));
+    let mut name = CompactString::new("");
+    for p in parts {
+        name.push_str(p);
+        name.push_str("::");
+    }
+    name.push_str(&bind.name);
+    let hint = match package {
+        true => "",
+        false => {
+            "; to write it at one type, write that type on its let (on its val, where an \
+             interface declares it)"
+        }
+    };
+    (name, hint)
+}
 
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
 /// and the declaration that would hold both. `reads_target`: what is
@@ -3701,12 +3726,10 @@ impl<R: Rt> Connect<R> {
                     Some(_) if generic => format_with_flags(
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
+                            let (name, hint) = generic_target(&ctx.env, bind);
                             anyhow!(
-                                "{} is {held}, made generic before this write compiled, \
-                                 so what is written to it must be as general, and \
-                                 {written} is not; {}",
-                                bind.name,
-                                ONE_TYPE_HINT
+                                "{name} is {held}, a generic binding, so what is written \
+                                 to it must be as general, and {written} is not{hint}"
                             )
                         },
                     ),
@@ -3729,13 +3752,12 @@ impl<R: Rt> Connect<R> {
             rigid.iter().map(|(addr, tv)| (tv.name.clone(), *addr)).collect();
         if generic && callsite::carried_out(&quantified, self.node.typ()).is_some() {
             return format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                let (name, hint) = generic_target(&ctx.env, bind);
                 Err(anyhow!(
-                    "{} is {}, made generic before this write compiled, so what is written \
-                     to it must be as general, and {written} is not: it holds a type \
-                     variable of the code around the write; {}",
-                    bind.name,
+                    "{name} is {}, a generic binding, so what is written to it must be as \
+                     general, and {written} is not: it holds a type variable of the code \
+                     around the write{hint}",
                     bind.typ,
-                    ONE_TYPE_HINT
                 ))
             })
             .map_err(|e| e.at(&self.spec));

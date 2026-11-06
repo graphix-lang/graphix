@@ -5820,7 +5820,7 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     assert!(rest.starts_with(arg), "{narrow}");
     let _w = ctx.rt.compile(ArcStr::from("f <- |x| x")).await?;
     let r = ctx.rt.compile(ArcStr::from("let r = &mut f")).await.unwrap_err();
-    assert!(format!("{r:#}").contains("made generic before this write compiled"));
+    assert!(format!("{r:#}").contains("f is generic, and a writable reference to it"));
     ctx.shutdown().await;
     Ok(())
 }

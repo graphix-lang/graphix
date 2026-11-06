@@ -1733,7 +1733,7 @@ run!(
 
 run!(
     a_load_cannot_narrow_a_written_generic_interface,
-    load_refused("made generic before this write compiled"),
+    load_refused("a generic binding, so what is written"),
     "/test.gx" => r#"
         mod a;
         a::f <- |x| x;
@@ -1758,7 +1758,7 @@ run!(
 // general.
 run!(
     a_write_through_a_dynamic_struct_of_functions_val_refused,
-    refused("c is { f: fn(x: 'a: unbound) -> 'a: unbound }, made generic before this write compiled, so what is written to it must be as general"),
+    refused("c is { f: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general"),
     "/test.gx" => r#"
         let s = mod d dynamic {
             sandbox unrestricted;

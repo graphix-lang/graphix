@@ -1114,6 +1114,24 @@ impl<R: Rt> Struct<R> {
 }
 
 impl<R: Rt> StructWith<R> {
+    // CR claude for claude: [bug/high] A struct update holding a written binding passes
+    // --check and its run refuses the bind: `let s = {f: |x| x}; let j = s.f; let t = {s
+    // with f: j}; println((t.f("s"), j(1))); j <- |x: i64| x + 1` runs, in jit and
+    // --no-fusion, to "a run-time bind ... did not type" at t.f("s")
+    // (GRAPHIX_ELAB_AUDIT: "an instance at fn(x: string) -> string of a definition typed
+    // fn(x: i64) -> i64"); so do `let j = |x| x`, a chain `{t with f: j}`, a `let j =
+    // never()` written later, a write through `&mut j` and one under a nested glob. j
+    // is one instance (its write is seen), but the update's result keeps the source's
+    // type, a holder read's generic copy of s's lambda signature, into which j's live
+    // cell is only contained; t is generalized (holds_function sees the read of s), so
+    // each read of t copies a scheme the write decided at i64. The literal `{f: j}` is
+    // refused (its field is j's own cell). Main 038729af4 the same. This is the struct
+    // update site of the D11/D12 follow-up (~/ptmp/cr-discuss.md, Ruled 11-05, (a)): a
+    // merge of a live cell into a generic copy keeps the survivor generic; the
+    // min-level merge that ruling builds should close it, so that lane re-runs these
+    // probes; failing that, a replaced field takes the replacement's type. probes
+    // ~/ptmp/cr29/scratch/r16-Q/structwith/{w1,w2,w3,x2,x3,r7}.gx, refused twin w5.gx
+    // (run: one.sh <file>) (holder-structwith-written-01)
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
