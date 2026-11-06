@@ -7825,6 +7825,40 @@ run!(
     FuseExpect::Jit
 );
 
+// A field typed through a typedef union narrows as a written union does.
+run!(
+    nullable_typedef_variable_beside_an_abstract_field_advice,
+    r#"{
+        type W<'a> = Abstract<'a>;
+        type U<'x> = ['x, null];
+        let g = 'b: [W<i64>, `B] |x: {f: U<'b>}| -> i64 select x {
+            {f: null} => 0,
+            {f: W(n)} => n,
+            {f: `B} => 1
+        };
+        g({f: W(3)})
+    }"#,
+    refused("write the type it tests, `{ f: W<i64> } as { f: W(n) }`");
+    FuseExpect::None
+);
+
+run!(
+    nullable_typedef_variable_beside_an_abstract_field_written,
+    r#"{
+        type W<'a> = Abstract<'a>;
+        type U<'x> = ['x, null];
+        let g = 'b: [W<i64>, `B] |x: {f: U<'b>}| -> i64 select x {
+            {f: null} => 0,
+            { f: W<i64> } as { f: W(n) } => n,
+            { f: U<[W<i64>, `B]> } as { f: `B } => 1
+        };
+        [g({f: W(3)}), g({f: `B}), g({f: null})]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 3
+        && matches!((&a[0], &a[1], &a[2]), (Value::I64(3), Value::I64(1), Value::I64(0))));
+    FuseExpect::Jit
+);
+
 // A variable the bound holds that the advised test does not is not
 // asked to be bounded.
 run!(

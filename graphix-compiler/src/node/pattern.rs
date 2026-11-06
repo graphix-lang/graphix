@@ -375,6 +375,13 @@ pub(super) enum Holder {
 // also checks: telling the two apart needs the advised test judged by
 // meets_rigid_written, which sees the bound's 'c as an open cell (the check judges the
 // written test's rigid 'c), so the advice that works both ways stands (d6_c_inner.gx).
+// 2026-11-06 claude: Repair (review r19): a struct field typed through a typedef union
+// (type U<'x> = ['x, null], x: {f: U<'b>}) was advised { f: U<[W<i64>, `B]> } as { f:
+// W(n) }, which is refused (W(..) patterns can't match the union): abstract_parts_held
+// narrowed only a written union. It narrows a named one too, so the advice is { f:
+// W<i64> } as { f: W(n) }. Pin that fails without it:
+// lang::select::nullable_typedef_variable_beside_an_abstract_field_advice; its twin
+// nullable_typedef_variable_beside_an_abstract_field_written runs.
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
@@ -636,9 +643,9 @@ fn rigid_written(
     Some(abstract_parts_held(env, ids, pat, &t))
 }
 
-/// `t` with each union a part of `pat` tests by an abstract pattern
-/// narrowed to the members that part may hold: an abstract pattern over a
-/// union is refused.
+/// `t` with each union, written or named, that a part of `pat` tests by
+/// an abstract pattern narrowed to the members that part may hold: an
+/// abstract pattern over a union is refused.
 fn abstract_parts_held(
     env: &Env,
     ids: &AbstractOf,
@@ -653,7 +660,7 @@ fn abstract_parts_held(
             .collect()
     };
     crate::stack::ensure_sufficient(|| match (pat, t) {
-        (P::Abstract { .. }, Type::Set(_)) => {
+        (P::Abstract { .. }, Type::Set(_) | Type::Ref(_)) => {
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             if union_members(env, t, &mut members).is_err() {
                 return t.clone();
