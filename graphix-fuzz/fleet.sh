@@ -31,14 +31,15 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # the launch. washu-chan, the session box, reaches itself over ssh and
 # joins a soak only when idle: launch it alone with FLEET_ONLY.
 #
-# Workers are sized by memory: a worker runs a subject's plain, cold and
-# warm sessions and measures about 375MB on average and 575MB at the top,
-# so a 62GB box takes 80 and katana (16GB) 32.
+# A worker runs a subject's plain, cold and warm sessions and measures about
+# 375MB on average and 575MB at the top, so memory bounds katana (16GB) at 32.
+# A 62GB box holds 80, but the compiler and runtime fork on their own and fill
+# its cores with far fewer: aieka does 55 runs/s at 32 and 44 at 80.
 HOSTS=(
     "katana:32:4:darwin"
     "washu-chan:64:1:linux"
-    "aieka:80:4:linux"
-    "ryouko:80:1:linux"
+    "aieka:32:4:linux"
+    "ryouko:32:1:linux"
 )
 
 MIX=${FLEET_MIX:-}                   # empty: the binary's DEFAULT_MIX
