@@ -490,9 +490,13 @@ fn undecided_part(
         if !concrete(t) || typemorph::leaks_binds(&se.arg) {
             continue;
         }
-        // a `never()` scrutinee adds nothing to a union beside `tm__z`,
-        // which is then the whole scrutinee, one the arms decide together
-        let bottom = matches!(se.arg.kind, ExprKind::Never { typ: None, .. });
+        // a `never()` or a connect scrutinee adds nothing to a union beside
+        // `tm__z`, which is then the whole scrutinee, one the arms decide
+        // together
+        let bottom = matches!(
+            se.arg.kind,
+            ExprKind::Never { typ: None, .. } | ExprKind::Connect { .. }
+        );
         let binds = |p: &Pattern| {
             let mut any = false;
             p.structure_predicate.with_names(&mut |_| any = true);

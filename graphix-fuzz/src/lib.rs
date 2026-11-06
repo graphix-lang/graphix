@@ -6107,6 +6107,20 @@ mod tests {
                 .collect();
             assert!(up.len() >= 2 && up.iter().all(|p| p.verdict.is_none()), "{up:?}");
         }
+        // over a scrutinee that is ⊥ (`never()`, a connect) family 14 writes
+        // only the decide shape: a union of it and tm__z is tm__z whole
+        for prog in [
+            "{ let y = 0; select y <- 5 { 6 => 1, _ => 2 } }",
+            "{ select never() { 0 => 0, 1 => 1, _ => 2 } }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            let up: Vec<_> = rep
+                .rejects
+                .iter()
+                .filter(|p| p.id.starts_with("undecided-part#"))
+                .collect();
+            assert!(up.iter().all(|p| p.verdict.is_none()), "{prog}: {up:?}");
+        }
         // family 8 refuses a literal and a function with a defaulted label
         let qf = "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }";
         let rep = typemorph_subject(qf, per, TM_CAP).await.unwrap();
