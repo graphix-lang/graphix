@@ -3427,6 +3427,24 @@ run!(recursive_abstract_in_a_body, RECURSIVE_ABSTRACT_IN_A_BODY, |v: Result<&Val
     Ok(Value::Array(a)) if &a[..] == [Value::Bool(true), Value::Bool(false)]
 ); FuseExpect::Jit);
 
+// A parametric abstract type in a function body: each instance's
+// representation is written over the definition's own formals.
+run!(
+    parametric_abstract_in_a_body,
+    r#"{
+        let f = |b: i64| {
+            type B<'p> = Abstract<'p>;
+            let x = B(b);
+            x.0 + 1
+        };
+        (f(1), f(2))
+    }"#,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::Array(a)) if &a[..] == [Value::I64(2), Value::I64(3)]
+    )
+);
+
 // An abstract type whose representation names a typedef its block
 // declares after it, in a function body: each instance compares the
 // representation once both are declared.

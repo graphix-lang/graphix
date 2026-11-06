@@ -507,6 +507,14 @@ fn rep_changed(name: &str, old: &Type) -> String {
     )
 }
 
+/// Whether a definition's formals are the cells a compile wrote: a block
+/// compiled again declares its live definition, whose formals are the
+/// first compile's.
+fn same_formals(def: &[(TVar, Option<Type>)], written: &[(TVar, Option<Type>)]) -> bool {
+    def.len() == written.len()
+        && def.iter().zip(written).all(|((a, _), (b, _))| a.same_cell(b))
+}
+
 fn non_contractive(name: &str) -> String {
     format!(
         "recursive type {name} refers back to itself through unions and aliases \
@@ -2218,7 +2226,18 @@ impl Env {
             (new(), Arc::new(AtomicBool::new(false)))
         };
         let key = def.def_key();
-        let td = TypeDef { def, rep: rep.clone(), doc, seeded };
+        let written = match &rep {
+            Some(r) if !same_formals(def.params(), &params) => {
+                let formals: LPooled<AHashMap<ArcStr, Type>> = def
+                    .params()
+                    .iter()
+                    .map(|(tv, _)| (tv.name.clone(), Type::TVar(tv.clone())))
+                    .collect();
+                Some(r.replace_tvars(&formals))
+            }
+            r => r.clone(),
+        };
+        let td = TypeDef { def, rep: written, doc, seeded };
         let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(name.into(), td);
         // compared with the definition in scope, where a self-reference in
