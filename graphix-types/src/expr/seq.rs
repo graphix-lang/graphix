@@ -1739,6 +1739,12 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     // an_outer_holder_read_in_a_flushed_seqq_is_generic} fail without the change (16 of 16 mode
     // tests); a_holder_a_seqq_step_writes_is_one_instance and its annotated twin pin what
     // stays.
+    // 2026-11-05 claude: Review r18: every earlier pin calls s.g in a step, a call with no
+    // static target, so its capture is read live;
+    // lang::quantified::each_queued_seqq_request_snapshots_an_outer_holder_generically pins the
+    // snapshot path (no step calls s.g, SEQPLAN live false): three requests each read their own
+    // s.n and s.g at both types, and it fails without the change. The shape a seqq inside a
+    // generalized holder's value still misses is seqq-capture-in-holder-01.
     qlets.push(let_bind(pos, &input, None, apply_core(pos, "queue", queue_args)));
     let mut field = 0;
     for (var, (live, name, _)) in captures.iter() {

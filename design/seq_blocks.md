@@ -337,9 +337,10 @@ variable itself where a step writes it) is written by nothing either, so
 a capture of a generalized binding carries its scheme too: it is typed
 by its live read, a copy of the scheme (`SeqCapture::scheme`,
 `bind::Passing::Capture`, Eric 11-05), never by the queue's one instance
-of what it carries, and its value is still the request's snapshot. A
-variable a step writes, a callee's write included, is written, so its
-capture is one instance, read live.
+of what it carries, and its value is still the request's snapshot
+unless the capture is live (a step makes a call with no static target,
+which counts as every variable). A variable a step writes, a callee's
+write included, is written, so its capture is one instance, read live.
 
 ## 6. The lowering
 

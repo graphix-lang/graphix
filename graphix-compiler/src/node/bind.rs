@@ -1128,6 +1128,21 @@ fn name_passed<R: Rt>(env: &Env, node: &mut Node<R>) {
                 pass(&mut parts.n[t.field])
             }
         }
+        // CR claude for claude: [bug/low] A seqq inside a generalized holder's value
+        // still reads an outer holder at one type: `let s = {g: |x| x}; let h = {f: |k|
+        // seqq k { (s.g(1), s.g("s")) }}` (or the seqq itself as a field or a tuple
+        // element) is refused at --check ("i64 does not contain string"), where the `seq`
+        // twin and the plain block run and print (1, "s"). Untraced hypothesis: under
+        // ValueReads::Shared the capture's Naming::Passed live read goes through
+        // holder_read (Ref::decide), sharing the holder's one copy of `s` with the
+        // queue argument's read of it in the lowering's prelude, so the capture carries
+        // the queue's instance. A fix that gives the capture's live read a copy of its
+        // own beside the holder's map is a rule the D3 follow-up 3 ruling does not state
+        // (it states the capture carries the scheme as a seq snapshot does, which this
+        // shape misses). A refusal, not a hole; main 5a28e6a57 refuses it too. Review r18
+        // Q-r1-1. probe: ~/ptmp/cr29/scratch/review-r16/Q-r1-1/r18/p31_lambda_in_holder.gx
+        // vs p31s_lambda_in_holder_seq.gx, p23_seqq_in_holder.gx vs p23s/p23p,
+        // p32_tuple_holder_value.gx vs p32s (seqq-capture-in-holder-01)
         Some(Passing::Capture) => {
             if let Some(c) = node.downcast_mut::<super::seq_machine::SeqCapture<R>>() {
                 pass(&mut c.live)

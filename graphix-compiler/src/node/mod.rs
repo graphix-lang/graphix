@@ -3866,6 +3866,15 @@ impl<R: Rt> Connect<R> {
 // between runs (the verdict never does). Review r14 A-r4-1. probe:
 // ~/ptmp/cr29/scratch/review-r14/A-r4-1/{repl/lw6.txt,lw2,lw3,lw4,p/vw1,p/vw1b}
 // (held-lower-bound-01)
+// 2026-11-05 claude: Another shape, review r18 Q-r1-1, no seq involved: in the REPL, `let s
+// = {g: |x| x, n: 0}` then `s <- sys::time::timer(duration:700.ms, false) ~ {g: |x| x, n:
+// 5}` is refused ("s is { g: fn(x: '_8549) -> '_8550, n: i64 }, a generic binding, so what
+// is written to it must be as general, and { g: fn(x: '_8556) -> '_8549, .. } is not: it
+// holds a type variable of the code around the write"): the held copy prints the identity's
+// result apart from its parameter, the result bounded below by it, as this CR describes.
+// Main 5a28e6a57 and lane Q's cr53-sq refuse it alike. probe:
+// ~/ptmp/cr29/scratch/review-r16/Q-r1-1/r18/repl8.txt piped into graphix --no-cache (also
+// repl7, repl9-11).
 /// The open cells `held`, a generic binding's copy, reaches, a bound's and
 /// a function type's own quantifiers included, by address: two of one name
 /// are two cells where the copy took each function type apart.

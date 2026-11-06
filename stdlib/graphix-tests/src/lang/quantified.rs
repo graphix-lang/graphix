@@ -881,6 +881,19 @@ run!(
     FuseExpect::Jit
 );
 
+// No step calls `s.g`, so the capture stays the request's snapshot: each
+// request reads its own `s.n`, and `s.g` at both types.
+run!(
+    each_queued_seqq_request_snapshots_an_outer_holder_generically,
+    "{ let c = array::iter([1, 2, 3]); let s = {g: |x| x, n: c}; \
+       let i = |f: fn(x: i64) -> i64| 1; let t = |f: fn(x: string) -> string| \"s\"; \
+       let r = seqq let k = c { let w = sys::time::after_idle(duration:30.ms, k); (w, s.n, i(s.g), t(s.g)) }; \
+       let acc: Array<(i64, i64, i64, string)> = []; acc <- r ~ array::push(acc, r); \
+       select array::len(acc) { 3 => acc, _ => never() } }",
+    prints(r#"[[i64:1, i64:1, i64:1, "s"], [i64:2, i64:2, i64:1, "s"], [i64:3, i64:3, i64:1, "s"]]"#);
+    FuseExpect::Jit
+);
+
 // A capture a step writes, through a callee here, is read live: the binding
 // is written, so one instance.
 run!(
