@@ -7,8 +7,8 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
-        Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        Unfolded, node_addr, params_size, probe_key,
+        Mutability, NodePairs, NormKey, Open, RefHist, RefKey, RefPair, TVar, TraitId,
+        Type, Unfolded, node_addr, params_size, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cycle_toward,
@@ -437,6 +437,36 @@ fn shares_bare_cell(s0: &[Type]) -> bool {
                 tvs.values().any(|tv| open(tv) == Some(cell))
             })
         })
+}
+
+/// The walk of [`Type::dispatch_members`]; with `seen`, a named type
+/// already expanded is skipped.
+fn flatten_members(
+    env: &Env,
+    t: &Type,
+    mut seen: Option<&mut AHashSet<RefKey>>,
+    out: &mut SmallVec<[Type; 8]>,
+) -> Result<()> {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => match tv.binding() {
+            Some(b) => flatten_members(env, &b, seen, out),
+            None => Ok(out.push(t.clone())),
+        },
+        Type::Set(ts) => {
+            ts.iter().try_for_each(|t| flatten_members(env, t, seen.as_deref_mut(), out))
+        }
+        Type::Ref(tr) => {
+            let key = tr.resolve_in(env).map(|r| (r.def_key(), tr.params.clone()));
+            if let (Some(seen), Some(key)) = (seen.as_deref_mut(), key)
+                && !seen.insert(key)
+            {
+                return Ok(());
+            }
+            flatten_members(env, &t.lookup_ref(env)?, seen, out)
+        }
+        Type::Primitive(p) => Ok(out.extend(p.iter().map(|b| Type::Primitive(b.into())))),
+        t => Ok(out.push(t.clone())),
+    })
 }
 
 /// How deep `t` nests constructors.
@@ -2047,22 +2077,17 @@ impl Type {
     /// its type references, a union of primitives split into its
     /// primitives and an open cell kept as one member.
     pub fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
-        fn go(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
-            ensure_sufficient(|| match t {
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => go(env, &b, out),
-                    None => Ok(out.push(t.clone())),
-                },
-                Type::Set(ts) => ts.iter().try_for_each(|t| go(env, t, out)),
-                Type::Ref(_) => go(env, &t.lookup_ref(env)?, out),
-                Type::Primitive(p) => {
-                    Ok(out.extend(p.iter().map(|b| Type::Primitive(b.into()))))
-                }
-                t => Ok(out.push(t.clone())),
-            })
-        }
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        go(env, t, &mut members)?;
+        flatten_members(env, t, None, &mut members)?;
+        Ok(members)
+    }
+
+    /// [`Self::dispatch_members`] with each named type expanded once,
+    /// however many of the names it reaches name it.
+    pub fn distinct_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
+        let mut seen: LPooled<AHashSet<RefKey>> = LPooled::take();
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        flatten_members(env, t, Some(&mut seen), &mut members)?;
         Ok(members)
     }
 

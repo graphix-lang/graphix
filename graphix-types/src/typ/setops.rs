@@ -834,6 +834,17 @@ impl Type {
     // Not covered: the depth families whose residual doubles in fewer pairs than the budget (dq, dp, darms,
     // arms16) are exponential again, as on main (diff-residual-depth-01). 1600 generated selects: 52 of main's 53
     // timeouts end, no change of verdict kind against 338e2916f; the 54 families as 338e2916f.
+    // 2026-11-05 claude: Review r16 part 3 (U-r1-2) fixes: past the pair budget the whole operand
+    // (Type::diff_held, now deleted) made ?/$ take the error strip for an operand with no error member (['a, X],
+    // X = 1100 named tags + null: $ let the null through, ? was refused); and Strip::kept flattened names with no
+    // memo, 2^n members over a DAG of names (wd16 40.8G, wd20/wd26 killed, main 1.8G). Now, where diff_exact says
+    // the budget widened, ?/$ split the operand by its members, each named type expanded once
+    // (Type::distinct_members; Strip::taken decides the strip and is the raised type, Strip::left the result
+    // type). Pins (fail without):
+    // lang::errors::an_open_operand_past_the_pair_budget_takes_its_null_with_{dollar,q} (8/8 fail with the whole
+    // operand), lang::errors::a_dag_of_names_past_the_pair_budget_strips_once_per_name (hangs with
+    // dispatch_members), typ::setops::tests::distinct_members_expand_each_name_once; twins
+    // lang::errors::an_open_operand_inside_the_pair_budget_*.
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         #[cfg(test)]
         DIFF_STEPS.with(|n| n.set(n.get() + 1));
@@ -1377,6 +1388,15 @@ impl Type {
     // probe above ended within 56G. probes: ~/ptmp/cr29/scratch/review-r16/U-r3-2/p/,
     // U-r3-2/x/k/, U-r1-2/r16U2/p2/; results ~/ptmp/cr29/scratch/r16-U5/named-table.txt
     // (diff-residual-depth-01)
+    // 2026-11-05 claude: Review r16 part 3 (U-r1-2) correction: the pair budget does meet
+    // these families, in the arm after the deep test. Over dq's residual of 2^d members
+    // the next arm's diff takes about 2^(d+1) named pairs, past WALK_PAIRS from d = 9, so
+    // it subtracts nothing: a repeated Error<U> as e arm after the first (ddu9..ddu12),
+    // which main refuses 'will never match' at every d, is accepted from d = 9 (sound, a
+    // verdict change against main), and the arm after it walks the unreduced residual
+    // again, which is HEAD's dq doubling (dq12 arm bisection, main 3.0/8.15/8.15G, HEAD
+    // 3.0/9.13/13.88G; ddu12 8.15G main, 14.9G HEAD). design/tvar_constraints.md now says
+    // so. probes: ~/ptmp/cr29/scratch/review-r16/U-r1-2/p3/ (ddu*.gx, q12a-d.gx, dq12.gx)
     /// The values of `self` that are not values of `t`, or more where the
     /// walk's pair budget stopped it subtracting.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
@@ -1389,15 +1409,6 @@ impl Type {
     pub fn diff_exact(&self, env: &Env, t: &Self) -> Result<Option<Self>> {
         let (d, widened) = self.diff_walk(env, t)?;
         Ok((!widened).then_some(d))
-    }
-
-    /// The values of `self` that `t` holds, `self` less its difference
-    /// from `t`, or all of `self` where a budget widened that difference.
-    pub fn diff_held(&self, env: &Env, t: &Self) -> Result<Self> {
-        match self.diff_exact(env, t)? {
-            Some(rest) => self.diff(env, &rest),
-            None => Ok(self.clone()),
-        }
     }
 
     fn diff_walk(&self, env: &Env, t: &Self) -> Result<(Self, bool)> {
@@ -1981,10 +1992,9 @@ mod tests {
 
     // Past the walk's budget a difference is wider than exact, and what it
     // left out is no measure of what the subtrahend holds (the difference
-    // from it loses the error behind a name): diff_held is the whole
-    // minuend there.
+    // from it loses the error behind a name): diff_exact says so.
     #[test]
-    fn diff_held_past_the_budget_is_the_minuend() {
+    fn diff_exact_past_the_budget_is_none() {
         let names: Vec<(String, String)> = (0..WALK_PAIRS + 100)
             .map(|i| (format!("N{i}"), format!("`N{i}")))
             .chain([("Zerr".to_string(), "Error<`E>".to_string())])
@@ -1994,8 +2004,28 @@ mod tests {
         let (env, t) = typed(&defs, &format!("[{all}, null]"));
         let error = Type::Primitive(Typ::Error.into());
         assert!(t.diff_exact(&env, &error).unwrap().is_none());
-        assert_eq!(t.diff_held(&env, &error).unwrap(), t);
         let twice = t.diff(&env, &t.diff(&env, &error).unwrap()).unwrap();
         assert!(!twice.to_string().contains("Zerr"));
+    }
+
+    // Over names that each name the two before them, the paths to the
+    // first double at every level: each name is expanded once.
+    #[test]
+    fn distinct_members_expand_each_name_once() {
+        let mut names = vec![
+            ("L0".to_string(), "[`A, null, Error<`E>]".to_string()),
+            ("M0".to_string(), "[`B, null]".to_string()),
+        ];
+        for i in 1..=40 {
+            names.push((format!("L{i}"), format!("[L{}, M{}]", i - 1, i - 1)));
+            names.push((format!("M{i}"), format!("[M{}, L{}]", i - 1, i - 1)));
+        }
+        let defs: Vec<(&str, &str)> = names.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "L40");
+        let members = Type::distinct_members(&env, &t).unwrap();
+        let printed = format_with_flags(PrintFlag::DerefTVars, || {
+            members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+        });
+        assert_eq!(printed, "`A, null, Error<`E>, `B, null");
     }
 }

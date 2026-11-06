@@ -1327,20 +1327,28 @@ run!(
     FuseExpect::Jit
 );
 
-/// A block over an operand of more named members than diff's pair budget,
-/// beside an error and null: `x` is that operand, `kept` the type holding
-/// its members but the error, and `body` reads both.
-fn past_the_pair_budget(body: &str) -> String {
-    let names: Vec<String> = (0..1100).map(|i| format!("N{i}")).collect();
+/// A block declaring `n` named tags `N0`, .., then `decls` with `{names}`
+/// listing them, then `body`.
+fn with_named_tags(n: usize, decls: &str, body: &str) -> String {
+    let names: Vec<String> = (0..n).map(|i| format!("N{i}")).collect();
     let mut code = String::from("{\n");
     for n in &names {
         code.push_str(&format!("type {n} = `{n};\n"))
     }
-    let names = names.join(", ");
-    code.push_str(&format!(
-        "type Zerr = Error<`E>;\ntype Kept = [{names}, null];\ntype X = [{names}, Zerr, null];\n{body}\n}}"
-    ));
+    code.push_str(&decls.replace("{names}", &names.join(", ")));
+    code.push_str(&format!("\n{body}\n}}"));
     code
+}
+
+/// A block over an operand of more named members than diff's pair budget,
+/// beside an error and null: `x` is that operand, `kept` the type holding
+/// its members but the error, and `body` reads both.
+fn past_the_pair_budget(body: &str) -> String {
+    with_named_tags(
+        1100,
+        "type Zerr = Error<`E>;\ntype Kept = [{names}, null];\ntype X = [{names}, Zerr, null];",
+        body,
+    )
 }
 
 // Past the pair budget a `?` or `$` result type is still the operand less
@@ -1359,4 +1367,76 @@ run!(
     past_the_pair_budget("let f = |x: X| { let v = x$; let w: Kept = v; 1 }; f(null)"),
     is(Value::I64(1));
     FuseExpect::None
+);
+
+/// `n` named tags beside null (`X`) and alone (`Tags`), and a function over
+/// an open member beside `X` whose body is `strip`, which takes the null.
+fn open_beside_named_tags(n: usize, strip: &str) -> String {
+    with_named_tags(
+        n,
+        "type Tags = [{names}];\ntype X = [{names}, null];",
+        &format!(
+            "let f = 'a: Any |x: ['a, X]| -> ['a, Tags] {strip};\n\
+             let s: [X, i64] = `N1;\n\
+             select f(s) {{ `N1 => 1, _ => 2 }}"
+        ),
+    )
+}
+
+// Past the pair budget an operand with no error member still takes the
+// null strip: the strip is chosen by the operand's members.
+run!(
+    an_open_operand_past_the_pair_budget_takes_its_null_with_dollar,
+    open_beside_named_tags(1100, "x$"),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_open_operand_past_the_pair_budget_takes_its_null_with_q,
+    open_beside_named_tags(
+        1100,
+        "{ catch(e) println(select e.0.error { `NullError(s) => s }); x? }"
+    ),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_open_operand_inside_the_pair_budget_takes_its_null_with_dollar,
+    open_beside_named_tags(900, "x$"),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_open_operand_inside_the_pair_budget_takes_its_null_with_q,
+    open_beside_named_tags(
+        900,
+        "{ catch(e) println(select e.0.error { `NullError(s) => s }); x? }"
+    ),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+/// Past the pair budget, `$` over names that each name the two before
+/// them: the paths to the first double at every level.
+fn named_dag_past_the_pair_budget(depth: usize) -> String {
+    let mut decls =
+        String::from("type L0 = [`A, null, Error<`E>];\ntype M0 = [`B, null];\n");
+    for i in 1..=depth {
+        decls.push_str(&format!(
+            "type L{i} = [L{p}, M{p}];\ntype M{i} = [M{p}, L{p}];\n",
+            p = i - 1
+        ));
+    }
+    decls.push_str(&format!("type W = [{{names}}, L{depth}];"));
+    with_named_tags(1100, &decls, "let x: W = `A;\nlet y = x$;\ny ~ 1")
+}
+
+run!(
+    a_dag_of_names_past_the_pair_budget_strips_once_per_name,
+    named_dag_past_the_pair_budget(24),
+    is(Value::I64(1));
+    FuseExpect::Jit
 );

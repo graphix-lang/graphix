@@ -732,12 +732,16 @@ type, counted, never timed (Eric 11-05, diff-cycle-hang-01 follow-up 2
 wherever a pair is met (pins
 `typ::setops::tests::diff_over_branching_unions_is_bounded`,
 `could_match_over_branching_unions_is_bounded`). The pair budget does not
-bound a residual that grows while the walk takes few pairs: over `T =
-[Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep walks under
-100 pairs and leaves a residual of `2^d` union members, and a select's
-running residual doubles at each arm testing a level deeper than the last.
-Those selects stay exponential in their depth, as before the budget
-(diff-residual-depth-01).
+bound a residual that grows while one walk takes few pairs: over `T =
+[Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep leaves a
+residual of `2^d` union members, and a select's running residual doubles
+at each arm testing a level deeper than the last. Those selects stay
+exponential in their depth, as before the budget
+(diff-residual-depth-01). The next arm's walk over that residual takes
+about `2^(d+1)` pairs, past the budget from `d = 9`: it subtracts nothing
+there, so a dead arm after it is not found (a repeated `Error<U> as e`
+arm, which main refuses, is accepted) and the arm after that walks the
+unreduced residual again.
 
 A wider residual is sound: fewer dead arms are found, a missing case may
 be refused that a `_` arm fixes, a later arm's bind is wider. It is not
@@ -745,11 +749,12 @@ sound for a caller that reads what a difference left out: `?` and `$`
 pick their strip by whether `t - (t - error)` holds a member, and `?`
 raises that part to its handler, so a widened inner difference would
 read as nothing taken. `Type::diff_exact` says where the budget widened a
-difference, and `Type::diff_held`, the part of `t` that its subtrahend
-holds, is all of `t` there (pin
-`typ::setops::tests::diff_held_past_the_budget_is_the_minuend`). There
-the result type of `?` and `$` is the operand's members, read through
-names and cells, less those the strip takes (`Strip::kept`; pins
+difference (pin `typ::setops::tests::diff_exact_past_the_budget_is_none`).
+There `?` and `$` split the operand by its members instead, read through
+cells and through names, each name expanded once
+(`Type::distinct_members`): an error member (or the null) is what the
+strip takes, which decides the strip and is the raised type, and the rest
+is the result type (`Strip::taken`, `Strip::left`; pins
 `lang::errors::an_operand_past_the_pair_budget_*`). One unfolding and
 1000 pairs were chosen from the 1600 generated selects (review-r8
 X-r1-1): of main's 1547 finishes none changes verdict or the kind of its

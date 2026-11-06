@@ -1385,10 +1385,10 @@ cycle, across workers; the compiler never pins threads.
   (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs
   (either side named) in one walk: a wider residual, so fewer dead arms
   are found and a missing case may be refused that `_` fixes. What reads
-  the part a difference left out (`?`'s strip and raised type) takes
-  `Type::diff_held`: the whole operand where the budget widened it; the
-  result type of `?`/`$` there is the operand's members less what it
-  strips (`Strip::kept`). A partial
+  the part a difference left out (`?`'s strip and raised type) and
+  `?`/`$`'s result type split the operand by its members, each name
+  expanded once, where the budget widened it (`Strip::taken`,
+  `Strip::left`). A partial
   struct pattern completes against the one member it can match
   (`StructurePattern::complete_type_predicate`); members told apart only
   by undecided cells are two members, refused unless what reaches the
