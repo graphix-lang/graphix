@@ -57,7 +57,9 @@ impl TVar {
     /// scheme's cells must not join live inference) and its live cells
     /// shared, so it keeps its relations. `Err(true)` when there is none,
     /// `Err(false)` when no conjunct could be one (all traits or
-    /// self-referential). Bound and unbounded cells have none.
+    /// self-referential, or a set only `Singleton` refuses: a member would
+    /// do, and no walk here can choose it). Bound and unbounded cells have
+    /// none.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
         let (cons, below) = {
             let cell = self.cell();
@@ -92,9 +94,11 @@ impl TVar {
             if c.is_predicate() || c.is_trait_ref(env) || would_cycle_open(addr, c) {
                 continue;
             }
-            candidates = true;
             for o in cons.iter() {
                 if !o.contains_int(BitFlags::empty(), env, &mut hist, c)? {
+                    // `Singleton` refuses the set, not its members: one of
+                    // them may still fit
+                    candidates |= !matches!(o, Type::Bound(Bound::Singleton));
                     continue 'cand;
                 }
             }

@@ -5210,6 +5210,46 @@ run!(
     prints("[[i64:2], [i64:100]]")
 );
 
+// A function value no binding names is one instance, so arithmetic over its
+// calls bounds one result cell `Number & Singleton`: a set `Singleton` refuses
+// is no witness, and no refusal either, since one of its members may still
+// fit. The cell stays open for what later decides it.
+run!(
+    a_shared_result_under_arithmetic_stays_open,
+    r#"{
+        let g = select true { true => |b| never(), false => |b| never() };
+        let a = g(true) + g(false);
+        let c = g(false);
+        7
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7)));
+    FuseExpect::None
+);
+
+run!(
+    a_shared_result_under_arithmetic_takes_a_later_number,
+    r#"{
+        let g = select true { true => |b| never(), false => |b| never() };
+        let a = g(true) + g(false);
+        let c: f64 = g(false);
+        7
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7)));
+    FuseExpect::None
+);
+
+run!(
+    a_shared_result_under_arithmetic_refuses_a_later_string,
+    r#"{
+        let g = select true { true => |b| never(), false => |b| never() };
+        let a = g(true) + g(false);
+        let c: string = g(false);
+        7
+    }"#,
+    refused("does not contain");
+    FuseExpect::None
+);
+
 // A select's two arms meeting under arithmetic merge a cell with one
 // above an array of it.
 const MERGE_UNDER_A_CONSTRUCTOR: &str = r#"

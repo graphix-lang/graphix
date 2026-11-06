@@ -44,7 +44,10 @@ unbound cells must merge their constraints, and alias sites have no
 unsatisfiable conjunction is detected at SETTLE time by the witness
 rule — `TVar::settle` binds an unbound constrained cell to the
 narrowest conjunct every other conjunct contains, and "no witness" is
-the "unsatisfiable constraints on 'a: i64 & string" error.
+the "unsatisfiable constraints on 'a: i64 & string" error. `Singleton`
+refuses a set, not its members, so a conjunct only it refuses
+(`Number & Singleton`) is no refusal: the cell stays open for what later
+decides it, and ends at ⊥ if nothing does.
 
 A cell may also be bounded from below: `TCell::lower`, a list every
 binding must contain (`cell_constraints_ok` checks it beside the

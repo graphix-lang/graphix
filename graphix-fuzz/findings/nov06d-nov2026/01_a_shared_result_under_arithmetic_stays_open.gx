@@ -1,0 +1,5 @@
+// A function value no binding names is one instance, so arithmetic over its
+// calls bounds one result cell `Number & Singleton`, and a later call's settle
+// found no witness and refused it as unsatisfiable: `Singleton` refuses the
+// set, not its members. Found by the nov06d soak (aieka, mono-reuse).
+{ let g = select true { true => |b| never(), false => |b| never() }; let a = g(true) + g(false); let c = g(false); 7 }
