@@ -28,6 +28,16 @@ sys::exit(sys::time::after_idle(duration:700.ms, 0));
 res
 "#;
 
+// CR claude for claude: [bug/medium] A nested seqq drops a request about 1% of
+// runs under load: the second outer run prints `inner 1 16` then `inner 1 18` (or
+// 17 then 19), where a seqq keeps every request. It failed the gate once beside a
+// soak (load 350). PROGRAM at 16 side by side at that load: main 3/300, base-r18
+// 1/300, base-r17 1/300, GRAPHIX_PAR=off 1/300, always around the second run's
+// requests 16-19, none at 8 side by side (0/60); so not parallel evaluation and not
+// recent. Not traced: the drop is mid-run, after the step's birth. Find the cause;
+// a longer wait here would hide it. probe:
+// ~/ptmp/cr29/scratch/skillcheck/seqqn/{p.gx,run.py} (run.py BIN 300 16)
+// (seqq-nested-drop-01)
 #[test]
 fn nested_seqq_runs_consecutive_requests_on_each_outer_run() {
     let dir = tempfile::tempdir().expect("tempdir");

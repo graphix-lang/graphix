@@ -1561,7 +1561,8 @@ references name the target is told the recursive type alone
   two unify (`contains.rs` Distinct) and none escapes into a cell outside
   the definition (`DefGate::check_declared_kept`; a variable the signature
   only names, undeclared, is lowered with that cell, and the definition is
-  monomorphic in it), so a function type without
+  monomorphic in it; in a function something writes, a part of its signature
+  left unwritten is such a cell, and the refusal names the annotation), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them
   freely; a call copies only what the callee's definition owns once
   its gate is closed (or not yet open): a cell shared with the

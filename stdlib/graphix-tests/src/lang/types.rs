@@ -5287,6 +5287,45 @@ run!(
     FuseExpect::None
 );
 
+// A function something writes is one instance, so a part of its signature left
+// unwritten is a cell outside it, and a declared variable meeting that cell is
+// told the annotation that keeps it the definition's.
+run!(
+    a_written_definition_s_unwritten_return_names_the_annotation,
+    "{ let t = 'a: Number |x: 'a| x; let r = &mut t; t(1) }",
+    refused("write its return type, `-> 'a`");
+    FuseExpect::None
+);
+
+run!(
+    a_written_definition_s_unwritten_return_holding_it_names_the_annotation,
+    "{ let t = 'a: Number |x: 'a| [x]; let r = &mut t; t(1) }",
+    refused("write its return type, `-> Array<'a>`");
+    FuseExpect::None
+);
+
+run!(
+    a_written_definition_s_unwritten_parameter_names_the_annotation,
+    "{ let t = 'a: Number |x: 'a, y| -> bool x == y; let r = &mut t; t(1, 2) }",
+    refused("write `y: 'a`");
+    FuseExpect::None
+);
+
+run!(
+    a_written_definition_with_its_signature_written,
+    "{ let t = 'a: Number |x: 'a, y: 'a| -> 'a x + y; let r = &mut t; t(1, 2) }",
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
+    FuseExpect::None
+);
+
+// A write to a binding outside is the escape itself, whatever else is unwritten.
+run!(
+    a_named_definition_writing_outside_is_told_what_it_hands_out,
+    "{ let y = never(); let t = 'a: Concrete |x: 'a| { y <- x; x }; t(1) }",
+    refused("to something outside it");
+    FuseExpect::None
+);
+
 // A select's two arms meeting under arithmetic merge a cell with one
 // above an array of it.
 const MERGE_UNDER_A_CONSTRUCTOR: &str = r#"

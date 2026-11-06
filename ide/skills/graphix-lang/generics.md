@@ -23,6 +23,8 @@ no "bound names" 'a: [i64, Array<'a>] |x: 'a| x
 no "bound reaches" 'a: 'b, 'b: 'a |x: 'a, y: 'b| x
 no "escapes the definition" let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f(1)
 ok let y = never(); let f = |x: 'a| -> 'a { y <- x; x }; f(1)
+no "write its return type, `-> 'a`" let t = 'a: Number |x: 'a| x; let r = &mut t; t(1)
+ok let t = 'a: Number |x: 'a| -> 'a x; let r = &mut t; t(1)
 ```
 
 A signature may not write a union of two of its type variables, `|x:

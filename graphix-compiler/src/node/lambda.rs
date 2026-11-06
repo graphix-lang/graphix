@@ -2407,6 +2407,10 @@ struct DefGate<R: Rt> {
     /// Each quantifier the definition declares, at the depth it had at the
     /// gate's opening.
     declared: LPooled<Vec<(TVar, u32)>>,
+    /// The parts of the signature left to inference (a parameter by its
+    /// name, the return as `None`) whose cell is outside the definition at
+    /// the gate's opening: a function something writes is one instance.
+    unwritten: LPooled<Vec<(Option<ArcStr>, TVar)>>,
 }
 
 impl<R: Rt> DefGate<R> {
@@ -2440,6 +2444,21 @@ impl<R: Rt> DefGate<R> {
             .filter_map(|q| named.get(q))
             .map(|tv| (tv.clone(), tv.level().depth()))
             .collect();
+        let outside = |t: &Type| match t {
+            Type::TVar(c)
+                if c.name.starts_with('_') && c.level().depth() < def.level.depth() =>
+            {
+                Some(c.clone())
+            }
+            _ => None,
+        };
+        let unwritten = def
+            .typ
+            .args
+            .iter()
+            .filter_map(|a| Some((Some(a.name()?.clone()), outside(&a.typ)?)))
+            .chain(outside(&def.typ.rtype).map(|c| (None, c)))
+            .collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         ctx.pending_settles.push(crate::SettleFrame::default());
@@ -2454,6 +2473,7 @@ impl<R: Rt> DefGate<R> {
             scope,
             rigid,
             declared,
+            unwritten,
         }
     }
 
@@ -2465,6 +2485,15 @@ impl<R: Rt> DefGate<R> {
     fn check_declared_kept(&self) -> Result<()> {
         for (tv, depth) in self.declared.iter() {
             if tv.level().depth() < *depth {
+                if let Some(fix) = self.unwritten_holding(tv) {
+                    bail!(
+                        "'{0} escapes the definition through its own signature: \
+                         a function something writes is one instance, so what its \
+                         signature leaves unwritten is a cell outside it; {fix}, or \
+                         declare no '{0}",
+                        tv.name
+                    )
+                }
                 bail!(
                     "'{0} escapes the definition: the body hands a value of type '{0} \
                      to something outside it, which would have to hold every '{0} a \
@@ -2475,6 +2504,37 @@ impl<R: Rt> DefGate<R> {
             }
         }
         Ok(())
+    }
+
+    // CR claude for eric: [structure/low] A function's own signature cells count
+    // as outside it once something writes the function, so `let t = 'a: Number |x:
+    // 'a| x; let r = &mut t; t(1)` is refused as an escape where nothing leaves the
+    // function, and `-> 'a` passes. Eric ruled (11-06) to keep the rule and name the
+    // annotation. The alternative left: those cells stay the definition's in a
+    // written binding, so inference gives what the annotation writes; it touches
+    // the written-binding level rule, and buys only not writing the annotation, the
+    // function being one instance either way. Reopen if programs meet this.
+    // (written-sig-cells-01)
+    /// The annotation that keeps `tv` the definition's, where a part of the
+    /// signature left unwritten holds it.
+    fn unwritten_holding(&self, tv: &TVar) -> Option<CompactString> {
+        let (part, cell) = self.unwritten.iter().find(|(_, cell)| {
+            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            Type::TVar(cell.clone()).reached_cells(&mut reached);
+            reached.values().any(|c| c.same_cell(tv))
+        })?;
+        let written = Type::TVar(cell.clone()).written_form(&mut |c| {
+            self.declared
+                .iter()
+                .find(|(tv, _)| tv.same_cell(c))
+                .map(|(tv, _)| Type::TVar(tv.clone()))
+        });
+        Some(match (part, written) {
+            (None, Some(t)) => format_compact!("write its return type, `-> {t}`"),
+            (None, None) => format_compact!("write its return type"),
+            (Some(name), Some(t)) => format_compact!("write `{name}: {t}`"),
+            (Some(name), None) => format_compact!("write `{name}`'s type"),
+        })
     }
 
     /// What the body raised: ⊥ when nothing joined the faux catch; an
