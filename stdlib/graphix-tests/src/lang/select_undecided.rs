@@ -319,10 +319,12 @@ run!(undecided_part_beside_a_bool_head_distributes, r#"{
     r
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "xs"); FuseExpect::Jit);
 
+// A body decides the element its arm binds: a later arm's literal there
+// is that body's type mismatch.
 run!(widened_open_element_refused, r#"{
     let f = |v| select (v, 0) { ([x, ..], _) => str::len(x), ([1, ..], _) => 5, (_, _) => 0 };
     [f(["ab"]), f([1])]
-}"#, refused("([1, ..], _) tests a value of 'v, a type not decided at this select"); FuseExpect::None);
+}"#, refused("type mismatch string does not contain [i64, "); FuseExpect::None);
 
 run!(widened_open_element_annotated, r#"{
     let f = |v: Array<string>| select (v, 0) { ([x, ..], _) => str::len(x), (_, _) => 0 };
@@ -535,15 +537,15 @@ run!(or_alternative_over_an_annotated_part, r#"{
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j1"); FuseExpect::Jit);
 
 // A later arm's pattern decides the part before an earlier arm's body is
-// checked: the select is refused for that arm, not for the body.
-run!(later_arm_deciding_a_part_an_earlier_body_tests_refused, r#"{
+// checked: the body's error is the select's.
+run!(an_earlier_body_over_a_part_a_later_arm_decides_is_its_error, r#"{
     let f = |b: bool, x| select (x, 0) {
         (a, _) if b => select a { `J => 1, `M => 2 },
         (`M, _) => 3,
         _ => 4
     };
     f(true, `M)
-}"#, refused("(`M, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+}"#, refused("pattern `J will never match `M"); FuseExpect::None);
 
 run!(later_arm_over_an_annotated_part_an_earlier_body_tests, r#"{
     let f = |b: bool, x: [`J, `M]| select (x, 0) {
@@ -655,10 +657,12 @@ run!(partial_struct_deciding_an_undecided_part_refused, r#"{
     f({a: 1, b: 2})
 }"#, refused("({ a, .. }, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
 
-run!(other_shape_than_an_earlier_arm_decided_refused, r#"{
+// A destructure decides the part's shape as an annotation would: an arm of
+// another shape after it is dead.
+run!(other_shape_than_an_earlier_arm_decided_is_dead, r#"{
     let f = |x| select (x, 0) { ((a, b), _) => a + b, ((a, b, c), _) => a };
     f((1, 2))
-}"#, refused("((a, b, c), _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+}"#, refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
 
 // A literal at a union position decides the undecided member beside the
 // one that holds its type.
@@ -736,4 +740,47 @@ run!(a_later_arm_after_a_whole_member_taken, r#"{
         select y { (`J, _) => 0, (`K, 7) => 1, (_, 3) => 2, _ => 3 }
     };
     [f(4, true), f(4, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3]); FuseExpect::Jit);
+
+// An arm's own error is the select's, never a refusal of another arm for
+// what the arms decided: a body's, a guard's, after a literal or a
+// destructure.
+run!(a_body_error_after_a_literal_arm_is_the_error, r#"{
+    let f = |z, c| {
+        let y = select c { true => z, false => 1 };
+        select y { 3 => 0, i64 as n => n + "x", s => str::len(s) }
+    };
+    f("ab", true)
+}"#, refused("cannot compute i64 + string"); FuseExpect::None);
+
+run!(a_guard_error_after_a_literal_arm_is_the_error, r#"{
+    let f = |z, c| {
+        let y = select c { true => z, false => 1 };
+        select y { 3 => 0, i64 as n if n + "x" == 2 => n, i64 as n => n, s => str::len(s) }
+    };
+    f("ab", true)
+}"#, refused("cannot compute i64 + string"); FuseExpect::None);
+
+run!(a_body_error_after_a_destructuring_arm_is_the_error, r#"{
+    let f = |z, c| {
+        let y = select c { true => (`J, z), false => (`K, 1) };
+        select y { (`J, (a, b)) => 0, (`K, n) => str::len(n), (_, 3) => 2, _ => 3 }
+    };
+    f((4, 5), true)
+}"#, refused("type mismatch string does not contain i64"); FuseExpect::None);
+
+run!(arms_after_a_literal_arm_run, r#"{
+    let f = |z, c| {
+        let y = select c { true => z, false => 1 };
+        select y { 3 => 0, i64 as n => n + 1, s => str::len(s) }
+    };
+    [f("ab", true), f("ab", false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 2]); FuseExpect::Jit);
+
+run!(arms_after_a_destructuring_arm_run, r#"{
+    let f = |z, c| {
+        let y = select c { true => (`J, z), false => (`K, 1) };
+        select y { (`J, (a, b)) => 0, (`K, 7) => 1, (_, 3) => 2, _ => 3 }
+    };
+    [f((4, 5), true), f((4, 5), false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3]); FuseExpect::Jit);

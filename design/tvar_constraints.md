@@ -640,11 +640,12 @@ guard or a body), and a cell such a step bound counts as undecided
 (`Deciding`, Eric 11-05, D5 follow-up (b)): `meets_decided` walks it as
 the open cell it was (`union_members_stopping` stops at it), and a
 written test is judged by `written_tests_undecided` over a copy of what
-reaches it with those cells open again (`written_tests_decided`). A
-refusal any step of the arms' check makes is first offered to this rule
-over every arm, one not checked yet judged against the whole scrutinee
-(the settle ran its pattern before any arm's guard or body), so the
-message names the binding. A whole
+reaches it with those cells open again (`written_tests_decided`). An
+arm the coverage finds dead (`Reach::arm`), which an earlier arm's
+decision may have made so, first has the arms up to it judged by this
+rule, so the message names the binding; any other error in an arm's
+check, its pattern's, guard's or body's, is that error, and no arm is
+judged. A whole
 scrutinee that is one open cell is not counted: the arms decide it
 together, as `select x { `J => 1, `M => 2 }` makes `x` a `` [`J, `M] ``;
 except where an arm holds a partial struct pattern, whose completion
@@ -665,8 +666,8 @@ abstract payload, holding only names, `_` and such patterns, each part of
 the shape of every member of the part as decided (`destructures`). It
 decides the part's shape as an annotation would and tests nothing of it:
 a later arm meets the part as decided, so one written for the part's
-other values is unreachable, as under the annotation, and one of another
-shape is refused as testing the part. A literal, a tag, `null`, `[]`, an
+other values is unreachable, as under the annotation, and so is one of
+another shape. A literal, a tag, `null`, `[]`, an
 or-pattern, a written test, a partial struct (its completion is the
 struct of the fields it names) and a slice of a fixed length choose among
 the part's values, and stay refused: a fixed length is a choice among
@@ -677,13 +678,9 @@ not take to a name or `_` in a later arm, or to the coverage; a later
 A destructure that decides nothing, a part still open after the arms
 (`((a, b), _)` over a `y` that is `'x` or `(i64, i64)`, whose member the
 pattern takes), is a test of an undecided part as above. It is refused
-too where a later arm's own refusal (an unreachable arm) stops the check
-first: the step that fails judges every arm before it, by what reaches
-it, against the cells still open (`still_open`), and every arm against
-those the arms' patterns decided, the arms from the failing one on as
-reached by the whole scrutinee. The arms after it are not judged against
-the cells still open: no arm before them has been checked to take its
-part, so an ordinary error in one arm's body stays that error.
+too where a later arm is found dead first: the dead arm's refusal judges
+the arms up to it, by what reaches each, against the cells still open
+(`still_open`) and those the arms' patterns decided.
 
 What only names and `_` meet passes, and stays sound two ways. A name
 over a union position where one member's part is an open cell takes

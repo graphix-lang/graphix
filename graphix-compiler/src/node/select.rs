@@ -2329,132 +2329,116 @@ impl<R: Rt> Select<R> {
             _ => &[],
         };
         for i in 0..self.arms.len() {
-            // an arm refused for what an earlier arm's pattern decided is
-            // refused for that decision
-            let step = (|| -> Result<()> {
-                let (pat, n) = &mut self.arms[i];
-                if checking && pat.explicit_type_predicate {
-                    super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
-                }
-                let deciding = deciding.again();
-                // a refusal about the pattern points at the pattern
-                let site = match spec_pats.get(i) {
-                    Some((p, _)) => pattern_site(p, n.spec()),
-                    None => n.spec().clone(),
-                };
-                if deferred[i]
-                    && let Some((spec_pat, _)) = spec_pats.get(i)
-                {
-                    let t = spec_pat
-                        .structure_predicate
-                        .complete_type_predicate(
-                            &ctx.env,
-                            &pat.type_predicate,
-                            &reach.atype,
-                        )
-                        .map_err(|e| undecided_members(&ctx.env, e, &self.spec.ori))
-                        .at(&site)?;
-                    if let Some(t) = t {
-                        pat.structure_predicate.realign(&ctx.env, &t)?;
-                        pat.type_predicate = t;
-                    }
-                }
-                // The arm's binds alias against what reaches it. The
-                // `any_as_tvar` view keeps a `_` slot from short-circuiting the
-                // walk.
-                let reaching = match !super::instance_rechecked()
-                    || !reach.passes_nothing(&ctx.env, pat)?
-                {
-                    true => reach.atype.clone(),
-                    // an arm its definition's check kept that nothing reaches
-                    // at the instance's types never runs
-                    false => Type::Bottom,
-                };
-                if checking {
-                    reached.push(reaching.clone());
-                }
-                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-                union_members(&ctx.env, &reaching, &mut members)?;
-                let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
-                reaching.narrow_pattern(&ctx.env, &narrowed)?;
-                pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
-                    .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
+            let (pat, n) = &mut self.arms[i];
+            if checking && pat.explicit_type_predicate {
+                super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
+            }
+            let deciding = deciding.again();
+            // a refusal about the pattern points at the pattern
+            let site = match spec_pats.get(i) {
+                Some((p, _)) => pattern_site(p, n.spec()),
+                None => n.spec().clone(),
+            };
+            if deferred[i]
+                && let Some((spec_pat, _)) = spec_pats.get(i)
+            {
+                let t = spec_pat
+                    .structure_predicate
+                    .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
+                    .map_err(|e| undecided_members(&ctx.env, e, &self.spec.ori))
                     .at(&site)?;
-                deciding.decided(&mut decided);
-                // a runtime test can't tell apart two types with one runtime form
-                if checking
-                    && pat.explicit_type_predicate
-                    && pat.type_predicate.ref_over_any(&ctx.env, &reaching)
-                {
-                    let t = &pat.type_predicate;
-                    return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                        anyhow!(
-                            "this pattern can't tell what the reference in {t} refers to \
-                             where the scrutinee may hold Any: every reference has one runtime \
-                             form"
-                        )
-                    }))
-                    .at(&site);
+                if let Some(t) = t {
+                    pat.structure_predicate.realign(&ctx.env, &t)?;
+                    pat.type_predicate = t;
                 }
+            }
+            // The arm's binds alias against what reaches it. The
+            // `any_as_tvar` view keeps a `_` slot from short-circuiting the
+            // walk.
+            let reaching = match !super::instance_rechecked()
+                || !reach.passes_nothing(&ctx.env, pat)?
+            {
+                true => reach.atype.clone(),
+                // an arm its definition's check kept that nothing reaches
+                // at the instance's types never runs
+                false => Type::Bottom,
+            };
+            if checking {
+                reached.push(reaching.clone());
+            }
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            union_members(&ctx.env, &reaching, &mut members)?;
+            let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
+            reaching.narrow_pattern(&ctx.env, &narrowed)?;
+            pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
+                .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
+                .at(&site)?;
+            deciding.decided(&mut decided);
+            // a runtime test can't tell apart two types with one runtime form
+            if checking
+                && pat.explicit_type_predicate
+                && pat.type_predicate.ref_over_any(&ctx.env, &reaching)
+            {
+                let t = &pat.type_predicate;
+                return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                    anyhow!(
+                        "this pattern can't tell what the reference in {t} refers to \
+                         where the scrutinee may hold Any: every reference has one runtime \
+                         form"
+                    )
+                }))
+                .at(&site);
+            }
+            if checking {
+                let mut tests: SmallVec<[(Type, Type); 4]> =
+                    smallvec![(pat.type_predicate.clone(), reaching.clone())];
+                if !pat.explicit_type_predicate {
+                    pat.structure_predicate.element_tests(
+                        &ctx.env,
+                        &pat.type_predicate,
+                        &reaching,
+                        &mut tests,
+                    );
+                }
+                let spec = Arc::new(site.clone());
+                for (test, among) in tests {
+                    let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
+                    if let Some(why) = test.rep_collision(&ctx.env, &rest) {
+                        return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                            why.untold("this pattern", &test, &rest)
+                        }))
+                        .at(&site);
+                    }
+                    let spec = spec.clone();
+                    super::defer_judgment(
+                        ctx,
+                        crate::PendingSettle::Told { test, rest, spec },
+                    );
+                }
+            }
+            // The guard typechecks after the narrowing so it sees the
+            // arm's binds at their settled type; it must be bool.
+            if let Some(guard) = &mut pat.guard {
+                wrap!(guard.node, child(&mut guard.node, ctx))?;
                 if checking {
-                    let mut tests: SmallVec<[(Type, Type); 4]> =
-                        smallvec![(pat.type_predicate.clone(), reaching.clone())];
-                    if !pat.explicit_type_predicate {
-                        pat.structure_predicate.element_tests(
-                            &ctx.env,
-                            &pat.type_predicate,
-                            &reaching,
-                            &mut tests,
-                        );
-                    }
-                    let spec = Arc::new(site.clone());
-                    for (test, among) in tests {
-                        let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
-                        if let Some(why) = test.rep_collision(&ctx.env, &rest) {
-                            return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                                why.untold("this pattern", &test, &rest)
-                            }))
-                            .at(&site);
-                        }
-                        let spec = spec.clone();
-                        super::defer_judgment(
-                            ctx,
-                            crate::PendingSettle::Told { test, rest, spec },
-                        );
-                    }
+                    let bt = Type::Primitive(Typ::Bool.into());
+                    wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
                 }
-                // The guard typechecks after the narrowing so it sees the
-                // arm's binds at their settled type; it must be bool.
-                if let Some(guard) = &mut pat.guard {
-                    wrap!(guard.node, child(&mut guard.node, ctx))?;
-                    if checking {
-                        let bt = Type::Primitive(Typ::Bool.into());
-                        wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
-                    }
-                }
-                wrap!(n, child(n, ctx))?;
-                let deciding = deciding.again();
-                let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking);
-                deciding.decided(&mut decided);
-                covered
-            })();
-            if let Err(e) = step {
+            }
+            wrap!(n, child(n, ctx))?;
+            let deciding = deciding.again();
+            let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking);
+            deciding.decided(&mut decided);
+            // an arm dead for what an earlier arm's pattern decided is refused
+            // for that decision
+            if let Err(e) = covered {
                 if checking {
-                    reached.truncate(i);
-                    let undecided = still_open(&outer);
-                    let none = Decisions::default();
-                    self.check_undecided(&ctx.env, &undecided, &none, &reached)?;
-                    if !decided.cells.is_empty() {
-                        while reached.len() < self.arms.len() {
-                            reached.push(scrut.clone())
-                        }
-                        self.check_undecided(
-                            &ctx.env,
-                            &AHashMap::new(),
-                            &decided,
-                            &reached,
-                        )?;
-                    }
+                    self.check_undecided(
+                        &ctx.env,
+                        &still_open(&outer),
+                        &decided,
+                        &reached,
+                    )?
                 }
                 return Err(e);
             }
@@ -2483,10 +2467,8 @@ impl<R: Rt> Select<R> {
     /// patterns brought) still open, or of `decided`, those the arms'
     /// patterns decided, unless the arm's pattern there only takes apart
     /// every value of the shape decided, in the part of the scrutinee that
-    /// reaches the arm (`reached`, one per arm judged: where a refusal
-    /// stopped the check at an arm, the arms before it for `undecided`, and
-    /// for `decided` every arm, the whole scrutinee from that arm on), or any
-    /// open cell of a written test.
+    /// reaches the arm (`reached`, one per arm judged: every arm, or up to
+    /// the one the coverage found dead), or any open cell of a written test.
     fn check_undecided(
         &self,
         env: &Env,
@@ -2762,6 +2744,23 @@ struct Decisions {
 // Both reviewers again report t3 (W(a) at a tuple position) and t5 (the ladder) giving
 // 'unreachable arm', as main does: still waiting on Eric's ruling on a destructure beside a
 // member of its shape (second review in a row; not lane work).
+// 2026-11-05 claude: Round 16 part 3 (lane U), the failure path: a step of the arms' check that
+// fails with its own error (a pattern's, a guard's, a body's) returns that error and makes no D5
+// judgement; the judgement runs once every arm has checked, or where the coverage finds an arm
+// dead (Reach::arm), which is the refusal D5 explains, and then judges the arms up to it against
+// the cells still open and those decided, as at the end. Gone: the arm loop's closure,
+// reached.truncate, the separate still-open judgement on failure, and padding later arms with
+// the whole scrutinee. k2, k6, e5 (review r16 U-r3) report their own errors as main does; t1,
+// t1n, t2, t4 keep naming x. Main's messages are back for g7 (a body's nested select: pattern `J
+// will never match `M), another-shape arm after a destructure (unreachable arm), a body-decided
+// element under a later literal (type mismatch), and a partial struct after a written test (two
+// members). Pins: lang::select_undecided::{a_body_error_after_a_literal_arm_is_the_error,
+// a_guard_error_after_a_literal_arm_is_the_error,
+// a_body_error_after_a_destructuring_arm_is_the_error} (each fails x4 with 338e2916f's loop),
+// twins arms_after_a_literal_arm_run, arms_after_a_destructuring_arm_run; rewritten:
+// an_earlier_body_over_a_part_a_later_arm_decides_is_its_error,
+// other_shape_than_an_earlier_arm_decided_is_dead, widened_open_element_refused,
+// lang::select::partial_struct_after_a_type_test_taking_a_decided_member.
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {

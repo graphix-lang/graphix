@@ -4681,8 +4681,8 @@ run!(partial_struct_empty_beside_a_decided_cell_named_fields, r#"{
     "[r] [s]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == r#"[1] ["s"]"#); FuseExpect::Jit);
 
-// A written test of a member whose cells are not decided is refused for
-// them, ahead of the partial pattern after it that both members reach.
+// A partial pattern after a written test of a member whose cells are not
+// decided reaches both members, told apart by those cells alone.
 run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     let x = never();
     let y = never();
@@ -4694,7 +4694,7 @@ run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     x <- 1;
     y <- "w";
     "[r] [s]"
-}"#, refused("{ a: Array<string>, c: string } as s tests a value of 'y, a type not decided at this select"); FuseExpect::None);
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: Array<string>, c: 'y }"); FuseExpect::None);
 
 // A written test that would decide a member's undecided cells tests them;
 // over the cells annotated, the other member alone reaches the partial
