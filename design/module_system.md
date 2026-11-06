@@ -199,7 +199,9 @@ the val's, from the module's check on (`module.rs::Proxy`, joined in
 `StaticCallees`). The two stay two bindings to the checker, each with
 its own type, and the runtime reads the implementing binding's id as
 the val's (`branch::VarAliases`, given to the runtime and the cycle's
-event at `ExecCtx::apply_deferred`): the body's `let` publishes to the
+event at `ExecCtx::apply_deferred`; the runtime's store, reader and
+notify calls take the `branch::Var` an id names, resolved once per read
+or delivery, `VarAliases::var_of`): the body's `let` publishes to the
 val, its readers read it, a `<-` or a write through `&mut` to either
 waits in the val's one queue, in the order the writes were made, each
 landing on the value the one before it left, and a level written

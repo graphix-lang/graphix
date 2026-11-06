@@ -4,7 +4,7 @@ use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecState, Rt, TagValue,
-    branch::VarAliases,
+    branch::{Var, VarAliases},
     expr::{Expr, ExprId},
     node::place::{Path, RefPath, VarUpdate},
     prune::Reader,
@@ -413,8 +413,8 @@ impl<X: GXExt> Default for GXRt<X> {
 }
 
 impl<X: GXExt> Rt for GXRt<X> {
-    fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
-        self.store.get(&self.aliases.var(*id))
+    fn store_get(&self, var: Var) -> Option<&(TagValue, u64)> {
+        self.store.get(&var.id())
     }
 
     fn var_aliases(&self) -> &VarAliases {
@@ -429,13 +429,12 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.alias_reads.retain(|id, n| *n > 0 && aliases.var(*id) != *id)
     }
 
-    fn store_insert(&mut self, id: BindId, tv: TagValue) {
-        let id = self.aliases.var(id);
-        self.store.insert(id, (tv, self.cycle));
+    fn store_insert(&mut self, var: Var, tv: TagValue) {
+        self.store.insert(var.id(), (tv, self.cycle));
     }
 
-    fn store_remove(&mut self, id: &BindId) {
-        self.store.remove(&self.aliases.var(*id));
+    fn store_remove(&mut self, var: Var) {
+        self.store.remove(&var.id());
     }
 
     fn forget_writes(&mut self, id: BindId) {
@@ -448,8 +447,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
-    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
-        let id = self.aliases.var(id);
+    fn store_put(&mut self, var: Var, entry: Option<(TagValue, u64)>) {
+        let id = var.id();
         match entry {
             None => self.store.remove(&id),
             Some(e) => self.store.insert(id, e),
@@ -489,8 +488,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         readers.add(ref_by)
     }
 
-    fn readers(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
-        if let Some(readers) = self.by_ref.get(&self.aliases.var(*id)) {
+    fn readers(&self, var: Var, f: &mut dyn FnMut(&Reader)) {
+        if let Some(readers) = self.by_ref.get(&var.id()) {
             readers.iter().for_each(|(r, _)| f(r))
         }
     }
@@ -573,11 +572,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.ref_paths.remove(cell);
     }
 
-    fn notify_set(&mut self, id: BindId) {
+    fn notify_set(&mut self, var: Var) {
+        let id = var.id();
         if dbg_vars() {
             eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
         }
-        let id = self.aliases.var(id);
         if let Some(refed) = self.by_ref.get(&id) {
             for (r, _) in refed.iter() {
                 self.updated.entry(r.root).or_default();
@@ -585,13 +584,13 @@ impl<X: GXExt> Rt for GXRt<X> {
         }
     }
 
-    fn late(&mut self, id: BindId, tv: TagValue, reader: Reader) {
-        self.late.push((self.aliases.var(id), tv, reader))
+    fn late(&mut self, var: Var, tv: TagValue, reader: Reader) {
+        self.late.push((var.id(), tv, reader))
     }
 
-    fn produced(&mut self, id: BindId) {
+    fn produced(&mut self, var: Var) {
         if self.running {
-            self.produced.push(self.aliases.var(id))
+            self.produced.push(var.id())
         }
     }
 

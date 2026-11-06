@@ -461,6 +461,25 @@ struct Proxy {
 // branch::tests::var_aliases_name_their_variables_only. ForkRt::note_read now notes the
 // variable (aliases.var), so GRAPHIX_PAR_AUDIT matches a read of an implementing binding
 // against the val-keyed event and store; no planner witness exists to pin it.
+// 2026-11-06 claude: Review r17 round 3 (the medium: compile-time bindings between the
+// first and last alias paid the out-of-line lookup at every read). The runtime's store,
+// reader and notify calls (Rt::store_get/insert/put/remove, readers, notify_set, late,
+// produced) take a branch::Var, the variable an id names; RtView, Layered, read_var and
+// ExecCtx::deliver resolve an id once per read or delivery (a delivery had resolved it five
+// times, a read up to three), and VarAliases::var_of is the range test plus an inline
+// filter load, the map out of line. Probes
+// ~/ptmp/cr29/scratch/review-r17/o2-r3-1/{head,tail,head2,tail2}, GRAPHIX_PAR=off
+// --no-cache --no-fusion, per cycle = (N60000 - N20000)/40000, callgrind without the eval
+// pool's idle spin: base-r17 head 61288 tail 62741; before (the round-2 range test, inline
+// filter) head 61822 tail 63582; now head 61458 (+0.28%) tail 62642 (-0.16%). perf stat
+// instructions:u, median of 4: base head 66069 tail 66883 (two runs of 4), lane HEAD
+// e7b5030dc head 66.4k tail 69.1k, now head 65685 tail 67003. Tail over head is 2.0% now,
+// 1.2-2.4% on base: the module's own walk; the alias checks left cost about 400
+// instructions a cycle on tail. ExecCtx::deliver resolves the event's entry by the event's
+// own table, since a merge can leave it behind the runtime's (var-alias-merge-01). Pins:
+// the D18 pins and lang::delivery::a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake
+// pass; resolving the event by the runtime's table fails
+// lang::modules::dynamic_module_runs_on_under_a_bottom_source::{par,jit_par}.
 impl Proxy {
     /// A private inner binding is the outer one's variable at run time
     /// ([`crate::branch::VarAliases`]), and one `<-` target with it: a

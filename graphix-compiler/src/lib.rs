@@ -1190,8 +1190,8 @@ pub trait Rt: Debug + Any + Send + Sync {
     fn ref_var(&mut self, id: BindId, by: prune::Reader);
     fn unref_var(&mut self, id: BindId, by: prune::Reader);
 
-    /// Each reader `id` has.
-    fn readers(&self, id: &BindId, f: &mut dyn FnMut(&prune::Reader));
+    /// Each reader `var` has.
+    fn readers(&self, var: branch::Var, f: &mut dyn FnMut(&prune::Reader));
 
     /// Queue a variable write for the next cycle. Writes to distinct
     /// variables are delivered in one event; a second write to the same
@@ -1228,20 +1228,20 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// this cycle, an older stamp as standing (Stale; Fired under an
     /// init view), absence as the phantom. Maintained at delivery, never
     /// ahead of it.
-    fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)>;
+    fn store_get(&self, var: branch::Var) -> Option<&(TagValue, u64)>;
 
     /// The last delivered value of a bind; `None` if the last delivery
     /// was a bottom.
-    fn store_value(&self, id: &BindId) -> Option<Value> {
-        branch::stored_value(self.store_get(id))
+    fn store_value(&self, var: branch::Var) -> Option<Value> {
+        branch::stored_value(self.store_get(var))
     }
 
     /// Insert a production into the store, stamped with the current
     /// cycle.
-    fn store_insert(&mut self, id: BindId, tv: TagValue);
+    fn store_insert(&mut self, var: branch::Var, tv: TagValue);
 
     /// Remove a bind from the store.
-    fn store_remove(&mut self, id: &BindId);
+    fn store_remove(&mut self, var: branch::Var);
 
     /// Drop the writes waiting for `id`: its binding is gone, and a write
     /// that landed now would leave a store entry nothing removes. Of a
@@ -1250,37 +1250,44 @@ pub trait Rt: Debug + Any + Send + Sync {
     fn forget_writes(&mut self, id: BindId);
 
     /// The bindings that are another's variable at run time; every call
-    /// here naming one acts on that variable.
+    /// here naming one by its `BindId` acts on that variable, and a call
+    /// taking a [`branch::Var`] is given the variable.
     fn var_aliases(&self) -> &branch::VarAliases;
     fn set_var_aliases(&mut self, aliases: branch::VarAliases);
+
+    /// The variable `id` names.
+    fn var_of(&self, id: BindId) -> branch::Var {
+        self.var_aliases().var_of(id)
+    }
 
     /// Insert a standing entry: no delivery, so it keeps the stamp of
     /// the last one, and a same-cycle reader never sees it as delivered
     /// ([`branch::standing_stamp`]).
-    fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        let stamp = branch::standing_stamp(self.store_get(&id), self.cycle());
-        self.store_put(id, Some((tv, stamp)))
+    fn store_insert_standing(&mut self, var: branch::Var, tv: TagValue) {
+        let stamp = branch::standing_stamp(self.store_get(var), self.cycle());
+        self.store_put(var, Some((tv, stamp)))
     }
 
     /// Put back an entry [`Self::store_get`] read, stamp and all, or
     /// remove it when it was absent.
-    fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>);
+    fn store_put(&mut self, var: branch::Var, entry: Option<(TagValue, u64)>);
 
     /// The current cycle number.
     fn cycle(&self) -> u64;
 
     /// A variable was set within the current cycle; dependent toplevel
     /// nodes must be updated.
-    fn notify_set(&mut self, id: BindId);
+    fn notify_set(&mut self, var: branch::Var);
 
-    /// `reader` meets this cycle's fire `tv` of `id` after the walk passed
-    /// it: deliver the fire to it alone next cycle ([`Event::late`]).
-    fn late(&mut self, id: BindId, tv: TagValue, reader: prune::Reader);
+    /// `reader` meets this cycle's fire `tv` of `var` after the walk
+    /// passed it: deliver the fire to it alone next cycle
+    /// ([`Event::late`]).
+    fn late(&mut self, var: branch::Var, tv: TagValue, reader: prune::Reader);
 
-    /// The root being updated fired `id`, which a reader in another root
+    /// The root being updated fired `var`, which a reader in another root
     /// reads: one in a root the cycle passed reads it next cycle
     /// ([`Self::late`]), one in a later root this cycle.
-    fn produced(&mut self, id: BindId);
+    fn produced(&mut self, var: branch::Var);
 
     /// Deliver a variable event for `id` carrying the current time after
     /// `timeout`.
@@ -2607,6 +2614,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// what `notify` says; a quiet production stands in the store with the
     /// stamp of the binding's last fire.
     pub fn deliver(&mut self, id: BindId, tv: TagValue, notify: Notify) {
+        let var = self.rt.var_of(id);
         let tag = tv.tag();
         let stored = match tag.is_bottom() {
             true => TagValue::tagged(Value::Null, tag),
@@ -2614,11 +2622,11 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         };
         if tag.triggers() {
             match self.event.root {
-                None => self.rt.store_insert(id, stored),
+                None => self.rt.store_insert_var(var, stored),
                 Some(root) => {
                     let mut passed = None;
                     let elsewhere = self.rt.store_fire(
-                        id,
+                        var,
                         stored,
                         root,
                         self.boundary.as_ref(),
@@ -2626,19 +2634,19 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
                     );
                     if let Some(passed) = passed {
                         for r in passed {
-                            self.rt.late(id, tv.clone(), r)
+                            self.rt.late_var(var, tv.clone(), r)
                         }
                     }
                     if elsewhere {
-                        self.rt.produced(id)
+                        self.rt.produced_var(var)
                     }
                 }
             }
             if notify == Notify::Roots {
-                self.rt.notify_marked(id)
+                self.rt.notify_marked_var(var)
             }
         } else {
-            self.rt.store_insert_standing(id, stored)
+            self.rt.store_insert_standing_var(var, stored)
         }
         self.event.variables.insert(id, tv);
     }

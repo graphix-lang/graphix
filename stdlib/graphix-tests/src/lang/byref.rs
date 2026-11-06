@@ -534,7 +534,8 @@ async fn place_through_deref_mirror() -> Result<()> {
     let Some(id) = graphix_compiler::reference::cell(&v) else {
         anyhow::bail!("expected a reference, got {v}")
     };
-    let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
+    let mirror =
+        ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(ctx.rt.var_of(id))).await?;
     assert_eq!(mirror, Some(Value::I64(10)));
     Ok(())
 }
@@ -641,7 +642,8 @@ async fn place_root_bottom_mirror() -> Result<()> {
         }
     }
     let Some(id) = cell else { anyhow::bail!("no reference produced") };
-    let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
+    let mirror =
+        ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(ctx.rt.var_of(id))).await?;
     ctx.shutdown().await;
     assert_eq!(mirror, None);
     Ok(())

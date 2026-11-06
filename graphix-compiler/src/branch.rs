@@ -61,24 +61,47 @@ pub(crate) fn standing_stamp(e: Option<&(TagValue, u64)>, cycle: u64) -> u64 {
 /// its interface's join, the binding implementing a `val` is the val's
 /// ([`crate::StaticCallees::join`]). Every read, delivery, store entry,
 /// registration and waiting write of either is the val's.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VarAliases {
     /// The smallest and the largest alias, so most ids are none by two
     /// compares; with no aliases `lo > hi`.
     lo: u64,
     hi: u64,
+    /// The filter of `aliases`, else [`NO_FILTER`], so an id between `lo`
+    /// and `hi` that is none is answered by one load.
+    filter: &'static [u64; FILTER_WORDS],
     aliases: Option<Arc<Aliases>>,
 }
 
+static NO_FILTER: [u64; FILTER_WORDS] = [0; FILTER_WORDS];
+
 impl Default for VarAliases {
     fn default() -> Self {
-        Self { lo: u64::MAX, hi: 0, aliases: None }
+        Self { lo: u64::MAX, hi: 0, filter: &NO_FILTER, aliases: None }
+    }
+}
+
+impl std::fmt::Debug for VarAliases {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.aliases.iter().flat_map(|a| a.map.iter())).finish()
+    }
+}
+
+/// The variable a binding names at run time ([`VarAliases::var_of`]):
+/// the runtime's store, readers and event are keyed by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Var(BindId);
+
+impl nohash::IsEnabled for Var {}
+
+impl Var {
+    pub fn id(self) -> BindId {
+        self.0
     }
 }
 
 /// The aliases, and a filter of their ids that answers most ids that are
 /// none without a probe of the map.
-#[derive(Debug)]
 struct Aliases {
     filter: Box<[u64; FILTER_WORDS]>,
     map: IntMap<BindId, BindId>,
@@ -104,21 +127,33 @@ impl VarAliases {
             let (w, b) = filter_bit(*id);
             filter[w] |= b
         }
-        Self { lo, hi, aliases: Some(Arc::new(Aliases { filter, map })) }
+        let aliases = Arc::new(Aliases { filter, map });
+        // SAFETY: the filter lives in a box `aliases` holds for as long
+        // as `Self` does, and nothing writes it once built
+        let filter = unsafe { &*(&*aliases.filter as *const [u64; FILTER_WORDS]) };
+        Self { lo, hi, filter, aliases: Some(aliases) }
     }
 
     /// The variable `id` names.
     #[inline(always)]
-    pub fn var(&self, id: BindId) -> BindId {
+    pub fn var_of(&self, id: BindId) -> Var {
         let n = id.inner();
-        if n < self.lo || n > self.hi { id } else { self.var_between(id) }
+        if n < self.lo || n > self.hi {
+            return Var(id);
+        }
+        let (w, b) = filter_bit(id);
+        if self.filter[w] & b == 0 { Var(id) } else { self.var_listed(id) }
+    }
+
+    /// The id of the variable `id` names.
+    #[inline(always)]
+    pub fn var(&self, id: BindId) -> BindId {
+        self.var_of(id).0
     }
 
     #[inline(never)]
-    fn var_between(&self, id: BindId) -> BindId {
-        let Some(a) = &self.aliases else { return id };
-        let (w, b) = filter_bit(id);
-        if a.filter[w] & b == 0 { id } else { a.map.get(&id).copied().unwrap_or(id) }
+    fn var_listed(&self, id: BindId) -> Var {
+        Var(self.aliases.as_ref().and_then(|a| a.map.get(&id).copied()).unwrap_or(id))
     }
 
     /// These with every alias of `kept` it lacks for which `keep` holds.
@@ -153,9 +188,9 @@ enum RtOp {
     SetLevel(BindId, Value),
     PatchVar(BindId, Path, Value, Option<Arc<Expr>>),
     PatchLevel(BindId, Path, Value),
-    NotifySet(BindId),
-    Late(BindId, TagValue, Reader),
-    Produced(BindId),
+    NotifySet(Var),
+    Late(Var, TagValue, Reader),
+    Produced(Var),
     ForgetWrites(BindId),
     SetTimer(BindId, Duration),
     CancelTimer(BindId),
@@ -294,8 +329,14 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// The variable `id` names ([`VarAliases`]).
     #[inline]
+    pub fn var_of(&self, id: BindId) -> Var {
+        self.var_aliases().var_of(id)
+    }
+
+    /// The id of the variable `id` names.
+    #[inline]
     pub fn var(&self, id: BindId) -> BindId {
-        self.var_aliases().var(id)
+        self.var_of(id).0
     }
 
     /// The variable `id` names in a forked branch, whose aliases are its
@@ -328,14 +369,13 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// Each reader of `id`: the runtime's and those the branches above
     /// registered this cycle.
-    pub(crate) fn each_reader(&self, id: &BindId, f: &mut dyn FnMut(&Reader)) {
-        let id = &self.fork_var(*id);
+    pub(crate) fn each_reader(&self, var: Var, f: &mut dyn FnMut(&Reader)) {
         let mut view: &RtView<'_, R> = self;
         loop {
             match view {
-                RtView::Root(r) => return r.readers(id, f),
+                RtView::Root(r) => return r.readers(var, f),
                 RtView::Fork(fk) => {
-                    if let Some(rs) = fk.readers.get(id) {
+                    if let Some(rs) = fk.readers.get(&var.0) {
                         rs.iter().for_each(&mut *f)
                     }
                     view = fk.parent();
@@ -350,8 +390,12 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// Mark every boundary that reads `id`: it was delivered this cycle.
     pub fn mark_readers(&mut self, id: BindId) {
+        self.mark_readers_var(self.var_of(id))
+    }
+
+    fn mark_readers_var(&mut self, var: Var) {
         let cycle = self.cycle();
-        self.each_reader(&id, &mut |r| r.mark(cycle))
+        self.each_reader(var, &mut |r| r.mark(cycle))
     }
 
     /// Whether `b` was marked this cycle, or is held dirty.
@@ -405,22 +449,23 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     #[inline]
     pub fn notify_set(&mut self, id: BindId) {
-        self.mark_readers(id);
-        self.notify_marked(id)
+        let var = self.var_of(id);
+        self.mark_readers_var(var);
+        self.notify_marked_var(var)
     }
 
-    /// [`Self::notify_set`] of an `id` whose readers are marked already.
+    /// [`Self::notify_set`] of a `var` whose readers are marked already.
     #[inline]
-    pub fn notify_marked(&mut self, id: BindId) {
-        logged!(self, notify_set(id), RtOp::NotifySet(id))
+    pub fn notify_marked_var(&mut self, var: Var) {
+        logged!(self, notify_set(var), RtOp::NotifySet(var))
     }
 
-    pub fn late(&mut self, id: BindId, tv: TagValue, by: Reader) {
-        logged!(self, late(id, tv, by), RtOp::Late(id, tv, by))
+    pub fn late_var(&mut self, var: Var, tv: TagValue, by: Reader) {
+        logged!(self, late(var, tv, by), RtOp::Late(var, tv, by))
     }
 
-    pub fn produced(&mut self, id: BindId) {
-        logged!(self, produced(id), RtOp::Produced(id))
+    pub fn produced_var(&mut self, var: Var) {
+        logged!(self, produced(var), RtOp::Produced(var))
     }
 
     pub fn set_timer(&mut self, id: BindId, timeout: Duration) {
@@ -468,12 +513,15 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// [`Rt::store_get`].
     #[inline]
     pub fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
-        let id = &self.fork_var(*id);
+        self.store_get_var(self.var_of(*id))
+    }
+
+    pub fn store_get_var(&self, var: Var) -> Option<&(TagValue, u64)> {
         let mut view: &RtView<'_, R> = self;
         loop {
             match view {
-                RtView::Root(r) => return r.store_get(id),
-                RtView::Fork(f) => match f.store.get(id) {
+                RtView::Root(r) => return r.store_get(var),
+                RtView::Fork(f) => match f.store.get(&var.0) {
                     Some(e) => return e.as_ref(),
                     None => view = f.parent(),
                 },
@@ -489,35 +537,39 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     #[inline]
     pub fn store_insert(&mut self, id: BindId, tv: TagValue) {
-        self.store_insert_unmarked(id, tv);
-        self.mark_readers(id)
+        self.store_insert_var(self.var_of(id), tv)
+    }
+
+    pub fn store_insert_var(&mut self, var: Var, tv: TagValue) {
+        self.store_insert_unmarked(var, tv);
+        self.mark_readers_var(var)
     }
 
     #[inline]
-    fn store_insert_unmarked(&mut self, id: BindId, tv: TagValue) {
+    fn store_insert_unmarked(&mut self, var: Var, tv: TagValue) {
         match self {
-            Self::Root(r) => r.store_insert(id, tv),
+            Self::Root(r) => r.store_insert(var, tv),
             Self::Fork(f) => {
-                f.store.insert(f.aliases.var(id), Some((tv, f.cycle)));
+                f.store.insert(var.0, Some((tv, f.cycle)));
             }
         }
     }
 
     /// [`Self::store_insert`] of a fire made in the root `root` by a walk
-    /// now inside `at`: each reader of `id` in `root` the walk has passed
+    /// now inside `at`: each reader of `var` in `root` the walk has passed
     /// goes into `passed`; whether a reader is in another root.
     pub fn store_fire(
         &mut self,
-        id: BindId,
+        var: Var,
         tv: TagValue,
         root: ExprId,
         at: Option<&BoundaryRef>,
         passed: &mut Option<SmallVec<[Reader; 2]>>,
     ) -> bool {
-        self.store_insert_unmarked(id, tv);
+        self.store_insert_unmarked(var, tv);
         let cycle = self.cycle();
         let mut elsewhere = false;
-        self.each_reader(&id, &mut |r| {
+        self.each_reader(var, &mut |r| {
             r.mark(cycle);
             if r.root != root {
                 elsewhere = true
@@ -530,27 +582,39 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// See [`Rt::store_insert_standing`].
     pub fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        let stamp = standing_stamp(self.store_get(&id), self.cycle());
-        self.store_put(id, Some((tv, stamp)));
-        self.mark_readers(id)
+        self.store_insert_standing_var(self.var_of(id), tv)
+    }
+
+    pub fn store_insert_standing_var(&mut self, var: Var, tv: TagValue) {
+        let stamp = standing_stamp(self.store_get_var(var), self.cycle());
+        self.store_put_var(var, Some((tv, stamp)));
+        self.mark_readers_var(var)
     }
 
     /// See [`Rt::store_put`].
     pub fn store_put(&mut self, id: BindId, entry: Option<(TagValue, u64)>) {
+        self.store_put_var(self.var_of(id), entry)
+    }
+
+    fn store_put_var(&mut self, var: Var, entry: Option<(TagValue, u64)>) {
         match self {
-            Self::Root(r) => r.store_put(id, entry),
+            Self::Root(r) => r.store_put(var, entry),
             Self::Fork(f) => {
-                f.store.insert(f.aliases.var(id), entry);
+                f.store.insert(var.0, entry);
             }
         }
     }
 
     #[inline]
     pub fn store_remove(&mut self, id: &BindId) {
+        self.store_remove_var(self.var_of(*id))
+    }
+
+    fn store_remove_var(&mut self, var: Var) {
         match self {
-            Self::Root(r) => r.store_remove(id),
+            Self::Root(r) => r.store_remove(var),
             Self::Fork(f) => {
-                f.store.insert(f.aliases.var(*id), None);
+                f.store.insert(var.0, None);
             }
         }
     }
@@ -560,8 +624,9 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// takes only the writes made through it: the variable stays.
     pub fn store_release(&mut self, id: &BindId) {
         logged!(self, forget_writes(*id), RtOp::ForgetWrites(*id));
-        if self.var(*id) == *id {
-            self.store_remove(id)
+        let var = self.var_of(*id);
+        if var.0 == *id {
+            self.store_remove_var(var)
         }
     }
 
@@ -629,7 +694,7 @@ impl<'a, R: Rt> RtView<'a, R> {
             }
             Self::Root(r) => {
                 for (id, e) in store {
-                    r.store_put(id, e);
+                    r.store_put(Var(id), e);
                 }
                 for (cell, e) in ref_paths {
                     match e {
@@ -722,6 +787,11 @@ impl<V: Clone> Layered<V> {
         self.aliases.var(id)
     }
 
+    #[inline]
+    pub fn var_of(&self, id: BindId) -> Var {
+        self.aliases.var_of(id)
+    }
+
     pub fn aliases(&self) -> &VarAliases {
         &self.aliases
     }
@@ -732,7 +802,11 @@ impl<V: Clone> Layered<V> {
 
     #[inline]
     pub fn get(&self, id: &BindId) -> Option<&V> {
-        let id = &self.aliases.var(*id);
+        self.get_var(self.aliases.var_of(*id))
+    }
+
+    pub fn get_var(&self, var: Var) -> Option<&V> {
+        let id = &var.0;
         let mut layer = self;
         loop {
             if let Some(v) = layer.map.get(id) {
@@ -754,7 +828,11 @@ impl<V: Clone> Layered<V> {
     /// Set `id`, returning this layer's own entry for it.
     #[inline]
     pub fn insert(&mut self, id: BindId, v: V) -> Option<V> {
-        let id = self.aliases.var(id);
+        self.insert_var(self.aliases.var_of(id), v)
+    }
+
+    pub fn insert_var(&mut self, var: Var, v: V) -> Option<V> {
+        let id = var.0;
         let prev = self.map.insert(id, v);
         if prev.is_none() && !self.parent.is_null() {
             self.removed.remove(&id);
@@ -765,21 +843,23 @@ impl<V: Clone> Layered<V> {
     /// Set `id` if it holds nothing, else hand `v` back.
     #[inline]
     pub fn try_insert(&mut self, id: BindId, v: V) -> Result<(), V> {
-        if self.contains_key(&id) {
+        let var = self.aliases.var_of(id);
+        if self.get_var(var).is_some() {
             return Err(v);
         }
-        self.insert(id, v);
+        self.insert_var(var, v);
         Ok(())
     }
 
     /// Set `id` for a while: what [`Self::put_back`] needs to leave the
     /// layer as it was.
     pub(crate) fn put(&mut self, id: BindId, v: V) -> Prior<V> {
-        let id = self.aliases.var(id);
+        let var = self.aliases.var_of(id);
+        let id = var.0;
         let inherited = !self.map.contains_key(&id)
             && !self.removed.contains(&id)
-            && self.parent().is_some_and(|p| p.contains_key(&id));
-        match self.insert(id, v) {
+            && self.parent().is_some_and(|p| p.get_var(var).is_some());
+        match self.insert_var(var, v) {
             Some(prev) => Prior::Own(prev),
             None if inherited => Prior::Inherited,
             None => Prior::Absent,
@@ -805,12 +885,13 @@ impl<V: Clone> Layered<V> {
     /// Remove `id`, returning what it held.
     #[inline]
     pub fn remove(&mut self, id: &BindId) -> Option<V> {
-        let id = &self.aliases.var(*id);
+        let var = self.aliases.var_of(*id);
+        let id = &var.0;
         let own = self.map.remove(id);
         if self.parent.is_null() || self.removed.contains(id) {
             return own;
         }
-        let from_parent = self.parent().and_then(|p| p.get(id).cloned());
+        let from_parent = self.parent().and_then(|p| p.get_var(var).cloned());
         if from_parent.is_some() {
             self.removed.insert(*id);
         }
@@ -866,6 +947,17 @@ impl<V: Clone> Layered<V> {
         }
     }
 
+    // CR claude for claude: [bug/medium] A forked branch's merge sets this layer's aliases to
+    // the child's whenever they differ, so a later sibling's merge, whose table is the one
+    // it was forked with, takes back the joins an earlier sibling's compile made: the
+    // event's table then lags the runtime's (RtView::merge's Root arm replays the earlier
+    // sibling's SetAliases; a fork parent's ForkRt::merge has the same overwrite). In
+    // lang::modules::dynamic_module_runs_on_under_a_bottom_source::par a debug print here
+    // showed 036 -> 030 and 037 -> 031 dropped, and a read in the fork saw the event map
+    // 036 to itself while the ForkRt mapped it to 030. Reads still land through the store,
+    // so no wrong answer is known; ExecCtx::deliver and read_var resolve the event and the
+    // runtime each by its own table because of it. A merge that unions the child's table
+    // over this one (VarAliases::with_kept) would keep them one table. (var-alias-merge-01)
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
         if !self.aliases.same(&child.aliases) {

@@ -473,7 +473,9 @@ reference cell's quiet seed or its bottom where its place has no
 element, and a fold's quiet accumulator are written to the store alone
 (`design/dense_delivery.md`). A
 module's interface pair is the `val`'s one variable at run time from
-its join (`branch::VarAliases`): the body's `let` publishes to it, and
+its join (`branch::VarAliases`; `Rt`'s store, reader and notify calls
+take the `branch::Var` an id names, resolved once per read or delivery):
+the body's `let` publishes to it, and
 every read, write, store entry and registration through the
 implementing binding is the val's, in one queue; a reload drops the
 writes the replaced body made through its binding and had not landed,

@@ -788,12 +788,13 @@ impl<X: GXExt> GX<X> {
         };
         match path {
             Some(path) => {
-                let patched = self.ctx.rt.store_value(&id).and_then(|cur| {
-                    coretraits::with_hooks(&mut self.ctx.view(), || {
-                        place::write_path(&cur, &path, v.clone())
-                    })
-                    .ok()
-                });
+                let patched =
+                    self.ctx.rt.store_value(self.ctx.rt.var_of(id)).and_then(|cur| {
+                        coretraits::with_hooks(&mut self.ctx.view(), || {
+                            place::write_path(&cur, &path, v.clone())
+                        })
+                        .ok()
+                    });
                 if patched.is_none_or(|root| self.admits(id, &root)) {
                     sets.push(EmbedderWrite::Patch(id, path, v))
                 }
@@ -842,7 +843,7 @@ impl<X: GXExt> GX<X> {
                         "a write through a reference was dropped: {why}"
                     ),
                 };
-                let Some(cur) = self.ctx.rt.store_value(&id) else {
+                let Some(cur) = self.ctx.rt.store_value(self.ctx.rt.var_of(id)) else {
                     return dropped(&"its root has no value");
                 };
                 let written = coretraits::with_hooks(&mut self.ctx.view(), || {
@@ -1450,7 +1451,13 @@ impl<X: GXExt> GX<X> {
         let n = genn::reference(&mut self.ctx.view(), id, typ.clone(), eid);
         self.ctx.view().apply_deferred();
         self.nodes.insert(eid, n);
-        Ok(Ref { id: eid, bid: id, typ, last: self.ctx.rt.store_value(&id), rt })
+        Ok(Ref {
+            id: eid,
+            bid: id,
+            typ,
+            last: self.ctx.rt.store_value(self.ctx.rt.var_of(id)),
+            rt,
+        })
     }
 
     fn call_callable(
@@ -1511,7 +1518,7 @@ impl<X: GXExt> GX<X> {
             sets.retain(|w| !matches!(w, EmbedderWrite::Set(set) if set.is_empty()));
             for a in c.args.iter() {
                 self.ctx.rt.forget_writes(*a);
-                self.ctx.rt.store_remove(a);
+                self.ctx.rt.store_remove(self.ctx.rt.var_of(*a));
             }
             if let Some(mut n) = self.nodes.remove(&c.expr) {
                 n.delete(&mut self.ctx.view())

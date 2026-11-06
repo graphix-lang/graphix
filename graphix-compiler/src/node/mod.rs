@@ -101,7 +101,7 @@ pub(crate) fn read_var<'a, R: Rt>(
     if let Some(tv) = ctx.event.variables.get(id) {
         return Some(VarRead::Delivered(tv));
     }
-    match ctx.rt.store_get(id) {
+    match ctx.rt.store_get_var(ctx.rt.var_of(*id)) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
         Some((tv, _)) => Some(VarRead::Standing(tv)),
         None => None,
@@ -136,8 +136,9 @@ fn late_fire<'a, R: Rt>(
     read: Option<&ReadStamp>,
 ) -> Option<&'a TagValue> {
     let late = ctx.event.late.as_ref()?;
-    let (tv, readers) = late.get(&ctx.event.variables.var(*id))?;
-    if ctx.event.variables.contains_key(id)
+    let var = ctx.event.variables.var_of(*id);
+    let (tv, readers) = late.get(&var.id())?;
+    if ctx.event.variables.get_var(var).is_some()
         || !readers.iter().any(|r| {
             r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read
         })
