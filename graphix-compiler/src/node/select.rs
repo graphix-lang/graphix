@@ -694,7 +694,7 @@ impl Reach {
         let atype = scrut.normalize();
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());
         let ladders = Ladder::of(env, &members_of)?;
-        let mut split = Split::empty();
+        let mut split = Split::default();
         for (pat, _) in arms.iter().filter(|(p, _)| p.explicit_type_predicate) {
             written_primitives(env, &pat.type_predicate, &mut split)
         }
@@ -1163,12 +1163,12 @@ enum Head {
     /// A value of an open cell the position holds, which only a name or
     /// `_` there matches.
     Open,
-    /// The values of one primitive member but `bool` and `null` that a
-    /// written test of the select names, which only a name or `_` there,
-    /// or a written test holding them, matches.
-    Prim(Typ),
-    /// The values of the other primitive members but `bool` and `null`,
-    /// which only a name or `_` there matches.
+    /// The values of the primitive members but `bool` and `null` in one
+    /// class of the [`Split`], which only a name or `_` there, or a
+    /// written test holding them, matches.
+    Prim(BitFlags<Typ>),
+    /// The values of the primitive members but `bool` and `null` no
+    /// written test names, which only a name or `_` there matches.
     Rest,
 }
 
@@ -1242,10 +1242,10 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, at most one tuple or struct holding no open
-/// cell, [`Head::Prim`] for each of its other primitives and
+/// cell, the [`Head::Prim`] or [`Head::Rest`] of its other primitives and
 /// [`Head::Open`] for the open cells among them, an open cell whose one
 /// typed bound is a union of primitives having those as its heads.
-fn heads(env: &Env, split: Split, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
+fn heads(env: &Env, split: &Split, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let mut cells: SmallVec<[TVar; 2]> = SmallVec::new();
     union_members_with(env, t, &mut members, &mut |tv| cells.push(tv.clone()))?;
@@ -1289,21 +1289,53 @@ fn heads(env: &Env, split: Split, t: &Type) -> Result<Option<SmallVec<[Head; 4]>
     Ok(Some(out))
 }
 
-/// The primitives a select's written tests name, each a head of its own
-/// at every position; the others are one head, [`Head::Rest`].
-type Split = BitFlags<Typ>;
+/// The primitives but `bool` and `null` a select's written tests name,
+/// in classes no written primitive set splits: every set a test names
+/// holds each class whole or none of it, so a class is one head at every
+/// position. The others are one head, [`Head::Rest`].
+#[derive(Default)]
+struct Split(SmallVec<[BitFlags<Typ>; 4]>);
 
-/// The primitives `t`, a written test, names, through typedefs and bound
-/// cells.
+impl Split {
+    /// Split every class by the primitives `p` a written test names.
+    fn by(&mut self, p: BitFlags<Typ>) {
+        let p = p & !(Typ::Bool | Typ::Null);
+        if p.is_empty() {
+            return;
+        }
+        let named: BitFlags<Typ> = self.0.iter().fold(BitFlags::empty(), |a, c| a | *c);
+        let mut out: SmallVec<[BitFlags<Typ>; 4]> = SmallVec::new();
+        for c in self.0.iter() {
+            out.extend([*c & p, *c & !p].into_iter().filter(|c| !c.is_empty()))
+        }
+        if !(p & !named).is_empty() {
+            out.push(p & !named)
+        }
+        self.0 = out
+    }
+
+    fn class_of(&self, typ: Typ) -> Option<BitFlags<Typ>> {
+        self.0.iter().find(|c| c.contains(typ)).copied()
+    }
+}
+
+/// Split `split` by the primitive sets `t`, a written test, names,
+/// through typedefs, bound cells and an open cell's bound, as [`heads`]
+/// reads them.
 fn written_primitives(env: &Env, t: &Type, split: &mut Split) {
     fn go(env: &Env, t: &Type, split: &mut Split, seen: &mut AHashSet<usize>) {
         crate::stack::ensure_sufficient(|| match t {
-            Type::Primitive(p) => *split |= *p,
-            Type::TVar(tv) => {
-                if let Some(b) = tv.binding() {
-                    go(env, &b, split, seen)
+            Type::Primitive(p) => split.by(*p),
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => go(env, &b, split, seen),
+                None => {
+                    if seen.insert(tv.cell_addr())
+                        && let Some(b) = t.open_bound(env)
+                    {
+                        go(env, &b, split, seen)
+                    }
                 }
-            }
+            },
             Type::Ref(_) => {
                 if let Some((key, body)) = t.lookup_ref_probe(env)
                     && seen.insert(key)
@@ -1315,23 +1347,29 @@ fn written_primitives(env: &Env, t: &Type, split: &mut Split) {
         })
     }
     go(env, t, split, &mut LPooled::take());
-    *split &= !(Typ::Bool | Typ::Null);
 }
 
 /// The heads of the primitives `p`, each once.
-fn primitive_heads(split: Split, p: BitFlags<Typ>, out: &mut SmallVec<[Head; 4]>) {
+fn primitive_heads(split: &Split, p: BitFlags<Typ>, out: &mut SmallVec<[Head; 4]>) {
     for typ in p.iter() {
-        let hs: &[Head] = match typ {
-            Typ::Bool => &[Head::Bool(true), Head::Bool(false)],
-            Typ::Null => &[Head::Null],
-            typ if split.contains(typ) => &[Head::Prim(typ)],
-            _ => &[Head::Rest],
-        };
-        for h in hs {
-            if !out.contains(h) {
-                out.push(h.clone())
+        let h = match typ {
+            Typ::Bool => {
+                push_head(out, Head::Bool(true));
+                Head::Bool(false)
             }
-        }
+            Typ::Null => Head::Null,
+            typ => match split.class_of(typ) {
+                Some(c) => Head::Prim(c),
+                None => Head::Rest,
+            },
+        };
+        push_head(out, h)
+    }
+}
+
+fn push_head(out: &mut SmallVec<[Head; 4]>, h: Head) {
+    if !out.contains(&h) {
+        out.push(h)
     }
 }
 
@@ -1357,13 +1395,13 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 /// `Never` when it cannot match `m`.
 fn pooled_leaves(
     env: &Env,
-    split: Split,
+    split: &Split,
     sp: &StructPatternNode,
     m: &Type,
 ) -> Result<Result<SmallVec<[Leaf; 8]>, Miss>> {
     fn leaf(
         env: &Env,
-        split: Split,
+        split: &Split,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
@@ -1415,7 +1453,7 @@ fn pooled_leaves(
     }
     fn children(
         env: &Env,
-        split: Split,
+        split: &Split,
         sp: &StructPatternNode,
         t: &Type,
         path: &mut SmallVec<[u32; 4]>,
@@ -1614,7 +1652,7 @@ struct PoolGroup {
 /// part by more than bool, null and primitive heads.
 fn written_part(
     env: &Env,
-    split: Split,
+    split: &Split,
     t: &Type,
     m: &Type,
 ) -> Result<Option<SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>>> {
@@ -1660,7 +1698,7 @@ fn written_part(
 /// `Unread` when it holds part of an open cell's values.
 fn restrict_leaves(
     env: &Env,
-    split: Split,
+    split: &Split,
     m: &Type,
     leaves: &mut SmallVec<[Leaf; 8]>,
     part: SmallVec<[(u32, SmallVec<[Head; 4]>); 2]>,
@@ -1735,18 +1773,18 @@ impl LiteralPool {
             if let Some(t) = explicit
                 && !t.contains_with_flags(BitFlags::empty(), env, &m)?
             {
-                match written_part(env, self.split, t, &m)? {
+                match written_part(env, &self.split, t, &m)? {
                     Some(part) => held = Some(part),
                     None => continue,
                 }
             }
-            let mut leaves = match pooled_leaves(env, self.split, sp, &m)? {
+            let mut leaves = match pooled_leaves(env, &self.split, sp, &m)? {
                 Ok(leaves) => leaves,
                 Err(Miss::Never) => continue,
                 Err(Miss::Unread) => return Ok(Claim::Unpooled),
             };
             if let Some(part) = held {
-                match restrict_leaves(env, self.split, &m, &mut leaves, part)? {
+                match restrict_leaves(env, &self.split, &m, &mut leaves, part)? {
                     Ok(()) => (),
                     Err(Miss::Never) => continue,
                     Err(Miss::Unread) => return Ok(Claim::Unpooled),

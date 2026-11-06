@@ -404,6 +404,47 @@ run!(unsplit_primitives_are_one_head, r#"{
     u((false, false, false, false, false, false, false, 3))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(99))); FuseExpect::Jit);
 
+// A written test holding every primitive of the member alike splits none
+// of them apart: they stay one head.
+run!(primitives_a_test_holds_alike_are_one_head, r#"{
+    let u = |x: (bool, bool, bool, bool, bool, bool, bool, [i64, u8, i32, u32, string, f64, f32, bytes, null])| select x {
+        (bool, bool, bool, bool, bool, bool, bool, [i64, u8, i32, u32, string, f64, f32, bytes]) as (true, true, true, true, true, true, true, v) => 50,
+        (_, _, _, _, _, _, _, null) => 0,
+        (true, _, _, _, _, _, _, _) => 1,
+        (false, true, _, _, _, _, _, _) => 2,
+        (false, false, true, _, _, _, _, _) => 3,
+        (false, false, false, true, _, _, _, _) => 4,
+        (false, false, false, false, true, _, _, _) => 5,
+        (false, false, false, false, false, true, _, _) => 6,
+        (false, false, false, false, false, false, true, _) => 7,
+        (false, false, false, false, false, false, false, _) => 99
+    };
+    [u((false, false, false, false, false, false, false, 3)), u((true, true, true, true, true, true, true, "s")), u((true, false, false, false, false, false, false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [99, 50, 0]); FuseExpect::None);
+
+// Each set a test names splits the classes, so a test holding i64 at one
+// position and u8 at another covers neither alone.
+run!(primitive_classes_follow_each_written_set, r#"{
+    let u = |x: (bool, [i64, u8, null], [i64, u8, null])| select x {
+        (bool, i64, u8) as (true, a, b) => 1,
+        (_, null, _) => 2,
+        (_, _, null) => 3,
+        (false, _, _) => 4
+    };
+    u((true, u8:1, i64:2))
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(primitive_classes_follow_each_written_set_covered, r#"{
+    let u = |x: (bool, [i64, u8, null], [i64, u8, null])| select x {
+        (bool, i64, u8) as (true, a, b) => 1,
+        (bool, [i64, u8], [i64, u8]) as (true, a, b) => 5,
+        (_, null, _) => 2,
+        (_, _, null) => 3,
+        (false, _, _) => 4
+    };
+    [u((true, u8:1, i64:2)), u((true, i64:1, u8:2)), u((false, null, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 1, 2]); FuseExpect::None);
+
 run!(written_tests_split_a_primitive_member, r#"{
     let u = |x: (bool, [i64, string, null])| select x {
         (true, _) => 0,

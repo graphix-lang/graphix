@@ -335,8 +335,8 @@ bounded variable is told as unreachable. Built (`rigid-pattern`), right
 site the definition. Not generated: coverage beside a bounded variable (a head
 arm at `['a, null]` leaves the variable's values to a name or `_`,
 `Head::Open`, or, where its one typed bound is primitives, to them as
-heads, `Head::Prim` for one a written test names, which that test also
-claims; containment splits `'a` by its bound,
+heads, `Head::Prim` for a class of the ones written tests name (those no
+written primitive set tells apart), which a test holding it also claims; containment splits `'a` by its bound,
 `Type::covers_by_parts`): the generated declared variables are
 unbounded, where a head test beside one meets it and this family's rule
 refuses first; pins `lang::select::pool_variable_*`,

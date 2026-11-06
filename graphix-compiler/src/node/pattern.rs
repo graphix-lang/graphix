@@ -2130,6 +2130,17 @@ impl StructPatternNode {
     // (wc_dead, wc_dead2: a written-test arm whose part earlier arms claim) stand: the
     // arms are dead. Two gaps remain refused on main and lane alike, now CR
     // written-test-variable-cover-01.
+    // 2026-11-05 claude: Repair (review r18): each primitive a written test named was a
+    // head of its own, so a test naming many primitives alike (bn_combo_named.gx: seven
+    // bools beside eight primitives, one arm testing all eight) raised the heads past
+    // MAX_POOL_COMBINATIONS and was refused where main runs it. select::Split now holds
+    // the named primitives in classes no written primitive set tells apart (each set a
+    // test names, through typedefs, bound cells and an open cell's bound, splits the
+    // classes), and a class is one Head::Prim. Pins:
+    // lang::select_undecided::primitives_a_test_holds_alike_are_one_head fails without the
+    // repair; primitive_classes_follow_each_written_set (refused: a test holding i64 at
+    // one position and u8 at another covers neither alone) and its covered twin pass both
+    // ways. CLAUDE.md, design/must_reject.md and design/tvar_constraints.md say so.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members

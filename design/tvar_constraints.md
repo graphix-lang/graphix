@@ -163,9 +163,10 @@ literal pool a position holding an open cell has a head of its own,
 `Head::Open`, which only a name or `_` there admits, so `(true, _)`,
 `(false, null)` over `(bool, ['b, null])` leave `(false, v)` for an arm
 of its own (a cell with one typed bound of primitives has that bound's
-heads instead, a `Head::Prim` for each primitive a written test of the
-select names, the rest one `Head::Rest`, and a written test admits the
-`Head::Prim`s it holds:
+heads instead, a `Head::Prim` for each class of the primitives the
+select's written tests name, primitives no written primitive set tells
+apart being one class (`select::Split`), the rest one `Head::Rest`, and a
+written test admits the `Head::Prim`s it holds:
 `(bool, i64) as (false, n)` and `(bool, string) as (false, s)` under
 `'b: [i64, string]` complete it), and a tuple or struct member beside the cell is never the
 position's only shape. In containment (`Type::covers_by_parts`, which
