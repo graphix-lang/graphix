@@ -1120,6 +1120,16 @@ fn environmental_hang(prog: &str) -> bool {
         .any(|m| mentions(&code, m))
 }
 
+/// Whether one run of `prog` did nothing where the other did not finish:
+/// a program on the environment reaches its runaway only if a subscribe, a
+/// timer or a process answers in time.
+fn environment_stopped_it(prog: &str, a: &Outcome, b: &Outcome) -> bool {
+    let idle = |t: &Outcome| matches!(t, Outcome::Trace(_)) && !t.has_events();
+    let running =
+        |t: &Outcome| matches!(t, Outcome::Timeout(c) if *c != Containment::Compile);
+    ((idle(a) && running(b)) || (running(a) && idle(b))) && environmental_hang(prog)
+}
+
 /// Classify a program. Markers are matched on code lines only. The
 /// Excluded list is empirical; selfcheck polices it — a marker missing
 /// from it shows up as a final-strength flake.
@@ -2335,6 +2345,8 @@ impl<'a> Oracle<'a> {
             )
         {
             "the stack budget stopped one schedule and not the other"
+        } else if environment_stopped_it(self.code, a, b) {
+            "the environment decided whether it ran at all: one run did nothing"
         } else {
             return false;
         };
@@ -6138,6 +6150,20 @@ mod tests {
                 rep.rejects
             );
         }
+        // a use of a wider type may be the one the others fit
+        let rep = typemorph_subject(
+            "{ let f = 'a: [null, Number] + OneNumber |x: 'a| -> 'a x; \
+             let a: [i64, null] = 3; let b = null; (f(a), f(b), f(2)) }",
+            per,
+            TM_CAP,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !rep.rejects.iter().any(|p| p.id.starts_with("mono-reuse#")),
+            "{:?}",
+            rep.rejects
+        );
         // over a scrutinee that is ⊥ (`never()`, a connect) or a name bound
         // over one, family 14 writes only the decide shape: a union of it and
         // tm__z is tm__z whole
@@ -6160,6 +6186,11 @@ mod tests {
         for (prog, family) in [
             (
                 "{ let m = map::filter_map({1 => 2}, |(_, _)| null); let v = m{1}$; v + 1 }",
+                "retype#",
+            ),
+            (
+                "{ let v = u8:1; let w = select 0 { 0 => v, _ => error(`E) }; \
+                 let z = select w { error as _ => u8:0, u8 as n => n }; v - u8:2 + z }",
                 "retype#",
             ),
             (
@@ -7593,6 +7624,28 @@ mod trace_probes {
         assert_eq!(labels(Pair::Par(Mode::JitPar)), ("interp".into(), "jit/par".into()));
         let jit = labels(Pair::Cold(Mode::Jit, Route::InLanguage));
         assert_eq!(jit, ("jit/nocache".into(), "jit/cold".into()));
+    }
+
+    /// A net program that did nothing beside one that ran away says nothing;
+    /// a run that showed anything, a program off the environment and a
+    /// construction timeout all still do.
+    #[test]
+    fn the_environment_decides_whether_a_program_runs_at_all() {
+        let net = "sys::net::subscribe(\"/a\")";
+        let idle = Outcome::Trace(trace::Trace {
+            epochs: Vec::new(),
+            stdout: Vec::new(),
+            exit: None,
+        });
+        let stuck = Outcome::Timeout(Containment::ActivationBudget);
+        assert!(environment_stopped_it(net, &idle, &stuck));
+        assert!(environment_stopped_it(net, &stuck, &idle));
+        assert!(!environment_stopped_it("1 + 1", &idle, &stuck));
+        let compile = Outcome::Timeout(Containment::Compile);
+        assert!(!environment_stopped_it(net, &idle, &compile));
+        assert!(!environment_stopped_it(net, &stuck, &stuck));
+        let shown = Outcome::single(Value::I64(1));
+        assert!(!environment_stopped_it(net, &shown, &stuck));
     }
 
     /// A run contained after the runtime's construction wrote its image

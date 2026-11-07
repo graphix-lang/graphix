@@ -73,7 +73,8 @@ what disqualifies a site.
 at two uses whose instances take different primitive first parameters:
 a VALUE use's by the map's type of it, a call's by the map's type of its
 first positional argument where the lambda's first parameter is left
-open. Not a lambda that declares a variable and leaves a parameter or its
+open. Not where any such use's is a decided type of many values: it may be
+the one the others fit. Not a lambda that declares a variable and leaves a parameter or its
 return unannotated: in a written binding that is a cell outside the
 definition, and meeting the variable is its escape, refused first.
 Mutation: route the lambda through a binding something writes, `let f =
@@ -201,7 +202,8 @@ non-⊥ initializer and a use pinned by a literal (`v + 1`, `v == "s"`).
 Mutations: the initializer replaced with a value of a disjoint type, or
 a writer `v <- u` added. Rule: an unannotated `let` takes its
 initializer's type, and a later writer must fit it
-(`node/mod.rs::write_mismatch`); the pinned use then conflicts. A `let`
+(`node/mod.rs::write_mismatch`); the pinned use then conflicts, or a select
+over what it reached misses the new type's case. A `let`
 over ⊥ is skipped: its type is a cell the first use decides, so an
 inserted writer decides it (`ExprTypeSite::cell` marks it). So is a
 `let` over a call whose callee's declared type returns a cell that no

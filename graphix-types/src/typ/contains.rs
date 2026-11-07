@@ -2269,6 +2269,21 @@ impl Type {
         if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
+    /// Whether `self` holds every member of a union.
+    fn holds_each(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        members: &[Self],
+    ) -> Result<bool> {
+        Ok(members
+            .iter()
+            .map(|t| self.contains_int(flags, env, hist, t))
+            .collect::<Result<AndAc>>()?
+            .0)
+    }
+
     pub(super) fn contains_int(
         &self,
         flags: BitFlags<ContainsFlags>,
@@ -2587,6 +2602,7 @@ impl Type {
                 }
                 Ok(true)
             }
+            (t0 @ Self::Bottom, Self::Set(s)) => t0.holds_each(flags, env, hist, s),
             (Self::Bottom, _) => Ok(false),
             (_, Self::Bottom) => Ok(true),
             (Self::TVar(t0), Self::Any) => {
@@ -2929,11 +2945,7 @@ impl Type {
                     Self::place_each,
                 )
             }
-            (t0, Self::Set(s)) => Ok(s
-                .iter()
-                .map(|t1| t0.contains_int(flags, env, hist, t1))
-                .collect::<Result<AndAc>>()?
-                .0),
+            (t0, Self::Set(s)) => t0.holds_each(flags, env, hist, s),
             (Self::Set(s), t) => {
                 if graphix_dbg_bind() {
                     eprintln!("SET-T {} >= {t}", Self::Set(s.clone()));

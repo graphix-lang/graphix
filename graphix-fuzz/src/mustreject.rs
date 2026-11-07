@@ -102,6 +102,7 @@ impl Family {
             ],
             Family::VariantWiden => &["missing match cases"],
             Family::Retype => &[
+                "missing match cases",
                 "cannot hold",
                 "cannot compute",
                 "cannot compare",
@@ -296,10 +297,10 @@ fn primitive(t: &Type) -> Option<Typ> {
     })
 }
 
-/// A function type's first parameter, when it is a single primitive.
-fn first_param(t: &Type) -> Option<Typ> {
+/// A function type's first parameter.
+fn first_param(t: &Type) -> Option<Type> {
     t.with_deref(|d| match d {
-        Some(Type::Fn(ft)) => ft.args.first().and_then(|a| primitive(&a.typ)),
+        Some(Type::Fn(ft)) => ft.args.first().map(|a| a.typ.clone()),
         _ => None,
     })
 }
@@ -1878,24 +1879,30 @@ fn mono_reuse(
         // a use's first parameter: a value's from its type, a call's (its
         // callee's reference sits right after it in preorder) from its
         // first positional argument
-        let firsts: Vec<(Typ, usize)> = values
+        let uses: Vec<(Type, usize)> = values
             .iter()
             .filter_map(|(r, j)| {
                 let first = match calls.iter().find(|c| *c + 1 == *r) {
                     None => types.of(&pre[*r]).first().and_then(first_param)?,
                     Some(_) if !open_param => return None,
                     Some(c) => match &pre[*c].kind {
-                        ExprKind::Apply(ap) => {
-                            ap.args.iter().find(|(label, _)| label.is_none()).and_then(
-                                |(_, a)| types.of(a).first().and_then(primitive),
-                            )?
-                        }
+                        ExprKind::Apply(ap) => ap
+                            .args
+                            .iter()
+                            .find(|(label, _)| label.is_none())
+                            .and_then(|(_, a)| types.of(a).first().cloned())?,
                         _ => return None,
                     },
                 };
                 Some((first, *j))
             })
             .collect();
+        // a decided type of many values may be the one the others fit
+        if uses.iter().any(|(t, _)| concrete(t) && primitive(t).is_none()) {
+            continue;
+        }
+        let firsts: Vec<(Typ, usize)> =
+            uses.iter().filter_map(|(t, j)| Some((primitive(t)?, *j))).collect();
         let Some((_, (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
             firsts[n + 1..].iter().find(|b| b.0 != a.0).map(|b| (a, b))
         }) else {

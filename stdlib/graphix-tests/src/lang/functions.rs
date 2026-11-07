@@ -4176,6 +4176,21 @@ const A_PATTERN_OVER_A_UNION_OF_ONE_TYPE: &str = r#"{
     m
 }"#;
 
+// `s + a` makes `a` and `b` one cell, whose instance the array's end settles to
+// ⊥, and the definition's return is still the union of its two names.
+const A_RETURN_OVER_A_UNION_OF_ONE_TYPE: &str = r#"{
+    let k = |y| |a, b| { let s = select true { true => a, false => b }; s + a };
+    let z = [1, k(2)];
+    array::len(z)
+}"#;
+
+run!(
+    a_return_over_a_union_of_one_type,
+    A_RETURN_OVER_A_UNION_OF_ONE_TYPE,
+    prints("i64:2");
+    FuseExpect::None
+);
+
 run!(
     a_pattern_over_a_union_of_one_type,
     A_PATTERN_OVER_A_UNION_OF_ONE_TYPE,

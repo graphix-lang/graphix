@@ -583,8 +583,9 @@ pub(crate) fn open_value(e: &Expr) -> bool {
 /// test binds it, coverage reads it), a field read or a `with` update on
 /// it, a call through it, a deref of it, or a `?` or `$` of it. Only the call supplies that
 /// type, so a `let` of the lambda is refused by language rule, not by an
-/// ordering bug. A write to it (`x <- v`) decides it where the `let` is, which
-/// the call would have decided first.
+/// ordering bug. A write to it (`x <- v`), or a written composite type its
+/// value flows into (a union leaves it the members nothing else takes), decides
+/// it where the `let` is, which the call would have decided first.
 fn reads_param_type(l: &LambdaExpr) -> bool {
     let mut untyped: HashSet<&str> = HashSet::new();
     for a in l.args.iter().filter(|a| a.constraint.is_none()) {
@@ -596,9 +597,16 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
     let writes_param = |n: &Expr| matches!(&n.kind, ExprKind::Connect { name, .. } if untyped.contains(name.to_string().as_str()));
     let is_param = |e: &Expr| matches!(&unparen(e).kind, ExprKind::Ref { name } if untyped.contains(name.to_string().as_str()));
     let mentions_param = |e: &Expr| e.fold(false, &mut |found, n| found || is_param(n));
+    let composite = |t: &Type| !matches!(t, Type::Primitive(_));
+    if l.rtype.as_ref().is_some_and(composite) && mentions_param(body) {
+        return true;
+    }
     body.fold(false, &mut |found, n| {
         found
             || match &n.kind {
+                ExprKind::Bind(b) => {
+                    b.typ.as_ref().is_some_and(composite) && mentions_param(&b.value)
+                }
                 ExprKind::Connect { .. } => writes_param(n),
                 ExprKind::Select(s) => mentions_param(&s.arg),
                 ExprKind::StructRef { source, .. }
@@ -962,6 +970,19 @@ mod test {
         }
         let extract = probes.iter().find(|p| p.kind == TmKind::LetExtract).unwrap();
         assert!(extract.body.contains("tm__0"), "{}", extract.body);
+    }
+
+    /// A written type a parameter flows into decides it where a `let` of the
+    /// lambda stands.
+    #[test]
+    fn let_extract_leaves_a_parameter_a_written_type_decides() {
+        for body in [
+            "{ let y = array::map([1], |x| { let r: [i64, Error<`B>] = select 0 { 0 => 2, _ => x }; 1 }); y }",
+            "{ let y = array::map([1], |x| -> [i64, Error<`B>] select 0 { 0 => 2, _ => x }); y }",
+        ] {
+            let (probes, _) = probes(body, 3);
+            assert!(!probes.iter().any(|p| p.kind == TmKind::LetExtract), "{body}");
+        }
     }
 
     /// A body of bare statements is probed as the block it compiles as.

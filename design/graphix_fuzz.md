@@ -186,7 +186,10 @@ no activations, so the node-walk aborts any recursion deeper than its
 budget whether or not it ends; the node-walk runs again at the slow
 budget with four times the activations, a trace there is a divergence
 (the JIT hung) and another abort leaves the check `unsure`. A Timeout beside
-anything else never agrees, a bottom or a print-only trace included.
+anything else never agrees, a bottom or a print-only trace included; it is
+CONTAINED where the program reads the environment and the other run shows
+nothing, since a subscribe, a timer or a process that answers late decides
+whether the program reaches its runaway at all.
 Read a bench timeout as an unexplained failure, not a pass. An
 asymmetric hang is a top-tier finding: fusion adding or removing
 nontermination — with one exception the kinds make legible: a
@@ -574,8 +577,9 @@ let-extract (`f(.., |x| body)` → `let tm__0 = |x| body; f(.., tm__0)` —
 THE order probe: declared-param push vs body-first inference; not on a
 callback whose body selects over a value an unannotated parameter's type
 decides, or reads a field of or `with`-updates such a parameter, which
-by language rule only the call types, or writes such a parameter, which
-a `let` decides before the call would), let-inline (the reverse: the
+by language rule only the call types, or writes such a parameter or flows
+one into a written composite type, which a `let` decides before the call
+would), let-inline (the reverse: the
 value goes in parenthesized, never a `never()`, never where a later
 binder at any depth rebinds the name or a name the value reads, and never
 what may be a generic function into a field or tuple read, where a `let`

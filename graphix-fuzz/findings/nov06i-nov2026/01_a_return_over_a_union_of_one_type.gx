@@ -1,0 +1,4 @@
+// `s + a` makes `a` and `b` one cell, whose instance the array's end settles
+// to ⊥, while the definition's return is still the union of its two names: the
+// check passed and the build refused the instance.
+{ let k = |y| |a, b| { let s = select true { true => a, false => b }; s + a }; [1, k(2)] }
