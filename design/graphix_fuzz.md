@@ -574,7 +574,8 @@ let-extract (`f(.., |x| body)` → `let tm__0 = |x| body; f(.., tm__0)` —
 THE order probe: declared-param push vs body-first inference; not on a
 callback whose body selects over a value an unannotated parameter's type
 decides, or reads a field of or `with`-updates such a parameter, which
-by language rule only the call types), let-inline (the reverse: the
+by language rule only the call types, or writes such a parameter, which
+a `let` decides before the call would), let-inline (the reverse: the
 value goes in parenthesized, never a `never()`, never where a later
 binder at any depth rebinds the name or a name the value reads, and never
 what may be a generic function into a field or tuple read, where a `let`

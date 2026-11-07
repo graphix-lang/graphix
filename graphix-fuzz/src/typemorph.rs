@@ -542,12 +542,32 @@ pub(crate) fn unparen(mut e: &Expr) -> &Expr {
     e
 }
 
+/// Whether `e` has no value and no written type: `never()`, a connect, a `let`
+/// or the empty slot a trailing `;` leaves, through parens, a block's tail, and
+/// a select whose every arm is.
+pub(crate) fn bottom_value(e: &Expr) -> bool {
+    match &unparen(e).kind {
+        ExprKind::Never { typ: None, .. }
+        | ExprKind::Connect { .. }
+        | ExprKind::Bind(_)
+        | ExprKind::NoOp => true,
+        ExprKind::Block { exprs } => exprs.last().is_some_and(bottom_value),
+        ExprKind::Select(se) => {
+            !se.arms.is_empty() && se.arms.iter().all(|(_, b)| bottom_value(b))
+        }
+        _ => false,
+    }
+}
+
 /// Whether a `let` over `e` is a cell its first reader decides: `e` is ⊥
 /// (through parens, a block's tail, a select whose every arm is) or an
 /// empty collection, whose element is open.
 pub(crate) fn open_value(e: &Expr) -> bool {
     match &unparen(e).kind {
-        ExprKind::Never { .. } => true,
+        ExprKind::Never { .. }
+        | ExprKind::Connect { .. }
+        | ExprKind::Bind(_)
+        | ExprKind::NoOp => true,
         ExprKind::Block { exprs } => exprs.last().is_some_and(open_value),
         ExprKind::Select(se) => {
             !se.arms.is_empty() && se.arms.iter().all(|(_, b)| open_value(b))
@@ -563,7 +583,8 @@ pub(crate) fn open_value(e: &Expr) -> bool {
 /// test binds it, coverage reads it), a field read or a `with` update on
 /// it, a call through it, a deref of it, or a `?` or `$` of it. Only the call supplies that
 /// type, so a `let` of the lambda is refused by language rule, not by an
-/// ordering bug.
+/// ordering bug. A write to it (`x <- v`) decides it where the `let` is, which
+/// the call would have decided first.
 fn reads_param_type(l: &LambdaExpr) -> bool {
     let mut untyped: HashSet<&str> = HashSet::new();
     for a in l.args.iter().filter(|a| a.constraint.is_none()) {
@@ -572,11 +593,13 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
         });
     }
     let LambdaBody::Expr(body) = &l.body else { return false };
+    let writes_param = |n: &Expr| matches!(&n.kind, ExprKind::Connect { name, .. } if untyped.contains(name.to_string().as_str()));
     let is_param = |e: &Expr| matches!(&unparen(e).kind, ExprKind::Ref { name } if untyped.contains(name.to_string().as_str()));
     let mentions_param = |e: &Expr| e.fold(false, &mut |found, n| found || is_param(n));
     body.fold(false, &mut |found, n| {
         found
             || match &n.kind {
+                ExprKind::Connect { .. } => writes_param(n),
                 ExprKind::Select(s) => mentions_param(&s.arg),
                 ExprKind::StructRef { source, .. }
                 | ExprKind::TupleRef { source, .. } => is_param(source),

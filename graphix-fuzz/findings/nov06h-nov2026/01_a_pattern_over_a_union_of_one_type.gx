@@ -1,0 +1,5 @@
+// A use decides the cell beside the tuple, so the element is one type, and the
+// annotated pattern covers it; the instance read the union of two members and
+// refused it as refutable, what the check had accepted. Found by the nov06h soak
+// (ryouko).
+{ let e = never(); let z = [e, ("a", 1)]; let m = array::map(z, |(k, v): (string, i64)| v); e <- ("b", 2); m }

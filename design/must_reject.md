@@ -349,8 +349,9 @@ arm tests is refused (`Select::check_undecided`,
 only takes apart every value of the shape it decides is no test of it
 (`StructurePattern::only_destructures`), except beside a member of that
 shape. Built (`undecided-part`), right
-site the select; over a `never()` or a connect scrutinee (`x <- e`), or a read
-of a cell (a name bound over one), only the decide shape, since a union of ⊥ and
+site the select; over a scrutinee with no value (`never()`, a connect, a block
+ending in a `let`), or a read of a cell (a name bound over one), only the decide
+shape, since a union of ⊥ and
 `tm__z` is `tm__z` whole, which the arms decide together. Not generated: an arm that only destructures the open
 part alone, which decides its shape as an annotation would (pins
 `lang::select_undecided::destructuring_*`); a name over the open part, typed beside

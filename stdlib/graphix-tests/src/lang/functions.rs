@@ -4165,3 +4165,20 @@ run!(
     is(Value::I64(1));
     FuseExpect::None
 );
+
+// A use decides the cell beside the tuple, so the element is one type at the
+// instance, and the annotated pattern covers it.
+const A_PATTERN_OVER_A_UNION_OF_ONE_TYPE: &str = r#"{
+    let e = never();
+    let z = [e, ("a", 1)];
+    let m = array::map(z, |(k, v): (string, i64)| v);
+    e <- ("b", 2);
+    m
+}"#;
+
+run!(
+    a_pattern_over_a_union_of_one_type,
+    A_PATTERN_OVER_A_UNION_OF_ONE_TYPE,
+    prints("[i64:2, i64:1]");
+    FuseExpect::Jit
+);

@@ -491,15 +491,11 @@ fn undecided_part(
         if !concrete(t) || typemorph::leaks_binds(&se.arg) {
             continue;
         }
-        // a `never()` or a connect scrutinee adds nothing to a union beside
-        // `tm__z`, which is then the whole scrutinee, one the arms decide
-        // together; a read of a cell, a name bound over such a scrutinee, is
-        // one cell with `tm__z`
-        let bottom = types.cell(&se.arg)
-            || matches!(
-                se.arg.kind,
-                ExprKind::Never { typ: None, .. } | ExprKind::Connect { .. }
-            );
+        // a scrutinee with no value adds nothing to a union beside `tm__z`,
+        // which is then the whole scrutinee, one the arms decide together; a
+        // read of a cell, a name bound over such a scrutinee, is one cell with
+        // `tm__z`
+        let bottom = types.cell(&se.arg) || typemorph::bottom_value(&se.arg);
         let binds = |p: &Pattern| {
             let mut any = false;
             p.structure_predicate.with_names(&mut |_| any = true);

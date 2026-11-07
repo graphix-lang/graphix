@@ -6145,6 +6145,7 @@ mod tests {
             "{ let y = 0; select y <- 5 { 6 => 1, _ => 2 } }",
             "{ select never() { 0 => 0, 1 => 1, _ => 2 } }",
             "{ select never() { `A | `B => -1, x => select x { `C => 2 } } }",
+            "{ select { let d = 1; } { 1 | 2 => 1, _ => 0 } }",
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             let up: Vec<_> = rep

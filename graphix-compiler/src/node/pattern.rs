@@ -2282,7 +2282,18 @@ impl StructPatternNode {
                         && self.member_rep(env, m).is_some_and(|r| bind.covers(env, &r, false))
                 });
         }
-        let shape = expand(env, typ);
+        let mut shape = expand(env, typ);
+        // a union of one type, a cell a use decided beside its binding, is that
+        // type
+        let one;
+        let typ = match &shape {
+            Some(Type::Set(_)) => {
+                one = typ.resolve_tvars().normalize();
+                shape = expand(env, &one);
+                &one
+            }
+            _ => typ,
+        };
         let shaped = match (self, &shape) {
             (
                 Self::Literal(_)
