@@ -297,10 +297,13 @@ fn primitive(t: &Type) -> Option<Typ> {
     })
 }
 
-/// A function type's first parameter.
+/// A function type's first positional parameter, the one a call's first
+/// positional argument types.
 fn first_param(t: &Type) -> Option<Type> {
     t.with_deref(|d| match d {
-        Some(Type::Fn(ft)) => ft.args.first().map(|a| a.typ.clone()),
+        Some(Type::Fn(ft)) => {
+            ft.args.iter().find(|a| a.is_positional()).map(|a| a.typ.clone())
+        }
         _ => None,
     })
 }
@@ -495,8 +498,10 @@ fn undecided_part(
         // a scrutinee with no value adds nothing to a union beside `tm__z`,
         // which is then the whole scrutinee, one the arms decide together; a
         // read of a cell, a name bound over such a scrutinee, is one cell with
-        // `tm__z`
-        let bottom = types.cell(&se.arg) || typemorph::bottom_value(&se.arg);
+        // `tm__z`; a member `Any` admits `tm__z`'s values, so the union is the
+        // scrutinee's type whole
+        let bottom =
+            types.cell(&se.arg) || typemorph::bottom_value(&se.arg) || admits_all(t);
         let binds = |p: &Pattern| {
             let mut any = false;
             p.structure_predicate.with_names(&mut |_| any = true);
@@ -777,6 +782,15 @@ fn primitive_class(t: &Type) -> bool {
 
 fn concrete(t: &Type) -> bool {
     t.resolve_tvars().tvar_free()
+}
+
+/// Whether `t` is `Any` or a union with a member that is.
+fn admits_all(t: &Type) -> bool {
+    t.with_deref(|d| match d {
+        Some(Type::Any) => true,
+        Some(Type::Set(ts)) => ts.iter().any(admits_all),
+        _ => false,
+    })
 }
 
 /// Whether `t` holds `Any`, an abstract type or a type name anywhere: a

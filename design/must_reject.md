@@ -354,7 +354,9 @@ shape. Built (`undecided-part`), right
 site the select; over a scrutinee with no value (`never()`, a connect, a block
 ending in a `let`), or a read of a cell (a name bound over one), only the decide
 shape, since a union of ⊥ and
-`tm__z` is `tm__z` whole, which the arms decide together. Not generated: an arm that only destructures the open
+`tm__z` is `tm__z` whole, which the arms decide together; over a scrutinee
+with a member `Any`, only the decide shape too, since that member admits
+`tm__z`'s values and the union is the scrutinee's type whole. Not generated: an arm that only destructures the open
 part alone, which decides its shape as an annotation would (pins
 `lang::select_undecided::destructuring_*`); a name over the open part, typed beside
 the members' others (`TVar::narrow_per_member`), whose refusal comes at

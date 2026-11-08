@@ -809,6 +809,16 @@ pub(crate) fn for_each_reached(
             }
         }
         ExprKind::Bind(b) if !b.rec => child(&b.value, reached, idx),
+        // a labeled default compiles in the definition's scope, which no
+        // parameter is in
+        ExprKind::Lambda(l) => {
+            for d in l.args.iter().filter_map(|a| a.kind.default()) {
+                child(d, reached, idx);
+            }
+            if let LambdaBody::Expr(body) = &l.body {
+                child(body, reached && !binds(e, f), idx);
+            }
+        }
         _ => {
             let inner = reached && !binds(e, f);
             e.for_each_child(&mut |c| child(c, inner, idx))

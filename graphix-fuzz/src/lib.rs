@@ -1207,13 +1207,13 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // FinalValues assumes the async values themselves settle
         // deterministically; a `<-` weaves arrival order into state, and
         // the fire-count/arrival-order-sensitive builtins leak it too.
-        // `iter(` is a self-clocked sequence: one element per cycle,
-        // so anything async landing beside it samples whichever element
-        // that cycle held.
+        // `iter(` and `range(` are self-clocked sequences: one element per
+        // cycle, so anything async landing beside one samples whichever
+        // element that cycle held.
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
             "any(", "queue(", "queuefn(", "take(", "skip(", "window(", "iterq", "iter(",
-            "group(", "hold(",
+            "range(", "group(", "hold(",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| mentions(code, m)) {
             return OracleTier::Excluded;
@@ -6053,6 +6053,14 @@ mod tests {
                  let c = array::map([\"s\"], g); let b = array::map([\"s\"], f); (a, b, c) }",
                 "mono-reuse#",
             ),
+            // a labeled default reads the binding outside its lambda, even
+            // where a parameter shadows it in the body: a use, refused first
+            (
+                "{ let f = |x| x; let a = f(1); \
+                 let g = |#f: string = f(\"s\"), y: i64| -> i64 y; \
+                 let b = f(2.5); (a, g(2), b) }",
+                "mono-reuse#",
+            ),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-unknown#"),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-missing#"),
             (
@@ -6137,6 +6145,20 @@ mod tests {
                 .collect();
             assert!(up.len() >= 2 && up.iter().all(|p| p.verdict.is_none()), "{up:?}");
         }
+        // a scrutinee with a member `Any` admits `tm__z`: only the decide shape
+        for prog in [
+            "{ let t: Any = 1; select t { 1 => 2, _ => 3 } }",
+            "{ let t: [Any, i64] = 1; select t { 1 => 2, _ => 3 } }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            let up: Vec<_> = rep
+                .rejects
+                .iter()
+                .filter(|p| p.id.starts_with("undecided-part#"))
+                .collect();
+            assert!(up.len() == 1 && up[0].verdict.is_none(), "{prog}: {up:?}");
+            assert!(up[0].mutant.contains("(tm__z, 0)"), "{prog}: {up:?}");
+        }
         // family 1 leaves a declared variable beside an unannotated parameter
         // or return, whose escape a written binding refuses first
         for declared in [
@@ -6159,6 +6181,15 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(
+            !rep.rejects.iter().any(|p| p.id.starts_with("mono-reuse#")),
+            "{:?}",
+            rep.rejects
+        );
+        // a value use's first parameter is its first positional, not a label
+        let labeled = "{ let f = |#s = \"a\", x| \"[s]:[x]\"; \
+                       (array::map([1, 100], f), f(#s: \"top\", 1)) }";
+        let rep = typemorph_subject(labeled, per, TM_CAP).await.unwrap();
         assert!(
             !rep.rejects.iter().any(|p| p.id.starts_with("mono-reuse#")),
             "{:?}",
@@ -7602,6 +7633,8 @@ mod trace_probes {
         assert_eq!(oracle_tier(summed), OracleTier::FinalValues);
         let counted = "{ let c = count(i64:1); sys::fs::read_all(\"/x\") }";
         assert_eq!(oracle_tier(counted), OracleTier::Excluded);
+        let ranged = "(range(i64:0, i64:4), sys::fs::read_all(\"/x\"))";
+        assert_eq!(oracle_tier(ranged), OracleTier::Excluded);
         let queued = "{ let qf = queuefn(#trigger: 1, |x: i64| x); qf(json::read(b)$) }";
         assert_eq!(oracle_tier(queued), OracleTier::Excluded);
     }
