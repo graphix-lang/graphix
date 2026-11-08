@@ -8,8 +8,8 @@ use super::{
     read_var_by, standing_view,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
-    PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
+    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, LambdaId, Node, NodeView,
+    Notify, PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
     compiler::compile,
     dbgenv,
     env::{self, Env},
@@ -226,6 +226,16 @@ fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInf
         typ: typ.clone(),
         lambda_id: Some(def.id),
     })
+}
+
+/// The builtin a read of a binding the table names is.
+fn aliased_builtin<R: Rt>(
+    ctx: &CompileCtx<R>,
+    node: &Node<R>,
+) -> Option<BuiltinBindInfo> {
+    let NodeView::Ref(r) = node.view() else { return None };
+    let bind = ctx.env.by_id.get(&r.id)?;
+    ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone())).cloned()
 }
 
 impl<R: Rt> Bind<R> {
@@ -511,10 +521,12 @@ impl<R: Rt> Bind<R> {
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
         // every name the pattern rebinds forgets the builtin it named; a
-        // single name over a builtin names that one, and an instance of the
-        // binding the table names already writes nothing
+        // single name over a builtin, or over a name of one, names that one,
+        // and an instance of the binding the table names already writes nothing
         let mut builtin = match pat {
-            expr::StructurePattern::Bind(_) => builtin_binding(&node, value),
+            expr::StructurePattern::Bind(_) => {
+                builtin_binding(&node, value).or_else(|| aliased_builtin(ctx, &node))
+            }
             _ => None,
         };
         pat.with_names(&mut |name| {
@@ -829,13 +841,24 @@ impl<R: Rt> Update<R> for Bind<R> {
             ctx.connect_targets.remove(&id);
             ctx.batch_connect_targets.remove(&id);
         });
-        if let Some(l) = lambda_value(&self.node)
-            && let Some(lambda) = l.lambda_id::<R>()
-            && let Some(id) = self.pattern.single_bind_id()
+        if let Some(id) = self.pattern.single_bind_id()
             && let Some(b) = ctx.env.by_id.get(&id)
         {
             let key = (b.scope.clone(), b.name.clone());
-            if ctx.builtin_bindings.get(&key).is_some_and(|i| i.lambda_id == Some(lambda))
+            let ours = |lambda: LambdaId| match lambda_value(&self.node) {
+                Some(l) => l.lambda_id::<R>() == Some(lambda),
+                None => {
+                    matches!(self.node.view(), NodeView::Ref(_))
+                        && self.node.typ().with_deref(|t| match t {
+                            Some(Type::Fn(ft)) => ft.lambda_ids.ids().contains(&lambda),
+                            _ => false,
+                        })
+                }
+            };
+            if ctx
+                .builtin_bindings
+                .get(&key)
+                .is_some_and(|i| i.lambda_id.is_some_and(ours))
             {
                 ctx.builtin_bindings.remove(&key);
             }

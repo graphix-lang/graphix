@@ -112,6 +112,19 @@ const DEAD_VARIADIC_LABELED_ONLY: &str = r#"
 
 run!(dead_variadic_labeled_only, DEAD_VARIADIC_LABELED_ONLY, refused("calling `str::join` with no positional arguments can never produce a value"); FuseExpect::None);
 
+// A `let` naming the builtin is the builtin: inlining it changes nothing,
+// a name shadowing it included.
+const DEAD_VARIADIC_ALIAS: &str = r#"
+{
+  let c = str::concat;
+  let c = c;
+  let v = c();
+  v
+}
+"#;
+
+run!(dead_variadic_alias, DEAD_VARIADIC_ALIAS, refused("calling `c` with no positional arguments can never produce a value"); FuseExpect::None);
+
 // never() stays legal; the binding never fires and the tail still does.
 const NEVER_ZERO_ARGS_OK: &str = r#"
 {

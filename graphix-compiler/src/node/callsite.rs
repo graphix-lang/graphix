@@ -69,7 +69,8 @@ use triomphe::Arc as TArc;
 
 /// Reject a direct call to a sync variadic builtin with no positional
 /// arguments (`str::concat()`, `sum()`): the node has no data inputs and
-/// can never fire. Only a direct `Ref` to the builtin is checkable.
+/// can never fire. Only a `Ref` to a binding that names the builtin is
+/// checkable.
 fn reject_dead_variadic_call<R: Rt>(
     ctx: &CompileCtx<R>,
     scope: &Scope,

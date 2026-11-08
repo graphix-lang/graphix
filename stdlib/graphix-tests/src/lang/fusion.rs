@@ -25,6 +25,15 @@ run!(neg_value_shapes, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[decimal:-1.5, z32:-7, z64:-9]"); FuseExpect::Jit);
 
+// A `let` naming a builtin is the builtin: its call fuses as a direct one.
+run!(builtin_alias_fuses, r#"
+{
+    let l = str::len;
+    let l = l;
+    #[native] l("abc")
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
 run!(neg_widened_f64, r#"
 {
     let y = f64:2.5;

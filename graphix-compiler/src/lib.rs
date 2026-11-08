@@ -382,8 +382,8 @@ impl Refs {
     }
 }
 
-/// Metadata for a `let foo = |...| 'builtin_name` binding
-/// ([`ExecCtx::builtin_bindings`]): the canonical builtin `name`, the
+/// Metadata for a `let foo = |...| 'builtin_name` binding, or a `let`
+/// naming one ([`ExecCtx::builtin_bindings`]): the canonical builtin `name`, the
 /// source-level `argspec` (with labeled defaults), and the binding's
 /// declared `typ`.
 #[derive(Debug, Clone, netidx_derive::Pack)]
