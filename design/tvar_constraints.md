@@ -970,7 +970,10 @@ to and never refuse.
 - A read's result is `Result<'b, E>`, a union beside its own error. In
   a union checked against a union the known members are matched first
   and an open member takes only the members they leave (all of them when
-  none are left, `contains.rs`), so `let r: [&i64, Error<E>] = parse(..)`
+  none are left, `contains.rs`; a primitive member a known primitive only
+  partly fills is left whole, so over `[i64, string, `A]` beside `i64` it
+  takes all three, as over `[i64, string]`), so `let r: [&i64, Error<E>] =
+  parse(..)`
   offers 'b only `&i64`, which `Concrete` refuses, never `Error<E>`.
   Where two members hold open cells (`[Array<'a1>, Array<'a2>, null]`, a
   bound naming two variables), the member that fits first alone may decide

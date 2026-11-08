@@ -1759,6 +1759,41 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
 );
 
+// A known primitive that only partly fills the primitive member leaves it
+// whole: `x` is [i64, string, `A], as over [i64, string].
+const PARTLY_FILLED_PRIMITIVE_STAYS_WHOLE: &str = r#"
+{
+  let f = |x| { let r: [i64, string, `A] = select 0 { 0 => 2, _ => x }; 1 };
+  [f("s"), f(3), f(`A)]
+}
+"#;
+run!(
+    partly_filled_primitive_stays_whole,
+    PARTLY_FILLED_PRIMITIVE_STAYS_WHOLE,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => {
+                a.iter().all(|v| matches!(v, Value::I64(1))) && a.len() == 3
+            }
+            _ => false,
+        }
+    }
+);
+
+// One it fills is taken: `x` is `A.
+const FILLED_PRIMITIVE_IS_TAKEN: &str = r#"
+{
+  let f = |x| { let r: [i64, `A] = select 0 { 0 => 2, _ => x }; 1 };
+  f(3)
+}
+"#;
+run!(
+    filled_primitive_is_taken,
+    FILLED_PRIMITIVE_IS_TAKEN,
+    refused("`A does not contain i64");
+    FuseExpect::None
+);
+
 // A callback that takes Any fixes its formal's open type to Any, so a
 // Concrete bound is met; a covariant Any decides nothing of what flows
 // into it: `q` is still an i64 for `h`.

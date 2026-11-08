@@ -3575,7 +3575,9 @@ impl Type {
     /// residue takes the general per-member walk (which is O(|s0|·|s1|)
     /// per level). An open rhs member takes from the lhs members its known
     /// siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E; where they
-    /// leave none it can take, from the whole lhs.
+    /// leave none it can take, from the whole lhs. A primitive member a
+    /// known primitive only partly fills is left whole: in `[i64, string,
+    /// A] ⊇ [i64, 'b]`, 'b is `[i64, string, A]`.
     fn place_each(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -3585,6 +3587,16 @@ impl Type {
         s1: &[Type],
     ) -> Result<bool> {
         let commit = flags.contains(ContainsFlags::Commit);
+        let bits = |t: &Type| {
+            t.with_deref(|d| match d {
+                Some(Self::Primitive(p)) => Some(*p),
+                _ => None,
+            })
+        };
+        let fills = |c: &Type, m: &Type| match (bits(c), bits(m)) {
+            (Some(c), Some(m)) => (c & !m).is_empty(),
+            _ => true,
+        };
         let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
         let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
         for m in s1.iter() {
@@ -3601,7 +3613,7 @@ impl Type {
             }
             for (i, c) in s0.iter().enumerate() {
                 if c.contains_int(guide(flags), env, hist, m)? {
-                    used[i] = true;
+                    used[i] = fills(c, m);
                     break;
                 }
             }
