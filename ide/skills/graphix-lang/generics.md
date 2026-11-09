@@ -129,13 +129,16 @@ named member judges its own). A
 it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
 A `let` nothing writes or annotates reads `s` once in its value,
 wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
-fn(x: i64) -> i64}` makes `t.a.f` take `i64` too.
+fn(x: i64) -> i64}` makes `t.a.f` take `i64` too, and so does `b: seqq
+1 { k(s) }`.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
 no "i64 does not contain string" let fs = [|#d = 1, x: i64| x, |#d = "q", x: i64| x]; array::len(fs)
 ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
 ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
+ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)
+no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
 ```
 
 A sample is no binding: under a binding made generic before the write,

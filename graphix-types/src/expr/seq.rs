@@ -216,6 +216,11 @@ const PC: &str = "#seqpc";
 /// request's snapshot of `v`, or `v` itself where a step writes it.
 const CAPTURE: &str = "#seqqcap";
 
+/// The prefix of the value a `seqq` queues for a variable its body reads,
+/// `let #seqqseed<id>_<n> = any(v, activation ~ v)`: the queue's one
+/// instance of `v`, which no step reads.
+const SEED: &str = "#seqqseed";
+
 /// Whether the lowering's binding `name` passes on what it reads whole,
 /// and nothing writes it: a step's entry snapshot ([`ENTRY_SNAPSHOT`]), a
 /// step's value ([`STEP_VALUE`]), a statement item's ([`STATEMENT_VALUE`])
@@ -226,6 +231,11 @@ pub fn passes_on(name: &str) -> bool {
         || numbered(name, STEP_VALUE, &[1, 2])
         || is_statement_value(name)
         || written_part(name, CAPTURE, 2).is_some()
+}
+
+/// Whether `name` is the value a `seqq` queues for a variable ([`SEED`]).
+pub fn is_request_seed(name: &str) -> bool {
+    numbered(name, SEED, &[2])
 }
 
 /// Whether `name` is a `{ .. }` statement's item value ([`STATEMENT_VALUE`]).
@@ -1626,7 +1636,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         }
     }
     for (i, arg) in args.iter_mut().enumerate() {
-        let name = format_compact!("#seqqseed{id}_{i}");
+        let name = format_compact!("{SEED}{id}_{i}");
         prelude.push(let_bind(
             pos,
             &name,

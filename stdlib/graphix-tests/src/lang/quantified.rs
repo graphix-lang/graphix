@@ -912,6 +912,49 @@ run!(
     FuseExpect::Jit
 );
 
+// A seqq in a holder's value captures as it does anywhere: the queue's
+// value is one instance of the binding, apart from the holder's copy,
+// which its steps share.
+run!(
+    a_seqq_in_a_holders_lambda_reads_an_outer_holder_generically,
+    "{ let s = {g: |x| x}; let h = {f: |k| seqq k { (s.g(1), s.g(\"s\")) }}; h.f(1) }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_seqq_as_a_holders_field_reads_an_outer_holder_generically,
+    "{ let s = {g: |x| x}; let h = {f: |x| x, r: seqq 1 { (s.g(1), s.g(\"s\")) }}; \
+       (h.r, h.f(2)) }",
+    prints(r#"[[i64:1, "s"], i64:2]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_seqq_in_a_holder_tuple_reads_an_outer_holder_generically,
+    "{ let s = {g: |x| x}; let h = (|x| x, seqq 1 { (s.g(1), s.g(\"s\")) }); h.1 }",
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+// What a step decides of the holder's copy holds for the holder's other
+// parts, as a `seq` step's and a plain part's decision does.
+run!(
+    a_seqq_step_in_a_holder_decides_the_holders_copy,
+    "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
+       let t = {a: s, b: seqq 1 { k(s) }}; (t.a.g(\"x\"), t.b) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_seqq_step_in_a_holder_decides_the_holders_copy_one_type,
+    "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
+       let t = {a: s, b: seqq 1 { k(s) }}; (t.a.g(1), t.b) }",
+    prints("[i64:1, i64:0]");
+    FuseExpect::Jit
+);
+
 // A step's `let` of a generic function, a read of it or of a field of one,
 // is generic as it is outside a seq: the step's value carries the scheme.
 run!(

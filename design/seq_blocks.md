@@ -339,8 +339,14 @@ by its live read, a copy of the scheme (`SeqCapture::scheme`,
 `bind::Passing::Capture`, Eric 11-05), never by the queue's one instance
 of what it carries, and its value is still the request's snapshot
 unless the capture is live (a step makes a call with no static target,
-which counts as every variable). A variable a step writes, a callee's
-write included, is written, so its capture is one instance, read live.
+which counts as every variable). The queue's value of a captured
+variable (`#seqqseed`, `expr::seq::is_request_seed`) is that one
+instance, read apart from a holder's copies (`bind::ValueReads::Own`):
+in a holder's value the capture shares the holder's copy as a `seq`
+step's snapshot does, so what a step decides of it holds for the
+holder's other parts, and the queue decides nothing of it. A variable
+a step writes, a callee's write included, is written, so its capture is
+one instance, read live.
 
 ## 6. The lowering
 
