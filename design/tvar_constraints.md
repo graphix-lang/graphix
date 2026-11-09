@@ -320,10 +320,14 @@ An argument with an undecided cell and nothing else at its variable
 (`id(u)`) takes the variable as it is: one cell, decided by whichever
 use comes first, as any cell is. A variable a callback also holds is
 not widenable: the first argument decides it, an undecided one
-included: an undecided argument that follows a decided one is refused
-naming the annotation (`typecheck_arg`'s refusal: "annotate it", and the
-arguments before it as wide), while `f(str::parse(s), 1, |v| 0)` over
-`|x: 'a, y: 'a, k: fn(v: 'a) -> i64|` runs. An argument or an omitted default whose type holds a function
+included, so `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v:
+'a) -> i64|` runs and `f(1, str::parse(s), |v| 0)` is refused. Annotating
+the undecided argument widens nothing there, so where a wider decision
+of the variable could hold it (`annotation_may_fit` over the formal's
+decided variables), the refusal names the argument that decided it,
+"annotate that argument as wide as this one"
+(`callsite::decided_elsewhere`); `f(1, [], |v| 0)` and an undecided
+argument at a formal with no variable are plain mismatches. An argument or an omitted default whose type holds a function
 type with open cells does not widen either (`Widening::widen` skips a
 type with an unbound cell): it fits the variable as the arguments before
 it left it, or is refused, so order decides between a value and a

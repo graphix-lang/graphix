@@ -2328,8 +2328,8 @@ run!(
 );
 
 // A variable a callback also holds is decided by the first argument: an
-// undecided argument after it is refused naming the annotation, one before
-// it runs.
+// undecided argument after it is refused naming the argument that decided
+// it, one before it runs, and so does the deciding argument annotated wide.
 run!(
     callback_variable_undecided_first_runs,
     r#"{ let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(str::parse("5"), 1, |v| 0) }"#,
@@ -2339,19 +2339,38 @@ run!(
 run!(
     callback_variable_undecided_last_refused,
     r#"{ let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, str::parse("5"), |v| 0) }"#,
-    refused("this argument is undecided at this call; annotate it");
+    refused(
+        "this argument is undecided at this call, and another argument decided 'a \
+         before it; annotate that argument as wide as this one"
+    );
     FuseExpect::None
 );
 
 run!(
-    callback_variable_annotated_either_order,
+    callback_variable_deciding_argument_annotated_runs,
     r#"{
   let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y;
   let one: [i64, Error<`ParseError(string)>] = 1;
-  let p: [i64, Error<`ParseError(string)>] = str::parse("5");
-  f(one, p, |v| 0)
+  f(one, str::parse("5"), |v| 0)
 }"#,
     prints("i64:5")
+);
+
+// The note is only where a wider decision of the variable could hold the
+// argument: a formal with no variable, or one no decision makes hold it,
+// names nothing.
+run!(
+    undecided_at_closed_formal_names_nothing,
+    r#"{ let f = |x: i64| x; f(str::parse("5")) }"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
+    callback_variable_unrelated_undecided_names_nothing,
+    r#"{ let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, [], |v| 0) }"#,
+    refused_naming_nothing;
+    FuseExpect::None
 );
 
 run!(

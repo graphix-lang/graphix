@@ -762,21 +762,16 @@ fn typecheck_arg<R: Rt>(
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    // Where the call did not open the formal, an argument holding an
-    // undecided cell takes what the arguments before it decided: its refusal
-    // names the annotation that settles it.
-    let open_arg = opening.is_none() && n.typ().has_free_in_data();
-    let refused = |ctx: &CompileCtx<R>, n: &Node<R>, e: anyhow::Error| match open_arg {
-        true => e.context(format_compact!(
-            "{}; the arguments before it decided its variable, so they must be \
-                 annotated as wide",
-            undecided_note(ctx, n)
-        )),
-        false => e,
+    let note = match opening {
+        None if n.typ().has_free_in_data() => decided_elsewhere(&ctx.env, typ, n.typ())?,
+        _ => None,
     };
-    Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ())
-        .map_err(|e| refused(ctx, n, e))?;
-    wrap!(n, n.typecheck0(ctx)).map_err(|e| refused(ctx, n, e))?;
+    let refused = |e: anyhow::Error| match &note {
+        Some(note) => e.context(note.clone()),
+        None => e,
+    };
+    Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ()).map_err(refused)?;
+    wrap!(n, n.typecheck0(ctx)).map_err(refused)?;
     Ok(if opening.is_some() && n.typ().has_free_in_data() {
         ArgFit::Open
     } else if typ.contains(&ctx.env, n.typ())? {
@@ -1621,6 +1616,38 @@ fn annotation_may_fit(
         }
     }
     Ok(true)
+}
+
+/// What a refusal of an argument of type `arg`, holding an undecided cell,
+/// at a formal the call did not open asks to annotate: where another
+/// argument already decided a variable of `formal` to a type a wider
+/// decision could make hold `arg` ([`annotation_may_fit`]), the argument
+/// that decided it, since annotating `arg` widens nothing.
+fn decided_elsewhere(
+    env: &Env,
+    formal: &Type,
+    arg: &Type,
+) -> Result<Option<CompactString>> {
+    let mut decided: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    formal.collect_tvars(&mut decided);
+    decided.retain(|_, tv| tv.is_bound());
+    if decided.is_empty() || !annotation_may_fit(env, formal, &decided, arg)? {
+        return Ok(None);
+    }
+    let mut names: SmallVec<[&ArcStr; 2]> = decided.keys().collect();
+    names.sort();
+    let mut note = CompactString::const_new(
+        "this argument is undecided at this call, and another argument decided ",
+    );
+    for (i, name) in names.iter().enumerate() {
+        let sep = if i == 0 { "" } else { ", " };
+        write!(note, "{sep}'{name}").unwrap();
+    }
+    note.push_str(
+        " before it; annotate that argument as wide as this one (bind it to a `let` \
+         with its type written)",
+    );
+    Ok(Some(note))
 }
 
 /// What to annotate where the argument `n` is undecided at its call: the

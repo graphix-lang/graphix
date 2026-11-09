@@ -144,13 +144,14 @@ A variable a callback also holds does not widen: the first argument decides
 it, an open one included, so order decides between a value and a refusal.
 `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v: 'a) -> i64|`
 runs (`'a` is the parse's Result, which holds the `1`), and `f(1,
-str::parse(s), |v| 0)` is refused, "annotate it": annotate the arguments
-before it as wide as this one, or put it first.
+str::parse(s), |v| 0)` is refused, "annotate that argument as wide as this
+one": annotating the parse widens nothing; annotate the argument that
+decided `'a` (here the `1`), or put the open one first.
 
 ```graphix,cases
 ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(str::parse("5"), 1, |v| 0)
-no "undecided at this call; annotate it" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, str::parse("5"), |v| 0)
-ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`ParseError(string)>] = 1; let p: [i64, Error<`ParseError(string)>] = str::parse("5"); f(one, p, |v| 0)
+no "annotate that argument as wide as this one" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, str::parse("5"), |v| 0)
+ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`ParseError(string)>] = 1; f(one, str::parse("5"), |v| 0)
 ```
 
 ## Abstract comparisons
