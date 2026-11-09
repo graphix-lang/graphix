@@ -1134,6 +1134,9 @@ pub struct TCell {
     /// The latest [`GROUND_EPOCH`] at which the cell, bound, was proved to
     /// reach no open cell; 0, never.
     pub(crate) ground: u64,
+    /// The [`GROUND_EPOCH`] at which a judgment of the ground binding
+    /// found nothing, per judgment ([`TVar::ground_verdict`]); 0, never.
+    pub(crate) judged: [u64; 2],
 }
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
@@ -1229,6 +1232,7 @@ impl Default for TCell {
             level: current_level(),
             task: TASK.get(),
             ground: 0,
+            judged: [0; 2],
         }
     }
 }
@@ -1794,6 +1798,47 @@ impl TVar {
 
     pub fn is_bound(&self) -> bool {
         self.read().cell.read().binding.is_some()
+    }
+
+    /// `judge` of the cell's binding when it reaches no open cell
+    /// ([`Self::ground_now`]), else `None`. A judgment that found nothing
+    /// at the current [`GROUND_EPOCH`] finds nothing again while the epoch
+    /// stands, so the cell keeps it, one slot per judgment, and is not
+    /// judged again.
+    pub(super) fn ground_verdict<R>(
+        &self,
+        slot: usize,
+        judge: impl FnOnce(&Type) -> Option<R>,
+    ) -> Option<Option<R>> {
+        let epoch = ground_epoch();
+        let (cell, binding) = {
+            let link = self.read();
+            let c = link.cell.read();
+            match &c.binding {
+                Some(_) if c.ground == epoch && c.judged[slot] == epoch => {
+                    return Some(None);
+                }
+                Some(b) if c.ground == epoch => (link.cell.clone(), b.clone()),
+                _ => return None,
+            }
+        };
+        let r = judge(&binding);
+        if r.is_none() && ground_epoch() == epoch {
+            let mut c = cell.0.write();
+            if c.ground == epoch {
+                c.judged[slot] = epoch
+            }
+        }
+        Some(r)
+    }
+
+    /// Whether the cell is bound and proved, at the current
+    /// [`GROUND_EPOCH`], to reach no open cell. Reads the proof, walks
+    /// nothing.
+    pub(super) fn ground_now(&self) -> bool {
+        let link = self.read();
+        let c = link.cell.read();
+        c.binding.is_some() && c.ground == ground_epoch()
     }
 
     /// The open cell this var stands for: its own, or the end of a chain
@@ -3220,7 +3265,7 @@ impl Type {
     ) {
         ensure_sufficient(|| match self {
             t if skips(t) => (),
-            Type::TVar(tv) if !seen.insert(tv.cell_addr()) => (),
+            Type::TVar(tv) if !seen.insert(tv.cell_addr()) || tv.ground_now() => (),
             Type::TVar(tv) => match tv.binding() {
                 Some(b) => b.require_everywhere(bound, skips, hand, seen),
                 None => hand(tv, bound.clone()),

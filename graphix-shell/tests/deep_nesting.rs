@@ -315,6 +315,21 @@ fn program(shape: &str, d: usize) -> String {
                 "type T<'x> = Array<'x>;\nlet f = {bounds} |x: ({cells})| x;\nf(never())"
             )
         }
+        // The chain with a second conjunct on every link, the last link a
+        // type the comparison takes.
+        "chainboundsdiscernible" | "chainboundsordered" => {
+            let (conj, last) = match shape {
+                "chainboundsordered" => ("Ordered", "i64"),
+                _ => ("Discernible", "Number"),
+            };
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: Array<'a{}> + {conj}", i + 1))
+                .chain([format!("'a{d}: {last}")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+            format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
+        }
         // The chain through a function type: the next variable its
         // parameter, its result, or its parameter with only the first link
         // on the definition's.
@@ -758,6 +773,40 @@ fn a_chain_of_bounds_checks_in_linear_time() {
 // Type::indiscernible -> rep_ambiguity once per cell, settle_witness); rank 2
 // 1.79 -> 1.65. probes: ~/ptmp/cr29/scratch/r17-hk/neighbours/
 // (final_sweep.txt, meas.sh, cgdiff.py)
+// 2026-11-09 claude: Partly fixed again (r19 lane 19b). The second conjunct now
+// checks in linear time: --check --no-cache total G (empty 0.93), base-r19 ->
+// lane, twoconj 1000 / 2000 / 4000: 2.63 / 7.30 / 25.2 -> 1.16 / 1.41 / 1.87,
+// 10000 links 3.33; the Ordered twin over i64 7.08 -> 1.41 at 2000. The call
+// settles the chain last link first, so each link binds over links already
+// bound and proved ground (would_cycle_open marks them), and two walks of that
+// bound tail now stop at a cell marked ground now: require_everywhere (the
+// Discernible bound write_binding hands the binding's open cells; a ground cell
+// reaches none, TVar::ground_now) and cast::rep_ambiguity, which keeps in the
+// ground cell the epoch at which judging its binding found nothing
+// (TCell::judged, a slot each for Discernible and Ordered,
+// TVar::ground_verdict), read and written only where seen.path is empty, so the
+// verdict rests on no application the walk assumed; map_key_failure keeps none.
+// Pin: deep_nesting
+// a_chain_of_bounds_with_a_second_conjunct_checks_in_linear_time (Discernible
+// over Number, Ordered over i64, CHAIN_DEPTH links, 3.3G of 6G); it fails with
+// either cut undone (killed at 6.1G / 6.0G). Census 2949 files: 0 verdict, 0
+// message changes; GUI --check 40.53 -> 40.50 G. Rank 2 is now refused by the
+// quantified-fn rule (QUANTIFIED_FN) wherever it can be written outside an
+// interface val (the val is pinned linear), and the refusal is linear: a let's
+// written fn<chain> type 0.96 / 1.01 / 1.10 G at 500 / 1000 / 2000. Still open:
+// the impl head (7.23 G at 1000; each head cell's merge with its copy runs
+// merge_one's occurs check, would_cycle_inner from the other cell and from its
+// conjuncts, over the rest of an OPEN chain, so the ground marks do not apply;
+// a cut needs reachability that survives the merges' writes) and the valued
+// call (13.6 G at 1000, base-r19 13.5, up from 7.2 at base-r17; each tuple
+// element's probe, cell_constraints_ok -> conjuncts_admit -> set_commit, walks
+// the open tail, and the commit's Lower walk twice more; every element writes
+// cells, so the cell_writes-stamped probe memo is cold each time, and a
+// Primitive or TVar side has no probe_key anyway; a cut wants a probe memo
+// invalidated per cell written, or lower bounds pushed into the conjuncts'
+// cells so a lower bound already held answers). probes:
+// ~/ptmp/cr29/scratch/r19/19b/cnb/ (gen.py SHAPE N OUT, genvar.py for the
+// Ordered/ambiguous twins, genr2.py, meas.sh)
 /// A chain of bounds through function types checks in time linear in its
 /// length: a walk meets each link's conjunct once however many function
 /// types name its variable, whether it aliases names, counts occurrences,
@@ -767,6 +816,19 @@ fn a_chain_of_bounds_checks_in_linear_time() {
 fn a_chain_of_bounds_through_function_types_checks_in_linear_time() {
     for shape in ["chainboundsfn", "chainboundsfnret", "chainboundsfnheld"] {
         checks_within(&program(shape, CHAIN_DEPTH), 8 * BILLION)
+    }
+}
+
+/// A chain of bounds with a second conjunct, `Discernible` or `Ordered`,
+/// on every link checks in time linear in its length: the call settles the
+/// chain last link first, and neither the comparison's judgment of each
+/// link's binding nor the bound it hands the binding's open cells walks
+/// the links already bound again.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_with_a_second_conjunct_checks_in_linear_time() {
+    for shape in ["chainboundsdiscernible", "chainboundsordered"] {
+        checks_within(&program(shape, CHAIN_DEPTH), 6 * BILLION)
     }
 }
 

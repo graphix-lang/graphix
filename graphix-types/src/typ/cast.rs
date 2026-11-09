@@ -2329,13 +2329,20 @@ struct Expanded<
     /// The heads the walk built, alive until it ends: a node `clear`
     /// holds keeps its address.
     built: LPooled<Vec<Type>>,
+    /// How many applications the walk is inside.
+    depth: usize,
 }
 
 impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Default
     for Expanded<K, N>
 {
     fn default() -> Self {
-        Self { seen: LPooled::take(), clear: LPooled::take(), built: LPooled::take() }
+        Self {
+            seen: LPooled::take(),
+            clear: LPooled::take(),
+            built: LPooled::take(),
+            depth: 0,
+        }
     }
 }
 
@@ -2381,10 +2388,14 @@ fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>
     again: R,
     body: impl FnOnce(&mut Expanded<K, N>) -> R,
 ) -> R {
-    match at.is_none_or(|k| seen.seen.insert(k)) {
-        true => body(seen),
-        false => again,
+    let Some(k) = at else { return body(seen) };
+    if !seen.seen.insert(k) {
+        return again;
     }
+    seen.depth += 1;
+    let r = body(seen);
+    seen.depth -= 1;
+    r
 }
 
 /// Pairs already on the walk; a finite witness never revisits one.
@@ -2651,6 +2662,17 @@ fn rep_ambiguity(
     t: &Type,
 ) -> Option<Indiscernible> {
     ensure_sufficient(|| {
+        // with no application in progress, what a ground cell's binding
+        // holds rests on nothing the walk assumed
+        if !keys_only
+            && seen.depth == 0
+            && let Type::TVar(tv) = t
+            && let Some(r) = tv.ground_verdict(refs as usize, |b| {
+                rep_ambiguity(env, seen, open, keys_only, refs, b)
+            })
+        {
+            return r;
+        }
         walk(seen, ref_at(t), None, |seen| {
             let head = rep_head(env, t)?;
             let r = seen.once(super::node_addr(&head), |seen| {

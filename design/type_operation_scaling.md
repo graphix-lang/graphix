@@ -75,6 +75,17 @@ structure is returned SHARED, never copied.
   reaches only its source's cells and does not advance it. It is one
   counter for the process: a change in another context costs the next
   walk a re-walk of what it reaches, once.
+- The same marks cut two walks of a settled chain (a call settles a
+  chain of bounds last link first, so each link binds over links already
+  bound and proved ground). Handing a `Discernible` or `Ordered` bound to
+  a binding's open cells (`require_everywhere`) stops at a cell marked
+  ground now: it reaches none. The comparison's judgment of a binding
+  (`cast::rep_ambiguity`) keeps, in the ground cell, the epoch at which a
+  judgment of its binding found nothing (`TCell::judged`, one slot each
+  for `Discernible` and `Ordered`), read and written only where no
+  application or abstract representation is in progress on the walk's
+  path, so the verdict rests on nothing the walk assumed. A key
+  judgment (`map_key_failure`) keeps none.
 
 **`flatten_set` worklist.** The accumulator is merge-saturated by
 invariant, so only the incoming (or just-merged) element can enable a
