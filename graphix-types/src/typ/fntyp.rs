@@ -1935,15 +1935,6 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     v
 }
 
-/// `ft` with its quantifiers renamed apart from same-named cells its
-/// positions hold, where bindings print in place.
-fn printed_apart(ft: &FnType) -> Option<FnType> {
-    match PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
-        true => tvar::quantifiers_apart(ft),
-        false => None,
-    }
-}
-
 /// How an argument's name is written before its type.
 struct ArgPrefix<'a>(&'a FnArgKind);
 
@@ -2022,8 +2013,8 @@ pub(crate) fn write_bounds(
     for (i, (tv, t)) in bounds.iter().enumerate() {
         match i.checked_sub(1).map(|j| &bounds[j].0) {
             Some(prev) if prev.name == tv.name => write!(f, " + {t}")?,
-            Some(_) => write!(f, ", '{}: {t}", tv.name)?,
-            None => write!(f, "'{}: {t}", tv.name)?,
+            Some(_) => write!(f, ", '{}: {t}", tvar::printed_name(tv))?,
+            None => write!(f, "'{}: {t}", tvar::printed_name(tv))?,
         }
     }
     Ok(())
@@ -2048,9 +2039,12 @@ pub(crate) fn write_bounds(
 // quantified::a_printed_quantifier_is_not_read_for_a_cell_of_its_name fails without it.
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(apart) = printed_apart(self) {
-            return fmt::Display::fmt(&apart, f);
-        }
+        tvar::quantifiers_apart(self, || self.write_flat(f))
+    }
+}
+
+impl FnType {
+    fn write_flat(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let constraints = printed_quantifiers(self);
         if constraints.len() == 0 {
             write!(f, "fn(")?;
@@ -2083,9 +2077,12 @@ impl fmt::Display for FnType {
 
 impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        if let Some(apart) = printed_apart(self) {
-            return apart.fmt_pretty_inner(buf);
-        }
+        tvar::quantifiers_apart(self, || self.write_pretty(buf))
+    }
+}
+
+impl FnType {
+    fn write_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let constraints = printed_quantifiers(self);
         if constraints.is_empty() {
             write!(buf, "fn(")?;
@@ -2101,9 +2098,9 @@ impl PrettyDisplay for FnType {
                         Some(_) => {
                             buf.kill_newline();
                             writeln!(buf, ",")?;
-                            write!(buf, "'{}: ", tv.name)?;
+                            write!(buf, "'{}: ", tvar::printed_name(tv))?;
                         }
-                        None => write!(buf, "'{}: ", tv.name)?,
+                        None => write!(buf, "'{}: ", tvar::printed_name(tv))?,
                     }
                     buf.nested(|buf| t.fmt_pretty(buf))?;
                 }

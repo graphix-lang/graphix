@@ -1522,8 +1522,9 @@ impl fmt::Display for TVar {
                 static PRINTING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
             }
             let addr = self.cell_addr();
+            let name = printed_name(self);
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
-                return write!(f, "'{}: …", ShortName(&self.name));
+                return write!(f, "'{}: …", ShortName(&name));
             }
             let r = (|| {
                 let (typ, cons, below) = {
@@ -1543,7 +1544,7 @@ impl fmt::Display for TVar {
                         }
                         return write!(f, "]");
                     }
-                    _ => write!(f, "'{}: ", ShortName(&self.name))?,
+                    _ => write!(f, "'{}: ", ShortName(&name))?,
                 }
                 let Some(t) = typ else {
                     write!(f, "unbound")?;
@@ -2780,46 +2781,63 @@ pub(super) fn keep_quantifiers(
     copy
 }
 
-/// `ft` with each quantifier renamed apart from the other cells of its
-/// name that its positions hold through bindings, so a signature printed
-/// with its bindings in place never reads one cell for another; `None`
-/// where none collides.
-pub(super) fn quantifiers_apart(ft: &FnType) -> Option<FnType> {
-    if ft.quantifiers.is_empty() {
-        return None;
+thread_local! {
+    /// The names printing signatures give their quantifiers' cells,
+    /// innermost signature last.
+    static PRINTED_APART: RefCell<SmallVec<[(usize, ArcStr); 2]>> =
+        const { RefCell::new(SmallVec::new_const()) };
+}
+
+/// The name `tv` prints under: the one a printing signature gave its cell
+/// ([`quantifiers_apart`]) where bindings print in place, else its own.
+pub(super) fn printed_name(tv: &TVar) -> ArcStr {
+    if !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
+        return tv.name.clone();
     }
+    let addr = tv.cell_addr();
+    PRINTED_APART
+        .with_borrow(|v| v.iter().rev().find(|(a, _)| *a == addr).map(|(_, n)| n.clone()))
+        .unwrap_or_else(|| tv.name.clone())
+}
+
+struct PrintedApart(usize);
+
+impl Drop for PrintedApart {
+    fn drop(&mut self) {
+        PRINTED_APART.with_borrow_mut(|v| v.truncate(self.0))
+    }
+}
+
+/// `f` with each of `ft`'s quantifiers printing under a name apart from
+/// the other cells of its name `ft` holds, where bindings print in place
+/// ([`PrintFlag::DerefTVars`]).
+pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
+    if ft.quantifiers.is_empty() || !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
+        return f();
+    }
+    let _scope = PrintedApart(PRINTED_APART.with_borrow(|v| v.len()));
     let mut own: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
     ft.each_quantifier(|q, tv| own.push((q.clone(), tv.clone())));
-    let mut out: Option<FnType> = None;
+    let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for (q, tv) in own {
-        let cur = out.as_ref().unwrap_or(ft);
         let addr = tv.cell_addr();
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-        if !cur
+        if ft
             .try_for_each_type(&mut |t| t.holds_other_cell(&q, addr, &mut seen))
-            .is_break()
+            .is_continue()
         {
             continue;
         }
-        let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        seen.clear();
-        cur.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
-        avoid.extend(cur.quantifiers.iter().cloned());
+        if avoid.is_empty() {
+            seen.clear();
+            ft.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
+            avoid.extend(ft.quantifiers.iter().cloned());
+        }
         let name = name_apart(&q, &avoid);
-        let mut memo = CopyMemo::default();
-        let Some(mut renamed) = cur
-            .cow_walk(|t| t.renamed_cells(&|c| c.cell_addr() == addr, &name, &mut memo))
-        else {
-            continue;
-        };
-        renamed.quantifiers = Arc::from_iter(
-            cur.quantifiers
-                .iter()
-                .map(|n| if *n == q { name.clone() } else { n.clone() }),
-        );
-        out = Some(renamed);
+        avoid.insert(name.clone());
+        PRINTED_APART.with_borrow_mut(|v| v.push((addr, name)));
     }
-    out
+    f()
 }
 
 // Each walk below spells out only the arms whose policy differs from

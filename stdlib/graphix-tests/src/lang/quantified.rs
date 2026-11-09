@@ -1255,3 +1255,17 @@ run!(
     refused("does not contain fn<'a1: Number>(y: Array<'a: i64>, x: 'a1: unbound within Number) -> 'a1: unbound within Number");
     FuseExpect::None
 );
+
+run!(
+    a_printed_quantifier_is_renamed_inside_a_binding_too,
+    "{ let g = 'a: Number |y, x: 'a| { let z = array::len(y); [x] }; let h: fn(y: Array<i64>, x: string) -> string = g; h }",
+    refused("does not contain fn<'a1: Number>(y: Array<'a: i64>, x: 'a1: unbound within Number) -> Array<'a1: unbound within Number>");
+    FuseExpect::None
+);
+
+run!(
+    an_inner_quantifier_prints_apart_from_an_outer_of_its_name,
+    "{ let g = 'a: Number |x: 'a| 'a: Number |y: 'a| [x, y]; let h: fn(x: string) -> string = g; h }",
+    refused("does not contain fn<'a: Number>(x: 'a: unbound within Number) -> fn<'a1: Number>(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>");
+    FuseExpect::None
+);
