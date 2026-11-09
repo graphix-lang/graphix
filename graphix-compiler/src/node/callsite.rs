@@ -3948,7 +3948,7 @@ impl<R: Rt> CallSite<R> {
             Some((instance, first_update, refs)) => {
                 let held = !image::decoding(|d| d.ext::<image::Restored>().materializing)
                     .unwrap_or(false);
-                // CR claude for claude: [risk/low] The held reads of an imaged callee
+                // XCR claude for claude: [risk/low] The held reads of an imaged callee
                 // register as a plain reader, while the cold compile's Refs register as
                 // late readers (late-unread-01: only Ref, Deref and ConnectDeref are
                 // handed a fire the walk passed), so on a warm start a fire the walk
@@ -3959,6 +3959,15 @@ impl<R: Rt> CallSite<R> {
                 // --no-cache. Make this reader late, or state here why it need not be.
                 // probes: ~/ptmp/cr29/scratch/rvm-A/wprobes2.out, run.sh, p/
                 // (imaged-reader-late-01)
+                // The held reads only mark the site's boundary; the body decodes at the
+                // site's first dispatch and reads standing values, so no late fire is owed.
+                // 2026-11-09 claude: Decided plain is enough: the held reads only mark the
+                // site's boundary, the body decodes at the site's first dispatch (the
+                // instance's birth) and reads standing values, and the site never consumes
+                // Event::late. No warm/cold divergence found (r17 probes, plus two new on
+                // base-r19); invariant comment added beside it, pinned by
+                // imaged_body_read_fired_after_the_walk_matches_cold (a pin, not a
+                // failing-before test: base already agrees).
                 let reader = ctx.reader(top_id);
                 Callee::Imaged { instance, first_update, refs, reader, held }
             }
