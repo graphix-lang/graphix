@@ -3,12 +3,11 @@ use crate::{
     abstract_value::{self, CastHook},
     env::Env,
     errf,
-    expr::{ModPath, union_members},
+    expr::union_members,
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
         AbstractId, Bound, CoreTrait, MapType, RefKey, TVar, Type, TypeRef, Unfolded,
-        params_size,
         setops::union_identical,
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
     },
@@ -141,8 +140,6 @@ pub enum CastInput {
 /// A cast in progress: the refs expanded on the way to each value.
 struct CastCx {
     hist: LPooled<AHashSet<(RefKey, usize)>>,
-    /// The params sizes on the path of each (definition, value address).
-    sizes: LPooled<AHashMap<(usize, usize), SmallVec<[usize; 2]>>>,
     /// Each reference's expansion, by definition and params allocation,
     /// with the params held so the allocation stays theirs.
     expanded: LPooled<AHashMap<(usize, usize), (Arc<[Type]>, Type)>>,
@@ -297,7 +294,6 @@ impl CastCx {
     fn new(input: CastInput, check_keys: bool) -> Self {
         CastCx {
             hist: LPooled::take(),
-            sizes: LPooled::take(),
             expanded: LPooled::take(),
             read: LPooled::take(),
             in_union: false,
@@ -406,8 +402,7 @@ fn ref_key(tr: &TypeRef) -> Option<RefKey> {
 
 /// A type reference as a walk deciding a property that composes over a
 /// type's parts keys it: its definition and whether each parameter has
-/// the property. Exact, and finite where the parameters grow as the
-/// definition recurses (`type N<'a> = [null, ('a, N<Array<'a>>)]`).
+/// the property: exact, and one of finitely many per definition.
 type ShapeKey = (usize, SmallVec<[bool; 4]>);
 
 /// What a walk knows of one application: it is being decided, at its
@@ -658,53 +653,42 @@ impl Type {
                 let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
                     return false;
                 };
-                walk(
-                    seen,
-                    pair_at(&p, &r),
-                    false,
-                    |_| true,
-                    |seen| {
-                        let expand = |t: &Type| match t {
-                            Type::Ref(_) => t.lookup_ref(env).ok(),
-                            t => Some(t.clone()),
-                        };
-                        let (Some(p), Some(r)) = (expand(&p), expand(&r)) else {
-                            return false;
-                        };
-                        match (&p, &r) {
-                            (_, Type::Any) => p.holds_ref(env),
-                            (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
-                            (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
-                            (Type::Tuple(ps), Type::Tuple(rs))
-                                if ps.len() == rs.len() =>
-                            {
-                                ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                            }
-                            (Type::Array(p), Type::Array(r))
-                            | (Type::List(p), Type::List(r))
-                            | (Type::Error(p), Type::Error(r))
-                            | (Type::ByRef(_, p), Type::ByRef(_, r)) => {
-                                go(env, seen, p, r)
-                            }
-                            (Type::Struct(ps), Type::Struct(rs)) => {
-                                ps.iter().any(|(n, p, _)| {
-                                    rs.iter()
-                                        .any(|(m, r, _)| n == m && go(env, seen, p, r))
-                                })
-                            }
-                            (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
-                                if pt == rt && ps.len() == rs.len() =>
-                            {
-                                ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                            }
-                            (Type::Map(p), Type::Map(r)) => {
-                                go(env, seen, &p.key, &r.key)
-                                    || go(env, seen, &p.value, &r.value)
-                            }
-                            _ => false,
+                walk(seen, pair_at(&p, &r), false, |seen| {
+                    let expand = |t: &Type| match t {
+                        Type::Ref(_) => t.lookup_ref(env).ok(),
+                        t => Some(t.clone()),
+                    };
+                    let (Some(p), Some(r)) = (expand(&p), expand(&r)) else {
+                        return false;
+                    };
+                    match (&p, &r) {
+                        (_, Type::Any) => p.holds_ref(env),
+                        (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
+                        (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
+                        (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
+                            ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
                         }
-                    },
-                )
+                        (Type::Array(p), Type::Array(r))
+                        | (Type::List(p), Type::List(r))
+                        | (Type::Error(p), Type::Error(r))
+                        | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
+                        (Type::Struct(ps), Type::Struct(rs)) => {
+                            ps.iter().any(|(n, p, _)| {
+                                rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
+                            })
+                        }
+                        (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
+                            if pt == rt && ps.len() == rs.len() =>
+                        {
+                            ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
+                        }
+                        (Type::Map(p), Type::Map(r)) => {
+                            go(env, seen, &p.key, &r.key)
+                                || go(env, seen, &p.value, &r.value)
+                        }
+                        _ => false,
+                    }
+                })
             })
         }
         self.holds_ref(env) && go(env, &mut RepSeen::default(), self, reaching)
@@ -1351,26 +1335,13 @@ impl Type {
                 let Some(t) = cx.expand(env, self, tr) else {
                     return Err(self.cast_fail("undefined type", v));
                 };
-                // the same definition over the same value with larger params
-                // grows at every level, the value never consumed
-                let size = params_size(&key.0.1);
-                let at = (key.0.0, key.1);
-                let grows =
-                    cx.sizes.get(&at).is_some_and(|ss| ss.iter().any(|s| *s < size));
-                if grows || !cx.hist.insert(key.clone()) {
+                if !cx.hist.insert(key.clone()) {
                     cx.cuts += 1;
                     return Err(
                         self.cast_fail("the type recurses without consuming it", v)
                     );
                 }
-                cx.sizes.entry(at).or_default().push(size);
                 let r = t.cast_int(env, cx, src, v);
-                if let Some(ss) = cx.sizes.get_mut(&at) {
-                    ss.pop();
-                    if ss.is_empty() {
-                        cx.sizes.remove(&at);
-                    }
-                }
                 cx.hist.remove(&key);
                 r
             }
@@ -1932,7 +1903,7 @@ impl ShallowScrutinee {
             .get_or_init(|| {
                 let mut scrut: LPooled<Vec<Type>> = LPooled::take();
                 flatten_union_members(&self.typ, env, &mut scrut)?;
-                let mut walked = ShapeSeen::default();
+                let mut walked: LPooled<ShapeSeen> = LPooled::take();
                 let mut below = |m: &Type| {
                     m.try_for_each_child(&mut |c| match shapes_collide(
                         c,
@@ -1997,30 +1968,20 @@ impl ShallowScrutinee {
     }
 }
 
-/// Whether `t` or a part of it is a union two of whose members share a
-/// shape (`arr_overlap`). An application is walked once a search, and a
-/// typedef once a path, whatever its parameters: a non-regular one's grow
-/// at every level, and what they hold is walked at the first.
-/// What a [`shapes_collide`] search has walked: the applications, and
-/// the typedefs on the path.
-#[derive(Default)]
-struct ShapeSeen {
-    walked: LPooled<AHashSet<RefKey>>,
-    path: SmallVec<[usize; 8]>,
-}
+/// The applications a [`shapes_collide`] search has walked.
+type ShapeSeen = AHashSet<RefKey>;
 
+/// Whether `t` or a part of it is a union two of whose members share a
+/// shape (`arr_overlap`). An application is walked once a search.
 fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
     ensure_sufficient(|| match t {
         Type::Ref(tr) => {
             let Some(key) = ref_key(tr) else { return false };
-            if seen.path.contains(&key.0) || !seen.walked.insert(key.clone()) {
+            if !seen.insert(key) {
                 return false;
             }
             let Ok(x) = t.lookup_ref(env) else { return false };
-            seen.path.push(key.0);
-            let r = shapes_collide(&x, env, seen);
-            seen.path.pop();
-            r
+            shapes_collide(&x, env, seen)
         }
         Type::TVar(tv) => tv.binding().is_some_and(|b| shapes_collide(&b, env, seen)),
         Type::Set(ts) => {
@@ -2340,16 +2301,12 @@ fn rep_prims(t: &Type) -> BitFlags<Typ> {
     }
 }
 
-/// The applications a walk has expanded, each once, and the path of
-/// applications it is inside, each with its parameters' size.
+/// The applications a walk has expanded, each once.
 struct Expanded<
     K: std::hash::Hash + Eq + 'static,
     N: std::hash::Hash + Eq + 'static = usize,
 > {
     seen: LPooled<AHashSet<K>>,
-    path: LPooled<Vec<((usize, usize), usize)>>,
-    /// Each application on `path`'s parameters' size, per side of a pair.
-    sides: LPooled<Vec<(usize, usize)>>,
     /// The shared nodes (or pairs of them) the walk found nothing under,
     /// so a type that shares them (a DAG) is walked once.
     clear: LPooled<AHashSet<N>>,
@@ -2362,13 +2319,7 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Defau
     for Expanded<K, N>
 {
     fn default() -> Self {
-        Self {
-            seen: LPooled::take(),
-            path: LPooled::take(),
-            sides: LPooled::take(),
-            clear: LPooled::take(),
-            built: LPooled::take(),
-        }
+        Self { seen: LPooled::take(), clear: LPooled::take(), built: LPooled::take() }
     }
 }
 
@@ -2404,50 +2355,7 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static>
     }
 }
 
-/// An application a walk is about to expand: its key, its definition (or
-/// pair of definitions), its parameters' size and, for a pair, each side's.
-type At<K> = (K, (usize, usize), usize, (usize, usize));
-
-fn def_of(t: &Type) -> usize {
-    match t {
-        Type::Ref(tr) => tr.def_key().unwrap_or(0),
-        _ => usize::MAX,
-    }
-}
-
-fn size_of(t: &Type) -> usize {
-    match t {
-        Type::Ref(tr) => params_size(&tr.params),
-        _ => 0,
-    }
-}
-
-/// Which side of a pair grew in `path`, the applications a walk is inside
-/// (`sides`: each one's side sizes): the one more of the earlier applications
-/// of the pair's definitions took smaller parameters on.
-fn growing_side(
-    path: &[((usize, usize), usize)],
-    sides: &[(usize, usize)],
-    def: &(usize, usize),
-    size: usize,
-    now: (usize, usize),
-) -> usize {
-    let smaller = |side: fn(&(usize, usize)) -> usize| {
-        path.iter()
-            .zip(sides)
-            .filter(|((d, s), t)| d == def && *s < size && side(t) < side(&now))
-            .count()
-    };
-    usize::from(smaller(|t| t.1) > smaller(|t| t.0))
-}
-
-/// How many applications of one definition with smaller parameters a
-/// path may hold before the walk takes them for growing at every level:
-/// a finite type may grow a few times (`type A<'a> = [null, A<Array<i64>>]`
-/// from `A<i64>`), one that grows at every level never stops.
-const MAX_GROWTH: usize = 4;
-
-// CR claude for claude: [risk/low] grows_on, which rep_collision, regular and
+// XCR claude for claude: [risk/low] grows_on, which rep_collision, regular and
 // textdata cut with, counts the applications of every definition, so a finite chain
 // of distinct typedefs that applies one non-recursive definition to ever larger
 // arguments (`type Opt<'a> = ['a, null]; type A = Opt<Array<B>>; type B =
@@ -2486,70 +2394,64 @@ const MAX_GROWTH: usize = 4;
 // messages (graphix-compiler lib.rs) and params_size; verify each. Their unit pins
 // over a growing type (regular's a_growing_application_has_a_key, textdata's growth
 // half) were removed with the refusal, since typed_at_root refuses the typedef.
-/// Whether an application of `def` with parameters of `size` grows at
-/// every level: `path`, the applications it is inside, holds
-/// [`MAX_GROWTH`] of `def` with smaller parameters.
-pub(super) fn grows_on<D: PartialEq>(path: &[(D, usize)], def: &D, size: usize) -> bool {
-    path.iter().filter(|(d, s)| d == def && *s < size).count() >= MAX_GROWTH
-}
-
+// 2026-11-09 claude: Done per D24 (a). Removed: grows_on, MAX_GROWTH, growing_side,
+// def_of/size_of, walk's grows argument and At's sizes (walk now keys an
+// application alone), Expanded's path and sides, Indiscernible::Grows,
+// TextRefusal::Grows with textdata's walk path and Same's left/right, regular's
+// path and its 'g' node (and defined_name), CastCx::sizes (cast_int's Ref arm
+// refused a value read through one definition applied twice over it, the inner to a
+// larger argument: type I<'a> = 'a; type B = I<{x: i64}>; type A = I<B>;
+// cast<A>({x: 1}) was an InvalidCast; its cuts counter stays, it counts path
+// repeats), tval's size test (now an exact application on the path at the value),
+// params_size, Indiscernible::untold's unused test/rest, and the compiler's three
+// 'grows its parameters' messages. Also shapes_collide's per-path definition cut,
+// the same kind: it missed a shape collision inside Array<O<O<X>>> (the shallow
+// select test assumed none). Pins that fail without it:
+// typ::cast::tests::{a_finite_chain_of_larger_arguments_is_discernible,
+// a_definition_applied_twice_over_one_value_reads_it,
+// a_nested_application_is_searched_for_shapes},
+// typ::regular::test::a_finite_chain_of_larger_arguments_is_keyed_by_its_expansion,
+// typ::textdata::test::a_finite_chain_of_larger_arguments_is_judged, graphix-tests
+// lang::types::{finite_chain_of_larger_arguments (v == w and a Map key over a
+// six-typedef chain: 'can't compare values of .. Opt grows its parameters' on
+// base), cast_through_a_larger_application}. Census vs the lane's previous commit:
+// no change; fuzz regress clean.
 /// `body` inside the application `at`: `again` when the walk expanded it
-/// already, `grows` when the path holds [`MAX_GROWTH`] applications of
-/// its definition with smaller parameters, as one whose parameters grow
-/// at every level does (`type N<'a> = [null, ('a, N<Array<'a>>)]`), which
-/// no walk finishes; `grows` is told which side of a pair grew. Parameters that stop growing on a path come from
-/// finitely many types, so a walk ends.
+/// already. A typedef is neither expansive nor non-contractive
+/// ([`Env::deftype`]), so a type unfolds to finitely many applications
+/// and the walk ends.
 fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>(
     seen: &mut Expanded<K, N>,
-    at: Option<At<K>>,
+    at: Option<K>,
     again: R,
-    grows: impl FnOnce(usize) -> R,
     body: impl FnOnce(&mut Expanded<K, N>) -> R,
 ) -> R {
-    let Some((k, def, size, sides)) = at else { return body(seen) };
-    if !seen.seen.insert(k) {
-        return again;
+    match at {
+        Some(k) if seen.seen.contains(&k) => again,
+        Some(k) => {
+            seen.seen.insert(k);
+            body(seen)
+        }
+        None => body(seen),
     }
-    if grows_on(&seen.path, &def, size) {
-        return grows(growing_side(&seen.path, &seen.sides, &def, size, sides));
-    }
-    seen.path.push((def, size));
-    seen.sides.push(sides);
-    let r = body(seen);
-    seen.sides.pop();
-    seen.path.pop();
-    r
 }
 
 /// Pairs already on the walk; a finite witness never revisits one.
 type RepSeen = Expanded<(Type, Type), (usize, usize)>;
 
-fn pair_at(a: &Type, b: &Type) -> Option<At<(Type, Type)>> {
-    (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_))).then(|| {
-        (
-            (a.clone(), b.clone()),
-            (def_of(a), def_of(b)),
-            size_of(a) + size_of(b),
-            (size_of(a), size_of(b)),
-        )
-    })
+fn pair_at(a: &Type, b: &Type) -> Option<(Type, Type)> {
+    (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
+        .then(|| (a.clone(), b.clone()))
 }
 
-fn ref_at(t: &Type) -> Option<At<Type>> {
-    matches!(t, Type::Ref(_))
-        .then(|| (t.clone(), (def_of(t), 0), size_of(t), (size_of(t), 0)))
+fn ref_at(t: &Type) -> Option<Type> {
+    matches!(t, Type::Ref(_)).then(|| t.clone())
 }
 
 /// An abstract type a walk is about to look through, keyed like a named
 /// type: a representation may name its own type.
-fn abstract_at(t: &Type) -> Option<At<Type>> {
-    match t {
-        Type::Abstract { id, params } => {
-            let size = params_size(params);
-            Some((t.clone(), (id.inner() as usize, 1), size, (size, 0)))
-        }
-        _ => None,
-    }
+fn abstract_at(t: &Type) -> Option<Type> {
+    matches!(t, Type::Abstract { .. }).then(|| t.clone())
 }
 
 /// What an abstract type's values compare by without an implementation
@@ -2597,11 +2499,7 @@ fn rep_collision(
         return None;
     }
     ensure_sufficient(|| {
-        let grows = |side: usize| match [a, b][side] {
-            Type::Ref(tr) => Some(Indiscernible::Grows(tr.name.clone())),
-            _ => unreachable!("only a reference grows"),
-        };
-        walk(seen, pair_at(a, b), None, grows, |seen| {
+        walk(seen, pair_at(a, b), None, |seen| {
             let pairs =
                 |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
                     xs.map(|(x, y)| rep_collision(env, seen, tested, open, ordered, x, y))
@@ -2736,9 +2634,6 @@ pub enum Indiscernible {
     /// A numeric type beside an open cell, under `Ordered`: the cell may
     /// yet be another numeric type.
     OpenNumber(Type),
-    /// The name of a definition whose parameters grow as it recurses, so
-    /// no walk decides it.
-    Grows(ModPath),
     /// An abstract type without the requested comparison implementation, whose values
     /// compare by a representation that fails one of the above; its
     /// representation is its module's, so only its name is told.
@@ -2746,21 +2641,15 @@ pub enum Indiscernible {
 }
 
 impl Indiscernible {
-    /// The refusal of `what`, a runtime test for `test` among `rest`,
-    /// which a [`rep_collision`] found can't tell this apart.
-    pub fn untold(&self, what: &str, test: &Type, rest: &Type) -> anyhow::Error {
+    /// The refusal of `what`, a runtime test a [`rep_collision`] found
+    /// can't tell this apart.
+    pub fn untold(&self, what: &str) -> anyhow::Error {
         match self {
             Indiscernible::Pair(a, b) => anyhow::anyhow!(
                 "{what} can't tell {} from {}: both have the same runtime form; wrap \
                  them in distinct variants",
                 a.resolve_tvars(),
                 b.resolve_tvars()
-            ),
-            Indiscernible::Grows(name) => anyhow::anyhow!(
-                "{what} tests for {} among {}, which hold {name}, whose parameters grow \
-                 as it recurses, so whether their runtime forms differ can't be decided",
-                test.resolve_tvars(),
-                rest.resolve_tvars()
             ),
             Indiscernible::Unordered(_)
             | Indiscernible::Numbers(_)
@@ -2811,11 +2700,7 @@ fn rep_ambiguity(
     t: &Type,
 ) -> Option<Indiscernible> {
     ensure_sufficient(|| {
-        let grows = |_| match t {
-            Type::Ref(tr) => Some(Indiscernible::Grows(tr.name.clone())),
-            _ => unreachable!("only a reference expands"),
-        };
-        walk(seen, ref_at(t), None, grows, |seen| {
+        walk(seen, ref_at(t), None, |seen| {
             let head = rep_head(env, t)?;
             let r = seen.once(super::node_addr(&head), |seen| {
             let t = &*head;
@@ -2879,7 +2764,6 @@ fn rep_ambiguity(
                         seen,
                         abstract_at(t),
                         None,
-                        |_| None,
                         |seen| rep_ambiguity(env, seen, open, keys_only, refs, &rep),
                     );
                     seen.keep(Some(Cow::Owned(rep)));
@@ -2891,7 +2775,6 @@ fn rep_ambiguity(
                             Indiscernible::Pair(a, b)
                         }
                         Indiscernible::OpenNumber(n) => Indiscernible::OpenNumber(n),
-                        Indiscernible::Grows(n) => Indiscernible::Grows(n),
                         _ => Indiscernible::Abstract(t.clone(), kind),
                     })
                 }
@@ -2945,10 +2828,6 @@ impl Type {
                     a.resolve_tvars(),
                     b.resolve_tvars()
                 ),
-                Indiscernible::Grows(name) => anyhow::anyhow!(
-                    "{what} holds {name}, whose parameters grow as it recurses, so \
-                     whether its members have distinct runtime forms can't be decided"
-                ),
                 Indiscernible::Unordered(r) => {
                     let (kind, how) = Indiscernible::unordered_kind(r);
                     let r = r.resolve_tvars();
@@ -2999,43 +2878,33 @@ fn reference_rep(
 /// [`Type::indiscernible`] looks.
 fn compared_ref(env: &Env, seen: &mut Expanded<Type>, t: &Type, kind: CoreTrait) -> bool {
     ensure_sufficient(|| {
-        walk(
-            seen,
-            ref_at(t),
-            false,
-            |_| true,
-            |seen| {
-                let Some(t) = resolved_head(env, t) else { return false };
-                let t = &*t;
-                let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
-                    Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t, kind))
-                };
-                match t {
-                    Type::Any | Type::ByRef(..) => true,
-                    Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
-                        any(&mut ts.iter())
-                    }
-                    Type::Array(e) | Type::List(e) | Type::Error(e) => {
-                        any(&mut std::iter::once(&**e))
-                    }
-                    Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
-                    Type::Map(m) => any(&mut [&m.key, &m.value].into_iter()),
-                    Type::Abstract { id, params } => {
-                        match reference_rep(env, *id, params, kind) {
-                            None => false,
-                            Some(rep) => walk(
-                                seen,
-                                abstract_at(t),
-                                false,
-                                |_| true,
-                                |seen| compared_ref(env, seen, &rep, kind),
-                            ),
-                        }
-                    }
-                    _ => false,
+        walk(seen, ref_at(t), false, |seen| {
+            let Some(t) = resolved_head(env, t) else { return false };
+            let t = &*t;
+            let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
+                Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t, kind))
+            };
+            match t {
+                Type::Any | Type::ByRef(..) => true,
+                Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
+                    any(&mut ts.iter())
                 }
-            },
-        )
+                Type::Array(e) | Type::List(e) | Type::Error(e) => {
+                    any(&mut std::iter::once(&**e))
+                }
+                Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
+                Type::Map(m) => any(&mut [&m.key, &m.value].into_iter()),
+                Type::Abstract { id, params } => {
+                    match reference_rep(env, *id, params, kind) {
+                        None => false,
+                        Some(rep) => walk(seen, abstract_at(t), false, |seen| {
+                            compared_ref(env, seen, &rep, kind)
+                        }),
+                    }
+                }
+                _ => false,
+            }
+        })
     })
 }
 
@@ -3703,6 +3572,66 @@ pub(crate) mod tests {
         let started = Instant::now();
         pred.shallow_discriminant(&env, &scrutinee);
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    /// `type O<'a> = ['a, null]` and, to `n`, `type Oi = Array<O<Array<..
+    /// Oi+1>>>`, each `O` applied to a larger argument than the last: a
+    /// finite chain, the root `O0`.
+    pub(crate) fn opt_chain(o: &str, n: usize) -> Vec<(String, String)> {
+        let mut defs = vec![(format!("{o}<'a>"), "['a, null]".to_string())];
+        for i in 0..n {
+            let next = match i + 1 == n {
+                true => "i64".to_string(),
+                false => format!("{o}{}", i + 1),
+            };
+            let arg = (0..=i).fold(next, |t, _| format!("Array<{t}>"));
+            defs.push((format!("{o}{i}"), format!("Array<{o}<{arg}>>")));
+        }
+        defs
+    }
+
+    pub(crate) fn typed_chain(o: &str, n: usize) -> (Env, Type) {
+        let defs = opt_chain(o, n);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        typed(&defs, &format!("{o}0"))
+    }
+
+    // A non-recursive typedef applied to ever larger arguments down a
+    // finite chain of typedefs is compared and keyed as its expansion.
+    #[test]
+    fn a_finite_chain_of_larger_arguments_is_discernible() {
+        let (env, t) = typed_chain("O", 8);
+        assert!(t.indiscernible(&env, super::Open::Benign, true).is_none());
+        assert!(t.map_key_failure(&env, super::Open::Benign).is_none());
+        let u = parsed(&env, "[O0, string]");
+        assert!(u.indiscernible(&env, super::Open::Benign, true).is_none());
+    }
+
+    // A value read through one definition applied twice, the second time
+    // to a larger argument, is read by the inner application.
+    #[test]
+    fn a_definition_applied_twice_over_one_value_reads_it() {
+        let v = crate::rep::structure([(arcstr::literal!("x"), Value::I64(1))]);
+        for o in ["['a, null]", "'a"] {
+            let defs = [("O<'a>", o), ("B", "O<{x: i64}>"), ("A", "O<B>")];
+            let (env, a) = typed(&defs, "A");
+            assert_eq!(a.try_cast_value(&env, v.clone()), Ok(v.clone()), "{o}");
+            assert!(a.is_a(&env, &v), "{o}");
+            let b = parsed(&env, "B");
+            let printed = |t: &Type| {
+                format!("{}", crate::typ::tval::TVal { env: &env, typ: t, v: &v })
+            };
+            assert_eq!(printed(&a), printed(&b), "{o}");
+        }
+    }
+
+    // A definition nested in its own argument is walked at each
+    // application: a union of one shape inside the inner is found.
+    #[test]
+    fn a_nested_application_is_searched_for_shapes() {
+        let defs = [("O<'a>", "['a, null]"), ("X", "[(i64, i64), (string, string)]")];
+        let (env, t) = typed(&defs, "Array<O<O<X>>>");
+        assert!(super::shapes_collide(&t, &env, &mut super::ShapeSeen::default()));
     }
 
     /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =

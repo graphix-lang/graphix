@@ -3595,6 +3595,48 @@ run!(
     FuseExpect::None
 );
 
+/// A non-recursive typedef applied to ever larger arguments down a finite
+/// chain of typedefs compares and keys a map as its expansion does.
+const FINITE_CHAIN_OF_LARGER_ARGUMENTS: &str = r#"
+{
+    type O<'a> = ['a, null];
+    type A = Array<O<Array<B>>>;
+    type B = Array<O<Array<Array<C>>>>;
+    type C = Array<O<Array<Array<Array<D>>>>>;
+    type D = Array<O<Array<Array<Array<Array<E>>>>>>;
+    type E = Array<O<Array<Array<Array<Array<Array<F>>>>>>>;
+    type F = Array<O<Array<Array<Array<Array<Array<Array<i64>>>>>>>>;
+    let v: A = [null];
+    let w: A = [[[null]]];
+    let m: Map<A, i64> = {v => 1, w => 2};
+    select v == w { true => 0, false => map::len(m) }
+}
+"#;
+
+run!(
+    finite_chain_of_larger_arguments,
+    FINITE_CHAIN_OF_LARGER_ARGUMENTS,
+    is(Value::I64(2))
+);
+
+/// A cast reads a value through one definition applied twice over it,
+/// the inner application to a larger argument.
+const CAST_THROUGH_A_LARGER_APPLICATION: &str = r#"
+{
+    type I<'a> = 'a;
+    type B = I<{x: i64}>;
+    type A = I<B>;
+    let r = cast<A>({x: 1});
+    r$.x
+}
+"#;
+
+run!(
+    cast_through_a_larger_application,
+    CAST_THROUGH_A_LARGER_APPLICATION,
+    is(Value::I64(1))
+);
+
 /// A typedef whose self-reference adds a union member reaches a fixed
 /// point once a substituted union is flattened: the comparison ends.
 const UNION_GROWING_TYPEDEF_ENDS: &str = r#"

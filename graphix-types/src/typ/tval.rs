@@ -1,8 +1,8 @@
-use super::{PrintFlag, Type, cast::IsAFlags};
+use super::{PrintFlag, RefKey, Type, cast::IsAFlags};
 use crate::{
     abstract_value, env::Env, expr::print::Literal, list, rep, typ::format_with_flags,
 };
-use ahash::AHashMap;
+use ahash::AHashSet;
 use netidx_value::{NakedValue, Typ, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -305,7 +305,7 @@ impl<'a> TVal<'a> {
     fn fmt_int(
         &self,
         f: &mut fmt::Formatter<'_>,
-        hist: &mut AHashMap<(usize, usize), usize>,
+        hist: &mut AHashSet<(RefKey, usize)>,
         context: PrintContext,
     ) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f, hist, context))
@@ -314,7 +314,7 @@ impl<'a> TVal<'a> {
     fn fmt_inner(
         &self,
         f: &mut fmt::Formatter<'_>,
-        hist: &mut AHashMap<(usize, usize), usize>,
+        hist: &mut AHashSet<(RefKey, usize)>,
         context: PrintContext,
     ) -> fmt::Result {
         if crate::dbgenv::graphix_dbg_tval() {
@@ -360,26 +360,20 @@ impl<'a> TVal<'a> {
             (Type::Error(_), v) => fmt_value(f, v, context),
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => fmt_value(f, v, context),
-            // `hist` is the path: a definition met again on the same value
-            // with params no smaller expands without consuming it (or grows
-            // at every level), so it prints naked; with smaller ones it is
-            // nested (`O<O<X>>`).
+            // `hist` is the path: an application met again on the same
+            // value expands without consuming it, so it prints naked.
             (Type::Ref(tr), v) => {
                 let typ = match self.typ.lookup_ref(&self.env) {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,
                 };
-                let key = (tr.def_key().unwrap_or(0), (*v as *const Value).addr());
-                let size = super::params_size(&tr.params);
-                if hist.get(&key).is_some_and(|prev| size >= *prev) {
+                let at = (*v as *const Value).addr();
+                let key = ((tr.def_key().unwrap_or(0), tr.params.clone()), at);
+                if !hist.insert(key.clone()) {
                     return fmt_value(f, v, context);
                 }
-                let outer = hist.insert(key, size);
                 let r = TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist, context);
-                match outer {
-                    Some(o) => hist.insert(key, o),
-                    None => hist.remove(&key),
-                };
+                hist.remove(&key);
                 r
             }
             (Type::Array(et), v) if let Some(a) = rep::array_elems(v) => {

@@ -3,12 +3,10 @@
 //! equi-recursive containment (`type R = [i64, Array<R>]` and `type S =
 //! [i64, Array<R>]`) have one key, whatever form each was written in.
 
-use crate::typ::{Type, TypeRef, cast::grows_on, params_size};
+use crate::typ::Type;
 use ahash::AHashMap;
-use compact_str::CompactString;
 use compact_str::format_compact;
 use netidx_core::pack::encode_varint;
-use netidx_core::path::Path;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -28,9 +26,6 @@ struct Graph {
     nodes: Vec<Node>,
     /// Each reference by its definition and its arguments.
     refs: AHashMap<(usize, Arc<[Type]>), usize>,
-    /// The definitions and parameter sizes of the references being
-    /// expanded, outermost first.
-    path: Vec<(usize, usize)>,
 }
 
 fn label(tag: u8, rest: &[u8]) -> LPooled<Vec<u8>> {
@@ -61,16 +56,6 @@ impl Graph {
         Some((tr.def_key()?, tr.expand_cell()?))
     }
 
-    /// The name of the definition `tr` resolved to, in the scope it is
-    /// defined in.
-    fn defined_name(tr: &TypeRef) -> CompactString {
-        let base = Path::basename(&tr.name.0).unwrap_or("");
-        match tr.resolved() {
-            Some(r) => format_compact!("{}::{base}", r.canonical_scope()),
-            None => format_compact!("{}", tr.name),
-        }
-    }
-
     fn node(&mut self, t: &Type) -> usize {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => match tv.binding() {
@@ -87,19 +72,9 @@ impl Graph {
                     if let Some(id) = self.refs.get(&key) {
                         return *id;
                     }
-                    // an application whose parameters grow at every level
-                    // never closes into a regular tree: it is its
-                    // definition over its parameters
-                    let size = params_size(&tr.params);
-                    if grows_on(&self.path, &def, size) {
-                        let name = Self::defined_name(tr);
-                        return self.ordered(b'g', name.as_bytes(), &tr.params);
-                    }
                     let id = self.push(Node::Forward(None));
                     self.refs.insert(key, id);
-                    self.path.push((def, size));
                     let body = self.node(&body);
-                    self.path.pop();
                     self.nodes[id] = Node::Forward(Some(body));
                     id
                 }
@@ -302,5 +277,14 @@ mod test {
         let (_i_env, i) = typed("R<i64>");
         assert_eq!(key(&[r.clone()]), key(&[s]));
         assert_ne!(key(&[r]), key(&[i]));
+    }
+
+    // A non-recursive typedef applied to ever larger arguments down a
+    // finite chain is keyed as its expansion, whatever it is named.
+    #[test]
+    fn a_finite_chain_of_larger_arguments_is_keyed_by_its_expansion() {
+        use crate::typ::cast::tests::typed_chain;
+        let ((_o_env, o), (_p_env, p)) = (typed_chain("O", 8), typed_chain("P", 8));
+        assert_eq!(key(&[o]), key(&[p]));
     }
 }

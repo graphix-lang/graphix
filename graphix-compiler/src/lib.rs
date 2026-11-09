@@ -3058,14 +3058,6 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
                                     r(t)
                                 ),
                             ),
-                            typ::TextRefusal::Grows(def) => (
-                                what(),
-                                format_compact!(
-                                    "{def} grows its parameters as it recurses, so \
-                                     whether what it writes as {name} data reads back \
-                                     can't be decided"
-                                ),
-                            ),
                         };
                         match tv.name.starts_with('_') {
                             true => bail!("{c} refuses {what}: {why}"),
@@ -3122,7 +3114,7 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
                  isn't known here and may share {known}'s runtime form: annotate it"
             )
         }
-        Err(why.untold("this pattern", test, rest))
+        Err(why.untold("this pattern"))
     })
 }
 
@@ -3184,16 +3176,6 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                     r.resolve_tvars()
                 )
             }
-            (Discerned::Compared { .. }, Indiscernible::Grows(name)) => bail!(
-                "can't compare values of {typ}: {name} grows its parameters as it \
-                 recurses, so whether its members have distinct runtime forms can't be \
-                 decided"
-            ),
-            (_, Indiscernible::Grows(name)) => bail!(
-                "a map key type can't hold {name}: it grows its parameters as it \
-                 recurses, so whether its members have distinct runtime forms can't be \
-                 decided"
-            ),
             (_, Indiscernible::Pair(a, b)) => bail!(
                 "{} and {} can't share a map key type: they have the same runtime \
                  form; wrap them in distinct variants",

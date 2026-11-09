@@ -1532,6 +1532,8 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
 // cheaper key. Found fixing chainbounds-elab-neighbours-01. probes:
 // ~/ptmp/cr29/scratch/r17-hk/elabnb/ (gen.py typedef|union|variant N OUT)
 // (chainbounds-elab-quadratic-01)
+// 2026-11-09 claude: params_size is gone (grows-on-counts-all-01, lane 19f): no
+// walk measures parameter sizes any more.
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
     union_identical(t0, t1)
@@ -2174,7 +2176,7 @@ impl Type {
                     ));
                 }
                 let what = format_compact!("a {} call over {t}", def.name);
-                return Some(why.untold(&what, t, t));
+                return Some(why.untold(&what));
             }
         }
         None

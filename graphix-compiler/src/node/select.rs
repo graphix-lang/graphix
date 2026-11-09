@@ -2478,7 +2478,7 @@ impl<R: Rt> Select<R> {
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
                     if let Some(why) = test.rep_collision(&ctx.env, &rest) {
                         return Err(format_with_flags(PrintFlag::DerefTVars, || {
-                            why.untold("this pattern", &test, &rest)
+                            why.untold("this pattern")
                         }))
                         .at(&site);
                     }

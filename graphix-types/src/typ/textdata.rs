@@ -9,14 +9,11 @@
 //! is refused over a type `T` known not to be abstract, where it would
 //! change nothing; over an open variable it is not judged. Inside the data
 //! an abstract type's `from_value` reads, a cast of data, every abstract
-//! value is written bare, so no abstract type carries a tag there. A
-//! typedef whose parameters grow as it recurses is refused: its expansions
-//! never end.
+//! value is written bare, so no abstract type carries a tag there.
 
 use crate::{
     env::Env,
-    expr::ModPath,
-    typ::{AbstractId, Typ, Type, cast::grows_on, params_size},
+    typ::{AbstractId, Typ, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
@@ -37,8 +34,6 @@ pub enum TextRefusal {
     SharedTag { union: Type, tag: ArcStr, a: Type, b: Type },
     /// `Transparent` over a type that is not abstract.
     Transparent(Type),
-    /// A typedef whose parameters grow as it recurses.
-    Grows(ModPath),
 }
 
 /// Whose types a [`Type::text_refusal`] judges: a `Transparent` over a
@@ -60,15 +55,12 @@ enum Named {
     Abstract(AbstractId),
 }
 
-/// A [`Walk::same`] comparison: the pairs it is inside, the names each
-/// side expanded on the way with their arguments' size, and each pair it
+/// A [`Walk::same`] comparison: the pairs it is inside, and each pair it
 /// found apart, or alike without leaning on a pair it was inside
 /// (`leaned`).
 #[derive(Default)]
 struct Same {
     path: LPooled<Vec<(Type, Type)>>,
-    left: LPooled<Vec<(usize, usize)>>,
-    right: LPooled<Vec<(usize, usize)>>,
     known: LPooled<AHashMap<(Type, Type), bool>>,
     leaned: bool,
 }
@@ -82,13 +74,11 @@ struct Walk<'a> {
     /// Each named type expanded, by what it names, whether it is in data
     /// a `from_value` reads, and its arguments.
     seen: LPooled<AHashSet<(Named, bool, Arc<[Type]>)>>,
-    /// The named types the walk is inside, each with its arguments' size.
-    path: LPooled<Vec<(Named, usize)>>,
 }
 
 impl<'a> Walk<'a> {
     fn new(env: &'a Env, site: TextSite) -> Self {
-        Walk { env, read_by: None, site, seen: LPooled::take(), path: LPooled::take() }
+        Walk { env, read_by: None, site, seen: LPooled::take() }
     }
 
     /// The walk of `body`, the expansion of the named type `named` at
@@ -98,21 +88,14 @@ impl<'a> Walk<'a> {
         &mut self,
         named: Named,
         read_by: Option<ArcStr>,
-        name: impl FnOnce() -> ModPath,
         params: &Arc<[Type]>,
         body: Type,
     ) -> Result<(), TextRefusal> {
         if !self.seen.insert((named, read_by.is_some(), params.clone())) {
             return Ok(());
         }
-        let size = params_size(params);
-        if grows_on(&self.path, &named, size) {
-            return Err(TextRefusal::Grows(name()));
-        }
         let outer = std::mem::replace(&mut self.read_by, read_by);
-        self.path.push((named, size));
         let r = self.walk(&body);
-        self.path.pop();
         self.read_by = outer;
         r
     }
@@ -148,13 +131,7 @@ impl<'a> Walk<'a> {
             Type::Ref(tr) => match self.expand(t) {
                 Some((def, body)) => {
                     let read_by = self.read_by.clone();
-                    self.named(
-                        Named::Def(def),
-                        read_by,
-                        || tr.name.clone(),
-                        &tr.params,
-                        body,
-                    )
+                    self.named(Named::Def(def), read_by, &tr.params, body)
                 }
                 None => Ok(()),
             },
@@ -216,8 +193,7 @@ impl<'a> Walk<'a> {
                 (true, false) => Some(rep.name.clone()),
             }
         };
-        let name = || ModPath::from([rep.name.as_str()]);
-        self.named(Named::Abstract(id), read_by, name, params, body)
+        self.named(Named::Abstract(id), read_by, params, body)
     }
 
     /// The members of the union `t` past every union and name in them,
@@ -308,27 +284,13 @@ impl<'a> Walk<'a> {
         match (a, b) {
             (Type::TVar(tv), b) if let Some(a) = tv.binding() => self.same(cx, &a, b),
             (a, Type::TVar(tv)) if let Some(b) = tv.binding() => self.same(cx, a, &b),
-            (Type::Ref(tr), b) => {
-                let Some((def, body)) = self.expand(a) else { return false };
-                let size = params_size(&tr.params);
-                if grows_on(&cx.left, &def, size) {
-                    return false;
-                }
-                cx.left.push((def, size));
-                let r = self.same(cx, &body, b);
-                cx.left.pop();
-                r
+            (Type::Ref(_), b) => {
+                let Some((_, body)) = self.expand(a) else { return false };
+                self.same(cx, &body, b)
             }
-            (a, Type::Ref(tr)) => {
-                let Some((def, body)) = self.expand(b) else { return false };
-                let size = params_size(&tr.params);
-                if grows_on(&cx.right, &def, size) {
-                    return false;
-                }
-                cx.right.push((def, size));
-                let r = self.same(cx, a, &body);
-                cx.right.pop();
-                r
+            (a, Type::Ref(_)) => {
+                let Some((_, body)) = self.expand(b) else { return false };
+                self.same(cx, a, &body)
             }
             (a, b) if union(a) || union(b) => {
                 let (mut xs, mut ys) = (SmallVec::new(), SmallVec::new());
@@ -398,9 +360,9 @@ impl<'a> Walk<'a> {
 
 impl Type {
     /// Why JSON or TOML may not read back what they write of this type:
-    /// a union whose members a tag does not tell apart, a `Transparent`
-    /// over a type that is not abstract, a typedef growing its
-    /// parameters; `None` when they read back every value of it.
+    /// a union whose members a tag does not tell apart, or a
+    /// `Transparent` over a type that is not abstract; `None` when they
+    /// read back every value of it.
     pub fn text_refusal(&self, env: &Env, site: TextSite) -> Option<TextRefusal> {
         Walk::new(env, site).walk(self).err()
     }
@@ -555,5 +517,13 @@ mod test {
     #[test]
     fn a_typedef_over_a_closed_argument_is_a_cycle() {
         assert!(!named(&[("A<'a>", "[`Here('a), `Next(A<Array<i64>>)]")], "A<i64>"));
+    }
+
+    // A non-recursive typedef applied to ever larger arguments down a
+    // finite chain is judged by its expansions.
+    #[test]
+    fn a_finite_chain_of_larger_arguments_is_judged() {
+        let (env, t) = crate::typ::cast::tests::typed_chain("O", 8);
+        assert!(t.text_refusal(&env, TextSite::Written).is_none());
     }
 }
