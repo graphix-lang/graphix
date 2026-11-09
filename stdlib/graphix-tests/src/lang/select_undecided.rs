@@ -649,6 +649,26 @@ run!(destructuring_a_part_below_a_reference, r#"{
     f((1, 2))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
 
+// A cell the bounds hold whole is the arms' to decide, as a whole open
+// scrutinee is.
+run!(tags_deciding_a_whole_abstract_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select W(x).0 { `J => 1, `M => 3 };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::Jit);
+
+run!(tuple_tags_deciding_a_whole_abstract_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select W(x).0 { (`J, _) => 1, (`M, _) => 3 };
+    [f((`M, 1)), f((`J, 1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(partial_struct_over_a_whole_abstract_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select W(x).0 { {a: `J, ..} => 1, _ => 3 };
+    f({a: `M, b: 1})
+}"#, refused("{ a: `J, .. } tests a value whose type is not decided at this select"); FuseExpect::None);
+
 run!(destructuring_a_part_below_an_abstract_parameter, r#"{
     type W<'a> = Abstract<'a>;
     let f = |x| select W((x, 0)).0 { ((a, b), _) => a + b };

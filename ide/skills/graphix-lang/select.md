@@ -50,8 +50,8 @@ select, and runtime forms. Each rule refuses and names the fix.
   A rest leaves the other lengths to a later name or `_`: a later `([],
   _)` is a length choice, refused.
   Only a scrutinee wholly of such a type is the arms' to decide together
-  (`|x| select x { `J => 1, `M => 2 }`), never by a partial struct
-  pattern (`{a, ..}`).
+  (`|x| select x { `J => 1, `M => 2 }`, and `select W(x).0` alike), never
+  by a partial struct pattern (`{a, ..}`).
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
@@ -89,6 +89,7 @@ ok |x| select (x, 0) { ((a, b), _) => a }
 no "not decided at this select" |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }
+ok type W<'a> = Abstract<'a>; |x| select W(x).0 { `J => 1, `M => 2 }
 ok |x| select x { `J => 1, `M => 2 }
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
 ```

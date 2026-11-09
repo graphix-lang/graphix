@@ -63,7 +63,8 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   scrutinee holds only through an open cell's lower bounds (`*r` over
   `&mut (x, 0)`, an abstract constructor's parameter) met in the
   scrutinee read as those bounds hold it (`lower_view`), except a
-  whole open scrutinee, which the arms decide together, unless an arm
+  whole open scrutinee, or the one cell its bounds hold whole
+  (`W(x).0`), which the arms decide together, unless an arm
   holds a partial struct pattern; a pattern there that only takes apart
   every value of the shape it decides (a tuple, a struct naming every
   field, a slice or list with a rest, an abstract payload, of names, `_`

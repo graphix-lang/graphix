@@ -2334,9 +2334,13 @@ impl<R: Rt> Select<R> {
         // the cells the arms' patterns decide, each by the cell it stands for
         let mut decided = Decisions::default();
         let deciding = match &self.spec.kind {
-            ExprKind::Select(se) if checking => {
-                Deciding::new(&outer, &below, self.arg.node.typ(), &se.arms)
-            }
+            ExprKind::Select(se) if checking => Deciding::new(
+                &outer,
+                &below,
+                self.arg.node.typ(),
+                lower.as_ref(),
+                &se.arms,
+            ),
             _ => Deciding::default(),
         };
         if checking && let ExprKind::Select(se) = &self.spec.kind {
@@ -2667,30 +2671,30 @@ impl<R: Rt> Select<R> {
 struct Deciding(SmallVec<[(TVar, Option<Type>); 4]>);
 
 impl Deciding {
-    /// `below`: the cells the scrutinee holds only through lower bounds.
+    /// `below`: the cells the scrutinee holds only through lower bounds,
+    /// `lower` the scrutinee as those bounds hold it ([`lower_view`]), whole
+    /// there as the scrutinee is.
     fn new(
         outer: &AHashMap<usize, TVar>,
         below: &AHashMap<usize, TVar>,
         scrut: &Type,
+        lower: Option<&Type>,
         arms: &[(Pattern, Expr)],
     ) -> Self {
-        let whole = match scrut {
-            Type::TVar(tv)
-                if !arms.iter().any(|(p, _)| {
-                    p.type_predicate.is_none()
-                        && p.structure_predicate.has_partial_struct()
-                }) =>
-            {
-                tv.open_cell().map(|c| c.cell_addr())
-            }
+        let partial = arms.iter().any(|(p, _)| {
+            p.type_predicate.is_none() && p.structure_predicate.has_partial_struct()
+        });
+        let whole = |t: &Type| match t {
+            Type::TVar(tv) if !partial => tv.open_cell().map(|c| c.cell_addr()),
             _ => None,
         };
+        let wholes = [whole(scrut), lower.and_then(whole)];
         Self(
             outer
                 .values()
                 .chain(below.values())
                 .filter_map(|tv| match tv.open_cell() {
-                    Some(c) => (!c.is_rigid() && Some(c.cell_addr()) != whole)
+                    Some(c) => (!c.is_rigid() && !wholes.contains(&Some(c.cell_addr())))
                         .then(|| (tv.clone(), None)),
                     None => Self::holding(tv),
                 })
@@ -2774,6 +2778,16 @@ fn lower_view(t: &Type) -> Option<Type> {
     go(t, &mut LPooled::take())
 }
 
+// CR claude for claude: [bug/low] A cell the scrutinee holds only through a lower
+// bound that the arms leave open is not judged: `below` feeds only Deciding, and
+// still_open reads `outer` alone, so meets_undecided never sees it. `|x| { let r =
+// &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }` runs ([3, 1] for `M and `J),
+// though its plain twin `|x| select [x, 0] { [`J, _] => 1, _ => 3 }` is refused
+// "[`J, _] tests a value of 'x". Same on base-r19. Judging it needs the D5 follow-up
+// 2 exemption for irrefutable destructures to hold for open below-bound cells (so
+// `select *r { ((a, b), _) => a }` over `&mut (x, 0)` still checks), and the whole
+// exemption kept for a cell the bounds hold whole (`select W(x).0 { `J => 1, `M =>
+// 3 }`). probe: ~/ptmp/cr29/scratch/r19/19a/w6.gx (undecided-lower-bound-03)
 /// What `meets` finds over `reaching`, else over `lower`.
 fn met_in(
     reaching: &Type,
