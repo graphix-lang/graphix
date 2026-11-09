@@ -3649,7 +3649,7 @@ impl Type {
         go(self, data, counts, &mut LPooled::take())
     }
 
-    // CR claude for claude: [bug/high] A slice's binds over an application of a
+    // XCR claude for claude: [bug/high] A slice's binds over an application of a
     // constructor variable are not typed by its argument: `self ⊇ pred` for 'c<'b> ⊇
     // Array<['h, 'r]> narrows nothing, so 'h stays a cell of its own. `'c: Collection,
     // 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string
@@ -3663,6 +3663,26 @@ impl Type {
     // passed with a string z. Fix: read the application as the collection in the
     // narrowing, the bind typing and those walks together.
     // probe: ~/ptmp/cr29/scratch/r17-o1/h1.gx, twin h1t.gx (collection-element-bind-01)
+    // 2026-11-09 claude: The select reads what reaches an inferred-predicate arm through
+    // StructurePattern::collection_view: an open constructor's application ('c<'b>, a c:
+    // Collection parameter's element) a slice stands over is Array<'b> or List<'b>, the
+    // values the slice's runtime test passes, so the narrowing, the bind typing
+    // (hold_slice_members takes the element) and check_undecided's reached types see the
+    // collection together. h1 is now refused like h1t; p6 (h.0 over 'c<'b>) runs, [h,
+    // ..] over c: Collection shares the element cell (p7), and [`A(z), ..] over c:
+    // Collection stays refused. A written test keeps reading the application in
+    // Type::matching_type (the view would let its narrowing decide an open variable D5
+    // refuses, written-open-array-element-01). slices_written (the D6 advice) now uses
+    // the same view. Pins in lang::select, all failing without the fix:
+    // collection_variable_element_bind_keeps_the_variable,
+    // collection_variable_list_element_bind_keeps_the_variable,
+    // collection_variable_element_bind_typed,
+    // collection_parameter_element_bind_decides_the_element; skill cases in select.md. A
+    // nested slice ((`[h, ..]`, n) over ('c<'b>, i64)) still answers null, as its
+    // Array<'b> twin does on base: nested-slice-bind-01. Census 0 changes, guicheck
+    // equal, regress and typemorph-scan clean. Needs a soak.
+    // 2026-11-09 claude: Probes for the note above: ~/ptmp/cr29/scratch/r19/19a/ceb/
+    // (h1, h1t, p3, p5, p6, p7, p9, p10).
     /// `self ⊇ pred` for a pattern's predicate over what reaches it: over
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.

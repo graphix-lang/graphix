@@ -7697,6 +7697,65 @@ run!(
     FuseExpect::None
 );
 
+// A name over the element of an open constructor's application is the
+// element's variable, as over `Array<'b>`: the body cannot decide it.
+run!(
+    collection_variable_element_bind_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x {
+            [h, ..] => { let q: string = h; q },
+            _ => null
+        };
+        let result = g([(3, 4)])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_list_element_bind_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x {
+            [<h, ..>] => { let q: string = h; q },
+            _ => null
+        };
+        let result = g([<(3, 4)>])
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    collection_variable_element_bind_typed,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 4, 1, 0, 0]),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> i64 select x {
+            [h, ..] => h.0 + 1,
+            [<h, ..>] => h.1,
+            _ => 0
+        };
+        let f = 'c: Collection |x: 'c<'b>| -> ['b, null] select x { [h, ..] => h, _ => null };
+        let n = |v: [i64, null]| select v { null as _ => 0, i => i };
+        let result = [g([(3, 4)]), g([<(3, 4)>]), n(f([1, 2])), n(f({1 => 1})), n(f([<1>]))]
+    "#;
+    FuseExpect::Jit
+);
+
+// The element of a `c: Collection` parameter is a cell a name over it
+// shares, so the arm's body decides it.
+run!(
+    collection_parameter_element_bind_decides_the_element,
+    refused("Array<string> does not contain Array<i64>"),
+    "/test.gx" => r#"
+        let h = |c: Collection| -> [string, null] select c {
+            [x, ..] => { let q: string = x; q },
+            _ => null
+        };
+        let result = (h(["a"]), h([1]))
+    "#;
+    FuseExpect::None
+);
+
 run!(
     written_test_closed_inside_a_declared_variable,
     r#"{

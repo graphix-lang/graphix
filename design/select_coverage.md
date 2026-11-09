@@ -121,7 +121,13 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`PatternNode::type_inside_rigid`), and one that stands inside it in
   another alternative or member takes both. A name over the variable's
   value at the top of the test (`[`A(i64), `B(i64)] as v` over `'b`) is
-  typed by the test, never `'b`.
+  typed by the test, never `'b`. A slice over an open constructor's
+  application (`'c<'b>`, a `c: Collection` parameter's element) stands
+  over the slice's collection, `Array<'b>` or `List<'b>`, the values its
+  run-time test passes: an inferred predicate's narrowing, its binds and
+  the undecided-type walks read what reaches the arm so
+  (`StructurePattern::collection_view`), so a name over the element is
+  `'b`; a written test reads it so in `Type::matching_type`.
 
 - **`name@ pattern` captures** are typed from the SCRUTINEE (a `let`'s
   from its value, `Bind::complete_partial`): under an

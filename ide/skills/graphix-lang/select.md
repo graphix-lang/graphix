@@ -20,7 +20,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   variable's value keeps it where the test holds the scrutinee around it:
   `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`;
   at the top, `[`A(i64), `B(i64)] as v` over `'b` types `v` by the test,
-  not as `'b`.
+  not as `'b`. A slice over a constructor variable's application
+  (`'c<'b>`, a `c: Collection` parameter) stands over `Array<'b>` (a list
+  pattern, `List<'b>`): `[h, ..]` gives `h: 'b`, and a pattern inside the
+  element needs `Array<..> as [..]`.
   An abstract type's parameter takes no annotation wider than the
   variable, and a type test of an abstract compares its parameters:
   `W<(i64, string)> as ..` matches only a `W` built at exactly that
@@ -83,6 +86,8 @@ no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { 'c as `A(z) => 1, _ =
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { `A(_) as `A(z) => 1, _ => 2 }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
+no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }
+ok let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [i64, null] select x { [h, ..] => h.0, _ => null }; g([(3, 4)])
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x| select (x, 0) { ((a, b), _) => a }

@@ -2453,6 +2453,14 @@ impl<R: Rt> Select<R> {
                 // at the instance's types never runs
                 false => Type::Bottom,
             };
+            // a written test types its binds itself (Type::matching_type)
+            let reaching = spec_pats
+                .get(i)
+                .filter(|_| !pat.explicit_type_predicate)
+                .and_then(|(p, _)| {
+                    p.structure_predicate.collection_view(&ctx.env, &reaching)
+                })
+                .unwrap_or(reaching);
             if checking {
                 reached.push(reaching.clone());
             }

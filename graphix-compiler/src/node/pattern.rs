@@ -551,7 +551,7 @@ fn rigid_written(
     let bound = rigid_as_bounds(env, bound)?;
     let is_tv = |t: &TVar| t.open_cell().is_some_and(|c| c.same_cell(tv));
     let t = typ.written_form(&mut |t| is_tv(t).then(|| bound.clone()))?;
-    let t = slices_written(pat, &t)?;
+    let t = slices_written(env, pat, &t)?;
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, &t, &mut members).ok()?;
     let held: SmallVec<[Type; 8]> = members
@@ -642,52 +642,9 @@ fn is_abstract(env: &Env, t: &Type) -> bool {
 
 /// `t`, the type a test over `pat` writes, with each application of an
 /// open constructor (`'c<T>`) a slice of `pat` stands over written as the
-/// slice's collection, `Array<T>` or `List<T>`; `None` where one is left,
-/// which no test can write.
-fn slices_written(pat: &StructurePattern, t: &Type) -> Option<Type> {
-    fn elems(binds: &[StructurePattern], list: bool, t: &Type) -> Type {
-        let et = match (list, t) {
-            (false, Type::Array(et)) | (true, Type::List(et)) | (_, Type::App(_, et)) => {
-                et
-            }
-            _ => return t.clone(),
-        };
-        let et = binds.iter().fold((**et).clone(), |et, p| go(p, &et));
-        match list {
-            true => Type::List(Arc::new(et)),
-            false => Type::Array(Arc::new(et)),
-        }
-    }
-    fn each(binds: &[StructurePattern], ts: &[Type]) -> Arc<[Type]> {
-        binds.iter().zip(ts.iter()).map(|(p, t)| go(p, t)).collect()
-    }
-    fn go(pat: &StructurePattern, t: &Type) -> Type {
-        use StructurePattern as P;
-        crate::stack::ensure_sufficient(|| match (pat, t) {
-            (_, Type::Set(ts)) => Type::Set(ts.iter().map(|t| go(pat, t)).collect()),
-            (P::Or(alts), _) => alts.iter().fold(t.clone(), |t, a| go(a, &t)),
-            (P::Tuple { binds, .. }, Type::Tuple(ts)) if binds.len() == ts.len() => {
-                Type::Tuple(each(binds, ts))
-            }
-            (P::Variant { tag, binds, .. }, Type::Variant(vt, ts, at))
-                if vt == tag && binds.len() == ts.len() =>
-            {
-                Type::Variant(vt.clone(), each(binds, ts), *at)
-            }
-            (P::Struct { binds, .. }, Type::Struct(fs)) => Type::Struct(
-                fs.iter()
-                    .map(|(n, ft, at)| match binds.iter().find(|(b, _, _)| b == n) {
-                        Some((_, p, _)) => (n.clone(), go(p, ft), *at),
-                        None => (n.clone(), ft.clone(), *at),
-                    })
-                    .collect(),
-            ),
-            (P::Slice { list, binds, .. }, _)
-            | (P::SlicePrefix { list, prefix: binds, .. }, _) => elems(binds, *list, t),
-            (P::SliceSuffix { suffix, .. }, _) => elems(suffix, false, t),
-            _ => t.clone(),
-        })
-    }
+/// slice's collection ([`StructurePattern::collection_view`]); `None` where
+/// one is left, which no test can write.
+fn slices_written(env: &Env, pat: &StructurePattern, t: &Type) -> Option<Type> {
     fn holds_app(t: &Type) -> bool {
         crate::stack::ensure_sufficient(|| match t {
             Type::App(..) => true,
@@ -698,7 +655,7 @@ fn slices_written(pat: &StructurePattern, t: &Type) -> Option<Type> {
             }
         })
     }
-    let t = go(pat, t);
+    let t = pat.collection_view(env, t).unwrap_or_else(|| t.clone());
     (!holds_app(&t)).then_some(t)
 }
 
@@ -1291,6 +1248,17 @@ impl StructPatternNode {
         })
     }
 
+    // CR claude for claude: [bug/medium] A slice nested under another pattern takes
+    // no member of the scrutinee: the recursion below passes `&[]`, so its elements are
+    // typed from the predicate's own cells, not the scrutinee's part. Under D6 (b) a
+    // name over the element of `Array<'b>` keeps 'b, as at the top (`[h, ..] => h.0`
+    // checks), but `'b: (i64, i64) |x: (Array<'b>, i64)| -> [string, null] select x {
+    // ([h, ..], n) => { let q: string = h; q }, _ => null }` checks and answers null
+    // over `([(3, 4)], 1)` (the arm's test is now of strings), and `([h, ..], _) =>
+    // h.0 + 1` is refused "reading a tuple needs its type known here". Same on base-r19,
+    // and over `('c<'b>, i64)`. Fix: pass each matched member's part at the child's
+    // position down the recursion. probe: ~/ptmp/cr29/scratch/r19/19a/ceb/p10t.gx,
+    // p9t.gx, p10.gx (nested-slice-bind-01)
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
@@ -2586,6 +2554,17 @@ impl<R: Rt> PatternNode<R> {
             )?)
     }
 
+    // CR claude for claude: [bug/low] D5 (b) says a written test's undeclared
+    // variable that its structure tests is refused, and `|x: [i64, `A(i64)]| select x {
+    // ['b, `A(i64)] as `A(n) => n, _ => 0 }` is
+    // (lang::select_undecided::written_test_with_an_open_variable_refused), but over an
+    // array element it is not: `|xs: Array<[i64, `Keep(i64)]>| -> i64 select xs {
+    // Array<['q, `Keep(i64)]> as [`Keep(r)] => r, _ => 0 }` checks and prints [3, 0] on
+    // base-r19, because the narrowing here binds 'q to i64 before check_undecided looks.
+    // The same test over 'c<[i64, `Keep(i64)]> is refused
+    // (written_collection_test_with_an_open_variable_refused) only because the
+    // application blocks that narrowing. No wrong answer seen. probe:
+    // ~/ptmp/cr29/scratch/r19/19a/ceb/w1t.gx, twin w1.gx (written-open-array-element-01)
     pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());

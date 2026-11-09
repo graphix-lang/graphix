@@ -100,6 +100,124 @@ impl StructurePattern {
         })
     }
 
+    /// Whether a slice or list pattern is here or in a sub-pattern.
+    fn has_slice(&self) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            let mut slice = matches!(
+                self,
+                Self::Slice { .. } | Self::SlicePrefix { .. } | Self::SliceSuffix { .. }
+            );
+            self.for_each_sub(&mut |p| slice |= p.has_slice());
+            slice
+        })
+    }
+
+    /// `t` with each application of an open constructor (`'c<T>`) a slice
+    /// of this pattern stands over read as the slice's collection,
+    /// `Array<T>` or `List<T>`: the values its runtime test passes. `None`
+    /// where `t` holds none.
+    pub fn collection_view(&self, env: &Env, t: &Type) -> Option<Type> {
+        match self.has_slice() {
+            true => self.collection_view_inner(env, t),
+            false => None,
+        }
+    }
+
+    fn collection_view_inner(&self, env: &Env, t: &Type) -> Option<Type> {
+        /// Each part's view, where any part has one.
+        fn parts<'a>(
+            env: &Env,
+            parts: impl Iterator<Item = (Option<&'a StructurePattern>, &'a Type)>,
+        ) -> Option<SmallVec<[Type; 8]>> {
+            let views: SmallVec<[(Option<Type>, &Type); 8]> = parts
+                .map(|(p, t)| (p.and_then(|p| p.collection_view_inner(env, t)), t))
+                .collect();
+            views.iter().any(|(v, _)| v.is_some()).then(|| {
+                views.into_iter().map(|(v, t)| v.unwrap_or_else(|| t.clone())).collect()
+            })
+        }
+        fn each<'a>(
+            env: &Env,
+            ps: &'a [StructurePattern],
+            ts: &'a [Type],
+        ) -> Option<Arc<[Type]>> {
+            if ps.len() != ts.len() {
+                return None;
+            }
+            parts(env, ps.iter().map(Some).zip(ts.iter())).map(Arc::from_iter)
+        }
+        fn seq<'a>(
+            env: &Env,
+            ps: impl Iterator<Item = &'a StructurePattern>,
+            t: &Type,
+        ) -> Option<Type> {
+            let mut view: Option<Type> = None;
+            for p in ps {
+                if let Some(v) = p.collection_view_inner(env, view.as_ref().unwrap_or(t))
+                {
+                    view = Some(v)
+                }
+            }
+            view
+        }
+        fn elems(
+            env: &Env,
+            ps: &[StructurePattern],
+            list: bool,
+            t: &Type,
+        ) -> Option<Type> {
+            let (et, open) = match (list, t) {
+                (false, Type::Array(et)) | (true, Type::List(et)) => (et, false),
+                (_, Type::App(_, et)) => (et, true),
+                _ => return None,
+            };
+            let view = seq(env, ps.iter(), et);
+            if !open && view.is_none() {
+                return None;
+            }
+            let et = view.map(Arc::new).unwrap_or_else(|| et.clone());
+            Some(if list { Type::List(et) } else { Type::Array(et) })
+        }
+        use StructurePattern as P;
+        crate::stack::ensure_sufficient(|| match (self, t) {
+            (P::Ignore | P::Bind(_) | P::Literal(..) | P::Abstract { .. }, _) => None,
+            (_, Type::TVar(tv)) => self.collection_view_inner(env, &tv.binding()?),
+            (_, Type::Ref(_)) => {
+                self.collection_view_inner(env, &t.lookup_ref(env).ok()?)
+            }
+            (_, Type::Set(ts)) => parts(env, ts.iter().map(|m| (Some(self), m)))
+                .map(|ts| Type::Set(Arc::from_iter(ts))),
+            (P::Or(alts), _) => seq(env, alts.iter(), t),
+            (_, Type::App(c, a)) if let Some(f) = Type::app_filled(c, a) => {
+                Some(self.collection_view_inner(env, &f).unwrap_or(f))
+            }
+            (P::Tuple { binds, .. }, Type::Tuple(ts)) => {
+                each(env, binds, ts).map(Type::Tuple)
+            }
+            (P::Variant { tag, binds, .. }, Type::Variant(vt, ts, at)) if vt == tag => {
+                each(env, binds, ts).map(|ts| Type::Variant(vt.clone(), ts, *at))
+            }
+            (P::Struct { binds, .. }, Type::Struct(fs)) => {
+                let pat =
+                    |n: &ArcStr| binds.iter().find(|(b, _, _)| b == n).map(|(_, p, _)| p);
+                parts(env, fs.iter().map(|(n, ft, _)| (pat(n), ft))).map(|ts| {
+                    Type::Struct(
+                        fs.iter()
+                            .zip(ts)
+                            .map(|((n, _, at), t)| (n.clone(), t, *at))
+                            .collect(),
+                    )
+                })
+            }
+            (P::Slice { list, binds, .. }, _)
+            | (P::SlicePrefix { list, prefix: binds, .. }, _) => {
+                elems(env, binds, *list, t)
+            }
+            (P::SliceSuffix { suffix, .. }, _) => elems(env, suffix, false, t),
+            (P::Tuple { .. } | P::Variant { .. } | P::Struct { .. }, _) => None,
+        })
+    }
+
     pub fn single_bind(&self) -> Option<&ArcStr> {
         match self {
             Self::Bind(s) => Some(s),
