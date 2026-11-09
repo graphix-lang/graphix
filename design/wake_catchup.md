@@ -380,11 +380,9 @@ As built:
   the input it fired on fired before the write landed or after, and a
   write landing in the wake's own cycle is replaced too. Where the
   initializer does not fire at the wake the write stands: no input fired
-  asleep, a sample whose argument alone fired (its trigger did not), or
-  an input whose fire reached a guard, a seq step, a collection over a
-  bottom source or a call over a bottom function only late, delivered
-  while it slept and lost (CR late-asleep-02; an arm's body takes it,
-  `design/dense_delivery.md`). A write landing after the wake's cycle stands as any write does. An arm that never slept would end on
+  asleep, or a sample whose argument alone fired (its trigger did not);
+  a late fire delivered while it slept is caught up as any other
+  (`design/dense_delivery.md`). A write landing after the wake's cycle stands as any write does. An arm that never slept would end on
   the later of the two; telling them apart needs a liveness bit on every
   fire in both engines, which was judged not worth its cost. Pins:
   `lang::select::{wake_catchup_replaces_a_later_write,
@@ -464,10 +462,9 @@ net_write_not_repeated_after_wake}`, and the LSP's
   back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
-  a late fire to a reader in a select arm's body that did not run included
-  (`TrackedFires::observe_late`; a guard's reader, a seq step's, a
-  collection's over a bottom source and a call's over a bottom function
-  lose it, CR late-asleep-02), once, at their current value (one fire bit per input per select, shared
+  a late fire to a reader in an arm's body or a guard that did not run, in
+  a call over a bottom function or a collection over a bottom source
+  included (`TrackedFires::observe_late`), once, at their current value (one fire bit per input per select, shared
   by consulted guards and arm bodies and consumed by whichever arm reads
   it, an arm's guard and its own body seeing it alike; a destructuring let's
   siblings are inputs of their own; a pattern bind, of this select or

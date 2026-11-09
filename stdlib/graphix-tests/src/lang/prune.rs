@@ -298,3 +298,19 @@ async fn idle_map_in_a_walked_arm() -> Result<()> {
 async fn idle_map_in_a_walked_instance() -> Result<()> {
     ticks_skip_the_idle_map(idle_map_in_an_instance).await
 }
+
+// A guard sits in a boundary of its own, which its arm's pattern binds are
+// delivered inside when the arm is taken: the guard read them as it ran,
+// so the walk did not pass it by, and no late copy schedules a cycle more
+// than a guard reading the scrutinee itself makes.
+#[tokio::test(flavor = "current_thread")]
+async fn a_guard_reading_its_bind_is_not_passed_by_its_arm() -> Result<()> {
+    let bind = "{ let t = once(1); select t { x if x > 0 => x, _ => 0 } }";
+    let scrutinee = "{ let t = once(1); select t { x if t > 0 => x, _ => 0 } }";
+    let (bv, (b_walks, b_skips)) = walks(bind, Mode::Interp).await?;
+    let (sv, (s_walks, s_skips)) = walks(scrutinee, Mode::Interp).await?;
+    assert_eq!(bv, [Value::I64(1)]);
+    assert_eq!(sv, [Value::I64(1)]);
+    assert_eq!((b_walks, b_skips), (s_walks, s_skips));
+    Ok(())
+}

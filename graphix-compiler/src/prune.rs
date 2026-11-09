@@ -145,6 +145,14 @@ impl BoundaryRef {
         }
         b == Some(self)
     }
+
+    /// Whether `outer` is a boundary that [holds](Self::holds) `inner`.
+    pub(crate) fn held_by(
+        outer: Option<&BoundaryRef>,
+        inner: Option<&BoundaryRef>,
+    ) -> bool {
+        outer.is_some_and(|x| x.holds(inner))
+    }
 }
 
 #[cfg(test)]

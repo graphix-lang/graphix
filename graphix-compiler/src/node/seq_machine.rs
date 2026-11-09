@@ -356,6 +356,12 @@ fn evaluate<R: Rt>(
         if entered {
             tracked.enter(k)
         }
+        // CR claude for claude: [test-gap/low] Nothing pins a step's entry catch-up: with
+        // this deliver replaced by an empty `Injected`, all 16443 graphix-tests lib tests
+        // pass. A step's entry samples what it reads and issues each call as a fresh frame,
+        // so a missed fire may change nothing at entry; either find the program it changes
+        // and pin it, or show it is unobservable and delete the machine's TrackedFires.
+        // (seq-catchup-01)
         let injected = tracked.deliver(ctx, k);
         let scope = tracked.open(ctx, k);
         let mut done = false;

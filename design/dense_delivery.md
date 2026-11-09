@@ -217,17 +217,25 @@ unchanged.
   it reaches makes a reference or a lambda or a call has no static
   target (`analysis::hands_out_callee_binds`): any other `let` is named
   by its scope alone.
-- A late fire to a reader in a select arm that does not run in the next
-  cycle sets its select's catch-up bit (`TrackedFires::observe_late`,
-  matching the reader's root and an arm's boundary around it, as the
-  select updates and again as it deselects the arm), so the arm takes it
-  at its wake as a fire made while it slept, the reader's own binding
-  compared as the variable the late fire names (a val's included). Not
-  yet a guard's reader, which carries the select's own boundary, nor what
-  a seq machine, a collection over a bottom source or a call over a bottom
-  function holds asleep: those lose the fire (CR late-asleep-02). Pins:
-  `lang::delivery::a_late_fire_reaches_a_sleeping_arm_at_its_wake`,
-  `a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake`.
+- A late fire to a reader that something holds asleep in the next cycle
+  sets that holder's catch-up bit (`TrackedFires::observe_late`, matching
+  the reader's root and a boundary of the holder's around it), so the
+  reader takes it at its wake as a fire made while it slept, the reader's
+  own binding compared as the variable the late fire names (a val's
+  included). The holders: a select arm (its body's boundary, as the select
+  updates and again as it deselects the arm), a guard the chain does not
+  reach (each guard sits in a boundary of its own, so a guard's reader is
+  told apart from its select's; the guard's arm delivers its pattern binds
+  inside it, which the guard read as it ran), a call whose function is
+  bottom (its instance's body) and a collection whose source is bottom
+  (its slots' instance bodies). A seq step that waits its turn needs no
+  bit for it: its entry samples what it reads and issues each call as a
+  fresh frame, so a fire it missed changes nothing there. Pins:
+  `lang::delivery::{a_late_fire_reaches_a_sleeping_arm_at_its_wake,
+  a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake,
+  a_late_fire_reaches_a_sleeping_guard_at_its_wake,
+  a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return,
+  a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return}`.
 - Inside the walk's own boundary the boundaries cannot order a reader
   against the fire: a `Deref` keeps a read stamp (`prune::ReadStamp`,
   in its `Reader`), set as it reads, and one that read this cycle is

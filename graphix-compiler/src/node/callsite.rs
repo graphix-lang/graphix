@@ -32,6 +32,7 @@ use crate::{
     },
     perfdbg,
     profile::{self, Phase},
+    prune::BoundaryRef,
     stack::ensure_sufficient,
     typ::{
         ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
@@ -1977,6 +1978,11 @@ pub(crate) fn static_builtin<'a, R: Rt>(
 }
 
 impl<R: Rt> CallSite<R> {
+    /// The walk-pruning boundary around the bound instance's body.
+    pub(crate) fn instance_boundary(&self) -> Option<&BoundaryRef> {
+        self.callee.apply().and_then(instance_boundary)
+    }
+
     /// An unbound site over compiled parts; `ftype` is `None` until
     /// `typecheck0` instantiates it.
     pub(crate) fn unbound(
@@ -3541,7 +3547,7 @@ impl<R: Rt> CallSite<R> {
                     let frame = super::wake::in_fresh_frame(ctx);
                     absent.unborn = Some(Unborn { view, frame });
                 }
-                absent.observe(ctx, &set);
+                absent.observe(ctx, &set, instance_boundary(&*f));
                 f.sleep(ctx);
                 self.slept.set();
             }
@@ -4669,6 +4675,14 @@ struct ArgsOut {
     set: Published,
 }
 
+/// The walk-pruning boundary around the body of the instance `f`.
+fn instance_boundary<R: Rt>(f: &dyn Apply<R>) -> Option<&BoundaryRef> {
+    match f.view() {
+        ApplyView::Lambda(l) => l.body_boundary(),
+        ApplyView::BuiltIn(_) | ApplyView::Opaque => None,
+    }
+}
+
 /// A bound instance asleep while its function is bottom: what fired that
 /// it did not see, caught up when the same function returns, as a
 /// deselected arm is at its wake, or the birth it was due meanwhile,
@@ -4718,8 +4732,14 @@ impl Absent {
     }
 
     /// Record this cycle's fires: the arguments published in `set`, and
-    /// the captured inputs.
-    fn observe<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, set: &Published) {
+    /// the captured inputs, a late fire to a reader in the instance's
+    /// body, inside `body`, included.
+    fn observe<R: Rt>(
+        &mut self,
+        ctx: &ExecCtx<'_, R>,
+        set: &Published,
+        body: Option<&BoundaryRef>,
+    ) {
         for id in set.iter() {
             let fired = ctx.event.variables.get(id).is_some_and(|tv| tv.tag().triggers());
             if fired && !self.missed.contains(id) {
@@ -4727,6 +4747,7 @@ impl Absent {
             }
         }
         self.captured.observe(ctx);
+        self.captured.observe_late(ctx, |_, b| BoundaryRef::held_by(body, b));
     }
 
     /// Run `update` under `view` with one catch-up fire for each argument

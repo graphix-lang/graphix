@@ -1081,7 +1081,8 @@ fn deselect<R: Rt>(
     }
     tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
-    tracked.observe_late(ctx, |i| (i == j).then(|| arm_boundary(arm)).flatten());
+    tracked
+        .observe_late(ctx, |i, b| i == j && BoundaryRef::held_by(arm_boundary(arm), b));
 }
 
 /// The walk-pruning boundary around an arm's body.
@@ -1837,8 +1838,12 @@ impl<R: Rt> Update<R> for Select<R> {
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);
         let awake = *selected;
-        tracked.observe_late(ctx, |i| {
-            (Some(i) != awake).then(|| arms.get(i).and_then(arm_boundary)).flatten()
+        tracked.observe_late(ctx, |i, b| match i.checked_sub(arms.len()) {
+            None => Some(i) != awake && BoundaryRef::held_by(arm_boundary(&arms[i]), b),
+            Some(g) => {
+                guards.as_ref().is_some_and(|runs| !matches!(runs[g], GuardRun::Awake))
+                    && BoundaryRef::held_by(arms[g].0.guard_boundary(), b)
+            }
         });
         // A guard runs where the chain reaches it, an arm whose shape
         // admits the value with no earlier arm claiming it (`open` is the
@@ -1876,6 +1881,9 @@ impl<R: Rt> Update<R> for Select<R> {
                     pat.sleep_guard(ctx);
                     tracked.fell_asleep(consumer, ctx.rt.cycle());
                     tracked.refresh(&ctx.env, consumer, |r| guard_refs(pat, r));
+                    tracked.observe_late(ctx, |k, b| {
+                        k == consumer && BoundaryRef::held_by(pat.guard_boundary(), b)
+                    });
                 }
                 continue;
             };

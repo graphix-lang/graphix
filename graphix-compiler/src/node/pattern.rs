@@ -8,7 +8,8 @@ use crate::{
         union_members, union_members_with,
     },
     format_with_flags,
-    node::{Held, compiler, list},
+    node::{Held, compiler, list, prune::Prune},
+    prune::BoundaryRef,
     rep,
     typ::{AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type},
 };
@@ -2801,7 +2802,11 @@ impl<R: Rt> PatternNode<R> {
         let guard = spec
             .guard
             .as_ref()
-            .map(|g| compiler::compile(ctx, flags, g.clone(), &scope, top_id))
+            .map(|g| {
+                Prune::compile(ctx, |ctx| {
+                    compiler::compile(ctx, flags, g.clone(), &scope, top_id)
+                })
+            })
             .transpose()?
             .map(Held::new);
         Ok(Self::with(explicit, type_predicate, structure_predicate, guard))
@@ -2816,8 +2821,22 @@ impl<R: Rt> PatternNode<R> {
         v: &Value,
         tag: crate::Tag,
     ) {
-        self.structure_predicate
-            .bind(v, &mut |id, v| ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk))
+        // inside the guard's boundary: the guard read these binds as it
+        // ran, so their delivery is not one the walk passed it by
+        let bind = |ctx: &mut ExecCtx<'_, R>| {
+            self.structure_predicate.bind(v, &mut |id, v| {
+                ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk)
+            })
+        };
+        match self.guard_boundary() {
+            Some(b) => ctx.in_boundary(Some(b), bind),
+            None => bind(ctx),
+        }
+    }
+
+    /// The walk-pruning boundary around the guard.
+    pub(super) fn guard_boundary(&self) -> Option<&BoundaryRef> {
+        self.guard.as_ref().and_then(|g| g.node.as_prune()).map(|p| p.boundary_ref())
     }
 
     /// [`Self::bind_event`] for a guard's tick, returning the store

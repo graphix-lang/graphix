@@ -26,6 +26,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     profile::{self, Phase},
+    prune::BoundaryRef,
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
@@ -1238,6 +1239,11 @@ impl<R: Rt> GXLambda<R> {
 
     pub(crate) fn body_mut(&mut self) -> &mut Node<R> {
         &mut self.body
+    }
+
+    /// The walk-pruning boundary around the body.
+    pub(crate) fn body_boundary(&self) -> Option<&BoundaryRef> {
+        self.body.as_prune().map(|p| p.boundary_ref())
     }
 
     /// The callback instance of a collection-bodied lambda, whose body a

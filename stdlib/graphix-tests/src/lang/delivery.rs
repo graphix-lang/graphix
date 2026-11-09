@@ -294,6 +294,88 @@ async fn a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake(
 
 modes!(a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake);
 
+/// `PASSED_ASLEEP` with `w`'s reader inside `h`'s instance, which counts
+/// `w`'s fires, and HOLDER logging what the instance makes, holding it
+/// asleep at `n == ASLEEP`.
+const LATE_HELD: &str = "{
+  let n = 0;
+  n <- select n { k if k < 5 => k + 1, _ => never() };
+  let h: fn(x: i64) -> i64 = never();
+  let log = [];
+  HOLDER;
+  let w = uniq(select n { k if k < FIRES => 0, _ => 10 });
+  h <- |x: i64| -> i64 x + w + 100 * count(w);
+  select n { 5 => n ~ log, _ => never() }
+}";
+
+/// `LATE_HELD` with `holder` for each `(asleep, fires, want)`: `w`'s one
+/// late fire is counted once, whether the holder falls asleep as the fire
+/// arrives or slept already.
+async fn late_held(
+    holder: &str,
+    cases: [(&str, &str, &str); 3],
+    mode: Mode,
+) -> Result<()> {
+    for (asleep, fires, want) in cases {
+        let code = LATE_HELD
+            .replace("HOLDER", holder)
+            .replace("ASLEEP", asleep)
+            .replace("FIRES", fires);
+        let got = result_updates(&code, &[], mode).await?;
+        assert_eq!(got, [want], "asleep at {asleep}, {mode:?}");
+    }
+    Ok(())
+}
+
+// A guard the chain does not reach: it logs only when `h(1)` fires.
+async fn a_late_fire_reaches_a_sleeping_guard_at_its_wake(mode: Mode) -> Result<()> {
+    let guard = "select n {
+      ASLEEP => -1,
+      k if { let g = h(1); log <- g ~ array::push(log, (n, g)); g > 0 } => k,
+      _ => -2
+    }";
+    let cases = [
+        ("100", "1", "[[1, 101], [2, 211]]"),
+        ("2", "1", "[[1, 101], [3, 211]]"),
+        ("2 | 3", "2", "[[1, 101], [4, 211]]"),
+    ];
+    late_held(guard, cases, mode).await
+}
+
+modes!(a_late_fire_reaches_a_sleeping_guard_at_its_wake);
+
+// A call whose function is bottom: it fires at each `n` while awake.
+async fn a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return(
+    mode: Mode,
+) -> Result<()> {
+    let call = "let r = { let f = select n { ASLEEP => never(), _ => h }; f(1) };
+      log <- r ~ array::push(log, (n, r))";
+    let cases = [
+        ("100", "1", "[[1, 101], [2, 211], [3, 211], [4, 211]]"),
+        ("2", "1", "[[1, 101], [3, 211], [4, 211]]"),
+        ("2 | 3", "2", "[[1, 101], [4, 211]]"),
+    ];
+    late_held(call, cases, mode).await
+}
+
+modes!(a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return);
+
+// A collection whose source is bottom: it fires at each `n` while awake.
+async fn a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return(
+    mode: Mode,
+) -> Result<()> {
+    let map = "let r = array::map(select n { ASLEEP => never(), _ => [1] }, |x| h(x));
+      log <- r ~ array::push(log, (n, r[0]$))";
+    let cases = [
+        ("100", "1", "[[1, 101], [2, 211], [3, 211], [4, 211]]"),
+        ("2", "1", "[[1, 101], [3, 211], [4, 211]]"),
+        ("2 | 3", "2", "[[1, 101], [4, 211]]"),
+    ];
+    late_held(map, cases, mode).await
+}
+
+modes!(a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return);
+
 // A late value that feeds its producer back is a self-loop, as `x <- x + 1`
 // is: `r` reads `w` through `h` a cycle late, and each new `r` makes a new
 // `w`, one step a cycle, never settling. `c` counts the cycles.

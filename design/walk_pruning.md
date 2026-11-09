@@ -45,7 +45,7 @@ Three kinds, each a wrapper node (`Prune`) around one child:
 2. **Instance bodies**: the body of a bound lambda instance (the child
    `GXLambda::update` runs after publishing its formals). Recursion
    activations and collection slots are instances, so this covers them.
-3. **Select arm bodies**: each arm's expression.
+3. **Select arm bodies**: each arm's expression, and each guard.
 
 Nodes between boundaries always run when their enclosing boundary runs.
 In particular a `CallSite` still updates its arguments every time its
@@ -274,7 +274,7 @@ boundary is a `BoundaryRef`, an `Arc` holding its parent, an atomic stamp
 (the last cycle it was marked) and a visit stamp; no slab, so compiling
 makes one without reaching the runtime and an id is never reused. A
 `Prune` node wraps each block statement (`compile_block_children`, so
-module bodies and seq steps too), each select arm body and each instance
+module bodies and seq steps too), each select arm body and guard and each instance
 body (`GXLambda::new_with_body`). It is transparent: its view,
 `for_each_child`, spec, type, refs and `emit_clif` are its child's, and
 `Node::downcast_ref`/`downcast_mut` see through it. Its `update` rides
@@ -365,7 +365,7 @@ atomic) is invisible beside a no-op on the forked mark probe.
 ## The rules in brief
 
 **Walk pruning** (`design/walk_pruning.md`): a block statement, a select
-arm body and an instance body each sit in a `Prune` boundary
+arm body or guard and an instance body each sit in a `Prune` boundary
 (`prune::BoundaryRef`, parent-linked), which rides its resident in a
 `Cycle` view when nothing marked it this cycle. A registration names its
 root and the boundary around the reader (`prune::Reader`), taken from the

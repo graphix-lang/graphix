@@ -32,6 +32,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
         scope_decode, scope_encode,
     },
+    prune::BoundaryRef,
     typ::{FnType, Type},
     wrap,
 };
@@ -712,7 +713,7 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
     let source = sval.and_then(|value| C::select(value, tag.triggers()));
     let Some(source) = source else {
         match seen {
-            SourceSeen::Paused(missed) => missed.observe(ctx),
+            SourceSeen::Paused(missed) => observe_paused(ctx, missed, slots, kind.call),
             _ if slots.is_empty() => *seen = SourceSeen::Absent,
             _ => {
                 for slot in slots.iter_mut() {
@@ -722,7 +723,7 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
                     TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
                         slots.iter_mut().for_each(|slot| (kind.call)(slot).refs(r))
                     });
-                missed.observe(ctx);
+                observe_paused(ctx, &mut missed, slots, kind.call);
                 *seen = SourceSeen::Paused(missed);
             }
         }
@@ -1094,6 +1095,23 @@ fn merge_tags(a: Option<Tag>, b: Option<Tag>) -> Option<Tag> {
         Some(tag) => merge_tag(a, tag),
         None => a,
     }
+}
+
+/// Record what the paused slots miss this cycle, a late fire to a reader
+/// in a slot's instance included.
+fn observe_paused<R: Rt, S>(
+    ctx: &ExecCtx<'_, R>,
+    missed: &mut TrackedFires,
+    slots: &mut [S],
+    call: fn(&mut S) -> &mut Node<R>,
+) {
+    missed.observe(ctx);
+    missed.observe_late(ctx, |_, b| {
+        slots.iter_mut().any(|slot| match call(slot).view() {
+            NodeView::CallSite(cs) => BoundaryRef::held_by(cs.instance_boundary(), b),
+            _ => false,
+        })
+    });
 }
 
 /// Run `update` over a collection's slots, `old_len` of them standing:
