@@ -292,6 +292,17 @@ impl<R: Rt> StructWith<R> {
     }
 }
 
+// CR claude for claude: [bug/low] A bounded generic's struct update is
+// newly refused, with a message that names no annotation:
+// `let f = 'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1}` runs on main
+// 3cfcd2407 (prints 2) and is refused at the check since D27 (a) typed the
+// update as the literal: "type mismatch 'a: unbound within { n: i64 } does not
+// contain { n: i64 }". The literal `{n: s.n + 1}` is refused the same way, so
+// the verdict follows the ruling; what is open is whether a replacement whose
+// type is closed and equal to the source field's keeps the source's type, and
+// a refusal that names the annotation (drop `-> 'a`, or `s: {n: i64}`). Census
+// of both repos: no file affected. probe:
+// ~/ptmp/cr29/scratch/r19/h/fin/bounded-with.gx (bounded-with-refused-01)
 /// The type of `{source with ..replace}`: the source's, each replaced
 /// field holding its replacement's type, as a literal's field does.
 fn updated_type<R: Rt>(
