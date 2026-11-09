@@ -2400,7 +2400,7 @@ impl Type {
                 tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // CR claude for claude: [bug/low] Taking two instances of one definition as
+                // XCR claude for claude: [bug/low] Taking two instances of one definition as
                 // one type when their parameters contain each other decides an open cell
                 // by equality where the expansion asks less, so the order of a function
                 // type's positions decides: `type L<'p> = fn(x: 'p) -> i64; let outer =
@@ -2445,11 +2445,24 @@ impl Type {
                 // definition now unfolds to finitely many applications, so the shortcut's
                 // recursive case may be droppable (compare by expansion, as the non-recursive
                 // case does); measure guicheck before and after.
+                // 2026-11-09 claude: Built on D24 (a): every typedef is regular now, so the
+                // same-definition shortcut no longer excepts a recursive definition; two
+                // instances of one definition with an open cell in their params are compared
+                // by their expansions, recursive or not, and the ContainsHist assumptions end
+                // the walk. ResolvedRef::is_recursive and its memo field are gone (no other
+                // user). The probes tpe_rec and tpe_nest now run as tpe_recz does. The code
+                // comment 'two instances of one definition whose parameters contain each
+                // other...' sits inside this block and is stale; it goes with the block. Pins
+                // that fail without it:
+                // lang::types::recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion
+                // and lang::types::typedef_over_a_recursive_typedef_agrees_with_the_expansion
+                // (their _z_first twins pass either way). Census of 2949 files unchanged;
+                // guicheck 40.05G before, 40.11G after (base-r19 40.50G). Needs a soak.
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                     && (!tr0.params.iter().chain(tr1.params.iter()).any(|p| p.has_free())
-                        || tr0.resolve_peek(env).is_none_or(|d| d.is_recursive(env)))
+                        || tr0.resolve_peek(env).is_none())
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
                     let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {

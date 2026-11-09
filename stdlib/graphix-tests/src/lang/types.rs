@@ -7698,6 +7698,59 @@ run!(
     FuseExpect::None
 );
 
+// Two instances of a recursive definition over an open cell are compared
+// by their expansions too, so the order of a function type's positions
+// does not decide.
+run!(
+    recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion,
+    r#"{
+  type T<'p> = [`Nil, `Cons(fn(x: 'p) -> i64, T<'p>)];
+  let outer = |k: T<'c>, z: 'c| z;
+  let g: fn(k: T<Any>, z: i64) -> i64 = outer;
+  g(`Nil, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+run!(
+    recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion_z_first,
+    r#"{
+  type T<'p> = [`Nil, `Cons(fn(x: 'p) -> i64, T<'p>)];
+  let outer = |z: 'c, k: T<'c>| z;
+  let g: fn(z: i64, k: T<Any>) -> i64 = outer;
+  g(1, `Nil)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+run!(
+    typedef_over_a_recursive_typedef_agrees_with_the_expansion,
+    r#"{
+  type T<'p> = [`Nil, `Cons(fn(x: 'p) -> i64, T<'p>)];
+  type W<'p> = (T<'p>, i64);
+  let outer = |k: W<'c>, z: 'c| z;
+  let g: fn(k: W<Any>, z: i64) -> i64 = outer;
+  g((`Nil, 0), 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+run!(
+    typedef_over_a_recursive_typedef_agrees_with_the_expansion_z_first,
+    r#"{
+  type T<'p> = [`Nil, `Cons(fn(x: 'p) -> i64, T<'p>)];
+  type W<'p> = (T<'p>, i64);
+  let outer = |z: 'c, k: W<'c>| z;
+  let g: fn(z: i64, k: W<Any>) -> i64 = outer;
+  g(1, (`Nil, 0))
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
 run!(
     a_dag_of_union_bounds_types_its_instances,
     r#"{
