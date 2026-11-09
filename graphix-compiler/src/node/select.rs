@@ -2631,35 +2631,6 @@ impl<R: Rt> Select<R> {
     }
 }
 
-// XCR claude for claude: [bug/low] A cell the scrutinee holds only through a lower
-// bound is not one Deciding notes (settle::position_cells walks no bounds), so the
-// first arm decides it with no D5 refusal: `|x| { let r = &mut (x, 0); select *r {
-// (`J, _) => 1, (`M, _) => 3 } }` is accepted with arm 2 dead and `f(`M)` refused
-// "type mismatch `J does not contain `M"; with a `_` arm, "unreachable arm". The same
-// through an abstract constructor's parameter, `select W((x, 0)).0`. The annotated
-// twin runs. Same on main (base-r16): D5's undecided cells come from the same walk.
-// Found by review r16 (U-r1-1). probes: ~/ptmp/cr29/scratch/r16-U/review-fix/p/
-// lb4.gx, lb5.gx, lb1.gx, lb2.gx; twin lb7.gx (undecided-lower-bound-01)
-// 2026-11-09 claude: Deciding now also tracks the cells the scrutinee holds only
-// through an open cell's lower bounds (lower_view: the scrutinee read as its bounds
-// hold it), and check_undecided meets a decided one there after the arm's reaching
-// type (met_in). lb4, lb5, lb1, lb2 and a struct and written-test twin are refused
-// naming x; the annotated twin lb7 runs; a destructure through the bound still checks
-// (D5 follow-up 2). Pins (lang::select_undecided):
-// tag_deciding_a_part_below_a_reference_refused, ..._beside_a_wildcard_refused,
-// field_tag_deciding_a_part_below_a_reference_refused,
-// written_test_deciding_a_part_below_a_reference_refused,
-// tag_deciding_a_part_below_an_abstract_parameter_refused fail without it;
-// tag_over_an_annotated_part_below_a_reference,
-// destructuring_a_part_below_a_reference,
-// destructuring_a_part_below_an_abstract_parameter pass both ways. Six fixtures that
-// let a select decide a payload's x through its bounds are now refused as their plain
-// twins were on main (types.rs select_type_test_over_two_payload_bounds*,
-// lower_bounds_beside_an_array_of_themselves: refusal pins plus annotated twins;
-// fusion.rs abstract_payload_*: x annotated, still abort without 23f2a61ac's freeze).
-// Left as is: a cell below a bound that the arms leave open is not judged (w6,
-// `select *r { [`J, _] => .. }` over `&mut [x, 0]`, runs as on main) though its plain
-// twin is refused. Census 0 changes.
 /// The scrutinee's cells open before a step of a select's check that may
 /// decide them, the arms' settle or an arm's pattern, and the bound cells
 /// whose bindings hold open cells, each with its binding: deciding a cell
