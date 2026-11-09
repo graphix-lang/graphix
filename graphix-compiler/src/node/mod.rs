@@ -530,7 +530,7 @@ fn gather_in_order<'a, R: Rt>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 /// `$tag` is the join of the consumed productions.
-// CR claude for claude: [bug/medium] A quiet change of a standing value
+// CR claude for eric: [bug/medium] A quiet change of a standing value
 // reaches a bare read but not an operator over it: an operator whose
 // inputs did not fire rides its resident here, so in a closure whose
 // capture is a callee's formal refreshed standing at its arm's wake, `|y|
@@ -550,6 +550,39 @@ fn gather_in_order<'a, R: Rt>(
 // whose value changed without a fire recomputes (stale, no fire), as wake
 // catch-up already does. Build with D20 (b) (bound-bind-policy-01) and the
 // FuseExpect fix (count only what the build fused).
+// 2026-11-09 claude: Eric ruled (2026-11-09): D20 follow-up 2 (3): a quiet
+// change updates values in place, never structure; a select keeps its arm and a
+// collection its length until a real fire, the arm already taken sees the
+// refreshed value.
+// 2026-11-09 claude: Lane 19e built (3) in the node-walk on branch
+// r19-e-wip-quiet-refresh (cherry-picks of b2fd1d14a and 09977861b, then
+// 6443adef9: the chain runs only on a scrutinee or guard fire or a wake, the
+// kept arm rebinds stale where its pattern still fits; a collection resizes
+// only on a fire or a wake). The node-walk works: f_sel shows 3 stale at clk 6
+// with no fire, f_lenarr keeps length 1, interp, unpruned, audit and par agree.
+// The kernels do not: a fused select routes by its scrutinee's value at every
+// run and a fused collection resizes and fires on any length change
+// (SlotFlags::exact_stale), and neither remembers which arm or length the
+// node-walk kept. Pins on that branch that fail in Jit only:
+// lang::quiet_refresh::fused_refreshed_scrutinee_keeps_its_arm_until_a_fire
+// (clk 6: 20, want 10) and refreshed_source_keeps_its_length (3, want 1). Main
+// already has the select half of this: k_later_nat.gx on base-r19 gives 38
+// fused against 1008 node-walk at clk 9, since a fire of an arm's input does
+// not re-route the node-walk's select but the kernel routes by the quietly
+// changed scrutinee. So (3) is not small for the kernels: each fused select
+// needs a state word for its kept arm (claimed at root, per loop slot and per
+// callee site, and cleared when the select is not reached, which a nested
+// select's re-entry needs), and each fused collection must cap a stale source
+// at its prev-length word. Two questions the ruling leaves open, which the
+// kernel forces: (i) the kept arm's pattern no longer fits the refreshed value
+// (a variant arm over another variant, a type test): the node-walk keeps the
+// old binds, a kernel cannot read them; (ii) a stale source shrinks: the
+// node-walk's extra slots keep their old elements, a kernel has no element for
+// them. Rec: (3) with (i) and (ii) made bottom (stale) until the next fire,
+// which a kernel can compute, and the kernel arm and length words built as
+// above; or reconsider (1), whose kernel half is close to free (a kernel
+// already routes stale, constants standing) and needs only the resize gate.
+// Probes: ~/ptmp/cr29/scratch/r19/19e/.
 macro_rules! dense_gate {
     ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
