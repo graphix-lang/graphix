@@ -478,7 +478,10 @@ the definition gates:
   inside a definition calls the lambda of either arm at the type the
   call decides, and arms whose cells must differ (a written binding
   beside a generic holder used at another type) are refused at the
-  check; generic pairs stay a renaming. And
+  check; generic pairs stay a renaming. Two declared variables of the
+  definition under check never pair, since they cannot merge: `{g: |p:
+  'a| p}` beside `{g: |q: 'b| q}` stays two members, and a call through
+  them is refused. And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`): a member's generic cells meet

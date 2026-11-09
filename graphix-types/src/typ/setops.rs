@@ -362,6 +362,9 @@ impl<'a> Identity<'a> {
                 if let Some(live) = &mut self.live
                     && !a.level().is_generic()
                 {
+                    if a.is_rigid() && b.is_rigid() {
+                        return false;
+                    }
                     live.push((a.clone(), b.clone()))
                 }
                 let (ca, cb) = (a.cell_constraints(), b.cell_constraints());

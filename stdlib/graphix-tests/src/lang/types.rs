@@ -8034,3 +8034,23 @@ run!(
     prints(r#"["s", i64:1]"#);
     FuseExpect::None
 );
+
+run!(
+    a_select_of_lambdas_over_two_declared_variables_stays_two_members,
+    r#"{
+  let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} };
+  f(false, 1, "s").g(2)
+}"#,
+    refused("expected fn not");
+    FuseExpect::None
+);
+
+run!(
+    a_select_of_lambdas_over_one_declared_variable_is_one_member,
+    r#"{
+  let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} };
+  (f(false, 1, "s").g(2), f(true, "t", 0).g("u"))
+}"#,
+    prints(r#"[i64:2, "u"]"#);
+    FuseExpect::None
+);

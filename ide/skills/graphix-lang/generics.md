@@ -97,7 +97,9 @@ never()`). A write the compiler meets only after
 the binding was made generic (a function body's `m::j <- ..` in the
 module's parent, a later REPL input) must be as general as the binding,
 and a `&mut` of it is refused: to write it at one type, write that type
-on its `let` (`let j: fn(x: i64) -> i64 = s.g`).
+on its `let` (`let j: fn(x: i64) -> i64 = s.g`). Arms holding lambdas
+over two declared variables (`|p: 'a| p` beside `|q: 'b| q`) stay two
+members, and a call through them is refused: give both one variable.
 
 ```graphix,cases
 no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
@@ -106,6 +108,8 @@ no "i64 does not contain string" let id = |x| x; let g = (id, 1).0; (g(1), g("s"
 no "i64 does not contain string" let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
 no "i64 does not contain string" let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; j <- |x: i64| x; (p(true).f("s"), p(false).f(1))
 ok let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; (p(true).f("s"), p(false).f(1))
+no "expected fn not" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)
+ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} }; f(false, 1, "s").g(2)
 ```
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
