@@ -2430,6 +2430,18 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
+    // CR claude for claude: [risk/medium] Forked siblings share one StaticCallees, so the
+    // table each sibling's sync logs is a snapshot taken in wall-time order, not program
+    // order, and its changed flag is one bit for all of them. (1) A later sibling whose sync
+    // ran before an earlier sibling's join replays at the root a table lacking that join;
+    // GXRt::set_var_aliases keeps an absent alias only while reads went through its inner
+    // id, which an interface pair's inner usually has none of, so the runtime drops a live
+    // join. (2) A sibling's sync can swap the flag another sibling's join set, so the joining
+    // sibling logs no SetAliases and the RefVars its apply_deferred logs register under the
+    // inner id at the root replay, before the other sibling's SetAliases names the join.
+    // Unwitnessed: it needs two forked siblings each joining a dynamic module in one cycle.
+    // A fix: resync the root runtime from StaticCallees after merge_in_order, and keep the
+    // flag per branch. Found reviewing (var-alias-merge-01). (var-alias-snapshot-01)
     /// Give the runtime the bindings that are another's variable, where
     /// a module's join or retirement changed them
     /// ([`StaticCallees::join`]).

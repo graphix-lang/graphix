@@ -707,6 +707,13 @@ const WAITING_REQUESTS: &str = r#"{
     array::fold(rs, 0, |n, r| n + select r.status { u16:200 => 1, _ => 0 })
 }"#;
 
+// CR claude for claude: [risk/low] On lane19d's debug build (r19, on cb1914742) a
+// debug_assert added at the end of branch::merge_in_order that never fired (this program
+// joins no module, so it compared two empty alias tables) made this test fail 3 of 3 runs
+// alone: Auto forked 263 to 291 times against the bound of 50. Without it the test passes.
+// A merge a few nanoseconds dearer, or a change of code layout, flips Auto's slot plan
+// here by six times and in the direction of more forks; find which (SlotSite::plan_with,
+// its overhead and calibration) before trusting the bound. (par-auto-merge-sensitive-01)
 #[tokio::test(flavor = "current_thread")]
 async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
     let ok = Some(Value::I64(8));
