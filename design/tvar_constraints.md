@@ -898,8 +898,9 @@ pair in progress, `Unfoldings`), a pair with a named side by its
 their nodes' identities while no cell is written, each with what its
 walk entered or was cut at (`DiffHist`, `Reached`). A kept difference is
 read again only where the path holds none of that: a fresh walk there
-would be cut nowhere it was not, so the memos change no answer (pin
-`memos_change_no_answer_over_shared_residuals`). The pair `U - T`,
+would be cut nowhere it was not, so the memos change no answer (pins
+`memos_change_no_answer_over_shared_residuals`,
+`memos_change_no_answer_over_shared_parts`). The pair `U - T`,
 whose walk meets `T - U` and comes back to itself, is kept, so each
 level of the residual is subtracted once: the next arm's walk takes
 pairs linear in `d` and stays exact, and a repeated `Error<U> as e` arm

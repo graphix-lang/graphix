@@ -2341,4 +2341,39 @@ mod tests {
         }
         memos_agree(&env, &pool);
     }
+
+    // A difference kept for a pair of shared unions is read again only
+    // where the path holds nothing its walk reached: V's rest less U's,
+    // each a residual of shared parts, meets a part first off the path of
+    // a pair its walk enters and again beneath that pair.
+    #[test]
+    fn memos_change_no_answer_over_shared_parts() {
+        let (env, _) = typed(
+            &[
+                ("T", "[`C, Array<V>]"),
+                ("U", "[Error<Error<U>>, Error<V>, Error<T>, `A]"),
+                ("V", "[Array<W>, Error<Error<U>>, `B]"),
+                ("W", "[Error<Error<T>>, Error<U>, List<T>, List<W>, `C]"),
+            ],
+            "null",
+        );
+        let less = |t: &str, arms: &[&str]| {
+            arms.iter()
+                .fold(parsed(&env, t), |r, a| r.diff(&env, &parsed(&env, a)).unwrap())
+        };
+        let pool = [
+            less(
+                "U",
+                &[
+                    "`A",
+                    "[Error<List<`B>>, Error<T>]",
+                    "List<U>",
+                    "Error<`B>",
+                    "Error<Error<Error<List<Error<Error<Error<`B>>>>>>>",
+                ],
+            ),
+            less("V", &["Error<Array<Array<Error<Error<Error<`B>>>>>>"]),
+        ];
+        memos_agree(&env, &pool);
+    }
 }
