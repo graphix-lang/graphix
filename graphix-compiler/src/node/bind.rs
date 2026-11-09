@@ -1711,6 +1711,16 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
 // ~/ptmp/cr29/scratch/review-r16/Q-r3-1/{a3_structwith_call,
 // b2_array_of_composites_direct,b4_holder_holds_array,b5b_structwith_outer_wrongval,
 // b6_structwith_ref_holder,b7_structwith_wrongval}.gx, Q-r3-1/m4 (holder-call-result-01)
+// 2026-11-09 claude: Stale on main 3cfcd2407 (base-r19): every probe the CR names
+// (Q-r3-1/{a3,b2,b4,b5b,b6,b7}.gx) and the siblings a1-a13, b1-b9 are refused at --check
+// with 'type mismatch i64 does not contain string' at the second-type call (e.g.
+// t.g("s")), and m4's module is refused at its val ('implemented ... one type all uses
+// share'); their one-type twins check and run with GRAPHIX_ELAB_AUDIT=1 silent ((1, 2)),
+// and a field from the named holder (t.f(1), t.f("s") over {s with g: mk()}) stays
+// generic and runs. Likely closed by the D11/D12 work (40c511a72, ec6d5fa05), not
+// bisected. No pin in the tree holds these shapes; a reviewer may want lang::types pins
+// of a3, b2, b4, b6 and m4 as refusals. Probes
+// ~/ptmp/cr29/scratch/r19/19a/holder-call-result-01/.
 /// Whether the value `node` builds holds, in a data literal (a struct, its
 /// update, a tuple, a variant, an array, a list or a map), a part a `let`
 /// of it would name ([`names_generic`]), each seen past grouping
