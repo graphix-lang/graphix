@@ -99,7 +99,7 @@ fn implements<R: Rt>(
     let pairs = declared.sig_matches(&ctx.env, &ft)?;
     let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
     let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
-    // XCR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
+    // CR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
     // and the impl's let annotation claims at the top level a free variable a declared
     // quantifier's bound names, so `trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y:
     // 'b) -> 'a }; impl T for i64 { let m = (|#x, s, y| x, 1).0 }` (or `(id, 1).0`) is
@@ -119,12 +119,6 @@ fn implements<R: Rt>(
     // lang::traits::method_value_projected_from_data_is_refused). Whether the message
     // should cite the ML rule rather than the level test is what remains; the probes tq1,
     // tq1b are refused as before.
-    // 2026-11-09 claude: Judged: no verdict change; the Holder::NoLambda text stays. Under
-    // Eric's 11-05 ML rule (a function is generic only where a binding names it) a value
-    // like (f, 1).0 is one instance, so 'no call copies its types' is accurate. The refusal
-    // is the intended verdict, pinned by
-    // lang::traits::method_value_projected_from_data_is_refused and the refused() strings
-    // in lang/traits.rs and lang/quantified.rs. Message text unchanged, so no pin changes.
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
