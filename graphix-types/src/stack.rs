@@ -258,27 +258,6 @@ pub fn eval_threads() -> usize {
     *THREADS
 }
 
-// XCR claude for claude: [perf/low] The eval workers' poolshark local pools hold
-// tens of MB of idle containers: forked_cycle_heap's shrinking case forked
-// (Force, 16 workers, fusion off) reads 52 to 54 MB live from 6000 to 120000
-// cycles, 13 to 15 MB from 6000 to 24000 when each part ends with
-// `poolshark::local::clear()` (probe_clear.diff), and 31 MB serially. A slot's
-// containers are freed on whichever worker deletes it, and each thread keeps up
-// to 1024 per element layout of up to 1024 elements, so the idle share grows
-// with the worker count. Bounded, and flat after the first few thousand cycles;
-// whether a worker should keep less (smaller sizes for the node-state
-// containers, plain `Vec`s for node state that outlives a part) wants a
-// measurement of what the pools save the forked benches. Probes:
-// ~/ptmp/cr29/scratch/r17-o2/ (churn_probe.rs, A_long.txt, B_long.txt,
-// C_serial_long.txt). (eval-worker-pools-01)
-// 2026-11-09 claude: Measured, no code change: forked_cycle_heap (slow-tests,
-// debug, 16 workers) as is: live MB at 6000 cycles node-walk 41, shrinking
-// serial 29, shrinking forked 52, fused 30, partly fused 47; wall 102 s, user
-// 145 s. With poolshark::local::clear() at each part's end (probe_clear.diff):
-// 12, 28, 13, 11, 14 MB; wall 165 s, user 184 s. Clearing saves 28-39 MB of
-// idle heap but costs 60% wall in the forked cases, so no variant is free;
-// per-worker memory is bounded and flat (heap test pins growth per cycle).
-// Accepted as is; delete. Logs: ~/ptmp/cr29/scratch/r19/19d/
 /// A pool of `threads` workers, each started by `spawn`, else of as
 /// many as the last try started before one failed. A failed try's
 /// workers have exited before the next try starts its own.
