@@ -2182,6 +2182,18 @@ impl Type {
         None
     }
 
+    // CR claude for claude: [perf/medium] A trait call over a DAG of named unions
+    // (L_i = [L_i-1, M_i-1], M_i = [M_i-1, L_i-1], L0 = [i64, string]) costs 4^n: this
+    // expands a name once per path (2^n members) and Type::dispatch_collision compares
+    // every pair. `Show::show(x)` with `x: L_n`, --no-cache --check, instructions, lane
+    // 19b (base-r19 the same at n = 10): n = 4 0.88G (the empty program's cost), 6 0.96G,
+    // 8 2.24G, 10 22.7G, 14 killed at 60 s; a `'a: Show` function taking it (tb10)
+    // 22.7G. Callers: Type::trait_contains, Type::trait_refusal, commit_cell_bounds and
+    // the union lowering in traits.rs (lower_trait_union's members). The `?` Any test
+    // uses Type::distinct_members (strip-any-members-dag-01); these need duplicate
+    // members dropped too, keeping the order the lowering's arms test in. probes:
+    // ~/ptmp/cr29/scratch/r19/19b/tr6.gx .. tr14.gx, tb10.gx
+    // (trait-dispatch-members-dag-01)
     /// The members a dispatch over `t` tests: a union flattened through
     /// its type references, a union of primitives split into its
     /// primitives and an open cell kept as one member.
