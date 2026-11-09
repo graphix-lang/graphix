@@ -290,62 +290,6 @@ impl<'a> Identity<'a> {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
-    // XCR claude for claude: [bug/medium] Two live cells pair as a renaming here, so a
-    // union collapse keeps one member and drops the other's live cells, which then learn
-    // nothing the kept member learns. Inside a definition a call through a select of
-    // two bare lambdas passes --check and its run-time bind fails: `let k = |v| { let s
-    // = select v > 0 { true => |x| x, false => |y| y }; s(v) }; println(k(2))` prints
-    // "binding the callee failed: ... an instance at fn(y: i64) -> i64 of a definition
-    // typed fn(x: _) -> '_N" (ELAB-AUDIT instance-signature; r8e). And a written name's
-    // live instance beside a holder's copy taken at another level collapses into the
-    // copy: `let s = {f: |x| x}; let j = s.f; let pick = |b| select b { true => s,
-    // false => {f: j} }; (pick(true).f("s"), pick(false).f(1)); j <- |x: i64| x + 1`
-    // runs ("s", 1) but under GRAPHIX_NO_SUBST=1 its build refuses `type mismatch { f:
-    // fn(x: string) -> string } does not contain ..` (h7, h8). Main 187fd838d alike. Not
-    // pairing live cells at all (lane d12's first cut) closes both but refuses ordinary
-    // destructuring of a select of composites holding lambda literals (u2: `select v {
-    // {g} => g(3) }`, `let {g} = v`, tuple and array patterns), whose cells are live at
-    // the enclosing level; only field reads met the members. A rule is needed: (a) a
-    // collapse that pairs two live cells merges them (the arms are one type, as ML
-    // unifies a conditional's branches), or (b) live cells never pair and every pattern
-    // bind over a union meets its function members as a field read does. probes:
-    // ~/ptmp/cr29/scratch/r19-d12/p/{r8e,h7,h8,u2*}.gx (union-live-renaming-01)
-    // 2026-11-06 claude: Lane d12 round 20: r8e was not live pairing but
-    // Type::meet_open_fns copying the members' live Def-level cells (FnType::instantiate
-    // with no open gates copies every Def cell), so the lambda's own cells learned
-    // nothing; the meet now copies generic cells alone (Fresh::Generic) and binds live
-    // ones, which closes r8e and a select of differing lambdas (pin
-    // lang::types::select_of_lambdas_in_a_definition_called_at_both_branches) and the
-    // field-read forms of review r20 (c1, c2, c7-c10, e5, e7; pins
-    // field_read_of_a_select_of_differing_lambdas_in_a_definition,
-    // field_read_of_a_select_passed_to_a_function_in_a_definition). What this CR still
-    // holds is composites of lambdas that pair as a renaming, which no meet reaches:
-    // inside a definition, picking one of two structs or tuples of lambdas (c5, c6:
-    // (t.f(v), t.f(w)), select t { {f, n} => .. }; e4: array::map(.., t.f) over
-    // identical bodies; reviewer 2's g1: let k = |b| select b { true => s, false => {f:
-    // |y| y} } then k(false).f(2); g8, the tuple form; r8: the identical-body pin called
-    // at both signs) passes --check and fails the run-time bind, main 187fd838d alike:
-    // the plain way of picking one of two handler structs reaches it. h7/h8 unchanged
-    // (NO_SUBST-only). probes
-    // ~/ptmp/cr29/scratch/r20-d12/p/{c5,c6,e4,r2-g1,r2-g8,r2-r8}.gx
-    // 2026-11-09 claude: Eric ruled (2026-11-09): D25 (a): a union collapse that pairs
-    // two live cells merges them, as ML unifies a conditional's branches (the D11
-    // min-level merge family).
-    // 2026-11-09 claude: Built (a): setops::union_collapses is union_identical recording
-    // each live (non-generic) pair Identity::cells makes; every collapse in
-    // Type::union_inner and normalize's merge (Kept::merge_with keeps a merge's pairs
-    // only when it holds) records them, and Type::union_with welds them (contains::weld,
-    // OpenPair as Link does) after its normalize. Generic pairs stay a renaming;
-    // meet_open_fns untouched. c5, c6, e4, r2-g1, r2-g8, r2-r8 run; ms1-ms11, n5, h7, h8
-    // are refused at --check (a written j beside a generic holder is one type), check
-    // and build agree under GRAPHIX_ELAB_AUDIT=1 and GRAPHIX_NO_SUBST=1. Pins that fail
-    // with the weld undone:
-    // lang::types::select_of_composites_of_lambdas_in_a_definition,
-    // pick_one_of_two_structs_of_lambdas,
-    // a_select_of_a_written_binding_and_a_generic_holder_is_one_type (twin
-    // a_select_of_a_generic_binding_and_its_holder_at_two_types runs). Census unchanged
-    // (2949 files); regress 567/0. Left: a select arm's bind over a union that stays two
-    // members (arm-narrow-snapshot-01).
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
         if a.same_cell(b) {
             return true;
