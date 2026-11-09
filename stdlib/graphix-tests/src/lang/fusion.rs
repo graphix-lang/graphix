@@ -2130,7 +2130,7 @@ run!(kernel_built_abstract_eq, KERNEL_BUILT_ABSTRACT_EQ, |v: Result<&Value>| {
 // bottom source's placeholder is an empty array, never a null.
 run!(abstract_payload_select_over_bottom, r#"{
   type B<'p> = Abstract<'p>;
-  let x = never();
+  let x: i64 = never();
   let b = B([x]);
   let v = select b.0 { [1, ..] => 0, [h, ..] => 1, _ => 2 };
   x <- 1;
@@ -2139,7 +2139,7 @@ run!(abstract_payload_select_over_bottom, r#"{
 
 run!(abstract_payload_rest_over_bottom, r#"{
   type B<'p> = Abstract<'p>;
-  let x = never();
+  let x: i64 = never();
   let b = B([x, 5]);
   let v = select b.0 { [1, rest..] => array::len(rest) + 10, [h, rest..] => h, _ => 2 };
   x <- 1;
@@ -2156,8 +2156,8 @@ run!(abstract_payload_decided_before_select, r#"{
 
 run!(abstract_payload_select_in_a_loop, r#"{
   type B<'p> = Abstract<'p>;
-  let x = never();
-  let f = |i| { let b = B([x, i]); select b.0 { [1, ..] => i, [h, ..] => h, _ => 2 } };
+  let x: i64 = never();
+  let f = |i: i64| { let b = B([x, i]); select b.0 { [1, ..] => i, [h, ..] => h, _ => 2 } };
   let v = array::map([1, 2, 3], |i| f(i));
   x <- 1;
   v

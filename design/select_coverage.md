@@ -59,7 +59,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   A cell an arm's pattern decided (the arms' settle, a completion, the
   narrowing, the coverage) counts as one still open there, a binding the
   decision rewrote read as it was (`Deciding`,
-  `StructurePattern::meets_decided`, `written_tests_decided`), except a
+  `StructurePattern::meets_decided`, `written_tests_decided`), one the
+  scrutinee holds only through an open cell's lower bounds (`*r` over
+  `&mut (x, 0)`, an abstract constructor's parameter) met in the
+  scrutinee read as those bounds hold it (`lower_view`), except a
   whole open scrutinee, which the arms decide together, unless an arm
   holds a partial struct pattern; a pattern there that only takes apart
   every value of the shape it decides (a tuple, a struct naming every

@@ -610,6 +610,51 @@ run!(destructuring_nested_capture_decides_an_undecided_part, r#"{
     f((1, {b: 2, c: 3}))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
 
+// A part the scrutinee holds only through a lower bound (a reference's
+// referent, an abstract constructor's parameter) is judged as the bound
+// holds it.
+run!(tag_deciding_a_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 3 } };
+    f(`M)
+}"#, refused("(`J, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_deciding_a_part_below_a_reference_beside_a_wildcard_refused, r#"{
+    let f = |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (_, _) => 3 } };
+    f(`M)
+}"#, refused("(`J, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(field_tag_deciding_a_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut {a: x, b: 0}; select *r { {a: `J, b} => b, {a, b} => 3 } };
+    f(`M)
+}"#, refused("{ a: `J, b } tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(written_test_deciding_a_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut (x, 0); select *r { ([`J, `M], i64) as (`J, _) => 1, _ => 3 } };
+    f(`M)
+}"#, refused("([`J, `M], i64) as (`J, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_deciding_a_part_below_an_abstract_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select W((x, 0)).0 { (`J, _) => 1, (`M, _) => 3, _ => 2 };
+    f(`M)
+}"#, refused("(`J, _) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_over_an_annotated_part_below_a_reference, r#"{
+    let f = |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 3 } };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(destructuring_a_part_below_a_reference, r#"{
+    let f = |x| { let r = &mut (x, 0); select *r { ((a, b), c) => a + b + c } };
+    f((1, 2))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(destructuring_a_part_below_an_abstract_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select W((x, 0)).0 { ((a, b), _) => a + b };
+    f((1, 2))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
 // A pattern that chooses a value, a tag or a length at an undecided part
 // decides it to that choice: refused as testing it.
 run!(bool_literals_deciding_an_undecided_part_refused, r#"{

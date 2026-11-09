@@ -39,12 +39,14 @@ select, and runtime forms. Each rule refuses and names the fix.
   leaves the later arms free of it): over `let v = select b { true => {a: [1],
   c: 1}, false => z }`, `{a, ..} => ..` is refused until `z` is annotated.
   An arm whose pattern would decide it is refused the same way: `|x|
-  select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`);
-  so is a literal, `null`, `[]`, a fixed-length slice or an or-pattern
-  there. A pattern that only takes it apart decides its shape: `((a, b),
-  _)`, `({a, b}, _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check,
-  unless the part stands beside a member of that shape (`y` is `x` or a
-  pair): the destructure then chooses between them, refused.
+  select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`),
+  and through a reference or an abstract's payload alike (`select *r`
+  over `let r = &mut (x, 0)`, `select W((x, 0)).0`); so is a literal,
+  `null`, `[]`, a fixed-length slice or an or-pattern there. A pattern
+  that only takes it apart decides its shape: `((a, b), _)`, `({a, b},
+  _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check, unless
+  the part stands beside a member of that shape (`y` is `x` or a pair):
+  the destructure then chooses between them, refused.
   A rest leaves the other lengths to a later name or `_`: a later `([],
   _)` is a length choice, refused.
   Only a scrutinee wholly of such a type is the arms' to decide together
@@ -84,6 +86,9 @@ ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x| select (x, 0) { ((a, b), _) => a }
+no "not decided at this select" |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
+ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
+ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }
 ok |x| select x { `J => 1, `M => 2 }
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
 ```

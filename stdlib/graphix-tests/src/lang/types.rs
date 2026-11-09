@@ -4287,19 +4287,32 @@ run!(
 
 // A type test over the element: `[i64, Array<i64>]` holds `x` and
 // `Array<x>` together only as `x := i64`, which the open bound takes
-// after the other.
+// after the other. The arms decide `x` so, through the payload's bounds,
+// and are refused for it as over a plain scrutinee; annotated, it runs.
 const TYPE_TEST_OVER_THE_ELEMENT: &str =
     "[h, ..] => select h { i64 as n => n + 100, Array<i64> as a => array::len(a) }";
+
+const TYPE_TEST_DECIDES_X: &str =
+    "Array<i64> as a tests a value of 'x, a type not decided at this select";
 
 run!(
     select_type_test_over_two_payload_bounds,
     select_over_two_payload_bounds("B([[x]])", "B([x])", TYPE_TEST_OVER_THE_ELEMENT),
-    prints("[[[[i64:1]], [i64:1]], [i64:1, i64:101]]")
+    refused(TYPE_TEST_DECIDES_X);
+    FuseExpect::None
 );
 
 run!(
     select_type_test_over_two_payload_bounds_by_a_definition,
     select_over_two_payload_bounds("mk([[x]])", "mk([x])", TYPE_TEST_OVER_THE_ELEMENT),
+    refused(TYPE_TEST_DECIDES_X);
+    FuseExpect::None
+);
+
+run!(
+    select_type_test_over_two_annotated_payload_bounds,
+    select_over_two_payload_bounds("B([[x]])", "B([x])", TYPE_TEST_OVER_THE_ELEMENT)
+        .replace("let x = never();", "let x: i64 = never();"),
     prints("[[[[i64:1]], [i64:1]], [i64:1, i64:101]]")
 );
 
@@ -5279,7 +5292,8 @@ run!(
 
 // A cell above an array of another cell and above that cell is no cycle:
 // a lower bound closes one only down from the cell below or up from the
-// cell above.
+// cell above. The select's type tests then decide `x` through the bounds,
+// refused for that, never as a cycle.
 const LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES: &str = r#"
 {
     type B<'p> = Abstract<'p>;
@@ -5301,6 +5315,14 @@ const LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES: &str = r#"
 run!(
     lower_bounds_beside_an_array_of_themselves,
     LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES,
+    refused(TYPE_TEST_DECIDES_X);
+    FuseExpect::None
+);
+
+run!(
+    lower_bounds_beside_an_array_of_an_annotated_cell,
+    LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES
+        .replace("let x = never();", "let x: i64 = never();"),
     prints("[[i64:2], [i64:100]]")
 );
 
