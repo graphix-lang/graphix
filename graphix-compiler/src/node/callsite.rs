@@ -2898,6 +2898,21 @@ impl<R: Rt> CallSite<R> {
             // quiet-refresh-op-01 (a), so a fused run-time bind and the node-walk
             // agree. Build (b) with that change, and make FuseExpect count only what
             // the build fused (its doc), which settles the 81 fixtures' flips.
+            // 2026-11-09 claude: Eric ruled (2026-11-09): D20 follow-up 2 (3): a quiet
+            // change updates values in place, never structure. Lane 19e did not land
+            // (b): its 11-05 ruling builds it with quiet-refresh-op-01 (a), which is
+            // not on main and is back with Eric (the kernel half of (3) is blocked,
+            // see that CR). Rebuilt on main 3cfcd2407 as branch r19-e-wip-bound-bind
+            // (357421777 FuseExpect, 7c1013eae, d0c0e9857, bea429a76 the
+            // strict_fusion.md rule): without (a),
+            // lang::prune::standing_formal_refresh_marks_its_readers fails in Jit
+            // (cycle 6: 1, the node-walk 3), a wrong answer under fusion;
+            // bound_function_value_fuses, bound_unfused_instance_tried_once,
+            // first_cycle_bind_is_not_the_builds pass. b8.gx instructions:u (debug):
+            // base-r19 24.60G, the branch 1.04G. graphix-fuzz regress on the branch:
+            // 567 programs, 0 regressions, outcome and fusion manifests 0 mismatches.
+            // Land the branch with quiet-refresh-op-01 once that CR's kernel half is
+            // settled; the admin TUI's first-bind cost is still to measure in quick.
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
