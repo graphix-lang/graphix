@@ -4266,7 +4266,23 @@ run!(
     x <- t ~ "s";
     (b.0, v)
 }"#,
-    refused("(1, \"a\") tests a value whose type is a part of 'x, a type not decided at this select")
+    refused(
+        "(1, \"a\") tests a value whose type is a part of 'b, a type not decided at this select"
+    )
+);
+
+run!(
+    payload_bounds_annotated_where_held,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let x = never();
+    let b: B<([i64, string], [i64, string])> = B((x, x));
+    let v = select b.0 { (1, "a") => 0, _ => 1 };
+    x <- t ~ "s";
+    (b.0, v)
+}"#,
+    prints(r#"[["s", "s"], i64:1]"#)
 );
 
 // A type test over the element: `[i64, Array<i64>]` holds `x` and

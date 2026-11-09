@@ -2610,47 +2610,42 @@ impl<'a> Holders<'a> {
     }
 
     /// The binding to annotate where the cell `tv` stands for is a part of
-    /// a binding's type, named: among the bindings other than functions
-    /// and select binds, one whose type is the cell, or a cell a value
-    /// written into it came from, else one holding such a cell inside its
-    /// type; the one written first of the nearest kind.
-    pub(crate) fn name_part(&mut self, env: &'a env::Env, tv: &TVar) -> Option<Type> {
-        let mut sources: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        let mut targets: LPooled<AHashSet<usize>> = LPooled::take();
-        for t in tv.cell_lower() {
-            if let Type::TVar(c) = &t {
-                targets.insert(c.stands_for());
-            }
-            t.collect_tvars(&mut sources);
+    /// a binding's type where the select `at` tests it, named: among the
+    /// bindings other than functions and select binds whose type holds
+    /// the cell outside a function type, the nearest one written above
+    /// `at`, else the one written first.
+    pub(crate) fn name_part(
+        &mut self,
+        env: &'a env::Env,
+        tv: &TVar,
+        at: &Expr,
+    ) -> Option<Type> {
+        fn holds(t: &Type, cell: usize, seen: &mut AHashSet<usize>) -> bool {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::TVar(tv) if tv.stands_for() == cell => true,
+                t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
+                Type::TVar(tv) => tv.binding().is_some_and(|b| holds(&b, cell, seen)),
+                Type::Fn(_) => false,
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found = found || holds(c, cell, seen));
+                    found
+                }
+            })
         }
-        targets.insert(tv.stands_for());
-        targets.extend(sources.values().map(|c| c.stands_for()));
-        let inside = |b: &env::Bind| {
-            let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            match b.typ.deref_cloned() {
-                Some(t) => t.collect_tvars(&mut cells),
-                None => b.typ.collect_tvars(&mut cells),
-            }
-            cells.values().any(|c| targets.contains(&c.stands_for()))
-        };
-        let whole = |b: &env::Bind| matches!(&b.typ, Type::TVar(c) if targets.contains(&c.stands_for()));
-        let b = env
-            .by_id
-            .iter()
-            .map(|(_, b)| b)
-            .filter(|b| {
+        let cell = tv.stands_for();
+        let held = || {
+            env.by_id.iter().map(|(_, b)| &**b).filter(|b| {
                 !crate::is_lowered(&b.name)
                     && !matches!(b.binder, Some(env::Binder::SelectPattern(_)))
-                    && !matches!(b.typ.deref_cloned(), Some(Type::Fn(_)))
-                    && !matches!(b.typ, Type::Fn(_))
+                    && holds(&b.typ, cell, &mut LPooled::take())
             })
-            .filter_map(|b| match (whole(b), inside(b)) {
-                (true, _) => Some((0, b)),
-                (_, true) => Some((1, b)),
-                _ => None,
-            })
-            .min_by_key(|(kind, b)| (*kind, b.pos.line, b.pos.column))?
-            .1;
+        };
+        let pos = |b: &env::Bind| (b.pos.line, b.pos.column);
+        let b = held()
+            .filter(|b| *b.ori == *at.ori && pos(b) <= (at.pos.line, at.pos.column))
+            .max_by_key(|b| pos(b))
+            .or_else(|| held().min_by_key(|b| pos(b)))?;
         Some(self.name(b))
     }
 

@@ -2574,7 +2574,7 @@ impl<R: Rt> Select<R> {
                             }
                             .map(|tv| {
                                 let pat = format_compact!("{t} as {sp}");
-                                undecided_refusal(env, &pat, &tv, &self.spec.ori)
+                                undecided_refusal(env, &pat, &tv, &self.spec)
                             })
                         }
                     }
@@ -2584,7 +2584,7 @@ impl<R: Rt> Select<R> {
                     None if decided.cells.is_empty() => None,
                     None => sp.meets_decided(env, &ids, reaching, &was)?,
                 }
-                .map(|tv| undecided_refusal(env, sp, &tv, &self.spec.ori)),
+                .map(|tv| undecided_refusal(env, sp, &tv, &self.spec)),
             };
             if let Some(e) = e {
                 return Err(e).at(&pattern_site(spec_pat, n.spec()));
@@ -2847,13 +2847,14 @@ fn written_tests_decided(
 // t, x (select.rs collection_parameter_element_pattern*, block_types.rs, types.rs
 // payload_bounds_refused_together).
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
-/// at its select, naming the binding whose type it is.
+/// at its select, naming the binding whose type it is or holds it.
 fn undecided_refusal(
     env: &Env,
     pat: &dyn std::fmt::Display,
     tv: &TVar,
-    at: &Origin,
+    select: &Expr,
 ) -> anyhow::Error {
+    let at = &*select.ori;
     let mut holders = Holders::new(env, None);
     match holders.name_cell(tv) {
         Some(name) => {
@@ -2864,7 +2865,7 @@ fn undecided_refusal(
                  {meanings}"
             )
         }
-        None => match holders.name_part(env, tv) {
+        None => match holders.name_part(env, tv, select) {
             Some(name) => {
                 let meanings = holders.meanings(at);
                 anyhow!(

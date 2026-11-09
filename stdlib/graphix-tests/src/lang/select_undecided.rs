@@ -865,11 +865,41 @@ run!(undecided_index_part_annotated, r#"{
     [f([`M]), f([`J])]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1]); FuseExpect::Jit);
 
-run!(undecided_abstract_part_names_its_binding, r#"{
+run!(undecided_nested_index_part_names_its_binding, r#"{
+    let f = |x| select ((x[0]$)[0]$, 0) { (`J, _) => 1, _ => 2 };
+    f([[`M]])
+}"#, refused(PART_OF_X); FuseExpect::None);
+
+run!(undecided_part_names_no_function_holding_it, r#"{
+    let s = {g: |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }};
+    s.g([`M])
+}"#, refused(PART_OF_X); FuseExpect::None);
+
+const BUILT_HERE: &str = "tests a value whose type is not decided at this select, which a \
+     later use could decide apart from what the arms test: annotate the scrutinee's type \
+     where it is built";
+
+run!(undecided_abstract_payload_names_no_argument, r#"{
     type W<'a> = Abstract<'a>;
     let f = |x| select (W(x), 0) { (W(`J), _) => 1, _ => 2 };
     f(`M)
-}"#, refused(PART_OF_X); FuseExpect::None);
+}"#, refused(BUILT_HERE); FuseExpect::None);
+
+run!(undecided_abstract_payload_over_an_annotated_argument, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: [`J, `M]| select (W(x), 0) { (W(`J), _) => 1, _ => 2 };
+    f(`M)
+}"#, refused(BUILT_HERE); FuseExpect::None);
+
+run!(
+    undecided_abstract_payload_annotated_where_built,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| { let w: W<[`J, `M]> = W(x); select (w, 0) { (W(`J), _) => 1, _ => 2 } };
+    [f(`M), f(`J)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1])
+);
 
 run!(undecided_part_of_a_destructured_binding, r#"{
     let f = |x| select (x, 0) { ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 }, _ => 0 };
