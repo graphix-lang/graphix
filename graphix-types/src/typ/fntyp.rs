@@ -1453,50 +1453,6 @@ impl FnType {
     // its let annotation: traits::written_method_unions treats self as the impl's there, but method_sig_at replaces self with the target, so a self written in the impl lambda is a
     // variable of that lambda (impl T for i64 { let m = |s, x: [self, 'c]| 0 } runs, its ['c, 'd] twin is refused). An under-refusal, as on main before D8. probes
     // ~/ptmp/cr29/scratch/review-r16/d7-r3-*/n_iself*.gx
-    // XCR claude for claude: [bug/medium] Eric's 11-05 ruling (b) refuses a union of two or
-    // more bare type variables in a written function type, but a union of members that
-    // each hold a variable (`[Array<'c>, Array<'d>]`) asks the same question, which member
-    // a value takes, and order answers it: over `let f = |x: [Array<'c>, Array<'d>], y:
-    // 'd, z: 'c| -> i64 0`, `f([1], 1, "s")` is refused ("'c: i64 does not contain
-    // string": `[1]` took the first member, naming nothing to annotate), while the same
-    // function with `x` last, `f(1, "s", [1])`, runs and prints 0; through an interface
-    // (`val f: fn(x: [Array<'a>, Array<'b>], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64`
-    // over an implementation naming them `'c`/`'d` the other way) the check accepts and
-    // the build refuses the instance ("an instance at .. of a definition typed .."). Main
-    // 187fd838d alike. Options: (a) extend (b): a written union two of whose members hold
-    // distinct variables of the definition under one constructor is refused too (census
-    // first); (b) leave it as it is. Found by lane d7
-    // (round 18) rewriting lang::interfaces::union_pairing_waits_for_later_parameters.
-    // Probes: ~/ptmp/cr29/scratch/r18-d7/nest3.gx, nest4.gx, nest/test.gx.
-    // (formal-union-nested-01)
-    // 2026-11-09 claude: Eric ruled (2026-11-09): D8 follow-up (a): extend D8 (b)'s
-    // written-form refusal to a written union two of whose members hold distinct variables
-    // of the definition under the same constructor (any constructor, function type or
-    // struct field), naming the annotation; typedef-hidden forms are not looked through.
-    // 2026-11-09 claude: Built (lane 19g): VariableUnion::of (settle.rs) also refuses a
-    // written union two of whose members share a constructor (same_constructor: two
-    // arrays, lists, maps, errors, references or function types; tuples of one arity;
-    // structs of one field set; variants of one tag and arity; one abstract; one typedef
-    // by written name) and hold two distinct own variables anywhere inside (own_vars),
-    // naming both members: 'write one variable in both, or a written type in place of one
-    // of them'. Every site D8 (b) judges (a lambda's signature, a .gxi val, a trait
-    // method, an impl method, a body annotation's function type) gets it through
-    // VariableUnion::of. nest3.gx and nest4.gx are refused at the definition, nest/test.gx
-    // at the implementation's lambda. Pins that fail without it:
-    // lang::types::nested_variable_union_{refused,written_last_refused,at_two_positions_refused,through_a_function_type_refused,of_struct_fields_refused,of_variants_refused,of_one_typedef_refused,in_the_result_refused},
-    // lang::interfaces::{val,implementation}_nested_variable_union_refused,
-    // lang::traits::trait_method_nested_variable_union_refused; twins
-    // nested_union_of_one_variable_beside_a_written_type,
-    // nested_union_of_two_constructors, nested_union_of_two_tags,
-    // nested_union_of_two_arities, nested_union_typedef_is_not_looked_through,
-    // nested_data_union_of_variables_in_an_annotation. Must-reject family 15 writes
-    // [Array<'tm__a>, Array<'tm__b>] every other probe. Fixtures that wrote the refused
-    // form were rewritten through two typedef names of one body (interfaces open_union_*,
-    // unpairable_union_refused_without_retrying_the_others, errors
-    // two_cells_behind_one_name_past_the_pair_budget_*, types
-    // a_dag_of_union_bounds_types_its_instances). Census: no verdict change. Two written
-    // function types merge as the union parses, so they never reach the rule
-    // (formal-union-fn-merge-01). Needs a soak.
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
