@@ -1586,7 +1586,8 @@ references name the target is told the recursive type alone
   method, one a body's annotation writes) holds no union written with two
   or more of its own bare variables (`['a, 'b]`, under any constructor as
   written; a typedef is not looked through; a trait's `self` and an impl's
-  head are no method's own, a `self` an impl's method writes is), nor two members of one constructor holding two distinct
+  head are no method's own, a `self` an impl's method writes is), nor two
+  members of one constructor holding two distinct
   ones (`[Array<'c>, Array<'d>]`), refused, naming one variable or written
   types as the fix
   (`Type::variable_union`); a def's declared tvars are

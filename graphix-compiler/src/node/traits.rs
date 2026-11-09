@@ -316,6 +316,14 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
 // in an impl, so it may need Eric. probes:
 // ~/ptmp/cr29/scratch/review-r16/d7-r3-1/n_iself.gx, n_iself4.gx
 // (impl-self-written-01)
+// 2026-11-09 claude: Review (lane 19g): in an impl method's let annotation,
+// self is neither the target nor rigid (bind.rs leaves it out of own_written):
+// impl T for i64 { let m: fn(s: i64, x: self) -> self = |s, x| x } over
+// fn(self, x: string) -> string runs with x a string, and fn(s: self, x:
+// string) -> string = |s, x| { let k = s + 1; x } runs (s + 1 is refused when
+// the lambda writes s: self). Two meanings of a written self in one impl;
+// whatever is ruled here should fix both. probes
+// ~/ptmp/cr29/scratch/r19/19g/review/la1.gx, la2.gx, la4.gx
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.

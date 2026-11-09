@@ -1473,6 +1473,11 @@ impl FnType {
     // binding to annotate (let u: [i64, string] = never()); one order everywhere, but it reaches every select over two open values, so census first, and the order-chasing variants of
     // this failed review before. Rec (a): no wrong value or check/build disagreement in the shipped mode, and (b) is the shape that kept failing. Probes
     // ~/ptmp/cr29/scratch/r19/19g/s*.gx.
+    // 2026-11-09 claude: Review (lane 19g, round 19) of the 11-09 note's item (2): the ruling settles only that D8 (b) and its follow-up do not reach the typedef-hidden forms
+    // (written form only); the rec Eric took says they stay on this CR, so they are still OPEN here beside (3), not closed. They split check and build in the default mode on main
+    // (base-r19) and on the lane build alike: --check accepts and the run refuses the instance ('an instance at fn(x: E<i64, string>) .. of a definition typed fn(x: E<'a, 'b>) ..')
+    // for ~/ptmp/cr29/scratch/r18b-d7/x/t_later.gx, t_idarg.gx and t_idbody.gx, an elaboration refusing what the check accepted. Item (3)'s recommendation (accept, default mode
+    // agrees) does not cover them.
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
