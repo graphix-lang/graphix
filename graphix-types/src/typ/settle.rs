@@ -603,8 +603,14 @@ impl VariableUnion {
                 if !same_constructor(a, b) {
                     continue;
                 }
-                let distinct =
-                    avs.iter().find_map(|v| bvs.iter().find(|w| *w != v).map(|w| (v, w)));
+                let distinct = avs
+                    .iter()
+                    .find(|v| !bvs.contains(v))
+                    .zip(bvs.iter().find(|w| !avs.contains(w)))
+                    .or_else(|| {
+                        avs.iter()
+                            .find_map(|v| bvs.iter().find(|w| *w != v).map(|w| (v, w)))
+                    });
                 if let Some((v, w)) = distinct {
                     let (v, w) = if v <= w { (v, w) } else { (w, v) };
                     return Some(VariableUnion {
@@ -648,7 +654,7 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
 /// value of the one may be a value of the other: two arrays, lists, maps,
 /// errors, references or function types; tuples of one arity; structs of
 /// one field set; variants of one tag and arity; one abstract type; one
-/// typedef by its written name.
+/// typedef by its written name; one constructor variable applied (`self<'c>`).
 fn same_constructor(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Array(_), Type::Array(_))
@@ -664,6 +670,9 @@ fn same_constructor(a: &Type, b: &Type) -> bool {
         (Type::Variant(t, a, _), Type::Variant(u, b, _)) => t == u && a.len() == b.len(),
         (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) => a == b,
         (Type::Ref(a), Type::Ref(b)) => a.scope == b.scope && a.name == b.name,
+        (Type::App(f, _), Type::App(g, _)) => {
+            matches!((&**f, &**g), (Type::TVar(f), Type::TVar(g)) if f.name == g.name)
+        }
         _ => false,
     }
 }

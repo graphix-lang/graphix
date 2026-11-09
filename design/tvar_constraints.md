@@ -380,7 +380,8 @@ the two members: write one variable in both, or a written type in place
 of one (`VariableUnion::of`, `same_constructor`). One constructor is two
 arrays, lists, maps, errors, references or function types, tuples of one
 arity, structs of one field set, variants of one tag and arity, one
-abstract type, or one typedef by its written name; a variable anywhere
+abstract type, one typedef by its written name, or one constructor
+variable applied (`[self<'c>, self<'d>]`); a variable anywhere
 inside a member counts (`[('c, i64), (i64, 'd)]`, `[Array<'c>,
 Array<fn(x: 'd) -> i64>]`). Members of two constructors (`[Array<'c>,
 Map<string, 'd>]`, `` [`A('c), `B('d)] ``), one variable among them

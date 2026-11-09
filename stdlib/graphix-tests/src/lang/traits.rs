@@ -3155,6 +3155,27 @@ run!(
     "#
 ; FuseExpect::None);
 
+// `self<'b>` and `self<'c>` apply one constructor: a `[2]` fits either.
+run!(
+    trait_method_self_applied_variable_union_refused,
+    refused("trait method pk: [self<'b>, self<'c>] is a union of the type variables 'b and 'c, held by"),
+    "/test.gx" => r#"
+        trait Pk { val pk: fn(self<'a>, x: [self<'b>, self<'c>], y: 'b, z: 'c) -> i64 };
+        impl Pk for Array<'_> { let pk = |s, x, y, z| 0 };
+        let result = Pk::pk([1], [2], 3, "s")
+    "#
+; FuseExpect::None);
+
+run!(
+    trait_method_self_applied_beside_a_written_type,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait Pk { val pk: fn(self<'a>, x: [self<'b>, i64], y: 'b) -> i64 };
+        impl Pk for Array<'_> { let pk = |s, x, y| 0 };
+        let result = Pk::pk([1], 3, 3)
+    "#
+; FuseExpect::Jit);
+
 // `self` is the implementation's type, a written type at every impl: one
 // variable beside it stands. A union an impl's head writes is the impl's.
 run!(
