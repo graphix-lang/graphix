@@ -2821,6 +2821,15 @@ impl<R: Rt> PatternNode<R> {
         v: &Value,
         tag: crate::Tag,
     ) {
+        // CR claude for claude: [perf/low] Delivering the binds inside the guard's boundary
+        // spares only a reader that sits directly in the guard: one in a block statement of
+        // the guard (`x if { let y = x; y > 0 }`) has that statement's boundary visited, which
+        // does not hold the guard's, so the arm's re-delivery is still a late fire to it and
+        // costs a cycle (lang::prune's `walks`, Interp: 637 boundary walks and 3 skips against
+        // 631 and 0 for the same guard reading the scrutinee `t`; 629 for both one-expression
+        // guards). Values are right (a `count(x)` there counts one fire, base and lane alike).
+        // The re-delivery repeats what bind_tentative gave the guard: it should not make a
+        // late fire to any reader inside the guard at all. (guard-bind-late-01)
         // inside the guard's boundary: the guard read these binds as it
         // ran, so their delivery is not one the walk passed it by
         let bind = |ctx: &mut ExecCtx<'_, R>| {
