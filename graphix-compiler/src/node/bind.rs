@@ -1120,31 +1120,6 @@ fn name_passed<R: Rt>(env: &Env, node: &mut Node<R>) {
                 pass(&mut parts.n[t.field])
             }
         }
-        // XCR claude for claude: [bug/low] A seqq inside a generalized holder's value
-        // still reads an outer holder at one type: `let s = {g: |x| x}; let h = {f: |k|
-        // seqq k { (s.g(1), s.g("s")) }}` (or the seqq itself as a field or a tuple
-        // element) is refused at --check ("i64 does not contain string"), where the `seq`
-        // twin and the plain block run and print (1, "s"). Untraced hypothesis: under
-        // ValueReads::Shared the capture's Naming::Passed live read goes through
-        // holder_read (Ref::decide), sharing the holder's one copy of `s` with the
-        // queue argument's read of it in the lowering's prelude, so the capture carries
-        // the queue's instance. A fix that gives the capture's live read a copy of its
-        // own beside the holder's map is a rule the D3 follow-up 3 ruling does not state
-        // (it states the capture carries the scheme as a seq snapshot does, which this
-        // shape misses). A refusal, not a hole; main 5a28e6a57 refuses it too. Review r18
-        // Q-r1-1. probe: ~/ptmp/cr29/scratch/review-r16/Q-r1-1/r18/p31_lambda_in_holder.gx
-        // vs p31s_lambda_in_holder_seq.gx, p23_seqq_in_holder.gx vs p23s/p23p,
-        // p32_tuple_holder_value.gx vs p32s (seqq-capture-in-holder-01)
-        // 2026-11-09 claude: The seqq lowering's queued value of a captured variable
-        // (#seqqseed, expr::seq::is_request_seed) reads under ValueReads::Own, so in a
-        // holder's value it is the queue's one instance apart from the holder's shared
-        // copy; the capture's live read keeps sharing that copy as a seq step's snapshot
-        // does (Bind::compile). The holder-once rule still holds through a seqq step. Pins
-        // lang::quantified::{a_seqq_in_a_holders_lambda,a_seqq_as_a_holders_field,a_seqq_in_a_holder_tuple}_reads_an_outer_holder_generically
-        // fail without it (all four modes);
-        // a_seqq_step_in_a_holder_decides_the_holders_copy{,_one_type} pin the once rule,
-        // which a capture with its own copy would break; skill fences in generics.md.
-        // Census unchanged.
         Some(Passing::Capture) => {
             if let Some(c) = node.downcast_mut::<super::seq_machine::SeqCapture<R>>() {
                 pass(&mut c.live)
