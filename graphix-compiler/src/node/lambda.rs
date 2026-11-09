@@ -609,6 +609,18 @@ fn instance_sig<R: Rt>(
     // no closed gate owns included, so the check binds nothing another
     // instance reads
     let def = def.instantiate_owned(known);
+    // CR claude for claude: [perf/medium] Building the instance of a union-bound
+    // DAG costs about 1.6x an added link, a Fibonacci growth, though its check is
+    // flat: `'a{i}: [Array<'a{i+1}>, Array<'a{i+2}>, null]` for i < N, `'aN:
+    // Number`, `|x: ('a0, 'a1)| 7`, called once with `never()`. A run takes 1.8 /
+    // 6.8 / 41 / 551 G instructions at N = 20 / 24 / 28 / 32 (main grows the same
+    // and refuses the instance), --check 0.9 G at 32. perf at 24:
+    // FnType::check_contains here (32%), FnType::bounds_hold -> constraint_view
+    // -> Type::normalize_int -> Type::merge (29%), FnType::collect_tvars (15%).
+    // The instance's printed signature spells each witness out in full, the DAG
+    // unfolded into a tree, so each walk likely walks the tree. probes:
+    // ~/ptmp/cr29/scratch/r19/19c/bos-review/{d20,d24,d28,ch32}.gx
+    // (union-dag-build-exp-01)
     instance.check_contains(&ctx.env, &def).ok()?;
     Some(Arc::new(def))
 }
