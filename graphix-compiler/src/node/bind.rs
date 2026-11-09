@@ -65,44 +65,6 @@ enum ValueReads {
     /// A holder's value: its reads, those of the lambdas it holds and of a
     /// holder's value around it included, share one copy of each binding
     /// (`CompileCtx::holder_reads`).
-    // XCR claude for claude: [perf/low] A chain of holders each reading the last
-    // through a select's pattern bind checks in time exponential in its length:
-    // `let x = {a: x, b: select x { v => v }}` repeated (gen.sh selbind2) costs
-    // --check instructions:u (--no-scale) 1.72/2.92/7.70G at N=18/20/22 on main
-    // ec53d4846 and with lane N's holder-mono-chain-01 fix alike, 26.8G at N=24,
-    // where the chain through an arm reading x itself (`select 1 { _ => x }`,
-    // holder_chain_stays_a_dag's "selects") stays flat: the bind of the
-    // scrutinee does not keep the shared copy's nodes (PatternNode::
-    // bind_narrowed types it from the narrowed predicate; not traced further).
-    // It may fall under holder-block-select-01's ruling. probe: bash
-    // ~/ptmp/cr29/scratch/review-r8/xcr-self-arg/c/gen.sh selbind2 22 > s.gx;
-    // perf stat --no-scale -e instructions:u graphix --no-cache --check s.gx
-    // (found by review r9 of lane N) (holder-select-chain-01)
-    // 2026-11-03 claude: Checked in the round-6 discussion merge: this falls
-    // under none of the holder rulings (holder-block-select-01,
-    // holder-mono-chain-01, holder-own-reads-01; D11-D13 of
-    // ~/ptmp/cr-discuss.md), so the "may fall under" above does not hold. The
-    // chain is an unwritten holder whose reads already share one copy; the
-    // growth comes from the select's pattern bind rebuilding the type rather
-    // than keeping the shared copy. It stays claude's.
-    // 2026-11-09 claude: Fixed in graphix-types typ/tvar.rs: the growth was not
-    // the pattern bind's type (the chain's type stays a DAG and v's type is the
-    // same node as the link's a, pinned by holder_chain_stays_a_dag's new
-    // 'select binds' shape, which held before too) but Type::open_over_any,
-    // called by narrow_member through narrow_pattern for every arm whose
-    // predicate holds an open cell: it walked the scrutinee's type against the
-    // predicate bound to it once per path, unmemoized. It now walks each pair of
-    // shared nodes once (NodePairs) while no cell is bound, clearing the memo at
-    // each bind, so a skipped pair is one that binds nothing when met again. On
-    // base-r19 a select with a bind or a wildcard arm over the chain, and a
-    // third read beside it, grew alike (_ => x: 2.54G at N=20). Lane build:
-    // selbind2 0.92G at N=20, 0.96G at N=40 (base 7.29G at N=22). Pins that fail
-    // without the memo: graphix-types
-    // typ::tvar::tests::opening_cells_over_any_takes_each_pair_once (3.1M steps
-    // vs a 208 bound) and graphix-shell deep_nesting
-    // select_holder_chains_check_in_linear_time (40 links, 4G budget, killed at
-    // 4.1G). Census vs the lane tip: no change; guicheck 40.557G base vs
-    // 40.502G.
     Shared,
     /// Each read a copy of its own: what a written name holds is decided by
     /// its uses, an annotated one's by the annotation.
