@@ -338,16 +338,19 @@ impl FnType {
         // a cell only a bound of a bound names is the site's to settle too
         let mut todo: LPooled<Vec<TVar>> = LPooled::take();
         todo.extend(tvs.values().chain(more.iter()).cloned());
-        let mut found: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut nodes: LPooled<AHashSet<usize>> = LPooled::take();
         while let Some(tv) = todo.pop() {
             for c in tv.cell_constraints().iter() {
-                position_cells(c, &mut found)
-            }
-            for (addr, tv) in found.drain() {
-                if seen.insert(addr) {
-                    todo.push(tv.clone());
-                    more.push(tv);
-                }
+                walk_positions(c, &mut nodes, &mut |tv| {
+                    let addr = tv.cell_addr();
+                    let first = walked.insert(addr);
+                    if first && seen.insert(addr) {
+                        todo.push(tv.clone());
+                        more.push(tv.clone());
+                    }
+                    first
+                })
             }
         }
         let named = more.drain(..).map(|tv| (tv.name.clone(), tv));
@@ -828,25 +831,35 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
 /// conjuncts.
 #[doc(hidden)]
 pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
-    fn go(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AHashSet<usize>) {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if out.insert(tv.cell_addr(), tv.clone()).is_none()
-                    && let Some(b) = tv.binding()
-                {
-                    go(&b, out, nodes)
-                }
+    walk_positions(t, &mut LPooled::take(), &mut |tv| {
+        out.insert(tv.cell_addr(), tv.clone()).is_none()
+    })
+}
+
+/// Visits the cells `t` holds as positions, entering a cell's binding
+/// only when `first` says the cell is met for the first time; `nodes`
+/// holds the shared nodes already walked.
+fn walk_positions(
+    t: &Type,
+    nodes: &mut AHashSet<usize>,
+    first: &mut dyn FnMut(&TVar) -> bool,
+) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if first(tv)
+                && let Some(b) = tv.binding()
+            {
+                walk_positions(&b, nodes, first)
             }
-            t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
-            Type::Fn(ft) => ft.for_each_part(&mut |t, constraint| {
-                if !constraint {
-                    go(t, out, nodes)
-                }
-            }),
-            t => t.for_each_child(&mut |c| go(c, out, nodes)),
-        })
-    }
-    go(t, out, &mut LPooled::take())
+        }
+        t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
+        Type::Fn(ft) => ft.for_each_part(&mut |t, constraint| {
+            if !constraint {
+                walk_positions(t, nodes, first)
+            }
+        }),
+        t => t.for_each_child(&mut |c| walk_positions(c, nodes, first)),
+    })
 }
 
 impl Type {
