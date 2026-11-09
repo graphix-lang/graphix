@@ -100,18 +100,55 @@ impl Rewrite<'_> {
     }
 }
 
-/// Separates a trigger cell's seq id from the written name it holds.
-const TRIGGER_SEP: char = '_';
+/// The prefix of a run's snapshot of its trigger, or of a name a `seq
+/// let` binds: `#seqt<id>_<written>`.
+const TRIGGER: &str = "#seqt";
 
-/// Stands for `/` in a trigger cell's name, which a path must not split.
+/// Separates a cell's numbers from each other and from the written name
+/// it holds.
+const CELL_SEP: char = '_';
+
+/// Stands for `/` in a cell's written name, which a path must not split.
 const PATH_SEP: char = '~';
 
-/// The name a program wrote for a trigger cell `#seqt<id>_<name>`.
-pub fn written_trigger_name(cell: &str) -> Option<CompactString> {
-    let rest = cell.strip_prefix("#seqt")?;
-    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    let name = rest[digits..].strip_prefix(TRIGGER_SEP).filter(|_| digits > 0)?;
-    Some(name.chars().map(|c| if c == PATH_SEP { '/' } else { c }).collect())
+/// The prefix of a `try`'s cell for the error its `with` binds:
+/// `#seqe<id>_<written>`.
+const CAUGHT: &str = "#seqe";
+
+/// The cells named for what the program wrote, and how many numbers
+/// precede the written name in each.
+const WRITTEN_CELLS: [(&str, usize); 4] =
+    [(TRIGGER, 1), (ENTRY_SNAPSHOT, 3), (CAPTURE, 2), (CAUGHT, 1)];
+
+/// The cell `<numbered>_<written>`, which [`written_name`] reads back.
+fn written_cell(numbered: &str, written: &str) -> ArcStr {
+    let mut cell = CompactString::from(numbered);
+    cell.push(CELL_SEP);
+    cell.extend(written.chars().map(|c| if c == '/' { PATH_SEP } else { c }));
+    ArcStr::from(cell.as_str())
+}
+
+/// The written part of `cell`, `prefix` and then `numbers` numbers.
+fn written_part<'a>(cell: &'a str, prefix: &str, numbers: usize) -> Option<&'a str> {
+    let mut rest = cell.strip_prefix(prefix)?;
+    for _ in 0..numbers {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        rest = rest[digits..].strip_prefix(CELL_SEP).filter(|_| digits > 0)?;
+    }
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// The path a program wrote for a cell of [`WRITTEN_CELLS`], through the
+/// cells that read other cells.
+pub fn written_name(cell: &str) -> Option<ModPath> {
+    fn part(cell: &str) -> Option<&str> {
+        WRITTEN_CELLS.iter().find_map(|(prefix, n)| written_part(cell, prefix, *n))
+    }
+    let mut written = part(cell)?;
+    while let Some(inner) = part(written) {
+        written = inner
+    }
+    Some(ModPath::from_iter(written.split(PATH_SEP).filter(|p| !p.is_empty())))
 }
 
 /// A seq's parts, as `desugar` matched them.
@@ -175,7 +212,7 @@ const ENTRY_INPUT: &str = "#seqsin";
 const PC: &str = "#seqpc";
 
 /// The prefix of a `seqq` request's capture of a variable its body reads,
-/// `let #seqqcap<id>_<n> = capture(input.1.n or live v)`: the dequeued
+/// `let #seqqcap<id>_<n>_<v> = capture(input.1.n or live v)`: the dequeued
 /// request's snapshot of `v`, or `v` itself where a step writes it.
 const CAPTURE: &str = "#seqqcap";
 
@@ -188,7 +225,7 @@ pub fn passes_on(name: &str) -> bool {
     numbered(name, ENTRY_SNAPSHOT, &[2])
         || numbered(name, STEP_VALUE, &[1, 2])
         || is_statement_value(name)
-        || numbered(name, CAPTURE, &[2])
+        || written_part(name, CAPTURE, 2).is_some()
 }
 
 /// Whether `name` is a `{ .. }` statement's item value ([`STATEMENT_VALUE`]).
@@ -343,8 +380,7 @@ fn trigger_snapshot(
 ) -> Result<Expr> {
     let Parts { spec, trigger, body, .. } = *seq;
     let (pos, id) = (spec.pos, spec.id.inner());
-    let cell =
-        |n: &str| ArcStr::from(format_compact!("#seqt{id}{TRIGGER_SEP}{n}").as_str());
+    let cell = |n: &str| written_cell(&format_compact!("{TRIGGER}{id}"), n);
     match trigger {
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
@@ -357,7 +393,7 @@ fn trigger_snapshot(
                 && let n = ArcStr::from(ref_key(name))
                 && (reads(&n) || aliases.iter().any(|a| reads(a)))
             {
-                let c = cell(&n.replace('/', &PATH_SEP.to_string()));
+                let c = cell(&n);
                 decls.push(let_bind(e.pos, &c, None, never(e.pos)));
                 writes.push(connect(pos, &c, r#ref(pos, go)));
                 for a in aliases {
@@ -927,8 +963,7 @@ impl Machine<'_> {
         let mut map = scope(visible);
         let mut reads: LPooled<Vec<(ArcStr, Expr)>> = LPooled::take();
         for (i, (k, read)) in vars.drain(..).enumerate() {
-            let c =
-                ArcStr::from(format_compact!("{ENTRY_SNAPSHOT}{id}_{n}_{i}").as_str());
+            let c = written_cell(&format_compact!("{ENTRY_SNAPSHOT}{id}_{n}_{i}"), &k);
             map.insert(k, Redirect::Entry(c.clone()));
             reads.push((c, read));
         }
@@ -1183,7 +1218,8 @@ impl Machine<'_> {
                 anyhow!("a try body and a with body each need a statement").at(spec)
             );
         }
-        let e_cell = ArcStr::from(format_compact!("#seqe{}", spec.id.inner()).as_str());
+        let e_cell =
+            written_cell(&format_compact!("{CAUGHT}{}", spec.id.inner()), &t.bind.name);
         self.decls.push(let_bind(t.bind.pos_or(pos), &e_cell, None, never(pos)));
         // a try whose value only writes variables has each body write them,
         // typed as they are
@@ -1482,7 +1518,10 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                         expr.kind = ExprKind::Ref { name: name.clone() };
                         (
                             expr,
-                            ArcStr::from(format_compact!("{CAPTURE}{id}_{n}").as_str()),
+                            written_cell(
+                                &format_compact!("{CAPTURE}{id}_{n}"),
+                                ref_key(name),
+                            ),
                             bind.id,
                         )
                     });
@@ -2565,13 +2604,29 @@ mod test {
     }
 
     #[test]
-    fn trigger_cells_name_what_was_written() {
-        let w = |c: &str| written_trigger_name(c).map(|n| n.to_string());
-        assert_eq!(w("#seqt12_y").as_deref(), Some("y"));
-        assert_eq!(w("#seqt12_m~t").as_deref(), Some("m/t"));
-        assert_eq!(w("#seqtv12"), None);
-        assert_eq!(w("#seqt_y"), None);
-        assert_eq!(w("y"), None);
+    fn cells_name_what_was_written() {
+        let w = |c: &str| written_name(c).map(|n| n.to_string());
+        assert_eq!(w(&written_cell("#seqt12", "y")).as_deref(), Some("y"));
+        assert_eq!(w(&written_cell("#seqt12", "/m/t")).as_deref(), Some("m::t"));
+        assert_eq!(w(&written_cell("#seqs12_0_3", "a_1")).as_deref(), Some("a_1"));
+        assert_eq!(w(&written_cell("#seqs12_0_3", "/m/t")).as_deref(), Some("m::t"));
+        assert_eq!(w(&written_cell("#seqqcap12_0", "y")).as_deref(), Some("y"));
+        assert_eq!(w(&written_cell("#seqe12", "e")).as_deref(), Some("e"));
+        let cap = written_cell("#seqqcap12_0", "/m/t");
+        assert_eq!(w(&written_cell("#seqs12_0_3", &cap)).as_deref(), Some("m::t"));
+        assert!(passes_on(&cap));
+        for lowered in [
+            "#seqtv12",
+            "#seqt_y",
+            "#seqt12_",
+            "#seqs12_0",
+            "#seqsin12_0",
+            "#seqedge12",
+            "#seqqcap12_0",
+            "y",
+        ] {
+            assert_eq!(w(lowered), None, "{lowered}");
+        }
     }
 
     fn cell(n: &str) -> Redirect {

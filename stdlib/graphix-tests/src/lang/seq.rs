@@ -976,3 +976,29 @@ run!(seq_function_prints_written_names, r#"{
     let f = seq let {x, y} = pt { |x| x + y };
     "[f]"
 }"#, prints(r#""Abstract(|x| x + y)""#); FuseExpect::Jit);
+
+// A step's entry snapshot of a variable, a seqq's capture, a with's error
+// and a connect's target print as the names the program wrote.
+run!(seq_step_function_prints_written_names, r#"{
+    let y = 2;
+    let r = &mut y;
+    let go = 1;
+    let f = seq go { |x| x + y };
+    let g = seq go { |x| *r <- x };
+    let pt = {a: 1};
+    let h = seq let {a} = pt { |x| a <- x };
+    let q = seqq go { |x| x + y + go };
+    let w = seq go { let v = try { error(`E)? } with(e) { |x| e }; v };
+    "[f] [g] [h] [q] [w]"
+}"#, prints(r#""Abstract(|x| x + y) Abstract(|x| *r <- x) Abstract(|x| a <- x) Abstract(|x| x + y + go) Abstract(|x| e)""#); FuseExpect::Jit);
+
+// A trigger spelled as a module path prints as the path it was written.
+run!(
+    seq_function_prints_written_module_path,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Abstract(|x| x + m::t)"),
+    "/test.gx" => r#"
+        mod m;
+        let f = seq m::t { |x| x + m::t };
+        let result = "[f]"
+    "#,
+    "/test/m.gx" => r#"let t = 0"#; FuseExpect::Jit);

@@ -3,9 +3,9 @@ use crate::{
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comment, Comments,
         Decorations, Doc, Expr, ExprKind, ImplExpr, ImplHead, ItemComments, LambdaBody,
-        LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem,
-        SigKind, StrForm, StructExpr, StructWithExpr, StructurePattern, TraitExpr,
-        TraitMethod, TypeDefBody, TypeDefExpr, UseCommentKind, UseItem,
+        LambdaExpr, ModPath, ModuleKind, Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig,
+        SigItem, SigKind, StrForm, StructExpr, StructWithExpr, StructurePattern,
+        TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr, UseCommentKind, UseItem,
         format::FormatConfig, parser, pattern::printed_fields,
     },
     print_as_written, print_lowered,
@@ -2213,7 +2213,7 @@ impl PrettyDisplay for ExprKind {
             }
             Connect { name, value, deref, .. } => {
                 let deref = if *deref { "*" } else { "" };
-                write!(buf, "{deref}{name} <-")?;
+                write!(buf, "{deref}{} <-", Written(name))?;
                 pretty_tail(buf, value)
             }
             TypeCast { expr, typ } => {
@@ -2839,23 +2839,12 @@ impl ExprKind {
             ExprKind::StructWith(sw) => write!(f, "{sw}"),
             ExprKind::Connect { name, value, deref, .. } => {
                 let deref = if *deref { "*" } else { "" };
-                write!(f, "{deref}{name} <- {value}")
+                write!(f, "{deref}{} <- {value}", Written(name))
             }
             ExprKind::Use { reexport, names } => {
                 write!(f, "{}", UseStmt(*reexport, names))
             }
-            ExprKind::Ref { name } => {
-                let written = match print_lowered() {
-                    true => None,
-                    false => {
-                        Path::basename(&name.0).and_then(super::seq::written_trigger_name)
-                    }
-                };
-                match written {
-                    Some(w) => write!(f, "{w}"),
-                    None => write!(f, "{name}"),
-                }
-            }
+            ExprKind::Ref { name } => write!(f, "{}", Written(name)),
             ExprKind::StructRef { source, field } => {
                 write!(f, "{}.{field}", Postfix(source))
             }
@@ -3129,6 +3118,23 @@ impl fmt::Display for Postfix<'_> {
         match prints_as_bare_postfix(self.0) {
             true => write!(f, "{}", self.0),
             false => write!(f, "({})", self.0),
+        }
+    }
+}
+
+/// A variable's name as the program wrote it: a lowering's cell prints
+/// the name it stands for, unless `PrintFlag::Lowered`.
+struct Written<'a>(&'a ModPath);
+
+impl fmt::Display for Written<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let written = match print_lowered() {
+            true => None,
+            false => Path::basename(&self.0.0).and_then(super::seq::written_name),
+        };
+        match written {
+            Some(w) => write!(f, "{w}"),
+            None => write!(f, "{}", self.0),
         }
     }
 }
