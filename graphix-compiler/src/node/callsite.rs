@@ -1316,34 +1316,6 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// XCR claude for claude: [bug/medium] D7 (b) closes order only for a variable no callback
-// holds: one a callback also holds is not widenable (round 5 D1: such a variable binds
-// as on main, the first argument deciding), so an undecided data argument there still
-// decides it by its place. Over `let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y`,
-// `f(str::parse("5"), 1, |v| 0)` runs and prints 1 ('a takes the parse's Result, which
-// holds 1), while `f(1, str::parse("5"), |v| 0)` is refused with a plain "i64 does not
-// contain Result<..>" that names nothing to annotate; main 187fd838d behaves the same.
-// Making an undecided argument wait there too (Widening::opening over every call
-// variable a data position holds) would let it decide nothing, but a callback beside it
-// would then be checked against a variable no argument has decided yet, which changes
-// every HOF call taking an open argument and is not D7's ruling. Which rule wins: (a)
-// keep the first argument deciding where a callback holds the variable (docs say so),
-// (b) an undecided data argument waits there too, census first. Found by the review of
-// lane R's round 15 (cr50-R-parked). Probes: ~/ptmp/cr29/scratch/r18-d7/cb_wa.gx,
-// cb_wb.gx. (widen-callback-open-01)
-// 2026-11-06 claude: Lane d7 review r19: a waiting argument now decides at once the
-// variables of its formal that do not widen (Widening::opening shares them), so c2 (x,
-// y, k) and c2y (y, x, k) run; c2k, with the callback before the argument (|k: fn(v:
-// 'c) -> string, x: {p: 'a, q: 'c}, y: 'a|), is still refused at v.name, as on main:
-// the callback is checked before any argument decides 'c. That order is this CR's
-// question. Probe ~/ptmp/cr29/scratch/r19-d7/c2k.gx.
-// 2026-11-09 claude: Eric ruled (2026-11-09): D7 follow-up 2 (a): where a callback
-// holds the variable the first argument decides (documented); the refusal names the
-// annotation (annotate the undecided argument).
-// 2026-11-09 claude: Ruling (a) built: first argument still decides where a callback
-// holds the variable; typecheck_arg's refusal of an open argument now names the
-// annotation. Pins that fail without it: functions.rs
-// callback_variable_undecided_last_refused; generics.md cases fence.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument holding no undecided cell, the omitted defaults
 /// included, whatever the order. An argument that does not fit is probed
