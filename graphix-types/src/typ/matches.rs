@@ -338,6 +338,29 @@ const NO_NODE: u32 = u32::MAX;
 // nest256 32.24G / 9.84G, q800 8.08G / 7.25G, rg40 72.42G / 72.43G, rg30 7.95G / 7.95G.
 // The conclusion above holds: still superlinear (nest256 over nest128 is 2.9 times
 // here, 5.3 on base-r11), so it stays a CR.
+// 2026-11-09 claude: Round 19, base-r19 (main 3cfcd2407): the cost this CR measures no
+// longer grows. Since c1d43af72 (diff-cycle-hang-01, Eric's ruling (b)) could_match
+// unfolds at most setops::WALK_PAIRS (1000) pairs a walk and answers true past it.
+// could_match_int calls, P998 against Q998 over nested_pairs(n, 32), all false and all
+// at the budget: n=64/128/256/512 9437/9665/8897/7217 (m=8 and m=64 alike, 7.1k to
+// 11.4k). Perf instructions, --no-cache --check: nest128 2.45G, nest256 7.01G, nest512
+// 26.2G (empty program 0.90G; nest256 without its select 1.05G), but could_match_int is
+// 0.5% of nest256 (perf record): the select's growth is now in contains_int under
+// Type::set_commit and place_each and in cast::rep_collision,
+// matching-type-contains-dag-01's ground; q1600 2.05G, could_match 2% of it. What the
+// re-walk still costs is precision: the chain walked again at each level spends the
+// budget, so a dead arm is accepted where one walk of the same chain would refuse it.
+// mkflip.py (the nest family under `let v: [`G(Q998), `H(Z1)]`, arm `[`G(P998), `H(Z0)]
+// as x`, Z0 = [`ZA], Z1 = [`ZB]) is refused 'will never match' at n=1 m=900, n=6 m=128,
+// n=18 m=32, n=24 m=8, and accepted at n=2 m=520, n=4 m=250, n=8 m=128, n=20 m=32: the
+// loss comes at about n*m = 1000. That is the sound direction the budget ruling
+// accepts. Ending the re-walk needs a different walk, not another memo: the union scan
+// stops at its first true member, so a dropped true has no alternatives recorded, and
+// keeping one would mean holding each true as an and/or over the pairs its walk met and
+// re-evaluating it when one fails, rather than walking it again. Recommendation: close
+// this CR as stale on cost, or keep it as the precision item above. probes:
+// ~/ptmp/cr29/scratch/r19/19b/ (mkflip.py, flip16.gx refused, flip32.gx accepted,
+// nest128.gx, nest256.gx, nosel256.gx).
 /// What could_match's trues rest on. Each pair of names entered and each
 /// node pair found to overlap by assuming a pair in progress is a node,
 /// which rests on the nodes its walk read true. A pair whose walk fails
