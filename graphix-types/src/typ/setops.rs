@@ -318,13 +318,14 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::new(None).same(t0, t1)
+    Identity::new(None, &mut NodePairs::default()).same(t0, t1)
 }
 
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
-    Identity { strict: true, ..Identity::new(None) }.same(t0, t1)
+    Identity { strict: true, ..Identity::new(None, &mut NodePairs::default()) }
+        .same(t0, t1)
 }
 
 /// The pairs of live cells union collapses have met: each pair is one
@@ -336,7 +337,7 @@ pub(super) type Welds = SmallVec<[(TVar, TVar); 2]>;
 /// learn what the kept one learns.
 pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
     let start = welds.len();
-    let same = Identity::new(Some(welds)).same(t0, t1);
+    let same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
     if !same {
         welds.truncate(start)
     }
@@ -350,6 +351,49 @@ pub(super) fn apply_welds(welds: &mut Welds) {
     }
 }
 
+/// What [`union_identical`] finds of two types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Identical {
+    Apart,
+    /// Identical, each cell met only beside itself.
+    Same,
+    /// Identical by pairing two distinct open cells inside a function
+    /// type.
+    Renamed,
+}
+
+/// [`union_identical`] over the questions of one walk: the node pairs
+/// found identical, with no two distinct cells paired, stand while this
+/// thread writes no cell, so a chain asked about at every link is walked
+/// once.
+#[derive(Default)]
+pub(super) struct IdenticalMemo {
+    writes: u64,
+    found: NodePairs,
+}
+
+impl IdenticalMemo {
+    pub(super) fn identical(&mut self, t0: &Type, t1: &Type) -> Identical {
+        let writes = cell_writes();
+        if self.writes != writes || !memo_on() {
+            self.found.clear();
+            self.writes = writes;
+        }
+        self.found.restart();
+        let mut id = Identity::new(None, &mut self.found);
+        let same = id.same(t0, t1);
+        let renamed = id.renamed;
+        if renamed {
+            self.found.clear()
+        }
+        match (same, renamed) {
+            (false, _) => Identical::Apart,
+            (true, false) => Identical::Same,
+            (true, true) => Identical::Renamed,
+        }
+    }
+}
+
 /// Identity of `t0` and `t1`.
 struct Identity<'a> {
     strict: bool,
@@ -358,24 +402,29 @@ struct Identity<'a> {
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
     /// The nodes found identical outside a function type.
-    found: NodePairs,
+    found: &'a mut NodePairs,
     /// Those found inside the function type being compared, which hold
     /// only under its pairing of cells.
     found_in_fn: NodePairs,
+    /// Two distinct cells were paired.
+    renamed: bool,
 }
 
 impl<'a> Identity<'a> {
-    fn new(live: Option<&'a mut Welds>) -> Self {
+    fn new(live: Option<&'a mut Welds>, found: &'a mut NodePairs) -> Self {
         Self {
             strict: false,
             live,
             pairs: None,
-            found: NodePairs::default(),
+            found,
             found_in_fn: NodePairs::default(),
+            renamed: false,
         }
     }
 
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
+        #[cfg(test)]
+        IDENTITY_STEPS.with(|n| n.set(n.get() + 1));
         // one shared node is identical to itself, however large
         if t0.node_key().is_some_and(|a| t1.node_key() == Some(a)) {
             return true;
@@ -422,6 +471,7 @@ impl<'a> Identity<'a> {
                     }
                     live.push((a.clone(), b.clone()))
                 }
+                self.renamed = true;
                 let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
                 self.all(&ca, &cb)
             }
@@ -1549,11 +1599,12 @@ fn same_resolved<'a, 'b>(
 thread_local! {
     pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DIFF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static IDENTITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether diff and could_match read their memos of pairs: a test
-/// compares their answers with the walks' without them.
+/// Whether diff, could_match and [`IdenticalMemo`] read their memos of
+/// pairs: a test compares their answers with the walks' without them.
 #[inline(always)]
 pub(super) fn memo_on() -> bool {
     #[cfg(test)]
@@ -1570,10 +1621,10 @@ mod tests {
         expr::{ModPath, TypeDefBody, parser::parse_type},
         format_with_flags,
         typ::{
-            Bound, TVar, Type,
+            Bound, NodePairs, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
-            setops::WALK_PAIRS,
+            setops::{Identical, IdenticalMemo, WALK_PAIRS},
         },
     };
     use ahash::AHashMap;
@@ -2318,5 +2369,92 @@ mod tests {
             less("V", &["Error<Array<Array<Error<Error<Error<`B>>>>>>"]),
         ];
         memos_agree(&env, &pool);
+    }
+
+    /// A chain of `n` links ending in i64, each link `[null, Array<next>]`,
+    /// the links from the top; `cells` reaches each next link through a
+    /// cell bound to it.
+    fn identity_chain(n: usize, cells: bool) -> Vec<Type> {
+        let mut links = vec![Type::Primitive(Typ::I64.into())];
+        for i in 0..n {
+            let next = links.last().unwrap().clone();
+            let next = match cells {
+                false => next,
+                true => {
+                    let c = TVar::empty_named(arcstr::format!("c{i}"));
+                    c.bind(next);
+                    Type::TVar(c)
+                }
+            };
+            links.push(Type::Set(Arc::from_iter([
+                Type::Primitive(Typ::Null.into()),
+                Type::Array(Arc::new(next)),
+            ])));
+        }
+        links.reverse();
+        links
+    }
+
+    /// The steps [`IdenticalMemo`] takes to find each link of a chain of
+    /// `n` identical to its twin's, top first, as an elaboration asks of
+    /// a signature copy's cells.
+    fn identical_chain_steps(n: usize, memo: bool) -> usize {
+        let (l, r) = (identity_chain(n, true), identity_chain(n, false));
+        super::NO_MEMO.with(|m| m.set(!memo));
+        super::IDENTITY_STEPS.with(|s| s.set(0));
+        let mut m = IdenticalMemo::default();
+        for (a, b) in l.iter().zip(r.iter()) {
+            assert_eq!(m.identical(a, b), Identical::Same);
+        }
+        super::NO_MEMO.with(|m| m.set(false));
+        super::IDENTITY_STEPS.with(|s| s.get())
+    }
+
+    // Each question walks the rest of the chain; the memo keeps the pairs
+    // an earlier one found, so the chain is walked once.
+    #[test]
+    fn identical_links_of_a_chain_walk_it_once() {
+        let steps = [100, 200, 400].map(|n| identical_chain_steps(n, true));
+        assert_eq!(steps, [6357, 13257, 27057]);
+        let without = [100, 200, 400].map(|n| identical_chain_steps(n, false));
+        assert_eq!(without, [20301, 80601, 321201]);
+    }
+
+    /// `(i64, .., i64, f)`, enough leaves first that the walk keys `f`.
+    fn past_eager(f: &Type) -> Type {
+        let leaves = (0..NodePairs::EAGER).map(|_| Type::Primitive(Typ::I64.into()));
+        Type::Tuple(Arc::from_iter(leaves.chain([f.clone()])))
+    }
+
+    // Two function types identical only by pairing their own cells: a
+    // later question meeting them again finds them renamed too, so the
+    // caller links their cells.
+    #[test]
+    fn identical_memo_keeps_no_pair_found_by_renaming() {
+        let f = |v: &str| parse_type(&format!("fn(x: '{v}) -> '{v}")).unwrap();
+        let (f0, f1) = (f("a"), f("b"));
+        let mut m = IdenticalMemo::default();
+        for _ in 0..2 {
+            assert_eq!(
+                m.identical(&past_eager(&f0), &past_eager(&f1)),
+                Identical::Renamed
+            );
+        }
+    }
+
+    // A pair found identical is not kept past a write to a cell it read.
+    #[test]
+    fn identical_memo_forgets_at_a_cell_write() {
+        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
+        a.bind(Type::Primitive(Typ::I64.into()));
+        b.bind(Type::Primitive(Typ::I64.into()));
+        let (x, y) = (
+            Type::Array(Arc::new(Type::TVar(a))),
+            Type::Array(Arc::new(Type::TVar(b.clone()))),
+        );
+        let mut m = IdenticalMemo::default();
+        assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Same);
+        b.bind(Type::Primitive(Typ::String.into()));
+        assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Apart);
     }
 }

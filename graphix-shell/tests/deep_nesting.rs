@@ -824,16 +824,30 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
     )
 }
 
-/// The chain through a typedef's parameter and through a union elaborates
-/// with each link's conjunct probed once and each application of the
-/// typedef keyed once a walk, by its parameters' keys.
+/// The chain through a typedef's parameter elaborates with each link's
+/// conjunct probed once and each application of the typedef keyed once a
+/// walk, by its parameters' keys.
 #[test]
 #[cfg(target_os = "linux")]
-fn a_chain_of_bounds_through_a_typedef_or_a_union_elaborates() {
+fn a_chain_of_bounds_through_a_typedef_elaborates() {
     let expand = ["--expand", "--no-cache"];
-    let d = CHAIN_DEPTH / 10;
-    completes_within(&expand, &program("chainboundstypedef", d), 12 * BILLION);
-    completes_within(&expand, &program("chainboundsunion", d), 8 * BILLION)
+    completes_within(
+        &expand,
+        &program("chainboundstypedef", CHAIN_DEPTH / 10),
+        12 * BILLION,
+    )
+}
+
+/// The chain through a union elaborates in time linear in its length, at
+/// two depths: each link's bound is found identical to the instance's
+/// type once a walk, not once a link, and no cells are linked where none
+/// were paired.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_through_a_union_elaborates_in_linear_time() {
+    let expand = ["--expand", "--no-cache"];
+    completes_within(&expand, &program("chainboundsunion", CHAIN_DEPTH), 9 * BILLION);
+    completes_within(&expand, &program("chainboundsunion", 2 * CHAIN_DEPTH), 17 * BILLION)
 }
 
 /// A let chain that wraps the last value in any constructor, or in an

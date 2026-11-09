@@ -341,6 +341,11 @@ impl NodePairs {
             f.clear()
         }
     }
+
+    /// Start a walk over the pairs found by earlier ones.
+    pub(super) fn restart(&mut self) {
+        self.seen = 0
+    }
 }
 
 /// The address of a composite's content allocation, its low bits telling

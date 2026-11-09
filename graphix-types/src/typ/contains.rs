@@ -9,7 +9,7 @@ use crate::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
         Unfolded, node_addr, probe_key,
-        setops::{strictly_identical, union_identical},
+        setops::{Identical, IdenticalMemo, strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
             cycle_toward, settled_cause_note, would_cycle_inner,
@@ -144,6 +144,8 @@ pub(super) struct ContainsHist {
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
+    /// [`identical_linked`]'s pairs found identical.
+    identical: IdenticalMemo,
 }
 
 /// A probe memo's key: both sides' identities, rigid cells held rigid
@@ -246,6 +248,7 @@ impl ContainsHist {
             closed_pins: Lazy::new(),
             gated: 0,
             trial: false,
+            identical: IdenticalMemo::default(),
         }
     }
 
@@ -1534,11 +1537,48 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
 // (chainbounds-elab-quadratic-01)
 // 2026-11-09 claude: params_size is gone (grows-on-counts-all-01, lane 19f): no
 // walk measures parameter sizes any more.
+// 2026-11-09 claude: Partly fixed: the union chain now elaborates in linear
+// time. --expand --no-cache, debug, total G instructions (empty 0.75): union at
+// 1000 / 2000 links 4.00 / 13.07 (base-r19) -> 1.28 / 1.83, and 6.37 / 12.42 at
+// 10000 / 20000. Two walks did it. Link::equal compared a bound cell's binding
+// against itself (it has no same-node shortcut), and it can only link two
+// distinct open cells that union_identical paired inside a function type, so
+// identical_linked now links only when setops::IdenticalMemo answers
+// Identical::Renamed. IdenticalMemo, held by ContainsHist, keeps the node pairs
+// union_identical found identical with no renaming across the questions of one
+// walk while cell_writes stands. Pins:
+// typ::setops::tests::identical_links_of_a_chain_walk_it_once (6357 / 13257 /
+// 27057 steps at 100 / 200 / 400 links; 20301 / 80601 / 321201 with the memo
+// off), identical_memo_keeps_no_pair_found_by_renaming,
+// identical_memo_forgets_at_a_cell_write,
+// typ::contains::tests::a_commit_after_a_probe_links_cells_paired_by_renaming,
+// and deep_nesting a_chain_of_bounds_through_a_union_elaborates_in_linear_time
+// (fails without the change). Still open: the typedef chain, 6.64 / 24.6 -> 5.64
+// / 20.2 at 1000 / 2000. Its root: node_addr and norm_key give a Ref no key, so
+// every walk that visits each shared node once walks a typedef application chain
+// again from each element of the signature's tuple (N^2/2 per walk). Callgrind
+// at 1000 links after this change: FnType::resolve_tvars from
+// CallSite::instance_ftype, 3 calls, 590M (its memo keys by norm_key);
+// collect_position_tvars and collect_tvars_seen (node_addr) about 900M each;
+// RefHist::shape_id -> shape_hash 920M; ContainsHist::pair_key ->
+// TypeRef::app_key -> param_key 420M; expand_ref (tvar_free and the rest) 430M;
+// params_size 225M; normalize 210M. Giving a Ref a node_addr (its Arc address |
+// 5) as an experiment took typedef 1000 / 2000 to 3.93 / 13.4: still quadratic,
+// and node_addr's 39 users want an audit for a path-dependent Ref arm before
+// that lands; norm_key (resolve_tvars, normalize, fusion's expand_ref_d) wants
+// the same. The variant chain (1.81 / 4.41 at 1000 / 2000) is unchanged;
+// norm_key gives a Variant no key either. probes:
+// ~/ptmp/cr29/scratch/r19/19b/ceq/ (gen.py SHAPE N OUT, meas.sh BIN --expand
+// FILES)
 /// Two types identical up to `Fn` equality whose cells can be welded.
-fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
-    union_identical(t0, t1)
-        && link_equal(t0, t1, false)
-        && (!commit || link_equal(t0, t1, true))
+fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
+    match hist.identical.identical(t0, t1) {
+        Identical::Apart => false,
+        Identical::Same => true,
+        Identical::Renamed => {
+            link_equal(t0, t1, false) && (!commit || link_equal(t0, t1, true))
+        }
+    }
 }
 
 /// A non-containment report that formats lazily: callers probe these
@@ -2407,7 +2447,7 @@ impl Type {
                         .params
                         .iter()
                         .zip(tr1.params.iter())
-                        .all(|(a, b)| identical_linked(a, b, commit)) =>
+                        .all(|(a, b)| identical_linked(hist, a, b, commit)) =>
             {
                 tr0.hold_bounds_with(tr1, env, commit)
             }
@@ -2869,7 +2909,7 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Set(_), t1 @ Self::Set(_))
-                if identical_linked(t0, t1, commit) =>
+                if identical_linked(hist, t0, t1, commit) =>
             {
                 Ok(true)
             }
@@ -2914,7 +2954,7 @@ impl Type {
                     eprintln!("SET-T {} >= {t}", Self::Set(s.clone()));
                 }
                 // a member that is `t` covers it and binds nothing
-                if s.iter().any(|m| identical_linked(m, t, commit)) {
+                if s.iter().any(|m| identical_linked(hist, m, t, commit)) {
                     return Ok(true);
                 }
                 match t {
@@ -3580,7 +3620,8 @@ impl Type {
                 open.push(m);
                 continue;
             }
-            if let Some(i) = s0.iter().position(|c| identical_linked(c, m, commit)) {
+            if let Some(i) = s0.iter().position(|c| identical_linked(hist, c, m, commit))
+            {
                 used[i] = true;
                 continue;
             }
@@ -3642,8 +3683,9 @@ impl Type {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a
             // cycle.
-            let reflexive =
-                m.deref_cloned().is_some_and(|md| identical_linked(t0, &md, commit));
+            let reflexive = m
+                .deref_cloned()
+                .is_some_and(|md| identical_linked(hist, t0, &md, commit));
             if reflexive {
                 continue;
             }
@@ -4050,6 +4092,32 @@ mod tests {
         assert!(!union_identical(&aa, &ab));
         assert!(!strictly_identical(&a, &b));
         assert!(!union_identical(&a, &b));
+    }
+
+    // Two function types identical only by pairing their own cells, probed
+    // and then committed in one walk: the commit links the cells, so a
+    // binding of one reaches the other.
+    #[test]
+    fn a_commit_after_a_probe_links_cells_paired_by_renaming() {
+        let f = |v: &str| {
+            crate::expr::parser::parse_type(&format!("fn(x: '{v}) -> '{v}")).unwrap()
+        };
+        let cell = |t: &Type, v: &str| {
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells[v].clone()
+        };
+        let (f0, f1) = (f("a"), f("b"));
+        let past_eager = |f: &Type| {
+            let leaves = (0..NodePairs::EAGER).map(|_| Type::Primitive(Typ::I64.into()));
+            Type::Tuple(Arc::from_iter(leaves.chain([f.clone()])))
+        };
+        let (x, y) = (past_eager(&f0), past_eager(&f1));
+        let mut hist = ContainsHist::new();
+        assert!(identical_linked(&mut hist, &x, &y, false));
+        assert!(identical_linked(&mut hist, &x, &y, true));
+        cell(&f0, "a").bind(Type::Primitive(Typ::I64.into()));
+        assert_eq!(cell(&f1, "b").binding(), Some(Type::Primitive(Typ::I64.into())));
     }
 
     const CHAIN_DEPTH: usize = 12;
