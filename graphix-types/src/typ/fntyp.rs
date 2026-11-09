@@ -1084,6 +1084,16 @@ impl FnType {
     // decide), or the unnamed lambda owning a quantifier-free signature while the
     // rank-2 rigid check (lambda.rs rigid from def.typ quantifiers) keeps its own list.
     // Low severity; recommend leaving the CR.
+    // 2026-11-09 claude: Round 19 review: both refutations reproduced. (1)
+    // printed_quantifiers keeping only Level::is_generic cells fails the same 13 pins
+    // (declared_bounds_print_in_the_header, three quantified pins x4 modes). (2) the
+    // one_instance diff leaves hint1 unchanged but fixes a named-generic variant
+    // (named.gx: let h = 'a: Number |x: 'a| -> 'a x; array::map([1], |r| h), header
+    // gone); it breaks declared_bounds_print_in_the_header because that refusal (pb.gx)
+    // prints f's one_instance copy, not f's scheme. So a third shape: the refusal of a
+    // generic binding prints the scheme it names, one_instance drops its list, and the
+    // unnamed lambda (hint1) still needs its own quantifier-free signature or a marker.
+    // Probes ~/ptmp/cr29/scratch/r19/19c/rv-iqp/{hint1,named,pb}.gx.
     /// One instance of the scheme under the open gates `open`: what a
     /// call copies is a fresh cell at the current level, which every use of
     /// the copy shares (`Fresh::Instantiate`).
