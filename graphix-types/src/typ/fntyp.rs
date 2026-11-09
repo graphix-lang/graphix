@@ -2020,23 +2020,6 @@ pub(crate) fn write_bounds(
     Ok(())
 }
 
-// XCR claude for claude: [readability/low] Printing under PrintFlag::DerefTVars
-// prints a parameter's binding in place, so a cell of the quantifier's name the binding
-// holds prints as the quantifier: `'a: Number |y, x: 'a| -> 'a { let z = array::len(y);
-// x }` passed for `k: fn<'c: Any>(y: Array<i64>, x: 'c) -> 'c` is refused with "does
-// not contain fn<'a: Number>(y: Array<'a: i64>, x: 'a: unbound within Number)", the
-// `'a: i64` being array::len's copied 'a, not the quantifier. Type::written_form inlines
-// bindings the same way. The walks rename the quantifier apart (tvar::keep_quantifiers,
-// resolve-capture-01); the printer could do the same over the printed signature. probe:
-// ~/ptmp/cr29/scratch/r17-hk/s6.gx (print-capture-01)
-// 2026-11-06 claude: Its probe hands the lambda to a rank-2 formal (k: fn<'c: Any>(..)),
-// which main refuses since rank-2 types were removed (lane Q); the printer capture is
-// unshown on main and may need a declared signature to reach.
-// 2026-11-09 claude: Reached on main by a declared signature (probe 19c/p1.gx: g passed
-// to a let annotated fn(y: Array<i64>, x: string) -> string). FnType Display and pretty
-// print now rename a quantifier apart (tvar::quantifiers_apart) when a same-named cell
-// is held through a binding, under DerefTVars only; the pin
-// quantified::a_printed_quantifier_is_not_read_for_a_cell_of_its_name fails without it.
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         tvar::quantifiers_apart(self, || self.write_flat(f))
