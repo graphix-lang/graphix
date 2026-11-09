@@ -1050,6 +1050,12 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // quantified function types; c4b_norank2 by the check. Left for D14's owner to decide whether this closes the CR or D14 (b) is still wanted for a shape
 // the ML rule misses; no probe here still holds. Pins: lang::quantified::a_callbacks_result_is_one_instance,
 // a_generic_binding_read_into_a_callbacks_result_is_one_instance.
+// 2026-11-09 claude: Round 19 fixer: STALE on main 3cfcd2407. Every probe is refused on base-r19: gen_map, gen_map2, gen_map4, gen_map5, gen_app2
+// (--check); review-r9 ref1_arg, ref2_let, ref3_conn, c5_block, c4_sel, c4e_let, c4h_arr, a1_selarg, a3_appconn, e2_default_sel, c4b_norank2, c1;
+// review-r14 sm3 and dl3 are refused at the module/load (val g declared fn(x: 'a) -> 'a but implemented with y's one type, naming the val to declare);
+// mm1, mm3, mm4 refuse the writer ('j is a generic binding, so what is written to it must be as general'), mm2 and mm5 refuse as before. Nothing computes
+// a wrong value. Pins on main: lang::quantified::a_callbacks_result_is_one_instance, a_generic_binding_read_into_a_callbacks_result_is_one_instance,
+// lang::interfaces (the val-declares refusal), lang::repl_inputs. D14 (b) is not needed; safe to delete this CR.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
