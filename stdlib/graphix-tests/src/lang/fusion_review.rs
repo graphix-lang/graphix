@@ -483,7 +483,7 @@ run!(select_list_pattern_leaves, r#"
         (w@ [<_, rest..>], k) => list::len(rest) + list::len(w) * 100 + k,
         _ => -1
     };
-    let l2 = |s: {xs: List<i64>, y: i64}| -> i64 #[native] select s { {xs: [<>], y} => y, {xs: [<h, ..>], ..} => h, _ => -1 };
+    let l2 = |s: {xs: List<i64>, y: i64}| -> i64 #[native] select s { {xs: [<>], y} => y, {xs: [<h, ..>], ..} => h };
     let l3 = |a: Array<List<i64>>| -> i64 #[native] select a { [[<h, ..>], ..] => h, _ => 0 };
     let l4 = |v: [`A(List<i64>), `B]| -> i64 #[native] select v { `A(w@ [<h, t..>]) => h + list::len(t) + list::len(w) * 10, `A(_) => -1, `B => 0 };
     (

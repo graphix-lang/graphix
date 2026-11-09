@@ -291,6 +291,12 @@ complete ladder like the one above is dead exactly as it would be
 behind a full variant set. Order exact-length arms above the rest
 arm that subsumes them.
 
+A slice inside a tuple, struct or variant counts the same way, at
+its own position, when its arm tests nothing else: `([], _)` and
+`([x, ..], _)` cover `(Array<i64>, i64)`, and `([x, y, ..], _)` after
+`([x, ..], _)` is dead. An arm that also tests another position, as
+`([x, ..], 0)` does, claims no lengths.
+
 ### List Patterns
 
 Lists (see [Fundamental Types](./fundamental_types.md#list)) have

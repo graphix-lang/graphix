@@ -142,9 +142,10 @@ embedder, and the fuzzer's interp engine are the whole cost.
 
 What stays out of native code, beside the rule row: a union of null
 and variants (`[null, `A(i64), `B]` has no kernel form), a varint or
-union operand of arithmetic, and a length ladder nested in a tuple
-pattern is not counted as coverage by the checker (so such a select
-needs a catch-all arm).
+and a union operand of arithmetic. A length ladder nested in a tuple
+counts as coverage only where its arms test nothing beside the slice
+(`design/select_coverage.md`); elsewhere the select needs a catch-all
+arm.
 
 What users are told (the book's performance chapter): a recursive
 function whose body fuses runs as a native loop; one that does not

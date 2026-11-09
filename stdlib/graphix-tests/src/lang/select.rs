@@ -607,6 +607,80 @@ run!(
     FuseExpect::None
 );
 
+// A slice inside a tuple, struct or variant, whose arm tests nothing else,
+// claims its lengths of that position: a later arm matching only lengths
+// claimed there is dead, as over the array alone.
+run!(
+    nested_slice_dead_arm_refused,
+    r#"{
+  let f = |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 };
+  f([5, 1])
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_dead_arm_unannotated_refused,
+    r#"{
+  let f = |x| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 };
+  f([5, 1])
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+// Each slice position keeps its own ladder: `(_, [b, ..])` claims nothing of
+// position 0, and `([a, b, ..], _)` after `([a, ..], _)` is dead.
+run!(
+    nested_slice_ladders_per_position,
+    r#"{
+  let f = |x: Array<i64>, y: Array<i64>| select (x, y) {
+    ([a, ..], _) => a, (_, [b, ..]) => b, ([], []) => 0, ([a, b, ..], _) => 9
+  };
+  f([5, 1], [])
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+// An arm testing anything beside its slice claims nothing: the second arm
+// takes `[5, 1]`, and the wildcard is live.
+run!(
+    nested_slice_refutable_sibling_live,
+    r#"{
+  let f = |x: Array<i64>| select (x, 0) { ([a, ..], 1) => a, ([a, b, ..], _) => a + b, _ => 0 };
+  f([5, 1]) * 10 + f([])
+}"#,
+    is(Value::I64(60));
+    FuseExpect::Jit
+);
+
+// A complete nested ladder covers its member: no wildcard is needed, and
+// one after it is dead.
+run!(
+    nested_slice_ladder_exhaustive,
+    r#"{
+  let f = |x: Array<i64>| select (x, 0) { ([], _) => 0, ([a, ..], _) => a };
+  let g = |x: Array<i64>| select {a: 1, b: (`K(x), 2)} {
+    {b: (`K([]), _), ..} => 0, {b: (`K([h, ..]), n), ..} => h + n
+  };
+  f([5, 1]) * 100 + f([]) * 10 + g([3]) + g([])
+}"#,
+    is(Value::I64(505));
+    FuseExpect::Jit
+);
+
+run!(
+    nested_slice_ladder_dead_wildcard_refused,
+    r#"{
+  let f = |x: Array<i64>| select (x, 0) { ([], _) => 0, ([a, ..], _) => a, _ => 7 };
+  f([5, 1])
+}"#,
+    refused("the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
 // Exact-length slice arms pool their elements' heads per length: `[true]`
 // with `[false]` claims length 1, of an array or a list, through a tuple
 // element too; a length short of a combination stays uncovered, and an arm

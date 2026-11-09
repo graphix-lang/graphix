@@ -548,6 +548,9 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
     Ok(())
 }
 
+const SLICE_LENGTHS_COVERED: &str =
+    "every array length this slice pattern can match is covered by earlier arms";
+
 /// An arm nothing reaches: its refusal.
 struct Dead(anyhow::Error);
 
@@ -567,6 +570,7 @@ struct Reach {
     /// scrutinee.
     members_of: Type,
     ladders: SmallVec<[Ladder; 4]>,
+    nested: SmallVec<[NestedLadder; 2]>,
     pool: LiteralPool,
     parts: PartPool,
     /// The members of `members_of` the pools do not see: its open cells,
@@ -685,6 +689,7 @@ impl Reach {
             atype,
             members_of,
             ladders,
+            nested: SmallVec::new(),
             pool: LiteralPool::default(),
             parts,
             unpooled,
@@ -821,7 +826,7 @@ impl Reach {
                     }
                 }));
             }
-            // CR claude for claude: [bug/low] A slice arm whose lengths earlier
+            // XCR claude for claude: [bug/low] A slice arm whose lengths earlier
             // arms cover is found dead only where the slice is the whole pattern:
             // inside a tuple it is not, so `|x: Array<i64>| select (x, 0) { ([a,
             // ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }` runs (5 for [5,
@@ -830,6 +835,20 @@ impl Reach {
             // earlier arms". Same on main (base-r16). Found by review r16
             // (U-r2-1). probes: ~/ptmp/cr29/scratch/review-r16/U-r2-1/q/a12v.gx,
             // a12t.gx, a12.gx (slice-ladder-nested-01)
+            // 2026-11-09 claude: Reach keeps a NestedLadder per (scrutinee
+            // member, slice path) inside tuples, structs and variants
+            // (Reach::nested_slices, inner_slices): an unguarded arm whose one
+            // refutable part is one slice with name/_ elements claims its lengths
+            // there, an arm whose slice at a claimed path matches only claimed
+            // lengths is dead with the same message, and a complete nested ladder
+            // covers its member. Pins that fail without it:
+            // lang::select::{nested_slice_dead_arm_refused,
+            // nested_slice_dead_arm_unannotated_refused,
+            // nested_slice_ladders_per_position, nested_slice_ladder_exhaustive,
+            // nested_slice_ladder_dead_wildcard_refused};
+            // nested_slice_refutable_sibling_live is the live twin. Not covered:
+            // a slice under a union position ([Array<i64>, null]) and products of
+            // two slice positions stay conservative (no ladder).
             if let Some((k, exact)) = sp.array_len_range() {
                 let (mut any, mut all) = (false, true);
                 for l in self.ladders.iter() {
@@ -839,9 +858,7 @@ impl Reach {
                     }
                 }
                 if checking && any && all {
-                    return dead(
-                        "every array length this slice pattern can match is covered by earlier arms",
-                    );
+                    return dead(SLICE_LENGTHS_COVERED);
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
                 if unguarded {
@@ -860,6 +877,8 @@ impl Reach {
                         self.cover(env, m)?
                     }
                 }
+            } else if self.nested_slices(env, sp, at, checking, unguarded)? {
+                return dead(SLICE_LENGTHS_COVERED);
             }
             if !unguarded {
                 continue;
@@ -957,6 +976,79 @@ impl Reach {
             }
         }
         Ok(Ok(()))
+    }
+
+    /// The composite atom `sp`, whose predicate is `at`, against the
+    /// nested ladders: true (`checking`) when at each member it can match
+    /// one of its slices matches only lengths earlier arms claimed there;
+    /// else, `unguarded`, it claims its lengths of each member it holds
+    /// where one slice is all it refutes by, covering a member it completes.
+    fn nested_slices(
+        &mut self,
+        env: &Env,
+        sp: &StructPatternNode,
+        at: &Type,
+        checking: bool,
+        unguarded: bool,
+    ) -> Result<bool> {
+        let composite = matches!(
+            sp,
+            StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
+                | StructPatternNode::Struct { .. }
+                | StructPatternNode::Variant { .. }
+        );
+        let dead_check = checking && !self.nested.is_empty();
+        if !composite || sp.matches_anything() || !dead_check && !unguarded {
+            return Ok(false);
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        union_members(env, &self.members_of, &mut members)?;
+        let (mut any, mut all) = (false, true);
+        let mut claims: SmallVec<[(Type, InnerSlice); 2]> = SmallVec::new();
+        for m in members {
+            let mut slices: SmallVec<[InnerSlice; 2]> = SmallVec::new();
+            let only = inner_slices(env, sp, &m, &mut SmallVec::new(), &mut slices)?;
+            if dead_check && at.could_match(env, &m)? {
+                any = true;
+                all &= slices.iter().any(|s| {
+                    self.nested.iter().any(|l| {
+                        l.ladder.member == m
+                            && l.path == s.path
+                            && l.ladder.covers(s.len.0, s.len.1)
+                    })
+                });
+            }
+            if unguarded
+                && only
+                && slices.len() == 1
+                && at.contains_with_flags(BitFlags::empty(), env, &m)?
+                && let Some(s) = slices.pop()
+            {
+                claims.push((m, s))
+            }
+        }
+        if dead_check && any && all {
+            return Ok(true);
+        }
+        for (m, s) in claims {
+            let i = match self
+                .nested
+                .iter()
+                .position(|l| l.ladder.member == m && l.path == s.path)
+            {
+                Some(i) => i,
+                None => {
+                    let ladder =
+                        Ladder { member: m.clone(), exacts: SmallVec::new(), rest: None };
+                    self.nested.push(NestedLadder { path: s.path, ladder });
+                    self.nested.len() - 1
+                }
+            };
+            if self.nested[i].ladder.claim(s.len.0, s.len.1) {
+                self.cover(env, m)?
+            }
+        }
+        Ok(false)
     }
 
     /// Nothing that reaches `pat`'s arm can pass its test.
@@ -1058,6 +1150,14 @@ struct Ladder {
     member: Type,
     exacts: SmallVec<[usize; 8]>,
     rest: Option<usize>,
+}
+
+/// The slice-length ladder at one array or list position inside a
+/// tuple, struct or variant member of a scrutinee, which `ladder.member`
+/// names: the lengths there that arms testing nothing else claim.
+struct NestedLadder {
+    path: SmallVec<[u32; 4]>,
+    ladder: Ladder,
 }
 
 impl Ladder {
@@ -1461,6 +1561,79 @@ fn pooled_leaves(
         None if out.iter().any(|l| l.heads.is_some()) => Ok(out),
         None => Err(Miss::Unread),
     })
+}
+
+/// An array or list slice a composite pattern tests inside a scrutinee
+/// member: its path into the member, keyed as a [`Leaf`]'s, and the
+/// lengths it matches, `(k, exact)` as `array_len_range` gives them.
+struct InnerSlice {
+    path: SmallVec<[u32; 4]>,
+    len: (usize, bool),
+}
+
+/// The slices composite pattern `sp` tests inside `t`, found along
+/// positions of one member that fits the pattern there; true when they
+/// are all it refutes a value of `t` by: everything else is a name or
+/// `_`, and every slice's elements are too.
+fn inner_slices(
+    env: &Env,
+    sp: &StructPatternNode,
+    t: &Type,
+    path: &mut SmallVec<[u32; 4]>,
+    out: &mut SmallVec<[InnerSlice; 2]>,
+) -> Result<bool> {
+    if sp.matches_anything() {
+        return Ok(true);
+    }
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    if union_members_open(env, t, &mut members)? {
+        return Ok(false);
+    }
+    let [m] = &members[..] else { return Ok(false) };
+    let mut children: SmallVec<[(&StructPatternNode, &Type); 8]> = SmallVec::new();
+    match (sp, m) {
+        (
+            StructPatternNode::Slice { kind: SliceKind::Array, .. }
+            | StructPatternNode::SlicePrefix { list: false, .. }
+            | StructPatternNode::SliceSuffix { .. },
+            Type::Array(_),
+        )
+        | (
+            StructPatternNode::Slice { kind: SliceKind::List, .. }
+            | StructPatternNode::SlicePrefix { list: true, .. },
+            Type::List(_),
+        ) if !path.is_empty() => {
+            let Some(len) = sp.array_len_range() else { return Ok(false) };
+            out.push(InnerSlice { path: path.clone(), len });
+            return Ok(sp.array_len_coverage(env, None).is_some());
+        }
+        (
+            StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds },
+            Type::Tuple(ts),
+        ) if ts.len() == binds.len() => children.extend(binds.iter().zip(ts.iter())),
+        (StructPatternNode::Variant { tag, all: _, binds }, Type::Variant(t, ts, _))
+            if tag == t && ts.len() == binds.len() =>
+        {
+            children.extend(binds.iter().zip(ts.iter()))
+        }
+        (StructPatternNode::Struct { all: _, width, binds }, Type::Struct(fs))
+            if width.admits(fs.len())
+                && binds.iter().all(|(n, _, _)| fs.iter().any(|(f, _, _)| n == f)) =>
+        {
+            children.extend(fs.iter().map(|(name, t, _)| {
+                let p = binds.iter().find(|(n, _, _)| n == name);
+                (p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p), t)
+            }))
+        }
+        _ => return Ok(false),
+    }
+    let mut all = true;
+    for (i, (p, t)) in children.into_iter().enumerate() {
+        path.push(i as u32);
+        all &= crate::stack::ensure_sufficient(|| inner_slices(env, p, t, path, out))?;
+        path.pop();
+    }
+    Ok(all)
 }
 
 /// The head a composite pattern tests: what groups arms in the
