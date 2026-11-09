@@ -355,7 +355,9 @@ enclosing definition declares is not its own; a method in an impl or a
 trait's default body is judged over the types it writes itself, an impl
 `let`'s annotation and every lambda its value writes outside a lambda's
 body: in its own lambda's signature, the rest being its trait's
-declaration, an impl's head variables and `self` are the impl's, and every
+declaration, an impl's head variables are the impl's and a default's
+`self` the trait's (an impl's `self` is filled in as its target, so a
+`self` an impl's method writes is that lambda's own variable), and every
 other lambda there (one a call that builds it is handed, a labeled
 default's, one in a block) names variables of its own, as at the top
 level, since no definition encloses a method's scope:
@@ -1583,8 +1585,8 @@ references name the target is told the recursive type alone
   written function type (a lambda's signature, a `.gxi` val, a trait
   method, one a body's annotation writes) holds no union written with two
   or more of its own bare variables (`['a, 'b]`, under any constructor as
-  written; a typedef is not looked through; `self` and an impl's head are no
-  method's own), nor two members of one constructor holding two distinct
+  written; a typedef is not looked through; a trait's `self` and an impl's
+  head are no method's own, a `self` an impl's method writes is), nor two members of one constructor holding two distinct
   ones (`[Array<'c>, Array<'d>]`), refused, naming one variable or written
   types as the fix
   (`Type::variable_union`); a def's declared tvars are

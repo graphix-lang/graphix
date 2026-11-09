@@ -1360,7 +1360,7 @@ impl FnType {
         r
     }
 
-    // CR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // CR claude for eric: [bug/low] Which member of a union of two open cells (`x: ['a,
     // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
     // containment holds such a position after every other (instance_sig, a written
     // function type), while a call site's check relates its arguments first, deciding
@@ -1453,6 +1453,26 @@ impl FnType {
     // its let annotation: traits::written_method_unions treats self as the impl's there, but method_sig_at replaces self with the target, so a self written in the impl lambda is a
     // variable of that lambda (impl T for i64 { let m = |s, x: [self, 'c]| 0 } runs, its ['c, 'd] twin is refused). An under-refusal, as on main before D8. probes
     // ~/ptmp/cr29/scratch/review-r16/d7-r3-*/n_iself*.gx
+    // 2026-11-09 claude: Eric ruled (2026-11-09): D8 follow-up (a) in ~/ptmp/cr-discuss.md (Ruled 11-09): a written union two of whose members hold distinct variables of the
+    // definition under one constructor is refused too, as a written-form rule; judging through typedefs is cut, and the typedef-hidden forms stay on this CR.
+    // 2026-11-09 claude: Lane 19g (round 19), what is done and what remains. (1) self in an impl method's own lambda, BUILT: an impl's self is filled in as its target only in the
+    // trait's declared signature (method_sig_at); a self the impl's method lambda or its let annotation writes is a variable of that lambda (n_iself.gx, n_iself4.gx show it rigid),
+    // so traits::written_method_unions now counts it as the lambda's own there (a trait default's self, which aliases the trait's, still stands). Pins that fail without it:
+    // lang::traits::impl_method_self_beside_a_variable_refused, impl_method_let_annotation_self_beside_a_variable_refused; twins impl_method_self_beside_a_written_type,
+    // default_body_self_beside_a_variable. Census of both repos: no verdict changes. What self means in an impl lambda is impl-self-written-01. (2) Typedef-hidden forms (E<'a, 'b>
+    // over type E<'p, 'q> = ['p, 'q], ['a, Id<'b>], ['a, Opt<'b>], a later block typedef): RULED to stay accepted under D8 (b) and its follow-up (a), the written form only (Eric
+    // 11-05, 11-09); they meet in order as before, pinned by lang::types::{typedef_union_of_variables,identity_member,option_member}_is_not_looked_through and the trait twins.
+    // Nothing to build. (3) The inferred result-union split, OPEN, no ruling covers it: below.
+    // 2026-11-09 claude: Lane 19g findings on (3), the inferred result union: let mk = |c, a, b| (select c { true => a, false => b }, [a], [b]) infers -> (['a, 'b], Array<'a>,
+    // Array<'b>), no written signature, so D8 (b) does not reach it. A let over never() that takes t.0 (u <- t.0) holds the union of the two open cells, and the next write into u
+    // decides the first open member: top level, u <- 1; u <- "s"; x <- 1; y <- "s" runs (s5.gx), the same with x <- "s"; y <- 1 is refused, naming the fix ('declare x: [i64,
+    // string]', s6.gx). Order decides acceptance, never a value. Default mode: check and build agreed on every form tried (s1-s13); the check-accepts/build-refuses split shows only
+    // under GRAPHIX_NO_SUBST=1, where the instance checks again (s2-s4: '(Array<i64>, Array<string>) does not contain (Array<[i64, string]>, Array<'_: unbound>)'), as the CR's
+    // original written fw1 did. Options: (a) accept it: default mode is sound and agrees, the refusals name an annotation, and NO_SUBST is a debug A/B (say so in
+    // design/tvar_constraints.md); (b) a local rule: a relation that would put a type into a union holding two or more open cells (u <- 1 after u <- t.0) is refused, naming the
+    // binding to annotate (let u: [i64, string] = never()); one order everywhere, but it reaches every select over two open values, so census first, and the order-chasing variants of
+    // this failed review before. Rec (a): no wrong value or check/build disagreement in the shipped mode, and (b) is the shape that kept failing. Probes
+    // ~/ptmp/cr29/scratch/r19/19g/s*.gx.
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,

@@ -31,13 +31,17 @@ A signature may not write a union of two of its type variables, `|x:
 ['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
 trait method's alike, nor a function type a `let` annotation writes: no
 value's type says which variable it takes. Keep one variable there
-(`['a, null]` and a method's `[self, 'a]` are fine) or write the types
-(`[i64, string]`).
+(`['a, null]` and a trait method's `[self, 'a]` are fine) or write the
+types (`[i64, string]`). In an impl, `self` written in a method's lambda is
+not the target but a variable of that lambda, so `[self, 'a]` there is
+refused too.
 
 ```graphix,cases
 no "union of the type variables" |x: ['a, 'b]| 1
 no "union of the type variables" |x: Array<['a, 'b]>| 1
 ok |x: ['a, null]| 1
+ok trait T { val m: fn(self, x: [self, 'a]) -> i64 }; impl T for i64 { let m = |s, x| 0 }; T::m(1, 2)
+no "union of the type variables" trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
 ```
 
 Two members of one constructor holding two of its variables ask the

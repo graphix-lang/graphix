@@ -3188,6 +3188,48 @@ run!(
     "#
 );
 
+// An impl's `self` is filled in as its target: a `self` its method writes
+// is that lambda's own variable.
+run!(
+    impl_method_self_beside_a_variable_refused,
+    refused("[self, 'c] is a union of the type variables 'c and 'self"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [i64, string]) -> i64 };
+        impl T for i64 { let m = |s, x: [self, 'c]| 0 };
+        let result = T::m(1, "q")
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_method_let_annotation_self_beside_a_variable_refused,
+    refused("[self, 'c] is a union of the type variables 'c and 'self"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [i64, string]) -> i64 };
+        impl T for i64 { let m: fn(s: i64, x: [self, 'c]) -> i64 = |s, x| 0 };
+        let result = T::m(1, "q")
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_method_self_beside_a_written_type,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [i64, string]) -> i64 };
+        impl T for i64 { let m = |s, x: [self, string]| 0 };
+        let result = T::m(1, "q")
+    "#
+);
+
+run!(
+    default_body_self_beside_a_variable,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [i64, string]) -> i64 = |s, x: [self, 'c]| 0 };
+        impl T for i64 {};
+        let result = T::m(1, "q")
+    "#
+);
+
 run!(
     impl_head_union_of_variables,
     is(Value::I64(0)),

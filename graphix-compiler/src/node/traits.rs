@@ -245,19 +245,22 @@ pub(crate) fn impl_outside_functions(
 /// lambdas compile in the method's scope, which a lambda's own check
 /// leaves to this one. The method's own lambda (the value, through
 /// parentheses) holds what its trait's declaration fills in, judged at the
-/// trait, and there an impl's `head` variables and `self` are the
-/// implementation's; every variable of any other is its own, since no
-/// definition encloses a method's scope.
-fn written_method_unions(typ: Option<&Type>, value: &Expr, head: &[TVar]) -> Result<()> {
-    let implements =
-        |tv: &TVar| &*tv.name != "self" && !head.iter().any(|h| h.name == tv.name);
+/// trait, and there a variable `own` refuses is the trait's (a default's
+/// `self`) or the impl's (its head's); an impl's `self` is filled in as its
+/// target, so a `self` it writes is its own. Every variable of any other
+/// lambda is its own, since no definition encloses a method's scope.
+fn written_method_unions(
+    typ: Option<&Type>,
+    value: &Expr,
+    own: &dyn Fn(&TVar) -> bool,
+) -> Result<()> {
     if let Some(t) = typ {
-        t.variable_union(&implements)?
+        t.variable_union(own)?
     }
     let method = value.unparen();
     match &method.kind {
         ExprKind::Lambda(l) => {
-            signature_unions(method, l, &implements)?;
+            signature_unions(method, l, own)?;
             l.args
                 .iter()
                 .filter_map(|a| a.kind.default())
@@ -300,6 +303,19 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
+// CR claude for claude: [bug/low] A `self` an impl's method lambda writes is
+// a type variable of that lambda, not the impl's target: annotate_lambda keeps
+// written annotations and method_sig_at substitutes `self` only in the trait's
+// declared signature. So `impl T for i64 { let m = |s: self, x| { let k = s +
+// 1; x } }` is refused ("cannot compute 'self: unbound + i64"), and `|s, x:
+// self| x` over `fn(self, x: string) -> string` is refused ("string does not
+// contain 'self"), where a reader expects `self` to be i64 there.
+// written_method_unions counts it as the lambda's own to match. Substituting
+// `self := target` into the written annotations too (as a trait default's
+// `self` aliases the trait's) would accept both; it changes what `self` means
+// in an impl, so it may need Eric. probes:
+// ~/ptmp/cr29/scratch/review-r16/d7-r3-1/n_iself.gx, n_iself4.gx
+// (impl-self-written-01)
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
@@ -425,7 +441,7 @@ impl<R: Rt> Trait<R> {
             // bound under a name no method call reaches (`#show`): a
             // bare `show` in a sibling default is the dispatcher
             if let Some(body) = &m.default {
-                written_method_unions(None, body, &[]).at(body)?;
+                written_method_unions(None, body, &|tv| &*tv.name != "self").at(body)?;
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
                 let name =
@@ -863,7 +879,8 @@ impl<R: Rt> Impl<R> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
-            written_method_unions(b.typ.as_ref(), &b.value, &params).at(m)?;
+            let own = |tv: &TVar| !params.iter().any(|h| h.name == tv.name);
+            written_method_unions(b.typ.as_ref(), &b.value, &own).at(m)?;
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
                 rec: b.rec,
