@@ -1487,63 +1487,6 @@ impl Type {
         }
     }
 
-    // XCR claude for claude: [perf/medium] A residual that doubles while the walk takes
-    // few pairs is exponential in depth, as on main: the pair budget (WALK_PAIRS) never
-    // meets it. Over `type T = [Error<T>, Error<U>, `A]; type U = [Error<T>, Error<U>,
-    // `B]`, a type test d deep (dq) costs, --no-cache --check, instructions, main
-    // (base-r16) / lane U HEAD: dq8 1.66G / 1.67G, dq12 8.15G / 13.9G, dq14 31.5G /
-    // 59.3G, dq16 134G / 260G, dq32 and dq64 past 60 s on both; dp16 15.2G / 15.2G, dp32
-    // and dp64 past 60 s on both; a select whose n arms each test a level deeper (darms
-    // n-dd): darms6-d12 486G / 486G, darms10-d8 457G / 457G, darms8-d12 and every darms
-    // at n >= 12 (d8, d12) or n >= 16 (d4) past 60 s on both; arms16-d12 253G / 253G.
-    // (HEAD's dq costs about twice main's from d = 12; not traced.) Three residual caps
-    // were built and each failed review: (1) a pair's difference of more than 1000 parts,
-    // every node of the tree counted, type arguments included, was its minuend: a
-    // definition whose parameters grow (`G<('a, 'a)>`) passed it at depth 5, and the
-    // widened rest refused arms main accepts (greach5-8) and lost dead arms (gdead5-10);
-    // (2) counting union members instead, and capping a top-level diff too: a named
-    // minuend counted only its arguments, so a named type of more than 1000 members
-    // subtracted nothing on every diff, `?`/`$` took the null strip over an error and a
-    // raise missed its handler; (3) counting the minuend with each definition it names
-    // expanded once at its arguments: quadratic, dp800 49G and dp800_240 181G against
-    // main's 4.3G and 10.2G, a 600-tag type argument still widened (wsel600, wstrip600,
-    // wstrips600 refused, which main runs), and greach8 still refused. A count of
-    // distinct nodes instead of a tree took dq16 to 260G and dq32 past the cap. A fix
-    // needs the residual held in a form that does not double (shared, or bounded by
-    // what the arms can tell apart), not another count. With the cap (338e2916f) every
-    // probe above ended within 56G. probes: ~/ptmp/cr29/scratch/review-r16/U-r3-2/p/,
-    // U-r3-2/x/k/, U-r1-2/r16U2/p2/; results ~/ptmp/cr29/scratch/r16-U5/named-table.txt
-    // (diff-residual-depth-01)
-    // 2026-11-05 claude: Review r16 part 3 (U-r1-2) correction: the pair budget does meet
-    // these families, in the arm after the deep test. Over dq's residual of 2^d members
-    // the next arm's diff takes about 2^(d+1) named pairs, past WALK_PAIRS from d = 9, so
-    // it subtracts nothing: a repeated Error<U> as e arm after the first (ddu9..ddu12),
-    // which main refuses 'will never match' at every d, is accepted from d = 9 (sound, a
-    // verdict change against main), and the arm after it walks the unreduced residual
-    // again, which is HEAD's dq doubling (dq12 arm bisection, main 3.0/8.15/8.15G, HEAD
-    // 3.0/9.13/13.88G; ddu12 8.15G main, 14.9G HEAD). design/tvar_constraints.md now says
-    // so. probes: ~/ptmp/cr29/scratch/review-r16/U-r1-2/p3/ (ddu*.gx, q12a-d.gx, dq12.gx)
-    // 2026-11-09 claude: Lane 19b: the residual was already a DAG (diff's Ref memo shares
-    // each level); what doubled was every walk over it, because a pair whose walk met any
-    // pair in progress kept nothing, and U - T, which meets T - U and comes back to
-    // itself, sat under every level. DiffHist now keeps a finished pair's difference when
-    // its walk was cut only at itself or below it (cut depth, not a cycled bit), and also
-    // keeps the difference of each pair of shared unions or of one constructor by node
-    // identity while no cell is written (DiffHist::parts). Each kept difference carries
-    // what its walk entered or was cut at (Reached) and is read again only where the path
-    // holds none of it, so the memos change no answer (with that check off,
-    // diff_and_could_match_memos_change_no_answer fails). base-r19 / fix, --no-cache
-    // --check instructions: dq12 12.4G / 0.95G, dq16 242G / 1.04G, dq32 and dq64 past 60
-    // s / 1.42G and 2.87G, dp32 past 60 s / 1.10G, darms6-d12 510G / 0.92G, darms10-d8
-    // 470G / 1.17G, every darms up to darms20-d12 / under 2.2G, arms16-d12 268G / 1.25G
-    // (both refuse its repeated arm), ddu9..ddu12 accepted / refused 'will never match'
-    // as before the pair budget. Over the 119 review-r16 probes no other verdict or
-    // message changes; census 2949 files unchanged; guicheck 40.50G / 40.55G; fuzz
-    // regress clean. Pins that fail without it:
-    // typ::setops::tests::diff_of_a_shared_residual_walks_each_part_once (767/1000/1000
-    // pairs, 2436/38916/622596 steps, budget-widened at d = 12, 16),
-    // lang::select::dead_arm_after_a_deep_test_is_refused. Probes:
-    // ~/ptmp/cr29/scratch/r19/19b/drd/.
     /// The values of `self` that are not values of `t`, or more where the
     /// walk's pair budget stopped it subtracting.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
