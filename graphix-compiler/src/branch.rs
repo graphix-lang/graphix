@@ -167,6 +167,14 @@ impl VarAliases {
         if grew { Self::new(m) } else { self.clone() }
     }
 
+    /// Take in the table of a branch forked from these: its aliases, and
+    /// every one of these it lacks.
+    pub(crate) fn absorb(&mut self, child: &Self) {
+        if !self.same(child) {
+            *self = child.with_kept(self, |_| true)
+        }
+    }
+
     pub(crate) fn same(&self, other: &Self) -> bool {
         match (&self.aliases, &other.aliases) {
             (None, None) => true,
@@ -350,7 +358,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Root(r) => r.set_var_aliases(aliases),
             Self::Fork(f) => {
-                f.aliases = aliases.with_kept(&f.aliases, |_| true);
+                f.aliases.absorb(&aliases);
                 f.log.push(RtOp::SetAliases(aliases))
             }
         }
@@ -677,9 +685,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         } = child;
         match self {
             Self::Fork(f) => {
-                if !f.aliases.same(&aliases) {
-                    f.aliases = aliases.with_kept(&f.aliases, |_| true)
-                }
+                f.aliases.absorb(&aliases);
                 if let (Some(mine), Some(theirs)) = (&f.reads, reads) {
                     mine.lock().extend(theirs.into_inner());
                 }
@@ -972,9 +978,7 @@ impl<V: Clone> Layered<V> {
     // in ExecCtx::deliver/read_var is left as is. Needs a soak.
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
-        if !self.aliases.same(&child.aliases) {
-            self.aliases = child.aliases.with_kept(&self.aliases, |_| true)
-        }
+        self.aliases.absorb(&child.aliases);
         for id in child.removed {
             self.remove(&id);
         }
@@ -1753,9 +1757,8 @@ mod tests {
         let (a, b, x, y) = (BindId::new(), BindId::new(), BindId::new(), BindId::new());
         let mut parent = Layered::<u32>::default();
         let mut first = unsafe { parent.fork() };
-        let second = unsafe { parent.fork() };
+        let mut second = unsafe { parent.fork() };
         first.aliases = VarAliases::new([(a, x)].into_iter().collect());
-        let mut second = second;
         second.aliases = VarAliases::new([(b, y)].into_iter().collect());
         parent.merge(first);
         parent.merge(second);
