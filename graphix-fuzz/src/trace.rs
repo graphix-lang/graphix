@@ -113,20 +113,6 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
             Task::Visit(v) => {
                 out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>>>() {
                     Some(def) => match &def.origin {
-                        // XCR claude for claude: [readability/low] A function a seq's body makes
-                        // prints what the lowering rewrote: `seq let {x, y} = pt { |x| x + y }`
-                        // prints `|x| x + #seqt4611686018427395399_y`, a name no program wrote,
-                        // whose id a process's earlier compiles move, so a printed function can
-                        // differ between two compiles in one process. The oracle numbers it
-                        // (`fresh_cells`); printing `y` is the fix, and `--expand` must keep the
-                        // lowered form. (print-lowered-name-01)
-                        // 2026-11-09 claude: Ref printing writes a trigger cell
-                        // (#seqt<id>_<name>) as the written name unless PrintFlag::Lowered,
-                        // which --expand sets; a path's '/' is kept as '~' in the cell so it
-                        // decodes. Pins: lang::seq::seq_function_prints_written_names (prints
-                        // #seqt<id>_y without the fix, a different id per mode) and
-                        // seq::tests::trigger_cells_name_what_was_written. The fuzzer's lambda
-                        // special case is removed.
                         DefOrigin::Source { spec, .. } => {
                             Value::String(ArcStr::from(spec.to_string()))
                         }
