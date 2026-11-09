@@ -35,7 +35,6 @@ use compact_str::{CompactString, format_compact};
 use dashmap::DashMap;
 use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
-use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
@@ -1476,20 +1475,20 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a>(
         .collect();
     drop(emission);
     let cx = crate::typ::tvar::TaskContext::current();
-    let mut results: Vec<(usize, anyhow::Result<()>)> =
-        ctx.control.eval_pool().expect("a pool before forking").install(|| {
-            work.par_iter_mut()
-                .map(|(i, n, task)| {
-                    let _cx = cx.enter();
-                    (
-                        *i,
-                        task.run_task(|task| {
-                            TypeMemo::enter(memo.clone(), || visit(n, Some(true), task))
-                        }),
-                    )
-                })
-                .collect()
-        });
+    let mut results: Vec<(usize, anyhow::Result<()>)> = Vec::new();
+    ctx.control.eval_pool().expect("a pool before forking").map(
+        &mut work,
+        &mut results,
+        |(i, n, task)| {
+            let _cx = cx.enter();
+            (
+                *i,
+                task.run_task(|task| {
+                    TypeMemo::enter(memo.clone(), || visit(n, Some(true), task))
+                }),
+            )
+        },
+    );
     for (_, _, task) in work.drain(..) {
         task.attr_census.lock().clear();
         ctx.join(task);

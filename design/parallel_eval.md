@@ -8,7 +8,8 @@ Pins: `lang::par_attrs`, `lang::par_loops`, every `run!` fixture's
 ## 1. Goal
 
 One cycle's update pass uses every core. Where two subtrees do not
-communicate within the cycle, they run under `rayon::join`. Which of
+communicate within the cycle, they run as parts of one fork on the
+runtime's evaluation pool. Which of
 the legal forks are actually taken is decided at run time from measured
 cost, and the program can force or forbid them with attributes.
 
@@ -323,8 +324,7 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
 
 - **Flat forks.** A fork point cuts its children into ranges up front
   (`cost::Splits::ranges`, a slot site's grain) and runs every range as
-  a sibling branch one level below it (`branch::fork_each`, rayon over
-  the parts), merging them in order. Binary splits nested a branch per
+  a sibling branch one level below it (`branch::fork_each`, a job a part), merging them in order. Binary splits nested a branch per
   level: a read walked every layer and each join copied a write one
   more time, which doubled the work of a slot-heavy cycle on one
   thread. A collision is a delivery an earlier sibling made: the later
@@ -437,11 +437,10 @@ fork, halved again at each re-probe), and the slots fork only where each
 half costs `T` plus it (the overhead is the fork's, paid once, so a range
 still needs only `T`). Three forks in a row that take no less than the
 slots' mean times their count turn the site serial until it re-probes or
-its slots double. The
-wall time of a fork does not see the CPU the pool's woken workers spin
-away after it (rayon wakes a worker per job it finds, each spinning
-through every deque before it parks): a fork that wins wall time still
-costs that. `T`
+its slots double. A fork is judged by its wall time alone, which is
+also about its CPU: a worker that finds no job parks at once (§9), so
+the pool spends nothing after the fork beyond its parts and one empty
+search for each worker it woke. `T`
 is four times the lower quartile of nine latencies of handing an idle
 pool a job, measured once per process on a thread of its own, against a pool of
 its own that nothing forks onto, as many workers as a runtime's, started when a
@@ -492,7 +491,7 @@ nothing and nothing waits for it.
   forks only its top level (the pool is saturated at once) and runs its
   steady state in 7.0 s against 5.4 s serial: every read in a branch
   walks the layered views. This is the floor under any speedup, and
-  the reason unstolen forks are not free here as they are in rayon.
+  the reason unstolen forks are not free here.
 - **A first cycle built on many threads slows the cycles after it.**
   `par_wide` on twelve threads, P- and E-cores: its first cycle in
   1.4 s forked against 2.8 s in order, then 59 steady cycles in 2.3 s
@@ -648,7 +647,7 @@ mid-cycle:
 | slot growth | `MapQ`/`FoldQ` `resize` → `Slot::new` (C/node/collection.rs) | `pending_refs` only: a slot's argument is a bare `BindId` with no environment binding (`Callback::slot_arg`); the slot's call binds at its first update (next row) |
 | dynamic bind, recursive activation, callback-holding builtins | `CallSite::bind` (C/node/callsite.rs:1092) inside `with_runtime_settles` | instantiate + typecheck, `lambda_defs`, `bind_to_lambda`, `fn_forward_resolutions`, analysis atomics, `apply_deferred`; a slot also reuses its prototype's kernels (no codegen) |
 | lazy image decode | `CallSite::materialize` (:1765) | the decoder `Mutex`, `pending_refs`, a kernel install under the JIT mutex |
-| dynamic module | `Module::update` → `compile_source` (C/node/module.rs:781) | all of `CompileCtx`; its checks already run on rayon from inside `update` |
+| dynamic module | `Module::update` → `compile_source` (C/node/module.rs:781) | all of `CompileCtx`; its checks already run on the evaluation pool from inside `update` |
 | core-trait hook sites | `take_site` → `build_site` (C/node/coretraits.rs:224) | env, `pending_refs`, `core_hook_sites`; entered from inside `Value::eq`/`cmp`/`fmt` |
 | delete and sleep | `unbind_variable`, `unref_var`, `Lambda::delete` | env, `pending_refs`, `lambda_defs`, `bind_to_lambda` |
 
@@ -755,8 +754,8 @@ Compile-time paths sort by id for stable image bytes (C/image/registration.rs:10
 
 ## 9. Threads
 
-`branch::fork_join` (two parts, `rayon::join`) and `branch::fork_each`
-(flat, rayon over the parts) fork the branch contexts, run the parts,
+`branch::fork_join` (two parts, `EvalPool::join`) and `branch::fork_each`
+(flat, `EvalPool::for_each`, a job a part) fork the branch contexts, run the parts,
 merge, and propagate a panic. `branch::compile_each` runs compile
 tasks the same way (§8). All three run their parallel part through
 `branch::on_pool`, which installs it into the evaluation pool when the
@@ -790,8 +789,28 @@ one runtime's cycle wait on another's part, past its own interrupt;
 a pool per runtime keeps runtimes in one process isolated. Saturation
 (`Control::eval_saturated`) counts the runtime's own live parts. Its
 compile tasks fork onto the same pool (`check_in_tasks`,
-`fusion::fuse_each`); `RAYON_NUM_THREADS` sizes only the JIT backend's
-threads. The fuzzer sets both to two for its children.
+`fusion::fuse_each`). The fuzzer sets `GRAPHIX_EVAL_THREADS` to two for
+its children.
+
+The pool is our own (`graphix_types::eval_pool`): a crossbeam deque a
+worker and an injector for the jobs handed in from off the pool
+(`install`). A fork pushes its parts but the first onto its worker's
+deque, wakes as many parked workers, runs the first, then runs jobs (its
+own newest first, else the injector's or another worker's oldest) until
+every part is done. A worker that finds no job, idle or waiting on its
+fork, parks at once in its own bed: an announcement wakes any parked
+worker (so a waiting one helps), and the last part of a fork wakes its
+owner. Every announcement bumps an epoch, so a worker whose search began
+before one does not park. Rayon's workers search 33 rounds after each
+wake before they park, and it wakes one for every worker that finds a
+job: on a 32-core box `Force` spent 1.5-4.9 s of eval-worker CPU on the
+1100-1400 tiny forks of a 3 s timer probe and 4.8-9.5 s on
+`x-perf-runtime-02` (`--no-fusion`), against 0.02-0.21 s and 1.3-1.9 s
+on this pool, with as many cycles or more. The wake latency `Auto`
+calibrates on is unchanged (4-6 µs). A part's panic resumes on the
+forking thread once every part has finished. Pin:
+`eval_pool::test::idle_workers_park_at_once` (every empty search is
+followed by a park).
 
 **Stack budget.** Per cycle: the `Control` counts the grown segments
 live in its cycle, on every thread (`Control::grown`), and a segment

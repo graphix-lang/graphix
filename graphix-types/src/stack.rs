@@ -1,3 +1,4 @@
+use crate::eval_pool::{EvalPool, WorkerStart};
 use enumflags2::bitflags;
 use poolshark::local::LPooled;
 use std::{
@@ -275,15 +276,11 @@ pub fn eval_threads() -> usize {
 /// workers have exited before the next try starts its own.
 fn build_eval_pool(
     mut threads: usize,
-    mut spawn: impl FnMut(rayon::ThreadBuilder) -> io::Result<JoinHandle<()>>,
-) -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    mut spawn: impl FnMut(WorkerStart) -> io::Result<JoinHandle<()>>,
+) -> io::Result<EvalPool> {
     let mut started: LPooled<Vec<JoinHandle<()>>> = LPooled::take();
     loop {
-        let built = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .spawn_handler(|t| Ok(started.push(spawn(t)?)))
-            .build();
-        match built {
+        match EvalPool::build(threads, |t| Ok(started.push(spawn(t)?))) {
             Ok(pool) => break Ok(pool),
             Err(e) if threads > 1 => {
                 log::warn!("the evaluation pool: {threads} workers: {e}");
@@ -420,7 +417,7 @@ pub struct Control {
     skipped: AtomicU64,
     /// The pool its cycles fork onto, built at the first fork: no other
     /// runtime's parts run there, so none waits on another's.
-    pool: OnceLock<Option<rayon::ThreadPool>>,
+    pool: OnceLock<Option<EvalPool>>,
     /// Parts forked onto the pool and not yet finished.
     live_parts: AtomicUsize,
     /// The references alive in its cycles' values.
@@ -530,7 +527,7 @@ impl Control {
     }
 
     /// This runtime's evaluation pool, built at the first call.
-    pub fn eval_pool(&self) -> Option<&rayon::ThreadPool> {
+    pub fn eval_pool(&self) -> Option<&EvalPool> {
         self.eval_pool_with(|t| {
             std::thread::Builder::new()
                 .name(format!("graphix-eval-{}", t.index()))
@@ -541,8 +538,8 @@ impl Control {
 
     fn eval_pool_with(
         &self,
-        spawn: impl FnMut(rayon::ThreadBuilder) -> io::Result<JoinHandle<()>>,
-    ) -> Option<&rayon::ThreadPool> {
+        spawn: impl FnMut(WorkerStart) -> io::Result<JoinHandle<()>>,
+    ) -> Option<&EvalPool> {
         self.pool
             .get_or_init(|| {
                 build_eval_pool(eval_threads(), spawn)
@@ -828,8 +825,8 @@ mod test {
         let (a, b) = (Control::new(), Control::new());
         assert!(!std::ptr::eq(a.eval_pool().unwrap(), b.eval_pool().unwrap()));
         a.eval_pool().unwrap().install(|| {
-            assert!(a.eval_pool().unwrap().current_thread_index().is_some());
-            assert!(b.eval_pool().unwrap().current_thread_index().is_none());
+            assert!(a.eval_pool().unwrap().on_worker());
+            assert!(!b.eval_pool().unwrap().on_worker());
         });
     }
 

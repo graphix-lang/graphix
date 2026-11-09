@@ -196,7 +196,7 @@ A `CompileCtx` forks and joins (`CompileCtx::fork`/`join`): a fork shares
 every tracked map and records what it touches, and a join takes the
 fork's writes. Every static bind elaborates its instance in a fork
 (`CallSite::resolve_static`). A body's statements elaborate in forks of
-the body's state before any runs, one per statement, on rayon
+the body's state before any runs, one per statement, on the evaluation pool
 (`node::typecheck1_statements`); they join in evaluation order, and the
 first error in order is the body's.
 
@@ -272,7 +272,7 @@ The deepest chain is 9 instances; the widest instance builds 332. Of the
 3343 instances, 1627 are distinct by definition, closed signature and
 callback sources; the repeats are about a quarter of build and check.
 
-With statements in compile tasks (one rayon thread vs four, admin app,
+With statements in compile tasks (one pool thread vs four, admin app,
 fusion off: ~400 ms vs ~195 ms), the chain that bounds it is
 `local::local(..)` (177 ms, one statement of the app) over
 `panels::panels(..)` (90 ms, one statement of `local`). Inside the

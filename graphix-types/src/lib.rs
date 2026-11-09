@@ -11,6 +11,7 @@ pub use ids::{AddrMap, AddrSet, MINT_BASE};
 pub mod abstract_value;
 pub(crate) mod dbgenv;
 pub mod env;
+pub mod eval_pool;
 pub mod expr;
 pub mod ide;
 pub mod image;

@@ -41,7 +41,6 @@ use netidx_core::{
 };
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
-use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{
     cell::Cell,
@@ -1905,9 +1904,7 @@ fn check_in_tasks<R: Rt>(
         statement_result(r, n, module)
     };
     match ctx.control.eval_pool() {
-        Some(pool) => pool.install(|| {
-            work.par_iter_mut().map(check_task).collect_into_vec(&mut results)
-        }),
+        Some(pool) => pool.map(&mut work, &mut results, check_task),
         None => results.extend(work.iter_mut().map(check_task)),
     }
     for (_, task, _) in work.drain(..) {

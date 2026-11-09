@@ -16,7 +16,6 @@ use graphix_types::{
     stack::{Control, ParMode},
 };
 use poolshark::local::LPooled;
-use rayon::prelude::*;
 use std::{any::Any, cell::Cell};
 
 /// A chunk: runs slots `lo..hi` of its loop over the kernel's `frame`
@@ -213,8 +212,8 @@ pub(crate) unsafe fn run(
             let env = KERNEL_ENV.with(|c| c.get()) as usize;
             let generation = SELF_BLOCK_GEN.with(|c| c.get());
             let live = Live::start(control, forked.len());
-            branch::on_pool(control, || {
-                forked.par_iter_mut().with_max_len(1).for_each(|r| {
+            branch::on_pool(control, |pool| {
+                pool.for_each(forked, |r| {
                     branch::as_part(control, None, &live, || {
                         let _env = crate::Restore::replace(&KERNEL_ENV, env as *const _);
                         let _gen = crate::Restore::replace(&SELF_BLOCK_GEN, generation);

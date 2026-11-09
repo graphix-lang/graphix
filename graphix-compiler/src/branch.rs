@@ -17,13 +17,13 @@ use crate::{
     typ::tvar::TaskContext,
 };
 use futures::channel::mpsc;
-use graphix_types::stack::{Control, eval_threads, with_control, with_current_control};
+use graphix_types::{
+    eval_pool::EvalPool,
+    stack::{Control, eval_threads, with_control, with_current_control},
+};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-};
 use smallvec::SmallVec;
 use std::{
     future::Future,
@@ -1361,8 +1361,8 @@ where
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(control, branches.len());
-    on_pool(control, || {
-        branches.par_iter_mut().with_max_len(1).for_each(|b| {
+    on_pool(control, |pool| {
+        pool.for_each(&mut branches, |b| {
             // a part may run on any thread of the pool
             as_part(control, tokio.as_ref(), &live, || {
                 let part = b.part.take().expect("a part");
@@ -1507,9 +1507,7 @@ pub(crate) fn compile_each<R, P, F>(
         })
     };
     match control.eval_pool() {
-        Some(_) => {
-            on_pool(control, || tasks.par_iter_mut().with_max_len(1).for_each(run))
-        }
+        Some(_) => on_pool(control, |pool| pool.for_each(&mut tasks, run)),
         None => tasks.iter_mut().for_each(run),
     }
     for (task, _) in tasks.drain(..) {
@@ -1541,8 +1539,8 @@ where
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(control, 2);
-    let (ra, rb) = on_pool(control, || {
-        rayon::join(
+    let (ra, rb) = on_pool(control, |pool| {
+        pool.join(
             || {
                 let _part = live.part();
                 a(&mut shared.ctx(&mut left))
@@ -1637,10 +1635,13 @@ impl Drop for Live<'_> {
 /// Run `f`, a fork's parallel part, on the evaluation pool: entered here
 /// from the runtime's own thread, so a cycle's serial work stays there,
 /// and joined in place by a fork already on the pool.
-pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
+pub(crate) fn on_pool<T: Send>(
+    control: &Control,
+    f: impl FnOnce(&EvalPool) -> T + Send,
+) -> T {
     let pool = control.eval_pool().expect("a pool before forking");
-    if pool.current_thread_index().is_some() {
-        return f();
+    if pool.on_worker() {
+        return f(pool);
     }
     let tokio = tokio::runtime::Handle::try_current().ok();
     let cx = TaskContext::current();
@@ -1648,7 +1649,7 @@ pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) 
         with_control(control, || {
             let _tokio = tokio.as_ref().map(|h| h.enter());
             let _cx = cx.enter();
-            f()
+            f(pool)
         })
     })
 }
