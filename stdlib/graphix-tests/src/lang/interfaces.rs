@@ -2047,6 +2047,36 @@ run!(
 ; FuseExpect::Jit);
 
 run!(
+    write_through_a_val_whose_variable_joins_two_arguments,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "i1"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x, y| x;
+        let result = select m::h(null) { "ss" => never(), s => s }
+    "#,
+    "/test/m.gxi" => "val f: fn(x: 'a, y: 'a) -> 'a; val h: fn(t: Any) -> string",
+    "/test/m.gx" => r#"
+        let f = |x, y| select true { true => y, false => x };
+        let h = |t| select f(t ~ 1, t ~ "s") { i64 as i => "i[i]", s => "s[s]" }
+    "#
+);
+
+run!(
+    write_through_a_val_whose_result_is_one_argument_refused,
+    refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x, y| x;
+        let result = m::h(null)
+    "#,
+    "/test/m.gxi" => "val f: fn(x: 'a, y: 'a) -> 'a; val h: fn(t: Any) -> i64",
+    "/test/m.gx" => r#"
+        let f = |x, y| y;
+        let h = |t| { let r: string = f(t ~ 1, t ~ "s"); str::len(r) }
+    "#
+);
+
+run!(
     write_through_a_val_whose_result_does_not_hold_the_argument_refused,
     refused("val f is written, and what is written lands on its implementation"),
     "/test.gx" => r#"

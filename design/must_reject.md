@@ -396,7 +396,9 @@ with a variable, or a write through a val over a generic body, which the
 generator does not write; their pins are
 `lang::interfaces::*_over_an_outer_binding_refused`,
 `narrow_write_through_a_val_refused`, `bounded_write_through_a_val_refused`,
-`write_through_a_*_val_refused`, `*_alike_named_*_refused`,
+`write_through_a_*_val_refused`,
+`write_through_a_val_whose_result_*_refused`,
+`*_alike_named_*_refused`,
 `mut_ref_to_a_*_val_refused`, `mut_ref_to_a_function_field_of_a_generic_val_refused`,
 `write_through_a_typedef_val_after_*_refused`
 and `lang::traits::*method_over_an_outer_binding_refused`,
