@@ -98,9 +98,11 @@ can keep the original member slice.
   and stored dep — scans compare u64s and fall back to full `TypeRef`
   equality only on a match (the string equality itself dominated once
   the walks were DAG-shaped).
-- Backstops: the per-path expansion length guard (non-regular
-  recursion, `type T<'a> = T<Array<'a>>`) and a budget/size cap that
-  only the fusion-side entry (`expand_refs`: budget 2 048,
+- No per-path expansion cut: an expansive typedef (`type T<'a> =
+  [`Nil, `C(T<Array<'a>>)]`) is refused at its definition
+  (`typ/expansive.rs`), so a path holds finitely many distinct
+  expansions. The backstop is a budget/size cap that only the
+  fusion-side entry (`expand_refs`: budget 2 048,
   `FUSION_SIZE_CAP` 4 096) sets tight — truncation there only
   de-fuses, since no kernel encodes a type that large. Truncation
   poisons memoization (`ResolveCx::poisoned`) so a partial result is

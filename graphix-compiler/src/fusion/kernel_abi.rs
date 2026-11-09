@@ -171,10 +171,7 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 /// (`Number = [Int, Real]`) folded into the one primitive set they are,
 /// beside its other members; `None` when that changes nothing.
 fn primitive_union(members: &[Type]) -> Option<Type> {
-    fn bits(t: &Type, depth: usize, acc: &mut BitFlags<Typ>) -> bool {
-        if depth > MAX_FREEZE_EXPANSIONS {
-            return false;
-        }
+    fn bits(t: &Type, acc: &mut BitFlags<Typ>) -> bool {
         // a member with no bits (⊥, an empty set) is no primitive
         match &t.deref_cloned() {
             Some(Type::Primitive(p)) if !p.is_empty() => {
@@ -183,7 +180,7 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
             }
             Some(Type::Set(ms)) if !ms.is_empty() => {
                 let mut part = *acc;
-                let all = ms.iter().all(|m| bits(m, depth + 1, &mut part));
+                let all = ms.iter().all(|m| bits(m, &mut part));
                 if all {
                     *acc = part
                 }
@@ -191,8 +188,7 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
             }
             Some(Type::Ref(tr)) => {
                 let mut part = *acc;
-                let all =
-                    tr.expand_cell().is_some_and(|x| bits(&x, depth + 1, &mut part));
+                let all = tr.expand_cell().is_some_and(|x| bits(&x, &mut part));
                 if all {
                     *acc = part
                 }
@@ -206,7 +202,7 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
     let mut plain = true;
     let mut rest: LPooled<Vec<Type>> = LPooled::take();
     for m in members {
-        if bits(m, 0, &mut acc) {
+        if bits(m, &mut acc) {
             folded += 1;
             plain &= matches!(m.deref_cloned(), Some(Type::Primitive(_)));
         } else {
@@ -400,7 +396,6 @@ pub(crate) struct Seen<'a> {
     key: Arc<TypeRef>,
     /// [`expand_key_fp`] of `key`; membership compares it before full equality.
     fp: u64,
-    len: usize,
     prev: Option<&'a Seen<'a>>,
     /// The refs a freeze expanded directly below this one that the
     /// freeze's own memo ([`Freeze::memo`]) does not hold, and what they
@@ -429,7 +424,7 @@ pub(crate) fn key_closed(key: &TypeRef) -> bool {
 impl<'a> Seen<'a> {
     pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: Arc<TypeRef>) -> Self {
         let fp = expand_key_fp(&key);
-        Self { key, fp, len: Self::len(prev) + 1, prev, frozen: RefCell::default() }
+        Self { key, fp, prev, frozen: RefCell::default() }
     }
 
     /// The occurrence of `key` on the path. Keys compare cell-blind, so
@@ -453,13 +448,9 @@ impl<'a> Seen<'a> {
         }
         None
     }
-
-    pub(crate) fn len(this: Option<&Self>) -> usize {
-        this.map_or(0, |s| s.len)
-    }
 }
 
-// CR claude for claude: [bug/medium] Freezing a type whose parameters double at each
+// XCR claude for claude: [bug/medium] Freezing a type whose parameters double at each
 // level walks MAX_FREEZE_EXPANSIONS levels of a type that doubles at each, so it never
 // ends: `type P<'a> = [`Leaf('a), `Node(P<('a, 'a)>)]; let t: P<i64> =
 // `Node(`Node(`Node(`Leaf((((1, 1), (1, 1)), ((1, 1), (1, 1)))))))`, then a select
@@ -480,10 +471,14 @@ impl<'a> Seen<'a> {
 // N<Array<'a>>)] are refused there now, so the freeze cannot meet a non-regular type:
 // MAX_FREEZE_EXPANSIONS and the cut it bounds look dead; verify and remove (the next
 // agent).
-/// Bounds the expansion chain for non-regular recursion
-/// (`type T<'a> = T<Array<'a>>`), whose keys never repeat.
-pub(crate) const MAX_FREEZE_EXPANSIONS: usize = 256;
-
+// 2026-11-09 claude: MAX_FREEZE_EXPANSIONS is gone with every cut it bounded: the
+// freeze's path-length refusal and its memo's per-entry depth (Freeze::deepest, Seen's
+// len), primitive_union's depth bound, and lowering's expand_ref_d path cut (its
+// budget and size cap stay). With expansive typedefs refused at their definition
+// (945d4583a) every path holds finitely many distinct expansions. Pin:
+// lang::types::doubling_typedef_refused (the perfect4 program); on base-r19 it checks
+// clean and a plain run is killed at 30 s in the freeze. regress 567/0, graphix-tests
+// lib green.
 /// The kernel-ABI encodability gate: the concrete form of `t` over the
 /// fusable subset, or `None` if any part has no kernel encoding.
 /// Accept/reject matches [`abi_kind`] at each level. Every part the
@@ -494,8 +489,9 @@ pub(crate) const MAX_FREEZE_EXPANSIONS: usize = 256;
 /// A recursive named type freezes to an opaque leaf: the recurring
 /// `Ref` stays unexpanded, so the output is finite and the value
 /// crosses the boundary as a 2-word opaque. Consumers needing flat
-/// payload structure refuse the leaf per node. Non-regular recursion
-/// is cut by [`MAX_FREEZE_EXPANSIONS`]; structural depth is unbounded.
+/// payload structure refuse the leaf per node. Every typedef is
+/// regular (`Env::deftype` refuses an expansive one), so a path holds
+/// finitely many distinct expansions; structural depth is unbounded.
 pub fn freeze_for_abi(t: &Type) -> Option<Type> {
     try_freeze_for_abi(t).ok()
 }
@@ -581,13 +577,10 @@ struct Freeze {
     /// The refs whose expansion met no recurring ref, by
     /// [`expand_key_fp`]: such a ref freezes alike on every path, so any
     /// later occurrence takes it, and a typedef DAG freezes once per
-    /// definition. Each entry is the key, its frozen form and how many
-    /// expansions deep its own went.
-    memo: RefCell<LPooled<AHashMap<u64, SmallVec<[(Arc<TypeRef>, Type, usize); 1]>>>>,
+    /// definition.
+    memo: RefCell<LPooled<AHashMap<u64, SmallVec<[(Arc<TypeRef>, Type); 1]>>>>,
     /// The expansion in progress met a recurring ref.
     recurred: Cell<bool>,
-    /// The longest path the expansion in progress reached.
-    deepest: Cell<usize>,
 }
 
 impl Freeze {
@@ -597,16 +590,10 @@ impl Freeze {
         })
     }
 
-    /// The memo's frozen form of `tr`, met at a path `len` long, when
-    /// its expansion stays within [`MAX_FREEZE_EXPANSIONS`] there.
-    fn memoized(&self, fp: u64, tr: &TypeRef, len: usize) -> Option<Type> {
+    /// The memo's frozen form of `tr`.
+    fn memoized(&self, fp: u64, tr: &TypeRef) -> Option<Type> {
         let memo = self.memo.borrow();
-        let (_, t, below) = memo.get(&fp)?.iter().find(|(k, _, _)| **k == *tr)?;
-        let deepest = len + 1 + below;
-        if deepest > MAX_FREEZE_EXPANSIONS {
-            return None;
-        }
-        self.deepest.set(self.deepest.get().max(deepest));
+        let (_, t) = memo.get(&fp)?.iter().find(|(k, _)| **k == *tr)?;
         Some(t.clone())
     }
 
@@ -753,12 +740,8 @@ impl Freeze {
                             outer.with_params(Arc::from_iter(frozen.drain(..))),
                         )));
                     }
-                    let len = Seen::len(seen);
-                    if len > MAX_FREEZE_EXPANSIONS {
-                        return Err(NonCanonical);
-                    }
                     let fp = expand_key_fp(tr);
-                    if let Some(t) = self.memoized(fp, tr, len) {
+                    if let Some(t) = self.memoized(fp, tr) {
                         return Ok(t);
                     }
                     if let Some(parent) = seen
@@ -774,17 +757,14 @@ impl Freeze {
                     let expanded = tr.expand_cell().ok_or(Unresolved)?;
                     let node = Seen::push(seen, tr.clone());
                     let recurred = self.recurred.replace(false);
-                    let deepest = self.deepest.replace(node.len);
                     let t = self.freeze(&expanded, Some(&node))?;
                     if !self.recurred.get() && key_closed(tr) {
-                        let below = self.deepest.get() - node.len;
                         let mut memo = self.memo.borrow_mut();
-                        memo.entry(fp).or_default().push((tr.clone(), t.clone(), below));
+                        memo.entry(fp).or_default().push((tr.clone(), t.clone()));
                     } else if let Some(parent) = seen {
                         parent.frozen.borrow_mut().push((fp, tr.clone(), t.clone()));
                     }
                     self.recurred.set(recurred || self.recurred.get());
-                    self.deepest.set(deepest.max(self.deepest.get()));
                     Ok(t)
                 }
                 _ => Err(Unsupported),

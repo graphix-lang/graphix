@@ -749,8 +749,7 @@ pub(crate) fn meets_abstract<R: Rt>(n: &Node<R>, env: &Env) -> bool {
 /// Expand named types to their definitions through composites so
 /// `abi_kind`/`freeze_for_abi` can classify a shape env-free. Abstract
 /// types are leaves. A recursive expansion is left as-is (the kernel
-/// then does not fuse); non-regular recursion is stopped by a length
-/// backstop on the expansion chain. Truncation only ever de-fuses, so
+/// then does not fuse). Truncation only ever de-fuses, so
 /// the work budget is small.
 pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
     super::TypeMemo::expanded(typ, || {
@@ -1046,12 +1045,6 @@ fn expand_ref_d_inner<'a>(
     seen: Option<&'a Seen<'a>>,
     cx: &ResolveCx,
 ) -> Option<Type> {
-    // Bounds distinct expansions on one path, which is what stops
-    // non-regular recursion.
-    if Seen::len(seen) > kernel_abi::MAX_FREEZE_EXPANSIONS {
-        cx.poisoned.set(true);
-        return None;
-    }
     if !cx.count_nodes(1) {
         return None;
     }

@@ -3578,6 +3578,23 @@ run!(
     FuseExpect::None
 );
 
+/// A parameter that doubles at each level (a perfect tree) is refused
+/// at its definition, so no value of it reaches a select or a freeze.
+const DOUBLING_TYPEDEF_REFUSED: &str = r#"
+{
+    type P<'a> = [`Leaf('a), `Node(P<('a, 'a)>)];
+    let t: P<i64> = `Node(`Node(`Node(`Node(`Leaf(((((1, 2), (3, 4)), ((5, 6), (7, 8))), (((1, 2), (3, 4)), ((5, 6), (7, 8)))))))));
+    select t { `Leaf(_) => 0, `Node(_) => 1 }
+}
+"#;
+
+run!(
+    doubling_typedef_refused,
+    DOUBLING_TYPEDEF_REFUSED,
+    refused("recursive type P grows its parameter 'a as it recurses");
+    FuseExpect::None
+);
+
 /// The same through a struct field.
 const GROWING_FIELD_TYPEDEF_REFUSED: &str = r#"
 {
