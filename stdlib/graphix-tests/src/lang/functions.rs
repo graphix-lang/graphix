@@ -3075,6 +3075,66 @@ run!(array_defaults_passed_on_annotated, r#"{
     "[array::len(fs)] [fs[1]$(7)] [fs[0]$(7)]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "2 q 1"); FuseExpect::None);
 
+// Lambdas in the parts of a literal's elements meet as the elements' own
+// lambdas do: a call through the part judges every default.
+run!(nested_array_defaults_of_two_types, r#"{
+    let fs = [
+        [|#d = 1, x: i64| cast<string>(d)$],
+        [|#d = "q", x: i64| cast<string>(d)$]
+    ];
+    fs[0]$[0]$(7)
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(tuple_part_defaults_of_two_types, r#"{
+    let fs = [
+        ([(0, |#d = 1, x: i64| cast<string>(d)$)], 0),
+        ([(1, |#d = "q", x: i64| cast<string>(d)$)], 1)
+    ];
+    fs[0]$.0[0]$.1(7)
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(select_of_structs_defaults_of_two_types, r#"{
+    let i = 0;
+    let s = select i {
+        0 => {f: |#d = 1, x: i64| cast<string>(d)$},
+        _ => {f: |#d = "q", x: i64| cast<string>(d)$}
+    };
+    s.f(7)
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(nested_array_defaults_passed_on_name_the_annotation, r#"{
+    let fs = [
+        [|#d = 1, x: i64| cast<string>(d)$],
+        [|#d = "q", x: i64| cast<string>(d)$]
+    ];
+    array::len(fs)
+}"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(nested_array_defaults_annotated, r#"{
+    let fs: Array<Array<fn(?#d: [i64, string], x: i64) -> string>> = [
+        [|#d = 1, x: i64| cast<string>(d)$],
+        [|#d = "q", x: i64| cast<string>(d)$]
+    ];
+    "[array::len(fs)] [fs[1]$[0]$(7)] [fs[0]$[0]$(7)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "2 q 1"); FuseExpect::None);
+
+run!(nested_array_defaults_of_one_type, r#"{
+    let fs = [[|#d = 1, x: i64| d + x], [|#d = 2, x: i64| d * x]];
+    "[fs[0]$[0]$(7)] [fs[1]$[0]$(7)] [fs[1]$[0]$(#d: 3, 7)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "8 14 21"); FuseExpect::None);
+
+run!(nested_array_of_generic_lambdas, r#"{
+    let fs = [[|x| x], [|y| y]];
+    "[fs[0]$[0]$(1)] [fs[1]$[0]$(2)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 2"); FuseExpect::None);
+
+// A select of structs of lambdas in a definition is one struct: each call
+// of the definition instantiates the lambda it picks.
+run!(select_of_structs_of_lambdas_in_a_definition, r#"{
+    let mk = |b| select b { true => {f: |x| x}, false => {f: |y| y} };
+    "[mk(true).f(1)] [mk(false).f("s")]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s"); FuseExpect::None);
+
 // Only one of the functions met has the default: no annotation of the
 // label holds it, so the refusal names none.
 run!(one_met_default_names_no_annotation, r#"{

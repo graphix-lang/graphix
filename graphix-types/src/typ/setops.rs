@@ -407,6 +407,38 @@ fn same_ref(env: &Env, r0: &TypeRef, r1: &TypeRef) -> bool {
         && r0.params.iter().zip(r1.params.iter()).all(|(a, b)| union_identical(a, b))
 }
 
+/// The parts a union of alternatives meets within a member: an array's,
+/// a list's or a reference's element, a map's key and value, a tuple's,
+/// a struct's or a variant's positions.
+fn parts(t: &Type) -> SmallVec<[&Type; 4]> {
+    match t {
+        Type::Array(e) | Type::List(e) | Type::ByRef(_, e) => smallvec![&**e],
+        Type::Map(m) => smallvec![&m.key, &m.value],
+        Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().collect(),
+        Type::Struct(fs) => fs.iter().map(|(_, t, _)| t).collect(),
+        _ => SmallVec::new(),
+    }
+}
+
+/// Whether `a` and `b` are one constructor whose [`parts`] pair by
+/// position.
+fn same_shape(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::Array(_), Type::Array(_))
+        | (Type::List(_), Type::List(_))
+        | (Type::Map(_), Type::Map(_)) => true,
+        (Type::ByRef(m0, _), Type::ByRef(m1, _)) => m0 == m1,
+        (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
+        (Type::Variant(t0, a, _), Type::Variant(t1, b, _)) => {
+            t0 == t1 && a.len() == b.len()
+        }
+        (Type::Struct(a), Type::Struct(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.0 == y.0)
+        }
+        _ => false,
+    }
+}
+
 /// The two-member union of `a` and `b`.
 fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
@@ -637,10 +669,10 @@ impl Type {
     }
 
     /// The union of a select's alternatives, which a call through the
-    /// select must accept alike: function members meet first
-    /// ([`Self::meet_open_fns`]).
+    /// select must accept alike: function members meet first, and so do
+    /// those in the members' parts ([`Self::meet_alternatives`]).
     pub fn union_of_alternatives(env: &Env, ts: &[&Type]) -> Result<Self> {
-        match Self::meet_open_fns(env, ts)? {
+        match Self::meet_alternatives(env, ts)? {
             None => Self::union(env, ts),
             Some(met) => {
                 let met: LPooled<Vec<&Type>> = met.iter().collect();
@@ -665,7 +697,85 @@ impl Type {
         Ok(acc)
     }
 
-    // CR claude for claude: [bug/medium] Only a union's own function members meet:
+    /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
+    /// of members of one shape ([`same_shape`]): a call through a part of
+    /// the union may be any member's. `None` when no member changes.
+    fn meet_alternatives(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+        ensure_sufficient(|| {
+            let fns = Self::meet_open_fns(env, ts)?;
+            let parts = match &fns {
+                Some(met) => {
+                    let met: LPooled<Vec<&Type>> = met.iter().collect();
+                    Self::meet_parts(env, &met)?
+                }
+                None => Self::meet_parts(env, ts)?,
+            };
+            Ok(parts.or(fns))
+        })
+    }
+
+    /// The members of `ts` of one shape meet part by part
+    /// ([`Self::meet_alternatives`]); a part that is one node in every
+    /// member meets nothing. `None` when no member changes.
+    fn meet_parts(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+        let members: SmallVec<[Option<Type>; 4]> = ts
+            .iter()
+            .map(|t| t.with_deref(|t| t.filter(|t| !parts(t).is_empty()).cloned()))
+            .collect();
+        let mut grouped: SmallVec<[bool; 4]> = smallvec![false; members.len()];
+        let mut out: Option<LPooled<Vec<Type>>> = None;
+        for (i, head) in members.iter().enumerate() {
+            let Some(head) = head else { continue };
+            if grouped[i] {
+                continue;
+            }
+            let group: SmallVec<[usize; 4]> = (i..members.len())
+                .filter(|j| members[*j].as_ref().is_some_and(|m| same_shape(head, m)))
+                .collect();
+            for j in group.iter() {
+                grouped[*j] = true;
+            }
+            if group.len() < 2 {
+                continue;
+            }
+            let mut rebuilt: SmallVec<[Type; 4]> =
+                group.iter().filter_map(|j| members[*j].clone()).collect();
+            let mut changed = false;
+            for p in 0..parts(head).len() {
+                let met = {
+                    let at: SmallVec<[&Type; 4]> =
+                        rebuilt.iter().map(|m| parts(m)[p]).collect();
+                    let one = at[0].node_key();
+                    if one.is_some() && at.iter().all(|t| t.node_key() == one) {
+                        continue;
+                    }
+                    Self::meet_alternatives(env, &at)?
+                };
+                let Some(mut met) = met else { continue };
+                for (m, t) in rebuilt.iter_mut().zip(met.drain(..)) {
+                    let mut k = 0;
+                    let mut t = Some(t);
+                    *m = m
+                        .cow_children(&mut |_| {
+                            k += 1;
+                            if k - 1 == p { t.take() } else { None }
+                        })
+                        .unwrap_or_else(|| m.clone());
+                }
+                changed = true;
+            }
+            if changed {
+                let out =
+                    out.get_or_insert_with(|| ts.iter().map(|t| (*t).clone()).collect());
+                for (j, m) in group.iter().zip(rebuilt.drain(..)) {
+                    out[*j] = m;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    // XCR claude for claude: [bug/medium] Only a union's own function members meet:
     // lambdas one level down, in arrays of an array, do not, so a call through the
     // outer array's element judges one lambda's default and the other's fails at every
     // run-time bind. `let fs = [[|#d = 1, x: i64| cast<string>(d)$], [|#d = "q", x: i64|
@@ -675,6 +785,17 @@ impl Type {
     // have to reach the members' parts (an Array's, a List's, a tuple's element), or
     // the union keep each part's lambda ids. probe:
     // ~/ptmp/cr29/scratch/review-r16/m-r1-1/ad_nest.gx (array-defaults-nested-01)
+    // 2026-11-09 claude: Type::union_of_alternatives now meets the parts of members of
+    // one shape (Type::meet_alternatives, meet_parts: arrays, lists, maps, references,
+    // tuples, structs, variants), so lambdas in parts meet and join lambda ids as
+    // top-level members do; the probe and its tuple, struct-select, map, variant and
+    // list forms are refused at --check with the share-one-#d note. Pins
+    // lang::functions::{nested_array_defaults_of_two_types,
+    // tuple_part_defaults_of_two_types, select_of_structs_defaults_of_two_types,
+    // nested_array_defaults_passed_on_name_the_annotation,
+    // select_of_structs_of_lambdas_in_a_definition} fail without it; twins
+    // nested_array_defaults_annotated, nested_array_defaults_of_one_type,
+    // nested_array_of_generic_lambdas pass. Census unchanged.
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh

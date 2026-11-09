@@ -489,7 +489,13 @@ the definition gates:
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`): a member's generic cells meet
   through a copy, and its live cells bind, so a lambda literal in an arm
-  is the instance the call through the union makes. A written cell is: an enclosing
+  is the instance the call through the union makes. Members of one shape
+  (arrays, lists, maps, references, tuples of one arity, structs of one
+  field list, one variant) meet part by part the same way
+  (`Type::meet_parts`), so a call through a part of the union judges
+  every member's defaults and binds every member's lambda (pins
+  `lang::functions::nested_array_defaults_of_two_types` and its
+  neighbours). A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
   Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
   of the enclosing definition's inner functions shares.
