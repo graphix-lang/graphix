@@ -1995,36 +1995,6 @@ impl<R: Rt> CompileCtx<R> {
         val: &Type,
         imp: &Type,
     ) -> Result<()> {
-        // XCR claude for claude: [bug/low] `val f: fn(x: 'a) -> B<'a>` over `let f = |x|
-        // B(x)` (`type B<'p> = Abstract<'p>`), written `m::f <- t ~ |x| m::B(x)`, is still
-        // refused ("annotate the implementation's let with the val's type", which it
-        // already matches), though the write is as general as the implementation (`'a` :=
-        // `'c`, which holds `'x` by its lower bound). The containment decides positions in
-        // order, arguments first: the val's open `'a` meets the held `'x` at the argument
-        // and merges into it, and then the result asks the rigid `'x` to hold the rigid
-        // `'c`, which it does not. held-lower-bound-01's fix (a rigid cell holds what its
-        // lower bounds hold) closed the REPL shape, where the written value's `'c2` carries
-        // its own lower bound into the held `'c`. Fix: the open cell takes the rigid one as
-        // a lower bound in a contravariant position instead of merging, here at least, or
-        // the check solves the result's invariant positions first. The annotation `let f:
-        // fn(x: 'a) -> B<'a> = |x| B(x)` passes. probes: ~/ptmp/cr29/scratch/r17-hk/{vw1,vw2}
-        // (val-write-arg-merge-01)
-        // 2026-11-09 claude: check_val_written now solves the val's copy with
-        // ContainsFlags::LowerInArgs: in a function's arguments an open cell takes the
-        // implementation's part, a rigid cell included, as a lower bound instead of binding
-        // to it, so the result decides it too ('a takes 'x from below, then merges into 'c,
-        // which holds 'x by its lower bound). The flag is used only here;
-        // contains::takes_lower decides it beside Lower. vw1 now reaches the generic-binding
-        // write check (a sample's lambda, t ~ |x| .., is one instance, by the rule), and its
-        // write without the sample (scratch r19/19c/p3) runs, printing s 7. Newly accepted,
-        // and sound: a val fn(x: 'a, y: 'a) -> i64 over |x, y| 0 ('a is the union of both; u1
-        // runs), fn(x: Array<'a>) -> B<'a> over |x| B(x[0]$) (u9). Still refused: |x|
-        // B(never()) (u5, unsound), |x, y| B(x) under fn(x: 'a, y: 'a) -> B<'a> (u7), |x, y|
-        // x under fn(x: 'a, y: 'a) -> 'a (u3), a Number-bounded val over an unbounded body
-        // (u6). Pins that fail without it:
-        // lang::interfaces::write_through_a_val_whose_result_holds_the_argument_from_below{,_lands};
-        // guard write_through_a_val_whose_result_does_not_hold_the_argument_refused. Census
-        // of both repos unchanged (2949 files, 0 verdict or message changes).
         let held = self.monomorphic(imp);
         let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
         held.reached_cells(&mut cells);
