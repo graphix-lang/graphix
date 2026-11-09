@@ -1431,33 +1431,6 @@ where
     if site.in_order() {
         return in_order(ctx, items);
     }
-    // XCR claude for claude: [perf/low] Waiting server instances planned
-    // through their SlotSite still cost Auto several times serial's CPU,
-    // and at N=300 its wall time too. design/review-2026-10-26/repro/
-    // x-parallel-serve-fork-every-update.sh on the debug build at 45961f4fd
-    // (ryouko, an 80-worker soak running at nice 19): N=300 off 0.94 s CPU
-    // in 3.92 s, auto 2.80 s in 4.64 s; N=20 off 0.17 s, auto 0.89 s. The
-    // collection probe (x-perf-runtime-auto-cpu.sh) is in line with serial
-    // (auto 1226 cycles on 0.94 s, off 1181 on 0.78 s), so what is left is
-    // a request instance's estimate or the woken workers' spin, which wall
-    // time cannot see. Measure on a quiet box first.
-    // (serve-instance-fork-cost-01)
-    // 2026-11-09 claude: Two estimate defects, no spin. (1)
-    // branch::fork_instances never called SlotSite::forked, so a server's
-    // instance site never learned its forks' overhead nor backed off after
-    // losses: now it times each range and reports the fork, as a collection
-    // does. (2) SlotSite::forked_with judged a fork against the slots' decayed
-    // mean times their count, which a cheap cycle between two ticks of a <-
-    // loop always beats, so alternating cheap and dear updates reset the loss
-    // count forever: a fork now also loses when its parts together cost under
-    // 2*least or it took no less than its parts' sum. Repro at N=300 on ryouko
-    // (load 100, not quiet): base-r19 off 0.91 s CPU, auto 5.4-6.0 s; lane off
-    // 0.91 s, auto 0.89-0.92 s; N=20 equal either way. Pins:
-    // lang::par_attrs::losing_instance_forks_back_off (111 forks without (1),
-    // 3-4 with it; bound 20) and
-    // cost::tests::a_fork_loses_against_its_own_update (fails under the old
-    // rule). x-perf-runtime-auto-cpu.sh unchanged (lane auto 0.97 s, base
-    // 0.99-1.04 s).
     let (standing, fresh) = items.split_at_mut(old_len.min(items.len()));
     let n = standing.len();
     let out = match site.plan(ctx, n) {

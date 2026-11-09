@@ -1215,9 +1215,9 @@ mod tests {
         );
     }
 
-    /// A fork is judged by its own update: one whose parts cost less than
-    /// a fork pays at, or that took no less than its parts in order,
-    /// lost, though it beat the slots' mean times their count.
+    /// A fork is judged by its own update, not the slots' mean times their
+    /// count: one whose parts cost less than a fork pays at lost though it
+    /// beat their sum, and one that took no less than its parts' sum lost.
     #[test]
     fn a_fork_loses_against_its_own_update() {
         let cal = Calibration { t: 1 << 10, shift: 4 };
@@ -1226,13 +1226,13 @@ mod tests {
         let mut site = SlotSite::default();
         let cheap = parts(&[cal.t / 4, cal.t / 4]);
         next_fork(&mut site, &cal, n, each);
-        site.forked_with(&cal, cal.t / 2, n, &cheap, workers);
+        site.forked_with(&cal, cal.t / 4 + 1, n, &cheap, workers);
         // one part did nearly all of the update's work
         next_fork(&mut site, &cal, n, each);
         site.forked_with(&cal, serial / 2 + 2, n, &parts(&[serial / 2, 1]), workers);
         assert!(matches!(site.standing, Slots::Measured { losses: 2, .. }));
         next_fork(&mut site, &cal, n, each);
-        site.forked_with(&cal, cal.t / 2, n, &cheap, workers);
+        site.forked_with(&cal, cal.t / 4 + 1, n, &cheap, workers);
         assert!(
             matches!(site.plan_with(&cal, n), SlotPlan::Serial),
             "{LOSSES} forks in a row that lost their own updates: {:?}",
