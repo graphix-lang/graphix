@@ -622,6 +622,13 @@ fn instance_sig<R: Rt>(
     // alone, x: 'a0 alone, every position given (union-dag-elab-01) and chains of
     // four run. Main ed2e39816 the same. probes:
     // ~/ptmp/cr29/scratch/r17-o1/union-dag/{w21,w22,w6,w11}.gx (bound-only-settle-01)
+    // 2026-11-09 claude: Since formal-union-nested-01 (lane 19g) the written chain
+    // above is refused at its definition ('[Array<'a1>, Array<'a2>, null] is a union
+    // of the type variables 'a1 and 'a2, held by its members ...'). The same chain
+    // written through two typedefs of one body (type A<'x> = Array<'x>; type B<'x> =
+    // Array<'x>; 'a0: [A<'a1>, B<'a2>, null], ...) checks and runs, printing 7, on
+    // lane 19g's build; probe ~/ptmp/cr29/scratch/r19/19g/bos.gx. Re-probe before
+    // fixing: this may now be unreachable.
     instance.check_contains(&ctx.env, &def).ok()?;
     Some(Arc::new(def))
 }

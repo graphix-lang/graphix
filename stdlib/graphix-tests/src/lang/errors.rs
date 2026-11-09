@@ -1419,16 +1419,17 @@ run!(
     FuseExpect::Jit
 );
 
-/// `n` named tags (`Tags`) beside one name applied to two open cells,
-/// `F<'a>` and `F<'b>` with `F<'t> = ['t, null]`, which `strip` takes the
-/// null from; the call decides `'b` as string, which `ann` must hold.
+/// `n` named tags (`Tags`) beside two names of one body applied to two open
+/// cells, `F<'a>` and `H<'b>` with `F<'t> = H<'t> = ['t, null]`, which
+/// `strip` takes the null from; the call decides `'b` as string, which `ann`
+/// must hold.
 fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
     with_named_tags(
         n,
-        "type Tags = [{names}];\ntype F<'t> = ['t, null];",
+        "type Tags = [{names}];\ntype F<'t> = ['t, null];\ntype H<'t> = ['t, null];",
         &format!(
-            "let f = 'a: Any, 'b: Any |p: [Tags, F<'a>, F<'b>]| {strip};\n\
-             let s: [Tags, F<i64>, F<string>] = \"hello\";\n\
+            "let f = 'a: Any, 'b: Any |p: [Tags, F<'a>, H<'b>]| {strip};\n\
+             let s: [Tags, F<i64>, H<string>] = \"hello\";\n\
              let r: {ann} = f(s);\n\
              select r {{ string as v => v, _ => \"other\" }}"
         ),
@@ -1469,16 +1470,16 @@ run!(
     FuseExpect::Jit
 );
 
-/// `n` named tags (`Tags`) beside one name applied to two open cells,
-/// `G<'a>` and `G<'b>` with `G<'t> = Error<'t>`, which `?` raises to a
-/// handler with `arms`; the call decides them as `A and `B.
+/// `n` named tags (`Tags`) beside two names of one body applied to two open
+/// cells, `G<'a>` and `K<'b>` with `G<'t> = K<'t> = Error<'t>`, which `?`
+/// raises to a handler with `arms`; the call decides them as `A and `B.
 fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
     with_named_tags(
         n,
-        "type Tags = [{names}];\ntype G<'t> = Error<'t>;",
+        "type Tags = [{names}];\ntype G<'t> = Error<'t>;\ntype K<'t> = Error<'t>;",
         &format!(
-            "let f = 'a: Any, 'b: Any |p: [Tags, G<'a>, G<'b>]| p?;\n\
-             let s: [Tags, G<`A>, G<`B>] = error(`B);\n\
+            "let f = 'a: Any, 'b: Any |p: [Tags, G<'a>, K<'b>]| p?;\n\
+             let s: [Tags, G<`A>, K<`B>] = error(`B);\n\
              let caught = never();\n\
              let r = {{ catch(e) caught <- select e.0.error {{ {arms} }}; f(s) }};\n\
              caught"

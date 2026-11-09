@@ -520,12 +520,16 @@ impl Type {
 }
 
 /// A union written in a function type with two or more of the variables
-/// `own` admits as members of their own: which of them a value takes, no
+/// `own` admits as members of their own, or two members of one constructor
+/// that hold two distinct such variables: which of them a value takes, no
 /// type says ([`Type::variable_union`]).
 #[derive(Debug)]
 pub struct VariableUnion {
     pub union: Type,
     pub vars: SmallVec<[ArcStr; 4]>,
+    /// The two members of one constructor that hold `vars`, where the
+    /// union's members are not the variables themselves.
+    pub members: Option<(Type, Type)>,
 }
 
 impl fmt::Display for VariableUnion {
@@ -539,12 +543,20 @@ impl fmt::Display for VariableUnion {
             };
             write!(f, "{sep}'{v}")?
         }
-        write!(
-            f,
-            " in a function's signature: no value's type says which of them it takes; keep \
-             one variable there, or write the types in their place (a union of \
-             written types, such as [i64, string])"
-        )
+        match &self.members {
+            None => write!(
+                f,
+                " in a function's signature: no value's type says which of them it takes; \
+                 keep one variable there, or write the types in their place (a union of \
+                 written types, such as [i64, string])"
+            ),
+            Some((a, b)) => write!(
+                f,
+                ", held by its members {a} and {b} under one constructor, in a function's \
+                 signature: no value's type says which member it takes; write one variable \
+                 in both, or a written type in place of one of them"
+            ),
+        }
     }
 }
 
@@ -552,31 +564,107 @@ impl Error for VariableUnion {}
 
 impl VariableUnion {
     /// The written union `union` refused where two or more of its members
-    /// are distinct variables `own` admits.
+    /// are distinct variables `own` admits, or two members of one
+    /// constructor ([`same_constructor`]) hold two distinct ones.
     #[doc(hidden)]
     pub fn of(union: &Type, own: &dyn Fn(&TVar) -> bool) -> Option<Self> {
         let Type::Set(ms) = union else { return None };
         let mut vars: SmallVec<[&TVar; 4]> = SmallVec::new();
         for m in ms.iter() {
             if let Type::TVar(tv) = m
+                && own(tv)
                 && !vars.iter().any(|v| v.name == tv.name)
             {
                 vars.push(tv)
             }
         }
-        if vars.len() < 2 {
-            return None;
+        if vars.len() >= 2 {
+            let mut vars: SmallVec<[&ArcStr; 4]> =
+                vars.iter().map(|tv| &tv.name).collect();
+            vars.sort();
+            return Some(VariableUnion {
+                union: union.clone(),
+                vars: vars.into_iter().cloned().collect(),
+                members: None,
+            });
         }
-        vars.retain(|tv| own(tv));
-        if vars.len() < 2 {
-            return None;
+        let held: SmallVec<[(&Type, LPooled<Vec<ArcStr>>); 4]> = ms
+            .iter()
+            .filter(|m| !matches!(m, Type::TVar(_)))
+            .map(|m| {
+                let mut vs = LPooled::take();
+                own_vars(m, own, &mut vs);
+                (m, vs)
+            })
+            .filter(|(_, vs)| !vs.is_empty())
+            .collect();
+        for (i, (a, avs)) in held.iter().enumerate() {
+            for (b, bvs) in held[i + 1..].iter() {
+                if !same_constructor(a, b) {
+                    continue;
+                }
+                let distinct =
+                    avs.iter().find_map(|v| bvs.iter().find(|w| *w != v).map(|w| (v, w)));
+                if let Some((v, w)) = distinct {
+                    let (v, w) = if v <= w { (v, w) } else { (w, v) };
+                    return Some(VariableUnion {
+                        union: union.clone(),
+                        vars: [v.clone(), w.clone()].into_iter().collect(),
+                        members: Some(((*a).clone(), (*b).clone())),
+                    });
+                }
+            }
         }
-        let mut vars: SmallVec<[&ArcStr; 4]> = vars.iter().map(|tv| &tv.name).collect();
-        vars.sort();
-        Some(VariableUnion {
-            union: union.clone(),
-            vars: vars.into_iter().cloned().collect(),
-        })
+        None
+    }
+}
+
+/// The distinct variables `own` admits that the written type `t` names,
+/// through every constructor, no typedef looked through.
+fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if own(tv) && !out.contains(&tv.name) {
+                out.push(tv.name.clone())
+            }
+        }
+        t => t.for_each_child(&mut |c| own_vars(c, own, out)),
+    })
+}
+
+// CR claude for claude: [bug/low] A written union of two function types whose
+// variables pair by renaming merges into one member as the parser flattens it
+// (Type::flatten_set -> union_identical, which pairs a function type's cells as its
+// own quantifiers), though in a signature they are the definition's: `|k: [fn(x:
+// 'c) -> i64, fn(x: 'd) -> i64], y: 'c, z: 'd| -> i64 0` keeps `fn(x: 'd) -> i64`
+// alone, so VariableUnion::of never sees the two members the source writes, and
+// `f(|x: i64| 0, 1, "s")` is refused naming nothing ("'d: i64 does not contain
+// string"); `Array<fn(x: 'c) -> i64>` beside `Array<fn(x: 'd) -> i64>` merges alike.
+// Main 3cfcd2407 alike. A fix keeps a written union's members apart where their
+// cells are a definition's (or judges the union before it flattens). Probe:
+// ~/ptmp/cr29/scratch/r19/19g/fnmerge.gx (formal-union-fn-merge-01)
+
+/// Whether two written union members are built by one constructor, so a
+/// value of the one may be a value of the other: two arrays, lists, maps,
+/// errors, references or function types; tuples of one arity; structs of
+/// one field set; variants of one tag and arity; one abstract type; one
+/// typedef by its written name.
+fn same_constructor(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::Array(_), Type::Array(_))
+        | (Type::List(_), Type::List(_))
+        | (Type::Map(_), Type::Map(_))
+        | (Type::Error(_), Type::Error(_))
+        | (Type::ByRef(..), Type::ByRef(..))
+        | (Type::Fn(_), Type::Fn(_)) => true,
+        (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
+        (Type::Struct(a), Type::Struct(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.0 == y.0)
+        }
+        (Type::Variant(t, a, _), Type::Variant(u, b, _)) => t == u && a.len() == b.len(),
+        (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) => a == b,
+        (Type::Ref(a), Type::Ref(b)) => a.scope == b.scope && a.name == b.name,
+        _ => false,
     }
 }
 

@@ -371,14 +371,16 @@ told apart only by undecided cells under a partial struct pattern
 **15. A union of variables in a signature.** Site: a top-level `let`
 of a lambda whose first positional parameter is a name, written with no
 type or with one variable `'v`. Mutation: that parameter written
-`['tm__a, 'tm__b]`, or `['v, 'tm__b]`. Rule: a union written in a
-function type holds no two or more of its own bare variables, under any
-constructor as written, no typedef looked through
+`['tm__a, 'tm__b]`, or `['v, 'tm__b]`; every other probe
+`[Array<'tm__a>, Array<'tm__b>]`, or `[Array<'v>, Array<'tm__b>]`. Rule:
+a union written in a function type holds no two or more of its own bare
+variables, nor two members of one constructor holding two distinct
+ones, under any constructor as written, no typedef looked through
 (`Type::variable_union`). Built (`variable-union`), right site the
 definition. Not generated: the other places the rule reads (a callback's
 parameter, the result, a bound, a typedef's argument, a `.gxi` val, a
 trait method, a `let` annotation's function type), pinned by
-`lang::types::variable_union_*_refused`,
+`lang::types::{variable_union,nested_variable_union}_*_refused`,
 `lang::interfaces::val_variable_union_refused` and
 `lang::traits::trait_method_variable_union_refused`.
 

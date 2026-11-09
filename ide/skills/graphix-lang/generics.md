@@ -40,6 +40,18 @@ no "union of the type variables" |x: Array<['a, 'b]>| 1
 ok |x: ['a, null]| 1
 ```
 
+Two members of one constructor holding two of its variables ask the
+same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
+'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`. Write one variable in both,
+or a written type in place of one. Members of two constructors stand.
+
+```graphix,cases
+no "held by its members" |x: [Array<'c>, Array<'d>], y: 'c| y
+no "held by its members" |x: [('c, i64), (i64, 'd)], y: 'c| y
+ok |x: [Array<'c>, Array<string>], y: 'c| y
+ok |x: [Array<'c>, Map<string, 'd>], y: 'c| y
+```
+
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
 `fn(c: Collection) -> i64`) stands only as a definition's signature: a

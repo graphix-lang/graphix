@@ -6005,6 +6005,96 @@ run!(
     prints("i64:0")
 );
 
+// Two members of one constructor holding two distinct variables of the
+// definition ask the same question: which member a value takes. Two
+// constructors, one variable among them, a typedef's written name against
+// another constructor and a data union in a body's annotation stand.
+const NESTED_UNION: &str =
+    "is a union of the type variables 'c and 'd, held by its members";
+
+run!(
+    nested_variable_union_refused,
+    r#"{ let f = |x: [Array<'c>, Array<'d>], y: 'd, z: 'c| -> i64 0; f([1], 1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_written_last_refused,
+    r#"{ let f = |y: 'd, z: 'c, x: [Array<'c>, Array<'d>]| -> i64 0; f(1, "s", [1]) }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_at_two_positions_refused,
+    r#"{ let f = |x: [('c, i64), (i64, 'd)], y: 'c| -> 'c y; f((1, 2), 3) }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_through_a_function_type_refused,
+    r#"{ let f = |k: [Array<'c>, Array<fn(x: 'd) -> i64>], y: 'c| -> 'c y; f([1], 1) }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_struct_fields_refused,
+    r#"{ let f = |x: [{v: 'c}, {v: 'd}], y: 'c| -> 'c y; f({v: 1}, 2) }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_variants_refused,
+    r#"{ let f = |x: [`A('c), `A('d), `B], y: 'c| -> 'c y; f(`B, 2) }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_one_typedef_refused,
+    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, M<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_in_the_result_refused,
+    r#"{ let f = |x: 'c, y: 'd| -> [Array<'c>, Array<'d>, null] null; f(1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_union_of_one_variable_beside_a_written_type,
+    r#"{ let f = |x: [Array<'c>, Array<string>], y: 'c| -> 'c y; f([1], 2) }"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+run!(
+    nested_union_of_two_constructors,
+    r#"{ let f = |x: [Array<'c>, Map<string, 'd>], y: 'c| -> 'c y; f([1], 2) }"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+run!(
+    nested_union_of_two_tags,
+    r#"{ let f = |x: [`A('c), `B('d)], y: 'c| -> 'c y; f(`A(1), 2) }"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+run!(
+    nested_union_of_two_arities,
+    r#"{ let f = |x: [('c, i64), ('d, i64, i64)], y: 'c| -> 'c y; f((1, 2), 3) }"#,
+    prints("i64:3");
+    FuseExpect::Jit
+);
+run!(
+    nested_union_typedef_is_not_looked_through,
+    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, Array<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
+    prints("i64:2")
+);
+run!(
+    nested_data_union_of_variables_in_an_annotation,
+    r#"{ let v: [Array<'r>, Array<'q>] = [1]; v }"#,
+    prints("[i64:1]")
+);
+
 // Every position is held, whichever round checks it: a result whose
 // variable the parameter's binding closes is checked all the same.
 run!(
@@ -7644,8 +7734,10 @@ run!(
 run!(
     a_dag_of_union_bounds_types_its_instances,
     r#"{
-  let f = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| 7;
-  let g = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: {a: 'a0, b: 'a3}| 8;
+  type A<'x> = Array<'x>;
+  type B<'x> = Array<'x>;
+  let f = 'a0: [A<'a1>, B<'a2>, null], 'a1: [A<'a2>, B<'a3>, null], 'a2: [A<'a3>, B<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| 7;
+  let g = 'a0: [A<'a1>, B<'a2>, null], 'a1: [A<'a2>, B<'a3>, null], 'a2: [A<'a3>, B<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: {a: 'a0, b: 'a3}| 8;
   f(never()) + g(never())
 }"#,
     is(Value::I64(15));

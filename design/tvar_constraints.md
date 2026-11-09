@@ -373,6 +373,24 @@ string]`). One variable beside written types (`['a, null]`) is a member
 a value's type picks, and a data union in an annotation (`let v: ['r,
 'q] = ..`) is no signature.
 
+Two members of one constructor that hold two distinct variables of the
+definition ask the same question (`[Array<'c>, Array<'d>]`: a `[1]`
+fits either), and are refused the same way, at the same sites, naming
+the two members: write one variable in both, or a written type in place
+of one (`VariableUnion::of`, `same_constructor`). One constructor is two
+arrays, lists, maps, errors, references or function types, tuples of one
+arity, structs of one field set, variants of one tag and arity, one
+abstract type, or one typedef by its written name; a variable anywhere
+inside a member counts (`[('c, i64), (i64, 'd)]`, `[Array<'c>,
+Array<fn(x: 'd) -> i64>]`). Members of two constructors (`[Array<'c>,
+Map<string, 'd>]`, `` [`A('c), `B('d)] ``), one variable among them
+(`[Array<'c>, Array<string>]`) and two typedefs of one expansion
+(`[A<'c>, B<'d>]` over `type A<'x> = Array<'x>` and `B` alike) stand:
+the rule reads the written form only. Two written function types whose
+variables pair by renaming merge as the union is parsed
+(`fn(x: 'c) -> i64` and `fn(x: 'd) -> i64` are one member), so that
+union never reaches the rule (formal-union-fn-merge-01).
+
 ### Function types with variables of their own
 
 A function type with type variables of its own stands only as a
@@ -1565,7 +1583,9 @@ references name the target is told the recursive type alone
   method, one a body's annotation writes) holds no union written with two
   or more of its own bare variables (`['a, 'b]`, under any constructor as
   written; a typedef is not looked through; `self` and an impl's head are no
-  method's own), refused, naming one variable or written types as the fix
+  method's own), nor two members of one constructor holding two distinct
+  ones (`[Array<'c>, Array<'d>]`), refused, naming one variable or written
+  types as the fix
   (`Type::variable_union`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥, no
   two unify (`contains.rs` Distinct) and none escapes into a cell outside

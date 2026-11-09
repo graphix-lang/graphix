@@ -3144,6 +3144,17 @@ run!(
     "#
 ; FuseExpect::None);
 
+run!(
+    trait_method_nested_variable_union_refused,
+    refused("trait method pick: [Array<'a>, Array<'b>] is a union of the type variables 'a and 'b, held by"),
+    "/test.gx" => r#"
+        trait Pick { val pick: fn(self, x: [Array<'a>, Array<'b>], y: 'a) -> 'a };
+        type C = Abstract<i64>;
+        impl Pick for C { let pick = |c, x, y| y };
+        let result = Pick::pick(C(1), [2], 3)
+    "#
+; FuseExpect::None);
+
 // `self` is the implementation's type, a written type at every impl: one
 // variable beside it stands. A union an impl's head writes is the impl's.
 run!(

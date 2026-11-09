@@ -1289,14 +1289,15 @@ run!(
     "/test/m.gx" => "let parse = 'b: Any |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
 ; FuseExpect::None);
 
-// A union of members holding variables pairs with the implementation's
-// however either side orders it, as the rest of the signature decides.
+// A union of members holding variables behind two typedefs pairs with the
+// implementation's however either side orders it, as the rest of the
+// signature decides.
 run!(
     open_union_pairs_by_the_rest_of_the_signature,
     is(Value::I64(2)),
     "/test.gx" => "mod m; let result = m::f([1], 2)",
-    "/test/m.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], y: 'a) -> 'a;",
-    "/test/m.gx" => "let f = |x: [Array<'b>, Array<'a>], y: 'a| -> 'a y"
+    "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
 ; FuseExpect::Jit);
 
 // No pairing of the union fits the rest of the signature: refused.
@@ -1304,8 +1305,26 @@ run!(
     open_union_without_a_pairing_is_refused,
     refused("type variable usage mismatch"),
     "/test.gx" => "mod m; let result = m::f([1], 2, 3)",
-    "/test/m.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], y: 'a, z: 'a) -> 'a;",
-    "/test/m.gx" => "let f = |x: [Array<'b>, Array<'a>], y: 'a, z: 'b| -> 'a y"
+    "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a, z: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a, z: 'b| -> 'a y"
+; FuseExpect::None);
+
+// Two members of one constructor holding two variables: the val is
+// refused, whatever its implementation writes.
+run!(
+    val_nested_variable_union_refused,
+    refused("val f: [Array<'a>, Array<'b>] is a union of the type variables 'a and 'b, held by"),
+    "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,
+    "/test/inner.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64",
+    "/test/inner.gx" => "let f = |x: [Array<i64>, Array<string>], g: fn(n: i64) -> i64, y: i64, z: string| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    implementation_nested_variable_union_refused,
+    refused("is a union of the type variables 'c and 'd, held by"),
+    "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,
+    "/test/inner.gxi" => "val f: fn(x: [Array<i64>, Array<string>], g: fn(n: i64) -> i64, y: i64, z: string) -> i64",
+    "/test/inner.gx" => "let f = |x: [Array<'c>, Array<'d>], g: fn(n: i64) -> i64, y: 'd, z: 'c| -> i64 0"
 ; FuseExpect::None);
 
 // A val may not write a union of two of its variables: no value's type
@@ -1400,13 +1419,14 @@ run!(
 );
 
 // Unions that share no cell pair apart: one that cannot pair is refused
-// without trying every pairing of the others.
+// without trying every pairing of the others (typedefs hide the members'
+// one constructor from the written-form rule).
 run!(
     unpairable_union_refused_without_retrying_the_others,
     refused("signature has string, implementation has f64"),
     "/test.gx" => "mod m; let result = 0",
-    "/test/m.gxi" => "val f: fn(x0: [Array<'a0>, Array<'a1>, Array<'a2>, Array<'a3>, Array<'a4>, string], x1: [Array<'b0>, Array<'b1>, Array<'b2>, Array<'b3>, Array<'b4>, i64], x2: [Array<'c0>, Array<'c1>, Array<'c2>, Array<'c3>, Array<'c4>, i64], x3: [Array<'d0>, Array<'d1>, Array<'d2>, Array<'d3>, Array<'d4>, i64]) -> i64;",
-    "/test/m.gx" => "let f = |x0: [Array<'a0>, Array<'a1>, Array<'a2>, Array<'a3>, Array<'a4>, f64], x1: [Array<'b0>, Array<'b1>, Array<'b2>, Array<'b3>, Array<'b4>, i64], x2: [Array<'c0>, Array<'c1>, Array<'c2>, Array<'c3>, Array<'c4>, i64], x3: [Array<'d0>, Array<'d1>, Array<'d2>, Array<'d3>, Array<'d4>, i64]| -> i64 0"
+    "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\ntype C<'x> = Array<'x>;\ntype D<'x> = Array<'x>;\ntype E<'x> = Array<'x>;\nval f: fn(x0: [A<'a0>, B<'a1>, C<'a2>, D<'a3>, E<'a4>, string], x1: [A<'b0>, B<'b1>, C<'b2>, D<'b3>, E<'b4>, i64], x2: [A<'c0>, B<'c1>, C<'c2>, D<'c3>, E<'c4>, i64], x3: [A<'d0>, B<'d1>, C<'d2>, D<'d3>, E<'d4>, i64]) -> i64;",
+    "/test/m.gx" => "let f = |x0: [A<'a0>, B<'a1>, C<'a2>, D<'a3>, E<'a4>, f64], x1: [A<'b0>, B<'b1>, C<'b2>, D<'b3>, E<'b4>, i64], x2: [A<'c0>, B<'c1>, C<'c2>, D<'c3>, E<'c4>, i64], x3: [A<'d0>, B<'d1>, C<'d2>, D<'d3>, E<'d4>, i64]| -> i64 0"
 ; FuseExpect::None);
 
 // A mismatch names the implemented type, not its cells.
