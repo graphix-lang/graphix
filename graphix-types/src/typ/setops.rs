@@ -1274,41 +1274,6 @@ impl Type {
                         matched.push(m);
                     }
                 }
-                // XCR claude for claude: [perf/low] err4.gx (mkerr.py 4: X_i = [Error<X_i+1>,
-                // Error<X_k>, Error<Error<X_i+2>>, `P], a Y twin with `Q, `select v: [X0, Y0] {
-                // Y0 as y => 0, _ => 1 }`) does not end its --check in 60 s on base-r17, in
-                // Select::typecheck0_with -> PatternNode::capture_type -> Type::matching_type,
-                // and once contains walks these names in polynomial steps
-                // (contains-probe-falses-01) it is still killed at 60 s, here: a gdb sample at
-                // 15 s shows matching_type_inner -> flatten_set -> Kept::merge_with -> merge ->
-                // merge_inner -> flat_eq -> flatten_set nested eight deep, so normalizing the
-                // matched union seems to walk the nested Error payloads as a tree. probes:
-                // ~/ptmp/cr29/scratch/r17-hk/ (err4.gx, mkerr.py, err4.fix.gdb)
-                // (matching-type-merge-01)
-                // 2026-11-09 claude: Lane 19b (matching-type-contains-dag-01): with narrowing
-                // memoized, the review-r16 select families spend their capture time here, in
-                // matching_type_inner -> flatten_set -> Kept::merge_with -> merge_inner ->
-                // flat_eq (dwarf perf, 93% of arr-5's 50.9G instructions; gdb samples of cm4
-                // and w3-3 at 15-30 s alike; contains under it is under 1%). Probes:
-                // ~/ptmp/cr29/scratch/review-r16/U-r1-2/fam/arr-5.gx, w3-3.gx, r16U2/p2/cm4.gx.
-                // 2026-11-09 claude: Lane 19b: Type::merge's flat_eq flattened both payloads
-                // afresh at every merge attempt, so flatten_set walked nested Error/Array
-                // payloads as a tree; a FlatCx (normalize.rs) now memoizes each nested union's
-                // flattening by node for one flatten_set or normalize pass. Two more tree walks
-                // of the same capture DAG went with it: Type's Ord took no shortcut for a
-                // shared node (leaves.sort walked equal shared payloads whole; cmp_fields now
-                // compares shared Arcs Equal), and narrow_per_member_in's open-cell walk
-                // revisited shared nodes (now skips a node seen). --no-cache --check
-                // instructions, base-r19 / lane before / after: err4 killed at 60 s / - /
-                // 1.41G, err3 - / 798G / 1.59G, err8 killed / - / 7.67G, err12 - / - / 30.9G,
-                // arr-5 404G / 50.9G / 1.22G, w3-3 killed / killed / 1.75G, cm4 killed / killed
-                // / 26.7G (now in contains -> set_commit -> normalize,
-                // contains-normalize-repeat-01). Pins in typ::normalize::tests:
-                // nested_unions_flatten_once_per_node (32 flattenings; 131070 with the memo
-                // lookup off), ordering_does_not_walk_a_shared_node and
-                // narrowing_collects_cells_once_per_node (each killed at 60 s with its shortcut
-                // reverted). Census 2949 unchanged; guicheck 40.47-40.49G base-r19 /
-                // 40.60-40.61G lane. Probes ~/ptmp/cr29/scratch/r19/19b/mtm/.
                 Ok(Self::flatten_set(matched.drain(..)))
             }
             (p, t) => {
