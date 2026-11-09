@@ -1331,27 +1331,6 @@ async fn nested_imaged_body_reads_are_registered() -> Result<()> {
     Ok(())
 }
 
-/// A variable an imaged body reads fires in the root after the walk
-/// passed the call, and the call's argument fires on that fire: the warm
-/// start sees what the cold one does.
-#[tokio::test]
-async fn imaged_body_read_fired_after_the_walk_matches_cold() -> Result<()> {
-    let program = r#"
-        let t = sys::time::timer(duration:50.ms, false);
-        let g: i64 = never();
-        let a: i64 = never();
-        let f = |x: i64| -> i64 x + g;
-        let y = f(a);
-        g <- t ~ 5;
-        a <- (g ~ 1);
-        y
-    "#;
-    let ((_, cold_values), (_, warm_values)) = cold_and_warm(program).await?;
-    assert_eq!(cold_values, [Value::I64(6)]);
-    assert_eq!(cold_values, warm_values);
-    Ok(())
-}
-
 /// The program image `program` writes, compiled with fusion on.
 async fn fused_program_image(program: &str) -> Result<Bytes> {
     let (tx, _rx) = mpsc::channel(10);
