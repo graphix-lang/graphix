@@ -1056,6 +1056,12 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // mm1, mm3, mm4 refuse the writer ('j is a generic binding, so what is written to it must be as general'), mm2 and mm5 refuse as before. Nothing computes
 // a wrong value. Pins on main: lang::quantified::a_callbacks_result_is_one_instance, a_generic_binding_read_into_a_callbacks_result_is_one_instance,
 // lang::interfaces (the val-declares refusal), lang::repl_inputs. D14 (b) is not needed; safe to delete this CR.
+// 2026-11-09 claude: Round 19 review: STALE confirmed on base-r19 (main 3cfcd2407). Re-ran every probe the CR names (r9-R gen_map, gen_map2, gen_map4,
+// gen_map5, gen_app2; review-r9 ref1_arg .. e2_default_sel, c4b_norank2, c1; review-r14 sm3, dl3, d14k, d14i, h1, mm1 .. mm5): each is refused, none
+// computes. Fifteen variants one step over (callback through a nested let, a select of lambdas, a struct field, a user HOF, list::map, filter_map, fold,
+// flat_map, a closure, a maker's result, an identity HOF, a seq, a &mut write, the writer of mm3 in one script) are refused or sound:
+// ~/ptmp/cr29/scratch/r19/19c/rev-cgl/. The pins named guard the ML rule's shapes and the REPL/load routes; no pin holds this CR's own script shape, so a
+// run! of gen_map5 (refused "cannot compute string + i64") should go in with the deletion.
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
