@@ -320,6 +320,11 @@ thread_local! {
         RefCell::new(AddrMap::default());
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static TVAR_WALK_STEPS: Cell<usize> = const { Cell::new(0) };
+}
+
 /// One `for_each_part` call's depth; the outermost forgets the positions
 /// memo on its way out, unwind too.
 struct PartsDepth;
@@ -623,6 +628,17 @@ impl FnType {
         // quantifier may occur only inside another's bound
         let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut reached);
+        self.view_of(&mut reached, &mut view);
+        view
+    }
+
+    /// The part of [`Self::constraint_view`] after the cells are found:
+    /// the conjuncts of the quantifiers in `reached`, into `view`.
+    fn view_of(
+        &self,
+        reached: &mut AHashMap<ArcStr, TVar>,
+        view: &mut Vec<(TVar, Type)>,
+    ) {
         let mut cx = NormCx::take();
         for q in self.quantifiers.iter() {
             let Some(tv) = reached.remove(q) else { continue };
@@ -643,6 +659,26 @@ impl FnType {
                 && x == y
                 && var_names(x).as_slice() == var_names(y).as_slice()
         });
+    }
+
+    /// [`Self::constraint_view`] for printing, which asks it of every
+    /// signature of a nest: the quantifiers are looked up among the
+    /// cells the positions name (a nested signature's, once a print), and
+    /// only a quantifier no position names takes the walk through bounds.
+    fn printed_view(&self) -> LPooled<Vec<(TVar, Type)>> {
+        let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        if self.quantifiers.is_empty() {
+            return view;
+        }
+        let Some(_guard) = Walking::enter(&VIEWING, self) else { return view };
+        let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        self.for_each_type(&mut |t| t.collect_position_tvars(&mut reached, &mut seen));
+        if !self.quantifiers.iter().all(|q| reached.contains_key(q)) {
+            reached.clear();
+            self.collect_tvars(&mut reached);
+        }
+        self.view_of(&mut reached, &mut view);
         view
     }
 
@@ -1939,7 +1975,7 @@ fn is_self_param(a: &FnArgType) -> bool {
         }
 }
 
-// CR claude for claude: [perf/low] Nested rank-2 function types print in
+// XCR claude for claude: [perf/low] Nested rank-2 function types print in
 // time quadratic in their nesting: `let y: fn<'a: Any>(x: fn<'a: Any>(x: ..)
 // -> 'a) -> 'a = never()` N levels deep costs 0.037 / 0.143 / 0.446 / 1.56 /
 // 5.82 G instructions under `graphix fmt --stdout` at N = 14 / 40 / 80 / 160
@@ -1956,13 +1992,25 @@ fn is_self_param(a: &FnArgType) -> bool {
 // and still reaches this printer path at the same cost; an inferred nest (a
 // lambda declaring a variable, returned by a lambda declaring one, ...) also
 // prints nested headers. The CR stands for the formatter.
+// 2026-11-09 claude: Printing a signature now looks its quantifiers up among
+// the cells its positions name (FnType::printed_view), and FnType printing
+// holds a PartsDepth scope so a nested signature's position cells are memoized
+// once per print; only a quantifier no position names takes the old walk.
+// Differential check (printed_view == constraint_view over all 16447
+// graphix-tests plus graphix-types) passed before removal. Pin:
+// typ::fntyp::tests::nested_quantified_types_print_in_linear_steps (40 vs 160
+// deep: 59982 / 644142 steps before, linear after). graphix fmt --stdout of the
+// probe at 40/80/160: 0.145/0.451/1.576 G instructions before,
+// 0.077/0.237/0.869 after: the rest is the parser (FnType::declaring,
+// check_quantifiers_held, alias_tvars per level), still quadratic and not part
+// of this CR; needs a soak? no, print-only.
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
 /// print as the trait at the argument). One entry per conjunct, a
 /// variable's conjuncts adjacent.
 fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
-    let mut v = ft.constraint_view();
+    let mut v = ft.printed_view();
     v.retain(|(tv, _)| &*tv.name != "self" && !tv.name.starts_with('#'));
     v
 }
@@ -2060,6 +2108,7 @@ impl fmt::Display for FnType {
 
 impl FnType {
     fn write_flat(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _scope = PartsDepth::enter();
         let constraints = printed_quantifiers(self);
         if constraints.len() == 0 {
             write!(f, "fn(")?;
@@ -2098,6 +2147,7 @@ impl PrettyDisplay for FnType {
 
 impl FnType {
     fn write_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        let _scope = PartsDepth::enter();
         let constraints = printed_quantifiers(self);
         if constraints.is_empty() {
             write!(buf, "fn(")?;
@@ -2311,6 +2361,35 @@ mod tests {
             }
         }
         assert!(met.iter().all(|n| *n > 400), "{met:?}");
+    }
+
+    fn nested_quantified(n: usize) -> String {
+        let mut s = String::from("fn<'a: Any>(x: i64) -> 'a");
+        for _ in 1..n {
+            s = format!("fn<'a: Any>(x: {s}) -> 'a");
+        }
+        s
+    }
+
+    /// The tvar-walk steps printing an `n`-deep nest of quantified function
+    /// types takes, flat and pretty.
+    fn print_steps(n: usize) -> usize {
+        use crate::{expr::print::PrettyDisplay, typ::Type};
+        let ft = triomphe::Arc::new(parse_fn_type(&nested_quantified(n)).unwrap());
+        let t = Type::Fn(ft);
+        super::TVAR_WALK_STEPS.with(|c| c.set(0));
+        let flat = t.to_string();
+        let pretty = t.to_string_pretty(80).to_string();
+        assert!(flat.matches("fn<").count() == n && pretty.matches("fn<").count() == n);
+        super::TVAR_WALK_STEPS.with(|c| c.get())
+    }
+
+    // Printing a nest of quantified function types walks each node a
+    // bounded number of times: the steps grow linearly with the depth.
+    #[test]
+    fn nested_quantified_types_print_in_linear_steps() {
+        let (a, b) = (print_steps(40), print_steps(160));
+        assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
     }
 
     /// The pretty pipeline keeps the user-written `'a` on both

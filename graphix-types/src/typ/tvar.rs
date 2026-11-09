@@ -3386,6 +3386,8 @@ impl Type {
         known: &mut AHashMap<ArcStr, TVar>,
         seen: &mut TVarsSeen,
     ) {
+        #[cfg(test)]
+        super::fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
         if let Some(n) = node_addr(self)
             && seen.nodes.insert(n, self.clone()).is_some()
         {
@@ -3497,6 +3499,8 @@ impl Type {
         known: &mut AHashMap<ArcStr, TVar>,
         seen: &mut AHashSet<usize>,
     ) {
+        #[cfg(test)]
+        super::fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
         if let Some(n) = node_addr(self)
             && !seen.insert(n)
         {
