@@ -450,35 +450,6 @@ impl<'a> Seen<'a> {
     }
 }
 
-// XCR claude for claude: [bug/medium] Freezing a type whose parameters double at each
-// level walks MAX_FREEZE_EXPANSIONS levels of a type that doubles at each, so it never
-// ends: `type P<'a> = [`Leaf('a), `Node(P<('a, 'a)>)]; let t: P<i64> =
-// `Node(`Node(`Node(`Leaf((((1, 1), (1, 1)), ((1, 1), (1, 1)))))))`, then a select
-// over t or println(t), passes --check and runs with --no-fusion, but a plain run and
-// --expand are killed at 30 s on base-r17 (main ed2e39816) and on cr52-o3 alike (gdb:
-// Freeze::freeze_inner over Freeze::freeze, dozens of frames deep, under
-// TypeMemo::intern_frozen). A type whose parameters grow by one constructor (`N<'a> =
-// [`Nil, `Cons('a, N<Array<'a>>)]`) ends, but a lambda over `x: N<i64>` fuses nothing
-// (lang::types::nested_argument_ends is FuseExpect::None). TypeRef::endless (the
-// expansive test, typ/expansive.rs) tells such a definition at its first application;
-// freezing an endless application as the opaque two-word value a recursive type is
-// would end both, and might fuse the second. probes:
-// ~/ptmp/cr29/scratch/r17-hk/r3/perfect3.gx, perfect4.gx, perfect4.gdb
-// (freeze-expansive-01)
-// 2026-11-09 claude: Eric ruled (2026-11-09) D24 (a): an expansive typedef is refused
-// at its definition (lane 19f, contains-growth-reset-01: typ/expansive.rs,
-// Env::typedef_shape). perfect3.gx, perfect4.gx and N<'a> = [`Nil, `Cons('a,
-// N<Array<'a>>)] are refused there now, so the freeze cannot meet a non-regular type:
-// MAX_FREEZE_EXPANSIONS and the cut it bounds look dead; verify and remove (the next
-// agent).
-// 2026-11-09 claude: MAX_FREEZE_EXPANSIONS is gone with every cut it bounded: the
-// freeze's path-length refusal and its memo's per-entry depth (Freeze::deepest, Seen's
-// len), primitive_union's depth bound, and lowering's expand_ref_d path cut (its
-// budget and size cap stay). With expansive typedefs refused at their definition
-// (945d4583a) every path holds finitely many distinct expansions. Pin:
-// lang::types::doubling_typedef_refused (the perfect4 program); on base-r19 it checks
-// clean and a plain run is killed at 30 s in the freeze. regress 567/0, graphix-tests
-// lib green.
 /// The kernel-ABI encodability gate: the concrete form of `t` over the
 /// fusable subset, or `None` if any part has no kernel encoding.
 /// Accept/reject matches [`abi_kind`] at each level. Every part the
