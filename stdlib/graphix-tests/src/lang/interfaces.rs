@@ -1850,6 +1850,16 @@ run!(
     "/test/m.gx" => "let mk = |u: i64| |x| x; let f = mk(0)"
 );
 
+// A let of a select is not generalized, so a val over it is refused as the
+// same let outside a module is.
+run!(
+    val_over_a_select_of_lambdas_names_a_lambda,
+    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a lambda over variables of its own"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let f = select true { true => |x| x, false => |x| x }"
+);
+
 // A val whose type is no function, implemented by no literal of lambdas,
 // is told to be one.
 run!(

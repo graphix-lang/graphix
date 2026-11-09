@@ -462,7 +462,7 @@ fn check_val(
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
-    // CR claude for claude: [bug/low] A val implemented by a select over lambdas is
+    // XCR claude for claude: [bug/low] A val implemented by a select over lambdas is
     // refused by this level test, though each use copies its lambdas: `val f: fn(x: 'a)
     // -> 'a` over `let f = select true { true => |x| x, false => |x| x }` is told "the
     // implementation has one type all uses share: declare the val at one type, or make
@@ -474,6 +474,12 @@ fn check_val(
     // file has the shape. Deciding it goes with holder-block-select-01's ruling on lets of
     // blocks and selects. probes: ~/ptmp/cr29/scratch/r14-A/fix3/p/{se1,se1t}
     // (iface-select-impl-01)
+    // 2026-11-09 claude: Stale: D11 (b) is built, a let of a select is not generalized, so
+    // the non-module twin 'let f = select true {..|x| x..}; (f(1), f("s"))' is refused on
+    // main (type mismatch i64 does not contain string). The val and trait-method refusals
+    // (probes se1, se1t) are the intended verdict, not an over-refusal. Pinned by
+    // val_over_a_select_of_lambdas_names_a_lambda and
+    // an_impl_method_over_a_select_of_lambdas_is_refused; delete this XCR.
     let shared = |tv: &TVar| !tv.level().copied_by(open);
     let is_function = declared.with_deref(|t| matches!(t, Some(Type::Fn(_))));
     hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {
