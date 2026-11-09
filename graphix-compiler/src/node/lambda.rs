@@ -609,37 +609,6 @@ fn instance_sig<R: Rt>(
     // no closed gate owns included, so the check binds nothing another
     // instance reads
     let def = def.instantiate_owned(known);
-    // XCR claude for claude: [bug/medium] A chain of union bounds five deep with
-    // only its first two links at positions checks and its build refuses the
-    // instance: `let f = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>,
-    // Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>,
-    // null], 'a4: Number |x: ('a0, 'a1)| 7; println(f(never()))` passes --check,
-    // GRAPHIX_ELAB_AUDIT reports instance-signature and the run fails, where
-    // GRAPHIX_NO_SUBST=1 prints 7; ('a1, 'a0) the same. The definition's
-    // signature lists 'a0..'a3 and not 'a4 as quantifiers, and the instance holds
-    // an open cell printed `'a4: [null, Array<'a4: Number>]` ('a3, unsettled, under
-    // 'a4's name), which the check here then merges with the copy's 'a4. x: 'a1
-    // alone, x: 'a0 alone, every position given (union-dag-elab-01) and chains of
-    // four run. Main ed2e39816 the same. probes:
-    // ~/ptmp/cr29/scratch/r17-o1/union-dag/{w21,w22,w6,w11}.gx (bound-only-settle-01)
-    // 2026-11-09 claude: Since formal-union-nested-01 (lane 19g) the written chain
-    // above is refused at its definition ('[Array<'a1>, Array<'a2>, null] is a union
-    // of the type variables 'a1 and 'a2, held by its members ...'). The same chain
-    // written through two typedefs of one body (type A<'x> = Array<'x>; type B<'x> =
-    // Array<'x>; 'a0: [A<'a1>, B<'a2>, null], ...) checks and runs, printing 7, on
-    // lane 19g's build; probe ~/ptmp/cr29/scratch/r19/19g/bos.gx. Re-probe before
-    // fixing: this may now be unreachable.
-    // 2026-11-09 claude: FnType::settle_terminal (settle.rs) now takes into its
-    // settle set every open cell a chain of bounds reaches from the signature's
-    // cells, by address, however deep; it took only one level of conjuncts
-    // (collect_tvars), so 'a4, named only in the bounds of 'a2 and 'a3, stayed open
-    // in the instance and instance_sig's check_contains matched a union member
-    // against it and merged it with the copy's 'a3. 'a4 now settles to its witness
-    // (Number) as a one-level bound-only cell already did. Pin
-    // lang::types::a_call_settles_a_variable_only_a_bound_of_a_bound_names (('a0,
-    // 'a1) and ('a1, 'a0)) fails in all four modes without the fix. Census of both
-    // repos identical to base-r19; guicheck 40.553 G (base-r19) vs 40.605 G. Probes
-    // ~/ptmp/cr29/scratch/r19/19c/bos/.
     instance.check_contains(&ctx.env, &def).ok()?;
     Some(Arc::new(def))
 }
