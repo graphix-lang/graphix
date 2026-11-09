@@ -2115,62 +2115,6 @@ impl StructPatternNode {
         }
     }
 
-    // XCR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
-    // `null` at another position cover nothing: over `x: (bool, [i64, null])`, `select x {
-    // (_, null) => 1, (true, _) => 0, (false, _) => 2 }` and `{ (true, null) => 0, (true,
-    // _) => 2, (false, _) => 1 }` are refused "missing match cases: no arm covers (bool,
-    // [i64, null])" on main (968fa9bc0) as on cr49-B, where `{ (true, _) => 0, (false, _)
-    // => 1 }` runs. A written test meets it too, since matched_part answers None for any
-    // literal but `null`: `(true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as
-    // (false, _) => 1` is refused alike. D6 (b) sends a pattern inside a declared
-    // variable to a written test, so the shape is met more often: under `'b: [i64,
-    // string]`, `(true, _)`, `(bool, i64) as (false, n)`, `(bool, string) as (false, s)`
-    // and `(false, null)` over `(bool, ['b, null])` ran on main through the D6 hole and
-    // are refused now. probes: ~/ptmp/cr29/scratch/r14-B/fix1/{q10t,q10r,q10p}.gx,
-    // r14-B/r2/q10c.gx, ~/ptmp/cr29/scratch/review-r11/N-r3-2/q/q10.gx
-    // (bool-beside-null-cover-01)
-    // 2026-11-04 claude: Partly fixed: the pool reads a primitive member beside bool and
-    // null as a head only a name or _ admits (Head::Rest), so q10t and q10r check and run
-    // ([1, 2, 1] and [0, 1, 1]); pins
-    // lang::select_undecided::bool_heads_beside_a_null_arm_cover,
-    // bool_heads_after_a_null_head_cover, rest_head_left_uncovered_refused. The
-    // written-test forms (q10p, q10c, q10 under 'b: [i64, string]) stay refused 'missing
-    // match cases': a written test whose type does not hold the whole member pools nothing
-    // (LiteralPool::claim skips a member the test does not contain) and matched_part
-    // answers None for a bool literal; covering them needs the pool to read a written test
-    // as the member's part it holds, a change to how written tests pool, not this rule's.
-    // 2026-11-06 claude: Parked (r17, lane M): the fix (sonnet a9176bf8a plus three
-    // repairs) failed review three times in new ways: the pool's combination cap refusing
-    // programs main runs (r17 review), a select whose written tests name enough primitives
-    // still refused (lane M r1), and a test applying a typedef twice claiming a primitive
-    // it does not hold, so the check passed and the run aborted (lane M r2, bn_td_twice).
-    // Its last repair passed review, but by the park rule it is reverted; the commits stay
-    // on branch cr52-m's history (e2e5f58c2, 909a37a78, c98a34ae5, 8537fead4). The two
-    // gaps it left (a written test naming the declared variable at the position, wc_s8;
-    // two positions narrowed by four tests, wc_s9) stand on main too. probes
-    // ~/ptmp/cr29/scratch/rv17/typing-a/wc_*.gx,
-    // ~/ptmp/cr29/scratch/review-r16/m-r*/bn_*.gx
-    // 2026-11-09 claude: Fixed (r19 lane 19a): a tuple or struct member a written test can
-    // match and does not hold is cut into parts, one member of each position's union
-    // apiece (a primitive set per primitive, a declared variable at the position by its
-    // one typed bound, each part also held by a test naming the variable), at most 64
-    // (select.rs PartPool), each pooled on its own; a complete part covers itself, a
-    // variable's parts together the variable, and an arm every part it reaches already
-    // matches is dead. LiteralPool::claim now reads a written test held rigid, closing a
-    // hole on main where a test naming a declared variable claimed its bound: bvar_tup.gx
-    // and bn_bvar.gx passed the check and aborted at run time (no arm matches). q10p,
-    // q10c, q10, wc_s1, wc_s4, wc_s7, wc_s8, wc_s9, bn_td run; wc_s2, wc_s3, wc_s5, wc_s6,
-    // wc_s10, bn_td_twice, bn_int, bn_shadow stay refused. Pins failing without it (11):
-    // lang::select_undecided::written_test_beside_bool_head_covers,
-    // written_tests_split_a_primitive_member, written_tests_split_a_struct_member,
-    // written_tests_narrow_two_positions, written_test_over_two_members_covers_each_part,
-    // written_tests_split_a_declared_variable_beside_bool_head,
-    // written_test_naming_the_declared_variable_covers_its_part,
-    // written_test_naming_another_declared_variable_covers_nothing_refused,
-    // written_test_after_bool_head_is_dead, written_test_sets_cut_each_position_covered,
-    // each_typedef_application_holds_its_own_part_covered. Census of both repos unchanged.
-    // Not covered: a test narrowing a nested position (wc_s5's shape when it should pass)
-    // or a variant's payload; those members stay whole. Needs a soak.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members
