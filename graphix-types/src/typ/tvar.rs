@@ -6,8 +6,8 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, FnType, Mutability, NodePairs, PRINT_FLAGS, PrintFlag, RefKey, TVarsSeen,
-        Type, node_addr, setops::union_identical,
+        Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
+        TVarsSeen, Type, contains::ContainsHist, node_addr, setops::union_identical,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -42,6 +42,8 @@ thread_local! {
     pub(super) static SPLIT_STEPS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
     static ANY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static NARROW_STEPS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
     static CHAIN_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -3662,15 +3664,53 @@ impl Type {
     /// a union, by member ([`Self::narrow_per_member`]). Whether some
     /// member, or `self`, contains it.
     pub fn narrow_pattern(&self, env: &Env, pred: &Type) -> Result<bool> {
+        self.narrow_pattern_in(env, pred, &mut Narrowing::new())
+    }
+
+    fn narrow_pattern_in(
+        &self,
+        env: &Env,
+        pred: &Type,
+        walk: &mut Narrowing,
+    ) -> Result<bool> {
+        ensure_sufficient(|| {
+            let key = walk.key(self, pred);
+            if let Some(k) = key {
+                if walk.held.contains(k) {
+                    return Ok(true);
+                }
+                if walk.failed.contains(k) {
+                    return Ok(false);
+                }
+            }
+            let r = self.narrow_pattern_inner(env, pred, walk)?;
+            if let Some(k) = key {
+                match r {
+                    true => walk.held.insert(k, self, pred),
+                    false => walk.failed.insert(k, self, pred),
+                }
+            }
+            Ok(r)
+        })
+    }
+
+    fn narrow_pattern_inner(
+        &self,
+        env: &Env,
+        pred: &Type,
+        walk: &mut Narrowing,
+    ) -> Result<bool> {
+        #[cfg(test)]
+        NARROW_STEPS.with(|n| n.set(n.get() + 1));
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut members)?;
         members.retain(|m| pred.could_match(env, m).unwrap_or(true));
         match members.len() {
             1 if members[0].needs_split(env, pred)? => {
-                members[0].narrow_member(env, pred)
+                members[0].narrow_member(env, pred, walk)
             }
-            0 | 1 => self.narrow_member(env, pred),
-            _ => pred.narrow_per_member(env, &members).map(|()| true),
+            0 | 1 => self.narrow_member(env, pred, walk),
+            _ => pred.narrow_per_member_in(env, &members, walk).map(|()| true),
         }
     }
 
@@ -3678,9 +3718,14 @@ impl Type {
     /// [`Self::narrow_parts`] where a union stands under a constructor
     /// `pred` has, else by containment; then a cell of `pred` left open
     /// over an `Any` part is `Any` ([`Self::open_over_any`]).
-    fn narrow_member(&self, env: &Env, pred: &Type) -> Result<bool> {
+    fn narrow_member(
+        &self,
+        env: &Env,
+        pred: &Type,
+        walk: &mut Narrowing,
+    ) -> Result<bool> {
         let narrowed = if self.needs_split(env, pred)? {
-            self.narrow_parts(env, pred)?
+            self.narrow_parts(env, pred, walk)?
         } else {
             self.contains(env, pred)?
         };
@@ -3896,15 +3941,15 @@ impl Type {
     /// a constructor gives a bind the union of its parts over every member
     /// its pattern can match. An element's set (a slice's elements and
     /// rest) narrows member by member, as containment of a set does.
-    fn narrow_parts(&self, env: &Env, pred: &Type) -> Result<bool> {
+    fn narrow_parts(&self, env: &Env, pred: &Type, walk: &mut Narrowing) -> Result<bool> {
         ensure_sufficient(|| {
             let Some(p) = pred.deref_cloned() else { return self.contains(env, pred) };
             let Some(t) = self.shape_under(env, &p)? else {
                 return self.contains(env, pred);
             };
-            let all = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+            let mut all = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
                 for (t, p) in parts {
-                    if !t.narrow_pattern(env, p)? {
+                    if !t.narrow_pattern_in(env, p, walk)? {
                         return Ok(false);
                     }
                 }
@@ -3922,7 +3967,7 @@ impl Type {
                 (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
                     match pe.deref_cloned() {
                         Some(Type::Set(ref qs)) => all(&mut qs.iter().map(|q| (&**e, q))),
-                        _ => e.narrow_pattern(env, pe),
+                        _ => e.narrow_pattern_in(env, pe, walk),
                     }
                 }
                 _ => self.contains(env, pred),
@@ -3937,6 +3982,15 @@ impl Type {
     /// the union commits it to the first member. A cell a matching
     /// alternative leaves open stays open.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
+        self.narrow_per_member_in(env, members, &mut Narrowing::new())
+    }
+
+    fn narrow_per_member_in(
+        &self,
+        env: &Env,
+        members: &[Type],
+        walk: &mut Narrowing,
+    ) -> Result<()> {
         fn open(t: &Type, seen: &mut AddrSet, out: &mut SmallVec<[TVar; 8]>) {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
@@ -3968,7 +4022,7 @@ impl Type {
                 let copy = alt
                     .reset_tvars_int(&mut known, Fresh::Copy)
                     .unwrap_or_else(|| alt.clone());
-                if !m.narrow_member(env, &copy)? {
+                if !m.narrow_member(env, &copy, walk)? {
                     continue;
                 }
                 // a copy left open took an open cell of the member's part,
@@ -4425,6 +4479,31 @@ impl Type {
             Type::Ref(_) => (),
             t => t.for_each_child(&mut |c| c.unbind_vacuous_tvars()),
         })
+    }
+}
+
+/// A narrowing's walk: the verdicts of the pairs of shared nodes it
+/// narrowed where neither side reaches an open cell. Such a pair binds
+/// nothing, so its verdict is the same on every path that meets it, and a
+/// predicate that shares its parts is narrowed once per pair of nodes.
+struct Narrowing {
+    closure: ContainsHist,
+    held: NodePairs,
+    failed: NodePairs,
+}
+
+impl Narrowing {
+    fn new() -> Self {
+        Narrowing {
+            closure: ContainsHist::new(),
+            held: NodePairs::default(),
+            failed: NodePairs::default(),
+        }
+    }
+
+    fn key(&mut self, t: &Type, pred: &Type) -> Option<(NodeKey, NodeKey)> {
+        let k = self.held.key(t, pred)?;
+        (self.closure.closed(t) && self.closure.closed(pred)).then_some(k)
     }
 }
 

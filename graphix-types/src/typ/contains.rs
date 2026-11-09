@@ -257,7 +257,7 @@ impl ContainsHist {
     /// two closed sides binds nothing, so it is the probe. Within a walk a
     /// closed node stays closed (cells only bind), and one found open
     /// only costs the commit's walk.
-    fn closed(&mut self, t: &Type) -> bool {
+    pub(super) fn closed(&mut self, t: &Type) -> bool {
         self.closure(t, false) != Closure::Open
     }
 

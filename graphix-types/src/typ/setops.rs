@@ -1186,7 +1186,7 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [perf/low] A select's check over a tuple DAG of names
+    // XCR claude for claude: [perf/low] A select's check over a tuple DAG of names
     // whose only way back is through Error grows two to three times per level from
     // depth 14, on main as on cr46-X: Ti = (Ti+1, Ti+1), Tn = [Error<T0>, `Z], a twin
     // S with `Y, `let v: S0 = never(); select v { T0 as x => 0, _ => 1 }`.
@@ -1266,6 +1266,24 @@ impl Type {
     // could_match's budgets (cm8-cm64 and the shared-tag cms* too). probe:
     // ~/ptmp/cr29/scratch/review-r16/U-r1-2/r16U2/p2/cm4.gx; out/cm-head.txt,
     // cm-base.txt
+    // 2026-11-09 claude: Re-measured on base-r19 (3cfcd2407), GRAPHIX_EVAL_THREADS=1,
+    // perf instructions:u, --no-cache --check: rt18 0.77G and rt22 0.78G (an empty
+    // program's cost), so the tuple DAG and matching_type's contains probes no longer
+    // grow (contains-probe-falses-01). What grew on this path was
+    // Type::narrow_pattern, which walked the capture type (a DAG matching_type
+    // shares) against what reaches the arm once per path: arr-5 spent 34 s of its
+    // check there. Narrowing now keeps the verdicts of the node pairs it narrowed
+    // where neither side reaches an open cell (tvar::Narrowing, two NodePairs; exact,
+    // since such a pair binds nothing and its verdict is a pure test of the pair).
+    // base-r19 / fix: arr-4 10.23G / 1.77G, arr-5 404.2G / 50.9G, arrs-4-u 15.37G /
+    // 2.20G; w2-4, w2s-4, w2u-4-u, rt unchanged. Pin:
+    // typ::setops::tests::narrowing_over_shared_array_parts_takes_each_pair_once (310
+    // narrowing steps over array_family(5); 389965 with the memo off). What still
+    // grows on these families is outside contains: arr-5's remaining 50.9G and cm4
+    // are in matching_type's flatten_set -> Kept::merge_with -> flat_eq
+    // (matching-type-merge-01), and w3-3 times out in the next arm's diff
+    // (diff-residual-depth-01). Census 2949 files unchanged; guicheck 40.43G base /
+    // 40.45G fix. Probes: ~/ptmp/cr29/scratch/r19/19b/mtc/.
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
         let refs = LPooled::take();
         let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
@@ -1365,6 +1383,12 @@ impl Type {
                 // matched union seems to walk the nested Error payloads as a tree. probes:
                 // ~/ptmp/cr29/scratch/r17-hk/ (err4.gx, mkerr.py, err4.fix.gdb)
                 // (matching-type-merge-01)
+                // 2026-11-09 claude: Lane 19b (matching-type-contains-dag-01): with narrowing
+                // memoized, the review-r16 select families spend their capture time here, in
+                // matching_type_inner -> flatten_set -> Kept::merge_with -> merge_inner ->
+                // flat_eq (dwarf perf, 93% of arr-5's 50.9G instructions; gdb samples of cm4
+                // and w3-3 at 15-30 s alike; contains under it is under 1%). Probes:
+                // ~/ptmp/cr29/scratch/review-r16/U-r1-2/fam/arr-5.gx, w3-3.gx, r16U2/p2/cm4.gx.
                 Ok(Self::flatten_set(matched.drain(..)))
             }
             (p, t) => {
@@ -1976,6 +2000,32 @@ mod tests {
         SPLIT_STEPS.with(|n| n.set(0));
         assert!(!s.narrow_pattern(&env, &m).unwrap());
         assert_eq!(SPLIT_STEPS.with(|n| n.get()), 174);
+    }
+
+    /// `T<i> = [Array<T<i+1>>, Array<T<i+2>>, `A<i>]`, indices mod `n`.
+    fn array_family(n: usize) -> Vec<(String, String)> {
+        (0..n)
+            .map(|i| {
+                let body =
+                    format!("[Array<T{}>, Array<T{}>, `A{i}]", (i + 1) % n, (i + 2) % n);
+                (format!("T{i}"), body)
+            })
+            .collect()
+    }
+
+    // Narrowing T0 to what a test of T1 takes of it, a predicate built of
+    // parts shared along many paths, narrows each pair of shared nodes once.
+    #[test]
+    fn narrowing_over_shared_array_parts_takes_each_pair_once() {
+        use crate::typ::tvar::NARROW_STEPS;
+        let defs = array_family(5);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, t) = typed(&defs, "T1");
+        let s = parsed(&env, "T0");
+        let m = t.matching_type(&env, &s).unwrap();
+        NARROW_STEPS.with(|n| n.set(0));
+        assert!(s.narrow_pattern(&env, &m).unwrap());
+        assert_eq!(NARROW_STEPS.with(|n| n.get()), 310);
     }
 
     /// Error cycles `C<l>_j = [Error<C<l>_j+1 mod l>, tag]` of the lengths
