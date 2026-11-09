@@ -42,7 +42,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   covers itself, a declared variable's parts together the variable, and
   an arm whose every part it reaches already matches what it matches
   there is dead (`(true, _)`, `(bool, i64) as (false, n)` and `(bool,
-  null) as (false, _)` cover `(bool, [i64, null])`); a group whose combinations of
+  null) as (false, _)` cover `(bool, [i64, null])`); neither pool finds
+  dead an arm whose written test can match a scrutinee member it does
+  not see (an open cell, read as its one typed bound, or `Any`:
+  `Reach::reaches_unpooled`); a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over

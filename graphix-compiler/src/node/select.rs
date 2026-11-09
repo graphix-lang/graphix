@@ -569,6 +569,9 @@ struct Reach {
     ladders: SmallVec<[Ladder; 4]>,
     pool: LiteralPool,
     parts: PartPool,
+    /// The members of `members_of` the pools do not see: its open cells,
+    /// each as its one typed bound where it has one, and `Any`.
+    unpooled: SmallVec<[Type; 2]>,
     bools: (bool, bool),
     /// What the unguarded arms cover, as containment reads it.
     covered: SmallVec<[Type; 8]>,
@@ -669,12 +672,22 @@ impl Reach {
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());
         let ladders = Ladder::of(env, &members_of)?;
         let parts = PartPool::new(env, &members_of, arms)?;
+        let mut unpooled: SmallVec<[Type; 2]> = SmallVec::new();
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        union_members_with(env, &members_of, &mut members, &mut |tv| {
+            unpooled.push(match &tv.typed_bounds(env)[..] {
+                [b] => b.clone(),
+                _ => Type::TVar(tv.clone()),
+            })
+        })?;
+        unpooled.extend(members.into_iter().filter(|m| matches!(m, Type::Any)));
         Ok(Self {
             atype,
             members_of,
             ladders,
             pool: LiteralPool::default(),
             parts,
+            unpooled,
             bools: (false, false),
             covered: SmallVec::new(),
             wildcard: false,
@@ -682,6 +695,19 @@ impl Reach {
             refutable_slice: false,
             built,
         })
+    }
+
+    /// Whether an arm whose written type test is `explicit` can match a
+    /// value of a member the pools do not see, so the pools never find it
+    /// dead.
+    fn reaches_unpooled(&self, env: &Env, explicit: Option<&Type>) -> Result<bool> {
+        for m in self.unpooled.iter() {
+            match explicit {
+                Some(t) if !t.could_match(env, m)? => (),
+                _ => return Ok(true),
+            }
+        }
+        Ok(false)
     }
 
     /// A refusal of an arm's binds over a scrutinee the arms decided,
@@ -853,7 +879,7 @@ impl Reach {
             }
             let explicit = pat.explicit_type_predicate.then_some(&pat.type_predicate);
             match self.pool.claim(env, &self.members_of, sp, explicit)? {
-                Claim::Dead if checking => {
+                Claim::Dead if checking && !self.reaches_unpooled(env, explicit)? => {
                     return dead(
                         "every combination of heads it matches is covered by earlier arms",
                     );
@@ -876,7 +902,9 @@ impl Reach {
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
             }
             match self.parts.claim(env, sp, explicit)? {
-                PartClaim::Dead if checking => {
+                PartClaim::Dead
+                    if checking && !self.reaches_unpooled(env, explicit)? =>
+                {
                     return dead(
                         "every combination of heads it matches is covered by earlier arms",
                     );

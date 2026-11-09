@@ -553,6 +553,40 @@ run!(each_typedef_application_holds_its_own_part_covered, r#"{
     [u((false, null, null)), u((true, null, "s")), u((true, null, i64:1)), u((true, null, u8:1))]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 1, 3]); FuseExpect::Jit);
 
+// A declared variable beside the member the pools count holds values
+// the pools do not see: an arm whose test can match it is not dead by
+// pooling.
+run!(written_test_reaching_a_declared_variable_member_is_live_by_parts, r#"{
+    let u = 'a: ([bool, i64], string) |x: ['a, (bool, [i64, null])]| select x {
+        (bool, i64) as (true, _) => 1,
+        (bool, null) as (true, _) => 2,
+        [(bool, [i64, null]), ([bool, i64], string)] as (true, _) => 3,
+        _ => 4
+    };
+    let s: [([bool, i64], string), (bool, [i64, null])] = (true, "s");
+    [u(s), u((true, 4)), u((false, 4))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1, 4]); FuseExpect::Jit);
+
+run!(written_test_reaching_a_declared_variable_member_is_live_by_pool, r#"{
+    let u = 'a: ([bool, i64], string) |x: ['a, (bool, [i64, null])]| select x {
+        (bool, [i64, null]) as (true, _) => 1,
+        [(bool, [i64, null]), ([bool, i64], string)] as (true, _) => 3,
+        _ => 4
+    };
+    let s: [([bool, i64], string), (bool, [i64, null])] = (true, "s");
+    [u(s), u((true, 4)), u((false, 4))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1, 4]); FuseExpect::Jit);
+
+run!(written_test_missing_a_declared_variable_member_is_dead_by_parts, r#"{
+    let u = 'a: ([bool, i64], string) |x: ['a, (bool, [i64, null])]| select x {
+        (bool, i64) as (true, _) => 1,
+        (bool, null) as (true, _) => 2,
+        (bool, [i64, null]) as (true, _) => 3,
+        _ => 4
+    };
+    u((true, 4))
+}"#, refused("every combination of heads it matches is covered by earlier arms"); FuseExpect::None);
+
 // Cutting a member leaves each part's combinations under the pool's
 // limit: seven bool positions beside a test holding eight primitives.
 run!(cut_member_keeps_bool_combinations_in_reach, r#"{
