@@ -407,20 +407,33 @@ fn same_ref(env: &Env, r0: &TypeRef, r1: &TypeRef) -> bool {
         && r0.params.iter().zip(r1.params.iter()).all(|(a, b)| union_identical(a, b))
 }
 
-/// The parts a union of alternatives meets within a member: an array's,
-/// a list's or a reference's element, a map's key and value, a tuple's,
-/// a struct's or a variant's positions.
-fn parts(t: &Type) -> SmallVec<[&Type; 4]> {
+/// How many parts a union of alternatives meets within a member: an
+/// array's, a list's or a reference's element, a map's key and value, a
+/// tuple's, a struct's or a variant's positions, in [`Type::cow_children`]
+/// order.
+fn part_count(t: &Type) -> usize {
     match t {
-        Type::Array(e) | Type::List(e) | Type::ByRef(_, e) => smallvec![&**e],
-        Type::Map(m) => smallvec![&m.key, &m.value],
-        Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().collect(),
-        Type::Struct(fs) => fs.iter().map(|(_, t, _)| t).collect(),
-        _ => SmallVec::new(),
+        Type::Array(_) | Type::List(_) | Type::ByRef(..) => 1,
+        Type::Map(_) => 2,
+        Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.len(),
+        Type::Struct(fs) => fs.len(),
+        _ => 0,
     }
 }
 
-/// Whether `a` and `b` are one constructor whose [`parts`] pair by
+/// Part `p` of `t`, `p < part_count(t)`.
+fn part(t: &Type, p: usize) -> &Type {
+    match t {
+        Type::Array(e) | Type::List(e) | Type::ByRef(_, e) => e,
+        Type::Map(m) if p == 0 => &m.key,
+        Type::Map(m) => &m.value,
+        Type::Tuple(ts) | Type::Variant(_, ts, _) => &ts[p],
+        Type::Struct(fs) => &fs[p].1,
+        _ => unreachable!("a type with no parts"),
+    }
+}
+
+/// Whether `a` and `b` are one constructor whose parts ([`part`]) pair by
 /// position.
 fn same_shape(a: &Type, b: &Type) -> bool {
     match (a, b) {
@@ -697,6 +710,19 @@ impl Type {
         Ok(acc)
     }
 
+    // CR claude for claude: [bug/medium] An alternative that is itself a union is not
+    // looked into: the function members of `[fn(..), null]` alternatives never meet, so
+    // their lambdas collapse as a renaming and keep one member's lambda ids, as parts did
+    // before (array-defaults-nested-01). `let o1 = select j { 0 => |#d = 1, x: i64|
+    // cast<string>(d)$, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64|
+    // cast<string>(d)$, _ => null }; let o = select i { 0 => o1, _ => o2 }; select o {
+    // null as _ => "n", f => f(7) }` passes --check, prints 1, then "binding the callee
+    // failed: .. "q": type mismatch i64 does not contain string" once i moves to 1; the
+    // same inside a part, `select i { 0 => [f1, null], _ => [f2, null] }`. Base 3cfcd2407
+    // alike. A fix flattens Set alternatives (and Set parts) into the members met and
+    // rebuilds each Set; optional callbacks are common in the GUI stdlib, so it needs a
+    // census and guicheck. probes: ~/ptmp/cr29/scratch/r19/19c/rev/{b_set_top2,b_set}.gx
+    // (union-set-alternative-meet-01)
     /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
     /// of members of one shape ([`same_shape`]): a call through a part of
     /// the union may be any member's. `None` when no member changes.
@@ -720,7 +746,7 @@ impl Type {
     fn meet_parts(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         let members: SmallVec<[Option<Type>; 4]> = ts
             .iter()
-            .map(|t| t.with_deref(|t| t.filter(|t| !parts(t).is_empty()).cloned()))
+            .map(|t| t.with_deref(|t| t.filter(|t| part_count(t) > 0).cloned()))
             .collect();
         let mut grouped: SmallVec<[bool; 4]> = smallvec![false; members.len()];
         let mut out: Option<LPooled<Vec<Type>>> = None;
@@ -741,10 +767,10 @@ impl Type {
             let mut rebuilt: SmallVec<[Type; 4]> =
                 group.iter().filter_map(|j| members[*j].clone()).collect();
             let mut changed = false;
-            for p in 0..parts(head).len() {
+            for p in 0..part_count(head) {
                 let met = {
                     let at: SmallVec<[&Type; 4]> =
-                        rebuilt.iter().map(|m| parts(m)[p]).collect();
+                        rebuilt.iter().map(|m| part(m, p)).collect();
                     let one = at[0].node_key();
                     if one.is_some() && at.iter().all(|t| t.node_key() == one) {
                         continue;
@@ -775,27 +801,6 @@ impl Type {
         Ok(out)
     }
 
-    // XCR claude for claude: [bug/medium] Only a union's own function members meet:
-    // lambdas one level down, in arrays of an array, do not, so a call through the
-    // outer array's element judges one lambda's default and the other's fails at every
-    // run-time bind. `let fs = [[|#d = 1, x: i64| cast<string>(d)$], [|#d = "q", x: i64|
-    // cast<string>(d)$]]` with `fs[i]$[0]$(7)`, i from a timer, passes --check and
-    // prints 1, then "binding the callee failed: ... "q": type mismatch i64 does not
-    // contain string" (main 302ef13fd and lane cr52-m alike, review r18). The meet would
-    // have to reach the members' parts (an Array's, a List's, a tuple's element), or
-    // the union keep each part's lambda ids. probe:
-    // ~/ptmp/cr29/scratch/review-r16/m-r1-1/ad_nest.gx (array-defaults-nested-01)
-    // 2026-11-09 claude: Type::union_of_alternatives now meets the parts of members of
-    // one shape (Type::meet_alternatives, meet_parts: arrays, lists, maps, references,
-    // tuples, structs, variants), so lambdas in parts meet and join lambda ids as
-    // top-level members do; the probe and its tuple, struct-select, map, variant and
-    // list forms are refused at --check with the share-one-#d note. Pins
-    // lang::functions::{nested_array_defaults_of_two_types,
-    // tuple_part_defaults_of_two_types, select_of_structs_defaults_of_two_types,
-    // nested_array_defaults_passed_on_name_the_annotation,
-    // select_of_structs_of_lambdas_in_a_definition} fail without it; twins
-    // nested_array_defaults_annotated, nested_array_defaults_of_one_type,
-    // nested_array_of_generic_lambdas pass. Census unchanged.
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh
