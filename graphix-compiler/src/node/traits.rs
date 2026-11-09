@@ -119,6 +119,25 @@ fn implements<R: Rt>(
     // lang::traits::method_value_projected_from_data_is_refused). Whether the message
     // should cite the ML rule rather than the level test is what remains; the probes tq1,
     // tq1b are refused as before.
+    // 2026-11-09 claude: Review r19 (19c) reopened it: the fixer's X (1fa476658, reverted)
+    // judged the text accurate, but one step over the refusal and its message are wrong.
+    // Eric's 11-05 D3 follow-up Q1 (a) generalizes a let whose value is a field or tuple
+    // read of a generalized binding, and a val implemented so runs at two types
+    // (~/ptmp/cr29/scratch/r19/19c/trait-nolambda/v2: let go = s.g, v3: let go = p.0, both
+    // print '1 s' on base-r19), yet the same value as a trait method is refused 'its value
+    // is no lambda, so no call copies its types' (a2: impl Put for C { let put = s.g }, a3:
+    // let put = p.0, with trait Put { val put: fn(self, x: 'a) -> 'a }). Cause:
+    // Impl::compile gives each method's let the trait signature as its annotation
+    // (traits.rs:877, typ: b.typ.clone().or_else(..sig..)) and bind::forwards
+    // (bind.rs:1009) requires b.typ.is_none(), so the method's let is never in poly_binds
+    // and its cells sit at Top (a debug print showed poly=false for a2's put). The CR's own
+    // probes tq1/tq1b ((f, 1).0 over a literal tuple) stay refused rightly. A fix: let a
+    // forwarding method value carry the scheme despite the synthesized annotation (forwards
+    // keyed on a written annotation only, or Impl not annotating a value that forwards),
+    // then pin a2/a3 as running at two types beside
+    // method_value_projected_from_data_is_refused; it accepts more, so census and guicheck.
+    // Using the Bind node's type in Impl::typecheck0 instead of env's does not help
+    // (tried).
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
