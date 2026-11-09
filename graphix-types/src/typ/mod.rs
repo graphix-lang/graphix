@@ -310,7 +310,7 @@ pub(super) struct NodePairs {
 }
 
 impl NodePairs {
-    const EAGER: u32 = 64;
+    pub(super) const EAGER: u32 = 64;
 
     /// The key of the node pair `t0`, `t1`, when both are shared
     /// composites and the walk has grown past `EAGER`.

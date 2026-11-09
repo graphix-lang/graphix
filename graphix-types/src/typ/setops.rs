@@ -2,8 +2,12 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        Bound, ContainsFlags, FnType, Kept, Lazy, NodePairs, RefHist, RefPair, TVar,
-        Type, TypeRef, contains::on_copies, fntyp::LambdaIds, node_addr, tvar::Fresh,
+        Bound, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair,
+        TVar, Type, TypeRef,
+        contains::on_copies,
+        fntyp::LambdaIds,
+        node_addr,
+        tvar::{Fresh, cell_writes},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -25,19 +29,73 @@ struct MatchingTypes {
 
 /// diff's walk state: each pair in progress with what it subtracts when
 /// met again inside its own difference (nothing), and the difference of
-/// each finished pair whose walk met no pair in progress and whose
-/// minuend, of which a difference is made, [`RefHist::ref_id`] keys
+/// each finished pair whose walk was cut only at itself or below it and
+/// whose minuend, of which a difference is made, [`RefHist::ref_id`] keys
 /// exactly. A subtrahend keyed alike is read alike: diff reads every part
-/// of it through.
+/// of it through. A finished pair's difference is kept with what its walk
+/// reached, and is read again only where the path holds none of it: a
+/// fresh walk there would be cut nowhere it was not, so the memo changes
+/// no answer.
 struct DiffHist {
-    hist: RefHist<AHashMap<RefPair, Type>>,
-    done: Lazy<AHashMap<RefPair, Kept<Type>>>,
+    /// Each pair in progress: its minuend and its depth on the path, from 1.
+    hist: RefHist<AHashMap<RefPair, (Type, usize)>>,
+    done: Lazy<AHashMap<RefPair, Kept<Done>>>,
+    ids: Lazy<AHashMap<Reach, usize>>,
     unfoldings: Unfoldings,
     pairs: Pairs,
-    /// The current walk met a pair in progress, or stopped unfolding.
-    cycled: bool,
+    /// The difference of each pair of shared nodes, by their identities,
+    /// met past [`NodePairs::EAGER`] steps, with the [`cell_writes`] it
+    /// was reached at: a residual a walk built is a DAG, and its parts are
+    /// subtracted once while no cell they may read is written.
+    parts: Lazy<AHashMap<(NodeKey, NodeKey), Kept<(Done, u64)>>>,
+    steps: u32,
+    /// The depth of the shallowest pair in progress the current pair's
+    /// walk was cut at, `usize::MAX` for none; 0 where a budget stopped it,
+    /// so a walk a budget widened keeps nothing.
+    cut: usize,
+    /// What the current pair's walk reached.
+    reached: Reached,
     /// A budget made the walk subtract less than it would have.
     widened: bool,
+}
+
+/// A finished pair's difference and what its walk reached.
+struct Done {
+    answer: Type,
+    reached: Reached,
+}
+
+/// What a diff walk reached that a path may hold: a pair by its key, a
+/// pair of definitions ([`Unfoldings`] cuts a walk at one met again).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Reach {
+    Pair(RefPair),
+    Defs(DefPair),
+}
+
+/// A set of [`Reach`]es by the ids [`DiffHist`] gives them.
+#[derive(Default, Clone)]
+struct Reached(SmallVec<[u64; 4]>);
+
+impl Reached {
+    fn insert(&mut self, id: usize) {
+        let (w, b) = (id / 64, id % 64);
+        if self.0.len() <= w {
+            self.0.resize(w + 1, 0)
+        }
+        self.0[w] |= 1 << b
+    }
+
+    fn contains(&self, id: usize) -> bool {
+        self.0.get(id / 64).is_some_and(|w| w & (1 << (id % 64)) != 0)
+    }
+
+    fn union(&mut self, other: &Reached) {
+        if self.0.len() < other.0.len() {
+            self.0.resize(other.0.len(), 0)
+        }
+        self.0.iter_mut().zip(other.0.iter()).for_each(|(a, b)| *a |= b)
+    }
 }
 
 impl DiffHist {
@@ -45,11 +103,59 @@ impl DiffHist {
         DiffHist {
             hist: RefHist::new(),
             done: Lazy::new(),
+            ids: Lazy::new(),
+            parts: Lazy::new(),
+            steps: 0,
             unfoldings: Unfoldings::default(),
             pairs: Pairs::default(),
-            cycled: false,
+            cut: usize::MAX,
+            reached: Reached::default(),
             widened: false,
         }
+    }
+
+    fn id(&mut self, r: Reach) -> usize {
+        let ids = self.ids.get_mut();
+        let next = ids.len();
+        *ids.entry(r).or_insert(next)
+    }
+
+    /// Note that the current walk entered `r`, or was cut at it. Only
+    /// what a walk enters is ever on a path, so the ids stay within the
+    /// pairs the walk may unfold.
+    fn reach(&mut self, r: Reach) {
+        let id = self.id(r);
+        self.reached.insert(id);
+    }
+
+    /// The key [`DiffHist::parts`] holds `t0`, `t1`'s difference by: a
+    /// pair diff walks into, a union on a side or two of one constructor.
+    #[inline]
+    fn parts_key(&mut self, t0: &Type, t1: &Type) -> Option<(NodeKey, NodeKey)> {
+        if self.steps < NodePairs::EAGER {
+            self.steps += 1;
+            return None;
+        }
+        match (t0, t1) {
+            (
+                Type::Set(_),
+                Type::Set(_) | Type::Error(_) | Type::Array(_) | Type::List(_),
+            )
+            | (Type::Error(_) | Type::Array(_) | Type::List(_), Type::Set(_))
+            | (Type::Error(_), Type::Error(_))
+            | (Type::Array(_), Type::Array(_))
+            | (Type::List(_), Type::List(_)) => (),
+            _ => return None,
+        }
+        Some((t0.node_key()?, t1.node_key()?))
+    }
+
+    /// Whether the path holds nothing of `r`.
+    fn path_clear_of(&self, r: &Reached) -> bool {
+        let Some(ids) = self.ids.get() else { return true };
+        let held = |k: Reach| ids.get(&k).is_some_and(|id| r.contains(*id));
+        !self.hist.keys().any(|k| held(Reach::Pair(*k)))
+            && !self.unfoldings.held().any(|d| held(Reach::Defs(d)))
     }
 }
 
@@ -124,6 +230,11 @@ impl Unfoldings {
         if let Some(ks) = defs.and_then(|defs| self.0.get_mut(&defs)) {
             ks.pop();
         }
+    }
+
+    /// The pairs of definitions the path holds.
+    fn held(&self) -> impl Iterator<Item = DefPair> + '_ {
+        self.0.iter().filter(|(_, ks)| !ks.is_empty()).map(|(d, _)| *d)
     }
 }
 
@@ -890,7 +1001,36 @@ impl Type {
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         #[cfg(test)]
         DIFF_STEPS.with(|n| n.set(n.get() + 1));
-        ensure_sufficient(|| self.diff_inner(env, hist, t))
+        let Some(key) = hist.parts_key(self, t) else {
+            return ensure_sufficient(|| self.diff_inner(env, hist, t));
+        };
+        let writes = cell_writes();
+        if memo_on()
+            && let Some(Kept { answer: (k, at), .. }) =
+                hist.parts.get().and_then(|m| m.get(&key))
+            && *at == writes
+            && hist.path_clear_of(&k.reached)
+        {
+            let (answer, reached) = (k.answer.clone(), k.reached.clone());
+            hist.reached.union(&reached);
+            return Ok(answer);
+        }
+        let depth = hist.hist.len() + 1;
+        let outer_cut = mem::replace(&mut hist.cut, usize::MAX);
+        let outer_reached = mem::take(&mut hist.reached);
+        let r = ensure_sufficient(|| self.diff_inner(env, hist, t));
+        let cut = mem::replace(&mut hist.cut, outer_cut);
+        hist.cut = hist.cut.min(cut);
+        let reached = mem::replace(&mut hist.reached, outer_reached);
+        hist.reached.union(&reached);
+        if cut >= depth
+            && cell_writes() == writes
+            && let Ok(d) = &r
+        {
+            let done = (Done { answer: d.clone(), reached }, writes);
+            hist.parts.get_mut().insert(key, Kept::new(done, self, t));
+        }
+        r
     }
 
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
@@ -902,25 +1042,33 @@ impl Type {
             (t0 @ Type::Ref(_), t1) | (t0, t1 @ Type::Ref(_)) => {
                 let key = (hist.hist.ref_id(t0, env), hist.hist.ref_id(t1, env));
                 let kept = key.0.is_some() && key.1.is_some() && !keyed_loosely(self);
+                let defs = def_pair(env, t0, t1);
                 if kept
                     && memo_on()
                     && let Some(k) = hist.done.get().and_then(|m| m.get(&key))
+                    && hist.path_clear_of(&k.answer.reached)
                 {
-                    return Ok(k.answer.clone());
+                    let (answer, reached) =
+                        (k.answer.answer.clone(), k.answer.reached.clone());
+                    hist.reached.union(&reached);
+                    return Ok(answer);
                 }
-                if let Some(r) = hist.hist.get(&key) {
-                    hist.cycled = true;
-                    return Ok(r.clone());
+                if let Some((r, depth)) = hist.hist.get(&key) {
+                    let r = r.clone();
+                    hist.cut = hist.cut.min(*depth);
+                    hist.reach(Reach::Pair(key));
+                    return Ok(r);
                 }
                 // a pair met again inside its own difference subtracts
                 // nothing: assuming it covered would drop what it did not
-                let defs = def_pair(env, t0, t1);
-                if hist.unfoldings.again(defs).is_some() {
-                    hist.cycled = true;
+                if let (Some(k), Some(defs)) = (hist.unfoldings.again(defs), defs) {
+                    let depth = hist.hist.get(&k).map_or(0, |(_, d)| *d);
+                    hist.cut = hist.cut.min(depth);
+                    hist.reach(Reach::Defs(defs));
                     return Ok(self.clone());
                 }
                 if !hist.pairs.unfold() {
-                    hist.cycled = true;
+                    hist.cut = 0;
                     hist.widened = true;
                     return Ok(self.clone());
                 }
@@ -928,19 +1076,28 @@ impl Type {
                 DIFF_PAIRS.with(|n| n.set(n.get() + 1));
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                hist.hist.insert(key, self.clone());
+                let depth = hist.hist.len() + 1;
+                hist.hist.insert(key, (self.clone(), depth));
                 hist.unfoldings.enter(defs, key);
-                let outer = mem::replace(&mut hist.cycled, false);
+                let outer_cut = mem::replace(&mut hist.cut, usize::MAX);
+                let outer_reached = mem::take(&mut hist.reached);
+                hist.reach(Reach::Pair(key));
+                if let Some(defs) = defs {
+                    hist.reach(Reach::Defs(defs));
+                }
                 let r = t0.diff_int(env, hist, &t1);
                 hist.unfoldings.leave(defs);
                 hist.hist.remove(&key);
-                let cycled = mem::replace(&mut hist.cycled, outer);
-                hist.cycled |= cycled;
+                let cut = mem::replace(&mut hist.cut, outer_cut);
+                hist.cut = hist.cut.min(cut);
+                let reached = mem::replace(&mut hist.reached, outer_reached);
+                hist.reached.union(&reached);
                 if kept
-                    && !cycled
+                    && cut >= depth
                     && let Ok(d) = &r
                 {
-                    hist.done.get_mut().insert(key, Kept::new(d.clone(), self, t));
+                    let done = Done { answer: d.clone(), reached };
+                    hist.done.get_mut().insert(key, Kept::new(done, self, t));
                 }
                 r
             }
@@ -1330,7 +1487,7 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [perf/medium] A residual that doubles while the walk takes
+    // XCR claude for claude: [perf/medium] A residual that doubles while the walk takes
     // few pairs is exponential in depth, as on main: the pair budget (WALK_PAIRS) never
     // meets it. Over `type T = [Error<T>, Error<U>, `A]; type U = [Error<T>, Error<U>,
     // `B]`, a type test d deep (dq) costs, --no-cache --check, instructions, main
@@ -1366,6 +1523,27 @@ impl Type {
     // again, which is HEAD's dq doubling (dq12 arm bisection, main 3.0/8.15/8.15G, HEAD
     // 3.0/9.13/13.88G; ddu12 8.15G main, 14.9G HEAD). design/tvar_constraints.md now says
     // so. probes: ~/ptmp/cr29/scratch/review-r16/U-r1-2/p3/ (ddu*.gx, q12a-d.gx, dq12.gx)
+    // 2026-11-09 claude: Lane 19b: the residual was already a DAG (diff's Ref memo shares
+    // each level); what doubled was every walk over it, because a pair whose walk met any
+    // pair in progress kept nothing, and U - T, which meets T - U and comes back to
+    // itself, sat under every level. DiffHist now keeps a finished pair's difference when
+    // its walk was cut only at itself or below it (cut depth, not a cycled bit), and also
+    // keeps the difference of each pair of shared unions or of one constructor by node
+    // identity while no cell is written (DiffHist::parts). Each kept difference carries
+    // what its walk entered or was cut at (Reached) and is read again only where the path
+    // holds none of it, so the memos change no answer (with that check off,
+    // diff_and_could_match_memos_change_no_answer fails). base-r19 / fix, --no-cache
+    // --check instructions: dq12 12.4G / 0.95G, dq16 242G / 1.04G, dq32 and dq64 past 60
+    // s / 1.42G and 2.87G, dp32 past 60 s / 1.10G, darms6-d12 510G / 0.92G, darms10-d8
+    // 470G / 1.17G, every darms up to darms20-d12 / under 2.2G, arms16-d12 268G / 1.25G
+    // (both refuse its repeated arm), ddu9..ddu12 accepted / refused 'will never match'
+    // as before the pair budget. Over the 119 review-r16 probes no other verdict or
+    // message changes; census 2949 files unchanged; guicheck 40.50G / 40.55G; fuzz
+    // regress clean. Pins that fail without it:
+    // typ::setops::tests::diff_of_a_shared_residual_walks_each_part_once (767/1000/1000
+    // pairs, 2436/38916/622596 steps, budget-widened at d = 12, 16),
+    // lang::select::dead_arm_after_a_deep_test_is_refused. Probes:
+    // ~/ptmp/cr29/scratch/r19/19b/drd/.
     /// The values of `self` that are not values of `t`, or more where the
     /// walk's pair budget stopped it subtracting.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
@@ -2094,5 +2272,73 @@ mod tests {
             members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
         });
         assert_eq!(printed, "null, 'a: unbound, null, 'b: unbound");
+    }
+
+    /// `T` and `U`, each `[Error<T>, Error<U>, tag]`, `T` less an Error
+    /// tower `d` deep of `` `A ``: a residual whose paths double at every
+    /// level, its parts shared.
+    fn residual(d: usize) -> (Env, Type) {
+        let defs = [("T", "[Error<T>, Error<U>, `A]"), ("U", "[Error<T>, Error<U>, `B]")];
+        let (env, t) = typed(&defs, "T");
+        let tower = format!("{}`A{}", "Error<".repeat(d), ">".repeat(d));
+        let r = t.diff(&env, &parsed(&env, &tower)).unwrap();
+        (env, r)
+    }
+
+    /// The pairs and the steps diff takes for `t` less `less`, and the
+    /// difference, `None` where a budget widened it.
+    fn diff_cost(env: &Env, t: &Type, less: &str) -> (usize, usize, Option<Type>) {
+        super::DIFF_PAIRS.with(|n| n.set(0));
+        super::DIFF_STEPS.with(|n| n.set(0));
+        let rest = t.diff_exact(env, &parsed(env, less)).unwrap();
+        let pairs = super::DIFF_PAIRS.with(|n| n.get());
+        (pairs, super::DIFF_STEPS.with(|n| n.get()), rest)
+    }
+
+    // A select's next arm subtracts from the residual the arms before it
+    // left, a DAG whose paths double at every level: each pair of its
+    // shared parts is walked once, through a named pair in progress below
+    // it, so the cost grows with the depth and the difference stays exact.
+    #[test]
+    fn diff_of_a_shared_residual_walks_each_part_once() {
+        let costs: Vec<_> = [8, 12, 16]
+            .iter()
+            .map(|&d| {
+                let (env, r) = residual(d);
+                let (pairs, _, rest) = diff_cost(&env, &r, "Error<U>");
+                let tower = format!("{}`B{}", "Error<".repeat(d + 1), ">".repeat(d + 1));
+                let (_, steps, deeper) = diff_cost(&env, &r, &tower);
+                let rest = rest.map(|r| r.to_string());
+                (pairs, rest, steps, deeper.is_some())
+            })
+            .collect();
+        let rest = Some("[Error<`A>, `A]".to_string());
+        assert_eq!(
+            costs,
+            vec![
+                (18, rest.clone(), 155, true),
+                (26, rest.clone(), 202, true),
+                (34, rest, 253, true)
+            ]
+        );
+    }
+
+    // Over residuals of the doubling family, where a pair's difference is
+    // kept only while the path holds nothing its walk reached, the memos
+    // change no answer.
+    #[test]
+    fn memos_change_no_answer_over_shared_residuals() {
+        let (env, _) = residual(0);
+        let mut pool: Vec<Type> = [2, 3, 5]
+            .iter()
+            .map(|&d| {
+                let tower = format!("{}`A{}", "Error<".repeat(d), ">".repeat(d));
+                parsed(&env, "T").diff(&env, &parsed(&env, &tower)).unwrap()
+            })
+            .collect();
+        for t in ["T", "U", "Error<U>", "Error<Error<`B>>", "[Error<T>, `A]"] {
+            pool.push(parsed(&env, t));
+        }
+        memos_agree(&env, &pool);
     }
 }

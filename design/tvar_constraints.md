@@ -889,17 +889,24 @@ type, counted, never timed (Eric 11-05, diff-cycle-hang-01 follow-up 2
 (b)), past which diff subtracts nothing and could_match answers an overlap
 wherever a pair is met (pins
 `typ::setops::tests::diff_over_branching_unions_is_bounded`,
-`could_match_over_branching_unions_is_bounded`). The pair budget does not
-bound a residual that grows while one walk takes few pairs: over `T =
-[Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep leaves a
-residual of `2^d` union members, and a select's running residual doubles
-at each arm testing a level deeper than the last. Those selects stay
-exponential in their depth, as before the budget
-(diff-residual-depth-01). The next arm's walk over that residual takes
-about `2^(d+1)` pairs, past the budget from `d = 9`: it subtracts nothing
-there, so a dead arm after it is not found (a repeated `Error<U> as e`
-arm, which main refuses, is accepted) and the arm after that walks the
-unreduced residual again.
+`could_match_over_branching_unions_is_bounded`). A residual is a DAG:
+over `T = [Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep
+leaves `2^d` paths through `d` shared levels. diff keeps the difference
+of each finished pair whose walk was cut only at itself or below it (a
+pair in progress, `Unfoldings`), a pair with a named side by its
+`RefHist::ref_id`s, a pair of shared unions or of one constructor by
+their nodes' identities while no cell is written, each with what its
+walk entered or was cut at (`DiffHist`, `Reached`). A kept difference is
+read again only where the path holds none of that: a fresh walk there
+would be cut nowhere it was not, so the memos change no answer (pin
+`memos_change_no_answer_over_shared_residuals`). The pair `U - T`,
+whose walk meets `T - U` and comes back to itself, is kept, so each
+level of the residual is subtracted once: the next arm's walk takes
+pairs linear in `d` and stays exact, and a repeated `Error<U> as e` arm
+after the deep test is dead at any depth (pins
+`diff_of_a_shared_residual_walks_each_part_once`,
+`lang::select::dead_arm_after_a_deep_test_is_refused`;
+diff-residual-depth-01).
 
 A wider residual is sound: fewer dead arms are found, a missing case may
 be refused that a `_` arm fixes, a later arm's bind is wider. It is not

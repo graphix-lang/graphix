@@ -5643,6 +5643,42 @@ run!(
     "#
 ; FuseExpect::None);
 
+// What the arms before it left, a residual whose paths double at every
+// level of a deep test, is subtracted exactly at any depth: a repeated
+// arm is dead, and the arms that cover the rest leave nothing.
+run!(
+    dead_arm_after_a_deep_test_is_refused,
+    refused("pattern Error<U> will never match Error<`A>"),
+    "/test.gx" => r#"
+        type T = [Error<T>, Error<U>, `A];
+        type U = [Error<T>, Error<U>, `B];
+        let x: T = `A;
+        let result = select x {
+          Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<`A>>>>>>>>>>>> as e => 0,
+          `A => 2,
+          Error<U> as e => 3,
+          Error<U> as e => 4,
+          _ => 5
+        }
+    "#
+; FuseExpect::None);
+
+run!(
+    arms_after_a_deep_test_cover_the_rest,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        type T = [Error<T>, Error<U>, `A];
+        type U = [Error<T>, Error<U>, `B];
+        let x: T = `A;
+        let result = select x {
+          Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<Error<`A>>>>>>>>>>>>>>>> as e => 0,
+          `A => 2,
+          Error<U> as e => 3,
+          Error<T> as e => 4
+        }
+    "#
+; FuseExpect::Jit);
+
 // An arm none of whose values the scrutinee holds is dead, however long
 // a tuple beside the names it walks: S0's Error<N0> against S1's
 // Error<N1> walks Error<L0> against Error<L1> while that pair is in
