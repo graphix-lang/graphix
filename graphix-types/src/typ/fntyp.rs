@@ -1062,6 +1062,28 @@ impl FnType {
     // The sibling forms name fs ("annotate fs"). Whether dropping the list from one
     // instance (this fix) makes the calls decide the copy and name fs is untried. probe
     // ~/ptmp/cr29/scratch/review-r16/Q-r2-2/mq1/main.gx (run.sh mq1/main.gx).
+    // 2026-11-09 claude: Round 19 fixer: PARTIAL, nothing changed. Tried (1)
+    // printed_quantifiers dropping a quantifier whose cell is not generic: hint1 prints
+    // 'fn(x: 'a: unbound within Number) -> ..' but 13 pins fail
+    // (lang::types::declared_bounds_print_in_the_header,
+    // lang::quantified::a_printed_quantifier_is_not_read_for_a_cell_of_its_name,
+    // a_printed_quantifier_is_renamed_inside_a_binding_too,
+    // an_inner_quantifier_prints_apart_from_an_outer_of_its_name, x4 modes): a message
+    // about a GENERIC binding prints the copy contains made (Fresh::Instantiate), whose
+    // cells are non-generic exactly like the unnamed lambda's claimed cells, and those
+    // messages want the header. Cell level cannot tell them apart. (2) Clearing the
+    // list in FnType::one_instance: no effect on hint1 (the fn in Array<fn..> is the
+    // unnamed lambda's own def.typ, claimed to the enclosing level in
+    // DefGate::close/Lambda::named=false, never passed through one_instance) and it
+    // breaks the same pins plus
+    // lang::repl_inputs::refusal_names_the_declaration_of_the_origin and
+    // lang::types::function_bounded_builtin_passed_as_a_value. mq1 (second face)
+    // unchanged by (2). What a fix needs: a marker that the type is one instance, not a
+    // scheme, e.g. an FnType field set where the unnamed definition's signature is
+    // built (Arc<FnType> shared by the def node, ~10 construction sites, Eq/image to
+    // decide), or the unnamed lambda owning a quantifier-free signature while the
+    // rank-2 rigid check (lambda.rs rigid from def.typ quantifiers) keeps its own list.
+    // Low severity; recommend leaving the CR.
     /// One instance of the scheme under the open gates `open`: what a
     /// call copies is a fresh cell at the current level, which every use of
     /// the copy shares (`Fresh::Instantiate`).
