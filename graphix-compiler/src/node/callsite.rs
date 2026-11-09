@@ -326,6 +326,17 @@ fn checked_default<R: Rt>(
     }
 }
 
+// CR claude for claude: [bug/low] Which default is judged first, and so which refusal a
+// conflict names, follows the iteration order of LambdaIds::ids, a nohash IntSet keyed by
+// LambdaId, whose values come from one process-wide counter. Compiles running side by side
+// in one process (the skill fence harness checks 8 at once) shift the ids, and the order
+// flips: the gate run lane19d-gate-1109-162656.log (lane 19d finisher) failed
+// examples_compile::skill_fences_check on generics.md's `let fs = [|#d = 1, x: i64| x,
+// |#d = "q", x: i64| x]; array::len(fs)` case with `string does not contain i64` where
+// the case says `i64 does not contain string`; it passed on 3 reruns alone, and 60
+// standalone --check runs on base-r19 and the lane all print the latter. A fix: judge
+// `defs` in program order (each LambdaDef's source position), not id order.
+// (default-judge-order-01)
 /// The labeled defaults of the lambdas `value` may hold that `formal`
 /// hides or makes optional, each judged at `formal`'s view.
 fn judge_hidden_defaults<R: Rt>(
