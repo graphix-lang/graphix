@@ -4266,7 +4266,7 @@ run!(
     x <- t ~ "s";
     (b.0, v)
 }"#,
-    refused("(1, \"a\") tests a value whose type is not decided at this select")
+    refused("(1, \"a\") tests a value whose type is a part of 'x, a type not decided at this select")
 );
 
 // A type test over the element: `[i64, Array<i64>]` holds `x` and

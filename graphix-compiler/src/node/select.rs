@@ -2809,7 +2809,7 @@ fn written_tests_decided(
     }))
 }
 
-// CR claude for claude: [bug/low] The D5 refusal names no binding when the
+// XCR claude for claude: [bug/low] The D5 refusal names no binding when the
 // undecided cell is a part of a binding's type rather than all of it (Holders names
 // a binding only by the cell its whole type is): `|x| select (x[0]$, 0) { (`J, _) =>
 // 1, _ => 2 }` and `|x| select (W(x), 0) { (W(`J), _) => 1, _ => 2 }` are refused
@@ -2838,6 +2838,14 @@ fn written_tests_decided(
 // apart, ((a, b), _) => select (a, 0) { (1, _) => .. }), refused the same nameless
 // way, where main runs it and prints 2. probes:
 // ~/ptmp/cr29/scratch/review-r16/U-r1-1/r16U3/p/nm1.gx, x8.gx
+// 2026-11-09 claude: Holders::name_part (node/mod.rs) names, on the refusal path
+// only, the binding whose type is a cell the undecided cell came from, else holds it
+// inside (functions and select binds skipped, whole kind first, then earliest);
+// undecided_refusal says 'a part of 'x'. idx1, abs1, n01, n02, n04, nm1, x8 now name
+// x. Pins in select_undecided.rs (undecided_*_part_*) fail without it; census of
+// both repos unchanged. Three older pins that expected the nameless text now name c,
+// t, x (select.rs collection_parameter_element_pattern*, block_types.rs, types.rs
+// payload_bounds_refused_together).
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is.
 fn undecided_refusal(
@@ -2856,11 +2864,21 @@ fn undecided_refusal(
                  {meanings}"
             )
         }
-        None => anyhow!(
-            "{pat} tests a value whose type is not decided at this select, which a \
-             later use could decide apart from what the arms test: annotate the \
-             scrutinee's type where it is built"
-        ),
+        None => match holders.name_part(env, tv) {
+            Some(name) => {
+                let meanings = holders.meanings(at);
+                anyhow!(
+                    "{pat} tests a value whose type is a part of {name}, a type not \
+                     decided at this select, which a later use could decide apart from \
+                     what the arms test: annotate it{meanings}"
+                )
+            }
+            None => anyhow!(
+                "{pat} tests a value whose type is not decided at this select, which a \
+                 later use could decide apart from what the arms test: annotate the \
+                 scrutinee's type where it is built"
+            ),
+        },
     }
 }
 

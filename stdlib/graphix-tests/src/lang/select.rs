@@ -7642,7 +7642,7 @@ run!(
 
 run!(
     collection_parameter_element_pattern_refused,
-    refused("[`A(z), ..] tests a value whose type is not decided at this select"),
+    refused("[`A(z), ..] tests a value whose type is a part of 'c, a type not decided at this select"),
     "/test.gx" => r#"
         let h = |c: Collection| -> [string, null] select c { [`A(z), ..] => z, _ => null };
         let o: [`A(i64), `B(i64)] = `A(3);
@@ -7653,7 +7653,7 @@ run!(
 
 run!(
     collection_parameter_element_pattern_arith_refused,
-    refused("[`A(z), ..] tests a value whose type is not decided at this select"),
+    refused("[`A(z), ..] tests a value whose type is a part of 'c, a type not decided at this select"),
     "/test.gx" => r#"
         let h = |c: Collection| select c { [`A(z), ..] => z + 1.5, _ => 0.0 };
         let o: [`A(i64), `B(i64)] = `A(3);

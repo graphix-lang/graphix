@@ -81,6 +81,8 @@ no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { 'c as `A(z) => 1, _ =
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { `A(_) as `A(z) => 1, _ => 2 }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
+no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
+ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x| select (x, 0) { ((a, b), _) => a }
 ok |x| select x { `J => 1, `M => 2 }
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }

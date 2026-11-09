@@ -2609,6 +2609,51 @@ impl<'a> Holders<'a> {
         self.holder(tv, |_| true).map(|b| self.name(b))
     }
 
+    /// The binding to annotate where the cell `tv` stands for is a part of
+    /// a binding's type, named: among the bindings other than functions
+    /// and select binds, one whose type is the cell, or a cell a value
+    /// written into it came from, else one holding such a cell inside its
+    /// type; the one written first of the nearest kind.
+    pub(crate) fn name_part(&mut self, env: &'a env::Env, tv: &TVar) -> Option<Type> {
+        let mut sources: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut targets: LPooled<AHashSet<usize>> = LPooled::take();
+        for t in tv.cell_lower() {
+            if let Type::TVar(c) = &t {
+                targets.insert(c.stands_for());
+            }
+            t.collect_tvars(&mut sources);
+        }
+        targets.insert(tv.stands_for());
+        targets.extend(sources.values().map(|c| c.stands_for()));
+        let inside = |b: &env::Bind| {
+            let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            match b.typ.deref_cloned() {
+                Some(t) => t.collect_tvars(&mut cells),
+                None => b.typ.collect_tvars(&mut cells),
+            }
+            cells.values().any(|c| targets.contains(&c.stands_for()))
+        };
+        let whole = |b: &env::Bind| matches!(&b.typ, Type::TVar(c) if targets.contains(&c.stands_for()));
+        let b = env
+            .by_id
+            .iter()
+            .map(|(_, b)| b)
+            .filter(|b| {
+                !crate::is_lowered(&b.name)
+                    && !matches!(b.binder, Some(env::Binder::SelectPattern(_)))
+                    && !matches!(b.typ.deref_cloned(), Some(Type::Fn(_)))
+                    && !matches!(b.typ, Type::Fn(_))
+            })
+            .filter_map(|b| match (whole(b), inside(b)) {
+                (true, _) => Some((0, b)),
+                (_, true) => Some((1, b)),
+                _ => None,
+            })
+            .min_by_key(|(kind, b)| (*kind, b.pos.line, b.pos.column))?
+            .1;
+        Some(self.name(b))
+    }
+
     /// [`Self::name_cell`] where a hint names the cell.
     pub(crate) fn name_open(&mut self, tv: &TVar) -> Option<Type> {
         match Self::waits(tv) {

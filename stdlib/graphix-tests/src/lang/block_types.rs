@@ -315,7 +315,7 @@ run!(
     let t = B(1);
     select t { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 }
 }"#,
-    refused("tests a value whose type is not decided at this select")
+    refused("tests a value whose type is a part of 't, a type not decided at this select")
 );
 
 // The same in a module's body, whose private typedef only its own env

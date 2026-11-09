@@ -851,3 +851,45 @@ run!(destructure_under_an_annotated_slice_element, r#"{
     let f = |x: Array<(i64, i64)>| select (x, 0) { ([(a, b), ..], _) => a, _ => 0 };
     [f([(1, 2)]), f([])]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0]); FuseExpect::Jit);
+
+const PART_OF_X: &str =
+    "tests a value whose type is a part of 'x, a type not decided at this select";
+
+run!(undecided_index_part_names_its_binding, r#"{
+    let f = |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 };
+    f([`M])
+}"#, refused(PART_OF_X); FuseExpect::None);
+
+run!(undecided_index_part_annotated, r#"{
+    let f = |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 };
+    [f([`M]), f([`J])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1]); FuseExpect::Jit);
+
+run!(undecided_abstract_part_names_its_binding, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select (W(x), 0) { (W(`J), _) => 1, _ => 2 };
+    f(`M)
+}"#, refused(PART_OF_X); FuseExpect::None);
+
+run!(undecided_part_of_a_destructured_binding, r#"{
+    let f = |x| select (x, 0) { ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 }, _ => 0 };
+    f((`J, 1))
+}"#, refused(PART_OF_X); FuseExpect::None);
+
+run!(undecided_part_of_a_destructured_binding_annotated, r#"{
+    let f = |x: ([`J, `M], i64)| select (x, 0) { ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 } };
+    [f((`J, 1)), f((`M, 1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0]); FuseExpect::Jit);
+
+run!(undecided_part_reached_through_a_pattern_alias, r#"{
+    let f = |x| select (x, 0) { (c@ (a, b), _) => select c { (1, d) => d, _ => 0 } };
+    f((5, 1))
+}"#, refused(PART_OF_X); FuseExpect::None);
+
+run!(undecided_part_through_an_intermediate_binding, r#"{
+    let f = |x, c| {
+        let y = select c { true => x[0]$, false => (1, 2) };
+        select (y, 0) { ((a, b), 0) => a + b, ((a, b), _) => a - b, _ => 0 }
+    };
+    f([(5, 1)], true)
+}"#, refused(PART_OF_X); FuseExpect::None);
