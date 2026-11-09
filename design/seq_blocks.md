@@ -353,6 +353,9 @@ lowered machine, source position first, then each instance's step
 boundaries once the analysis has decided them (`S0 -> S1 same, S1 ->
 S2 next`); `GXDBG_SEQPLAN=1` adds every step's summary. The completion
 guards are compiler-only nodes and print as their operand.
+Printing is canonical: a trigger cell (`#seqt<id>_<name>`) prints as the
+name the program wrote, so a function a seq's body makes prints the same
+in every compile; only `--expand` (`PrintFlag::Lowered`) prints the cell.
 
 A seq inside a definition lowers once per definition: the lowering mints
 expression ids, and every compile of the body (the check and each

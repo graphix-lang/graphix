@@ -197,6 +197,9 @@ pub enum PrintFlag {
     /// are not part of a session image, and a type is shared by content,
     /// so whose written order it carries is incidental.
     AsWritten,
+    /// Print the names a lowering built (`--expand`) rather than the
+    /// names the program wrote for them.
+    Lowered,
 }
 
 thread_local! {
@@ -206,6 +209,11 @@ thread_local! {
 #[doc(hidden)]
 pub fn print_as_written() -> bool {
     PRINT_FLAGS.get().contains(PrintFlag::AsWritten)
+}
+
+#[doc(hidden)]
+pub fn print_lowered() -> bool {
+    PRINT_FLAGS.get().contains(PrintFlag::Lowered)
 }
 
 /// Run `f` with the given type-formatting flags on this thread.

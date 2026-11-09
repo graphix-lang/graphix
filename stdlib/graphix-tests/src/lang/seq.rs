@@ -968,3 +968,11 @@ run!(step_reads_present_values_when_untaken_arm_arrives, r#"{
     let go = 0;
     seq go { select mode { `A => present, `B => absent } }
 }"#, is(Value::I64(5)); FuseExpect::Jit);
+
+// A function a seq's body makes prints the names its program wrote, not the
+// cells the lowering renamed them to.
+run!(seq_function_prints_written_names, r#"{
+    let pt = {x: 1, y: 2};
+    let f = seq let {x, y} = pt { |x| x + y };
+    "[f]"
+}"#, prints(r#""Abstract(|x| x + y)""#); FuseExpect::Jit);

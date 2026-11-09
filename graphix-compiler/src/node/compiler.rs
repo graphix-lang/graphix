@@ -14,12 +14,14 @@ use super::{
     seq_machine::{SeqCapture, SeqMachine},
 };
 use crate::{
-    CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope, bailat,
+    CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, PrintFlag, Rt,
+    Scope, bailat,
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BinOp, Decorations, Expr, ExprId, ExprKind,
         LambdaBody, LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr,
         StructWithExpr, StructurePattern, print::PrettyDisplay,
     },
+    format_with_flags,
     ide::{ModuleRefSite, ScopeMapEntry},
     node::{
         ExplicitParens, Nop,
@@ -545,11 +547,11 @@ fn compile_kind<R: Rt>(
                 }
                 let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
                 if flags.contains(CFlag::ExpandSeq) {
-                    println!(
-                        "// seq at {}\n{}\n",
-                        spec.pos,
-                        lowered.to_string_pretty(80)
+                    let text = format_with_flags(
+                        PrintFlag::ReplacePrims | PrintFlag::Lowered,
+                        || lowered.to_string_pretty(80),
                     );
+                    println!("// seq at {}\n{}\n", spec.pos, text);
                 }
                 Ok(lowered)
             };

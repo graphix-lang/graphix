@@ -25,7 +25,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use indexmap::IndexMap;
 use netidx_core::path::Path;
 use netidx_value::{Typ, Value};
@@ -98,6 +98,20 @@ impl Rewrite<'_> {
             mode => mode,
         }
     }
+}
+
+/// Separates a trigger cell's seq id from the written name it holds.
+const TRIGGER_SEP: char = '_';
+
+/// Stands for `/` in a trigger cell's name, which a path must not split.
+const PATH_SEP: char = '~';
+
+/// The name a program wrote for a trigger cell `#seqt<id>_<name>`.
+pub fn written_trigger_name(cell: &str) -> Option<CompactString> {
+    let rest = cell.strip_prefix("#seqt")?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let name = rest[digits..].strip_prefix(TRIGGER_SEP).filter(|_| digits > 0)?;
+    Some(name.chars().map(|c| if c == PATH_SEP { '/' } else { c }).collect())
 }
 
 /// A seq's parts, as `desugar` matched them.
@@ -329,7 +343,8 @@ fn trigger_snapshot(
 ) -> Result<Expr> {
     let Parts { spec, trigger, body, .. } = *seq;
     let (pos, id) = (spec.pos, spec.id.inner());
-    let cell = |n: &str| ArcStr::from(format_compact!("#seqt{id}_{n}").as_str());
+    let cell =
+        |n: &str| ArcStr::from(format_compact!("#seqt{id}{TRIGGER_SEP}{n}").as_str());
     match trigger {
         None => Ok(boolean(pos, true)),
         Some(SeqTrigger::Expr(e)) => {
@@ -342,7 +357,7 @@ fn trigger_snapshot(
                 && let n = ArcStr::from(ref_key(name))
                 && (reads(&n) || aliases.iter().any(|a| reads(a)))
             {
-                let c = cell(&n.replace('/', "_"));
+                let c = cell(&n.replace('/', &PATH_SEP.to_string()));
                 decls.push(let_bind(e.pos, &c, None, never(e.pos)));
                 writes.push(connect(pos, &c, r#ref(pos, go)));
                 for a in aliases {
@@ -2547,6 +2562,16 @@ mod test {
 
     fn names(entries: &[(&str, Redirect)]) -> Names {
         entries.iter().map(|(n, r)| (ArcStr::from(*n), r.clone())).collect()
+    }
+
+    #[test]
+    fn trigger_cells_name_what_was_written() {
+        let w = |c: &str| written_trigger_name(c).map(|n| n.to_string());
+        assert_eq!(w("#seqt12_y").as_deref(), Some("y"));
+        assert_eq!(w("#seqt12_m~t").as_deref(), Some("m/t"));
+        assert_eq!(w("#seqtv12"), None);
+        assert_eq!(w("#seqt_y"), None);
+        assert_eq!(w("y"), None);
     }
 
     fn cell(n: &str) -> Redirect {

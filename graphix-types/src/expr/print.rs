@@ -8,7 +8,7 @@ use crate::{
         TraitMethod, TypeDefBody, TypeDefExpr, UseCommentKind, UseItem,
         format::FormatConfig, parser, pattern::printed_fields,
     },
-    print_as_written,
+    print_as_written, print_lowered,
     stack::ensure_sufficient,
     typ::{
         Noted, Type,
@@ -2845,7 +2845,16 @@ impl ExprKind {
                 write!(f, "{}", UseStmt(*reexport, names))
             }
             ExprKind::Ref { name } => {
-                write!(f, "{name}")
+                let written = match print_lowered() {
+                    true => None,
+                    false => {
+                        Path::basename(&name.0).and_then(super::seq::written_trigger_name)
+                    }
+                };
+                match written {
+                    Some(w) => write!(f, "{w}"),
+                    None => write!(f, "{name}"),
+                }
             }
             ExprKind::StructRef { source, field } => {
                 write!(f, "{}.{field}", Postfix(source))
