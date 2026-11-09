@@ -595,28 +595,6 @@ impl FnType {
         known
     }
 
-    // XCR claude for claude: [bug/low] The same one-bound-deep collection lives where a
-    // written function type's quantifier list, or an instance's substitution of it, is
-    // built: a rank-2 formal `|k: fn<'a: [i64, string], 'c: ['a, null], 'b: ['c, `X]>(x:
-    // 'b) -> [`X, null, i64, string]| k(`X)` applied to `|x| x` passes --check, then its
-    // elaboration is refused ("ELAB-AUDIT instance-signature .. an instance at fn(k:
-    // fn<'b: ['c: .. [null, i64] ..], 'c: [i64, null]>..": 'a lost, its bound decided);
-    // both print the list as fn<'b, 'c>, and an interface val with the chain prints that
-    // way too. Two levels ('a, 'b: ['a, `X]) run. Found by review r17 of
-    // bound-chain-rigid-01, on main and lane alike. probes:
-    // ~/ptmp/cr29/scratch/r17-m/{bc_r2d,bc_r2c}.gx, bcmod/main.gx
-    // (rank2-bound-chain-01)
-    // 2026-11-06 claude: Lane M's merge of main (lane Q): the rank-2 shapes (bc_r2d,
-    // bc_r2c) are refused where written now (a function type with type variables of its
-    // own stands only as a definition's signature), so only the interface val's print
-    // stands: bcmod/main.gx is told 'val f is declared fn<'b: ['c, `X], 'c: [null,
-    // 'a]>..', the list without 'a.
-    // 2026-11-09 claude: constraint_view and printed_view now reach a quantifier named
-    // only inside a bound of a bound (collect_tvars_through_bounds when a declared
-    // quantifier is not among the cells found), so the val's declared list prints 'a.
-    // Pin that fails without it:
-    // lang::interfaces::a_chain_of_bounds_prints_every_quantifier. Needs a soak
-    // (identity of constraint_view widens only for chains).
     /// [`Self::collect_tvars`] and then, until nothing new arrives, the
     /// cells the bounds of the cells found name: a quantifier only the
     /// bound of a bound names is reached too.
