@@ -1975,7 +1975,7 @@ fn is_self_param(a: &FnArgType) -> bool {
         }
 }
 
-// XCR claude for claude: [perf/low] Nested rank-2 function types print in
+// CR claude for claude: [perf/low] Nested rank-2 function types print in
 // time quadratic in their nesting: `let y: fn<'a: Any>(x: fn<'a: Any>(x: ..)
 // -> 'a) -> 'a = never()` N levels deep costs 0.037 / 0.143 / 0.446 / 1.56 /
 // 5.82 G instructions under `graphix fmt --stdout` at N = 14 / 40 / 80 / 160
@@ -2004,6 +2004,23 @@ fn is_self_param(a: &FnArgType) -> bool {
 // 0.077/0.237/0.869 after: the rest is the parser (FnType::declaring,
 // check_quantifiers_held, alias_tvars per level), still quadratic and not part
 // of this CR; needs a soak? no, print-only.
+// 2026-11-09 claude: Review r19 19c: the print half holds and stays
+// (88d415f3e): fmt --stdout of every .gx/.gxi in both repos is byte-identical
+// to base-r19 (2949 files), the pin fails with the fix undone (59982/644142
+// steps at 40/160) and passes with it (1206/4086), fmt of the probe is
+// 0.145/0.451/1.576 G before and 0.077/0.237/0.869 G after at 40/80/160. The
+// formatter is still quadratic, so the CR stands: the 11-09 note's 'the rest is
+// the parser' leaves out format::guard, whose AST equality reaches FnType's
+// PartialEq, which calls constraint_view at every level of the nest (a full
+// collect_tvars per level: 16160 steps at 40 deep, 256640 at 160; 12.5% of fmt
+// at 160). The checker meets the same Eq wherever function types compare. The
+// parser's per-level walks (FnType::declaring via alias_tvars,
+// check_quantifiers_held, inner_quantifiers; about 36% of fmt at 160) remain
+// too. A fix for Eq/Ord must keep what equality sees (see
+// rank2-bound-chain-01); printed_view's position lookup picks the first
+// position occurrence where constraint_view takes the first occurrence in
+// for_each_part order (conjuncts before throws), which differs only for two
+// distinct cells sharing a quantifier's name.
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
