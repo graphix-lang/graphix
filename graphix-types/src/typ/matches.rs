@@ -254,6 +254,7 @@ thread_local! {
     pub(super) static MATCH_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static REST_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static MATCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static BOTTOM_AS_ANY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// could_match's walk state: its pairs in progress (assumed to overlap),
@@ -749,14 +750,29 @@ impl Type {
     /// predicate `self`, where a ⊥ part, a cell nothing decided, passes
     /// any value.
     pub fn could_pass(&self, env: &Env, t: &Self) -> Result<bool> {
-        fn bottom_as_any(t: &Type) -> Option<Type> {
+        type Done = AHashMap<NodeKey, (Type, Option<Type>)>;
+        fn bottom_as_any(t: &Type, done: &mut Done) -> Option<Type> {
             ensure_sufficient(|| match t {
                 Type::Bottom => Some(Type::Any),
-                Type::TVar(tv) => tv.binding().map(|b| bottom_as_any(&b).unwrap_or(b)),
-                t => t.cow_children(&mut bottom_as_any),
+                Type::TVar(tv) => {
+                    tv.binding().map(|b| bottom_as_any(&b, done).unwrap_or(b))
+                }
+                t => {
+                    #[cfg(test)]
+                    BOTTOM_AS_ANY_STEPS.with(|n| n.set(n.get() + 1));
+                    let key = t.node_key();
+                    if let Some((_, r)) = key.and_then(|k| done.get(&k)) {
+                        return r.clone();
+                    }
+                    let r = t.cow_children(&mut |c| bottom_as_any(c, done));
+                    if let Some(k) = key {
+                        done.insert(k, (t.clone(), r.clone()));
+                    }
+                    r
+                }
             })
         }
-        match bottom_as_any(self) {
+        match bottom_as_any(self, &mut LPooled::<Done>::take()) {
             Some(p) => p.could_match(env, t),
             None => self.could_match(env, t),
         }
@@ -1140,6 +1156,36 @@ mod tests {
             defs.push((named(n), format!("({chain}1, {tag})")));
         }
         defs
+    }
+
+    /// A predicate whose ⊥ parts and bound cells a DAG of tuples shares
+    /// is read once a node, and keeps its sharing for the match.
+    #[test]
+    fn could_pass_reads_a_predicate_dag_once_a_node() {
+        use crate::{
+            env::Env,
+            typ::{TVar, Type},
+        };
+        use arcstr::literal;
+        use triomphe::Arc;
+        let n = 20;
+        let pair = |t: Type| Type::Tuple(Arc::from_iter([t.clone(), t]));
+        let c = TVar::empty_named(literal!("c"));
+        let i64 = parsed(&Env::default(), "i64");
+        c.bind(i64.clone());
+        let (mut p, mut q, mut t) = (Type::TVar(c), Type::Bottom, i64);
+        for _ in 0..n {
+            (p, q, t) = (pair(p), pair(q), pair(t));
+        }
+        for pred in [p, q] {
+            super::BOTTOM_AS_ANY_STEPS.with(|n| n.set(0));
+            MATCH_PAIRS.with(|n| n.set(0));
+            assert!(pred.could_pass(&Env::default(), &t).unwrap());
+            let steps = super::BOTTOM_AS_ANY_STEPS.with(|n| n.get());
+            let pairs = MATCH_PAIRS.with(|n| n.get());
+            assert!(steps <= 2 * n + 8, "{steps} reads of a DAG of depth {n}");
+            assert!(pairs <= 4 * n + 128, "{pairs} pairs matched at depth {n}");
+        }
     }
 
     // Each P_k fails at its tag and takes back the trues of the chain,

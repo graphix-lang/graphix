@@ -1131,12 +1131,13 @@ fn written_holder_chains_check_in_linear_time() {
 }
 
 /// A chain of holders, each link reading the last beside a select over it,
-/// checks in time linear in its length: the arm's pattern, whose cell the
-/// scrutinee's DAG binds, is opened over its `Any` parts once per pair of
-/// shared nodes, where once per path takes 2^depth.
+/// checks and runs in time linear in its length: the arm's pattern, whose
+/// cell the scrutinee's DAG binds, is opened over its `Any` parts once per
+/// pair of shared nodes, and the select's shallow test reads the scrutinee
+/// and the pattern once a node, where once per path takes 2^depth.
 #[test]
 #[cfg(target_os = "linux")]
-fn select_holder_chains_check_in_linear_time() {
+fn select_holder_chains_check_and_run_in_linear_time() {
     const LINKS: usize = 40;
     for link in ["{a: x, b: select x { v => v }}", "{a: x, b: select x { _ => x }, c: x}"]
     {
@@ -1144,8 +1145,12 @@ fn select_holder_chains_check_in_linear_time() {
         for _ in 0..LINKS {
             program.push_str(&format!("let x = {link};\n"));
         }
-        program.push_str("0\n");
-        checks_within(&program, 4 * BILLION)
+        checks_within(&format!("{program}0\n"), 4 * BILLION);
+        completes_within(
+            &["--no-cache"],
+            &format!("{program}sys::exit(0)\n"),
+            4 * BILLION,
+        )
     }
 }
 

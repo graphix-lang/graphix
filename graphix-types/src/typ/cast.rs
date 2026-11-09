@@ -1903,7 +1903,7 @@ impl ShallowScrutinee {
             .get_or_init(|| {
                 let mut scrut: LPooled<Vec<Type>> = LPooled::take();
                 flatten_union_members(&self.typ, env, &mut scrut)?;
-                let mut walked: LPooled<ShapeSeen> = LPooled::take();
+                let mut walked = ShapeSeen::default();
                 let mut below = |m: &Type| {
                     m.try_for_each_child(&mut |c| match shapes_collide(
                         c,
@@ -1968,16 +1968,32 @@ impl ShallowScrutinee {
     }
 }
 
-/// The applications a [`shapes_collide`] search has walked.
-type ShapeSeen = AHashSet<RefKey>;
+/// What a [`shapes_collide`] search has walked: the applications, and
+/// the shared nodes, each held so its address stays its own.
+#[derive(Default)]
+struct ShapeSeen {
+    walked: LPooled<AHashSet<RefKey>>,
+    nodes: LPooled<AHashMap<usize, Type>>,
+}
 
 /// Whether `t` or a part of it is a union two of whose members share a
-/// shape (`arr_overlap`). An application is walked once a search.
+/// shape (`arr_overlap`). An application is walked once a search, and so
+/// is a shared node.
 fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
+    #[cfg(test)]
+    SHAPE_STEPS.with(|n| n.set(n.get() + 1));
+    if let Some(addr) = super::node_addr(t) {
+        match seen.nodes.entry(addr) {
+            Entry::Occupied(_) => return false,
+            Entry::Vacant(e) => {
+                e.insert(t.clone());
+            }
+        }
+    }
     ensure_sufficient(|| match t {
         Type::Ref(tr) => {
             let Some(key) = ref_key(tr) else { return false };
-            if !seen.insert(key) {
+            if !seen.walked.insert(key) {
                 return false;
             }
             let Ok(x) = t.lookup_ref(env) else { return false };
@@ -3265,6 +3281,7 @@ fn long_integer(s: &str) -> Option<Value> {
 thread_local! {
     static LITERALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static IS_A_NAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SHAPE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `s` read as a value literal.
@@ -3474,6 +3491,7 @@ pub(crate) mod tests {
         borrow::Cow,
         time::{Duration, Instant},
     };
+    use triomphe::Arc;
 
     /// An env holding the typedefs `defs` at the root, and `t` there.
     pub(crate) fn typed(defs: &[(&str, &str)], t: &str) -> (Env, Type) {
@@ -3567,6 +3585,23 @@ pub(crate) mod tests {
         let defs = [("O<'a>", "['a, null]"), ("X", "[(i64, i64), (string, string)]")];
         let (env, t) = typed(&defs, "Array<O<O<X>>>");
         assert!(super::shapes_collide(&t, &env, &mut super::ShapeSeen::default()));
+    }
+
+    /// A select's shallow test over a union holding a DAG of tuples walks
+    /// each shared node once, not once per path.
+    #[test]
+    fn shallow_discriminant_walks_a_shared_dag_once() {
+        let n = 20;
+        let mut t = parse_type("i64").unwrap();
+        for _ in 0..n {
+            t = Type::Tuple(Arc::from_iter([t.clone(), t]));
+        }
+        let scrutinee =
+            Type::Set(Arc::from_iter([parse_type("null").unwrap(), t.clone()]));
+        super::SHAPE_STEPS.with(|s| s.set(0));
+        assert!(t.shallow_discriminant(&Env::default(), &scrutinee).is_some());
+        let steps = super::SHAPE_STEPS.with(|s| s.get());
+        assert!(steps <= 4 * n, "{steps} steps over a DAG of depth {n}");
     }
 
     /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =
