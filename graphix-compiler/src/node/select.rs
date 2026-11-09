@@ -2809,43 +2809,6 @@ fn written_tests_decided(
     }))
 }
 
-// XCR claude for claude: [bug/low] The D5 refusal names no binding when the
-// undecided cell is a part of a binding's type rather than all of it (Holders names
-// a binding only by the cell its whole type is): `|x| select (x[0]$, 0) { (`J, _) =>
-// 1, _ => 2 }` and `|x| select (W(x), 0) { (W(`J), _) => 1, _ => 2 }` are refused
-// "tests a value whose type is not decided at this select ... annotate the
-// scrutinee's type where it is built", where the ruling asks to name the binding to
-// annotate (x). On main these were "unreachable arm"; main's D5 message for a part
-// still open at the select's end names through the same Holders. Found by review r16
-// (U-r1-1).
-// probes: ~/ptmp/cr29/scratch/r16-U/review-fix/p/idx1.gx, abs1.gx
-// (undecided-part-name-01)
-// 2026-11-05 claude: Review r16 (U-r1-1 part 2) found the same root through pattern
-// binds: after an exempt destructure decides x as ('p, 'q), a nested select in the
-// arm's body that tests one of those part cells by value is refused with the
-// nameless message, where the annotation that passes is on x: ((a, b), 0) => .., (c,
-// _) => select c { (1, d) => d, _ => 0 } (n01), (c@ (a, b), _) => select c { (1, d)
-// => .. } (n02), ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 } (n04). main
-// ran n01 (6) and n02 (0) and said unreachable arm for n04; the let-destructuring
-// analog n05 names a. Holders would have to reach a cell through the pattern binds
-// that took it apart. None is in the census. probes:
-// ~/ptmp/cr29/scratch/review-r16/U-r1-1/part2/p4/n01.gx, n02.gx, n04.gx, n05.gx;
-// p4.out
-// 2026-11-05 claude: Review r16 part 3 (U-r1-1): two more instances: nm1 (the t5
-// ladder over a cell that is part of y's type, y = x[0]$ or (1, 2), arms ((a, b),
-// 0), ((a, b), _), _), refused by the beside-shape rule with the message that names
-// no binding, where the annotation goes on x; and x8 (a part a pattern bind took
-// apart, ((a, b), _) => select (a, 0) { (1, _) => .. }), refused the same nameless
-// way, where main runs it and prints 2. probes:
-// ~/ptmp/cr29/scratch/review-r16/U-r1-1/r16U3/p/nm1.gx, x8.gx
-// 2026-11-09 claude: Holders::name_part (node/mod.rs) names, on the refusal path
-// only, the binding whose type is a cell the undecided cell came from, else holds it
-// inside (functions and select binds skipped, whole kind first, then earliest);
-// undecided_refusal says 'a part of 'x'. idx1, abs1, n01, n02, n04, nm1, x8 now name
-// x. Pins in select_undecided.rs (undecided_*_part_*) fail without it; census of
-// both repos unchanged. Three older pins that expected the nameless text now name c,
-// t, x (select.rs collection_parameter_element_pattern*, block_types.rs, types.rs
-// payload_bounds_refused_together).
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is or holds it.
 fn undecided_refusal(
