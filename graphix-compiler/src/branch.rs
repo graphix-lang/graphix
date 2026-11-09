@@ -953,29 +953,6 @@ impl<V: Clone> Layered<V> {
         }
     }
 
-    // XCR claude for claude: [bug/medium] A forked branch's merge sets this layer's aliases to
-    // the child's whenever they differ, so a later sibling's merge, whose table is the one
-    // it was forked with, takes back the joins an earlier sibling's compile made: the
-    // event's table then lags the runtime's (RtView::merge's Root arm replays the earlier
-    // sibling's SetAliases; a fork parent's ForkRt::merge has the same overwrite). In
-    // lang::modules::dynamic_module_runs_on_under_a_bottom_source::par a debug print here
-    // showed 036 -> 030 and 037 -> 031 dropped, and a read in the fork saw the event map
-    // 036 to itself while the ForkRt mapped it to 030. Reads still land through the store,
-    // so no wrong answer is known; ExecCtx::deliver and read_var resolve the event and the
-    // runtime each by its own table because of it. A merge that unions the child's table
-    // over this one (VarAliases::with_kept) would keep them one table. (var-alias-merge-01)
-    // 2026-11-06 claude: late_fire (node/mod.rs) is a second consumer of the lagging table
-    // that no store read covers: it resolves the id by the event's table,
-    // ctx.event.variables.var_of, and looks that key up in event.late, which is filled from
-    // Rt::late under the key ExecCtx::deliver resolved by the runtime's table. Where the
-    // event's table lags, a late fire to a val's reader is missed. Not a regression (the
-    // event's table was used there before); no witness built, it needs a dynamic module
-    // joined inside a forked sibling. The fix of the merge covers it too. (review r17 o2)
-    // 2026-11-09 claude: Both merges (Layered::merge, RtView::merge Fork arm) now union the
-    // child's table over the parent's with VarAliases::with_kept. Pin:
-    // branch::tests::sibling_merges_keep_every_join fails without it (second sibling drops
-    // the first's join). No end-to-end witness for late_fire built; the two-table resolution
-    // in ExecCtx::deliver/read_var is left as is. Needs a soak.
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
         self.aliases.absorb(&child.aliases);
