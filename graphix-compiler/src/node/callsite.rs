@@ -762,8 +762,21 @@ fn typecheck_arg<R: Rt>(
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ())?;
-    wrap!(n, n.typecheck0(ctx))?;
+    // Where the call did not open the formal, an argument holding an
+    // undecided cell takes what the arguments before it decided: its refusal
+    // names the annotation that settles it.
+    let open_arg = opening.is_none() && n.typ().has_free_in_data();
+    let refused = |ctx: &CompileCtx<R>, n: &Node<R>, e: anyhow::Error| match open_arg {
+        true => e.context(format_compact!(
+            "{}; the arguments before it decided its variable, so they must be \
+                 annotated as wide",
+            undecided_note(ctx, n)
+        )),
+        false => e,
+    };
+    Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ())
+        .map_err(|e| refused(ctx, n, e))?;
+    wrap!(n, n.typecheck0(ctx)).map_err(|e| refused(ctx, n, e))?;
     Ok(if opening.is_some() && n.typ().has_free_in_data() {
         ArgFit::Open
     } else if typ.contains(&ctx.env, n.typ())? {
@@ -1308,7 +1321,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
-// CR claude for eric: [bug/medium] D7 (b) closes order only for a variable no callback
+// XCR claude for claude: [bug/medium] D7 (b) closes order only for a variable no callback
 // holds: one a callback also holds is not widenable (round 5 D1: such a variable binds
 // as on main, the first argument deciding), so an undecided data argument there still
 // decides it by its place. Over `let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y`,
@@ -1329,6 +1342,13 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // 'c) -> string, x: {p: 'a, q: 'c}, y: 'a|), is still refused at v.name, as on main:
 // the callback is checked before any argument decides 'c. That order is this CR's
 // question. Probe ~/ptmp/cr29/scratch/r19-d7/c2k.gx.
+// 2026-11-09 claude: Eric ruled (2026-11-09): D7 follow-up 2 (a): where a callback
+// holds the variable the first argument decides (documented); the refusal names the
+// annotation (annotate the undecided argument).
+// 2026-11-09 claude: Ruling (a) built: first argument still decides where a callback
+// holds the variable; typecheck_arg's refusal of an open argument now names the
+// annotation. Pins that fail without it: functions.rs
+// callback_variable_undecided_last_refused; generics.md cases fence.
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument holding no undecided cell, the omitted defaults
 /// included, whatever the order. An argument that does not fit is probed

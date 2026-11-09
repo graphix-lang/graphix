@@ -2327,6 +2327,33 @@ run!(
     prints("[i64:1, i64:5]")
 );
 
+// A variable a callback also holds is decided by the first argument: an
+// undecided argument after it is refused naming the annotation, one before
+// it runs.
+run!(
+    callback_variable_undecided_first_runs,
+    r#"{ let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(str::parse("5"), 1, |v| 0) }"#,
+    prints("i64:1")
+);
+
+run!(
+    callback_variable_undecided_last_refused,
+    r#"{ let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, str::parse("5"), |v| 0) }"#,
+    refused("this argument is undecided at this call; annotate it");
+    FuseExpect::None
+);
+
+run!(
+    callback_variable_annotated_either_order,
+    r#"{
+  let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y;
+  let one: [i64, Error<`ParseError(string)>] = 1;
+  let p: [i64, Error<`ParseError(string)>] = str::parse("5");
+  f(one, p, |v| 0)
+}"#,
+    prints("i64:5")
+);
+
 run!(
     undecided_argument_takes_the_closed_join,
     r#"{ let s = "5"; let d = opt::or_default(str::parse(s)$, 0); d + 1 }"#,

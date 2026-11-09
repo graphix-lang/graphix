@@ -140,6 +140,19 @@ argument or omitted default whose type is still open (a `str::parse`, a
 `f(str::parse(s), 1)` over `|x: 'a, y: 'a|` is refused, "annotate it"
 (`'a` is `i64`, which holds no parse error): annotate the read.
 
+A variable a callback also holds does not widen: the first argument decides
+it, an open one included, so order decides between a value and a refusal.
+`f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v: 'a) -> i64|`
+runs (`'a` is the parse's Result, which holds the `1`), and `f(1,
+str::parse(s), |v| 0)` is refused, "annotate it": annotate the arguments
+before it as wide as this one, or put it first.
+
+```graphix,cases
+ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(str::parse("5"), 1, |v| 0)
+no "undecided at this call; annotate it" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, str::parse("5"), |v| 0)
+ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`ParseError(string)>] = 1; let p: [i64, Error<`ParseError(string)>] = str::parse("5"); f(one, p, |v| 0)
+```
+
 ## Abstract comparisons
 
 An abstract's `Eq` implementation bypasses representation checks for equality
