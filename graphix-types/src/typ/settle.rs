@@ -330,10 +330,27 @@ impl FnType {
         });
         let mut seen: LPooled<AHashSet<usize>> =
             tvs.values().map(|tv| tv.cell_addr()).collect();
-        let rtype_cell = rtype_cell.filter(|tv| seen.insert(tv.cell_addr()));
-        let under = positional.values().filter(|tv| seen.insert(tv.cell_addr()));
-        let named =
-            rtype_cell.into_iter().chain(under).map(|tv| (tv.name.clone(), tv.clone()));
+        let mut more: LPooled<Vec<TVar>> = LPooled::take();
+        more.extend(rtype_cell.filter(|tv| seen.insert(tv.cell_addr())).cloned());
+        more.extend(
+            positional.values().filter(|tv| seen.insert(tv.cell_addr())).cloned(),
+        );
+        // a cell only a bound of a bound names is the site's to settle too
+        let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+        todo.extend(tvs.values().chain(more.iter()).cloned());
+        let mut found: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        while let Some(tv) = todo.pop() {
+            for c in tv.cell_constraints().iter() {
+                position_cells(c, &mut found)
+            }
+            for (addr, tv) in found.drain() {
+                if seen.insert(addr) {
+                    todo.push(tv.clone());
+                    more.push(tv);
+                }
+            }
+        }
+        let named = more.drain(..).map(|tv| (tv.name.clone(), tv));
         let nodes = super::fntyp::sorted_tvars(tvs.drain().chain(named));
         let mut index: LPooled<AHashMap<usize, usize>> = LPooled::take();
         for (i, (_, tv)) in nodes.iter().enumerate() {

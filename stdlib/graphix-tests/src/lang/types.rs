@@ -7745,6 +7745,19 @@ run!(
     FuseExpect::None
 );
 
+// A call settles a variable only a bound of a bound names ('a4 here) as it
+// settles one a bound names: the instance holds no open cell of it.
+run!(
+    a_call_settles_a_variable_only_a_bound_of_a_bound_names,
+    r#"{
+  let f = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: ('a0, 'a1)| 7;
+  let g = 'a0: [Array<'a1>, Array<'a2>, null], 'a1: [Array<'a2>, Array<'a3>, null], 'a2: [Array<'a3>, Array<'a4>, null], 'a3: [Array<'a4>, null], 'a4: Number |x: ('a1, 'a0)| 8;
+  f(never()) + g(never())
+}"#,
+    is(Value::I64(15));
+    FuseExpect::None
+);
+
 // A written binding holds one instance of each function its value holds
 // once, wherever the value's type repeats it: a value of `mk(g)` is one
 // instance of `g` twice, as a `let` of it is; two reads are two.

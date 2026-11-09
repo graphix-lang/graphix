@@ -644,7 +644,10 @@ An image carries each cell's level and each definition's depth.
   `lang::functions::default_hidden_by_a_fn_type_types_the_instance`).
 - The terminal settle (`FnType::settle_terminal`, the check's drain)
   walks the LIVE ftype in dependency order, the cells its bindings hold
-  as positions included, and settles whatever remains. A cell still
+  as positions included and every cell a chain of bounds reaches from
+  them, however deep (pin `lang::types::
+  a_call_settles_a_variable_only_a_bound_of_a_bound_names`), and settles
+  whatever remains. A cell still
   unbound after the whole tc0 phase binds ⊥ (`TVar::settle_or_bottom`):
   nothing ever produced into it, and what bounds it (a trait, a
   predicate) has no witness, so a trait dispatch on it is a standing
