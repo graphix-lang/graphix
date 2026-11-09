@@ -2400,7 +2400,7 @@ impl Type {
                 tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // XCR claude for claude: [bug/low] Taking two instances of one definition as
+                // CR claude for claude: [bug/low] Taking two instances of one definition as
                 // one type when their parameters contain each other decides an open cell
                 // by equality where the expansion asks less, so the order of a function
                 // type's positions decides: `type L<'p> = fn(x: 'p) -> i64; let outer =
@@ -2445,24 +2445,34 @@ impl Type {
                 // definition now unfolds to finitely many applications, so the shortcut's
                 // recursive case may be droppable (compare by expansion, as the non-recursive
                 // case does); measure guicheck before and after.
-                // 2026-11-09 claude: Built on D24 (a): every typedef is regular now, so the
-                // same-definition shortcut no longer excepts a recursive definition; two
-                // instances of one definition with an open cell in their params are compared
-                // by their expansions, recursive or not, and the ContainsHist assumptions end
-                // the walk. ResolvedRef::is_recursive and its memo field are gone (no other
-                // user). The probes tpe_rec and tpe_nest now run as tpe_recz does. The code
-                // comment 'two instances of one definition whose parameters contain each
-                // other...' sits inside this block and is stale; it goes with the block. Pins
-                // that fail without it:
-                // lang::types::recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion
-                // and lang::types::typedef_over_a_recursive_typedef_agrees_with_the_expansion
-                // (their _z_first twins pass either way). Census of 2949 files unchanged;
-                // guicheck 40.05G before, 40.11G after (base-r19 40.50G). Needs a soak.
+                // 2026-11-09 claude: Review of lane 19f's 372ea6a60 (dropping the
+                // is_recursive escape, so two instances of a recursive definition with an
+                // open cell in their params compare by expansion): reverted. The verdicts
+                // were right (tpe_rec, tpe_nest and the mutual-recursion m1.gx now ran as
+                // their z-first twins do; census and guicheck unchanged), but the expansion
+                // walk over a recursive definition whose open cells stay open is exponential,
+                // and the shortcut was what kept main off it. Over type D<'a0..'a3> = [`N,
+                // `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2, 'a3>), `Y(D<'a1, 'a2, 'a3, 'a0>)]
+                // (24 applications), a plain call h(x) with h = |k: D<'q0..'q3>| 0 and x:
+                // D<Any, Any, Any, Any> checks in 0.18 s on base-r19 and hung past 20 s with
+                // the fix (permc4.gx, pb0.gx; the same through a second definition F at the
+                // call, permcx4.gx; 10 params ran out of 6 GB in 7 s, perm10.gx). Any on the
+                // other side leaves every cell open, so each permutation is its own
+                // application and nothing the walk proved is reused: ContainsHist::assuming
+                // forgets a pair once answered, expand_ref caches no expansion whose params
+                // hold a cell, and the probe memo keys by content identity, so it enumerates
+                // paths. Letting expand_ref cache open-cell expansions on probes only took
+                // pb0 from >20 s to 12.5 s. A fix needs that walk polynomial first (probe
+                // verdicts over open-cell applications memoized by application key, reused
+                // across siblings once their assumptions are answered), then this escape can
+                // go; pin it with permc4/pb0 timed in a unit count. The two-definition
+                // spelling hangs on main already (typedef-open-expansion-01). Probes:
+                // ~/ptmp/cr29/scratch/r19/19f/review-tpe/.
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                     && (!tr0.params.iter().chain(tr1.params.iter()).any(|p| p.has_free())
-                        || tr0.resolve_peek(env).is_none())
+                        || tr0.resolve_peek(env).is_none_or(|d| d.is_recursive(env)))
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
                     let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {
@@ -2480,6 +2490,21 @@ impl Type {
                         return tr0.hold_bounds_with(tr1, env, commit);
                     }
                 }
+                // CR claude for claude: [perf/high] The expansion walk over a recursive
+                // definition whose open cells stay open enumerates paths: each application is
+                // answered under ContainsHist::assuming and forgotten, expand_ref caches no
+                // expansion whose params hold a cell, and the probe memo keys by content
+                // identity, so a sibling meeting the same application walks it again. Over
+                // `type D<'a0, 'a1, 'a2, 'a3> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2,
+                // 'a3>), `Y(D<'a1, 'a2, 'a3, 'a0>)]` and an identical F, `let outer = |k:
+                // D<'q0, 'q1, 'q2, 'q3>, z: 'q0| z; let g: fn(k: F<Any, Any, Any, Any>, z: i64)
+                // -> i64 = outer` hangs on main 3cfcd2407 (killed at 30 s; three params take
+                // 0.5 s). The same-definition shortcut above keeps D against D off this walk,
+                // which is why typedef-param-equality-01's fix was reverted. A fix memoizes
+                // probe verdicts over open-cell applications by application key, reused
+                // across siblings once their assumptions are answered. probes:
+                // ~/ptmp/cr29/scratch/r19/19f/review-tpe/{permx4,permc4,pb0}.gx
+                // (typedef-open-expansion-01)
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
@@ -2928,6 +2953,15 @@ impl Type {
                     None => Self::set_covers_by_distribution(flags, env, hist, s, t),
                 }
             }
+            // CR claude for claude: [bug/low] A generic function checked against a written
+            // function type decides a cell at the first position that meets it and never
+            // widens it for a later one, so the order of the positions decides: `let f =
+            // |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f` is refused ("'y: i64"),
+            // while the same with k written first runs ('y := Any). A call widens such a
+            // variable whatever the order (callsite::Widening); this containment does not.
+            // Main 3cfcd2407 the same. probes:
+            // ~/ptmp/cr29/scratch/r19/19f/review-tpe/{ord1,ord1k,ord2,s7z,s7a,s7ak}.gx
+            // (fn-annotation-order-01)
             (Self::Fn(f0), Self::Fn(f1)) => {
                 let r = f0.contains_int(flags, env, hist, f1)?;
                 if r && commit {

@@ -240,12 +240,6 @@ reload's, is compared by what each means), `union` and
 `union_identical` (`setops.rs`: refs to one definition merge or compare
 by their params) and `contains`' arm for two instances of one
 definition whose params contain each other (one type, no expansion).
-Where an open cell stands in the params that arm does not hold:
-deciding the cell by the params' equality asks more than the expansion
-does, so the order of a function type's positions would decide. Two
-instances over an open cell are compared by their expansions, recursive
-definitions included: every definition is regular
-(`Env::typedef_shape`), so the `ContainsHist` assumptions end the walk.
 
 `ResolvedRef::def_key` is the params allocation of one `TypeDef`,
 which every cell filled from it shares. A type a module's interface
