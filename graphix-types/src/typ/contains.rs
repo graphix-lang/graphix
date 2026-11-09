@@ -1570,6 +1570,13 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
 // norm_key gives a Variant no key either. probes:
 // ~/ptmp/cr29/scratch/r19/19b/ceq/ (gen.py SHAPE N OUT, meas.sh BIN --expand
 // FILES)
+// 2026-11-09 claude: Review of the union part (1f4beecf8) holds: union 1000 /
+// 2000 / 4000 links 1.28 / 1.83 / 2.95G (base-r19 4.00 / 13.08); with
+// identical_linked restored to union_identical plus both link_equal walks the
+// deep_nesting union pin fails (9.1G over 9.0G); dropping the renamed clear, the
+// cell_writes check, or the link on Renamed each fails its unit pin. Census 2949
+// files no verdict or message change, regress 0, graphix-tests lib passes.
+// Typedef and variant chains remain as the note above says.
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
     match hist.identical.identical(t0, t1) {
