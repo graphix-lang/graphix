@@ -1130,6 +1130,25 @@ fn written_holder_chains_check_in_linear_time() {
     }
 }
 
+/// A chain of holders, each link reading the last beside a select over it,
+/// checks in time linear in its length: the arm's pattern, whose cell the
+/// scrutinee's DAG binds, is opened over its `Any` parts once per pair of
+/// shared nodes, where once per path takes 2^depth.
+#[test]
+#[cfg(target_os = "linux")]
+fn select_holder_chains_check_in_linear_time() {
+    const LINKS: usize = 40;
+    for link in ["{a: x, b: select x { v => v }}", "{a: x, b: select x { _ => x }, c: x}"]
+    {
+        let mut program = String::from("let y = (|z| z, 2);\nlet x = (|x| x, 1);\n");
+        for _ in 0..LINKS {
+            program.push_str(&format!("let x = {link};\n"));
+        }
+        program.push_str("0\n");
+        checks_within(&program, 4 * BILLION)
+    }
+}
+
 /// A pair DAG named through a typedef builds in time linear in its depth:
 /// a call's argument checked against its formal compares and welds two
 /// equal DAGs, in different allocations, once per pair of nodes.

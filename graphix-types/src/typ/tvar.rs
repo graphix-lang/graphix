@@ -41,6 +41,7 @@ thread_local! {
         const { std::cell::Cell::new(0) };
     pub(super) static SPLIT_STEPS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    static ANY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static CHAIN_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -205,6 +206,14 @@ pub(super) fn bare_path(addr: usize, t: &Type, toward: Toward) -> LPooled<Vec<TV
     let mut walk = BarePath { addr, reaches: LPooled::take(), on: LPooled::take() };
     walk.go(t, toward);
     walk.on
+}
+
+/// What [`Type::open_over_any`] has done: the node pairs it walked whole
+/// since it last bound a cell, and the cells it bound.
+#[derive(Default)]
+struct AnyWalk {
+    walked: NodePairs,
+    binds: usize,
 }
 
 struct BarePath {
@@ -3685,51 +3694,86 @@ impl Type {
     /// to `Any`: `Any ⊇ 'a` binds nothing, but a pattern bind receives
     /// the scrutinee's value, whatever the arm body does with it.
     fn open_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
+        self.open_over_any_int(env, pred, &mut AnyWalk::default())
+    }
+
+    /// [`Self::open_over_any`], each pair of shared nodes walked once
+    /// while no cell is bound: a pair walked whole under the cells as they
+    /// stand binds nothing when met again.
+    fn open_over_any_int(
+        &self,
+        env: &Env,
+        pred: &Type,
+        walk: &mut AnyWalk,
+    ) -> Result<()> {
         ensure_sufficient(|| {
-            if let Type::TVar(tv) = pred {
-                return match tv.binding() {
-                    Some(b) => self.open_over_any(env, &b),
-                    None if self.with_deref(|t| matches!(t, Some(Type::Any))) => {
-                        pred.contains(env, &Type::Any).map(|_| ())
-                    }
-                    None => Ok(()),
-                };
+            let key = walk.walked.key(self, pred);
+            if key.is_some_and(|k| walk.walked.contains(k)) {
+                return Ok(());
             }
-            let Some(p) = pred.deref_cloned() else { return Ok(()) };
-            if let Type::Set(qs) = &p {
-                return qs.iter().try_for_each(|q| self.open_over_any(env, q));
+            let binds = walk.binds;
+            self.open_over_any_inner(env, pred, walk)?;
+            if let Some(k) = key.filter(|_| walk.binds == binds) {
+                walk.walked.insert(k, self, pred)
             }
-            let Some(t) = self.shape_under(env, &p)? else { return Ok(()) };
-            let each = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                for (t, p) in parts {
-                    t.open_over_any(env, p)?
-                }
-                Ok(())
-            };
-            match (&t, &p) {
-                (Type::Set(_), p) => {
-                    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-                    crate::expr::union_members(env, &t, &mut members)?;
-                    for m in members.iter() {
-                        if p.could_match(env, m)? {
-                            m.open_over_any(env, p)?
-                        }
-                    }
+            Ok(())
+        })
+    }
+
+    fn open_over_any_inner(
+        &self,
+        env: &Env,
+        pred: &Type,
+        walk: &mut AnyWalk,
+    ) -> Result<()> {
+        #[cfg(test)]
+        ANY_STEPS.with(|n| n.set(n.get() + 1));
+        if let Type::TVar(tv) = pred {
+            return match tv.binding() {
+                Some(b) => self.open_over_any_int(env, &b, walk),
+                None if self.with_deref(|t| matches!(t, Some(Type::Any))) => {
+                    pred.contains(env, &Type::Any)?;
+                    walk.binds += 1;
+                    walk.walked.clear();
                     Ok(())
                 }
-                (Type::Tuple(ts), Type::Tuple(ps))
-                | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
-                    each(&mut ts.iter().zip(ps.iter()))
-                }
-                (Type::Struct(fs), Type::Struct(pfs)) => each(
-                    &mut fs.iter().zip(pfs.iter()).map(|((_, t, _), (_, p, _))| (t, p)),
-                ),
-                (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
-                    e.open_over_any(env, pe)
-                }
-                _ => Ok(()),
+                None => Ok(()),
+            };
+        }
+        let Some(p) = pred.deref_cloned() else { return Ok(()) };
+        if let Type::Set(qs) = &p {
+            return qs.iter().try_for_each(|q| self.open_over_any_int(env, q, walk));
+        }
+        let Some(t) = self.shape_under(env, &p)? else { return Ok(()) };
+        let mut each = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+            for (t, p) in parts {
+                t.open_over_any_int(env, p, walk)?
             }
-        })
+            Ok(())
+        };
+        match (&t, &p) {
+            (Type::Set(_), p) => {
+                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                crate::expr::union_members(env, &t, &mut members)?;
+                for m in members.iter() {
+                    if p.could_match(env, m)? {
+                        m.open_over_any_int(env, p, walk)?
+                    }
+                }
+                Ok(())
+            }
+            (Type::Tuple(ts), Type::Tuple(ps))
+            | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
+                each(&mut ts.iter().zip(ps.iter()))
+            }
+            (Type::Struct(fs), Type::Struct(pfs)) => {
+                each(&mut fs.iter().zip(pfs.iter()).map(|((_, t, _), (_, p, _))| (t, p)))
+            }
+            (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
+                e.open_over_any_int(env, pe, walk)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Whether a union of `self` stands where `pred` has a constructor
@@ -4480,6 +4524,24 @@ mod tests {
         }
         let steps = CHAIN_STEPS.with(|s| s.get());
         assert!(steps <= 2 * n, "{steps} links walked for {n} copies");
+    }
+
+    /// Opening a predicate's cells over the `Any` parts of a pair DAG
+    /// walks each pair of shared nodes once, binding the one cell it holds.
+    #[test]
+    fn opening_cells_over_any_takes_each_pair_once() {
+        let n = 20;
+        let pair = |t: Type| Type::Tuple(Arc::from_iter([t.clone(), t]));
+        let c = TVar::empty_named(literal!("c"));
+        let (mut t, mut pred) = (Type::Any, Type::TVar(c.clone()));
+        for _ in 0..n {
+            (t, pred) = (pair(t), pair(pred));
+        }
+        ANY_STEPS.with(|s| s.set(0));
+        t.open_over_any(&Env::default(), &pred).unwrap();
+        let steps = ANY_STEPS.with(|s| s.get());
+        assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
+        assert!(matches!(c.binding(), Some(Type::Any)));
     }
 
     #[test]

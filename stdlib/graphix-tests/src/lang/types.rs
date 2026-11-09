@@ -5894,10 +5894,11 @@ fn part_node(t: &graphix_compiler::typ::Type, name: &str) -> Option<usize> {
 }
 
 /// A chain of holders, each reading the last twice (in arrays, lists, a
-/// map's values, a call's argument, a block, a select's arm, a lambda's body
-/// or a struct update), holds one copy of its last link's type: the chain's type grows by
-/// a few nodes a link, where a copy at each read would double it, and two
-/// parts a link reads the last through are one type.
+/// map's values, a call's argument, a block, a select's arm or its bind, a
+/// lambda's body or a struct update), holds one copy of its last link's
+/// type: the chain's type grows by a few nodes a link, where a copy at each
+/// read would double it, and two parts a link reads the last through are
+/// one type.
 #[tokio::test(flavor = "current_thread")]
 async fn holder_chain_stays_a_dag() -> Result<()> {
     use arcstr::ArcStr;
@@ -5914,6 +5915,7 @@ async fn holder_chain_stays_a_dag() -> Result<()> {
         ("call pairs", PAIRS, "(id(x), id(x), |w| w)", Some(["0", "1"])),
         ("blocks", PAIRS, "{a: x, b: {let t = x; t}}", Some(["a", "b"])),
         ("selects", PAIRS, "{a: x, b: select 1 { _ => x }}", None),
+        ("select binds", PAIRS, "{a: x, b: select x { v => v }}", Some(["a", "b"])),
         ("lambdas", PAIRS, "{a: x, g: || x}", None),
         ("updates", RECORD, "{n: 1, a: x, b: {x with n: 2}}", None),
         ("update pairs", RECORD, "{n: 1, a: {x with n: 1}, b: {x with n: 2}}", None),
