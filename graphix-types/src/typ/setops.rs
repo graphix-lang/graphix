@@ -1614,7 +1614,7 @@ pub(super) fn memo_on() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::{
         PrintFlag,
         env::Env,
@@ -2421,7 +2421,7 @@ mod tests {
     }
 
     /// `(i64, .., i64, f)`, enough leaves first that the walk keys `f`.
-    fn past_eager(f: &Type) -> Type {
+    pub(crate) fn past_eager(f: &Type) -> Type {
         let leaves = (0..NodePairs::EAGER).map(|_| Type::Primitive(Typ::I64.into()));
         Type::Tuple(Arc::from_iter(leaves.chain([f.clone()])))
     }

@@ -4016,6 +4016,7 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::typ::setops::tests::past_eager;
     use arcstr::literal;
 
     // A type expanded through a chain of parametric typedefs, a DAG that
@@ -4108,10 +4109,6 @@ mod tests {
             cells[v].clone()
         };
         let (f0, f1) = (f("a"), f("b"));
-        let past_eager = |f: &Type| {
-            let leaves = (0..NodePairs::EAGER).map(|_| Type::Primitive(Typ::I64.into()));
-            Type::Tuple(Arc::from_iter(leaves.chain([f.clone()])))
-        };
         let (x, y) = (past_eager(&f0), past_eager(&f1));
         let mut hist = ContainsHist::new();
         assert!(identical_linked(&mut hist, &x, &y, false));
