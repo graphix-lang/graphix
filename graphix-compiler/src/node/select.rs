@@ -826,29 +826,6 @@ impl Reach {
                     }
                 }));
             }
-            // XCR claude for claude: [bug/low] A slice arm whose lengths earlier
-            // arms cover is found dead only where the slice is the whole pattern:
-            // inside a tuple it is not, so `|x: Array<i64>| select (x, 0) { ([a,
-            // ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }` runs (5 for [5,
-            // 1]) with arm 2 dead, where the same arms over x alone are refused
-            // "every array length this slice pattern can match is covered by
-            // earlier arms". Same on main (base-r16). Found by review r16
-            // (U-r2-1). probes: ~/ptmp/cr29/scratch/review-r16/U-r2-1/q/a12v.gx,
-            // a12t.gx, a12.gx (slice-ladder-nested-01)
-            // 2026-11-09 claude: Reach keeps a NestedLadder per (scrutinee
-            // member, slice path) inside tuples, structs and variants
-            // (Reach::nested_slices, inner_slices): an unguarded arm whose one
-            // refutable part is one slice with name/_ elements claims its lengths
-            // there, an arm whose slice at a claimed path matches only claimed
-            // lengths is dead with the same message, and a complete nested ladder
-            // covers its member. Pins that fail without it:
-            // lang::select::{nested_slice_dead_arm_refused,
-            // nested_slice_dead_arm_unannotated_refused,
-            // nested_slice_ladders_per_position, nested_slice_ladder_exhaustive,
-            // nested_slice_ladder_dead_wildcard_refused};
-            // nested_slice_refutable_sibling_live is the live twin. Not covered:
-            // a slice under a union position ([Array<i64>, null]) and products of
-            // two slice positions stay conservative (no ladder).
             if let Some((k, exact)) = sp.array_len_range() {
                 let (mut any, mut all) = (false, true);
                 for l in self.ladders.iter() {
