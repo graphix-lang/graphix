@@ -1185,6 +1185,16 @@ run!(
 );
 
 run!(
+    an_impl_method_as_a_lambda_of_a_select_at_two_types,
+    prints("[i64:2, \"s\"]"),
+    "/test.gx" => r#"
+        trait Id { val id: fn(self, x: 'a) -> 'a };
+        impl Id for i64 { let id = |s, x| select true { true => x, false => x } };
+        let result = (Id::id(1, 2), Id::id(1, "s"))
+    "#
+);
+
+run!(
     an_impl_methods_quantified_annotation_over_a_makers_result_is_refused,
     refused("its value is no lambda, so no call copies its types"),
     "/test.gx" => r#"

@@ -1860,6 +1860,14 @@ run!(
     "/test/m.gx" => "let f = select true { true => |x| x, false => |x| x }"
 );
 
+run!(
+    val_over_a_lambda_of_a_select_at_two_types,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let f = |x| select true { true => x, false => x }"
+);
+
 // A val whose type is no function, implemented by no literal of lambdas,
 // is told to be one.
 run!(
