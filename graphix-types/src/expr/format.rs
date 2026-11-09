@@ -526,6 +526,16 @@ mod tests {
         assert!(out.contains("'b: Int"), "{}", *out);
     }
 
+    // and one only the bound of a bound names
+    #[test]
+    fn a_bound_of_a_bound_quantifier_keeps_its_bound() {
+        let src =
+            "val f: fn<'a: [i64, string], 'c: ['a, null], 'b: ['c, `X]>(x: 'b) -> 'b";
+        let out =
+            format_source(SourceKind::Interface, src, &FormatConfig::default()).unwrap();
+        assert!(out.contains("'a: [i64, string]"), "{}", *out);
+    }
+
     #[test]
     fn a_spliced_string_constant_stays_spliced() {
         for src in [

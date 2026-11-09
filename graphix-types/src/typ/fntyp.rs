@@ -534,6 +534,25 @@ pub fn seed_conjuncts<'a>(
     }
 }
 
+/// `known` and, until nothing new arrives, the cells the bounds of its
+/// cells name.
+fn close_through_bounds(known: &mut AHashMap<ArcStr, TVar>, seen: &mut TVarsSeen) {
+    let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+    todo.extend(known.values().cloned());
+    let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    while let Some(tv) = todo.pop() {
+        for tc in tv.cell_constraints() {
+            tc.collect_tvars_seen(&mut found, seen);
+        }
+        for (name, tv) in found.drain() {
+            if !known.contains_key(&name) {
+                known.insert(name, tv.clone());
+                todo.push(tv);
+            }
+        }
+    }
+}
+
 /// The variables `t` names, in order, a signature's conjuncts included.
 fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
     fn walk(t: &Type, out: &mut Vec<ArcStr>) {
@@ -602,22 +621,9 @@ impl FnType {
     /// cells the bounds of the cells found name: a quantifier only the
     /// bound of a bound names is reached too.
     pub fn collect_tvars_through_bounds(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        let mut seen = super::TVarsSeen::take();
+        let mut seen = TVarsSeen::take();
         self.collect_tvars_seen(known, &mut seen);
-        let mut todo: LPooled<Vec<TVar>> = LPooled::take();
-        todo.extend(known.values().cloned());
-        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        while let Some(tv) = todo.pop() {
-            for tc in tv.cell_constraints() {
-                tc.collect_tvars_seen(&mut found, &mut seen);
-            }
-            for (name, tv) in found.drain() {
-                if !known.contains_key(&name) {
-                    known.insert(name, tv.clone());
-                    todo.push(tv);
-                }
-            }
-        }
+        close_through_bounds(known, &mut seen)
     }
 
     /// `(tvar, conjunct)` for every conjunct of every declared quantifier,
@@ -635,7 +641,7 @@ impl FnType {
         let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut reached);
         if !self.quantifiers.iter().all(|q| reached.contains_key(q)) {
-            self.collect_tvars_through_bounds(&mut reached);
+            close_through_bounds(&mut reached, &mut TVarsSeen::take());
         }
         self.view_of(&mut reached, &mut view);
         view
@@ -1781,6 +1787,18 @@ impl FnType {
         Ok(())
     }
 
+    // CR claude for claude: [bug/medium] A val whose quantifier occurs only inside
+    // another's bound accepts an implementation that bounds it differently, and the
+    // build refuses each call the signature admits and the implementation does not:
+    // `val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;` over `let f = 'a:
+    // [i64, f64], 'b: ['a, `X] |x: 'b| -> 'b x` passes --check with `m::f("s")` in
+    // main, then the run fails "an instance at fn(x: string) -> string of a
+    // definition typed fn<'a: [i64, f64], ..". The same with 'a written at a
+    // position (`(x: 'a) -> 'a`) is refused ("the implementation requires 'a: [i64,
+    // f64], which the signature does not declare"); a chain of three ('c: ['a,
+    // null], 'b: ['c, `X]) is accepted the same way. On base-r19 and lane 19c alike.
+    // probes: ~/ptmp/cr29/scratch/r19/19c/rv/{p10,p7,p11}/main.gx
+    // (iface-bound-only-01)
     /// The bounds of a signature against its implementation's, once the
     /// whole signature has paired its variables ([`SigPairs::finish`]).
     pub(super) fn sig_bounds(
