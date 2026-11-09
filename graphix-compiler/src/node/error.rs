@@ -634,7 +634,7 @@ impl Strip {
                 }
             })?
         }
-        // CR claude for claude: [perf/medium] This test flattens the operand with
+        // XCR claude for claude: [perf/medium] This test flattens the operand with
         // Type::dispatch_members, which expands a name once per path to it: over a DAG of
         // names (L_i = [L_i-1, M_i-1], M_i = [M_i-1, L_i-1]) that is 2^n members. `x?` over
         // `[<1100 named tags>, L_n]` costs, --no-cache --check, instructions, on main
@@ -646,8 +646,12 @@ impl Strip {
         // ~/ptmp/cr29/scratch/r16-U6/wq20.gx, wq24.gx, dagq600.gx
         // (strip-any-members-dag-01)
         // what `?` raises is the operand's error part, which Any does not say
+        // 2026-11-09 claude: The ? Any test flattens with Type::distinct_members, each name
+        // expanded once. Pin: lang::types::strip_any_over_name_dag (2^40-path DAG of names)
+        // hangs on the old dispatch_members call and passes now. Other dispatch_members
+        // callers (traits.rs, contains.rs) are untouched.
         if op == '?'
-            && Type::dispatch_members(&ctx.env, typ)?
+            && Type::distinct_members(&ctx.env, typ)?
                 .iter()
                 .any(|t| matches!(t, Type::Any))
         {

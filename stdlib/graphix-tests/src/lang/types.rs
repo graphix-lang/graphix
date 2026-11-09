@@ -221,6 +221,99 @@ const DEEP_ALIAS_CHAIN: &str = r#"
 
 run!(deep_alias_chain, DEEP_ALIAS_CHAIN, is(Value::I64(1)));
 
+// `?` over a DAG of named unions (2^40 paths) checks in time linear in the names.
+const STRIP_DAG: &str = r#"
+{
+  type L0 = [`A, null, Error<`E>];
+  type M0 = [`B, null];
+  type L1 = [L0, M0];
+  type M1 = [M0, L0];
+  type L2 = [L1, M1];
+  type M2 = [M1, L1];
+  type L3 = [L2, M2];
+  type M3 = [M2, L2];
+  type L4 = [L3, M3];
+  type M4 = [M3, L3];
+  type L5 = [L4, M4];
+  type M5 = [M4, L4];
+  type L6 = [L5, M5];
+  type M6 = [M5, L5];
+  type L7 = [L6, M6];
+  type M7 = [M6, L6];
+  type L8 = [L7, M7];
+  type M8 = [M7, L7];
+  type L9 = [L8, M8];
+  type M9 = [M8, L8];
+  type L10 = [L9, M9];
+  type M10 = [M9, L9];
+  type L11 = [L10, M10];
+  type M11 = [M10, L10];
+  type L12 = [L11, M11];
+  type M12 = [M11, L11];
+  type L13 = [L12, M12];
+  type M13 = [M12, L12];
+  type L14 = [L13, M13];
+  type M14 = [M13, L13];
+  type L15 = [L14, M14];
+  type M15 = [M14, L14];
+  type L16 = [L15, M15];
+  type M16 = [M15, L15];
+  type L17 = [L16, M16];
+  type M17 = [M16, L16];
+  type L18 = [L17, M17];
+  type M18 = [M17, L17];
+  type L19 = [L18, M18];
+  type M19 = [M18, L18];
+  type L20 = [L19, M19];
+  type M20 = [M19, L19];
+  type L21 = [L20, M20];
+  type M21 = [M20, L20];
+  type L22 = [L21, M21];
+  type M22 = [M21, L21];
+  type L23 = [L22, M22];
+  type M23 = [M22, L22];
+  type L24 = [L23, M23];
+  type M24 = [M23, L23];
+  type L25 = [L24, M24];
+  type M25 = [M24, L24];
+  type L26 = [L25, M25];
+  type M26 = [M25, L25];
+  type L27 = [L26, M26];
+  type M27 = [M26, L26];
+  type L28 = [L27, M27];
+  type M28 = [M27, L27];
+  type L29 = [L28, M28];
+  type M29 = [M28, L28];
+  type L30 = [L29, M29];
+  type M30 = [M29, L29];
+  type L31 = [L30, M30];
+  type M31 = [M30, L30];
+  type L32 = [L31, M31];
+  type M32 = [M31, L31];
+  type L33 = [L32, M32];
+  type M33 = [M32, L32];
+  type L34 = [L33, M33];
+  type M34 = [M33, L33];
+  type L35 = [L34, M34];
+  type M35 = [M34, L34];
+  type L36 = [L35, M35];
+  type M36 = [M35, L35];
+  type L37 = [L36, M36];
+  type M37 = [M36, L36];
+  type L38 = [L37, M37];
+  type M38 = [M37, L37];
+  type L39 = [L38, M38];
+  type M39 = [M38, L38];
+  type L40 = [L39, M39];
+  type M40 = [M39, L39];
+  let x: L40 = `A;
+  let y = x?;
+  y
+}
+"#;
+
+run!(strip_any_over_name_dag, STRIP_DAG, is(Value::String("A".into())); FuseExpect::Jit);
+
 // A cyclic typedef is a compile error, not a hang.
 const CYCLIC_ALIAS: &str = r#"
 {
