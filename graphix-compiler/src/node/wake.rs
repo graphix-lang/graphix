@@ -440,26 +440,6 @@ impl TrackedFires {
         }
     }
 
-    // XCR claude for claude: [risk/low] Only a select's arm bodies take a late fire they
-    // slept through: a guard's reader has the select's own boundary, which tells no arm
-    // apart, and the seq machine, a collection over a bottom source and a call over a bottom
-    // function never call observe_late, so a late fire to a reader they hold asleep is lost
-    // at the wake as it was for select arms before late-asleep-01. Unprobed. (late-asleep-02)
-    // 2026-11-09 claude: Each holder now records a late fire to a reader it keeps asleep
-    // (TrackedFires::observe_late, now a holds(i, b) predicate): a guard the chain does not
-    // reach (each guard is compiled in a Prune boundary of its own; its arm's pattern binds
-    // are delivered inside it, so a guard reading its bind is not passed by its own arm's
-    // delivery and schedules no extra cycle), a call whose function is bottom
-    // (Absent::observe, the instance body's boundary) and a collection whose source is bottom
-    // (observe_paused, the slots' instance bodies). A seq step is left as is: its entry
-    // samples what it reads and issues each call as a fresh frame, so a fire missed while it
-    // waited changes nothing at entry (with the machine's step catch-up delivery turned off,
-    // all 16443 graphix-tests lib tests still pass). Pins that fail without the fix:
-    // lang::delivery::{a_late_fire_reaches_a_sleeping_guard_at_its_wake,
-    // a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return,
-    // a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return}, and
-    // lang::prune::a_guard_reading_its_bind_is_not_passed_by_its_arm for the bind delivery
-    // (634 vs 629 walks without it). Needs a soak.
     /// Record each late fire ([`crate::Event::late`]) to a reader in a
     /// boundary `holds(i, b)` says arm `i` holds: the walk passed the arm
     /// when the fire was made, so the arm owes it if it does not run this
