@@ -3410,6 +3410,15 @@ impl Type {
                 distributing = Some(j);
             }
         }
+        // CR claude for claude: [perf/low] Each distribution normalizes its pool (and
+        // place_members its residue) in a pass of its own, so a contains walk over a DAG
+        // of named error unions renormalizes the same shared parts once per question:
+        // cm4.gx (four `Un as u` arms over T0..T3 = [Error<Ti+1>, Error<Ti+2>, `Ai]) takes
+        // 26.7G instructions --no-cache --check on lane 19b after matching-type-merge-01,
+        // gdb samples at 2-4 s in matching_type -> contains -> set_commit ->
+        // set_covers_by_distribution_inner -> normalize. A pass memo shared by one walk's
+        // normalizations would take each shared part once. probe:
+        // ~/ptmp/cr29/scratch/r19/19b/mtm/cm4.gx (contains-normalize-repeat-01)
         let pool = distributing.map(|j| {
             Type::Set(Arc::from_iter(cands.iter().map(|c| c[j].clone()))).normalize()
         });

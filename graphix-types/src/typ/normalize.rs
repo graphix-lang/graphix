@@ -31,6 +31,7 @@ pub(super) struct NormCx {
     memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
     /// The live cells the pass's collapses paired.
     welds: Welds,
+    flat: FlatCx,
 }
 
 #[doc(hidden)]
@@ -38,7 +39,35 @@ pub type NormKey = (Discriminant<Type>, usize, usize);
 
 impl NormCx {
     pub(super) fn take() -> Self {
-        Self { cells: LPooled::take(), memo: LPooled::take(), welds: Welds::new() }
+        Self {
+            cells: LPooled::take(),
+            memo: LPooled::take(),
+            welds: Welds::new(),
+            flat: FlatCx::default(),
+        }
+    }
+}
+
+/// A flattening's (or a normalize pass's) memo of the nested unions its
+/// merges compare, keyed by the address of their members, each entry
+/// pinning its key: a union shared by many payloads is flattened once.
+#[derive(Default)]
+struct FlatCx {
+    flat: Option<LPooled<AHashMap<usize, (Arc<[Type]>, Type)>>>,
+    flattened: usize,
+}
+
+impl FlatCx {
+    fn flat(&mut self, t: &Type) -> Type {
+        let Type::Set(s) = t else { return t.clone() };
+        let key = (**s).as_ptr() as usize;
+        if let Some((_, f)) = self.flat.as_ref().and_then(|m| m.get(&key)) {
+            return f.clone();
+        }
+        self.flattened += 1;
+        let f = Type::flatten_set_with(s.iter().cloned(), self);
+        self.flat.get_or_insert_with(LPooled::take).insert(key, (s.clone(), f.clone()));
+        f
     }
 }
 
@@ -145,7 +174,12 @@ struct Kept {
 
 impl Kept {
     /// Take out the earliest kept member `t` merges with, and the merge.
-    fn merge_with(&mut self, t: &Type, welds: &mut Welds) -> Option<Type> {
+    fn merge_with(
+        &mut self,
+        t: &Type,
+        cx: &mut FlatCx,
+        welds: &mut Welds,
+    ) -> Option<Type> {
         let key = MergeKey::of(t);
         let keyed: &[usize] = match &key {
             Some(k) => self.keyed.get(k).map(|v| &v[..]).unwrap_or(&[]),
@@ -169,7 +203,7 @@ impl Kept {
         let (j, m, mut met) = candidates.iter().find_map(|&j| {
             let mut met = Welds::new();
             let kept = self.members[j].as_ref()?;
-            t.merge(kept, &mut met).map(|m| (j, m, met))
+            t.merge(kept, cx, &mut met).map(|m| (j, m, met))
         })?;
         welds.extend(met.drain(..));
         let kept = self.members[j].take().expect("live");
@@ -198,7 +232,11 @@ impl Kept {
 
 impl Type {
     pub(crate) fn flatten_set(set: impl IntoIterator<Item = Self>) -> Self {
-        Self::flatten_set_tracked(set, &mut Welds::new()).0
+        Self::flatten_set_with(set, &mut FlatCx::default())
+    }
+
+    fn flatten_set_with(set: impl IntoIterator<Item = Self>, cx: &mut FlatCx) -> Self {
+        Self::flatten_set_tracked(set, cx, &mut Welds::new()).0
     }
 
     /// [`Self::flatten_set`] reporting whether it changed anything
@@ -207,6 +245,7 @@ impl Type {
     /// The live cells each collapse pairs go on `welds`.
     fn flatten_set_tracked(
         set: impl IntoIterator<Item = Self>,
+        cx: &mut FlatCx,
         welds: &mut Welds,
     ) -> (Self, bool) {
         let mut leaves: LPooled<Vec<Self>> = LPooled::take();
@@ -259,7 +298,7 @@ impl Type {
             // `acc` is merge-saturated, so only the incoming element (or
             // its merge result) can enable a new merge.
             let mut incoming = t;
-            while let Some(m) = acc.merge_with(&incoming, welds) {
+            while let Some(m) = acc.merge_with(&incoming, cx, welds) {
                 changed = true;
                 incoming = m;
             }
@@ -429,8 +468,11 @@ impl Type {
                         None => members.push(t.clone()),
                     }
                 }
-                let (flat, flat_changed) =
-                    Self::flatten_set_tracked(members.drain(..), &mut cx.welds);
+                let (flat, flat_changed) = Self::flatten_set_tracked(
+                    members.drain(..),
+                    &mut cx.flat,
+                    &mut cx.welds,
+                );
                 (members_changed || flat_changed).then_some(flat)
             }
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
@@ -444,20 +486,16 @@ impl Type {
 
     /// The one member `self` and `t` merge into; the live cells a
     /// collapse pairs go on `welds`, which a `None` leaves to be dropped.
-    fn merge(&self, t: &Self, welds: &mut Welds) -> Option<Self> {
-        ensure_sufficient(|| self.merge_inner(t, welds))
+    fn merge(&self, t: &Self, cx: &mut FlatCx, welds: &mut Welds) -> Option<Self> {
+        ensure_sufficient(|| self.merge_inner(t, cx, welds))
     }
 
-    fn merge_inner(&self, t: &Self, welds: &mut Welds) -> Option<Self> {
+    fn merge_inner(&self, t: &Self, cx: &mut FlatCx, welds: &mut Welds) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
-        fn flat_eq(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
+        fn flat_eq(t0: &Type, t1: &Type, cx: &mut FlatCx, welds: &mut Welds) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
-                    let f = |t: &Type| match t {
-                        Type::Set(s) => Type::flatten_set(s.iter().cloned()),
-                        t => t.clone(),
-                    };
-                    union_collapses(&f(t0), &f(t1), welds)
+                    union_collapses(&cx.flat(t0), &cx.flat(t1), welds)
                 }
                 (t0, t1) => union_collapses(t0, t1, welds),
             }
@@ -468,18 +506,19 @@ impl Type {
             t0: impl IntoIterator<Item = &'a T>,
             t1: impl IntoIterator<Item = &'a T>,
             typ: impl Fn(&T) -> &Type,
+            cx: &mut FlatCx,
             welds: &mut Welds,
         ) -> Option<Option<(usize, Type)>> {
             let mut differing = None;
             for (i, (a, b)) in t0.into_iter().zip(t1).enumerate() {
                 let (a, b) = (typ(a), typ(b));
-                if flat_eq(a, b, welds) {
+                if flat_eq(a, b, cx, welds) {
                     continue;
                 }
                 if differing.is_some() {
                     return None;
                 }
-                differing = Some((i, a.merge(b, welds)?));
+                differing = Some((i, a.merge(b, cx, welds)?));
             }
             Some(differing)
         }
@@ -487,12 +526,12 @@ impl Type {
         if let Type::App(c, a) = self
             && let Some(filled) = Type::app_filled(c, a)
         {
-            return filled.merge(t, welds);
+            return filled.merge(t, cx, welds);
         }
         if let Type::App(c, a) = t
             && let Some(filled) = Type::app_filled(c, a)
         {
-            return self.merge(&filled, welds);
+            return self.merge(&filled, cx, welds);
         }
         match (self, t) {
             (Type::Ref(_), Type::Ref(_)) => {
@@ -534,14 +573,14 @@ impl Type {
                 }
             }
             (Type::Array(t0), Type::Array(t1)) => {
-                if flat_eq(t0, t1, welds) {
+                if flat_eq(t0, t1, cx, welds) {
                     Some(Type::Array(t0.clone()))
                 } else {
                     None
                 }
             }
             (Type::List(t0), Type::List(t1)) => {
-                if flat_eq(t0, t1, welds) {
+                if flat_eq(t0, t1, cx, welds) {
                     Some(Type::List(t0.clone()))
                 } else {
                     None
@@ -556,8 +595,8 @@ impl Type {
                 }
             }
             (Type::Map(m0), Type::Map(m1)) => {
-                if flat_eq(&m0.key, &m1.key, welds)
-                    && flat_eq(&m0.value, &m1.value, welds)
+                if flat_eq(&m0.key, &m1.key, cx, welds)
+                    && flat_eq(&m0.value, &m1.value, cx, welds)
                 {
                     Some(Type::Map(m0.clone()))
                 } else {
@@ -565,7 +604,7 @@ impl Type {
                 }
             }
             (Type::Error(t0), Type::Error(t1)) => {
-                if flat_eq(t0, t1, welds) {
+                if flat_eq(t0, t1, cx, welds) {
                     Some(Type::Error(t0.clone()))
                 } else {
                     None
@@ -574,11 +613,11 @@ impl Type {
             (
                 Type::ByRef(Mutability::Shared, t0),
                 Type::ByRef(Mutability::Shared, t1),
-            ) => {
-                t0.merge(t1, welds).map(|t| Type::ByRef(Mutability::Shared, Arc::new(t)))
-            }
+            ) => t0
+                .merge(t1, cx, welds)
+                .map(|t| Type::ByRef(Mutability::Shared, Arc::new(t))),
             (Type::ByRef(m0, t0), Type::ByRef(m1, t1)) => {
-                if m0 == m1 && flat_eq(t0, t1, welds) {
+                if m0 == m1 && flat_eq(t0, t1, cx, welds) {
                     Some(Type::ByRef(*m0, t0.clone()))
                 } else {
                     None
@@ -587,6 +626,7 @@ impl Type {
             (Type::Set(s0), Type::Set(s1)) => Some(
                 Self::flatten_set_tracked(
                     s0.iter().cloned().chain(s1.iter().cloned()),
+                    cx,
                     welds,
                 )
                 .0,
@@ -594,12 +634,13 @@ impl Type {
             (Type::Set(s), t) | (t, Type::Set(s)) => Some(
                 Self::flatten_set_tracked(
                     s.iter().cloned().chain(iter::once(t.clone())),
+                    cx,
                     welds,
                 )
                 .0,
             ),
             (Type::Tuple(t0), Type::Tuple(t1)) if t0.len() == t1.len() => {
-                match merge_one_differing(t0.iter(), t1.iter(), |t| t, welds)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t, cx, welds)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -612,7 +653,7 @@ impl Type {
             (Type::Variant(tag0, t0, at), Type::Variant(tag1, t1, _))
                 if tag0 == tag1 && t0.len() == t1.len() =>
             {
-                match merge_one_differing(t0.iter(), t1.iter(), |t| t, welds)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t, cx, welds)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -630,7 +671,8 @@ impl Type {
                         .zip(t1.iter())
                         .all(|((n0, _, _), (n1, _, _))| n0 == n1) =>
             {
-                match merge_one_differing(t0.iter(), t1.iter(), |(_, t, _)| t, welds)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |(_, t, _)| t, cx, welds)?
+                {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -651,8 +693,8 @@ impl Type {
             {
                 Some(t0v.clone())
             }
-            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t, welds)),
-            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b, welds)),
+            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t, cx, welds)),
+            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b, cx, welds)),
             (Type::ByRef(..), _)
             | (_, Type::ByRef(..))
             | (Type::Abstract { .. }, _)
@@ -680,7 +722,57 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{expr::ModPath, typ::TypeRef};
+    use crate::{env::Env, expr::ModPath, typ::TypeRef};
+    use std::cmp::Ordering;
+
+    /// `S_k = [Error<S_k-1>, Error<T_k-1>, i64]` and `T_k` its twin with
+    /// `string`: two unions per level over the two below, a DAG whose tree
+    /// doubles at each level.
+    fn error_ladder(depth: usize) -> (Type, Type) {
+        let mut s = Type::Primitive(Typ::I64.into());
+        let mut t = Type::Primitive(Typ::String.into());
+        for _ in 0..depth {
+            let (es, et) = (Type::Error(Arc::new(s)), Type::Error(Arc::new(t)));
+            s = Type::Set(Arc::from_iter([
+                es.clone(),
+                et.clone(),
+                Type::Primitive(Typ::I64.into()),
+            ]));
+            t = Type::Set(Arc::from_iter([es, et, Type::Primitive(Typ::String.into())]));
+        }
+        (s, t)
+    }
+
+    /// Merging `Error<S_n>` with `Error<T_n>` compares their payloads
+    /// flattened, and each flattening merges the level below: every
+    /// union of the ladder is flattened once.
+    #[test]
+    fn nested_unions_flatten_once_per_node() {
+        let depth = 16;
+        let (s, t) = error_ladder(depth);
+        let mut cx = FlatCx::default();
+        let members = [Type::Error(Arc::new(s)), Type::Error(Arc::new(t))];
+        let flat = Type::flatten_set_with(members.iter().cloned(), &mut cx);
+        assert!(matches!(&flat, Type::Set(m) if m.len() == 2), "{flat}");
+        assert_eq!(cx.flattened, 2 * depth);
+    }
+
+    /// A node shared by both sides compares equal without walking it.
+    #[test]
+    fn ordering_does_not_walk_a_shared_node() {
+        let (s, t) = error_ladder(64);
+        let members = [Type::Error(Arc::new(s)), Type::Error(Arc::new(t))];
+        let a = Type::Set(Arc::from_iter(members.iter().cloned()));
+        let b = Type::Set(Arc::from_iter(members.iter().cloned()));
+        assert_eq!(a.cmp(&b), Ordering::Equal);
+    }
+
+    /// Collecting a capture type's open cells walks each shared node once.
+    #[test]
+    fn narrowing_collects_cells_once_per_node() {
+        let (s, _) = error_ladder(64);
+        s.narrow_per_member(&Env::default(), &[]).unwrap();
+    }
 
     /// A union of named or abstract members normalizes in linear time:
     /// each is tried only against members it could merge with.

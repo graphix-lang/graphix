@@ -2214,28 +2214,39 @@ impl Type {
 
     /// Two types of one variant, field by field in declaration order.
     fn cmp_fields(&self, other: &Self) -> Ordering {
+        fn slice_cmp<T: Ord>(a: &Arc<[T]>, b: &Arc<[T]>) -> Ordering {
+            if (**a).as_ptr() == (**b).as_ptr() { Ordering::Equal } else { a.cmp(b) }
+        }
+        fn one_cmp<T: Ord>(a: &Arc<T>, b: &Arc<T>) -> Ordering {
+            if Arc::ptr_eq(a, b) { Ordering::Equal } else { a.cmp(b) }
+        }
         match (self, other) {
             (Type::Primitive(a), Type::Primitive(b)) => a.cmp(b),
-            (Type::Ref(a), Type::Ref(b)) => a.cmp(b),
-            (Type::Fn(a), Type::Fn(b)) => a.cmp(b),
+            (Type::Ref(a), Type::Ref(b)) => one_cmp(a, b),
+            (Type::Fn(a), Type::Fn(b)) => one_cmp(a, b),
             (Type::TVar(a), Type::TVar(b)) => a.cmp(b),
-            (Type::Set(a), Type::Set(b)) | (Type::Tuple(a), Type::Tuple(b)) => a.cmp(b),
+            (Type::Set(a), Type::Set(b)) | (Type::Tuple(a), Type::Tuple(b)) => {
+                slice_cmp(a, b)
+            }
             (Type::Error(a), Type::Error(b))
             | (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b))
-            | (Type::ByRef(_, a), Type::ByRef(_, b)) => a.cmp(b),
-            (Type::Struct(a), Type::Struct(b)) => a.cmp(b),
+            | (Type::ByRef(_, a), Type::ByRef(_, b)) => one_cmp(a, b),
+            (Type::Struct(a), Type::Struct(b)) => slice_cmp(a, b),
             (Type::Variant(t0, a, w0), Type::Variant(t1, b, w1)) => {
-                t0.cmp(t1).then_with(|| a.cmp(b)).then_with(|| w0.cmp(w1))
+                t0.cmp(t1).then_with(|| slice_cmp(a, b)).then_with(|| w0.cmp(w1))
             }
+            (Type::Map(m0), Type::Map(m1)) if Arc::ptr_eq(m0, m1) => Ordering::Equal,
             (Type::Map(m0), Type::Map(m1)) => {
                 m0.key.cmp(&m1.key).then_with(|| m0.value.cmp(&m1.value))
             }
             (
                 Type::Abstract { id: i0, params: p0 },
                 Type::Abstract { id: i1, params: p1 },
-            ) => i0.cmp(i1).then_with(|| p0.cmp(p1)),
-            (Type::App(c0, a0), Type::App(c1, a1)) => c0.cmp(c1).then_with(|| a0.cmp(a1)),
+            ) => i0.cmp(i1).then_with(|| slice_cmp(p0, p1)),
+            (Type::App(c0, a0), Type::App(c1, a1)) => {
+                one_cmp(c0, c1).then_with(|| one_cmp(a0, a1))
+            }
             _ => Ordering::Equal,
         }
     }

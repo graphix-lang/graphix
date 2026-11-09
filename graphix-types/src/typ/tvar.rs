@@ -4001,6 +4001,7 @@ impl Type {
                         }
                     }
                 }
+                t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
                 t => t.for_each_child(&mut |c| open(c, seen, out)),
             })
         }
