@@ -1474,6 +1474,16 @@ run!(
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
 ; FuseExpect::None);
 
+// A quantifier named only inside the bound of a bound is in the declared
+// list a mismatch prints.
+run!(
+    a_chain_of_bounds_prints_every_quantifier,
+    refused("val f is declared fn<'a: [i64, string], 'b: ['c, `X], 'c: [null, 'a]>"),
+    "/test.gx" => "mod m; let result = m::f(`X)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: ['a, null], 'b: ['c, `X]>(x: 'b) -> [`X, null, i64];",
+    "/test/m.gx" => "let f = |x| x"
+; FuseExpect::None);
+
 // A predicate the implementation needs of a compound signature type asks
 // it of the variables inside: Array<'a> is discernible only if 'a is.
 run!(
