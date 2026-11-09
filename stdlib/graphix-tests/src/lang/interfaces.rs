@@ -1677,8 +1677,7 @@ run!(
     "/test/m.gx" => "let p = {f: |x| x, d: never<Array<'a>>()}"
 );
 
-// An abstract type's parameter, and a typedef that grows its parameters
-// as it recurses, stand outside function types.
+// An abstract type's parameter stands outside function types.
 run!(
     val_variable_as_an_abstract_parameter_refused,
     refused("val w has its type variable 'a outside a function type"),
@@ -1687,9 +1686,10 @@ run!(
     "/test/m.gx" => "let w = W({f: |x| x})"
 );
 
+// An interface's typedef is refused at its definition as a body's is.
 run!(
-    val_variable_under_a_growing_typedef_refused,
-    refused("val t has its type variable 'a outside a function type"),
+    interface_growing_typedef_refused,
+    refused("recursive type T grows its parameter 'a as it recurses"),
     "/test.gx" => "mod m; let x: m::T<i64> = m::t; m::t <- null; let result = x",
     "/test/m.gxi" => "type T<'a> = [null, ('a, T<Array<'a>>)]; val t: T<'a>",
     "/test/m.gx" => "let t = never()"

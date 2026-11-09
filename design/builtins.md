@@ -69,8 +69,7 @@ null, or members each carrying a tag, a variant's or an abstract type's
 name (none inside the data a `from_value` reads, where abstract values are
 bare), no two the same, an error no member; `Transparent<T>` carries none
 and is refused over a `T` known not to be abstract, never over a
-definition's own open variable; a typedef growing its parameters
-as it recurses is refused), judged of the
+definition's own open variable), judged of the
 call's settled binding (`site_bounds`; refused at the bind, a union
 target would narrow to one member), a writer declares its value `'a: Data` (no
 reference, function or such abstract type; open is fine), an async

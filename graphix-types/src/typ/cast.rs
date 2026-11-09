@@ -2474,6 +2474,18 @@ const MAX_GROWTH: usize = 4;
 // (d8a2d0bc0, dffb87798, 1a3fe4519, 1ee02743f), with a Kennedy-Pierce expansiveness
 // test in typ/expansive.rs. Eric is asked as D24 whether to refuse expansive
 // typedefs at their definition. Probes: ~/ptmp/cr29/scratch/r17-hk/ and r17-hk/r3/.
+// 2026-11-09 claude: Eric ruled (2026-11-09): D24 (a): refuse an expansive typedef
+// at its definition (Env::deftype), as a non-contractive one is, so no type walk
+// needs a growth cut. Built for contains-growth-reset-01 (lane 19f):
+// typ/expansive.rs refuses a typedef one of whose parameters flows back to it
+// wrapped in a constructor (a bare union member flows plainly), and contains'
+// MAX_GROWTH bookkeeping is gone. What remains here: grows_on, MAX_GROWTH,
+// growing_side, walk's grows argument, Indiscernible::Grows and TextRefusal::Grows
+// (rep_collision, regular, textdata, tval's params_size, cast.rs's cuts counter at
+// the Ref arm) are now dead and can go, with the compiler's 'grows its parameters'
+// messages (graphix-compiler lib.rs) and params_size; verify each. Their unit pins
+// over a growing type (regular's a_growing_application_has_a_key, textdata's growth
+// half) were removed with the refusal, since typed_at_root refuses the typedef.
 /// Whether an application of `def` with parameters of `size` grows at
 /// every level: `path`, the applications it is inside, holds
 /// [`MAX_GROWTH`] of `def` with smaller parameters.

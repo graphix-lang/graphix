@@ -201,7 +201,7 @@ pub(crate) fn compile_use<R: Rt>(
         items,
     )
     .at(&spec)?;
-    crate::recheck_pending_contractive(ctx)?;
+    crate::recheck_pending_typedefs(ctx)?;
     Ok(Nop::new(Type::Bottom))
 }
 

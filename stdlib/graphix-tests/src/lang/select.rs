@@ -8250,14 +8250,14 @@ run!(
 );
 
 run!(
-    coverage_over_growing_parameters_ends,
+    coverage_over_growing_parameters_refused,
     r#"{
         type G<'a> = [i64, Error<G<Array<'a>>>];
         type P = [i64, Error<P>];
         let v: G<i64> = 1;
         select v { P as x => 0, _ => 1 }
     }"#,
-    refused("which hold G, whose parameters grow as it recurses");
+    refused("recursive type G grows its parameter 'a as it recurses");
     FuseExpect::None
 );
 

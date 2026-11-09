@@ -3653,9 +3653,9 @@ pub(crate) enum Pending {
     /// resolve at its check (a `use` the interface defers may name it
     /// later); it must name something once the check ends.
     Name(typ::TypeRef, Expr),
-    /// A typedef whose body named something not defined yet: it must be
-    /// contractive once everything is.
-    Contractive(ModPath, ArcStr, Expr),
+    /// A typedef whose body named something not defined yet: its shape
+    /// is checked once everything is ([`Env::check_typedef`]).
+    Typedef(ModPath, ArcStr, Expr),
 }
 
 /// A written type name that did not resolve at its definition's check
@@ -3670,8 +3670,8 @@ pub(crate) fn check_pending_names<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> 
                 }
                 tr.check_application(&ctx.env).at(&spec)?;
             }
-            Pending::Contractive(scope, name, spec) => {
-                ctx.env.check_contractive(&scope, &name).at(&spec)?;
+            Pending::Typedef(scope, name, spec) => {
+                ctx.env.check_typedef(&scope, &name).at(&spec)?;
             }
         }
     }
@@ -3703,14 +3703,14 @@ pub(crate) fn resite_pending_name<R: Rt>(
 /// Refuse now each deferred typedef a `use` naming a type just
 /// completed, before anything later in the run expands it, and forget
 /// those it settled.
-pub(crate) fn recheck_pending_contractive<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> {
+pub(crate) fn recheck_pending_typedefs<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> {
     use expr::At;
     let mut res = Ok(());
     let CompileCtx { pending_names, env, .. } = ctx;
     pending_names.retain(|p| match p {
-        Pending::Contractive(_, _, _) if res.is_err() => true,
-        Pending::Contractive(scope, name, spec) => {
-            match env.check_contractive(scope, name).at(spec) {
+        Pending::Typedef(_, _, _) if res.is_err() => true,
+        Pending::Typedef(scope, name, spec) => {
+            match env.check_typedef(scope, name).at(spec) {
                 Ok(u) => u == typ::Unguarded::Unknown,
                 Err(e) => {
                     res = Err(e);

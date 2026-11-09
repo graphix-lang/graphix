@@ -8,7 +8,7 @@ use crate::{
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        Unfolded, node_addr, params_size, probe_key,
+        Unfolded, node_addr, probe_key,
         setops::{strictly_identical, union_identical},
         tvar::{
             CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
@@ -129,14 +129,6 @@ pub(super) struct ContainsHist {
     in_progress: SmallVec<[Question; 4]>,
     /// What the current verdict assumed of the walk in progress.
     rests: Rests,
-    /// Per definition and side (`true` for the right), on this path: the
-    /// size of the params its latest expansion took, and how many
-    /// expansions in a row grew them. The sides expand on alternate steps
-    /// (`T ⊇ {..}`, then `[T, null] ⊇ T`), each growing on its own.
-    unfolding: Lazy<AHashMap<(usize, bool), (usize, u32)>>,
-    /// A definition whose parameters grew past [`MAX_GROWTH`] under a
-    /// probe: the reason a refusal gives when the verdict needed it.
-    grew: Option<ModPath>,
     /// A cycle under a constructor refused a pair of cells: the reason a
     /// refusal gives ([`TypeMismatch`]).
     cycled: bool,
@@ -154,72 +146,23 @@ pub(super) struct ContainsHist {
     trial: bool,
 }
 
-// CR claude for claude: [bug/medium] contains' growth bound counts the expansions of
-// a definition on a side that grew one after another, and an expansion that does not
-// grow starts the count again, so a definition beside a non-growing application of
-// itself, or two growing on alternate steps, may never be cut: `type G<'a> =
-// [Error<G<Array<'a>>>, Error<G<'a>>, `X]`, H alike with `Y, `let v: G<i64> =
-// never(); select v { H<i64> as x => 0, _ => 1 }` (grow3.gx; grow2.gx alike) does
-// not end its --check in 60 s on cr48-X, in matching_type's contains under
-// set_covers_by_distribution; main hangs earlier, in could_match. diff and
-// could_match (PathApps), rep_collision, regular and textdata cut where
-// cast::grows_on does (a path holding MAX_GROWTH applications of the definition
-// with smaller parameters), which ends every walk; contains could take that rule
-// too. probes: ~/ptmp/cr29/scratch/r11-X/fix/grow2.gx, grow3.gx
-// (contains-growth-reset-01)
-// 2026-11-03 claude: grow2.gx ended on cr48-X 7d0551cac, whose matching_type probes
-// shared one ContainsHist; with that walk removed (matching-type-contains-dag-01)
-// grow2 hangs here again (gdb: contains_int frames only), in matching_type's
-// contains under set_covers_by_distribution, as grow3 does and as main does
-// (earlier, in could_match). Review r11 round 2's cap15.gx (mkcap.py 15: G applied
-// to a parameter of 2^15 leaves) hangs here too: this bound reads params_size, which
-// stops counting at PARAMS_CAP (grows-on-counts-all-01). PathApps now counts only
-// definitions ResolvedRef::grows takes, each unfolding once, and a size past
-// PARAMS_CAP as larger than every other: contains could take that rule.
-// 2026-11-03 claude: cr48-X2 carries this CR to main without cr48-X's growth cut,
-// and it stands there: on base-r11 (main 8814f118b) and cr48-X2 alike grow2.gx and
-// grow3.gx are killed at 60 s here (gdb: Select::typecheck0_with ->
-// PatternNode::capture_type -> Type::matching_type -> contains_int under set_commit;
-// main now reaches contains before could_match), and an annotation alone reaches it:
-// `type G<'a> = [Error<G<Array<'a>>>, Error<G<'a>>, `X]`, H the same, `let v: G<i64>
-// = never(); let w: H<i64> = v` (cg1.gx) is killed at 60 s in Bind::check_value ->
-// Type::check_contains -> contains_int on both (G against G ends at same_ref).
-// PathApps, ResolvedRef::grows and PARAMS_CAP named above are cr48-X's, parked
-// (diff-cycle-hang-01): here diff and could_match have no growth bound and
-// params_size stops at 1 << 16. probes: ~/ptmp/cr29/scratch/r11-X/x2/ (cg1.gx,
-// grow3.gx, grow3.base.gdb)
-// 2026-11-06 claude: The growth cut was built in lane o3 r17 and parked after three
-// review rounds, each finding false refusals of finite values (a five-parameter
-// shift and a large literal type; a finite N value 4 levels deep; a non-recursive
-// typedef nested 5 deep beside a growing type). The commits stay on branch cr52-o3
-// (d8a2d0bc0, dffb87798, 1a3fe4519, 1ee02743f), with a Kennedy-Pierce expansiveness
-// test in typ/expansive.rs. Eric is asked as D24 whether to refuse expansive
-// typedefs at their definition. Probes: ~/ptmp/cr29/scratch/r17-hk/ and r17-hk/r3/.
-/// How many expansions of one typedef in a row may take larger params. A
-/// pair met again ends a walk, so params that keep growing are a walk
-/// that never ends (`type N<'a> = [null, ('a, N<Array<'a>>)]`); nested
-/// applications of one alias shrink theirs.
-const MAX_GROWTH: u32 = 64;
-
 /// A probe memo's key: both sides' identities, rigid cells held rigid
 /// or not.
 type ProbeKey = (NormKey, NormKey, bool);
 
 /// What a verdict assumed of the walk in progress: the depth of the
 /// shallowest pair in progress it took to hold, the shallowest entries of
-/// `in_progress` it took to hold and to fail (`usize::MAX` for none), and
-/// whether a pair whose parameters grew past [`MAX_GROWTH`] was refused.
+/// `in_progress` it took to hold and to fail (`usize::MAX` for none).
 #[derive(Clone, Copy)]
 struct Rests {
     pairs: usize,
     held: usize,
     failed: usize,
-    cut: bool,
 }
 
 impl Rests {
     const NOTHING: Self =
-        Rests { pairs: usize::MAX, held: usize::MAX, failed: usize::MAX, cut: false };
+        Rests { pairs: usize::MAX, held: usize::MAX, failed: usize::MAX };
 
     /// The questions taken to hold, or to fail.
     fn taken(&mut self, held: bool) -> &mut usize {
@@ -235,20 +178,17 @@ impl Rests {
             pairs: self.pairs.min(other.pairs),
             held: self.held.min(other.held),
             failed: self.failed.min(other.failed),
-            cut: self.cut || other.cut,
         }
     }
 
     /// Whether verdict `r`, reached by a verdict at `height`, is the
     /// pair's wherever it is met. contains is monotone in what it
     /// assumes, so a false that took only holds stays false had they been
-    /// walked, and a true that took only failures stays true; a growth
-    /// cut is a failure on this path alone.
+    /// walked, and a true that took only failures stays true.
     fn settled(self, r: bool, height: usize) -> bool {
-        let holds = self.pairs < height || self.held != usize::MAX;
         match r {
-            true => !holds,
-            false => self.failed == usize::MAX && (!self.cut || !holds),
+            true => self.pairs >= height && self.held == usize::MAX,
+            false => self.failed == usize::MAX,
         }
     }
 }
@@ -301,8 +241,6 @@ impl ContainsHist {
             apps: Lazy::new(),
             in_progress: SmallVec::new(),
             rests: Rests::NOTHING,
-            unfolding: Lazy::new(),
-            grew: None,
             cycled: false,
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
@@ -396,7 +334,7 @@ impl ContainsHist {
 
     /// Memoize a probe's verdict, reached by a verdict at `height`
     /// assuming `rests`: for good where it is settled, else while what it
-    /// rests on stands. A false a growth cut refused is the path's alone.
+    /// rests on stands.
     fn probe_put(
         &mut self,
         (rigid, t0, t1): (bool, &Type, &Type),
@@ -409,12 +347,10 @@ impl ContainsHist {
         let epoch = cell_writes();
         let new = if rests.settled(r, height) {
             self.probe_pairs.get_mut().insert(k, (epoch, r)).is_none()
-        } else if r || !rests.cut {
+        } else {
             let p = Provisional { verdict: r, epoch, rests };
             self.provisional_order.get_mut().push(k);
             self.provisional.get_mut().insert(k, p).is_none()
-        } else {
-            false
         };
         if new {
             let pins = self.probe_pins.get_mut();
@@ -1916,15 +1852,6 @@ fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
     Some((tv, b))
 }
 
-/// The refusal of a comparison of two instances of `name` whose
-/// parameters grow at every level.
-fn growth_error(name: &ModPath) -> anyhow::Error {
-    anyhow::anyhow!(
-        "cannot compare two instances of {name}: its parameters grow at every \
-         level of its recursion, so no comparison ends"
-    )
-}
-
 /// Whether `f` holds of a pair of parts `s` and `t` place alike: a
 /// function's result and arguments, each member of a union beside the
 /// other side, the parts of one constructor on both sides.
@@ -1973,10 +1900,9 @@ impl Type {
         if graphix_dbg_bind() {
             eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
         }
-        match (ok, hist.grew) {
-            (true, _) => Ok(()),
-            (false, Some(name)) => Err(growth_error(&name)),
-            (false, None) => {
+        match ok {
+            true => Ok(()),
+            false => {
                 let mut e = self.contains_mismatch(env, t);
                 if let Some(m) = e.downcast_mut::<TypeMismatch>() {
                     m.infinite = hist.cycled;
@@ -2508,6 +2434,15 @@ impl Type {
                 // k-first spelling over a recursive T is refused while the z-first one runs,
                 // and a non-recursive W over a recursive T is refused the same way. probes:
                 // ~/ptmp/cr29/scratch/rv17/typing-a/{tpe_rec,tpe_recz,tpe_nest}.gx
+                // 2026-11-09 claude: Eric ruled (2026-11-09) D24 (a): expansive typedefs are
+                // refused at their definition (lane 19f, contains-growth-reset-01), and
+                // contains' growth guard is gone. The test this CR names as the reason a
+                // recursive definition keeps the shortcut,
+                // nested_datatype_instances_relate_by_parameters, is now
+                // lang::types::nested_datatype_refused (refused at the typedef). Every
+                // definition now unfolds to finitely many applications, so the shortcut's
+                // recursive case may be droppable (compare by expansion, as the non-recursive
+                // case does); measure guicheck before and after.
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
@@ -2531,53 +2466,7 @@ impl Type {
                     }
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                let defs = [(t0, false), (t1, true)].map(|(t, right)| match t {
-                    Self::Ref(tr) => {
-                        tr.def_key().map(|d| ((d, right), params_size(&tr.params)))
-                    }
-                    _ => None,
-                });
-                let mut saved: SmallVec<[((usize, bool), Option<(usize, u32)>); 2]> =
-                    SmallVec::new();
-                let restore =
-                    |hist: &mut ContainsHist,
-                     saved: &[((usize, bool), Option<(usize, u32)>)]| {
-                        for (d, old) in saved.iter().rev() {
-                            match old {
-                                Some(old) => {
-                                    hist.unfolding.get_mut().insert(*d, *old);
-                                }
-                                None => {
-                                    hist.unfolding.get_mut().remove(d);
-                                }
-                            }
-                        }
-                    };
-                for (d, size) in defs.iter().flatten() {
-                    let old = hist.unfolding.get().and_then(|m| m.get(d)).copied();
-                    let growth = match old {
-                        Some((last, g)) if *size > last => g + 1,
-                        _ => 0,
-                    };
-                    saved.push((*d, old));
-                    hist.unfolding.get_mut().insert(*d, (*size, growth));
-                    if growth > MAX_GROWTH {
-                        restore(hist, &saved);
-                        // a probe answers; a commit that grows past the limit
-                        // is an error the program sees
-                        let Self::Ref(tr) = (if d.1 { t1 } else { t0 }) else {
-                            unreachable!("a definition key is a reference's")
-                        };
-                        let name = tr.name.clone();
-                        if !commit {
-                            hist.grew = Some(name);
-                            hist.rests.cut = true;
-                            return Ok(false);
-                        }
-                        return Err(growth_error(&name));
-                    }
-                }
-                let r = hist.assuming(key, |hist| {
+                hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
                         return Ok(false);
                     };
@@ -2585,9 +2474,7 @@ impl Type {
                         return Ok(false);
                     };
                     e0.contains_int(flags, env, hist, &e1)
-                });
-                restore(hist, &saved);
-                r
+                })
             }
             // ⊥ fits whatever the cell becomes; binding would only
             // foreclose its writers. The cell remembers it was fed ⊥.

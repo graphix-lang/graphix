@@ -25,7 +25,29 @@ they come from lisp, the original functional programming language from the late
 The recursion must pass through a structure, as `Lst` does through the payload
 of `` `Cons ``: a type that refers back to itself through unions and aliases alone,
 `type T = [i64, T]` or `type A = B; type B = A`, describes no value, and it is
-refused where it is defined.
+refused where it is defined. And it must pass its parameters on as they are: a
+type that applies itself to a parameter wrapped in a constructor (a nested
+datatype) unfolds to ever larger types, which no check could finish, so it is
+refused where it is defined too.
+
+```graphix,refused
+type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)];
+let n: N<i64> = `Nil;
+n
+```
+
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 1, column: 1 in file test.gx, in: type N<'a> = [`Cons('a, N<Array<'a>>),..
+    1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
+```
+
+Passing a parameter to another position (`type S<'a, 'b> = [`Nil, `C('a, S<'b,
+'a>)]`), replacing it with a type that holds no parameter (`N<Array<i64>>`), or
+adding members to it as a union (`N<['a, null]>`) is fine.
 
 Anyway, lets define some functions to work on our new list type,
 

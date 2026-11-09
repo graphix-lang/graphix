@@ -54,9 +54,7 @@ no two the same:
 `` [`A, `B(i64), Port, null] `` and `[T, null]`, for a `T` that is not
 itself a union, read back. `[i64, string]`, `[u8, i64]`, `[Port, u8]`, `` [string, `A] ``,
 `[{a: i64}, {b: i64}]` and a type variable beside another member are
-refused, as a target and as a written value. So is a typedef whose
-parameters grow as it recurses, such as ``type N<'a> = [`Nil, `Cons('a,
-N<Array<'a>>)]``.
+refused, as a target and as a written value.
 
 The data inside an abstract value's object is written for its reader:
 where `T`'s `Cast` implementation writes `from_value`, which casts it as

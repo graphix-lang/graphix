@@ -128,11 +128,9 @@ part overridable through the core traits, `traits.md`); a value prints as
 (`typ::regular::key`: every resolved reference expanded, recursion
 included, unions flattened, then refined to canonical ranks), so an alias,
 a cast's target as written and a construction's frozen type name one
-parameter, and the orderings and hashes agree with equality. An
-application whose arguments grow at every level (`type N<'a> = [`Nil,
-`Cons('a, N<Array<'a>>)]`) is no regular tree: where `cast::grows_on`
-says it grows, the key holds its definition's name over its arguments'
-keys, a function of the type that never equates two different ones.
+parameter, and the orderings and hashes agree with equality. Every
+parameter is a regular tree: no typedef is expansive
+(`design/tvar_constraints.md`).
 
 ## Why: one view instead of two
 
@@ -222,8 +220,6 @@ constructed at init) take the box with no visible cost.
   binds it holds its argument to that binding, which a call's context
   then cannot widen; a trait bound or dispatch reads it, so decides it
   there. Two values compare their
-  parameters, as regular trees (`typ::regular`; an application whose
-  arguments grow at every level as its definition over its arguments),
-  before their payloads. A pattern `T(p)` with no
+  parameters, as regular trees (`typ::regular`), before their payloads. A pattern `T(p)` with no
   type test tests the tag and takes its parameters from the scrutinee,
   never from `p` (`StructPatternNode::narrow_payloads`).

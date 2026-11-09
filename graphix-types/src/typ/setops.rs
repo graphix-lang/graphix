@@ -2023,9 +2023,8 @@ mod tests {
         assert_eq!((apart, shared), (vec![12, 24, 43, 178], vec![12, 24, 43, 178]));
     }
 
-    // Names recurring through Error payloads, and a definition whose
-    // parameters grow as it recurses, end: the first within the walk's pair
-    // budget, the second unfolding its pair once.
+    // Names recurring through Error payloads end within the walk's pair
+    // budget.
     #[test]
     fn diff_over_names_recurring_through_errors_ends() {
         let defs: Vec<(String, String)> = [
@@ -2034,14 +2033,11 @@ mod tests {
             ("Ct", "[Array<Ct>, Error<Bt>]"),
             ("H", "[Error<Error<K>>, `Q]"),
             ("K", "[Error<H>, Error<K>, `P]"),
-            ("G<'a>", "[i64, Error<G<Array<'a>>>]"),
-            ("P", "[i64, Error<P>]"),
         ]
         .iter()
         .map(|(n, b)| (n.to_string(), b.to_string()))
         .collect();
-        let ends = |t: &str, less: &str| diff_pairs(&defs, t, less).1;
-        assert_eq!((ends("At", "K"), ends("G<i64>", "P")), (WALK_PAIRS, 1));
+        assert_eq!(diff_pairs(&defs, "At", "K").1, WALK_PAIRS);
     }
 
     /// `T0 .. Tn-1`, each `[Error<Ti+1>, Error<Ti+2>, `Ai]` (indices mod

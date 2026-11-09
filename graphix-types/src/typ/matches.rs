@@ -1276,18 +1276,4 @@ mod tests {
             );
         }
     }
-
-    // A pair of definitions whose parameters grow as they recur unfolds
-    // once, then is met again as the pair in progress: an overlap.
-    #[test]
-    fn could_match_unfolds_growing_definitions_once() {
-        let defs: Vec<(String, String)> = [
-            ("G<'a>", "[Error<G<Array<'a>>>, `X]"),
-            ("H<'a>", "[Error<H<Array<'a>>>, `Y]"),
-        ]
-        .iter()
-        .map(|(n, b)| (n.to_string(), b.to_string()))
-        .collect();
-        assert_eq!(pairs_walked(&defs, "H<i64>", "G<i64>"), (true, 1));
-    }
 }

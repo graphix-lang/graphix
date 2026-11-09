@@ -303,16 +303,4 @@ mod test {
         assert_eq!(key(&[r.clone()]), key(&[s]));
         assert_ne!(key(&[r]), key(&[i]));
     }
-
-    // A typedef whose arguments grow as it recurses is no regular tree:
-    // its key ends, and tells its applications apart by their arguments.
-    #[test]
-    fn a_growing_application_has_a_key() {
-        let defs = [("N<'a>", "[`Nil, `Cons('a, N<Array<'a>>)]")];
-        let typed = |t| Env::typed_at_root(&defs, t).unwrap();
-        let ((_a_env, a), (_b_env, b)) = (typed("N<i64>"), typed("N<i64>"));
-        let (_c_env, c) = typed("N<u64>");
-        assert_eq!(key(&[a.clone()]), key(&[b]));
-        assert_ne!(key(&[a]), key(&[c]));
-    }
 }

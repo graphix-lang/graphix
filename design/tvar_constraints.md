@@ -870,8 +870,7 @@ named types into their definitions. A pair met again inside its own walk
 is answered by assumption: diff subtracts nothing there (the residual is
 the minuend), could_match answers an overlap that rests on the pair in
 progress (`Rests`). Keyed by the types themselves, a walk that subtracts
-a union member by member, or a definition whose parameters grow as it
-recurses, meets a new key at every level and does not end, and the exact
+a union member by member meets a new key at every level and does not end, and the exact
 difference over Error cycles of coprime lengths repeats only after their
 lcm. So a pair of two named types is also keyed by its two definitions,
 arguments ignored (`setops::DefPair`), and a path may hold
@@ -922,11 +921,7 @@ X-r1-1): of main's 1547 finishes none changes verdict or the kind of its
 message, 52 of its 53 timeouts end, the last in matching_type's
 containment; 100 pairs moved two of main's verdicts (a dead arm accepted, a
 dead-arm refusal become a missing case), 10000 pairs cost a generated
-select (rnd13) 3.4G instructions where 1000 cost 1.7G. Where the widened
-residual meets a type whose parameters grow, the arm's test against it can
-no longer be decided (`Type::rep_collision`) and the arm is refused: a
-test 10 levels deep in `G<'a> = [Error<G<Array<'a>>>, Error<G<('a,
-'a)>>, `A('a)]`, which main accepts. Over Error cycles
+select (rnd13) 3.4G instructions where 1000 cost 1.7G. Over Error cycles
 of coprime lengths diff walks pairs that grow with the lengths, not their
 lcm (pin
 `typ::setops::tests::diff_over_error_cycles_walks_pairs_by_their_lengths`).
@@ -1338,10 +1333,8 @@ payloads, a map's key and value, an abstract type's representation where
 its `Cast` implementation leaves a method out (and `Transparent`'s
 parameter), each named type once per list of arguments, in the text and
 in a `from_value`'s data; a union's members expand each name once,
-however many paths reach it; a typedef whose
-arguments grow at every level (``type N<'a> = [`Nil, `Cons('a,
-N<Array<'a>>)]``) is refused by the growth rule of the representation
-walks (`cast::grows_on`). A map's form is its key type's alone: an object
+however many paths reach it, and a typedef's arguments take finitely many
+forms (no typedef is expansive, below). A map's form is its key type's alone: an object
 under `string`, its pairs under any other, so its key union is judged as
 any other. A TOML document is a table: where the bound is a writer's
 (`'a: Data + TomlData`), a map at the type's root, past names and a
@@ -1485,7 +1478,19 @@ eta-expansion (`eta_dispatcher`); a dispatcher is only a call's own
 function. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
-sound. An inferred type is finite the same way: a relation that would
+sound. And it must not be expansive (Kennedy and Pierce; Eric 11-09, D24):
+no parameter flows back to its own definition wrapped in a constructor,
+through any chain of the definitions and abstract representations it
+reaches (`typ::expansive`; ``type N<'a> = [`Nil, `Cons('a,
+N<Array<'a>>)]``, `type P<'a> = [`L('a), `N(P<('a, 'a)>)]`, and `type A<'a>
+= [`N, `C(B<'a>)]; type B<'b> = A<Array<'b>>` at B, are refused at
+`Env::deftype`, naming the definition and the parameter). A parameter
+passed on bare, to any position, or as a bare member of a union (unions
+flatten, so `T<['a, string]>` applied again is itself) flows plainly. So
+every type unfolds to finitely many applications, and every walk over
+types ends at a pair it meets again, with no growth cut. A definition
+whose body names something not defined yet is checked again once it is
+(`Pending::Typedef`, `Env::check_typedef`), as contractiveness is. An inferred type is finite the same way: a relation that would
 put a cell under a constructor of itself is refused (`b <- B([t ~
 b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged

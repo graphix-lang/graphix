@@ -550,15 +550,10 @@ mod test {
     }
 
     // A typedef expands once for each list of arguments it is applied to,
-    // so a recursion that passes its parameters on is a cycle; one that
-    // grows them at every level never ends, and is refused.
+    // so a recursion that passes its parameters on, or replaces one with a
+    // closed type, is a cycle.
     #[test]
-    fn a_typedef_growing_its_parameters_is_refused() {
+    fn a_typedef_over_a_closed_argument_is_a_cycle() {
         assert!(!named(&[("A<'a>", "[`Here('a), `Next(A<Array<i64>>)]")], "A<i64>"));
-        let (env, t) = typed(&[("N<'a>", "[`Nil, `Cons('a, N<Array<'a>>)]")], "N<i64>");
-        assert!(matches!(
-            t.text_refusal(&env, TextSite::Written),
-            Some(TextRefusal::Grows(n)) if n.to_string() == "N"
-        ));
     }
 }

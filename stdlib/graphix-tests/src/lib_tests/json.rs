@@ -547,21 +547,6 @@ run!(
     prints("[true, [\"Cons\", u64:1, [\"Cons\", u64:2, \"Nil\"]]]")
 );
 
-// One that grows its parameters at every level never ends.
-run!(
-    json_data_refuses_a_typedef_growing_its_parameters,
-    r#"{
-    type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)];
-    let f = 'a: JsonData |x: 'a| -> 'a x;
-    let v: N<i64> = `Nil;
-    f(v)
-}"#,
-    refused(
-        "'a: JsonData refuses [`Cons(i64, N<Array<i64>>), `Nil]: N grows its \
-         parameters as it recurses"
-    )
-);
-
 // An abstract value is written inside an object its type's name keys, so
 // it reads back through its from_value beside a variant, whatever that
 // from_value reads.

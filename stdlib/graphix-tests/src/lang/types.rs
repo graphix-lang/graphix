@@ -2185,17 +2185,6 @@ run!(cast_to_a_block_nested_alias, CAST_TO_A_BLOCK_NESTED_ALIAS, |v: Result<&Val
     matches!(v, Ok(Value::I64(42)))
 });
 
-// A definition whose parameters grow as it recurses is a cast target:
-// every application of it holds what its parameters hold.
-run!(
-    cast_to_a_growing_definition,
-    is(Value::Null),
-    "/test.gx" => r#"
-        type N<'a> = [null, ('a, N<Array<'a>>)];
-        let result = cast<N<i64>>(null)$
-    "#
-; FuseExpect::None);
-
 // A verdict read from an application still being decided is that
 // application's assumption: A refuses, so B, which holds A, refuses too,
 // though B was first reached inside A.
@@ -2621,15 +2610,6 @@ const CONJUNCT_RIGID_TRAIT: &str = r#"{
   f("s", false)
 }"#;
 
-// A mismatch at a growing definition's first level is a mismatch, not a
-// comparison that cannot end.
-const GROWING_MISMATCH: &str = r#"{
-  type N<'a> = [null, ('a, N<Array<'a>>)];
-  let x: N<i64> = null;
-  let y: N<f64> = x;
-  0
-}"#;
-
 // Error is a one-argument product head: a union of errors holds the error
 // its members merge to.
 const ERROR_UNION_DISTRIBUTES: &str = r#"{
@@ -2712,7 +2692,6 @@ mod unsound_acceptances {
         CAST_TO_AN_ABSTRACT_OF_A_FUNCTION => "can't cast a value to a function",
         CONJUNCT_RIGID => "does not contain i64",
         CONJUNCT_RIGID_TRAIT => "does not contain [i64, 'a",
-        GROWING_MISMATCH => "does not contain",
         NO_ERROR_OPEN_MEMBER => "does not contain Error<",
         ABSTRACT_PATTERN_OVER_A_UNION => "patterns can't match",
         RIGID_PARAM_CALL => "does not contain",
@@ -3581,8 +3560,8 @@ const RECURSIVE_UNION_MEMBER_ENDS: &str = r#"
 
 run!(recursive_union_member_ends, RECURSIVE_UNION_MEMBER_ENDS, is(Value::I64(0)));
 
-/// A typedef whose parameters grow at every level cannot be compared:
-/// refused, never a walk without end.
+/// A typedef whose parameter grows as it recurses unfolds to ever larger
+/// types: refused at its definition, never a walk without end.
 const GROWING_TYPEDEF_REFUSED: &str = r#"
 {
     type N<'a> = [null, ('a, N<Array<'a>>)];
@@ -3592,10 +3571,14 @@ const GROWING_TYPEDEF_REFUSED: &str = r#"
 }
 "#;
 
-run!(growing_typedef_refused, GROWING_TYPEDEF_REFUSED, refused("its parameters grow"); FuseExpect::None);
+run!(
+    growing_typedef_refused,
+    GROWING_TYPEDEF_REFUSED,
+    refused("recursive type N grows its parameter 'a as it recurses");
+    FuseExpect::None
+);
 
-/// The same through a struct field, where the two sides expand on
-/// alternate steps: each side's growth counts, so the walk ends.
+/// The same through a struct field.
 const GROWING_FIELD_TYPEDEF_REFUSED: &str = r#"
 {
     type T<'a> = {n: [T<Array<'a>>, null], v: 'a};
@@ -3608,7 +3591,7 @@ const GROWING_FIELD_TYPEDEF_REFUSED: &str = r#"
 run!(
     growing_field_typedef_refused,
     GROWING_FIELD_TYPEDEF_REFUSED,
-    refused("its parameters grow");
+    refused("recursive type T grows its parameter 'a as it recurses");
     FuseExpect::None
 );
 
@@ -6631,17 +6614,6 @@ const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"
 
 run!(inferred_cell_prints_its_binding, INFERRED_CELL_PRINTS_ITS_BINDING, refused("type mismatch i64 does not contain string"); FuseExpect::None);
 
-/// A cast through a typedef whose params grow over one value ends.
-const CAST_GROWING_TYPEDEF: &str = r#"
-{
-    type W<'a> = [Array<W<Array<'a>>>, null];
-    let r = cast<W<i64>>("x");
-    select r { error as _ => true, _ => false }
-}
-"#;
-
-run!(cast_growing_typedef, CAST_GROWING_TYPEDEF, is(Value::Bool(true)); FuseExpect::None);
-
 /// A value under one definition nested in itself (`O<O<X>>`) prints by
 /// its type, as under one level.
 const NESTED_DEFINITION_PRINTS_TYPED: &str = r#"
@@ -6866,59 +6838,6 @@ run!(typed_reads_exact_or_refused, r##"{
 }"##, |v: Result<&Value>| {
     matches!(v, Ok(v) if v.to_string() == "[true, true, true, true, true]")
 }; FuseExpect::None);
-
-// A typedef whose parameters grow as it recurses has no finite walk: the
-// checks over runtime forms give up and refuse, never hang.
-run!(growing_typedef_compare_refused, r#"{
-    type N<'a> = [null, ('a, N<Array<'a>>)];
-    let x: N<i64> = null;
-    let y: N<i64> = (1, null);
-    x == y
-}"#, refused("N grows its parameters as it recurses"); FuseExpect::None);
-
-run!(growing_typedef_map_key_refused, r#"{
-    type N<'a> = [null, ('a, N<Array<'a>>)];
-    let m: Map<N<i64>, i64> = {};
-    m
-}"#, refused("a map key type can't hold N"); FuseExpect::None);
-
-run!(growing_typedef_select_refused, r#"{
-    type N<'a> = [null, ('a, N<Array<'a>>)];
-    let f = |u: [N<i64>, N<string>]| select u { N<i64> as a => 1, N<string> as b => 2 };
-    f(null)
-}"#, refused("which hold N, whose parameters grow as it recurses"); FuseExpect::None);
-
-// The growth refusal names the definition whose parameters grow, whichever
-// side of the pair it stands on, never a neighbour that has none.
-run!(growing_typedef_select_names_growing_pattern_side, r#"{
-    type G<'a> = [i64, Error<G<Array<'a>>>];
-    type P = [i64, Error<P>];
-    let v: [`L(G<i64>), `R(G<i64>)] = never();
-    select v { [`L(P), `R(P)] as x => 0, _ => 1 }
-}"#, refused("which hold G, whose parameters grow as it recurses"); FuseExpect::None);
-
-run!(growing_typedef_select_names_growing_scrutinee_side, r#"{
-    type G<'a> = [i64, Error<G<Array<'a>>>];
-    type P = [i64, Error<P>];
-    let v: [`L(P), `R(P)] = never();
-    select v { [`L(G<i64>), `R(G<i64>)] as x => 0, _ => 1 }
-}"#, refused("which hold G, whose parameters grow as it recurses"); FuseExpect::None);
-
-run!(growing_typedef_bind_names_growing_source, r#"{
-    type G<'a> = [i64, Error<G<Array<'a>>>];
-    type P = [i64, Error<P>];
-    let x: G<i64> = never();
-    let y: P = x;
-    y
-}"#, refused("cannot compare two instances of G: its parameters grow"); FuseExpect::None);
-
-run!(growing_typedef_bind_names_growing_target, r#"{
-    type G<'a> = [i64, Error<G<Array<'a>>>];
-    type P = [i64, Error<P>];
-    let x: P = never();
-    let y: G<i64> = x;
-    y
-}"#, refused("cannot compare two instances of G: its parameters grow"); FuseExpect::None);
 
 // A finite type whose parameters grow a few times is decided as usual.
 run!(
@@ -7214,11 +7133,11 @@ run!(
     "#
 ; FuseExpect::None);
 
-// Two instances of a nested datatype whose parameters are equal are one
-// type, open cells included: a generic function over it checks.
+// A nested datatype is refused at its definition, written at the top level
+// as in a block.
 run!(
-    nested_datatype_instances_relate_by_parameters,
-    is(Value::I64(1)),
+    nested_datatype_refused,
+    refused("recursive type N grows its parameter 'a as it recurses"),
     "/test.gx" => r#"
         type N<'a> = [null, ('a, N<Array<'a>>)];
         let n1: N<i64> = (1, ([2], null));
@@ -7226,18 +7145,6 @@ run!(
         let result = select g(n1) { null => 0, (x, _) => x }
     "#
 );
-
-// A union member whose comparison would grow without end is a member that
-// does not match; the others still cover the value.
-run!(
-    a_growing_member_is_a_miss,
-    is(Value::Null),
-    "/test.gx" => r#"
-        type N<'a> = [null, ('a, N<Array<'a>>)];
-        let f = |x: N<i64>| -> [N<string>, (Any, Any), null] x;
-        let result = f(null)
-    "#
-; FuseExpect::None);
 
 // A union's normal form does not depend on the order its members are
 // written in: f and g take one type, so [f, g] is an array of one fn type.

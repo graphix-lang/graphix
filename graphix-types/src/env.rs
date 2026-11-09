@@ -10,7 +10,7 @@ use crate::{
     tracked::{TrackedMap, TrackedSet},
     typ::{
         AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
-        Unguarded,
+        Unguarded, expansive::Expansive,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -520,6 +520,15 @@ fn non_contractive(name: &str) -> String {
         "recursive type {name} refers back to itself through unions and aliases \
          alone, so it names no value; a recursive type must recurse through a \
          structural body (variant, tuple, struct, array, ...)"
+    )
+}
+
+fn expansive(name: &str, param: &TVar) -> String {
+    format!(
+        "recursive type {name} grows its parameter {param} as it recurses: {param} \
+         comes back wrapped in a constructor, so {name} unfolds to ever larger types \
+         and no check over it ends; a recursive type must pass its parameters on \
+         unwrapped"
     )
 }
 
@@ -2225,7 +2234,6 @@ impl Env {
         } else {
             (new(), Arc::new(AtomicBool::new(false)))
         };
-        let key = def.def_key();
         let written = match &rep {
             Some(r) if !same_formals(def.params(), &params) => {
                 let formals: LPooled<AHashMap<ArcStr, Type>> = def
@@ -2237,6 +2245,7 @@ impl Env {
             }
             r => r.clone(),
         };
+        let td_def = def.clone();
         let td = TypeDef { def, rep: written, doc, seeded };
         let defs = self.lexical.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(name.into(), td);
@@ -2274,15 +2283,102 @@ impl Env {
                 self.abstract_reps.insert(*id, Arc::new(r));
             }
         }
-        // Every self-reference must sit under a constructor: `type T =
-        // [i64, T]` (or `type A = B; type B = A`) names no value, and
-        // contains' coinductive memo would accept it against anything.
-        match typ.reaches_unguarded(self, key) {
-            Unguarded::Reaches => {
+        match self.typedef_shape(name, &typ, &td_def) {
+            Err(e) => {
                 self.undeftype(scope, name);
-                bail!("{}", non_contractive(name))
+                Err(e)
             }
-            u => Ok((u, deferred)),
+            Ok(u) => Ok((u, deferred)),
+        }
+    }
+
+    // XCR claude for claude: [bug/medium] contains' growth bound counts the expansions of
+    // a definition on a side that grew one after another, and an expansion that does not
+    // grow starts the count again, so a definition beside a non-growing application of
+    // itself, or two growing on alternate steps, may never be cut: `type G<'a> =
+    // [Error<G<Array<'a>>>, Error<G<'a>>, `X]`, H alike with `Y, `let v: G<i64> =
+    // never(); select v { H<i64> as x => 0, _ => 1 }` (grow3.gx; grow2.gx alike) does
+    // not end its --check in 60 s on cr48-X, in matching_type's contains under
+    // set_covers_by_distribution; main hangs earlier, in could_match. diff and
+    // could_match (PathApps), rep_collision, regular and textdata cut where
+    // cast::grows_on does (a path holding MAX_GROWTH applications of the definition
+    // with smaller parameters), which ends every walk; contains could take that rule
+    // too. probes: ~/ptmp/cr29/scratch/r11-X/fix/grow2.gx, grow3.gx
+    // (contains-growth-reset-01)
+    // 2026-11-03 claude: grow2.gx ended on cr48-X 7d0551cac, whose matching_type probes
+    // shared one ContainsHist; with that walk removed (matching-type-contains-dag-01)
+    // grow2 hangs here again (gdb: contains_int frames only), in matching_type's
+    // contains under set_covers_by_distribution, as grow3 does and as main does
+    // (earlier, in could_match). Review r11 round 2's cap15.gx (mkcap.py 15: G applied
+    // to a parameter of 2^15 leaves) hangs here too: this bound reads params_size, which
+    // stops counting at PARAMS_CAP (grows-on-counts-all-01). PathApps now counts only
+    // definitions ResolvedRef::grows takes, each unfolding once, and a size past
+    // PARAMS_CAP as larger than every other: contains could take that rule.
+    // 2026-11-03 claude: cr48-X2 carries this CR to main without cr48-X's growth cut,
+    // and it stands there: on base-r11 (main 8814f118b) and cr48-X2 alike grow2.gx and
+    // grow3.gx are killed at 60 s here (gdb: Select::typecheck0_with ->
+    // PatternNode::capture_type -> Type::matching_type -> contains_int under set_commit;
+    // main now reaches contains before could_match), and an annotation alone reaches it:
+    // `type G<'a> = [Error<G<Array<'a>>>, Error<G<'a>>, `X]`, H the same, `let v: G<i64>
+    // = never(); let w: H<i64> = v` (cg1.gx) is killed at 60 s in Bind::check_value ->
+    // Type::check_contains -> contains_int on both (G against G ends at same_ref).
+    // PathApps, ResolvedRef::grows and PARAMS_CAP named above are cr48-X's, parked
+    // (diff-cycle-hang-01): here diff and could_match have no growth bound and
+    // params_size stops at 1 << 16. probes: ~/ptmp/cr29/scratch/r11-X/x2/ (cg1.gx,
+    // grow3.gx, grow3.base.gdb)
+    // 2026-11-06 claude: The growth cut was built in lane o3 r17 and parked after three
+    // review rounds, each finding false refusals of finite values (a five-parameter
+    // shift and a large literal type; a finite N value 4 levels deep; a non-recursive
+    // typedef nested 5 deep beside a growing type). The commits stay on branch cr52-o3
+    // (d8a2d0bc0, dffb87798, 1a3fe4519, 1ee02743f), with a Kennedy-Pierce expansiveness
+    // test in typ/expansive.rs. Eric is asked as D24 whether to refuse expansive
+    // typedefs at their definition. Probes: ~/ptmp/cr29/scratch/r17-hk/ and r17-hk/r3/.
+    // 2026-11-09 claude: Eric ruled (2026-11-09): D24 (a): refuse an expansive typedef
+    // at its definition (Env::deftype), as a non-contractive one is, so no type walk
+    // needs a growth cut.
+    // 2026-11-09 claude: Env::typedef_shape (deftype, and Env::check_typedef for a
+    // definition pending on a name not yet defined, Pending::Typedef) refuses a typedef
+    // one of whose parameters flows back to it wrapped in a constructor, through any
+    // chain of typedefs and abstract representations (typ/expansive.rs, Kennedy-Pierce
+    // over the flow graph, Tarjan SCCs; a parameter passed bare, to any position, or as
+    // a bare union member flows plainly). It names the definition and the parameter:
+    // 'recursive type G grows its parameter 'a as it recurses'. The scan follows only
+    // applications that pass a formal and stops at a definition already found regular,
+    // so guicheck is 40.13G vs base-r19 40.49G. contains' MAX_GROWTH, its unfolding map,
+    // grew, Rests::cut and growth_error are gone (this CR moved here from them).
+    // cg1/grow2/grow3/cap15/shiftexp/gd6 and the r3 probes are refused at the typedef
+    // (base: killed at 60 s); finite shifts, arr6-style chains and T<['a, string]> are
+    // accepted. Pins:
+    // typ::expansive::test::{a_parameter_wrapped_on_its_way_back_is_refused,
+    // parameters_passed_on_are_regular}; lang::types::{growing_typedef_refused,
+    // growing_field_typedef_refused, nested_datatype_refused,
+    // union_growing_typedef_ends},
+    // lang::select::coverage_over_growing_parameters_refused,
+    // lang::interfaces::interface_growing_typedef_refused, book udt/recursive.md refused
+    // fence, generics.md cases. With the refusal undone the first unit pin fails and the
+    // lang pins hang. Census base-r19 vs lane: only design/review-* repros of nested
+    // datatypes change. Needs a soak.
+    /// Refuse a typedef `name`, whose body is `typ`, that names no value
+    /// or unfolds without end. Every self-reference must sit under a
+    /// constructor: `type T = [i64, T]` (or `type A = B; type B = A`)
+    /// names no value, and contains' coinductive memo would accept it
+    /// against anything. And no parameter may come back to its definition
+    /// wrapped in a constructor ([`crate::typ::expansive`]): every walk
+    /// over a type ends because its unfolding repeats.
+    fn typedef_shape(
+        &self,
+        name: &str,
+        typ: &Type,
+        def: &ResolvedRef,
+    ) -> Result<Unguarded> {
+        let guarded = match typ.reaches_unguarded(self, def.def_key()) {
+            Unguarded::Reaches => bail!("{}", non_contractive(name)),
+            u => u,
+        };
+        match crate::typ::expansive::expansive(self, def) {
+            Expansive::Grows(param) => bail!("{}", expansive(name, &param)),
+            Expansive::Unknown => Ok(guarded.or(Unguarded::Unknown)),
+            Expansive::Regular => Ok(guarded),
         }
     }
 
@@ -2356,18 +2452,15 @@ impl Env {
         Ok(())
     }
 
-    /// [`Self::deftype`]'s contractiveness again, for a definition whose
-    /// body named something not defined yet: at the end of the check
-    /// every name it reaches is. `Unknown` while a name it reaches is
-    /// still undefined.
-    pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<Unguarded> {
+    /// [`Self::deftype`]'s check of a typedef's shape again, for a
+    /// definition whose body named something not defined yet: at the end
+    /// of the check every name it reaches is. `Unknown` while a name it
+    /// reaches is still undefined.
+    pub fn check_typedef(&self, scope: &ModPath, name: &str) -> Result<Unguarded> {
         let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
             return Ok(Unguarded::Guarded);
         };
-        match td.typ().reaches_unguarded(self, td.def.def_key()) {
-            Unguarded::Reaches => bail!("{}", non_contractive(name)),
-            u => Ok(u),
-        }
+        self.typedef_shape(name, td.typ(), &td.def)
     }
 
     /// The representation of the Graphix-minted abstract type `id`, if

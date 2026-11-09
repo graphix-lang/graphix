@@ -40,6 +40,7 @@ mod contains;
 pub use contains::ContainsFlags;
 pub(crate) use contains::find_impl;
 pub use contains::{InfiniteType, TypeMismatch};
+pub(crate) mod expansive;
 pub mod fntyp;
 mod matches;
 pub use matches::SigMatch;
@@ -644,7 +645,7 @@ pub enum Unguarded {
 }
 
 impl Unguarded {
-    fn or(self, other: Self) -> Self {
+    pub(crate) fn or(self, other: Self) -> Self {
         match (self, other) {
             (Self::Reaches, _) | (_, Self::Reaches) => Self::Reaches,
             (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
@@ -876,6 +877,10 @@ pub struct ResolvedRef {
     typ: Type,
     /// [`Self::is_recursive`], once every name it met resolved
     recursive: OnceLock<bool>,
+    /// [`expansive::expansive`] found it regular with every name it
+    /// reached defined, so no flow through it comes back to a definition
+    /// made later.
+    pub(crate) regular: OnceLock<()>,
 }
 
 impl ResolvedRef {
@@ -1006,7 +1011,15 @@ impl ResolvedRef {
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
     ) -> Self {
-        Self { canonical_scope, pos, ori, params, typ, recursive: OnceLock::new() }
+        Self {
+            canonical_scope,
+            pos,
+            ori,
+            params,
+            typ,
+            recursive: OnceLock::new(),
+            regular: OnceLock::new(),
+        }
     }
 
     pub(crate) fn pos(&self) -> SourcePosition {
@@ -1098,7 +1111,8 @@ pub(crate) fn resolved_encode(
     r: &ResolvedRef,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
-    let ResolvedRef { canonical_scope, pos, ori, params, typ, recursive: _ } = r;
+    let ResolvedRef { canonical_scope, pos, ori, params, typ, recursive: _, regular: _ } =
+        r;
     canonical_scope.encode(buf)?;
     image::pos_encode(pos, buf)?;
     image::origin_encode(ori, buf)?;
@@ -1114,6 +1128,7 @@ pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackErr
         params: PackTrait::decode(buf)?,
         typ: PackTrait::decode(buf)?,
         recursive: OnceLock::new(),
+        regular: OnceLock::new(),
     })
 }
 
@@ -3333,6 +3348,7 @@ impl Type {
                     params: _,
                     typ: def_typ,
                     recursive: _,
+                    regular: _,
                 } = &*resolved;
                 resolved.check_arity(name, params)?;
                 if env.ide.is_lsp() {

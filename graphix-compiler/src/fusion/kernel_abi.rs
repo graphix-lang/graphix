@@ -474,6 +474,12 @@ impl<'a> Seen<'a> {
 // would end both, and might fuse the second. probes:
 // ~/ptmp/cr29/scratch/r17-hk/r3/perfect3.gx, perfect4.gx, perfect4.gdb
 // (freeze-expansive-01)
+// 2026-11-09 claude: Eric ruled (2026-11-09) D24 (a): an expansive typedef is refused
+// at its definition (lane 19f, contains-growth-reset-01: typ/expansive.rs,
+// Env::typedef_shape). perfect3.gx, perfect4.gx and N<'a> = [`Nil, `Cons('a,
+// N<Array<'a>>)] are refused there now, so the freeze cannot meet a non-regular type:
+// MAX_FREEZE_EXPANSIONS and the cut it bounds look dead; verify and remove (the next
+// agent).
 /// Bounds the expansion chain for non-regular recursion
 /// (`type T<'a> = T<Array<'a>>`), whose keys never repeat.
 pub(crate) const MAX_FREEZE_EXPANSIONS: usize = 256;
