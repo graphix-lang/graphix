@@ -678,7 +678,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Fork(f) => {
                 if !f.aliases.same(&aliases) {
-                    f.aliases = aliases
+                    f.aliases = aliases.with_kept(&f.aliases, |_| true)
                 }
                 if let (Some(mine), Some(theirs)) = (&f.reads, reads) {
                     mine.lock().extend(theirs.into_inner());
@@ -947,7 +947,7 @@ impl<V: Clone> Layered<V> {
         }
     }
 
-    // CR claude for claude: [bug/medium] A forked branch's merge sets this layer's aliases to
+    // XCR claude for claude: [bug/medium] A forked branch's merge sets this layer's aliases to
     // the child's whenever they differ, so a later sibling's merge, whose table is the one
     // it was forked with, takes back the joins an earlier sibling's compile made: the
     // event's table then lags the runtime's (RtView::merge's Root arm replays the earlier
@@ -965,10 +965,15 @@ impl<V: Clone> Layered<V> {
     // event's table lags, a late fire to a val's reader is missed. Not a regression (the
     // event's table was used there before); no witness built, it needs a dynamic module
     // joined inside a forked sibling. The fix of the merge covers it too. (review r17 o2)
+    // 2026-11-09 claude: Both merges (Layered::merge, RtView::merge Fork arm) now union the
+    // child's table over the parent's with VarAliases::with_kept. Pin:
+    // branch::tests::sibling_merges_keep_every_join fails without it (second sibling drops
+    // the first's join). No end-to-end witness for late_fire built; the two-table resolution
+    // in ExecCtx::deliver/read_var is left as is. Needs a soak.
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
         if !self.aliases.same(&child.aliases) {
-            self.aliases = child.aliases
+            self.aliases = child.aliases.with_kept(&self.aliases, |_| true)
         }
         for id in child.removed {
             self.remove(&id);
@@ -1741,5 +1746,20 @@ mod tests {
         for id in inner.iter().chain([&outer]) {
             assert_eq!(none.var(*id), *id)
         }
+    }
+
+    #[test]
+    fn sibling_merges_keep_every_join() {
+        let (a, b, x, y) = (BindId::new(), BindId::new(), BindId::new(), BindId::new());
+        let mut parent = Layered::<u32>::default();
+        let mut first = unsafe { parent.fork() };
+        let second = unsafe { parent.fork() };
+        first.aliases = VarAliases::new([(a, x)].into_iter().collect());
+        let mut second = second;
+        second.aliases = VarAliases::new([(b, y)].into_iter().collect());
+        parent.merge(first);
+        parent.merge(second);
+        assert_eq!(parent.aliases.var(a), x);
+        assert_eq!(parent.aliases.var(b), y);
     }
 }
