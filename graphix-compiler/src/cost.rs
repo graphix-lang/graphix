@@ -825,22 +825,34 @@ impl SlotSite {
     /// A forked update of `n` standing slots, which started at tick `t0`
     /// and ran as `parts`, is over.
     pub fn forked(&mut self, t0: u64, n: usize, parts: &Parts) {
-        if let Slots::Measured { .. } = self.standing {
-            self.forked_with(ticks_since(t0), n, parts, crate::branch::eval_workers())
+        if let (Slots::Measured { .. }, Some(cal)) = (&self.standing, calibration()) {
+            let workers = crate::branch::eval_workers();
+            self.forked_with(cal, ticks_since(t0), n, parts, workers)
         }
     }
 
     /// Learn what a fork of `n` slots on `workers` workers took beyond
     /// its parts, and run the slots in order once [`LOSSES`] forks in a
-    /// row took no less than in order.
-    fn forked_with(&mut self, total: u64, n: usize, parts: &Parts, workers: usize) {
+    /// row lost: their parts cost less than a fork pays at, or the fork
+    /// took no less than its parts in order or the slots' mean times
+    /// their count.
+    fn forked_with(
+        &mut self,
+        cal: &Calibration,
+        total: u64,
+        n: usize,
+        parts: &Parts,
+        workers: usize,
+    ) {
+        let least = self.least(cal);
         let Slots::Measured { mean, losses, .. } = &mut self.standing else { return };
         if parts.count < 2 {
             return;
         }
         let critical = parts.longest.max(parts.sum / workers.max(1) as u64);
         self.overhead = (self.overhead + total.saturating_sub(critical)) / 2;
-        if total < mean.saturating_mul(n as u64) {
+        let in_order = parts.sum.min(mean.saturating_mul(n as u64));
+        if parts.sum >= 2 * least && total < in_order {
             *losses = 0;
         } else if *losses + 1 < LOSSES {
             *losses += 1;
@@ -1177,13 +1189,13 @@ mod tests {
         let mut site = SlotSite::default();
         for _ in 0..LOSSES - 1 {
             next_fork(&mut site, &cal, n, each);
-            site.forked_with(serial, n, &slow, workers);
+            site.forked_with(&cal, serial, n, &slow, workers);
         }
         next_fork(&mut site, &cal, n, each);
-        site.forked_with(serial / 2, n, &parts(&[serial / 2, serial / 2]), workers);
+        site.forked_with(&cal, serial / 2, n, &parts(&[serial / 2, serial / 2]), workers);
         for _ in 0..LOSSES - 1 {
             next_fork(&mut site, &cal, n, each);
-            site.forked_with(serial, n, &slow, workers);
+            site.forked_with(&cal, serial, n, &slow, workers);
         }
         assert!(
             matches!(site.standing, Slots::Measured { .. }),
@@ -1191,7 +1203,7 @@ mod tests {
         );
         assert_eq!(site.overhead, 0);
         next_fork(&mut site, &cal, n, each);
-        site.forked_with(serial + 1, n, &slow, workers);
+        site.forked_with(&cal, serial + 1, n, &slow, workers);
         assert!(
             matches!(site.plan_with(&cal, n), SlotPlan::Serial),
             "{LOSSES} forks in a row no faster than in order: {:?}",
@@ -1200,6 +1212,31 @@ mod tests {
         assert!(
             matches!(site.plan_with(&cal, 2 * n), SlotPlan::Measure(_)),
             "twice the slots probe again"
+        );
+    }
+
+    /// A fork is judged by its own update: one whose parts cost less than
+    /// a fork pays at, or that took no less than its parts in order,
+    /// lost, though it beat the slots' mean times their count.
+    #[test]
+    fn a_fork_loses_against_its_own_update() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let (n, each, workers) = (64, cal.t / 8, 4);
+        let serial = each * n as u64;
+        let mut site = SlotSite::default();
+        let cheap = parts(&[cal.t / 4, cal.t / 4]);
+        next_fork(&mut site, &cal, n, each);
+        site.forked_with(&cal, cal.t / 2, n, &cheap, workers);
+        // one part did nearly all of the update's work
+        next_fork(&mut site, &cal, n, each);
+        site.forked_with(&cal, serial / 2 + 2, n, &parts(&[serial / 2, 1]), workers);
+        assert!(matches!(site.standing, Slots::Measured { losses: 2, .. }));
+        next_fork(&mut site, &cal, n, each);
+        site.forked_with(&cal, cal.t / 2, n, &cheap, workers);
+        assert!(
+            matches!(site.plan_with(&cal, n), SlotPlan::Serial),
+            "{LOSSES} forks in a row that lost their own updates: {:?}",
+            site.standing
         );
     }
 
@@ -1212,7 +1249,7 @@ mod tests {
         let mut site = SlotSite::default();
         assert_eq!(next_fork(&mut site, &cal, n, each), grain);
         // eight parts of T on four workers take 2T; the fork took 4T more
-        site.forked_with(2 * t + 4 * t, n, &parts(&[t; 8]), workers);
+        site.forked_with(&cal, 2 * t + 4 * t, n, &parts(&[t; 8]), workers);
         assert_eq!(site.overhead, 2 * t);
         assert_eq!(
             next_fork(&mut site, &cal, n, each),
@@ -1220,7 +1257,7 @@ mod tests {
             "the overhead is the fork's, so a range still costs T"
         );
         // 6T more: halves of 5T, more than the slots
-        site.forked_with(2 * t + 6 * t, n, &parts(&[t; 8]), workers);
+        site.forked_with(&cal, 2 * t + 6 * t, n, &parts(&[t; 8]), workers);
         assert_eq!(site.overhead, 4 * t);
         loop {
             match site.plan_with(&cal, n) {
@@ -1251,7 +1288,7 @@ mod tests {
         assert_eq!(grain, 1);
         // a fork that took 32T beyond its parts: halves of 17T, which two of
         // these slots cover, where two of the last bucket's floor, 8T, do not
-        site.forked_with(64 * cal.t + 32 * cal.t, n, &parts(&[64 * cal.t; 4]), 4);
+        site.forked_with(&cal, 64 * cal.t + 32 * cal.t, n, &parts(&[64 * cal.t; 4]), 4);
         assert_eq!(site.overhead, 16 * cal.t);
         assert_eq!(next_fork(&mut site, &cal, n, each), 1);
     }

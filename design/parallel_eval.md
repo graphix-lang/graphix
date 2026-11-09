@@ -436,12 +436,16 @@ the fork took beyond its parts' critical path (the longest part, or
 their sum over the workers) is its overhead, decayed (halved at each
 fork, halved again at each re-probe), and the slots fork only where each
 half costs `T` plus it (the overhead is the fork's, paid once, so a range
-still needs only `T`). Three forks in a row that take no less than the
-slots' mean times their count turn the site serial until it re-probes or
-its slots double. A fork is judged by its wall time alone, which is
-also about its CPU: a worker that finds no job parks at once (§9), so
-the pool spends nothing after the fork beyond its parts and one empty
-search for each worker it woke. `T`
+still needs only `T`). A fork is judged by its own update: it lost when
+its parts together cost less than `2T` plus twice the overhead (an update
+cheaper than the estimate, as the cycle between two ticks of a `<-` loop
+is), or when it took no less than its parts' sum or the slots' mean times
+their count (one part held the work). Three losses in a row turn the site
+serial until it re-probes or its slots double. A server's instances are
+judged as a collection's slots are. The times are wall times, which
+also stand for the fork's CPU: a worker that finds no job parks at
+once (§9), so the pool spends nothing after the fork beyond its parts and
+one empty search for each worker it woke. `T`
 is four times the lower quartile of nine latencies of handing an idle
 pool a job, measured once per process on a thread of its own, against a pool of
 its own that nothing forks onto, as many workers as a runtime's, started when a
@@ -997,9 +1001,10 @@ serially inside; runtime compiles run in compile tasks
 (`set_par_mode`), from `GRAPHIX_PAR=off|auto|force`, `auto` by
 default: `Auto` forks where `cost.rs`'s tick histograms say a side
 costs the calibrated threshold (4x the pool's wake latency) and not
-while every worker has a part; a collection's slots fork only where each
+while every worker has a part; a collection's slots and a server's
+instances fork only where each
 half also pays what its forks took beyond their parts, and run in order
-after three forks in a row no faster than in order (`SlotSite::forked`);
+after three forks in a row that lost their updates (`SlotSite::forked`);
 `Force` forks at every fork point (tests, the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
 under it (a compile error where nothing forks; callees excluded),
 `#[serial]` inhibits them, callees included. The stack budget is per

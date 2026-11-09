@@ -714,6 +714,11 @@ const WAITING_REQUESTS: &str = r#"{
 // A merge a few nanoseconds dearer, or a change of code layout, flips Auto's slot plan
 // here by six times and in the direction of more forks; find which (SlotSite::plan_with,
 // its overhead and calibration) before trusting the bound. (par-auto-merge-sensitive-01)
+// 2026-11-09 claude: serve-instance-fork-cost-01 likely explains this: fork_instances
+// never reported its forks to SlotSite::forked, so once a dearer merge made the estimate
+// plan forks, nothing backed off and Auto forked every update. With that fixed on r19-d,
+// the lopsided pin losing_instance_forks_back_off forks 3-4 times; this test's bound was
+// not re-probed with the merge debug_assert.
 #[tokio::test(flavor = "current_thread")]
 async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
     let ok = Some(Value::I64(8));
@@ -726,5 +731,43 @@ async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
     assert_eq!(auto.values.last(), ok.as_ref());
     assert!(forced.forks > 0, "Force ran the instances in order");
     assert!(auto.forks < 50, "Auto forked {} times", auto.forks);
+    Ok(())
+}
+
+// Two waiting instances, one of which sorts 4096 values at each tick:
+// each fork of them takes the dear one's sort and the fork's own cost,
+// no less than both in order, and the cycles between ticks cost too
+// little to fork. Auto learns the losses and runs them in order.
+const LOPSIDED_REQUESTS: &str = r#"{
+    let tick = 0;
+    tick <- sys::time::timer(duration:2.ms, 200) ~ tick + 1;
+    let a0 = [9, 2, 7, 4, 1, 8, 3, 6, 5, 0, 15, 12, 11, 14, 13, 10];
+    let a1 = array::concat(a0, a0, a0, a0);
+    let a2 = array::concat(a1, a1, a1, a1);
+    let a3 = array::concat(a2, a2, a2, a2);
+    let big = array::concat(a3, a3, a3, a3);
+    let handler = |req: http::Request| {
+        let start = req ~ tick;
+        let work = select req.path == "/0" {
+            true => array::len(array::sort(array::push(big, tick))),
+            false => 0
+        };
+        select tick {
+            t if t > start + 60 && work >= 0 => { body: "ok", headers: [], status: u16:200 },
+            _ => never()
+        }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let rs = array::init(2, |i| http::request(client, "http://[addr]/[i]")$);
+    array::fold(rs, 0, |n, r| n + select r.status { u16:200 => 1, _ => 0 })
+}"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn losing_instance_forks_back_off() -> Result<()> {
+    let auto = run_par(LOPSIDED_REQUESTS, ParMode::Auto).await?;
+    assert_eq!(auto.values.last(), Some(&Value::I64(2)));
+    assert!(auto.forks < 20, "Auto forked {} times", auto.forks);
     Ok(())
 }

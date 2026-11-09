@@ -7,7 +7,7 @@
 
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue,
-    cost::{ForkSite, Meter, Plan, SlotPlan, SlotSite},
+    cost::{self, ForkSite, Meter, Parts, Plan, SlotPlan, SlotSite},
     expr::{Expr, ExprId},
     node::{
         callsite::CallNode,
@@ -1410,20 +1410,28 @@ where
     let in_order = |ctx: &mut ExecCtx<'_, R>, items: &mut [T]| -> Vec<O> {
         items.iter_mut().map(|item| f(ctx, item)).collect()
     };
-    let in_ranges = |ctx: &mut ExecCtx<'_, R>, items: &mut [T], grain: usize| {
-        let grain = grain.max(1);
-        match items.len() < 2 * grain {
-            true => in_order(ctx, items),
-            false => fork_each(ctx, items.chunks_mut(grain), |c, part| in_order(c, part))
-                .into_iter()
-                .flatten()
-                .collect(),
-        }
-    };
+    let in_ranges =
+        |ctx: &mut ExecCtx<'_, R>, items: &mut [T], grain: usize, timed: &mut Parts| {
+            let grain = grain.max(1);
+            if items.len() < 2 * grain {
+                return in_order(ctx, items);
+            }
+            let ranges = fork_each(ctx, items.chunks_mut(grain), |c, part| {
+                let t0 = cost::ticks();
+                let out = in_order(c, part);
+                (out, cost::ticks_since(t0))
+            });
+            let mut out = Vec::with_capacity(items.len());
+            for (mut part, ticks) in ranges {
+                timed.add(ticks);
+                out.append(&mut part);
+            }
+            out
+        };
     if site.in_order() {
         return in_order(ctx, items);
     }
-    // CR claude for claude: [perf/low] Waiting server instances planned
+    // XCR claude for claude: [perf/low] Waiting server instances planned
     // through their SlotSite still cost Auto several times serial's CPU,
     // and at N=300 its wall time too. design/review-2026-10-26/repro/
     // x-parallel-serve-fork-every-update.sh on the debug build at 45961f4fd
@@ -1434,6 +1442,22 @@ where
     // a request instance's estimate or the woken workers' spin, which wall
     // time cannot see. Measure on a quiet box first.
     // (serve-instance-fork-cost-01)
+    // 2026-11-09 claude: Two estimate defects, no spin. (1)
+    // branch::fork_instances never called SlotSite::forked, so a server's
+    // instance site never learned its forks' overhead nor backed off after
+    // losses: now it times each range and reports the fork, as a collection
+    // does. (2) SlotSite::forked_with judged a fork against the slots' decayed
+    // mean times their count, which a cheap cycle between two ticks of a <-
+    // loop always beats, so alternating cheap and dear updates reset the loss
+    // count forever: a fork now also loses when its parts together cost under
+    // 2*least or it took no less than its parts' sum. Repro at N=300 on ryouko
+    // (load 100, not quiet): base-r19 off 0.91 s CPU, auto 5.4-6.0 s; lane off
+    // 0.91 s, auto 0.89-0.92 s; N=20 equal either way. Pins:
+    // lang::par_attrs::losing_instance_forks_back_off (111 forks without (1),
+    // 3-4 with it; bound 20) and
+    // cost::tests::a_fork_loses_against_its_own_update (fails under the old
+    // rule). x-perf-runtime-auto-cpu.sh unchanged (lane auto 0.97 s, base
+    // 0.99-1.04 s).
     let (standing, fresh) = items.split_at_mut(old_len.min(items.len()));
     let n = standing.len();
     let out = match site.plan(ctx, n) {
@@ -1443,7 +1467,12 @@ where
             site.measured(t0, n);
             out
         }
-        SlotPlan::Fork { grain } => in_ranges(ctx, standing, grain),
+        SlotPlan::Fork { grain } => {
+            let (t0, mut parts) = (cost::ticks(), Parts::default());
+            let out = in_ranges(ctx, standing, grain, &mut parts);
+            site.forked(t0, n, &parts);
+            out
+        }
     };
     site.fresh
         .run(
@@ -1455,7 +1484,7 @@ where
             |ctx, items, _, grain| {
                 Some(match grain {
                     None => in_order(ctx, items),
-                    Some(grain) => in_ranges(ctx, items, grain),
+                    Some(grain) => in_ranges(ctx, items, grain, &mut Parts::default()),
                 })
             },
             |mut a, mut b| {
