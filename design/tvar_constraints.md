@@ -651,8 +651,8 @@ An image carries each cell's level and each definition's depth.
 - The terminal settle (`FnType::settle_terminal`, the check's drain)
   walks the LIVE ftype in dependency order, the cells its bindings hold
   as positions included and every cell a chain of bounds reaches from
-  them, however deep (pin `lang::types::
-  a_call_settles_a_variable_only_a_bound_of_a_bound_names`), and settles
+  them, however deep, each cell's binding walked once (pin
+  `typ::settle::test::a_terminal_settle_decides_a_bound_of_a_bound`), and settles
   whatever remains. A cell still
   unbound after the whole tc0 phase binds ⊥ (`TVar::settle_or_bottom`):
   nothing ever produced into it, and what bounds it (a trait, a

@@ -898,3 +898,30 @@ impl Type {
         go(self, env, &mut LPooled::take()).unwrap_or_else(|| self.clone())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// A call's terminal settle decides `'a4`, which only the bound of a
+    /// bound names: the signature holds no open cell after it.
+    #[test]
+    fn a_terminal_settle_decides_a_bound_of_a_bound() {
+        let (env, t) = Env::typed_at_root(
+            &[],
+            "fn<'a0: [Array<'a1>, null], 'a1: [Array<'a2>, null], 'a2: [Array<'a3>, null], \
+             'a3: [Array<'a4>, null], 'a4: Number>(x: ('a0, 'a1)) -> i64",
+        )
+        .unwrap();
+        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
+        ft.alias_tvars(&mut LPooled::take());
+        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ft.collect_tvars_through_bounds(&mut cells);
+        let mut open: Vec<&ArcStr> =
+            cells.iter().filter(|(_, tv)| !tv.is_bound()).map(|(n, _)| n).collect();
+        open.sort();
+        assert_eq!(cells.len(), 5, "{cells:?}");
+        assert!(open.is_empty(), "open after the settle: {open:?}");
+    }
+}
