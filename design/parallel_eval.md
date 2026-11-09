@@ -324,7 +324,8 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
 
 - **Flat forks.** A fork point cuts its children into ranges up front
   (`cost::Splits::ranges`, a slot site's grain) and runs every range as
-  a sibling branch one level below it (`branch::fork_each`, a job a part), merging them in order. Binary splits nested a branch per
+  a sibling branch one level below it (`branch::fork_each`, a job a
+  part), merging them in order. Binary splits nested a branch per
   level: a read walked every layer and each join copied a write one
   more time, which doubled the work of a slot-heavy cycle on one
   thread. A collision is a delivery an earlier sibling made: the later
@@ -801,14 +802,9 @@ every part is done. A worker that finds no job, idle or waiting on its
 fork, parks at once in its own bed: an announcement wakes any parked
 worker (so a waiting one helps), and the last part of a fork wakes its
 owner. Every announcement bumps an epoch, so a worker whose search began
-before one does not park. Rayon's workers search 33 rounds after each
-wake before they park, and it wakes one for every worker that finds a
-job: on a 32-core box `Force` spent 1.5-4.9 s of eval-worker CPU on the
-1100-1400 tiny forks of a 3 s timer probe and 4.8-9.5 s on
-`x-perf-runtime-02` (`--no-fusion`), against 0.02-0.21 s and 1.3-1.9 s
-on this pool, with as many cycles or more. The wake latency `Auto`
-calibrates on is unchanged (4-6 µs). A part's panic resumes on the
-forking thread once every part has finished. Pin:
+before one does not park. No worker spins, so a fork's CPU is about its
+wall time, and `Auto` weighs wall time alone (§5). A part's panic
+resumes on the forking thread once every part has finished. Pin:
 `eval_pool::test::idle_workers_park_at_once` (every empty search is
 followed by a park).
 

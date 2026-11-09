@@ -518,9 +518,7 @@ mod test {
             pool.for_each(&mut parts, |p| *p += 1);
         }
         let sleep = &pool.registry.sleep;
-        let t0 = std::time::Instant::now();
-        while sleep.sleepers.load(Ordering::SeqCst) < WORKERS {
-            assert!(t0.elapsed() < Duration::from_secs(10), "a worker never parked");
+        while !sleep.beds.iter().all(|b| *b.asleep.lock()) {
             thread::sleep(Duration::from_millis(1));
         }
         let empty = sleep.empty_searches.load(Ordering::Relaxed);
