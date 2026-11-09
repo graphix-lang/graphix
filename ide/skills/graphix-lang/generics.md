@@ -194,7 +194,9 @@ itself to a parameter wrapped in a constructor, a nested datatype
 (``type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)]``, `P<('a, 'a)>`), is
 refused at its definition, naming the parameter, directly or through
 other typedefs. Passing a parameter to another position, replacing it
-with a closed type, or adding union members to it is fine.
+with a closed type, or adding union members to it is fine. An alias applied
+to the parameter wraps it, even one that adds nothing (`U<I<'a>>` over
+`type I<'b> = 'b`): the checks compare applications as written.
 
 ```graphix,cases
 no "refers back to itself" type T = [i64, T]; 1
@@ -203,4 +205,5 @@ no "grows its parameter 'b" type A<'a> = [`N, `C(B<'a>)]; type B<'b> = A<Array<'
 ok type S<'a, 'b> = [`Nil, `C('a, S<'b, 'a>)]; 1
 ok type K<'a> = [`Nil, `C('a, K<Array<i64>>)]; 1
 ok type U<'a> = [`Nil, `C('a, U<['a, null]>)]; 1
+no "grows its parameter 'a" type I<'b> = 'b; type U<'a> = [`Nil, `C('a, U<I<'a>>)]; 1
 ```

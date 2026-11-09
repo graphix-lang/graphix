@@ -1478,7 +1478,7 @@ eta-expansion (`eta_dispatcher`); a dispatcher is only a call's own
 function. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
-sound. And it must not be expansive (Kennedy and Pierce; Eric 11-09, D24):
+sound. And it must not be expansive (Kennedy and Pierce):
 no parameter flows back to its own definition wrapped in a constructor,
 through any chain of the definitions and abstract representations it
 reaches (`typ::expansive`; ``type N<'a> = [`Nil, `Cons('a,
@@ -1486,7 +1486,9 @@ N<Array<'a>>)]``, `type P<'a> = [`L('a), `N(P<('a, 'a)>)]`, and `type A<'a>
 = [`N, `C(B<'a>)]; type B<'b> = A<Array<'b>>` at B, are refused at
 `Env::deftype`, naming the definition and the parameter). A parameter
 passed on bare, to any position, or as a bare member of a union (unions
-flatten, so `T<['a, string]>` applied again is itself) flows plainly. So
+flatten, so `T<['a, string]>` applied again is itself) flows plainly. An alias applied to a
+parameter wraps it, even `type I<'b> = 'b`: walks compare applications as
+written, so `A<I<'a>>` grows `A<I<I<'a>>>`. So
 every type unfolds to finitely many applications, and every walk over
 types ends at a pair it meets again, with no growth cut. A definition
 whose body names something not defined yet is checked again once it is

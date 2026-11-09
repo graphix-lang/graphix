@@ -296,6 +296,7 @@ mod test {
         grows(&[("A<'a>", "[`N, `C(B<'a>)]"), ("B<'b>", "A<Array<'b>>")], "B", "'b");
         grows(&[("W<'a>", "Abstract<[`N, `C(W<Array<'a>>)]>")], "W", "'a");
         grows(&[("U<'a>", "[`N, `C(U<['a, Array<'a>]>)]")], "U", "'a");
+        grows(&[("I<'b>", "'b"), ("A<'a>", "[`N('a), `C(A<I<'a>>)]")], "A", "'a");
     }
 
     #[test]
