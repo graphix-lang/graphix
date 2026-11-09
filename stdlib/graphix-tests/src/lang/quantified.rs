@@ -1248,3 +1248,10 @@ run!(
         let result = (T::m(1, "s"), T::m(1, 2))
     "#
 );
+
+run!(
+    a_printed_quantifier_is_not_read_for_a_cell_of_its_name,
+    "{ let g = 'a: Number |y, x: 'a| -> 'a { let z = array::len(y); x }; let h: fn(y: Array<i64>, x: string) -> string = g; h }",
+    refused("does not contain fn<'a1: Number>(y: Array<'a: i64>, x: 'a1: unbound within Number) -> 'a1: unbound within Number");
+    FuseExpect::None
+);

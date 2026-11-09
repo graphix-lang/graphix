@@ -2780,6 +2780,48 @@ pub(super) fn keep_quantifiers(
     copy
 }
 
+/// `ft` with each quantifier renamed apart from the other cells of its
+/// name that its positions hold through bindings, so a signature printed
+/// with its bindings in place never reads one cell for another; `None`
+/// where none collides.
+pub(super) fn quantifiers_apart(ft: &FnType) -> Option<FnType> {
+    if ft.quantifiers.is_empty() {
+        return None;
+    }
+    let mut own: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
+    ft.each_quantifier(|q, tv| own.push((q.clone(), tv.clone())));
+    let mut out: Option<FnType> = None;
+    for (q, tv) in own {
+        let cur = out.as_ref().unwrap_or(ft);
+        let addr = tv.cell_addr();
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        if !cur
+            .try_for_each_type(&mut |t| t.holds_other_cell(&q, addr, &mut seen))
+            .is_break()
+        {
+            continue;
+        }
+        let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        seen.clear();
+        cur.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
+        avoid.extend(cur.quantifiers.iter().cloned());
+        let name = name_apart(&q, &avoid);
+        let mut memo = CopyMemo::default();
+        let Some(mut renamed) = cur
+            .cow_walk(|t| t.renamed_cells(&|c| c.cell_addr() == addr, &name, &mut memo))
+        else {
+            continue;
+        };
+        renamed.quantifiers = Arc::from_iter(
+            cur.quantifiers
+                .iter()
+                .map(|n| if *n == q { name.clone() } else { n.clone() }),
+        );
+        out = Some(renamed);
+    }
+    out
+}
+
 // Each walk below spells out only the arms whose policy differs from
 // plain recursion (chiefly whether `Ref` params are walked); the rest
 // routes through `Type::try_for_each_child` / `Type::cow_children`.
@@ -3374,6 +3416,37 @@ impl Type {
                 ft.for_each_type(&mut |t| t.names_held(out, seen))
             }
             t => t.for_each_child(&mut |c| c.names_held(out, seen)),
+        })
+    }
+
+    /// Whether a cell named `q` other than the one at `addr` is held,
+    /// through bindings and bounds.
+    fn holds_other_cell(
+        &self,
+        q: &ArcStr,
+        addr: usize,
+        seen: &mut AHashSet<usize>,
+    ) -> ControlFlow<()> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                if tv.name == *q && tv.cell_addr() != addr {
+                    return ControlFlow::Break(());
+                }
+                if seen.insert(tv.cell_addr()) {
+                    for t in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
+                        t.holds_other_cell(q, addr, seen)?
+                    }
+                    if let Some(b) = tv.binding() {
+                        b.holds_other_cell(q, addr, seen)?
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => {
+                ControlFlow::Continue(())
+            }
+            Type::Fn(ft) if ft.quantifiers.contains(q) => ControlFlow::Continue(()),
+            t => t.try_for_each_child(&mut |c| c.holds_other_cell(q, addr, seen)),
         })
     }
 
