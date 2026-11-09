@@ -269,6 +269,11 @@ variables at its own types; so a val something writes must fit its
 implementation: a copy of the val's type contained in the
 implementation's, the implementation's variables rigid, none taking a
 bound its own bounds do not imply (`CompileCtx::check_val_written`).
+The copy's variables are solved by every position that meets them: in
+an argument one takes the implementation's part as a lower bound rather
+than binding to it (`ContainsFlags::LowerInArgs`), so `val f: fn(x: 'a)
+-> B<'a>` over `let f = |x| B(x)` (`fn(x: 'x) -> B<'c>`, `'c` above
+`'x`) fits, `'a` being `'c`.
 Within one compile a `<-` or `&mut` among a block's statements compiles
 before the module checks, so the module's check asks it of a val that
 is a `<-` target; a later compile's write or `&mut` through a val

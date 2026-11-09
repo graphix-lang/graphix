@@ -55,6 +55,12 @@ pub enum ContainsFlags {
     /// rather than bound to the whole union: where no binding holds every
     /// bound of a cell ([`commit_lower`]).
     IntoMember,
+    /// Under `Contra`, an open cell `self` reaches takes `t`'s part as a
+    /// lower bound instead of binding to it, a rigid cell too: a solve for
+    /// an instance that a held type must contain decides each cell by every
+    /// position that meets it, where a bind at an argument fixes it below
+    /// what a later position needs.
+    LowerInArgs,
 }
 
 /// The infinite-type refusal: what a unification asked for holds
@@ -716,11 +722,24 @@ fn nesting(t: &Type) -> usize {
 /// a rigid cell rigid wherever the decision will, so a member it admits
 /// does not fail on that cell.
 fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
-    let lower = flags & (ContainsFlags::Lower | ContainsFlags::IntoMember);
+    let lower = flags
+        & (ContainsFlags::Lower | ContainsFlags::IntoMember | ContainsFlags::LowerInArgs);
     match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
         true => lower | ContainsFlags::RigidCheck,
         false => lower,
     }
+}
+
+/// Whether the open cell `tv` takes what it must hold as a lower bound
+/// rather than binding to it ([`ContainsFlags::Lower`] outside a
+/// function's arguments, where a rigid `part` merges, and
+/// [`ContainsFlags::LowerInArgs`] inside them).
+fn takes_lower(flags: BitFlags<ContainsFlags>, tv: &TVar, rigid_part: bool) -> bool {
+    !tv.is_rigid()
+        && match flags.contains(ContainsFlags::Contra) {
+            false => flags.contains(ContainsFlags::Lower) && !rigid_part,
+            true => flags.contains(ContainsFlags::LowerInArgs),
+        }
 }
 
 /// A variable whose chain of bindings ends open.
@@ -2777,10 +2796,7 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return rigid_holds_by_lower(t0, flags, env, hist, t1);
                 }
-                if flags.contains(ContainsFlags::Lower)
-                    && !flags.contains(ContainsFlags::Contra)
-                    && !t0.is_rigid()
-                {
+                if takes_lower(flags, t0, false) {
                     if !conjuncts_admit(t0, flags, env, hist, t1)? {
                         return Ok(false);
                     }
@@ -3089,12 +3105,7 @@ impl Type {
         let rigid = flags.contains(ContainsFlags::RigidCheck);
         let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
         // `t0` takes `t1` as a lower bound, rather than a merge or a bind
-        let lower = |t1_rigid: bool| {
-            flags.contains(ContainsFlags::Lower)
-                && !flags.contains(ContainsFlags::Contra)
-                && !t0.is_rigid()
-                && !t1_rigid
-        };
+        let lower = |t1_rigid: bool| takes_lower(flags, t0, t1_rigid);
         // A cycle under a constructor has no finite solution; the cells on
         // a bare one are one type.
         let refuse = |cycle: Cycle, paths: &[Reach], hist: &mut ContainsHist| {
@@ -3220,7 +3231,7 @@ impl Type {
                     return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
                 }
                 // an open cell below is bounded by what bounds `t0`, as a
-                // merge would have it; a declared one is merged
+                // merge would have it; under `Lower` a declared one is merged
                 if lower(t1.is_rigid()) {
                     if commit {
                         for c in t0.cell_constraints() {

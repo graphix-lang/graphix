@@ -2018,6 +2018,46 @@ run!(
     "/test/m.gxi" => "val f: fn(x: i64) -> i64; val g: fn(t: Any) -> i64",
     "/test/m.gx" => "let f: fn(x: i64) -> i64 = |x| x; let g = |t| f(t ~ 1)");
 
+// The val's variable is decided by every position it meets: the argument
+// puts it above the implementation's `'x`, and the result makes it the
+// implementation's `'c`, which holds `'x` from below.
+run!(
+    write_through_a_val_whose_result_holds_the_argument_from_below,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s 7"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x| m::B(x);
+        let result = "[m::f("s").0] [m::f(7).0]"
+    "#,
+    "/test/m.gxi" => "type B<'p> = Abstract<'p>; val f: fn(x: 'a) -> B<'a>",
+    "/test/m.gx" => "let f = |x| B(x)"
+; FuseExpect::None);
+
+run!(
+    write_through_a_val_whose_result_holds_the_argument_from_below_lands,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s 7"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x| m::B((x, 1));
+        let (r, q) = (m::f("s").0, m::f(7).0);
+        let result = select (r.1, q.1) { (1, 1) => "[r.0] [q.0]", _ => never() }
+    "#,
+    "/test/m.gxi" => "type B<'p> = Abstract<('p, i64)>; val f: fn(x: 'a) -> B<'a>",
+    "/test/m.gx" => "let f = |x| B((x, 0))"
+; FuseExpect::Jit);
+
+run!(
+    write_through_a_val_whose_result_does_not_hold_the_argument_refused,
+    refused("val f is written, and what is written lands on its implementation"),
+    "/test.gx" => r#"
+        mod m;
+        m::f <- |x| m::B(x);
+        let result = m::g(null)
+    "#,
+    "/test/m.gxi" => "type B<'p> = Abstract<'p>; val f: fn(x: 'a) -> B<'a>; val g: fn(t: Any) -> string",
+    "/test/m.gx" => "let f = |x| B(never()); let g = |t| { let b: B<string> = f(t ~ 1); b.0 }"
+);
+
 run!(
     bounded_write_through_a_val_refused,
     refused("val f is written, and what is written lands on its implementation"),
