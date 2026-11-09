@@ -2355,67 +2355,6 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static>
     }
 }
 
-// XCR claude for claude: [risk/low] grows_on, which rep_collision, regular and
-// textdata cut with, counts the applications of every definition, so a finite chain
-// of distinct typedefs that applies one non-recursive definition to ever larger
-// arguments (`type Opt<'a> = ['a, null]; type A = Opt<Array<B>>; type B =
-// Opt<Array<Array<C>>>; ..`, review r11's arr6.gx) is taken for growing once the
-// chain is MAX_GROWTH long; and params_size stops counting at PARAMS_CAP, so growth
-// past it is never seen (review r11's cap15.gx: G applied to a parameter of 2^15
-// leaves; contains' own bound reads the same measure and hangs there first, on main
-// and on cr48-X). cr48-X's PathApps (diff, could_match) counts only a definition
-// ResolvedRef::grows takes and a size past PARAMS_CAP as larger than every other;
-// these walks could take both rules. Not shown to change a verdict on main. probes:
-// ~/ptmp/cr29/scratch/review-r11/X-r2-1/f/arr6.gx, X-r2-2/mkcap.py
-// (grows-on-counts-all-01)
-// 2026-11-03 claude: cr48-X2 carries this CR to main without cr48-X's growth cut:
-// PathApps, ResolvedRef::grows and PARAMS_CAP named above are not here (params_size
-// stops at 1 << 16), and the rule they suggest failed review r11 there (X-r3-1:
-// verdicts main reaches changed, cv5, unfa5, unfx6, gen_chain; X-r3-2: grows
-// quadratic over typedef chains, mkgc, mkgp). What the CR says of grows_on stands
-// on main: arr6.gx is refused (unreachable arm) on base-r11 and cr48-X2 alike, with
-// one message.
-// 2026-11-06 claude: The growth cut was built in lane o3 r17 and parked after three
-// review rounds, each finding false refusals of finite values (a five-parameter
-// shift and a large literal type; a finite N value 4 levels deep; a non-recursive
-// typedef nested 5 deep beside a growing type). The commits stay on branch cr52-o3
-// (d8a2d0bc0, dffb87798, 1a3fe4519, 1ee02743f), with a Kennedy-Pierce expansiveness
-// test in typ/expansive.rs. Eric is asked as D24 whether to refuse expansive
-// typedefs at their definition. Probes: ~/ptmp/cr29/scratch/r17-hk/ and r17-hk/r3/.
-// 2026-11-09 claude: Eric ruled (2026-11-09): D24 (a): refuse an expansive typedef
-// at its definition (Env::deftype), as a non-contractive one is, so no type walk
-// needs a growth cut. Built for contains-growth-reset-01 (lane 19f):
-// typ/expansive.rs refuses a typedef one of whose parameters flows back to it
-// wrapped in a constructor (a bare union member flows plainly), and contains'
-// MAX_GROWTH bookkeeping is gone. What remains here: grows_on, MAX_GROWTH,
-// growing_side, walk's grows argument, Indiscernible::Grows and TextRefusal::Grows
-// (rep_collision, regular, textdata, tval's params_size, cast.rs's cuts counter at
-// the Ref arm) are now dead and can go, with the compiler's 'grows its parameters'
-// messages (graphix-compiler lib.rs) and params_size; verify each. Their unit pins
-// over a growing type (regular's a_growing_application_has_a_key, textdata's growth
-// half) were removed with the refusal, since typed_at_root refuses the typedef.
-// 2026-11-09 claude: Done per D24 (a). Removed: grows_on, MAX_GROWTH, growing_side,
-// def_of/size_of, walk's grows argument and At's sizes (walk now keys an
-// application alone), Expanded's path and sides, Indiscernible::Grows,
-// TextRefusal::Grows with textdata's walk path and Same's left/right, regular's
-// path and its 'g' node (and defined_name), CastCx::sizes (cast_int's Ref arm
-// refused a value read through one definition applied twice over it, the inner to a
-// larger argument: type I<'a> = 'a; type B = I<{x: i64}>; type A = I<B>;
-// cast<A>({x: 1}) was an InvalidCast; its cuts counter stays, it counts path
-// repeats), tval's size test (now an exact application on the path at the value),
-// params_size, Indiscernible::untold's unused test/rest, and the compiler's three
-// 'grows its parameters' messages. Also shapes_collide's per-path definition cut,
-// the same kind: it missed a shape collision inside Array<O<O<X>>> (the shallow
-// select test assumed none). Pins that fail without it:
-// typ::cast::tests::{a_finite_chain_of_larger_arguments_is_discernible,
-// a_definition_applied_twice_over_one_value_reads_it,
-// a_nested_application_is_searched_for_shapes},
-// typ::regular::test::a_finite_chain_of_larger_arguments_is_keyed_by_its_expansion,
-// typ::textdata::test::a_finite_chain_of_larger_arguments_is_judged, graphix-tests
-// lang::types::{finite_chain_of_larger_arguments (v == w and a Map key over a
-// six-typedef chain: 'can't compare values of .. Opt grows its parameters' on
-// base), cast_through_a_larger_application}. Census vs the lane's previous commit:
-// no change; fuzz regress clean.
 /// `body` inside the application `at`: `again` when the walk expanded it
 /// already. A typedef is neither expansive nor non-contractive
 /// ([`Env::deftype`]), so a type unfolds to finitely many applications
@@ -2426,13 +2365,9 @@ fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>
     again: R,
     body: impl FnOnce(&mut Expanded<K, N>) -> R,
 ) -> R {
-    match at {
-        Some(k) if seen.seen.contains(&k) => again,
-        Some(k) => {
-            seen.seen.insert(k);
-            body(seen)
-        }
-        None => body(seen),
+    match at.is_none_or(|k| seen.seen.insert(k)) {
+        true => body(seen),
+        false => again,
     }
 }
 
