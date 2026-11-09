@@ -95,21 +95,6 @@ fn walked(stmts: &str, interface: bool, cycles: usize) -> u64 {
     work
 }
 
-// XCR claude for claude: [test-gap/low] The per-statement cost this compares swings by
-// about 20 instructions between runs of one binary under load (one gate run of
-// laneo2 r17 read lets with an interface 230.3 against expressions 210.8 and failed;
-// three reruns read 210.2, 193.9 and 214.9 and passed; base-r17's CLI twins read 191 to
-// 207 per variant), so its 15-instruction margin fails on noise: the count includes
-// what the runtime's idle polling retires. Count only the cycles' update passes, or
-// take the least of several runs. (idle-module-cost-noise-01)
-// 2026-11-09 claude: The swing was the compile, not idle polling: the evaluation pool
-// (one worker a core) schedules compile work differently each run, so the two runs a
-// test subtracts did not retire the same compile. Both tests now run with
-// GRAPHIX_EVAL_THREADS=1; perf stat of the walked() program reads 1.59-1.62G
-// instructions before (3% spread) and 1462.3-1463.0M after; the test's per-statement
-// costs read 201.0-202.6 over four runs. A regression of the pre-fix noise (about 20
-// per statement) would fail the 15-instruction margin; undoing SERIAL in
-// idle_module_cost.rs brings the swing back.
 #[test]
 #[cfg(target_os = "linux")]
 fn walked_module_lets_cost_what_expression_statements_do() {
