@@ -141,8 +141,8 @@ embedder, and the fuzzer's interp engine are the whole cost.
      `shared-slot-kernels`.
 
 What stays out of native code, beside the rule row: a union of null
-and variants (`[null, `A(i64), `B]` has no kernel form), a varint or
-and a union operand of arithmetic. A length ladder nested in a tuple
+and variants (`[null, `A(i64), `B]` has no kernel form), and a varint
+or union operand of arithmetic. A length ladder nested in a tuple
 counts as coverage only where its arms test nothing beside the slice
 (`design/select_coverage.md`); elsewhere the select needs a catch-all
 arm.

@@ -991,14 +991,8 @@ impl Reach {
         checking: bool,
         unguarded: bool,
     ) -> Result<bool> {
-        let composite = matches!(
-            sp,
-            StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
-                | StructPatternNode::Struct { .. }
-                | StructPatternNode::Variant { .. }
-        );
         let dead_check = checking && !self.nested.is_empty();
-        if !composite || sp.matches_anything() || !dead_check && !unguarded {
+        if !dead_check && !unguarded || !nests_slice(sp) {
             return Ok(false);
         }
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
@@ -1569,6 +1563,20 @@ fn pooled_leaves(
 struct InnerSlice {
     path: SmallVec<[u32; 4]>,
     len: (usize, bool),
+}
+
+/// Whether an array or list slice stands at a tuple, struct or variant
+/// position of `sp`, where [`inner_slices`] looks for one.
+fn nests_slice(sp: &StructPatternNode) -> bool {
+    let holds = |p: &StructPatternNode| p.is_array_slice() || nests_slice(p);
+    crate::stack::ensure_sufficient(|| match sp {
+        StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds }
+        | StructPatternNode::Variant { tag: _, all: _, binds } => binds.iter().any(holds),
+        StructPatternNode::Struct { all: _, width: _, binds } => {
+            binds.iter().any(|(_, _, p)| holds(p))
+        }
+        _ => false,
+    })
 }
 
 /// The slices composite pattern `sp` tests inside `t`, found along

@@ -671,6 +671,31 @@ run!(
     FuseExpect::Jit
 );
 
+// Each member keeps its own nested ladder, a list or a suffix slice climbs
+// one as an array prefix does, and a member no ladder completes stays
+// uncovered.
+run!(
+    nested_slice_ladder_per_member,
+    r#"{
+  let f = |v: [(Array<i64>, i64), (Array<string>, i64)]| select v { ([], _) => 0, ([a, ..], _) => 1 };
+  let g = |x: List<i64>| select (x, 0) { ([<>], _) => 0, ([<a, ..>], _) => a };
+  let h = |x: Array<i64>| select (x, 0) { ([], _) => 0, ([i.., a], _) => a };
+  f(([], 1)) + f((["s"], 1)) * 10 + g([<5>]) * 100 + h([1, 7]) * 1000
+}"#,
+    is(Value::I64(7510));
+    FuseExpect::Jit
+);
+
+run!(
+    nested_slice_ladder_leaves_other_member,
+    r#"{
+  let f = |v: [`A(Array<i64>), `B]| select v { `A([]) => 0, `A([h, ..]) => h };
+  f(`B)
+}"#,
+    refused("missing match cases: no arm covers `B");
+    FuseExpect::None
+);
+
 run!(
     nested_slice_ladder_dead_wildcard_refused,
     r#"{
