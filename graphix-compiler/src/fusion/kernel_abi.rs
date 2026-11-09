@@ -173,7 +173,7 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 fn primitive_union(members: &[Type]) -> Option<Type> {
     fn bits(t: &Type, acc: &mut BitFlags<Typ>) -> bool {
         // a member with no bits (⊥, an empty set) is no primitive
-        match &t.deref_cloned() {
+        crate::stack::ensure_sufficient(|| match &t.deref_cloned() {
             Some(Type::Primitive(p)) if !p.is_empty() => {
                 *acc |= *p;
                 true
@@ -195,7 +195,7 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
                 all
             }
             _ => false,
-        }
+        })
     }
     let mut acc = BitFlags::empty();
     let mut folded = 0;
@@ -1379,6 +1379,27 @@ mod tests {
             });
             prop_assert_eq!(freeze_for_abi_normalized(&typ), expected);
         }
+    }
+
+    /// A union nested past any thread's stack folds to its primitives:
+    /// the depth of a chain of union typedefs is the program's.
+    #[test]
+    fn deep_union_folds_without_overflow() {
+        let mut levels = vec![i64_t()];
+        for _ in 0..200_000 {
+            let inner = levels.last().unwrap().clone();
+            levels.push(Type::Set(Arc::from_iter([
+                inner,
+                Type::Primitive(Typ::I32.into()),
+            ])));
+        }
+        let members =
+            [levels.last().unwrap().clone(), Type::Primitive(Typ::String.into())];
+        let want = Type::Primitive(Typ::I64 | Typ::I32 | Typ::String);
+        assert_eq!(primitive_union(&members), Some(want));
+        drop(members);
+        // outermost first, so no drop recurses
+        while levels.pop().is_some() {}
     }
 }
 
