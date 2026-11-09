@@ -1590,6 +1590,17 @@ fn annotation_may_fit(
     Ok(true)
 }
 
+// CR claude for claude: [bug/low] (decided-elsewhere-rec-01) The note claims
+// "another argument decided" a variable whenever the formal holds a bound
+// cell, whoever bound it. In a `let rec` self-call the formal is the def's
+// own cell, decided by its body, and the note names a generated cell
+// ('_4611686018427396573) and asks to annotate an argument that decided
+// nothing; the argument there (`buffer::to_string(..)`, a closed Result
+// against i64) is no annotation's to fix. probe:
+// ~/ptmp/cr29/scratch/r19/19g/fin_rec_note.gx, and the census message change
+// on graphix-fuzz/findings/rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx.
+// A fix: note only a variable an earlier argument of this call bound, and
+// only a written one.
 /// What a refusal of an argument of type `arg`, holding an undecided cell,
 /// at a formal the call did not open asks to annotate: where another
 /// argument already decided a variable of `formal` to a type a wider
