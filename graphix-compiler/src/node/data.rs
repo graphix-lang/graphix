@@ -286,9 +286,38 @@ impl<R: Rt> StructWith<R> {
                 Ok(Replace::with(None, name.clone(), n))
             })
             .collect::<Result<Box<[_]>>>()?;
-        let typ = source.typ().clone();
+        let typ = updated_type(ctx, source.typ(), &replace)
+            .unwrap_or_else(|_| Type::empty_tvar());
         Ok(Self::with(spec, typ, source, replace))
     }
+}
+
+/// The type of `{source with ..replace}`: the source's, each replaced
+/// field holding its replacement's type, as a literal's field does.
+fn updated_type<R: Rt>(
+    ctx: &CompileCtx<R>,
+    source: &Type,
+    replace: &[Replace<R>],
+) -> Result<Type> {
+    let updated = |flds: &[(ArcStr, Type, WrittenAt)]| {
+        Type::Struct(Arc::from_iter(flds.iter().map(|(name, t, at)| {
+            let t = match replace.iter().rev().find(|r| &r.name == name) {
+                Some(r) => r.n.typ(),
+                None => t,
+            };
+            (name.clone(), t.clone(), *at)
+        })))
+    };
+    if let Some(members) = union_of(ctx, source, |t| match t {
+        Type::Struct(flds) => Some(updated(flds)),
+        _ => None,
+    })? {
+        let members: LPooled<Vec<&Type>> = members.iter().collect();
+        return Type::union(&ctx.env, &members);
+    }
+    deref_typ!("struct", ctx, source,
+        Some(Type::Struct(flds)) => Ok(updated(flds))
+    )
 }
 
 impl<R: Rt> Update<R> for StructWith<R> {
@@ -1114,7 +1143,7 @@ impl<R: Rt> Struct<R> {
 }
 
 impl<R: Rt> StructWith<R> {
-    // CR claude for claude: [bug/high] A struct update holding a written binding passes
+    // XCR claude for claude: [bug/high] A struct update holding a written binding passes
     // --check and its run refuses the bind: `let s = {f: |x| x}; let j = s.f; let t = {s
     // with f: j}; println((t.f("s"), j(1))); j <- |x: i64| x + 1` runs, in jit and
     // --no-fusion, to "a run-time bind ... did not type" at t.f("s")
@@ -1184,6 +1213,27 @@ impl<R: Rt> StructWith<R> {
     // ms1-ms11), the live-cell renaming Eric is asked about as D25
     // (union-live-renaming-01). probes ~/ptmp/cr29/scratch/review-r16/d12-*/ and
     // ~/ptmp/cr29/scratch/r20-d12/p/
+    // 2026-11-09 claude: Eric ruled (2026-11-09): D27 (a): a struct update takes the replacement's own type
+    // at its field (StructWith::typecheck0_with), as the literal {f: j} already does; t.f("s") is refused
+    // at the check.
+    // 2026-11-09 claude: Built D27 (a): data::updated_type gives the update the source's type with each
+    // replaced field holding its replacement's own type (every member of a union source), at compile and at
+    // the check; the fit of the replacement against the source's field is gone, so a field can change type
+    // ({x with foo: 1} over foo: string is {foo: i64, ..}), {s with b: null} narrows b to null, and an
+    // update of a declared variable's value is a struct, not the variable (which closes 'a: {n: [i64,
+    // null]} |s: 'a| -> 'a {s with n: null}, accepted on base and wrong at run time). y4, y7, s2, x2 are
+    // refused at the check ('reading a fn needs its type known here: annotate the binding', as the literal
+    // {f: j} is); the annotated twin runs. Pins that fail without it:
+    // lang::types::{struct_update_over_a_name_written_later_shares_its_type,
+    // chained_struct_update_over_a_name_written_later_shares_its_type,
+    // seqq_struct_update_over_a_name_written_later_shares_its_type,
+    // union_field_with_replaces_every_member}, lang::tuples_structs::{structwith0,
+    // struct_update_narrows_a_replaced_field, struct_update_of_a_declared_variable_is_not_the_variable};
+    // twins struct_update_over_a_declared_name_written_later_runs,
+    // struct_update_over_a_name_written_first_takes_its_type,
+    // struct_update_annotated_keeps_the_written_field. The select-of-composites part (n5, ms1-ms11) is
+    // closed by D25 (1bc976592, 9a13bc99f): all refused at the check. Census 2949 files unchanged; one
+    // fixture rewritten (lib_tests::json::json_forms_read_back annotates its update). Needs a soak.
     /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
@@ -1193,40 +1243,19 @@ impl<R: Rt> StructWith<R> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         let styp = self.source.typ().clone();
-        let top_id = self.spec.id;
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
-                // the result keeps the source's type: over a union the
-                // replacement fits every member's field
-                let (i, typs) = struct_field_types(ctx, &styp, &rep.name)?;
+                rep.index = struct_field_types(ctx, &styp, &rep.name)?.0;
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
-                if check {
-                    for typ in typs.iter() {
-                        let contain = |t: &Type| t.check_contains(&ctx.env, &rep.n.typ());
-                        wrap!(rep.n, contain(typ))?;
-                        wrap!(
-                            rep.n,
-                            super::callsite::check_hidden_defaults(
-                                ctx,
-                                BitFlags::empty(),
-                                &Scope::root(),
-                                top_id,
-                                typ,
-                                &rep.n.typ(),
-                                super::callsite::Narrowing::Copy
-                            )
-                        )?;
-                    }
-                }
-                rep.index = i;
             }
             Ok(())
         };
         wrap!(self, fields())?;
-        match check {
-            true => wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ())),
-            false => Ok(()),
+        if !check {
+            return Ok(());
         }
+        let typ = wrap!(self, updated_type(ctx, &styp, &self.replace))?;
+        wrap!(self, self.typ.check_contains(&ctx.env, &typ))
     }
 }
 

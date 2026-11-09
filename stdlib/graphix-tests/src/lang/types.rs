@@ -1965,13 +1965,14 @@ run!(
 );
 
 // A write through a field of a union keeps the value in its member: a
-// `with` replacement fits every member's field, and a writable reference
-// to a field needs the members' fields to be one type.
+// `with` replaces the field in every member, which the union need not
+// hold, and a writable reference to a field needs the members' fields to
+// be one type.
 run!(
-    union_field_with_fits_every_member,
+    union_field_with_replaces_every_member,
     "{ type S = [{a: i64, b: string}, {a: string, b: i64}]; \
        let h = |s: S, k: i64| -> S {s with a: k}; 0 }",
-    refused("string does not contain i64");
+    refused("S does not contain { a: i64, b: [i64, string] }");
     FuseExpect::None
 );
 run!(
@@ -7818,6 +7819,82 @@ run!(
   (t.f("s"), j("t"))
 }"#,
     prints(r#"["s", "t"]"#);
+    FuseExpect::None
+);
+
+// A struct update's replaced field holds the replacement's own type, as a
+// literal's field does: a name written later stays one open instance there,
+// so a call through the update needs the name's type, and the write that
+// decides it decides the call.
+const UPDATE_OVER_AN_OPEN_NAME: &str = "reading a fn needs its type known here";
+
+run!(
+    struct_update_over_a_name_written_later_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = never();
+  let t = {s with f: j};
+  let r = t.f("s");
+  j <- |x: i64| x + 1;
+  r
+}"#,
+    refused(UPDATE_OVER_AN_OPEN_NAME);
+    FuseExpect::None
+);
+
+run!(
+    chained_struct_update_over_a_name_written_later_shares_its_type,
+    r#"{
+  let s = {f: |x| x, n: 1};
+  let j = never();
+  let t = {s with n: 2};
+  let u = {t with f: j};
+  let r = (u.f("s"), u.f(1));
+  j <- |x: i64| x + 1;
+  r
+}"#,
+    refused(UPDATE_OVER_AN_OPEN_NAME);
+    FuseExpect::None
+);
+
+run!(
+    seqq_struct_update_over_a_name_written_later_shares_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = never();
+  let t = sys::time::timer(duration:1.ms, false);
+  let r = seqq t { let u = {s with f: j}; (u.f("s"), u.f(1)) };
+  j <- |x: i64| x + 1;
+  r
+}"#,
+    refused(UPDATE_OVER_AN_OPEN_NAME);
+    FuseExpect::None
+);
+
+run!(
+    struct_update_over_a_name_written_first_takes_its_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = never();
+  j <- |x: i64| x + 1;
+  let t = {s with f: j};
+  t.f("s")
+}"#,
+    refused("type mismatch i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    struct_update_over_a_declared_name_written_later_runs,
+    r#"{
+  let s = {f: |x| x};
+  let j: fn(x: i64) -> i64 = never();
+  let t = {s with f: j};
+  let r = (t.f(2), s.f("s"));
+  j <- |x: i64| x + 1;
+  r
+}"#,
+    prints(r#"[i64:3, "s"]"#);
     FuseExpect::None
 );
 

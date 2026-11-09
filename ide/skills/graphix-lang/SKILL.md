@@ -599,7 +599,16 @@ rigid: a function taking `Result<i64, 'e>` and catching only
 A union of structs allows `.field` when every member has that name, even at
 different sorted positions; a union of tuples allows `.N` when every member
 has that position, even at different arities. A read unions the member field
-types; a functional struct update must fit every member's field type.
+types. A functional struct update gives each replaced field its
+replacement's own type, in every member, as a literal's field does: `{s with
+b: null}` has `b: null`, and a select testing it for `i64` is a dead arm.
+Annotate the let to keep the wider field (`let t: S = {s with b: null}`).
+
+```graphix,cases
+ok let s = {a: 1, b: "x"}; let t = {s with b: 2}; t.b + 1
+no "unreachable arm" let s: {b: [i64, null]} = {b: 3}; let t = {s with b: null}; select t.b { null as _ => 0, i64 as i => i }
+ok let s: {b: [i64, null]} = {b: 3}; let t: {b: [i64, null]} = {s with b: null}; select t.b { null as _ => 0, i64 as i => i }
+```
 
 ## References and places
 

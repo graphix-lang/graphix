@@ -150,7 +150,44 @@ const STRUCTWITH0: &str = r#"
 }
 "#;
 
-run!(structwith0, STRUCTWITH0, refused("string does not contain i64"); FuseExpect::None);
+// A replaced field holds its replacement's type, as a literal's field does.
+run!(structwith0, STRUCTWITH0, is(Value::I64(1)); FuseExpect::Jit);
+
+run!(
+    struct_update_narrows_a_replaced_field,
+    r#"{
+  let s: {a: i64, b: [i64, null]} = {a: 1, b: 3};
+  let t = {s with b: null};
+  select t.b { null as _ => 0, i64 as i => i }
+}"#,
+    refused("unreachable arm");
+    FuseExpect::None
+);
+
+run!(
+    struct_update_annotated_keeps_the_written_field,
+    r#"{
+  let s: {a: i64, b: [i64, null]} = {a: 1, b: 3};
+  let t: {a: i64, b: [i64, null]} = {s with b: null};
+  select t.b { null as _ => 0, i64 as i => i }
+}"#,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
+
+// An update of a declared variable's value is a struct, never the variable:
+// the variable may stand for a struct whose field the replacement does not
+// fit.
+run!(
+    struct_update_of_a_declared_variable_is_not_the_variable,
+    r#"{
+  let f = 'a: {n: [i64, null]} |s: 'a| -> 'a {s with n: null};
+  let r: {n: i64} = f({n: 3});
+  r.n + 1
+}"#,
+    refused("does not contain { n: null }");
+    FuseExpect::None
+);
 
 const STRUCTWITH1: &str = r#"
 {

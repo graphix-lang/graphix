@@ -76,8 +76,7 @@ takes `.field` the same way,
 A field can be read from a union of struct types when every member has that
 field. The result has the union of their field types. The other fields may
 differ, and the shared field need not have the same position in each struct.
-A functional update over such a union requires the replacement to fit that
-field in every member.
+A functional update over such a union replaces that field in every member.
 
 ## Mutability and Functional Update
 
@@ -98,6 +97,12 @@ Will create a new struct with all the same fields as `s` except `bar` which will
 ```
 
 Notice that the type printed is the full type of the struct, this is because of structural typing.
+
+A replaced field takes the replacement's own type, exactly as the same
+field in a struct literal would, so an update can change a field's type.
+`{ s with bar: null }` has `bar: null`, not whatever `s.bar` was. To keep
+the wider type, annotate the binding:
+`let t: {bar: [i64, null], foo: string} = { s with bar: null }`.
 
 ## Implementation
 

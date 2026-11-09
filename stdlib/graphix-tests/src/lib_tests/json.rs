@@ -720,7 +720,7 @@ fn with_forms(body: &str) -> String {
 // and a map keyed by an abstract type, written as its pairs, read back.
 run!(json_forms_read_back, &with_forms(r#"
 type E = [`JsonErr(string), `InvalidCast(string)];
-let e = {d with o: Transparent(Port(u16:83))};
+let e: Doc = {d with o: Transparent(Port(u16:83))};
 let j = json::write_str(d)$;
 let back: Result<Doc, E> = json::read(j);
 let eb: Result<Doc, E> = json::read(json::write_str(e)$);

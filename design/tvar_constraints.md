@@ -457,12 +457,15 @@ the definition gates:
   lowered by a binding: a scheme bound into a cell (a let's name, a
   reference's placeholder) is still a scheme. A merge takes the lower of
   its two cells' levels, a generic survivor included (`TVar::merge_one`),
-  so a scheme's copy that meets a live cell is that cell's: a struct
-  update, an array, list or map of composites, or a tuple holding a
-  written name beside a holder's read is the name's one instance, where
-  the name's cells meet the copy's; a name over `never()`, whose open
-  cell is bound to the copy and never merged, is not
-  (holder-structwith-written-01). What a
+  so a scheme's copy that meets a live cell is that cell's: an array,
+  list or map of composites, or a tuple holding a written name beside a
+  holder's read is the name's one instance, where the name's cells meet
+  the copy's. A struct update relates its replacement to nothing: each
+  replaced field holds the replacement's own type, in every member of a
+  union source, as a literal's field does (`data::updated_type`), so a
+  written name it holds, one over `never()` included, stays that name's
+  one instance, and an update of a declared variable's value is a
+  struct, never the variable. What a
   merge may lower must never be a scheme's own cell, so a relation
   against a scheme instantiates it first: an omitting site outside a
   definition compiles its default among generic cells and judges a copy
