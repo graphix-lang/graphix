@@ -207,18 +207,43 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::new(false).same(t0, t1)
+    Identity::new(None).same(t0, t1)
 }
 
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::new(true).same(t0, t1)
+    Identity { strict: true, ..Identity::new(None) }.same(t0, t1)
+}
+
+/// The pairs of live cells union collapses have met: each pair is one
+/// cell once [`apply_welds`] runs.
+pub(super) type Welds = SmallVec<[(TVar, TVar); 2]>;
+
+/// [`union_identical`], for a collapse that keeps `t0` in place of `t1`:
+/// the live cells it pairs go on `welds`, so the dropped member's cells
+/// learn what the kept one learns.
+pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
+    let start = welds.len();
+    let same = Identity::new(Some(welds)).same(t0, t1);
+    if !same {
+        welds.truncate(start)
+    }
+    same
+}
+
+/// Weld each pair `welds` holds.
+pub(super) fn apply_welds(welds: &mut Welds) {
+    for (a, b) in welds.drain(..) {
+        super::contains::weld(&a, &b)
+    }
 }
 
 /// Identity of `t0` and `t1`.
-struct Identity {
+struct Identity<'a> {
     strict: bool,
+    /// Where the live cells paired inside a function type go.
+    live: Option<&'a mut Welds>,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
     /// The nodes found identical outside a function type.
@@ -228,10 +253,11 @@ struct Identity {
     found_in_fn: NodePairs,
 }
 
-impl Identity {
-    fn new(strict: bool) -> Self {
+impl<'a> Identity<'a> {
+    fn new(live: Option<&'a mut Welds>) -> Self {
         Self {
-            strict,
+            strict: false,
+            live,
             pairs: None,
             found: NodePairs::default(),
             found_in_fn: NodePairs::default(),
@@ -264,7 +290,7 @@ impl Identity {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
-    // CR claude for eric: [bug/medium] Two live cells pair as a renaming here, so a
+    // XCR claude for claude: [bug/medium] Two live cells pair as a renaming here, so a
     // union collapse keeps one member and drops the other's live cells, which then learn
     // nothing the kept member learns. Inside a definition a call through a select of
     // two bare lambdas passes --check and its run-time bind fails: `let k = |v| { let s
@@ -302,6 +328,24 @@ impl Identity {
     // the plain way of picking one of two handler structs reaches it. h7/h8 unchanged
     // (NO_SUBST-only). probes
     // ~/ptmp/cr29/scratch/r20-d12/p/{c5,c6,e4,r2-g1,r2-g8,r2-r8}.gx
+    // 2026-11-09 claude: Eric ruled (2026-11-09): D25 (a): a union collapse that pairs
+    // two live cells merges them, as ML unifies a conditional's branches (the D11
+    // min-level merge family).
+    // 2026-11-09 claude: Built (a): setops::union_collapses is union_identical recording
+    // each live (non-generic) pair Identity::cells makes; every collapse in
+    // Type::union_inner and normalize's merge (Kept::merge_with keeps a merge's pairs
+    // only when it holds) records them, and Type::union_with welds them (contains::weld,
+    // OpenPair as Link does) after its normalize. Generic pairs stay a renaming;
+    // meet_open_fns untouched. c5, c6, e4, r2-g1, r2-g8, r2-r8 run; ms1-ms11, n5, h7, h8
+    // are refused at --check (a written j beside a generic holder is one type), check
+    // and build agree under GRAPHIX_ELAB_AUDIT=1 and GRAPHIX_NO_SUBST=1. Pins that fail
+    // with the weld undone:
+    // lang::types::select_of_composites_of_lambdas_in_a_definition,
+    // pick_one_of_two_structs_of_lambdas,
+    // a_select_of_a_written_binding_and_a_generic_holder_is_one_type (twin
+    // a_select_of_a_generic_binding_and_its_holder_at_two_types runs). Census unchanged
+    // (2949 files); regress 567/0. Left: a select arm's bind over a union that stays two
+    // members (arm-narrow-snapshot-01).
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
         if a.same_cell(b) {
             return true;
@@ -315,6 +359,11 @@ impl Identity {
             Some(&(p, q)) => p == x && q == y,
             None => {
                 pairs.push((x, y));
+                if let Some(live) = &mut self.live
+                    && !a.level().is_generic()
+                {
+                    live.push((a.clone(), b.clone()))
+                }
                 let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
                 self.all(&ca, &cb)
             }
@@ -436,18 +485,23 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
+        welds: &mut Welds,
         t0: &TypeRef,
         t1: &TypeRef,
         t: &Self,
     ) -> Result<Self> {
+        let mut kept = Welds::new();
         let mut differ = t0
             .params
             .iter()
             .zip(t1.params.iter())
             .enumerate()
-            .filter(|(_, (a, b))| !union_identical(a, b));
+            .filter(|(_, (a, b))| !union_collapses(a, b, &mut kept));
         let (i, (p0, p1)) = match (differ.next(), differ.next()) {
-            (None, _) => return Ok(self.clone()),
+            (None, _) => {
+                welds.extend(kept.drain(..));
+                return Ok(self.clone());
+            }
             (Some(d), None) => d,
             (Some(_), Some(_)) => return Ok(pair(self, t)),
         };
@@ -457,13 +511,14 @@ impl Type {
             return Ok(pair(self, t));
         }
         let mut params: LPooled<Vec<Type>> = t0.params.iter().cloned().collect();
-        params[i] = p0.union_int(env, hist, merge, p1)?;
+        params[i] = p0.union_int(env, hist, merge, &mut kept, p1)?;
         let merged =
             Type::Ref(Arc::new(t0.with_params(Arc::from_iter(params.drain(..)))));
         let probe = BitFlags::empty();
         if merged.contains_with_flags(probe, env, self)?
             && merged.contains_with_flags(probe, env, t)?
         {
+            welds.extend(kept.drain(..));
             Ok(merged)
         } else {
             Ok(pair(self, t))
@@ -475,9 +530,10 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
+        welds: &mut Welds,
         t: &Self,
     ) -> Result<Self> {
-        ensure_sufficient(|| self.union_inner(env, hist, merge, t))
+        ensure_sufficient(|| self.union_inner(env, hist, merge, welds, t))
     }
 
     fn union_inner(
@@ -485,6 +541,7 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
+        welds: &mut Welds,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -496,7 +553,7 @@ impl Type {
                 if t0.same_definition(t1, env) && t0.params.len() == t1.params.len() =>
             {
                 t0.hold_bounds_with(t1, env, true)?;
-                self.union_ref_params(env, hist, merge, t0, t1, t)
+                self.union_ref_params(env, hist, merge, welds, t0, t1, t)
             }
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
@@ -510,15 +567,15 @@ impl Type {
                 let e = tr.lookup_ref(env)?;
                 hist.insert(key, tr.clone());
                 let r = if matches!(self, Type::Ref(_)) {
-                    e.union_int(env, hist, merge, t)
+                    e.union_int(env, hist, merge, welds, t)
                 } else {
-                    t.union_int(env, hist, merge, &e)
+                    t.union_int(env, hist, merge, welds, &e)
                 };
                 hist.remove(&key);
                 r
             }
             (t0 @ Type::Abstract { .. }, t1 @ Type::Abstract { .. })
-                if union_identical(t0, t1) =>
+                if union_collapses(t0, t1, welds) =>
             {
                 Ok(self.clone())
             }
@@ -562,7 +619,7 @@ impl Type {
                 Ok(Type::Primitive(*p))
             }
             (Type::Error(e0), Type::Error(e1)) => {
-                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, e1)?)))
+                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, welds, e1)?)))
             }
             (Type::Set(s0), Type::Set(s1)) => Ok(Type::Set(Arc::from_iter(
                 s0.iter().cloned().chain(s1.iter().cloned()),
@@ -577,38 +634,40 @@ impl Type {
                 let differing = || {
                     t0.iter()
                         .zip(t1.iter())
-                        .filter(|(a, b)| !union_identical(a, b))
+                        .filter(|(a, b)| !union_collapses(a, b, &mut Welds::new()))
                         .count()
                 };
                 if tg0 == tg1 && t0.len() == t1.len() && differing() <= 1 {
                     let mut typs = t0
                         .iter()
                         .zip(t1.iter())
-                        .map(|(t0, t1)| t0.union_int(env, hist, merge, t1))
+                        .map(|(t0, t1)| t0.union_int(env, hist, merge, welds, t1))
                         .collect::<Result<LPooled<Vec<_>>>>()?;
                     Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..)), *at))
                 } else {
                     Ok(pair(u, t))
                 }
             }
-            (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) if union_identical(t0, t1) => {
+            (t0 @ Type::TVar(_), t1 @ Type::TVar(_))
+                if union_collapses(t0, t1, welds) =>
+            {
                 Ok(t0.clone())
             }
             // A bound cell unions as its binding; an unbound cell
             // stays its own member.
             (Type::TVar(tv), t1) => match tv.binding() {
-                Some(b) => b.union_int(env, hist, merge, t1),
+                Some(b) => b.union_int(env, hist, merge, welds, t1),
                 None => Ok(pair(self, t1)),
             },
             (t0, Type::TVar(tv)) => match tv.binding() {
-                Some(b) => t0.union_int(env, hist, merge, &b),
+                Some(b) => t0.union_int(env, hist, merge, welds, &b),
                 None => Ok(pair(t0, t)),
             },
             // Everything left of one variant is kept once if identical,
             // else as two members.
             (t0, t1)
                 if std::mem::discriminant(t0) == std::mem::discriminant(t1)
-                    && union_identical(t0, t1) =>
+                    && union_collapses(t0, t1, welds) =>
             {
                 Ok(t0.clone())
             }
@@ -649,11 +708,14 @@ impl Type {
             return Ok(Type::Primitive(BitFlags::empty()));
         };
         let mut hist = RefHist::new();
+        let mut welds = Welds::new();
         let mut acc = first.clone();
         for t in iter {
-            acc = acc.union_int(env, &mut hist, merge, t)?;
+            acc = acc.union_int(env, &mut hist, merge, &mut welds, t)?;
         }
-        Ok(acc.normalize())
+        let acc = acc.normalize_welding(&mut welds);
+        apply_welds(&mut welds);
+        Ok(acc)
     }
 
     // CR claude for claude: [bug/medium] Only a union's own function members meet:

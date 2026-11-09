@@ -470,7 +470,15 @@ the definition gates:
   instance of its method (`Impl::build_prototypes`). Two function types
   are one union member when their cells pair up as a renaming, generic
   with generic or live with live; a scheme's copy never pairs with a live
-  cell, which keeps that cell's instance (`setops::Identity::cells`), and
+  cell, which keeps that cell's instance (`setops::Identity::cells`). A
+  union that collapses two members into one merges each pair of live
+  cells the collapse paired, as ML unifies a conditional's branches
+  (`setops::union_collapses`, applied once `Type::union` and its
+  normalize are done): picking one of two structs or tuples of lambdas
+  inside a definition calls the lambda of either arm at the type the
+  call decides, and arms whose cells must differ (a written binding
+  beside a generic holder used at another type) are refused at the
+  check; generic pairs stay a renaming. And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`): a member's generic cells meet
@@ -1673,7 +1681,8 @@ references name the target is told the recursive type alone
   formal's type; `let x: Any = y` decides nothing of `y`);
   union collapse requires strict tvar identity (two function types pair
   their cells as a renaming, generic with generic or live with live, never
-  a generic cell with a live one, `setops::Identity::cells`;
+  a generic cell with a live one, `setops::Identity::cells`; a collapse a
+  `Type::union` makes merges the live pairs, `setops::union_collapses`;
   a field read of a union and a select's arms meet their function
   members, through a copy of a member's generic cells, binding its live
   ones, `Type::union_of_alternatives`); a merge takes the

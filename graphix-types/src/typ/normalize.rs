@@ -2,7 +2,10 @@ use crate::{
     AddrMap, AddrSet,
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{AbstractId, Mutability, TVar, Type, setops::union_identical},
+    typ::{
+        AbstractId, Mutability, TVar, Type,
+        setops::{Welds, union_collapses},
+    },
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -26,6 +29,8 @@ use triomphe::Arc;
 pub(super) struct NormCx {
     pub(super) cells: LPooled<AddrSet>,
     memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
+    /// The live cells the pass's collapses paired.
+    welds: Welds,
 }
 
 #[doc(hidden)]
@@ -33,7 +38,7 @@ pub type NormKey = (Discriminant<Type>, usize, usize);
 
 impl NormCx {
     pub(super) fn take() -> Self {
-        Self { cells: LPooled::take(), memo: LPooled::take() }
+        Self { cells: LPooled::take(), memo: LPooled::take(), welds: Welds::new() }
     }
 }
 
@@ -140,7 +145,7 @@ struct Kept {
 
 impl Kept {
     /// Take out the earliest kept member `t` merges with, and the merge.
-    fn merge_with(&mut self, t: &Type) -> Option<Type> {
+    fn merge_with(&mut self, t: &Type, welds: &mut Welds) -> Option<Type> {
         let key = MergeKey::of(t);
         let keyed: &[usize] = match &key {
             Some(k) => self.keyed.get(k).map(|v| &v[..]).unwrap_or(&[]),
@@ -161,9 +166,12 @@ impl Kept {
                     .map(|(i, _)| i),
             ),
         }
-        let (j, m) = candidates.iter().find_map(|&j| {
-            self.members[j].as_ref().and_then(|kept| t.merge(kept)).map(|m| (j, m))
+        let (j, m, mut met) = candidates.iter().find_map(|&j| {
+            let mut met = Welds::new();
+            let kept = self.members[j].as_ref()?;
+            t.merge(kept, &mut met).map(|m| (j, m, met))
         })?;
+        welds.extend(met.drain(..));
         let kept = self.members[j].take().expect("live");
         match MergeKey::of(&kept) {
             Some(k) => self.keyed.get_mut(&k).expect("indexed").retain(|i| *i != j),
@@ -190,13 +198,17 @@ impl Kept {
 
 impl Type {
     pub(crate) fn flatten_set(set: impl IntoIterator<Item = Self>) -> Self {
-        Self::flatten_set_tracked(set).0
+        Self::flatten_set_tracked(set, &mut Welds::new()).0
     }
 
     /// [`Self::flatten_set`] reporting whether it changed anything
     /// relative to a `Type::Set` of the input members in input order.
     /// Conservative: `true` may be reported for an identical result.
-    fn flatten_set_tracked(set: impl IntoIterator<Item = Self>) -> (Self, bool) {
+    /// The live cells each collapse pairs go on `welds`.
+    fn flatten_set_tracked(
+        set: impl IntoIterator<Item = Self>,
+        welds: &mut Welds,
+    ) -> (Self, bool) {
         let mut leaves: LPooled<Vec<Self>> = LPooled::take();
         let mut nested: LPooled<Vec<(Arc<[Self]>, usize)>> = LPooled::take();
         let mut saw_bottom = false;
@@ -247,7 +259,7 @@ impl Type {
             // `acc` is merge-saturated, so only the incoming element (or
             // its merge result) can enable a new merge.
             let mut incoming = t;
-            while let Some(m) = acc.merge_with(&incoming) {
+            while let Some(m) = acc.merge_with(&incoming, welds) {
                 changed = true;
                 incoming = m;
             }
@@ -378,6 +390,15 @@ impl Type {
         self.normalize_int(&mut NormCx::take()).unwrap_or_else(|| self.clone())
     }
 
+    /// [`Self::normalize`] for a union: the live cells each collapse pairs
+    /// go on `welds`.
+    pub(super) fn normalize_welding(&self, welds: &mut Welds) -> Self {
+        let mut cx = NormCx::take();
+        let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
+        welds.extend(cx.welds.drain(..));
+        r
+    }
+
     /// `None` when already normal. A `TVar` normalizes its binding in
     /// place inside the shared cell and is therefore always `None`.
     pub(super) fn normalize_int(&self, cx: &mut NormCx) -> Option<Self> {
@@ -408,7 +429,8 @@ impl Type {
                         None => members.push(t.clone()),
                     }
                 }
-                let (flat, flat_changed) = Self::flatten_set_tracked(members.drain(..));
+                let (flat, flat_changed) =
+                    Self::flatten_set_tracked(members.drain(..), &mut cx.welds);
                 (members_changed || flat_changed).then_some(flat)
             }
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
@@ -420,22 +442,24 @@ impl Type {
         r
     }
 
-    fn merge(&self, t: &Self) -> Option<Self> {
-        ensure_sufficient(|| self.merge_inner(t))
+    /// The one member `self` and `t` merge into; the live cells a
+    /// collapse pairs go on `welds`, which a `None` leaves to be dropped.
+    fn merge(&self, t: &Self, welds: &mut Welds) -> Option<Self> {
+        ensure_sufficient(|| self.merge_inner(t, welds))
     }
 
-    fn merge_inner(&self, t: &Self) -> Option<Self> {
+    fn merge_inner(&self, t: &Self, welds: &mut Welds) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
-        fn flat_eq(t0: &Type, t1: &Type) -> bool {
+        fn flat_eq(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
                     let f = |t: &Type| match t {
                         Type::Set(s) => Type::flatten_set(s.iter().cloned()),
                         t => t.clone(),
                     };
-                    union_identical(&f(t0), &f(t1))
+                    union_collapses(&f(t0), &f(t1), welds)
                 }
-                (t0, t1) => union_identical(t0, t1),
+                (t0, t1) => union_collapses(t0, t1, welds),
             }
         }
         // Products merge component-wise only when at most one component
@@ -444,17 +468,18 @@ impl Type {
             t0: impl IntoIterator<Item = &'a T>,
             t1: impl IntoIterator<Item = &'a T>,
             typ: impl Fn(&T) -> &Type,
+            welds: &mut Welds,
         ) -> Option<Option<(usize, Type)>> {
             let mut differing = None;
             for (i, (a, b)) in t0.into_iter().zip(t1).enumerate() {
                 let (a, b) = (typ(a), typ(b));
-                if flat_eq(a, b) {
+                if flat_eq(a, b, welds) {
                     continue;
                 }
                 if differing.is_some() {
                     return None;
                 }
-                differing = Some((i, a.merge(b)?));
+                differing = Some((i, a.merge(b, welds)?));
             }
             Some(differing)
         }
@@ -462,16 +487,16 @@ impl Type {
         if let Type::App(c, a) = self
             && let Some(filled) = Type::app_filled(c, a)
         {
-            return filled.merge(t);
+            return filled.merge(t, welds);
         }
         if let Type::App(c, a) = t
             && let Some(filled) = Type::app_filled(c, a)
         {
-            return self.merge(&filled);
+            return self.merge(&filled, welds);
         }
         match (self, t) {
             (Type::Ref(_), Type::Ref(_)) => {
-                if union_identical(self, t) {
+                if union_collapses(self, t, welds) {
                     Some(self.clone())
                 } else {
                     None
@@ -484,7 +509,7 @@ impl Type {
             | (_, Type::Hole)
             | (Type::Bound(_), _)
             | (_, Type::Bound(_)) => {
-                if union_identical(self, t) {
+                if union_collapses(self, t, welds) {
                     Some(self.clone())
                 } else {
                     None
@@ -499,24 +524,24 @@ impl Type {
                 Some(t.clone())
             }
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
-                if union_identical(self, t) { Some(self.clone()) } else { None }
+                if union_collapses(self, t, welds) { Some(self.clone()) } else { None }
             }
             (Type::Fn(_), Type::Fn(_)) => {
-                if union_identical(self, t) {
+                if union_collapses(self, t, welds) {
                     Some(self.clone())
                 } else {
                     None
                 }
             }
             (Type::Array(t0), Type::Array(t1)) => {
-                if flat_eq(t0, t1) {
+                if flat_eq(t0, t1, welds) {
                     Some(Type::Array(t0.clone()))
                 } else {
                     None
                 }
             }
             (Type::List(t0), Type::List(t1)) => {
-                if flat_eq(t0, t1) {
+                if flat_eq(t0, t1, welds) {
                     Some(Type::List(t0.clone()))
                 } else {
                     None
@@ -531,14 +556,16 @@ impl Type {
                 }
             }
             (Type::Map(m0), Type::Map(m1)) => {
-                if flat_eq(&m0.key, &m1.key) && flat_eq(&m0.value, &m1.value) {
+                if flat_eq(&m0.key, &m1.key, welds)
+                    && flat_eq(&m0.value, &m1.value, welds)
+                {
                     Some(Type::Map(m0.clone()))
                 } else {
                     None
                 }
             }
             (Type::Error(t0), Type::Error(t1)) => {
-                if flat_eq(t0, t1) {
+                if flat_eq(t0, t1, welds) {
                     Some(Type::Error(t0.clone()))
                 } else {
                     None
@@ -547,22 +574,32 @@ impl Type {
             (
                 Type::ByRef(Mutability::Shared, t0),
                 Type::ByRef(Mutability::Shared, t1),
-            ) => t0.merge(t1).map(|t| Type::ByRef(Mutability::Shared, Arc::new(t))),
+            ) => {
+                t0.merge(t1, welds).map(|t| Type::ByRef(Mutability::Shared, Arc::new(t)))
+            }
             (Type::ByRef(m0, t0), Type::ByRef(m1, t1)) => {
-                if m0 == m1 && flat_eq(t0, t1) {
+                if m0 == m1 && flat_eq(t0, t1, welds) {
                     Some(Type::ByRef(*m0, t0.clone()))
                 } else {
                     None
                 }
             }
-            (Type::Set(s0), Type::Set(s1)) => {
-                Some(Self::flatten_set(s0.iter().cloned().chain(s1.iter().cloned())))
-            }
-            (Type::Set(s), t) | (t, Type::Set(s)) => {
-                Some(Self::flatten_set(s.iter().cloned().chain(iter::once(t.clone()))))
-            }
+            (Type::Set(s0), Type::Set(s1)) => Some(
+                Self::flatten_set_tracked(
+                    s0.iter().cloned().chain(s1.iter().cloned()),
+                    welds,
+                )
+                .0,
+            ),
+            (Type::Set(s), t) | (t, Type::Set(s)) => Some(
+                Self::flatten_set_tracked(
+                    s.iter().cloned().chain(iter::once(t.clone())),
+                    welds,
+                )
+                .0,
+            ),
             (Type::Tuple(t0), Type::Tuple(t1)) if t0.len() == t1.len() => {
-                match merge_one_differing(t0.iter(), t1.iter(), |t| t)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t, welds)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -575,7 +612,7 @@ impl Type {
             (Type::Variant(tag0, t0, at), Type::Variant(tag1, t1, _))
                 if tag0 == tag1 && t0.len() == t1.len() =>
             {
-                match merge_one_differing(t0.iter(), t1.iter(), |t| t)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t, welds)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -593,7 +630,7 @@ impl Type {
                         .zip(t1.iter())
                         .all(|((n0, _, _), (n1, _, _))| n0 == n1) =>
             {
-                match merge_one_differing(t0.iter(), t1.iter(), |(_, t, _)| t)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |(_, t, _)| t, welds)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -609,11 +646,13 @@ impl Type {
                 }
             }
             // Strict tvar identity: two distinct unbound cells never merge.
-            (t0v @ Type::TVar(_), t1v @ Type::TVar(_)) if union_identical(t0v, t1v) => {
+            (t0v @ Type::TVar(_), t1v @ Type::TVar(_))
+                if union_collapses(t0v, t1v, welds) =>
+            {
                 Some(t0v.clone())
             }
-            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t)),
-            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b)),
+            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t, welds)),
+            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b, welds)),
             (Type::ByRef(..), _)
             | (_, Type::ByRef(..))
             | (Type::Abstract { .. }, _)

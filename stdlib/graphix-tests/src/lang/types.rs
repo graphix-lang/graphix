@@ -7969,3 +7969,68 @@ run!(
     prints("[[i64:2, i64:2, [i64:2]], [i64:-2, i64:-1, [i64:-1]]]");
     FuseExpect::Jit
 );
+
+run!(
+    select_of_composites_of_lambdas_in_a_definition,
+    r#"{
+  let k = |v| {
+    let s = select v > 0 { true => {f: |x| x}, false => {f: |y| y} };
+    let t = select v > 0 { true => {f: |x| x, n: 1}, false => {f: |y| y, n: 2} };
+    let u = select v > 0 { true => (|x| x, 1), false => (|y| y, 2) };
+    let w = select v > 0 { true => `A({f: |x| x}), false => `A({f: |y| y}) };
+    let m = select v > 0 { true => {f: |x| x, n: 1}, false => {f: |y| y, n: "s"} };
+    let r = select v { 2 => {f: |x| x}, -2 => {f: |y| y}, _ => {f: |z| z} };
+    [
+      s.f(v),
+      select t { {f, n} => f(v) + n },
+      u.0(v),
+      select w { `A(q) => q.f(v) },
+      m.f(v),
+      r.f(v),
+      array::fold(array::map([v, v + 1], s.f), 0, |a, x| a + x)
+    ]
+  };
+  (k(2), k(-2))
+}"#,
+    prints("[[i64:2, i64:3, i64:2, i64:2, i64:2, i64:2, i64:5], [i64:-2, i64:0, i64:-2, i64:-2, i64:-2, i64:-2, i64:-3]]");
+    FuseExpect::Jit
+);
+
+run!(
+    pick_one_of_two_structs_of_lambdas,
+    r#"{
+  let s = {f: |x| x};
+  let k = |b| select b { true => s, false => {f: |y| y} };
+  let h = |x| x;
+  let pick = |b| select b { true => (h, 1), false => (|y| y, 2) };
+  let (f, n) = pick(true);
+  (k(true).f(1), k(false).f(2), f(5), n, pick(false).0("s"))
+}"#,
+    prints(r#"[i64:1, i64:2, i64:5, i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_select_of_a_written_binding_and_a_generic_holder_is_one_type,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let pick = |b| select b { true => s, false => {f: j} };
+  j <- |x: i64| x + 1;
+  (pick(true).f("s"), pick(false).f(1))
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_select_of_a_generic_binding_and_its_holder_at_two_types,
+    r#"{
+  let s = {f: |x| x};
+  let j = s.f;
+  let pick = |b| select b { true => s, false => {f: j} };
+  (pick(true).f("s"), pick(false).f(1))
+}"#,
+    prints(r#"["s", i64:1]"#);
+    FuseExpect::None
+);

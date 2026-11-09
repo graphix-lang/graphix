@@ -88,8 +88,9 @@ field of a call's result, `(id, 1).0`, a reference (`let r = &f`, then
 Each call of `mk` is an instance of its own: `let a = mk(0); let b =
 mk(0)` takes `a(1)` and `b("s")`. Whatever holds such an instance beside
 a generic value is that instance too: with `let j = s.f; j <- ..`, a
-`{s with f: j}`, a `[s, {f: j}]` (an array, list or map of composites)
-or a `[(s.f, 0), (j, 1)]` takes `j`'s one type in every element. Not yet a `j`
+`{s with f: j}`, a `[s, {f: j}]` (an array, list or map of composites),
+a `[(s.f, 0), (j, 1)]` or a `select b { true => s, false => {f: j} }`
+takes `j`'s one type in every element and arm. Not yet a `j`
 that starts as `never()`: `{s with f: j}` over it passes the check and fails
 at run time, so write its type on the `let` (`let j: fn(x: i64) -> i64 =
 never()`). A write the compiler meets only after
@@ -103,6 +104,8 @@ no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs
 ok let fs = array::map([1], |r| |x| x); let g = fs[0]$; g(1)
 no "i64 does not contain string" let id = |x| x; let g = (id, 1).0; (g(1), g("s"))
 no "i64 does not contain string" let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
+no "i64 does not contain string" let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; j <- |x: i64| x; (p(true).f("s"), p(false).f(1))
+ok let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; (p(true).f("s"), p(false).f(1))
 ```
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or

@@ -1450,6 +1450,14 @@ fn link_equal(t0: &Type, t1: &Type, commit: bool) -> bool {
     Link { commit, found: NodePairs::default() }.equal(t0, t1)
 }
 
+/// Weld two open cells a union collapse paired, as [`Link`] welds those a
+/// containment compared equal.
+pub(super) fn weld(a: &TVar, b: &TVar) {
+    if !a.same_cell(b) && a.binding().is_none() && b.binding().is_none() {
+        OpenPair::of(a, b).apply(a, b);
+    }
+}
+
 /// How many positional arguments a function type takes, when it takes a
 /// fixed number.
 fn positional_arity(t: &Type) -> Option<usize> {

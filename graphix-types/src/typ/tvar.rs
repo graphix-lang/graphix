@@ -3840,6 +3840,20 @@ impl Type {
                 super::settle::position_cells(m, &mut taken);
                 for (c, p) in cells.iter().zip(parts.iter_mut()) {
                     let Some(f) = known.get(&c.cell_addr()) else { continue };
+                    // CR claude for claude: [bug/medium] A select arm's bind over a union
+                    // that stays two members takes each member's part through
+                    // resolve_tvars, a snapshot whose open cells are fresh: the
+                    // lambdas' own live cells never learn what the arm's calls decide.
+                    // Inside a definition `let t = select v > 0 { true => ({f: |x| x}, 1,
+                    // 1), false => ({f: |y| y}, "s", "s") }; select t { (r, n, m) =>
+                    // r.f(v) }` passes --check and fails the run-time bind ("an instance
+                    // at fn(x: i64) -> i64 of a definition typed fn(y: _) -> ..");
+                    // `let (r, n, m) = t; r.f(v)` and `t.0.f(v)` run. Pushing the
+                    // binding itself (`t.clone()`) makes union_exact weld the live
+                    // cells (union-live-renaming-01) but trips the arm's rep_collision
+                    // refusal ("can't tell fn(x: ..) from fn(y: ..)"), so the snapshot
+                    // has a job there to find first. probes:
+                    // ~/ptmp/cr29/scratch/r19/h/{e2,d3}.gx (arm-narrow-snapshot-01)
                     match (f.binding(), p.as_mut()) {
                         (Some(t), Some(p)) => p.push(t.resolve_tvars()),
                         (None, Some(p)) if taken.contains_key(&f.cell_addr()) => {
