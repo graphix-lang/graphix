@@ -31,7 +31,18 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   position, a declared variable included, is a head of its own that only
   a name or `_` there admits, `Head::Open`, as is a primitive member's
   value but `bool` and `null`, `Head::Rest`), and an arm under
-  a type test pools only a member the test holds; a group whose combinations of
+  a type test pools only a member the test holds, held rigid (a declared
+  variable the test names holds only itself, never its bound); a tuple or
+  struct member a written test can match and does not hold is also cut
+  into parts (`PartPool`), each one member of every position's union (a
+  primitive set one per primitive, a declared variable at the position
+  its one typed bound's members, each also held by a test naming the
+  variable), at most 64 (`MAX_POOL_PARTS`) or it stays whole, and each
+  part pools on its own the arms whose test holds it: a complete part
+  covers itself, a declared variable's parts together the variable, and
+  an arm whose every part it reaches already matches what it matches
+  there is dead (`(true, _)`, `(bool, i64) as (false, n)` and `(bool,
+  null) as (false, _)` cover `(bool, [i64, null])`); a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over

@@ -323,11 +323,13 @@ variable the lambda writes no bound for, or a class of primitives
 (`Number`); a trait bound (`'c: Collection`) refuses `null` by the
 dead-arm rule instead. Right site the definition. Not generated: coverage beside a bounded variable (a head
 arm at `['a, null]` leaves the variable's values to a name or `_`,
-`Head::Open`; containment splits `'a` by its bound,
+`Head::Open`, or to written tests that cut it by its bound, `PartPool`;
+containment splits `'a` by its bound,
 `Type::covers_by_parts`): the generated declared variables are
 unbounded, where a head test beside one meets it and this family's rule
 refuses first; pins `lang::select::pool_variable_*`,
-`distribution_variable_*`, `containment_variable_*`. Nor a written test
+`distribution_variable_*`, `containment_variable_*`,
+`lang::select_undecided::written_test*`. Nor a written test
 whose part over the variable holds `_` or an undeclared variable
 (`StructurePattern::meets_rigid_written`, the same message): the
 mutation writes no test; pins `lang::select::written_test_holding_*`.

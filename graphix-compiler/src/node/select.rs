@@ -13,7 +13,7 @@ use crate::{
     env::Env,
     expr::{
         At, Decided, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern,
-        UndecidedMembers, union_members, union_members_open,
+        UndecidedMembers, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -23,7 +23,8 @@ use crate::{
     },
     prune::BoundaryRef,
     typ::{
-        AbstractId, InfiniteType, NodeKey, ShallowScrutinee, TVar, Type, TypeMismatch,
+        AbstractId, ContainsFlags, InfiniteType, NodeKey, ShallowScrutinee, TVar, Type,
+        TypeMismatch,
     },
     wrap,
 };
@@ -552,8 +553,8 @@ struct Dead(anyhow::Error);
 
 /// What reaches each arm of a select, walked arm by arm: the scrutinee
 /// less what the unguarded arms before it cover (irrefutable atoms,
-/// `null`, a true/false pair, a completed literal pool, a completed
-/// slice ladder). It narrows an arm's binds, an arm that can match none
+/// `null`, a true/false pair, a completed literal pool or part, a
+/// completed slice ladder). It narrows an arm's binds, an arm that can match none
 /// of it is dead, and the select is exhaustive when nothing reaches past
 /// the last arm. Quadratic in the arm count (each arm re-walks what still
 /// reaches; 4000 tag arms check in about 2 s): member sets indexed by
@@ -567,6 +568,7 @@ struct Reach {
     members_of: Type,
     ladders: SmallVec<[Ladder; 4]>,
     pool: LiteralPool,
+    parts: PartPool,
     bools: (bool, bool),
     /// What the unguarded arms cover, as containment reads it.
     covered: SmallVec<[Type; 8]>,
@@ -666,11 +668,13 @@ impl Reach {
         let atype = scrut.normalize();
         let members_of = atype.open_bound(env).unwrap_or_else(|| atype.clone());
         let ladders = Ladder::of(env, &members_of)?;
+        let parts = PartPool::new(env, &members_of, arms)?;
         Ok(Self {
             atype,
             members_of,
             ladders,
             pool: LiteralPool::default(),
+            parts,
             bools: (false, false),
             covered: SmallVec::new(),
             wildcard: false,
@@ -870,6 +874,19 @@ impl Reach {
                     None => self.cover(env, m)?,
                 },
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
+            }
+            match self.parts.claim(env, sp, explicit)? {
+                PartClaim::Dead if checking => {
+                    return dead(
+                        "every combination of heads it matches is covered by earlier arms",
+                    );
+                }
+                PartClaim::Dead => (),
+                PartClaim::Covers(ts) => {
+                    for t in ts {
+                        self.cover(env, t)?
+                    }
+                }
             }
             if !pat.explicit_type_predicate && sp.holds_abstract() {
                 // an inferred abstract predicate tests the tag at run time: the
@@ -1564,7 +1581,7 @@ impl LiteralPool {
         let mut reached: Option<(Type, SmallVec<[Leaf; 8]>)> = None;
         for m in shape.members(env, scrut)? {
             if let Some(t) = explicit
-                && !t.contains_with_flags(BitFlags::empty(), env, &m)?
+                && !t.contains_with_flags(ContainsFlags::RigidCheck.into(), env, &m)?
             {
                 continue;
             }
@@ -1595,6 +1612,265 @@ impl LiteralPool {
             }
         };
         Ok(self.groups[i].add(leaves))
+    }
+}
+
+/// A member the parts cut is cut into at most this many; one that would
+/// take more stays whole.
+const MAX_POOL_PARTS: usize = 64;
+
+/// What one position of a part holds: one member of the position's
+/// union, each primitive its own, or one member of the typed bound of a
+/// declared variable standing there.
+struct Choice {
+    typ: Type,
+    /// The declared variable it is a member of, else `typ`.
+    held: Type,
+}
+
+/// The choices at a position of type `t`; `None` where it reaches an
+/// open cell no declaration holds rigid.
+fn choices(env: &Env, t: &Type) -> Result<Option<SmallVec<[Choice; 4]>>> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    let mut cells: SmallVec<[TVar; 2]> = SmallVec::new();
+    union_members_with(env, t, &mut members, &mut |tv| cells.push(tv.clone()))?;
+    let mut out: SmallVec<[Choice; 4]> = SmallVec::new();
+    if !split_members(&members, None, &mut out) {
+        return Ok(None);
+    }
+    for tv in cells.iter() {
+        match tv.open_cell() {
+            Some(cell) if cell.is_rigid() => (),
+            _ => return Ok(None),
+        }
+        let held = Type::TVar(tv.clone());
+        match &tv.typed_bounds(env)[..] {
+            [b] => {
+                let mut bound: SmallVec<[Type; 8]> = SmallVec::new();
+                if union_members_open(env, b, &mut bound)?
+                    || !split_members(&bound, Some(&held), &mut out)
+                {
+                    return Ok(None);
+                }
+            }
+            _ => out.push(Choice { typ: held.clone(), held }),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// `members` as choices, a primitive set one per primitive, each a
+/// member of `held` where given; false where one reaches an open cell no
+/// declaration holds rigid.
+fn split_members(
+    members: &[Type],
+    held: Option<&Type>,
+    out: &mut SmallVec<[Choice; 4]>,
+) -> bool {
+    let choice =
+        |typ: Type| Choice { held: held.cloned().unwrap_or_else(|| typ.clone()), typ };
+    for m in members {
+        if m.has_free() {
+            return false;
+        }
+        match m {
+            Type::Primitive(p) => {
+                out.extend(p.iter().map(|typ| choice(Type::Primitive(typ.into()))))
+            }
+            m => out.push(choice(m.clone())),
+        }
+    }
+    true
+}
+
+/// `m`, a tuple or struct, with `ts` at its positions.
+fn with_positions(m: &Type, ts: impl Iterator<Item = Type>) -> Type {
+    match m {
+        Type::Struct(fs) => Type::Struct(Arc::from_iter(
+            fs.iter().zip(ts).map(|((n, _, at), t)| (n.clone(), t, *at)),
+        )),
+        _ => Type::Tuple(Arc::from_iter(ts)),
+    }
+}
+
+/// The literal pool over the parts the written tests cut the scrutinee's
+/// tuple and struct members into, so a written test that holds only part
+/// of a member covers that part with the arms beside it: `(true, _)`,
+/// `(bool, i64) as (false, n)` and `(bool, null) as (false, _)` cover
+/// `(bool, [i64, null])`. A member is cut where a written test can match
+/// it and does not hold it: at each position into the choices there.
+#[derive(Default)]
+struct PartPool {
+    parts: Vec<Part>,
+    /// The tuple and struct members left whole.
+    whole: SmallVec<[Type; 2]>,
+}
+
+struct Part {
+    /// One choice at each position.
+    typ: Type,
+    /// `typ` with the declared variable each choice is a member of: what
+    /// the part covers once every part of it is covered.
+    held: Type,
+    group: PoolGroup,
+}
+
+/// What pooling an atom into the parts decided.
+enum PartClaim {
+    /// Every combination of heads it matches in each part it reaches,
+    /// earlier arms match.
+    Dead,
+    /// What its arm completes.
+    Covers(SmallVec<[Type; 2]>),
+}
+
+impl PartPool {
+    fn new<R: Rt>(
+        env: &Env,
+        members_of: &Type,
+        arms: &[(PatternNode<R>, Node<R>)],
+    ) -> Result<Self> {
+        let mut pool = Self::default();
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        union_members(env, members_of, &mut members)?;
+        let rigid = ContainsFlags::RigidCheck.into();
+        for m in members {
+            if !matches!(m, Type::Tuple(_) | Type::Struct(_)) {
+                continue;
+            }
+            let mut narrowed = false;
+            for (pat, _) in arms.iter().filter(|(p, _)| p.explicit_type_predicate) {
+                let t = &pat.type_predicate;
+                if t.could_match(env, &m)? && !t.contains_with_flags(rigid, env, &m)? {
+                    narrowed = true;
+                    break;
+                }
+            }
+            if !narrowed || !pool.cut(env, &m)? {
+                pool.whole.push(m)
+            }
+        }
+        Ok(pool)
+    }
+
+    /// Cut `m` into its parts; false where it stays whole.
+    fn cut(&mut self, env: &Env, m: &Type) -> Result<bool> {
+        let (shape, positions): (Shape, SmallVec<[&Type; 8]>) = match m {
+            Type::Tuple(ts) => (Shape::Tuple(ts.len()), ts.iter().collect()),
+            Type::Struct(fs) => (
+                Shape::Struct(fs.iter().map(|(n, _, _)| n.clone()).collect()),
+                fs.iter().map(|(_, t, _)| t).collect(),
+            ),
+            _ => return Ok(false),
+        };
+        let mut at: SmallVec<[SmallVec<[Choice; 4]>; 8]> = SmallVec::new();
+        let mut total = 1usize;
+        for t in positions {
+            match choices(env, t)? {
+                Some(cs) if !cs.is_empty() => {
+                    total = total.saturating_mul(cs.len());
+                    at.push(cs)
+                }
+                _ => return Ok(false),
+            }
+        }
+        if total > MAX_POOL_PARTS {
+            return Ok(false);
+        }
+        for c in 0..total {
+            let pick = |c: usize, f: fn(&Choice) -> &Type| {
+                let mut c = c;
+                with_positions(
+                    m,
+                    at.iter().map(move |cs| {
+                        let t = f(&cs[c % cs.len()]).clone();
+                        c /= cs.len();
+                        t
+                    }),
+                )
+            };
+            let typ = pick(c, |ch| &ch.typ);
+            let held = pick(c, |ch| &ch.held);
+            if self.parts.iter().any(|p| p.typ == typ && p.held == held) {
+                continue;
+            }
+            let shape = match &shape {
+                Shape::Tuple(n) => Shape::Tuple(*n),
+                Shape::Struct(names) => Shape::Struct(names.clone()),
+                _ => return Ok(false),
+            };
+            let group = PoolGroup {
+                shape,
+                member: typ.clone(),
+                arms: Vec::new(),
+                done: false,
+                matched: None,
+            };
+            self.parts.push(Part { typ, held, group });
+        }
+        Ok(true)
+    }
+
+    /// Pool the unguarded atom `sp`, whose arm's written type test is
+    /// `explicit`, into each part it reaches: one its test holds, part
+    /// or its held form, with a head each position admits.
+    fn claim(
+        &mut self,
+        env: &Env,
+        sp: &StructPatternNode,
+        explicit: Option<&Type>,
+    ) -> Result<PartClaim> {
+        let mut covers: SmallVec<[Type; 2]> = SmallVec::new();
+        let Some(shape) = Shape::of(sp).filter(|_| !self.parts.is_empty()) else {
+            return Ok(PartClaim::Covers(covers));
+        };
+        let rigid = ContainsFlags::RigidCheck.into();
+        let mut dead = !self.whole.iter().any(|m| shape.fits(m));
+        let mut reached = false;
+        for i in 0..self.parts.len() {
+            let part = &mut self.parts[i];
+            if !shape.fits(&part.typ) {
+                continue;
+            }
+            if let Some(t) = explicit {
+                if !t.could_match(env, &part.typ)? {
+                    continue;
+                }
+                if !t.contains_with_flags(rigid, env, &part.held)?
+                    && !t.contains_with_flags(rigid, env, &part.typ)?
+                {
+                    dead = false;
+                    continue;
+                }
+            }
+            let leaves = match pooled_leaves(env, sp, &part.typ)? {
+                Ok(leaves) => leaves,
+                Err(Miss::Never) => continue,
+                Err(Miss::Unread) => {
+                    dead = false;
+                    continue;
+                }
+            };
+            reached = true;
+            if part.group.done {
+                continue;
+            }
+            match part.group.add(leaves) {
+                Claim::Dead => (),
+                Claim::Completes(_) => {
+                    dead = false;
+                    let held = &self.parts[i].held;
+                    if self.parts.iter().all(|p| p.held != *held || p.group.done) {
+                        covers.push(held.clone())
+                    }
+                }
+                Claim::Open | Claim::Unpooled => dead = false,
+            }
+        }
+        Ok(match dead && reached {
+            true => PartClaim::Dead,
+            false => PartClaim::Covers(covers),
+        })
     }
 }
 

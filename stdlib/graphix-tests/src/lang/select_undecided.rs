@@ -375,6 +375,202 @@ run!(rest_head_left_uncovered_refused, r#"{
     u((false, 7))
 }"#, refused("missing match cases"); FuseExpect::None);
 
+// A written test that holds part of a member covers that part with the
+// bool heads beside it: the member is cut, at each position, into the
+// position's members.
+run!(written_test_beside_bool_head_covers, r#"{
+    let u = |x: (bool, [i64, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => n,
+        (bool, null) as (false, _) => 1
+    };
+    [u((true, null)), u((false, 7)), u((false, null)), u((true, 3))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 1, 0]); FuseExpect::Jit);
+
+run!(written_tests_split_a_primitive_member, r#"{
+    let u = |x: (bool, [i64, string, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => n,
+        (bool, string) as (false, s) => str::len(s),
+        (false, null) => 3
+    };
+    [u((true, null)), u((false, 7)), u((false, "abcd")), u((false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 4, 3]); FuseExpect::Jit);
+
+run!(written_test_leaves_a_member_part_refused, r#"{
+    let u = |x: (bool, [i64, string, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => n,
+        (false, null) => 3
+    };
+    u((false, "abcd"))
+}"#, refused("missing match cases: no arm covers"); FuseExpect::None);
+
+run!(written_tests_split_a_struct_member, r#"{
+    type N = [i64, null];
+    let u = |x: {a: bool, b: [N, string]}| select x {
+        {a: true, b: _} => 0,
+        {a: bool, b: i64} as {a: false, b: n} => n,
+        {a: bool, b: [string, null]} as {a: false, b: _} => 1
+    };
+    [u({a: true, b: null}), u({a: false, b: 7}), u({a: false, b: "s"}), u({a: false, b: null})]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 7, 1, 1]); FuseExpect::Jit);
+
+// Two positions, each cut by the tests.
+run!(written_tests_narrow_two_positions, r#"{
+    let u = |x: ([bool, null], [i64, null])| select x {
+        ([bool, null], null) as (_, null) => 0,
+        (bool, i64) as (true, n) => n,
+        (bool, i64) as (false, n) => n + 100,
+        (null, i64) as (_, n) => n + 1000
+    };
+    [u((null, null)), u((true, 1)), u((false, 2)), u((null, 3))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 102, 1003]); FuseExpect::Jit);
+
+run!(written_tests_narrow_two_positions_leaving_one_refused, r#"{
+    let u = |x: ([bool, null], [i64, null])| select x {
+        ([bool, null], null) as (false, null) => 0,
+        ([bool, null], null) as (null, null) => 5,
+        (bool, i64) as (true, n) => n,
+        (bool, i64) as (false, n) => n + 100,
+        (null, i64) as (_, n) => n + 1000
+    };
+    u((true, null))
+}"#, refused("missing match cases: no arm covers"); FuseExpect::None);
+
+// A test holding part of two members of one shape covers its part of each.
+run!(written_test_over_two_members_covers_each_part, r#"{
+    let u = |x: [(bool, [i64, null]), (bool, [string, null])]| select x {
+        (true, _) => 0,
+        (bool, [i64, string]) as (false, n) => 1,
+        (bool, null) as (false, _) => 2
+    };
+    [u((false, 1)), u((false, "s")), u((false, null)), u((true, 1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 0]); FuseExpect::Jit);
+
+// A declared variable at the position is cut into its bound's members,
+// each also held by a test naming the variable.
+run!(written_tests_split_a_declared_variable_beside_bool_head, r#"{
+    let u = 'b: [i64, string] |x: (bool, ['b, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => 1,
+        (bool, string) as (false, s) => 2,
+        (false, null) => 3
+    };
+    let (w0, w1): ([i64, string], [i64, string]) = (7, "four");
+    [u((true, null)), u((false, w0)), u((false, w1)), u((false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2, 3]); FuseExpect::Jit);
+
+run!(written_test_leaves_a_declared_variable_part_refused, r#"{
+    let u = 'b: Number |x: (bool, ['b, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (false, n) => 1,
+        (bool, f64) as (false, n) => 2,
+        (false, null) => 3
+    };
+    u((true, null))
+}"#, refused("missing match cases: no arm covers"); FuseExpect::None);
+
+run!(written_test_naming_the_declared_variable_covers_its_part, r#"{
+    let u = 'b: [i64, string] |x: (bool, ['b, null])| select x {
+        (true, _) => 0,
+        (bool, 'b) as (false, v) => 1,
+        (false, null) => 3
+    };
+    let (w0, w1): ([i64, string], [i64, string]) = (7, "four");
+    [u((true, null)), u((false, w0)), u((false, w1)), u((false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 1, 3]); FuseExpect::Jit);
+
+// A test naming a declared variable holds only the variable, never its
+// bound: an instance may take the variable narrower.
+run!(written_test_naming_another_declared_variable_covers_nothing_refused, r#"{
+    let f = 'b: [i64, u8] |x: (bool, [i64, u8]), y: 'b| select x {
+        (bool, 'b) as (true, a) => 1,
+        (false, _) => 2
+    };
+    f((true, u8:1), i64:3)
+}"#, refused("missing match cases: no arm covers"); FuseExpect::None);
+
+run!(written_test_naming_another_declared_variable_beside_a_catch_all, r#"{
+    let f = 'b: [i64, u8] |x: (bool, [i64, u8]), y: 'b| select x {
+        (bool, 'b) as (true, a) => 1,
+        _ => 2
+    };
+    [f((true, u8:1), i64:3), f((true, i64:1), i64:3), f((false, i64:1), i64:3)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 2]); FuseExpect::Jit);
+
+// Every combination a written test matches in each part it reaches,
+// earlier arms match: dead.
+run!(written_test_after_bool_head_is_dead, r#"{
+    let u = |x: (bool, [i64, null])| select x {
+        (true, _) => 0,
+        (bool, i64) as (true, n) => n,
+        _ => 1
+    };
+    u((false, 7))
+}"#, refused("every combination of heads it matches is covered by earlier arms"); FuseExpect::None);
+
+// The tests' sets cut the positions alike: a test holding i64 at one
+// position and u8 at another covers neither alone.
+run!(written_test_sets_cut_each_position_refused, r#"{
+    let u = |x: (bool, [i64, u8, null], [i64, u8, null])| select x {
+        (bool, i64, u8) as (true, a, b) => 1,
+        (_, null, _) => 2,
+        (_, _, null) => 3,
+        (false, _, _) => 4
+    };
+    u((true, u8:1, i64:2))
+}"#, refused("missing match cases: no arm covers"); FuseExpect::None);
+
+run!(written_test_sets_cut_each_position_covered, r#"{
+    let u = |x: (bool, [i64, u8, null], [i64, u8, null])| select x {
+        (bool, i64, u8) as (true, a, b) => 1,
+        (bool, [i64, u8], [i64, u8]) as (true, a, b) => 5,
+        (_, null, _) => 2,
+        (_, _, null) => 3,
+        (false, _, _) => 4
+    };
+    [u((true, u8:1, i64:2)), u((true, i64:1, u8:2)), u((false, null, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 1, 2]); FuseExpect::Jit);
+
+// A typedef applied twice in one test holds what each application holds.
+run!(each_typedef_application_holds_its_own_part_refused, r#"{
+    type O<'a> = ['a, null];
+    let u = |x: (bool, [i64, u8, null], [i64, u8, null])| select x {
+        (bool, O<[i64, u8]>, O<i64>) as (true, a, b) => 1,
+        (false, _, _) => 2
+    };
+    u((true, null, u8:1))
+}"#, refused("missing match cases: no arm covers"); FuseExpect::None);
+
+run!(each_typedef_application_holds_its_own_part_covered, r#"{
+    type O<'a> = ['a, i64, null];
+    let u = |x: (bool, [i64, u8, null], [i64, u8, string, null])| select x {
+        (bool, O<[i64, u8]>, O<string>) as (true, a, b) => 1,
+        (bool, [i64, u8, null], u8) as (true, a, b) => 3,
+        (false, _, _) => 2
+    };
+    [u((false, null, null)), u((true, null, "s")), u((true, null, i64:1)), u((true, null, u8:1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 1, 3]); FuseExpect::Jit);
+
+// Cutting a member leaves each part's combinations under the pool's
+// limit: seven bool positions beside a test holding eight primitives.
+run!(cut_member_keeps_bool_combinations_in_reach, r#"{
+    let u = |x: (bool, bool, bool, bool, bool, bool, bool, [i64, u8, i32, u32, string, f64, f32, bytes, null])| select x {
+        (bool, bool, bool, bool, bool, bool, bool, [i64, u8, i32, u32, string, f64, f32, bytes]) as (true, true, true, true, true, true, true, v) => 50,
+        (_, _, _, _, _, _, _, null) => 0,
+        (true, _, _, _, _, _, _, _) => 1,
+        (false, true, _, _, _, _, _, _) => 2,
+        (false, false, true, _, _, _, _, _) => 3,
+        (false, false, false, true, _, _, _, _) => 4,
+        (false, false, false, false, true, _, _, _) => 5,
+        (false, false, false, false, false, true, _, _) => 6,
+        (false, false, false, false, false, false, true, _) => 7,
+        (false, false, false, false, false, false, false, _) => 99
+    };
+    [u((false, false, false, false, false, false, false, 3)), u((true, true, true, true, true, true, true, "s")), u((true, false, false, false, false, false, false, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [99, 50, 0]); FuseExpect::Jit);
+
 // A written test at a nested union position covers its member alone.
 run!(written_nested_constructor_covers_its_member_alone, r#"{
     let g = 'b: Number |x: {f: ['b, `Keep('b)]}| -> ['b, null] select x {

@@ -2115,7 +2115,7 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
+    // XCR claude for claude: [bug/low] Bool literals in a tuple beside an arm that takes a
     // `null` at another position cover nothing: over `x: (bool, [i64, null])`, `select x {
     // (_, null) => 1, (true, _) => 0, (false, _) => 2 }` and `{ (true, null) => 0, (true,
     // _) => 2, (false, _) => 1 }` are refused "missing match cases: no arm covers (bool,
@@ -2150,6 +2150,27 @@ impl StructPatternNode {
     // two positions narrowed by four tests, wc_s9) stand on main too. probes
     // ~/ptmp/cr29/scratch/rv17/typing-a/wc_*.gx,
     // ~/ptmp/cr29/scratch/review-r16/m-r*/bn_*.gx
+    // 2026-11-09 claude: Fixed (r19 lane 19a): a tuple or struct member a written test can
+    // match and does not hold is cut into parts, one member of each position's union
+    // apiece (a primitive set per primitive, a declared variable at the position by its
+    // one typed bound, each part also held by a test naming the variable), at most 64
+    // (select.rs PartPool), each pooled on its own; a complete part covers itself, a
+    // variable's parts together the variable, and an arm every part it reaches already
+    // matches is dead. LiteralPool::claim now reads a written test held rigid, closing a
+    // hole on main where a test naming a declared variable claimed its bound: bvar_tup.gx
+    // and bn_bvar.gx passed the check and aborted at run time (no arm matches). q10p,
+    // q10c, q10, wc_s1, wc_s4, wc_s7, wc_s8, wc_s9, bn_td run; wc_s2, wc_s3, wc_s5, wc_s6,
+    // wc_s10, bn_td_twice, bn_int, bn_shadow stay refused. Pins failing without it (11):
+    // lang::select_undecided::written_test_beside_bool_head_covers,
+    // written_tests_split_a_primitive_member, written_tests_split_a_struct_member,
+    // written_tests_narrow_two_positions, written_test_over_two_members_covers_each_part,
+    // written_tests_split_a_declared_variable_beside_bool_head,
+    // written_test_naming_the_declared_variable_covers_its_part,
+    // written_test_naming_another_declared_variable_covers_nothing_refused,
+    // written_test_after_bool_head_is_dead, written_test_sets_cut_each_position_covered,
+    // each_typedef_application_holds_its_own_part_covered. Census of both repos unchanged.
+    // Not covered: a test narrowing a nested position (wc_s5's shape when it should pass)
+    // or a variant's payload; those members stay whole. Needs a soak.
     /// The part of `typ` this pattern covers when its only refutable parts
     /// are `null` literals and constructors: `typ` with `null` at each
     /// `null` and, where a constructor stands over a union, the members

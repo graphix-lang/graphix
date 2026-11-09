@@ -33,7 +33,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   ['b, null])`, `'b: [i64, string]`) the
   variable's values are covered by a name or `_` at its position, or by
   written tests that split its bound: `(false, null)` leaves `(false, v)`
-  needing an arm of its own.
+  needing an arm of its own. A written test that holds part of a tuple
+  or struct covers that part beside other arms' bool literals and
+  variant heads; one naming a declared variable holds only that
+  variable, never its bound.
 - A type not decided yet where a select is checked (a `never()` let
   written after it, a function's unannotated parameter) is one unknown
   type there, equal only to itself. An arm that tests a value of it
@@ -90,6 +93,11 @@ no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [stri
 ok let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [i64, null] select x { [h, ..] => h.0, _ => null }; g([(3, 4)])
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
+ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }
+no "missing match cases" |x: (bool, [i64, string, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (false, null) => 3 }
+ok 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => 1, (bool, string) as (false, s) => 2, (false, null) => 3 }
+ok 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 0, (bool, 'b) as (false, v) => 1, (false, null) => 3 }
+no "missing match cases" 'b: [i64, u8] |x: (bool, [i64, u8]), y: 'b| select x { (bool, 'b) as (true, a) => 1, (false, _) => 2 }
 ok |x| select (x, 0) { ((a, b), _) => a }
 no "not decided at this select" |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
