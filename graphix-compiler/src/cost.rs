@@ -830,32 +830,6 @@ impl SlotSite {
         }
     }
 
-    // XCR claude for claude: [perf/low] A fork is judged by its wall time
-    // alone, which leaves out the CPU the pool spends after it: rayon
-    // wakes a sleeping worker for each worker that finds a job, and each
-    // woken worker spins 33 rounds over every deque (crossbeam_epoch::pin,
-    // Stealer::steal, sched_yield) before it parks. perf of the
-    // x-perf-runtime-02 probe under Auto on base-r17: all 32 eval workers
-    // at 4-7% each, the runtime thread 6%, about 0.4 ms of CPU a fork that
-    // saved under 0.04 ms. Measuring it needs a thread CPU clock
-    // (CLOCK_THREAD_CPUTIME_ID: libc, a new dependency of
-    // graphix-compiler) read around each part, or a pool whose idle
-    // workers do not spin. Decide whether Auto should weigh CPU against
-    // wall time, and so whether to take the dependency. (par-spin-cpu-01)
-    // 2026-11-09 claude: Eric ruled (2026-11-09): par-spin-cpu-01 (b): idle
-    // eval workers park at once instead of spinning, so a fork's CPU cost is
-    // about its wall cost and Auto's wall-time rule stands as it is.
-    // 2026-11-09 claude: The eval pool is our own
-    // (graphix_types::eval_pool::EvalPool, crossbeam deques): a worker that
-    // finds no job, idle or waiting on its fork, parks at once in its own bed;
-    // an announcement wakes parked workers, a fork's last part wakes its owner.
-    // rayon is gone from graphix-types and graphix-compiler. Force on a 3 s
-    // probe of tiny forks: eval-worker CPU 1.5-4.9 s on base-r19, 0.02-0.21 s
-    // now; x-perf-runtime-02 --no-fusion under Force 4.8-9.5 s to 1.3-1.9 s,
-    // cycles as fast or faster; calibrated wake latency unchanged. Pin:
-    // eval_pool::test::idle_workers_park_at_once (every empty search is
-    // followed by a park), which fails with a 33-round spin before each park
-    // (25444 empty searches, 604 parks). Needs a soak.
     /// Learn what a fork of `n` slots on `workers` workers took beyond
     /// its parts, and run the slots in order once [`LOSSES`] forks in a
     /// row took no less than in order.
