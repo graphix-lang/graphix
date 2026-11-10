@@ -2555,34 +2555,6 @@ impl<R: Rt> PatternNode<R> {
             )?)
     }
 
-    // XCR claude for claude: [bug/low] D5 (b) says a written test's undeclared
-    // variable that its structure tests is refused, and `|x: [i64, `A(i64)]| select x {
-    // ['b, `A(i64)] as `A(n) => n, _ => 0 }` is
-    // (lang::select_undecided::written_test_with_an_open_variable_refused), but over an
-    // array element it is not: `|xs: Array<[i64, `Keep(i64)]>| -> i64 select xs {
-    // Array<['q, `Keep(i64)]> as [`Keep(r)] => r, _ => 0 }` checks and prints [3, 0] on
-    // base-r19, because the narrowing here binds 'q to i64 before check_undecided looks.
-    // The same test over 'c<[i64, `Keep(i64)]> is refused
-    // (written_collection_test_with_an_open_variable_refused) only because the
-    // application blocks that narrowing. No wrong answer seen. probe:
-    // ~/ptmp/cr29/scratch/r19/19a/ceb/w1t.gx, twin w1.gx (written-open-array-element-01)
-    // 2026-11-10 claude: Select::check_undecided now judges every cell a written test
-    // held open before the arms (Deciding::hold_written, collected in the arms' first
-    // check loop), not only those still open at the end: one the narrowing bound since
-    // (an array or list element, or Any via open_over_any) is met as the open cell it
-    // was (meets_decided), so a destructure that takes apart all it bound still passes
-    // (d5 follow-up 2 (b)), and the refusal prints the test as written. This also closes
-    // a wrong answer on base-r20: |x: Any| -> i64 select x { ['q, `A(i64)] as `A(n) =>
-    // n, _ => 0 } returned "s" for `A("s") (node-walk) and panicked the kernel with n +
-    // 1 (any1.gx, any2.gx). Cells the pattern's own compile decides ('q as `A(n), ['q,
-    // string] as 1, an or-alternative) are its shape, as an inferred predicate's, and
-    // stay unjudged; probes sound. Pins (lang::select_undecided):
-    // written_array_element_test_with_an_open_variable_refused,
-    // written_list_element_..., written_test_with_an_open_variable_over_any_refused,
-    // written_array_element_..._over_any_refused fail without the fix (16 runs); twins
-    // written_array_element_test_closed, written_array_test_binding_an_open_variable,
-    // written_test_destructuring_an_open_variable. Census 2949 files: 0 changes. Probes
-    // ~/ptmp/cr29/scratch/r20/20e/woae/.
     pub(super) fn capture_type(&self, env: &Env, reaching: &Type) -> Result<Type> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());
