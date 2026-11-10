@@ -721,7 +721,16 @@ that safe: they are independent.
 
 **Dynamic modules** compile in their branch's task too. Their checks'
 internal `par_iter` (C/node/mod.rs:949) nests in the evaluation pool. A
-dynamic module is `opaque` in its summary, so nothing forks beside it.
+dynamic module is `opaque` in its summary (it reads and writes every
+variable and is ordered), so a sibling forks beside it only where it
+makes no ordered call, publishes nothing when it stands before the
+module, and after it reads nothing the module's sibling publishes and
+publishes nothing a reference or a lambda hands out
+(`analysis::ids_verdict`). A load joins each `val` with the binding
+implementing it in `StaticCallees`, the one table every branch shares,
+and each view of the runtime reads the joins for itself
+(`design/module_system.md`, "one variable"): a sibling's sync between a
+load's join and the load's own takes nothing from the loading branch.
 
 **Core-trait hooks** reach `&mut ExecCtx` through a raw pointer
 published in `VALUE_HOOKS` (C/node/coretraits.rs:368) and re-enter node

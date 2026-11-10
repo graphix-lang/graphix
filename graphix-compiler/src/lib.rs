@@ -2428,7 +2428,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
-    // CR claude for claude: [risk/medium] Forked siblings share one StaticCallees, so the
+    // XCR claude for claude: [risk/medium] Forked siblings share one StaticCallees, so the
     // table each sibling's sync logs is a snapshot taken in wall-time order, not program
     // order, and its changed flag is one bit for all of them. (1) A later sibling whose sync
     // ran before an earlier sibling's join replays at the root a table lacking that join;
@@ -2440,11 +2440,29 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     // Unwitnessed: it needs two forked siblings each joining a dynamic module in one cycle.
     // A fix: resync the root runtime from StaticCallees after merge_in_order, and keep the
     // flag per branch. Found reviewing (var-alias-merge-01). (var-alias-snapshot-01)
-    /// Give the runtime the bindings that are another's variable, where
-    /// a module's join or retirement changed them
-    /// ([`StaticCallees::join`]).
+    // 2026-11-10 claude: Witnessed with one joining sibling: a load forked beside siblings
+    // that sync (a collection's growth calls apply_deferred) lost its changed flag to them,
+    // so its branch never read its own join: d::v stayed bottom, and a reload panicked in
+    // unref_var (base-r20 under GRAPHIX_PAR=force, 8/8; probes
+    // ~/ptmp/cr29/scratch/r20/20h/vas/). StaticCallees now counts its changes, a VarAliases
+    // carries the count it was read at, and each view of the runtime (root, each ForkRt)
+    // syncs when the count passed its own table's (StaticCallees::aliases_after);
+    // merge_in_order ends with a sync of the root. Pins:
+    // lang::modules::a_load_beside_syncing_siblings_publishes_its_val and
+    // a_reload_beside_syncing_siblings_keeps_the_val_one_variable fail in par and jit_par
+    // without the fix (11 of 12 runs; a race, so not every run),
+    // static_callees_tests::a_join_reaches_every_view_that_has_not_read_it and
+    // branch::tests::a_table_absorbed_out_of_order_keeps_the_later_reading pin the count.
+    // Part (1), two siblings each joining, stays unreachable (a dynamic module is ordered, so
+    // two never fork as siblings): the root's sync at the merge has no failing pin, its
+    // reachable effect is dropping an alias of a retired binding that a sibling's earlier
+    // table put back. Needs a soak.
+    /// Give this view of the runtime the bindings that are another's
+    /// variable, where a module's join or retirement changed them since
+    /// the view's table was read ([`StaticCallees::aliases_after`]).
     pub(crate) fn sync_var_aliases(&mut self) {
-        if let Some(aliases) = self.static_callees.changed_aliases() {
+        let read_at = self.rt.var_aliases().read_at();
+        if let Some(aliases) = self.static_callees.aliases_after(read_at) {
             self.rt.set_var_aliases(aliases);
             let aliases = self.rt.var_aliases().clone();
             self.event.variables.set_aliases(aliases)
@@ -3919,9 +3937,10 @@ pub fn record_expr_types<R: Rt>(nodes: &[Node<R>], out: &mut Vec<ide::ExprTypeSi
 /// The live holds on bindings whose definitions calls bound statically
 /// ([`CompileCtx::static_callees`]): per binding, each holding call with
 /// the number of holders that hold it, and the bindings that are one
-/// variable. One index serves a context and every compile task it forks.
+/// variable, with the count of the changes to those. One index serves a
+/// context and every compile task it forks.
 #[derive(Debug, Default)]
-pub(crate) struct StaticCallees(Mutex<Holds>, std::sync::atomic::AtomicBool);
+pub(crate) struct StaticCallees(Mutex<Holds>, AtomicU64);
 
 #[derive(Debug, Default)]
 struct Holds {
@@ -3933,6 +3952,8 @@ struct Holds {
     /// The bindings of a body being replaced: no longer one variable with
     /// another to its replacement's compile.
     aside_vars: AHashMap<BindId, u32>,
+    /// `joined` as the runtime takes it, as of the change it was read at.
+    aliases: branch::VarAliases,
 }
 
 /// A binding's side of the interface pairs it is in
@@ -3999,7 +4020,7 @@ impl StaticCallees {
     /// `val`'s.
     pub(crate) fn join(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
-        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.1.fetch_add(1, Ordering::Relaxed);
         held.joined.insert(inner, Side::Inner(outer));
         let side =
             held.joined.entry(outer).or_insert_with(|| Side::Outer(SmallVec::new()));
@@ -4013,7 +4034,7 @@ impl StaticCallees {
     /// `inner` and `outer` are no longer one variable.
     pub(crate) fn unjoin(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
-        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.1.fetch_add(1, Ordering::Relaxed);
         if matches!(held.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
             held.joined.remove(&inner);
         }
@@ -4034,22 +4055,28 @@ impl StaticCallees {
     }
 
     /// Each binding implementing a `val` mapped to the val's, its variable
-    /// at run time, when a join or an unjoin changed them since the last
-    /// call.
-    fn changed_aliases(&self) -> Option<branch::VarAliases> {
-        if !self.1.swap(false, std::sync::atomic::Ordering::Relaxed) {
+    /// at run time, when a join or an unjoin changed them after the change
+    /// `read_at` counts, a table's [`branch::VarAliases::read_at`]. Each
+    /// view of the runtime asks with its own table's, so a forked branch's
+    /// sync takes nothing from its sibling's.
+    fn aliases_after(&self, read_at: u64) -> Option<branch::VarAliases> {
+        if self.1.load(Ordering::Relaxed) == read_at {
             return None;
         }
-        let held = self.0.lock();
-        let m = held
-            .joined
-            .iter()
-            .filter_map(|(id, side)| match side {
-                Side::Inner(outer) => Some((*id, *outer)),
-                Side::Outer(_) => None,
-            })
-            .collect();
-        Some(branch::VarAliases::new(m))
+        let mut held = self.0.lock();
+        let now = self.1.load(Ordering::Relaxed);
+        if held.aliases.read_at() != now {
+            let m = held
+                .joined
+                .iter()
+                .filter_map(|(id, side)| match side {
+                    Side::Inner(outer) => Some((*id, *outer)),
+                    Side::Outer(_) => None,
+                })
+                .collect();
+            held.aliases = branch::VarAliases::new(m, now)
+        }
+        Some(held.aliases.clone())
     }
 
     /// Add to `ids` every binding one of them is one variable with.
@@ -4092,7 +4119,7 @@ impl StaticCallees {
         let mut held = self.0.lock();
         held.calls.remove(&id);
         let Some(side) = held.joined.remove(&id) else { return };
-        self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.1.fetch_add(1, Ordering::Relaxed);
         for with in side.with() {
             match held.joined.get_mut(with) {
                 Some(Side::Outer(inners)) => {
@@ -4599,5 +4626,30 @@ mod handler_tests {
         assert!(!outer.has_nested_errors());
         inner.handled(0);
         assert!(!try_.has_nested_errors() && !machine.has_nested_errors());
+    }
+}
+
+#[cfg(test)]
+mod static_callees_tests {
+    use super::*;
+
+    #[test]
+    fn a_join_reaches_every_view_that_has_not_read_it() {
+        let index = StaticCallees::default();
+        let (a, b, x, y) = (BindId::new(), BindId::new(), BindId::new(), BindId::new());
+        assert!(index.aliases_after(0).is_none());
+        index.join(a, x);
+        let sibling = index.aliases_after(0).expect("the sibling's view");
+        let joiner = index.aliases_after(0).expect("the joining view");
+        assert_eq!((sibling.var(a), joiner.var(a)), (x, x));
+        assert!(index.aliases_after(joiner.read_at()).is_none());
+        index.join(b, y);
+        index.unjoin(a, x);
+        let later = index.aliases_after(joiner.read_at()).expect("the changes since");
+        assert_eq!((later.var(a), later.var(b)), (a, y));
+        assert!(later.read_at() > joiner.read_at());
+        index.forget(b);
+        let last = index.aliases_after(later.read_at()).expect("the forgotten join");
+        assert_eq!(last.var(b), b);
     }
 }

@@ -69,13 +69,17 @@ pub struct VarAliases {
     /// and `hi` that is none is answered by one load.
     filter: &'static [u64; FILTER_WORDS],
     aliases: Option<Arc<Aliases>>,
+    /// The count of the compile's joins and unjoins these hold
+    /// ([`crate::StaticCallees::aliases_after`]): each view of the
+    /// runtime asks for what changed since its own table's.
+    read_at: u64,
 }
 
 static NO_FILTER: [u64; FILTER_WORDS] = [0; FILTER_WORDS];
 
 impl Default for VarAliases {
     fn default() -> Self {
-        Self { lo: u64::MAX, hi: 0, filter: &NO_FILTER, aliases: None }
+        Self { lo: u64::MAX, hi: 0, filter: &NO_FILTER, aliases: None, read_at: 0 }
     }
 }
 
@@ -114,11 +118,11 @@ fn filter_bit(id: BindId) -> (usize, u64) {
 }
 
 impl VarAliases {
-    pub(crate) fn new(map: IntMap<BindId, BindId>) -> Self {
+    pub(crate) fn new(map: IntMap<BindId, BindId>, read_at: u64) -> Self {
         let (Some(lo), Some(hi)) =
             (map.keys().map(BindId::inner).min(), map.keys().map(BindId::inner).max())
         else {
-            return Self::default();
+            return Self { read_at, ..Self::default() };
         };
         let mut filter = Box::new([0u64; FILTER_WORDS]);
         for id in map.keys() {
@@ -129,7 +133,11 @@ impl VarAliases {
         // SAFETY: the filter lives in a box `aliases` holds for as long
         // as `Self` does, and nothing writes it once built
         let filter = unsafe { &*(&*aliases.filter as *const [u64; FILTER_WORDS]) };
-        Self { lo, hi, filter, aliases: Some(aliases) }
+        Self { lo, hi, filter, aliases: Some(aliases), read_at }
+    }
+
+    pub(crate) fn read_at(&self) -> u64 {
+        self.read_at
     }
 
     /// The variable `id` names.
@@ -157,6 +165,9 @@ impl VarAliases {
     /// These with every alias of `kept` it lacks for which `keep` holds.
     pub fn with_kept(&self, kept: &Self, mut keep: impl FnMut(&BindId) -> bool) -> Self {
         let Some(old) = &kept.aliases else { return self.clone() };
+        if self.same(kept) {
+            return self.clone();
+        }
         let mut m = self.aliases.as_ref().map(|a| a.map.clone()).unwrap_or_default();
         let mut grew = false;
         for (inner, outer) in old.map.iter() {
@@ -165,15 +176,17 @@ impl VarAliases {
                 grew = true
             }
         }
-        if grew { Self::new(m) } else { self.clone() }
+        if grew { Self::new(m, self.read_at) } else { self.clone() }
     }
 
     /// Take in the table of a branch forked from these: its aliases, and
-    /// every one of these it lacks.
+    /// every one of these it lacks, read at the later of the two.
     pub(crate) fn absorb(&mut self, child: &Self) {
+        let read_at = self.read_at.max(child.read_at);
         if !self.same(child) {
             *self = child.with_kept(self, |_| true)
         }
+        self.read_at = read_at
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {
@@ -1277,6 +1290,11 @@ fn merge_in_order<R: Rt>(
         ctx.event.merge(event);
         crate::node::coretraits::adopt(ctx, sites);
     }
+    // a branch's table was read when its sync ran, in no order with its
+    // siblings' joins: the runtime ends with the joins as they stand
+    if let RtView::Root(_) = &ctx.rt {
+        ctx.sync_var_aliases()
+    }
 }
 
 /// Run `f` on a branch of its own forked from `ctx`, on this thread, and
@@ -1720,7 +1738,7 @@ mod tests {
         let outer = ids[0];
         // ids[2] and ids[FILTER_WORDS * 64 + 2] share a filter bit
         let inner = [ids[2], ids[6], ids[FILTER_WORDS * 64 + 5]];
-        let aliases = VarAliases::new(inner.iter().map(|id| (*id, outer)).collect());
+        let aliases = VarAliases::new(inner.iter().map(|id| (*id, outer)).collect(), 0);
         for id in inner {
             assert_eq!(aliases.var(id), outer)
         }
@@ -1745,11 +1763,25 @@ mod tests {
         let mut parent = Layered::<u32>::default();
         let mut first = unsafe { parent.fork() };
         let mut second = unsafe { parent.fork() };
-        first.aliases = VarAliases::new([(a, x)].into_iter().collect());
-        second.aliases = VarAliases::new([(b, y)].into_iter().collect());
+        first.aliases = VarAliases::new([(a, x)].into_iter().collect(), 0);
+        second.aliases = VarAliases::new([(b, y)].into_iter().collect(), 0);
         parent.merge(first);
         parent.merge(second);
         assert_eq!(parent.aliases.var(a), x);
         assert_eq!(parent.aliases.var(b), y);
+    }
+
+    #[test]
+    fn a_table_absorbed_out_of_order_keeps_the_later_reading() {
+        let (a, b, x, y) = (BindId::new(), BindId::new(), BindId::new(), BindId::new());
+        let mut parent = VarAliases::default();
+        parent.absorb(&VarAliases::new([(a, x), (b, y)].into_iter().collect(), 5));
+        parent.absorb(&VarAliases::new([(a, x)].into_iter().collect(), 3));
+        assert_eq!((parent.var(a), parent.var(b), parent.read_at()), (x, y, 5));
+        parent.absorb(&VarAliases::new(IntMap::default(), 7));
+        assert_eq!((parent.var(a), parent.var(b), parent.read_at()), (x, y, 7));
+        let mut empty = VarAliases::default();
+        empty.absorb(&VarAliases::new(IntMap::default(), 2));
+        assert_eq!(empty.read_at(), 2);
     }
 }

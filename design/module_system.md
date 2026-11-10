@@ -214,6 +214,20 @@ written (`CompileCtx::rebinds`) and a woken `let` keeps what was
 written through the `val` (`CompileCtx::var_written`); a seq's plan
 counts the pair one variable (`design/dependency_summaries.md` §3).
 
+The joins are one table (`StaticCallees`), shared by the runtime and
+every branch of a forked cycle, and counted at each change. A table
+read from it carries that count (`VarAliases::read_at`), and each view
+of the runtime, the runtime's own and each forked branch's, takes the
+joins again whenever the count has passed its table's
+(`ExecCtx::sync_var_aliases`, `StaticCallees::aliases_after`): a branch
+that joins reads its own join whatever its siblings read first, and one
+that joins nothing may read a sibling's early, which names bindings it
+never uses. A branch's table only grows (`VarAliases::absorb`). The
+tables it read replay into the runtime in the branch's order at the
+merge, so a retired body's readers leave before its join does, and once
+the branches have merged the runtime, which alone drops a join, reads
+the joins as they stand (`branch::merge_in_order`).
+
 A reload joins its new body's binding before the body it replaces
 retires; while the new source compiles, the replaced body's bindings
 are no names of the variable (`StaticCallees::set_aside`), so a write

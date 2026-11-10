@@ -2112,6 +2112,68 @@ run!(
     is(Value::String("null 1".into())); FuseExpect::Jit
 );
 
+/// A tuple whose first field loads the dynamic module `d` and whose
+/// second is sixty collections with a stateful callback: `d` loads at
+/// `ep` 3, reloads at 5 and 7 (the last body writes its `v`), `d::v` is
+/// written at 10, and the collections grow in each of the load's cycles.
+/// Forked, each growth gives its own branch the runtime's joins while the
+/// load's branch joins `d::v` and compiles on. The program's value is
+/// `result`, over `r.0`, which is `d::v`, and `seen`, every value it had
+/// in order.
+fn load_beside_growing_collections(result: &str) -> String {
+    let body = |v: i64, extra: &str| {
+        let lets: Vec<String> = (0..60).map(|i| format!("let a{i} = {i} + v")).collect();
+        format!("let v = {v}; {extra}{}", lets.join("; "))
+    };
+    let maps: Vec<String> =
+        (0..60).map(|i| format!("array::map(xs, |x| uniq(x) + {i})")).collect();
+    format!(
+        r#"{{
+    let ep = 0;
+    ep <- select ep {{ n if n < 9 => n + 1, _ => never() }};
+    let xs: Array<i64> = never();
+    xs <- select ep {{ 2 => [0, 1], 4 => [0, 1, 2, 3], 6 => [0, 1, 2, 3, 4, 5], _ => never() }};
+    let src: string = never();
+    src <- select ep {{ 2 => "{first}", 4 => "{second}", 6 => "{third}", _ => never() }};
+    let r = (
+        {{
+            let s = mod d dynamic {{ sandbox unrestricted; sig {{ val v: i64 }}; source src }};
+            d::v <- select ep {{ 9 => 9, _ => never() }};
+            select s {{ error as e => never(dbg(e)), null as _ => d::v }}
+        }},
+        [{maps}]
+    );
+    let seen = "";
+    seen <- r.0 ~ "[seen] [r.0]";
+    {result}
+}}"#,
+        first = body(1, ""),
+        second = body(2, ""),
+        third = body(0, "v <- once(v) ~ 7; "),
+        maps = maps.join(", "),
+    )
+}
+
+// A forked load's branch reads its own joins whatever its siblings read
+// first: the loaded body publishes its `let` as the val.
+run!(
+    a_load_beside_syncing_siblings_publishes_its_val,
+    load_beside_growing_collections("r.0"),
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+// A reload beside them retires the replaced body through the joins it
+// was registered under, and writes through either binding still land.
+run!(
+    a_reload_beside_syncing_siblings_keeps_the_val_one_variable,
+    load_beside_growing_collections(
+        r#"select seen { s if s == " 1 2 0 7 9" => s, _ => never() }"#
+    ),
+    is(Value::String(" 1 2 0 7 9".into()));
+    FuseExpect::Jit
+);
+
 // A sibling's write through a val reaches the implementation's own calls,
 // whichever module's check ran first.
 run!(
