@@ -1511,7 +1511,7 @@ impl FnType {
         r
     }
 
-    // CR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // XCR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
     // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
     // containment holds such a position after every other (instance_sig, a written
     // function type), while a call site's check relates its arguments first, deciding
@@ -1635,6 +1635,33 @@ impl FnType {
     // typedef-hidden as t_later/t_idarg/t_idbody, inferred select unions as s5, nested members, callbacks, invariant positions). Eric: more annotations in exchange for a simpler
     // implementation is a good trade, within limits; census both repos first and bring it back only if the stdlib, the book's examples or netidx-admin need many. D8's written-form
     // rule (Type::variable_union) then is redundant: keep it as the earlier message or delete it, decided when built. Supersedes (a) and (b) of the item; s5 becomes a refusal.
+    // 2026-11-10 claude: Lane 20b (round 20) built D8 follow-up 2 (c) at the pick. Type::take (set_commit, place_members' cover loop) and residue_member give a type to one member by
+    // rules that read the union alone: a member identical to it or holding it as it stands (takes_as_it_stands, its own cells held rigid) binds nothing and takes it; else constructor
+    // members before bare variables; in the first tier where a member holds it on copies exactly one undecided member (reaching an open, non-rigid cell) must, and two are refused
+    // with the typed error AmbiguousMember. A member that is a name or bound cell standing for an open variable or a union holding one is its members first (names_members,
+    // Type::unfolded), so E<'a, Id<'b>>, ['a, M<'b>] and a cell bound to ['x, 'y] are judged flat; an undecided rhs member takes a union of undecided members whole; an equality
+    // relates such a union as the contained side first (equal_int, op::operand_type), so u + 1 over ['a, 'b] decides both. Walks on copies (on_copies, place_in_order's trials,
+    // contains_holding, contains_through_copy) and a select's or let's own pattern walks (Type::contains_ordered, check_contains_ordered: tvar.rs narrowing, pattern.rs, Select's
+    // predicate, bind::fits_every_member) keep the first member. place_in_order still searches its two member orders; each placement on the real walk is judged. Sites name what to
+    // annotate: Connect (declare u's type where it is bound), a call's argument (callsite::ambiguous_parameter), the default elsewhere. A trait call checks against the declaration
+    // alone, so traits::instance_picks_no_member refuses an implementation whose instance would have to choose (closes a check/build split the rule opened for
+    // default_body/impl_method over E<'a, 'b>), and an impl's target is judged by the written-form rule (impl<'a, 'b> T for Array<['a, 'b]> refused at the head). D8's written-form
+    // rule (Type::variable_union, VariableUnion) is KEPT whole as the earlier, clearer message at the definition; nothing deleted. Verdicts: t_later, t_idarg, t_idbody, s5 and s6
+    // refused at --check and at the run alike, also under GRAPHIX_NO_SUBST=1 and GRAPHIX_ELAB_AUDIT=1; twins s5a/s5b/tl_a run. Census of 2949 files against base-r20: one verdict
+    // change, design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx (a review repro calling unannotated slice-pattern functions; no stdlib, book or netidx-admin file), no
+    // message change. guicheck 40.598G base, 40.789G lane (+0.47%). fuzz regress: 0 regressions, 0 manifest mismatches. Pins that fail with the refusal disabled (ContainsHist::new
+    // ordered): typ::contains::tests::two_undecided_members_refuse_a_type_either_could_take, lang::types::{write_into_a_union_of_two_undecided_refused,
+    // write_into_a_union_of_two_undecided_the_other_order_refused, argument_into_a_later_typedef_union_refused, argument_into_an_identity_argument_union_refused,
+    // argument_into_an_identity_body_union_refused, slice_arms_over_an_unannotated_parameter_refused_at_the_call, typedef_union_of_variables_refused_at_its_use,
+    // identity_member_refused_at_its_use, option_member_refused_at_its_use, nested_union_typedef_refused_at_its_use, data_union_of_variables_in_an_annotation_refused,
+    // nested_data_union_of_variables_in_an_annotation_refused}, lang::traits::{trait_method_typedef_union_refused_at_the_call, default_body_typedef_union_refused,
+    // impl_method_typedef_union_refused}, lang::interfaces::open_union_call_refused; twins write_into_a_declared_union, write_into_a_union_of_two_decided,
+    // argument_into_a_typedef_union_of_one_variable, one_undecided_member_takes_the_type, arithmetic_over_a_union_of_two_undecided, slice_arms_over_a_written_parameter,
+    // option_member_takes_its_null, impl_method_typedef_at_one_variable. Fixtures rewritten (22): the seven *_is_not_looked_through and two data-union annotation pins invert;
+    // generic_slice_arms_check and destructuring_slice_with_a_rest_decides_an_undecided_part annotate the parameter (slice-param-union-01); the eight impl<'a, 'b> T for Array<['a,
+    // 'b]> fixtures move to (Array<'a>, Array<'b>) or invert; the six pair-budget fixtures in lang::errors apply their one name to Array<'x>/List<'y> and `L('x)/`R('y) so the members
+    // stay apart; open_union_pairs_by_the_rest_of_the_signature no longer calls. Not reached: set_commit called from the cell arm (a rigid or bound-refused cell into a union) sees
+    // members un-unfolded. Needs a soak and the netidx-admin tests. Probes ~/ptmp/cr29/scratch/r20/20b/.
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
@@ -2881,6 +2908,15 @@ fn holds_open_union(t: &Type) -> bool {
         })
     }
     go(t, &mut LPooled::take())
+}
+
+impl Type {
+    /// Whether this type holds a union two of whose members are open
+    /// cells: a type going into it decides neither, so an equality
+    /// relates it as the contained side first.
+    pub fn holds_open_union(&self) -> bool {
+        holds_open_union(self)
+    }
 }
 
 impl Type {

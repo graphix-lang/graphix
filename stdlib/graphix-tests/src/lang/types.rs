@@ -6527,9 +6527,10 @@ run!(
     FuseExpect::None
 );
 run!(
-    typedef_union_of_variables_is_not_looked_through,
+    typedef_union_of_variables_refused_at_its_use,
     r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
-    prints("i64:2")
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
 );
 run!(
     typedef_union_at_a_written_type,
@@ -6557,8 +6558,14 @@ run!(
     prints("[[], []]")
 );
 run!(
-    data_union_of_variables_in_an_annotation,
+    data_union_of_variables_in_an_annotation_refused,
     r#"{ let v: ['r, 'q] = select true { true => 1, false => "s" }; v }"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    data_union_of_one_variable_in_an_annotation,
+    r#"{ let v: ['r, string] = select true { true => 1, false => "s" }; v }"#,
     prints("i64:1")
 );
 // A variable of the definition around stands beside one of its own: the
@@ -6579,13 +6586,20 @@ run!(
     prints("[]")
 );
 run!(
-    identity_member_is_not_looked_through,
+    identity_member_refused_at_its_use,
     r#"{ type Id<'x> = 'x; let f = |x: ['a, Id<'b>]| -> i64 0; f(1) }"#,
-    prints("i64:0")
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
 );
 run!(
-    option_member_is_not_looked_through,
+    option_member_refused_at_its_use,
     r#"{ type M<'x> = ['x, null]; let f = |x: ['a, M<'b>]| -> i64 0; f(1) }"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    option_member_takes_its_null,
+    r#"{ type M<'x> = ['x, null]; let f = |x: ['a, M<'b>]| -> i64 0; f(null) }"#,
     prints("i64:0")
 );
 run!(
@@ -6674,14 +6688,178 @@ run!(
     FuseExpect::Jit
 );
 run!(
-    nested_union_typedef_is_not_looked_through,
+    nested_union_typedef_refused_at_its_use,
     r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, Array<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
-    prints("i64:2")
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
 );
 run!(
-    nested_data_union_of_variables_in_an_annotation,
+    nested_data_union_of_variables_in_an_annotation_refused,
     r#"{ let v: [Array<'r>, Array<'q>] = [1]; v }"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    nested_data_union_of_one_variable_in_an_annotation,
+    r#"{ let v: [Array<'r>, Array<string>] = [1]; v }"#,
     prints("[i64:1]")
+);
+
+// A type that could go to either of two undecided members of a union goes
+// to neither: which would take it follows the order the check relates
+// things in, which an instance's check need not share. The refusal names
+// what holds the union; with it written, or one member left to take the
+// type, the program runs.
+const AMBIGUOUS_MEMBER: &str =
+    "which nothing has decided, and the check picks none by order";
+
+run!(
+    write_into_a_union_of_two_undecided_refused,
+    r#"{
+  let mk = |c, a, b| (select c { true => a, false => b }, [a], [b]);
+  let x = never();
+  let y = never();
+  let t = mk(false, x, y);
+  let u = never();
+  u <- t.0;
+  u <- 1;
+  u <- "s";
+  x <- 1;
+  y <- "s";
+  t.0
+}"#,
+    refused("declare u's type where it is bound");
+    FuseExpect::None
+);
+run!(
+    write_into_a_union_of_two_undecided_the_other_order_refused,
+    r#"{
+  let mk = |c, a, b| (select c { true => a, false => b }, [a], [b]);
+  let x = never();
+  let y = never();
+  let t = mk(false, x, y);
+  let u = never();
+  u <- t.0;
+  u <- "s";
+  u <- 1;
+  x <- 1;
+  y <- "s";
+  t.0
+}"#,
+    refused("declare u's type where it is bound");
+    FuseExpect::None
+);
+run!(
+    write_into_a_declared_union,
+    r#"{
+  let mk = |c, a, b| (select c { true => a, false => b }, [a], [b]);
+  let x = never();
+  let y = never();
+  let t = mk(false, x, y);
+  let u: [i64, string] = never();
+  u <- t.0;
+  u <- 1;
+  u <- "s";
+  x <- 1;
+  y <- "s";
+  t.0
+}"#,
+    prints(r#""s""#)
+);
+run!(
+    write_into_a_union_of_two_decided,
+    r#"{
+  let mk = |c, a, b| (select c { true => a, false => b }, [a], [b]);
+  let x: i64 = never();
+  let y: string = never();
+  let t = mk(false, x, y);
+  let u = never();
+  u <- t.0;
+  u <- 1;
+  u <- "s";
+  x <- 1;
+  y <- "s";
+  t.0
+}"#,
+    prints(r#""s""#)
+);
+run!(
+    argument_into_a_later_typedef_union_refused,
+    r#"{
+  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
+  type E<'p, 'q> = ['p, 'q];
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused("write the type of the parameter this argument is passed to");
+    FuseExpect::None
+);
+run!(
+    argument_into_an_identity_argument_union_refused,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  type Id<'x> = 'x;
+  let f = |x: E<'a, Id<'b>>| -> (Array<'a>, Array<'b>) ([], []);
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    argument_into_an_identity_body_union_refused,
+    r#"{
+  type Id<'x> = 'x;
+  type E<'p, 'q> = ['p, Id<'q>];
+  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, "s")
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    argument_into_a_typedef_union_of_one_variable,
+    r#"{
+  let f = |x: E<'a, 'a>| -> (Array<'a>, Array<'a>) ([], []);
+  type E<'p, 'q> = ['p, 'q];
+  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
+  g(1, 2)
+}"#,
+    prints("[[], []]")
+);
+// One undecided member that can take the type takes it: a constructor
+// before a bare variable, and a member that holds it as it stands first.
+run!(
+    one_undecided_member_takes_the_type,
+    r#"{
+  let f = |r: Result<'a, 'e>| select r { error as _ => 0, _ => 1 };
+  (f(1), f(error(`X)), f("s"))
+}"#,
+    prints("[i64:1, i64:0, i64:1]")
+);
+// An equality decides both members of the union by what must hold it.
+run!(
+    arithmetic_over_a_union_of_two_undecided,
+    r#"{
+  let f = |c, a, b| { let u = select c { true => a, false => b }; u + 1 };
+  f(true, 1, 2)
+}"#,
+    prints("i64:2")
+);
+// A select's patterns stay ordered, as its arms are consulted top down; the
+// union of two slice elements a function's parameter keeps is refused at
+// the call, and the parameter written takes it.
+run!(
+    slice_arms_over_an_unannotated_parameter_refused_at_the_call,
+    r#"{ let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5]) }"#,
+    refused("write the type of the parameter this argument is passed to");
+    FuseExpect::None
+);
+run!(
+    slice_arms_over_a_written_parameter,
+    r#"{ let f = |x: Array<'e>| select x { [h, ..] => h, [] => 0 }; f([4, 5]) }"#,
+    prints("i64:4")
 );
 
 // Every position is held, whichever round checks it: a result whose

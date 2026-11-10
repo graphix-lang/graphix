@@ -24,7 +24,7 @@ use crate::{
     },
     prune::ReadStamp,
     typ::{
-        CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
+        AmbiguousMember, CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
         tvar::{
             AtLevel, BoundAt, InTask, Level, TaskContext, TaskId, current_task, new_task,
         },
@@ -4020,6 +4020,24 @@ impl<R: Rt> Connect<R> {
                             )
                         },
                     ),
+                    None => match e.downcast_ref::<AmbiguousMember>() {
+                        Some(a) if a.in_holder() && !crate::is_lowered(&bind.name) => {
+                            format_with_flags(
+                                PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                                || {
+                                    anyhow!(
+                                        "{} is {held}: {}; declare {}'s type where it \
+                                         is bound ({})",
+                                        bind.name,
+                                        a.fact(),
+                                        bind.name,
+                                        BoundAt(bind, Some(&self.spec.ori))
+                                    )
+                                },
+                            )
+                        }
+                        _ => e,
+                    },
                     // a write a lowering built has no declaration to point at
                     Some(_) if !crate::is_lowered(&bind.name) => {
                         let mut refs = Refs::without_callees();

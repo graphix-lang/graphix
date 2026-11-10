@@ -35,7 +35,8 @@ use crate::{
     prune::BoundaryRef,
     stack::ensure_sufficient,
     typ::{
-        Brief, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
+        AmbiguousMember, Brief, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability,
+        TVar, Type,
         tvar::{AtLevel, BoundAt, Level, RigidGate},
     },
     wrap,
@@ -808,6 +809,19 @@ enum ArgFit {
     Open,
 }
 
+/// An argument that could go to either of two undecided members of its
+/// parameter's type: the parameter is what to annotate.
+fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
+    match e.downcast_ref::<AmbiguousMember>() {
+        Some(a) if a.in_holder() => anyhow!(
+            "{}: write the type of the parameter this argument is passed to, where \
+             the function is defined",
+            a.fact()
+        ),
+        _ => e,
+    }
+}
+
 /// Check a call's argument node against its formal's type `typ`,
 /// answering how it fit. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
@@ -839,7 +853,7 @@ fn typecheck_arg<R: Rt>(
     wrap!(n, n.typecheck0(ctx)).map_err(refused)?;
     Ok(if opening.is_some() && n.typ().has_free_in_data() {
         ArgFit::Open
-    } else if typ.contains(&ctx.env, n.typ())? {
+    } else if wrap!(n, typ.contains(&ctx.env, n.typ()).map_err(ambiguous_parameter))? {
         ArgFit::Fits
     } else {
         ArgFit::Misfit
@@ -1586,7 +1600,8 @@ impl Widening {
         let waits =
             typ.has_free_in_data() && !self.held(env, def, inst, formal).is_empty();
         if waits
-            || !formal.contains(env, typ)? && !self.widen(env, def, inst, formal, typ)?
+            || !formal.contains(env, typ).map_err(ambiguous_parameter)?
+                && !self.widen(env, def, inst, formal, typ)?
         {
             let waiter =
                 Waiter::Default { typ: typ.clone(), at: at.clone(), met, undecided };
@@ -1607,7 +1622,9 @@ impl Widening {
         formal: &Type,
         typ: &Type,
     ) -> Result<bool> {
-        let check = || formal.check_contains(env, typ).map(|()| true);
+        let check = || {
+            formal.check_contains(env, typ).map(|()| true).map_err(ambiguous_parameter)
+        };
         if !self.fresh || typ.has_unbound() {
             return check();
         }
@@ -1616,7 +1633,7 @@ impl Widening {
             return check();
         }
         let (open, opened) = Self::open(formal, cells.keys());
-        if !open.contains(env, typ)? {
+        if !open.contains(env, typ).map_err(ambiguous_parameter)? {
             return match open.discernible_refusal(env, typ) {
                 Some(e) => Err(e),
                 None => check(),
@@ -2596,7 +2613,10 @@ impl<R: Rt> CallSite<R> {
             met.extend(held.keys().cloned());
             Ok(joined && annotation_may_fit(env, formal, &held, typ)?)
         };
-        let noted = |res: Result<()>, note: Option<CompactString>| match (res, note) {
+        let noted = |res: Result<()>, note: Option<CompactString>| match (
+            res.map_err(ambiguous_parameter),
+            note,
+        ) {
             (Err(e), Some(note)) => Err(anyhow!("{e}: {note}")),
             (res, _) => res,
         };
@@ -2610,7 +2630,7 @@ impl<R: Rt> CallSite<R> {
                 }
                 Waiter::Incomparable(key) => {
                     let Some(n) = arg(&key) else { continue };
-                    wrap!(n, formal.check_contains(env, n.typ()))?
+                    wrap!(n, noted(formal.check_contains(env, n.typ()), None))?
                 }
                 Waiter::Default { typ, at, met: shared, undecided: names } => {
                     let note = match typ.has_free_in_data()

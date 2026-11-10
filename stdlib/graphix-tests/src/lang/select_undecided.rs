@@ -943,7 +943,7 @@ run!(destructuring_struct_decides_an_undecided_part, r#"{
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
 
 run!(destructuring_slice_with_a_rest_decides_an_undecided_part, r#"{
-    let f = |x| select (x, 0) { ([a, ..], _) => a, (_, _) => 0 };
+    let f = |x: Array<'e>| select (x, 0) { ([a, ..], _) => a, (_, _) => 0 };
     [f([4, 5]), f([])]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0]); FuseExpect::Jit);
 

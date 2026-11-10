@@ -67,6 +67,31 @@ same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
 'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`. Write one variable in both,
 or a written type in place of one. Members of two constructors stand.
 
+The same holds for a union nothing wrote: a value that two undecided
+members of a union could take goes to neither, and the check names what
+to annotate. It shows up three ways. A `let` over `never()` that took a
+select of two undecided values (`u <- select c { true => x, false => y
+}`) and is then written a value: declare `u` (`let u: [i64, string] =
+never()`), or `x` and `y`. A typedef that unions its parameters (`type
+E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: every
+call is refused, so write one variable (`E<'a, 'a>`). And an unannotated
+parameter a select takes apart with slice patterns: its element type is
+the union of each element's own, so write the parameter (`|x:
+Array<'e>|`). An impl's target may not union two of its head's variables
+either (`impl<'a, 'b> T for Array<['a, 'b]>`).
+
+```graphix,cases
+no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
+ok let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u: [i64, string] = never(); u <- h(true, x, y); u <- 1; u
+ok let h = |c, a, b| select c { true => a, false => b }; h(true, 1, "s")
+ok let f = |c, a, b| { let u = select c { true => a, false => b }; u + 1 }; f(true, 1, 2)
+no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>| 0; f(1)
+ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'a>| 0; f(1)
+no "write the type of the parameter" let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])
+ok let f = |x: Array<'e>| select x { [h, ..] => h, [] => 0 }; f([4, 5])
+no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
+```
+
 ```graphix,cases
 no "held by its members" |x: [Array<'c>, Array<'d>], y: 'c| y
 no "held by its members" |x: [('c, i64), (i64, 'd)], y: 'c| y

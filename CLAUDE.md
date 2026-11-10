@@ -332,6 +332,10 @@ a change elsewhere most often breaks.
 - A written function type holds no union of two or more of its own bare
   variables (`['a, 'b]`, `Type::variable_union`), and a quantified function
   type stands only as a declared signature's top (`typ::QUANTIFIED_FN`).
+- A type that two undecided members of a union could take goes to neither
+  (`contains.rs::AmbiguousMember`): the relation's site names what to
+  annotate. Only a select's own pattern walks keep the first member
+  (`Type::contains_ordered`).
 - **Widening:** a call's variable that only data positions hold settles to
   the widest of the decided arguments and omitted defaults, whatever the
   order; an undecided argument waits for that join and is refused, "annotate

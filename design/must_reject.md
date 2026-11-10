@@ -388,7 +388,12 @@ parameter, the result, a bound, a typedef's argument, a `.gxi` val, a
 trait method, a `let` annotation's function type), pinned by
 `lang::types::{variable_union,nested_variable_union}_*_refused`,
 `lang::interfaces::val_variable_union_refused` and
-`lang::traits::trait_method_variable_union_refused`.
+`lang::traits::trait_method_variable_union_refused`. The choice-point
+rule behind it (a type two undecided members of a union could take goes
+to neither, `AmbiguousMember`, `design/tvar_constraints.md`) is not
+generated either: it refuses at the use, not at the mutated definition;
+pins `lang::types::*_refused_at_its_use`,
+`write_into_a_union_of_two_undecided_refused`.
 
 **Interface vals.** Not generated: the module generator writes every
 `val` at one type. A val's variable outside a function type is refused

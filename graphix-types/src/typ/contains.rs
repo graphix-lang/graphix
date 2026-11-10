@@ -19,7 +19,7 @@ use crate::{
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use enumflags2::{BitFlags, bitflags};
@@ -180,6 +180,10 @@ pub(super) struct ContainsHist {
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
+    /// A union's first member that holds a type takes it (a walk that
+    /// binds copies alone, a select's patterns), where any other walk
+    /// refuses a choice between two ([`AmbiguousMember`]).
+    ordered: bool,
     /// [`identical_linked`]'s pairs found identical.
     identical: IdenticalMemo,
 }
@@ -309,12 +313,17 @@ impl ContainsHist {
             norm: None,
             gated: 0,
             trial: false,
+            ordered: false,
             identical: IdenticalMemo::default(),
         }
     }
 
+    fn ordered() -> Self {
+        ContainsHist { ordered: true, ..Self::new() }
+    }
+
     fn trial() -> Self {
-        ContainsHist { trial: true, ..Self::new() }
+        ContainsHist { trial: true, ..Self::ordered() }
     }
 
     /// Whether `t` reaches no open cell, through bindings: a commit over
@@ -925,6 +934,49 @@ fn takes_lower(flags: BitFlags<ContainsFlags>, tv: &TVar, rigid_part: bool) -> b
             false => flags.contains(ContainsFlags::Lower) && !rigid_part,
             true => flags.contains(ContainsFlags::LowerInArgs),
         }
+}
+
+/// Whether `m`, a union's member, is a name or a bound cell that stands
+/// for an open variable or for a union holding one as a member: its
+/// members are the union's.
+fn names_members(env: &Env, m: &Type) -> bool {
+    fn go(env: &Env, m: &Type, seen: &mut Expanded) -> bool {
+        let named = match m {
+            Type::Ref(tr) => !tr.params.iter().all(|p| p.tvar_free()),
+            Type::TVar(tv) => tv.is_bound() && !is_unbound_tvar(m),
+            _ => false,
+        };
+        named
+            && ensure_sufficient(|| match &named_head(env, m, seen) {
+                Some(Type::Set(ms)) => {
+                    ms.iter().any(|m| is_unbound_tvar(m) || go(env, m, seen))
+                }
+                Some(h) => is_unbound_tvar(h),
+                None => false,
+            })
+    }
+    go(env, m, &mut Expanded::default())
+}
+
+/// Two vars sharing one cell, or one id, are already unified.
+fn one_variable(t0: &TVar, t1: &TVar) -> bool {
+    t0.wrapper_addr() == t1.wrapper_addr()
+        || t0.read().id == t1.read().id
+        || t0.same_cell(t1)
+}
+
+/// Whether two members of a union are one member: the same variable, or
+/// identical with every cell by identity.
+fn one_member(m0: &Type, m1: &Type) -> bool {
+    match (m0, m1) {
+        (Type::TVar(t0), Type::TVar(t1)) => one_variable(t0, t1),
+        _ => strictly_identical(m0, m1),
+    }
+}
+
+/// Whether `t` reaches a cell nothing has decided: open, and not declared.
+fn undecided(t: &Type) -> bool {
+    find_open_cell(t, true, &mut |tv| !tv.is_rigid()).is_some()
 }
 
 /// A variable whose chain of bindings ends open.
@@ -1863,6 +1915,97 @@ impl std::fmt::Display for TypeMismatch {
         })
     }
 }
+
+/// A type that two or more undecided members of a union could take. Which
+/// takes it would follow the order the check relates things in, so the
+/// check takes neither: the union is decided where it comes from.
+#[derive(Debug)]
+pub struct AmbiguousMember {
+    union: Type,
+    typ: Type,
+    members: SmallVec<[Type; 2]>,
+    contra: bool,
+}
+
+impl AmbiguousMember {
+    fn new(
+        flags: BitFlags<ContainsFlags>,
+        s: &[Type],
+        t: &Type,
+        members: &[&Type],
+    ) -> anyhow::Error {
+        if graphix_dbg_bind() {
+            eprintln!(
+                "AMBIGUOUS {} <- {t}",
+                Type::Set(Arc::from_iter(s.iter().cloned()))
+            );
+        }
+        if graphix_dbg_cycle_bt() {
+            eprintln!("AMBIGUOUS\n{}", std::backtrace::Backtrace::force_capture());
+        }
+        anyhow::Error::new(AmbiguousMember {
+            union: Type::Set(Arc::from_iter(s.iter().cloned())),
+            typ: t.clone(),
+            members: members.iter().map(|m| (*m).clone()).collect(),
+            contra: flags.contains(ContainsFlags::Contra),
+        })
+    }
+
+    /// Whether the union stands in the type the relation holds a value
+    /// in (a binding written, a parameter passed to), not under a
+    /// function's parameter, where it is the value's own.
+    pub fn in_holder(&self) -> bool {
+        !self.contra
+    }
+
+    /// The refusal without what to annotate, for a site that names it.
+    pub fn fact(&self) -> impl std::fmt::Display + '_ {
+        struct Fact<'a>(&'a AmbiguousMember);
+        impl std::fmt::Display for Fact<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let Fact(a) = self;
+                format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                    write!(f, "{} could go to ", Brief(&a.typ))?;
+                    let shown: SmallVec<[CompactString; 2]> = a
+                        .members
+                        .iter()
+                        .map(|m| format_compact!("{}", Brief(m)))
+                        .collect();
+                    // copies of one variable print alike
+                    match shown.iter().all(|m| *m == shown[0]) {
+                        true => write!(f, "any of {} members", shown.len())?,
+                        false => {
+                            for (i, m) in shown.iter().enumerate() {
+                                let sep = if i == 0 { "" } else { " or " };
+                                write!(f, "{sep}{m}")?;
+                            }
+                        }
+                    }
+                    write!(
+                        f,
+                        " of the union {}, which nothing has decided, and the check \
+                         picks none by order",
+                        Brief(&a.union)
+                    )
+                })
+            }
+        }
+        Fact(self)
+    }
+}
+
+impl std::fmt::Display for AmbiguousMember {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: write the type of what holds that union (a let, a parameter), so its \
+             members are decided",
+            self.fact()
+        )
+    }
+}
+
+impl std::error::Error for AmbiguousMember {}
 
 /// The walk that finds where an open cell bounded `Data` meets a function
 /// or a reference, pairing the parts of two types as `contains` does.
@@ -2884,13 +3027,7 @@ impl Type {
             }
             // Two vars sharing one cell are already unified; the cycle
             // guard below would otherwise poison both.
-            (Self::TVar(t0), Self::TVar(t1))
-                if t0.wrapper_addr() == t1.wrapper_addr()
-                    || t0.read().id == t1.read().id
-                    || t0.same_cell(t1) =>
-            {
-                Ok(true)
-            }
+            (Self::TVar(t0), Self::TVar(t1)) if one_variable(t0, t1) => Ok(true),
             (tt0 @ Self::TVar(t0), tt1 @ Self::TVar(t1)) => {
                 Self::contains_tvars(flags, env, hist, (tt0, t0), (tt1, t1))
             }
@@ -3045,6 +3182,22 @@ impl Type {
             {
                 Ok(true)
             }
+            // a member that names a variable or a union stands as what it
+            // names: `['a, Id<'b>]` over `type Id<'x> = 'x` is `['a, 'b]`
+            (Self::Set(s0), _)
+                if commit
+                    && !hist.closed(self)
+                    && s0.iter().any(|m| names_members(env, m)) =>
+            {
+                Self::unfolded(env, s0)?.contains_int(flags, env, hist, t)
+            }
+            (_, Self::Set(s1))
+                if commit
+                    && !hist.closed(t)
+                    && s1.iter().any(|m| names_members(env, m)) =>
+            {
+                self.contains_int(flags, env, hist, &Self::unfolded(env, s1)?)
+            }
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
@@ -3059,7 +3212,7 @@ impl Type {
                     env,
                     hist,
                     (t0, s0, s1),
-                    ContainsHist::new,
+                    ContainsHist::ordered,
                     Self::place_members,
                 )
             }
@@ -3103,13 +3256,17 @@ impl Type {
                                 uncovered |= b
                             }
                         }
-                        let bare = Self::residue_member(
-                            s.iter().filter(|m| is_unbound_tvar(m)),
-                            flags,
-                            env,
-                            hist,
-                            &Self::Primitive(uncovered),
-                        )?;
+                        let bare = match uncovered.is_empty() {
+                            true => None,
+                            false => Self::residue_member(
+                                s,
+                                s.iter().filter(|m| is_unbound_tvar(m)),
+                                flags,
+                                env,
+                                hist,
+                                &Self::Primitive(uncovered),
+                            )?,
+                        };
                         if uncovered.is_empty() || bare.is_some() {
                             for b in (*p & !uncovered).iter() {
                                 let bit = Self::Primitive(b.into());
@@ -3395,16 +3552,59 @@ impl Type {
         Ok(false)
     }
 
-    /// Decide `s ⊇ t` by the first member (structural members before
-    /// bare unbound tvars, which admit anything: `['b, Array<'b>]` must
-    /// bind an array through `Array<'b>`) that holds `t`, deciding with
-    /// `flags` only there. A probe judges each part apart, so it admits
-    /// `fn(i: 'c) -> 'c` into `fn(path: string) -> i64`, which a commit
-    /// refuses after binding 'c: where a later member admits `t` too, a
-    /// member that may bind commits only once it holds on copies. A trial
-    /// commits its members directly: one nested in each would double the
-    /// walk at every level of a union typedef chain. `None` when no member
-    /// admits `t`.
+    /// The union `s` with each member that [`names_members`] replaced by
+    /// what it names, a union's members in its place, until none does; a
+    /// named type's parameter bounds are committed. A cell met again
+    /// under its own binding adds nothing.
+    fn unfolded(env: &Env, s: &[Type]) -> Result<Type> {
+        fn unfold(
+            env: &Env,
+            m: &Type,
+            cells: &mut AddrSet,
+            depth: usize,
+            out: &mut SmallVec<[Type; 8]>,
+        ) -> Result<()> {
+            if !names_members(env, m) {
+                return Ok(out.push(m.clone()));
+            }
+            if depth > HEAD_CHAIN_LIMIT {
+                bail!("a union's member names itself")
+            }
+            if let Type::TVar(tv) = m
+                && !cells.insert(tv.cell_addr())
+            {
+                return Ok(());
+            }
+            let mut head = m.clone();
+            for _ in 0..HEAD_CHAIN_LIMIT {
+                head = match head.with_deref(|d| d.cloned()) {
+                    Some(d @ Type::Ref(_)) => d.lookup_ref(env)?,
+                    Some(d) => d,
+                    None => break,
+                };
+                if !matches!(head, Type::Ref(_)) {
+                    break;
+                }
+            }
+            ensure_sufficient(|| match &head {
+                Type::Set(ms) => {
+                    ms.iter().try_for_each(|m| unfold(env, m, cells, depth + 1, out))
+                }
+                _ => Ok(out.push(head.clone())),
+            })
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        let mut cells: LPooled<AddrSet> = LPooled::take();
+        for m in s.iter() {
+            unfold(env, m, &mut cells, 0, &mut members)?
+        }
+        Ok(Self::Set(Arc::from_iter(members)))
+    }
+
+    /// Decide `s ⊇ t` by the member that takes `t` ([`Self::take`]),
+    /// structural members before bare unbound tvars, which admit anything:
+    /// `['b, Array<'b>]` must bind an array through `Array<'b>`. `None`
+    /// when no member admits `t`.
     fn set_commit(
         s: &[Type],
         flags: BitFlags<ContainsFlags>,
@@ -3412,35 +3612,121 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Type,
     ) -> Result<Option<bool>> {
-        let members = s
-            .iter()
-            .filter(|m| !is_unbound_tvar(m))
-            .chain(s.iter().filter(|m| is_unbound_tvar(m)));
         let probe = guide(flags);
-        let commit = flags.contains(ContainsFlags::Commit);
-        let mut pending: Option<&Type> = None;
-        for m in members {
-            if !m.contains_int(probe, env, hist, t)? {
-                continue;
-            }
-            if !commit {
-                return Ok(Some(true));
-            }
-            let Some(p) = pending.replace(m) else { continue };
-            if hist.trial || (hist.closed(p) && hist.closed(t)) {
-                if p.contains_int(flags, env, hist, t)? {
+        let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
+        let mut structural = 0;
+        for bare in [false, true] {
+            for m in s.iter().filter(|m| is_unbound_tvar(m) == bare) {
+                if !m.contains_int(probe, env, hist, t)? {
+                    continue;
+                }
+                // a decided member that holds a decided type binds nothing
+                if !flags.contains(ContainsFlags::Commit)
+                    || (hist.closed(m) && hist.closed(t))
+                {
                     return Ok(Some(true));
                 }
-            } else if on_copies([p, t], |[p, t], trial| {
-                p.contains_int(flags, env, trial, &t)
-            })? {
-                return Ok(Some(p.contains_int(flags, env, hist, t)?));
+                admit.push(m)
+            }
+            if !bare {
+                structural = admit.len()
             }
         }
-        match pending {
-            Some(m) => Ok(Some(m.contains_int(flags, env, hist, t)?)),
-            None => Ok(None),
+        let (structural, bare) = admit.split_at(structural);
+        Self::take(s, [structural, bare], flags, env, hist, t)
+    }
+
+    /// Commit `t` into `m`, an undecided member of a union, where it holds
+    /// `t` with every cell of its own held as it stands, so it decides
+    /// none of them; `None` where it does not, or holds no undecided cell.
+    fn takes_as_it_stands(
+        m: &Type,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Type,
+    ) -> Result<Option<bool>> {
+        if !undecided(m) {
+            return Ok(None);
         }
+        let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+        hold_rigid(m, &mut gates);
+        hist.gated += 1;
+        let r = on_copies([m, t], |[m, t], trial| m.contains_int(flags, env, trial, &t))
+            .and_then(|holds| match holds {
+                true => m.contains_int(flags, env, hist, t).map(Some),
+                false => Ok(None),
+            });
+        hist.gated -= 1;
+        r
+    }
+
+    /// Commit `t` into the member of the union `s` that takes it, of those
+    /// a probe admits it into, a tier at a time; `None` with no member. A
+    /// probe judges each part apart, so it admits `fn(i: 'c) -> 'c` into
+    /// `fn(path: string) -> i64`, which a commit refuses after binding 'c:
+    /// where another member admits `t` too, a member takes it only once it
+    /// holds on copies. A member that holds it as it stands, deciding no
+    /// cell of the union, takes it first; else the one member that holds
+    /// it, in the first tier where one does. Two that could
+    /// are a choice only the order of the check's relations would make
+    /// ([`AmbiguousMember`]); a walk on copies takes the first, and a
+    /// trial commits its members directly: a trial nested in each would
+    /// double the walk at every level of a union typedef chain. Where none
+    /// holds it, the last admitted answers.
+    fn take(
+        s: &[Type],
+        tiers: [&[&Type]; 2],
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Type,
+    ) -> Result<Option<bool>> {
+        let Some(last) = tiers.iter().rev().find_map(|tier| tier.last()) else {
+            return Ok(None);
+        };
+        if tiers[0].len() + tiers[1].len() == 1 {
+            return Ok(Some(last.contains_int(flags, env, hist, t)?));
+        }
+        if !hist.ordered {
+            for m in tiers.iter().flat_map(|tier| tier.iter().copied()) {
+                if let Some(r) = Self::takes_as_it_stands(m, flags, env, hist, t)? {
+                    return Ok(Some(r));
+                }
+            }
+        }
+        for tier in tiers {
+            let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
+            for m in tier.iter().copied() {
+                if hist.trial || (hist.closed(m) && hist.closed(t)) {
+                    if m.contains_int(flags, env, hist, t)? {
+                        return Ok(Some(true));
+                    }
+                    continue;
+                }
+                if open.is_empty() && std::ptr::eq(m, *last) {
+                    break;
+                }
+                let holds = on_copies([m, t], |[m, t], trial| {
+                    m.contains_int(flags, env, trial, &t)
+                })?;
+                if !holds {
+                    continue;
+                }
+                if hist.ordered || !undecided(m) {
+                    return Ok(Some(m.contains_int(flags, env, hist, t)?));
+                }
+                if !open.iter().any(|o| one_member(o, m)) {
+                    open.push(m)
+                }
+            }
+            match open[..] {
+                [] => (),
+                [m] => return Ok(Some(m.contains_int(flags, env, hist, t)?)),
+                _ => return Err(AmbiguousMember::new(flags, s, t, &open)),
+            }
+        }
+        Ok(Some(last.contains_int(flags, env, hist, t)?))
     }
 
     /// The distribution law for product heads: a set whose members
@@ -3870,7 +4156,7 @@ impl Type {
             // is covered reflexively too.
             let own_cell = match m {
                 Self::TVar(mtv) => s0.iter().any(|c| match c {
-                    Self::TVar(ctv) => ctv.same_cell(mtv),
+                    Self::TVar(ctv) => one_variable(ctv, mtv),
                     _ => false,
                 }),
                 _ => false,
@@ -3885,18 +4171,40 @@ impl Type {
                 residue.push(m.clone());
                 continue;
             }
-            let mut covered = false;
+            let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
             for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                 if c.contains_int(probe, env, hist, m)? {
-                    if commit && !c.contains_int(flags, env, hist, m)? {
-                        return Ok(false);
+                    admit.push(c);
+                    // a decided member that holds a decided type binds nothing
+                    if !commit || (hist.closed(c) && hist.closed(m)) {
+                        admit.truncate(0);
+                        admit.push(c);
+                        break;
                     }
-                    covered = true;
-                    break;
                 }
             }
-            if !covered {
+            if admit.is_empty() {
                 residue.push(m.clone());
+            } else if commit
+                && Self::take(s0, [&admit, &[]], flags, env, hist, m)? != Some(true)
+            {
+                return Ok(false);
+            }
+        }
+        // an undecided rhs member takes a union of undecided members whole,
+        // as it would alone: no one member is picked for it
+        let undecided_free = |(m, free): (&Type, &bool)| *free && undecided(m);
+        if s0.iter().zip(&free).filter(|p| undecided_free(*p)).nth(1).is_some() {
+            let mut i = 0;
+            while i < residue.len() {
+                if !is_unbound_tvar(&residue[i]) || !undecided(&residue[i]) {
+                    i += 1;
+                    continue;
+                }
+                let m = residue.remove(i);
+                if !t0.contains_int(flags, env, hist, &m)? {
+                    return Ok(false);
+                }
             }
         }
         if residue.is_empty() {
@@ -3904,28 +4212,44 @@ impl Type {
         }
         let target = hist.normal_union(residue.iter());
         let free = s0.iter().zip(&free).filter_map(|(m, free)| free.then_some(m));
-        match Self::residue_member(free, flags, env, hist, &target)? {
+        match Self::residue_member(s0, free, flags, env, hist, &target)? {
             Some(m) => m.contains_int(flags, env, hist, &target),
             None => Ok(false),
         }
     }
 
-    /// The member of a union's open `members` that takes the `residue` no
-    /// other member covers: the first a probe admits it into (a rigid
-    /// member admits only itself), else the first.
+    /// The member of the union `s`'s open `members` that takes the
+    /// `residue` no other member covers: one a probe admits it into (a
+    /// rigid member admits only itself), else the first. Two undecided
+    /// ones that admit it are a choice only the order of the check's
+    /// relations would make ([`AmbiguousMember`]); a walk on copies takes
+    /// the first.
     fn residue_member<'a>(
+        s: &[Type],
         mut members: impl Iterator<Item = &'a Type> + Clone,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
         hist: &mut ContainsHist,
         residue: &Type,
     ) -> Result<Option<&'a Type>> {
+        let judged = flags.contains(ContainsFlags::Commit) && !hist.ordered;
+        let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
         for m in members.clone() {
-            if m.contains_int(guide(flags), env, hist, residue)? {
+            if !m.contains_int(guide(flags), env, hist, residue)? {
+                continue;
+            }
+            if !judged || !undecided(m) {
                 return Ok(Some(m));
             }
+            if !open.iter().any(|o| one_member(o, m)) {
+                open.push(m)
+            }
         }
-        Ok(members.next())
+        match open[..] {
+            [] => Ok(members.next()),
+            [m] => Ok(Some(m)),
+            _ => Err(AmbiguousMember::new(flags, s, residue, &open)),
+        }
     }
 
     /// Containment both ways: an invariant position.
@@ -3936,8 +4260,13 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        Ok(self.contains_int(flags, env, hist, t)?
-            && t.contains_int(flags, env, hist, self)?)
+        // a union of undecided members is decided by what must hold it
+        match !hist.closed(self) && self.holds_open_union() && !t.holds_open_union() {
+            true => Ok(t.contains_int(flags, env, hist, self)?
+                && self.contains_int(flags, env, hist, t)?),
+            false => Ok(self.contains_int(flags, env, hist, t)?
+                && t.contains_int(flags, env, hist, self)?),
+        }
     }
 
     /// A constructor application (`self<'a>`, `'c<'b>`) against another
@@ -4190,6 +4519,58 @@ impl Type {
         t: &Self,
     ) -> Result<bool> {
         self.contains_int(flags, env, &mut ContainsHist::new(), t)
+    }
+
+    /// Whether a type going into `self` may have to choose among a union's
+    /// undecided members: `self` holds a union with an open cell, or a
+    /// named type applied to a variable, which may expand to one.
+    pub fn may_choose_member(&self) -> bool {
+        fn go(t: &Type, seen: &mut AddrSet) -> bool {
+            ensure_sufficient(|| match t {
+                Type::Set(ms) if ms.iter().any(|m| m.has_unbound()) => true,
+                Type::Ref(tr) if !tr.params.iter().all(|p| p.tvar_free()) => true,
+                Type::TVar(tv) => tv.binding().is_some_and(|b| go(&b, seen)),
+                t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found = found || go(c, seen));
+                    found
+                }
+            })
+        }
+        go(self, &mut LPooled::take())
+    }
+
+    /// [`Self::contains`] for a select's patterns, whose arms are consulted
+    /// top down, and for a relation over copies: the first member of a
+    /// union that holds a type takes it, where [`Self::contains`] refuses
+    /// a choice between two undecided ones ([`AmbiguousMember`]).
+    pub fn contains_ordered(&self, env: &Env, t: &Self) -> Result<bool> {
+        let r = self.contains_int(
+            ContainsFlags::Commit.into(),
+            env,
+            &mut ContainsHist::ordered(),
+            t,
+        );
+        if graphix_dbg_bind() {
+            eprintln!("CONTAINS-ORDERED {self} >= {t} -> {r:?}");
+        }
+        r
+    }
+
+    /// [`Self::check_contains`] as [`Self::contains_ordered`] decides.
+    pub fn check_contains_ordered(&self, env: &Env, t: &Self) -> Result<()> {
+        let mut hist = ContainsHist::ordered();
+        match self.contains_int(ContainsFlags::Commit.into(), env, &mut hist, t)? {
+            true => Ok(()),
+            false => {
+                let mut e = self.contains_mismatch(env, t);
+                if let Some(m) = e.downcast_mut::<TypeMismatch>() {
+                    m.infinite = hist.cycled;
+                }
+                Err(e)
+            }
+        }
     }
 }
 
@@ -5351,6 +5732,42 @@ mod tests {
         assert_eq!(binding(&free, 0), Some(parsed("i64")));
         let free = parsed("['b, Array<'b>]");
         assert!(!free.contains(&env, &parsed("[string, Array<i64>]")).unwrap());
+    }
+
+    // a type either of two undecided members could take goes to neither;
+    // one that only one can take, or that a member holds as it stands,
+    // goes there, and an ordered walk takes the first
+    #[test]
+    fn two_undecided_members_refuse_a_type_either_could_take() {
+        let env = Env::default();
+        for (union, t) in [
+            ("['a, 'b]", "i64"),
+            ("['a, 'b, null]", "[i64, null]"),
+            ("[Array<'a>, Array<'b>]", "Array<i64>"),
+            ("[(i64, 'a), ('b, string)]", "(i64, string)"),
+        ] {
+            let e = parsed(union).contains(&env, &parsed(t)).unwrap_err();
+            assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{union}: {e}");
+            let ordered = parsed(union);
+            assert!(ordered.contains_ordered(&env, &parsed(t)).unwrap(), "{union}");
+        }
+        for (union, t, taker) in [
+            ("['a, Array<'b>]", "Array<i64>", "b"),
+            ("['a, Error<'e>]", "Error<`X>", "e"),
+            ("[Array<'a>, List<'b>]", "List<i64>", "b"),
+            ("['a, null]", "i64", "a"),
+        ] {
+            let u = parsed(union);
+            assert!(u.contains(&env, &parsed(t)).unwrap(), "{union}");
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            u.collect_tvars(&mut tvs);
+            for (name, tv) in tvs.iter() {
+                assert_eq!(tv.is_bound(), &**name == taker, "{union}: '{name}");
+            }
+        }
+        let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
+        assert!(held.contains(&env, &parsed("null")).unwrap());
+        assert!(held.has_unbound());
     }
 
     // a member bound to an open cell is as free as that cell: the other

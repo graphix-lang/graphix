@@ -349,9 +349,10 @@ written type's names (`Type::for_each_written`, which every name check
 rides) hands each union it writes in a function type to
 `VariableUnion::of` and looks through no typedef, so `E<'a, 'b>` over
 `type E<'p, 'q> = ['p, 'q]`, `['a, Id<'b>]` over `type Id<'x> = 'x` and
-`['a, M<'b>]` over `type M<'x> = ['x, null]` stand (a typedef's own body
-writes a union of its parameters, not of the definition's variables;
-those forms still meet in order, formal-union-order-01). It is judged
+`['a, M<'b>]` over `type M<'x> = ['x, null]` pass this rule (a typedef's
+own body writes a union of its parameters, not of the definition's
+variables) and are refused where a value meets them (below, A union's
+member takes a type by rule). It is judged
 where the type is written: a lambda's signature as it compiles, in the
 walk that warns of a later block's names (`warn_written`; a variable an
 enclosing definition declares is not its own; a method in an impl or a
@@ -377,7 +378,10 @@ argument first, an instance's signature last), and the refusal names the
 annotation that passes: one variable there, or written types (`[i64,
 string]`). One variable beside written types (`['a, null]`) is a member
 a value's type picks, and a data union in an annotation (`let v: ['r,
-'q] = ..`) is no signature.
+'q] = ..`) is no signature: the value written into it is refused at the
+choice (below). An impl's target is every method's `self`, so a union of
+two of the head's variables there (`impl<'a, 'b> T for Array<['a, 'b]>`)
+is refused as one in a signature (`Impl::typecheck0`).
 
 Two members of one constructor that hold two distinct variables of the
 definition ask the same question (`[Array<'c>, Array<'d>]`: a `[1]`
@@ -397,6 +401,64 @@ the rule reads the written form only. Two written function types whose
 variables pair by renaming merge as the union is parsed
 (`fn(x: 'c) -> i64` and `fn(x: 'd) -> i64` are one member), so that
 union never reaches the rule (formal-union-fn-merge-01).
+
+The written-form rule is the earlier message, at the definition; the
+rule below is what makes the choice sound, whatever the source wrote.
+
+### A union's member takes a type by rule, never by order
+
+A containment that puts a type into a union (`contains.rs`: `set_commit`,
+`place_members`, `residue_member`, all through `Type::take`) gives it to
+one member, chosen by rules that read the union alone:
+
+- a member identical to the type, or one that holds it as it stands,
+  deciding none of its own cells (`takes_as_it_stands`: `[Array<'a>, null]
+  ⊇ null`), takes it and binds nothing;
+- else constructor members before bare variables (`Result<'a, 'e> ⊇
+  Error<`X>` is `Error<'e>`'s, `['b, Array<'b>]` takes an array through
+  `Array<'b>`);
+- in the first of those tiers where a member can take the type (it holds
+  on copies), exactly one undecided member must. Two that could (`['a, 'b]
+  ⊇ i64`, `[Array<'a>, Array<'b>] ⊇ Array<i64>`) are refused,
+  `AmbiguousMember`: which would take it follows the order the check
+  relates things in, and a definition's check and an instance's need not
+  share it. An undecided member reaches an open cell no declaration holds
+  rigid (`undecided`); a decided member that holds the type takes it
+  before any undecided one.
+
+A member that is a name or a bound cell standing for an open variable or
+for a union holding one is its members first (`names_members`,
+`Type::unfolded`): `['a, Id<'b>]` over `type Id<'x> = 'x` is `['a, 'b]`,
+`['a, M<'b>]` over `type M<'x> = ['x, null]` is `['a, 'b, null]`, a cell
+bound to `['x, 'y]` is `'x` and `'y`. An undecided rhs member takes a
+union of undecided members whole, as it does alone (`['a, 'b] ⊇ 'c` binds
+`'c`), and an equality relates such a union as the contained side first
+(`equal_int`, `op::operand_type`: `u + 1` over `u: ['a, 'b]` decides
+both), since what must hold it decides every member.
+
+Two walks keep the first member that holds: a walk that binds copies
+alone (`on_copies`, `place_in_order`'s trials, `contains_holding`,
+`contains_through_copy`), whose answer the real walk judges again, and a
+select's patterns (`contains_ordered`, `check_contains_ordered`: the
+narrowing walk in `tvar.rs`, `pattern.rs`, `Select`'s predicate against
+its scrutinee), whose arms are consulted top down. What a pattern leaves
+in a binding's or a parameter's type is judged where a value next meets
+it: `|x| select x { [h, ..] => h, [] => 0 }` types `x` as an array of the
+head's and the rest's cells, so `f([4, 5])` is refused until the parameter
+is written (`|x: Array<'e>|`).
+
+`contains` does not know bindings, so the refusal is a typed error the
+relation's site names: a `<-` names its target (`declare u's type where it
+is bound`, `Connect`), a call's argument the parameter
+(`callsite::ambiguous_parameter`), and any other site gets the default
+(`write the type of what holds that union`). A trait method's call checks
+against the declaration alone, so an implementation whose own signature
+would make every instance choose is refused where it is checked against
+the declaration (`traits::instance_picks_no_member`). Pins:
+`lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,slice_arms_over_an_unannotated_parameter}_refused*`
+and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
+`lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
+`lang::interfaces::open_union_call_refused`.
 
 ### Function types with variables of their own
 
@@ -1164,8 +1226,9 @@ result typed by a union of two open cells only after every other position
 decide it, a parameter's or the result's, and the union then holds what
 they left. A written function type holds no such union (below, A union of
 variables in a signature), so only an inferred one meets that order (`|c,
-a, b| select c { true => a, false => b }`), where a call relates its
-arguments first: the split formal-union-order-01 keeps open.
+a, b| select c { true => a, false => b }`), and a type that either member
+could take is refused by both orders alike (A union's member takes a type
+by rule).
 
 A type written in a body names the variables of the definitions around
 it (`lambda::body_annotation`); a labeled default is written in its
@@ -1768,7 +1831,9 @@ references name the target is told the recursive type alone
   members of one constructor holding two distinct
   ones (`[Array<'c>, Array<'d>]`), refused, naming one variable or written
   types as the fix
-  (`Type::variable_union`); a def's declared tvars are
+  (`Type::variable_union`); a type that two undecided members of a union
+  could take goes to neither, refused naming what holds the union
+  (`AmbiguousMember`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥, no
   two unify (`contains.rs` Distinct) and none escapes into a cell outside
   the definition (`DefGate::check_declared_kept`; a variable the signature

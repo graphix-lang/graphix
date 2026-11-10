@@ -32,8 +32,8 @@ use crate::{
     },
     stack::ensure_sufficient,
     typ::{
-        CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
-        seed_conjuncts, settle::VariableUnion,
+        AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef,
+        check_bounds_acyclic, seed_conjuncts, settle::VariableUnion,
     },
     wrap,
 };
@@ -76,6 +76,28 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
+/// A call through `declared` builds its instance by holding the
+/// implementation's own signature at what the call picked: where that
+/// would choose between two undecided members of a union the
+/// implementation writes, whatever the call picks, the build would refuse
+/// what the call's check, which reads `declared` alone, accepts. Judged
+/// over copies, the declaration's variables held rigid.
+fn instance_picks_no_member<R: Rt>(
+    ctx: &CompileCtx<R>,
+    declared: &FnType,
+    implemented: &FnType,
+) -> Result<()> {
+    let held = Type::Fn(Arc::new(declared.clone())).reset_tvars();
+    let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    held.collect_tvars(&mut tvs);
+    let _gates: LPooled<Vec<_>> = tvs.values().map(|tv| tv.open_rigid()).collect();
+    let own = Type::Fn(Arc::new(implemented.instantiate_owned(&mut LPooled::take())));
+    match held.check_contains(&ctx.env, &own) {
+        Err(e) if e.downcast_ref::<AmbiguousMember>().is_some() => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface
@@ -106,6 +128,9 @@ fn implements<R: Rt>(
         return Err(told(anyhow!("{implemented} is not a function")));
     };
     let pairs = declared.sig_matches(&ctx.env, &ft).map_err(told)?;
+    if implemented.may_choose_member() {
+        instance_picks_no_member(ctx, declared, &ft)?;
+    }
     let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
     let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
     let shared = |tv: &TVar| {
@@ -1191,6 +1216,15 @@ impl<R: Rt> Update<R> for Impl<R> {
         // decides them
         let _gates: LPooled<Vec<_>> =
             self.def.params.iter().map(|tv| tv.open_rigid()).collect();
+        // the target is every method's `self`
+        wrap!(
+            self,
+            self.def.target.signature_variable_union(&|_| true).map_err(|e| anyhow!(
+                "impl {} for {}: {e}",
+                self.trait_def.name,
+                self.def.target
+            ))
+        )?;
         wrap!(self.body, self.body.typecheck0(ctx))?;
         // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {

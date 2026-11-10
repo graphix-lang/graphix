@@ -3798,13 +3798,25 @@ run!(
     "#
 );
 
+// An impl's target is every method's `self`: a union of two of the head's
+// variables there is one in a signature.
 run!(
-    impl_head_union_of_variables,
-    is(Value::I64(0)),
+    impl_head_union_of_variables_refused,
+    refused("impl T for Array<['a, 'b]>: ['a, 'b] is a union of the type variables 'a and 'b"),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> i64 };
         impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 };
         let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_head_of_two_variables,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) { let m = |s| 0 };
+        let result = T::m(([1], ["s"]))
     "#
 );
 
@@ -3894,10 +3906,10 @@ run!(
     refused("['a, 'b] is a union of the type variables 'a and 'b"),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> {
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
             let m = { let g = |x: ['a, 'b], y: 'b, z: 'a| -> i64 0; |s| g(1, 1, "s") }
         };
-        let result = T::m([1])
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::None);
 
@@ -3906,10 +3918,10 @@ run!(
     is(Value::I64(0)),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> {
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
             let m = { let g = |x: 'a| -> i64 0; |s| g(1) + g("s") }
         };
-        let result = T::m([1])
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::None);
 
@@ -3929,10 +3941,10 @@ run!(
     refused("['a, 'b] is a union of the type variables 'a and 'b"),
     "/test.gx" => r#"
         trait T { val m: fn(?#g: fn(x: Array<i64>) -> i64, self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> {
-            let m = |#g = |x: Array<['a, 'b]>| -> i64 0, s| array::len(s)
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
+            let m = |#g = |x: Array<['a, 'b]>| -> i64 0, s| array::len(s.0)
         };
-        let result = T::m([1])
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::None);
 
@@ -3941,10 +3953,10 @@ run!(
     refused("['a, 'b] is a union of the type variables 'a and 'b"),
     "/test.gx" => r#"
         trait T { val m: fn(?#g: fn(x: i64) -> i64, self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> {
-            let m = |#g = { let h = |z: ['a, 'b]| -> i64 0; |x: i64| -> i64 x }, s| array::len(s)
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
+            let m = |#g = { let h = |z: ['a, 'b]| -> i64 0; |x: i64| -> i64 x }, s| array::len(s.0)
         };
-        let result = T::m([1])
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::None);
 
@@ -3955,10 +3967,10 @@ run!(
     refused("['a, 'b] is a union of the type variables 'a and 'b"),
     "/test.gx" => r#"
         trait T { val m: fn(?#g: fn(x: i64) -> i64, self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> {
-            let m = |#g = |x: i64| -> i64 { let h = |z: ['a, 'b]| -> i64 0; x }, s| array::len(s)
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
+            let m = |#g = |x: i64| -> i64 { let h = |z: ['a, 'b]| -> i64 0; x }, s| array::len(s.0)
         };
-        let result = T::m([1])
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::None);
 
@@ -3967,21 +3979,23 @@ run!(
     is(Value::I64(1)),
     "/test.gx" => r#"
         trait T { val m: fn(?#g: fn(x: i64) -> i64, self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> {
-            let m = |#g = |x: i64| -> i64 { let h = |z: 'a| -> i64 0; h(1) + h("s") + x }, s| array::len(s)
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
+            let m = |#g = |x: i64| -> i64 { let h = |z: 'a| -> i64 0; h(1) + h("s") + x }, s| array::len(s.0)
         };
-        let result = T::m([1])
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::Jit);
 
 // The method's own lambda writes the head's variables.
 run!(
-    impl_method_lambda_writes_the_head_union,
+    impl_method_lambda_writes_the_head_variables,
     is(Value::I64(1)),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> i64 };
-        impl<'a, 'b> T for Array<['a, 'b]> { let m = |s: Array<['a, 'b]>| array::len(s) };
-        let result = T::m([1])
+        impl<'a, 'b> T for (Array<'a>, Array<'b>) {
+            let m = |s: (Array<'a>, Array<'b>)| array::len(s.0)
+        };
+        let result = T::m(([1], ["s"]))
     "#
 ; FuseExpect::Jit);
 
@@ -4005,11 +4019,17 @@ run!(
         let result = Sz::sz(1, 2)
     "#; FuseExpect::None);
 
+const AMBIGUOUS_MEMBER: &str =
+    "which nothing has decided, and the check picks none by order";
+
 // A typedef a trait's declaration, a default body or an impl's method
-// applies is not looked through.
+// applies is not looked through by the written-form rule; the value that
+// could go to either variable is refused where it meets the union: at the
+// call for a declaration's, at the implementation for a body's, whose
+// instance every call would build.
 run!(
-    trait_method_typedef_is_not_looked_through,
-    is(Value::I64(0)),
+    trait_method_typedef_union_refused_at_the_call,
+    refused(AMBIGUOUS_MEMBER),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: E<'a, 'b>) -> i64 = |s, x| 0 };
@@ -4018,11 +4038,11 @@ run!(
             T::m(0, 1)
         }
     "#
-);
+; FuseExpect::None);
 
 run!(
-    default_body_typedef_is_not_looked_through,
-    is(Value::I64(0)),
+    default_body_typedef_union_refused,
+    refused(AMBIGUOUS_MEMBER),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: 'a) -> i64 = |s, x: E<'a, 'b>| 0 };
@@ -4031,15 +4051,28 @@ run!(
             T::m(0, 1)
         }
     "#
-);
+; FuseExpect::None);
 
 run!(
-    impl_method_typedef_is_not_looked_through,
-    is(Value::I64(0)),
+    impl_method_typedef_union_refused,
+    refused(AMBIGUOUS_MEMBER),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: 'a) -> i64 };
             impl T for i64 { let m = |s, x: E<'a, 'b>| -> i64 0 };
+            type E<'p, 'q> = ['p, 'q];
+            T::m(0, 1)
+        }
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_method_typedef_at_one_variable,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        let result = {
+            trait T { val m: fn(self, x: 'a) -> i64 };
+            impl T for i64 { let m = |s, x: E<'a, 'a>| -> i64 0 };
             type E<'p, 'q> = ['p, 'q];
             T::m(0, 1)
         }

@@ -1295,10 +1295,19 @@ run!(
 run!(
     open_union_pairs_by_the_rest_of_the_signature,
     is(Value::I64(2)),
+    "/test.gx" => "mod m; let result = { let g = m::f; 2 }",
+    "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
+);
+
+// A value that either member could take is refused at the call.
+run!(
+    open_union_call_refused,
+    refused("which nothing has decided, and the check picks none by order"),
     "/test.gx" => "mod m; let result = m::f([1], 2)",
     "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a) -> 'a;",
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
-; FuseExpect::Jit);
+; FuseExpect::None);
 
 // No pairing of the union fits the rest of the signature: refused.
 run!(

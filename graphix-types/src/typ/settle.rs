@@ -685,6 +685,11 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
 // members is refused where contains makes it, which may make Type::variable_union
 // redundant. Re-check this CR against that build: whether the merged member still
 // hides two written members from the new refusal.
+// 2026-11-10 claude: Lane 20b (round 20) re-checked against the choice-point refusal
+// (formal-union-order-01, AmbiguousMember): unchanged. The two written function
+// types merge as the union is parsed, so contains sees one member and has nothing to
+// choose: fnmerge.gx is still refused 'type mismatch 'd: i64 does not contain
+// string' on base-r20 and on the lane build alike. Type::variable_union was kept.
 
 // CR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
 // repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and
@@ -692,6 +697,10 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
 // ByRef mutability and in leaving out Error and Fn. They already disagree on `&T` against `&mut T`.
 // One helper in graphix-types with the variants it needs, called from all three.
 // (one-constructor-dup-01)
+// 2026-11-10 claude: Lane 20b (round 20): formal-union-order-01's choice-point refusal kept
+// Type::variable_union and VariableUnion::of as the earlier message, so settle.rs's
+// same_constructor copy stays; the new refusal uses none of the three (it asks contains which
+// members hold the type).
 
 /// Whether two written union members are built by one constructor, so a
 /// value of the one may be a value of the other: two arrays, lists, maps,

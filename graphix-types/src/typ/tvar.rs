@@ -4041,7 +4041,7 @@ impl Type {
         let narrowed = if self.needs_split(env, pred)? {
             self.narrow_parts(env, pred, walk)?
         } else {
-            self.contains(env, pred)?
+            self.contains_ordered(env, pred)?
         };
         if narrowed && pred.has_unbound() {
             self.open_over_any(env, pred)?
@@ -4109,7 +4109,7 @@ impl Type {
             return match tv.binding() {
                 Some(b) => self.open_over_any_int(env, &b, walk),
                 None if matches!(self.head(env)?, Some(Type::Any)) => {
-                    pred.contains(env, &Type::Any)?;
+                    pred.contains_ordered(env, &Type::Any)?;
                     walk.binds += 1;
                     walk.walked.clear();
                     Ok(())
@@ -4278,9 +4278,11 @@ impl Type {
     /// rest) narrows member by member, as containment of a set does.
     fn narrow_parts(&self, env: &Env, pred: &Type, walk: &mut Narrowing) -> Result<bool> {
         ensure_sufficient(|| {
-            let Some(p) = pred.deref_cloned() else { return self.contains(env, pred) };
+            let Some(p) = pred.deref_cloned() else {
+                return self.contains_ordered(env, pred);
+            };
             let Some(t) = self.shape_under(env, &p)? else {
-                return self.contains(env, pred);
+                return self.contains_ordered(env, pred);
             };
             let mut all = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
                 for (t, p) in parts {
@@ -4305,7 +4307,7 @@ impl Type {
                         _ => e.narrow_pattern_in(env, pe, walk),
                     }
                 }
-                _ => self.contains(env, pred),
+                _ => self.contains_ordered(env, pred),
             }
         })
     }
@@ -4408,7 +4410,7 @@ impl Type {
                 // read does.
                 let joined = Type::union_exact(env, &p)?;
                 let cell = Type::TVar(c.clone());
-                if joined.contains(env, &cell)? && c.binding().is_none() {
+                if joined.contains_ordered(env, &cell)? && c.binding().is_none() {
                     joined.open_over_any(env, &cell)?
                 }
             }
@@ -4443,7 +4445,7 @@ impl Type {
         let inner = t.reset_tvars_int(&mut known, Fresh::Copy);
         let outer = outer.as_ref().unwrap_or(self);
         let inner = inner.as_ref().unwrap_or(t);
-        let r = outer.contains(env, inner);
+        let r = outer.contains_ordered(env, inner);
         drop(gates);
         r
     }
@@ -4472,11 +4474,11 @@ impl Type {
             })
             .collect();
         pairs.sort_by_key(|(_, c)| c.read().id);
-        let _ = copy.contains(env, t);
+        let _ = copy.contains_ordered(env, t);
         for (s, c) in
             pairs.iter().filter(|(_, c)| c.open_cell().is_some_and(|o| !o.is_rigid()))
         {
-            if !Type::TVar(s.clone()).contains(env, &Type::TVar(c.clone()))? {
+            if !Type::TVar(s.clone()).contains_ordered(env, &Type::TVar(c.clone()))? {
                 return Ok(false);
             }
         }

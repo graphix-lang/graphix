@@ -229,10 +229,15 @@ fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t 
     }
     let probe = ContainsFlags::RigidCheck.into();
     let commit = ContainsFlags::Commit | ContainsFlags::RigidCheck;
+    // a union of undecided members is decided by what must hold it
+    let (first, second) = match lt.holds_open_union() && !rt.holds_open_union() {
+        true => (rt, lt),
+        false => (lt, rt),
+    };
     let one = lt.contains_with_flags(probe, env, rt)?
         && rt.contains_with_flags(probe, env, lt)?
-        && lt.contains_with_flags(commit, env, rt)?
-        && rt.contains_with_flags(commit, env, lt)?;
+        && first.contains_with_flags(commit, env, second)?
+        && second.contains_with_flags(commit, env, first)?;
     Ok(one.then_some(lt))
 }
 

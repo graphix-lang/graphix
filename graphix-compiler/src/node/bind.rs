@@ -1298,13 +1298,13 @@ fn fits_every_member<R: Rt>(
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     expr::union_members(&ctx.env, typ, &mut members)?;
     if members.len() < 2 || matches!(ptyp, Type::TVar(_)) {
-        return ptyp.any_as_tvar().contains(&ctx.env, typ);
+        return ptyp.any_as_tvar().contains_ordered(&ctx.env, typ);
     }
     for m in members.iter() {
-        if !ptyp.any_as_tvar().reset_tvars().contains(&ctx.env, m)? {
+        if !ptyp.any_as_tvar().reset_tvars().contains_ordered(&ctx.env, m)? {
             // the whole check, which fails too, binds the cells the refusal
             // names
-            return ptyp.any_as_tvar().contains(&ctx.env, typ);
+            return ptyp.any_as_tvar().contains_ordered(&ctx.env, typ);
         }
     }
     let pred = binds()?.any_as_tvar();

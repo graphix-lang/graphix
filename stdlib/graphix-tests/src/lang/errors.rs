@@ -1419,20 +1419,24 @@ run!(
     FuseExpect::Jit
 );
 
-/// `n` named tags (`Tags`) beside one name applied to two open cells, `F<'a>`
-/// and `F<'b>` with `F<'t> = ['t, null]`, reached through the wrapper
-/// `P<'x, 'y> = [Tags, F<'x>, F<'y>]`; `strip` takes the null from the
-/// parameter, and the call decides `'b` as string, which `ann` must hold.
+/// `n` named tags (`Tags`) beside one name applied to two types holding an
+/// open cell each, `F<Array<'a>>` and `F<List<'b>>` with `F<'t> = ['t,
+/// null]`, reached through the wrapper `P<'x, 'y> = [Tags, F<Array<'x>>,
+/// F<List<'y>>]`; `strip` takes the null from the parameter, and the call
+/// decides `'b` as string, which `ann` must hold.
 fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
     with_named_tags(
         n,
         "type Tags = [{names}];\ntype F<'t> = ['t, null];\n\
-         type P<'x, 'y> = [Tags, F<'x>, F<'y>];",
+         type P<'x, 'y> = [Tags, F<Array<'x>>, F<List<'y>>];",
         &format!(
             "let f = 'a: Any, 'b: Any |p: P<'a, 'b>| {strip};\n\
-             let s: P<i64, string> = \"hello\";\n\
+             let s: P<i64, string> = [<\"hello\">];\n\
              let r: {ann} = f(s);\n\
-             select r {{ string as v => v, _ => \"other\" }}"
+             select r {{\n\
+               List<string> as v => select v {{ [<h, ..>] => h, _ => \"none\" }},\n\
+               _ => \"other\"\n\
+             }}"
         ),
     )
 }
@@ -1441,21 +1445,21 @@ fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
 // names are applied to.
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_keeps_both_cells_with_dollar_refused,
-    two_cells_beside_named_tags(1100, "p$", "[Tags, i64]"),
+    two_cells_beside_named_tags(1100, "p$", "[Tags, Array<i64>]"),
     refused("'b: string");
     FuseExpect::None
 );
 
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_keeps_both_cells_with_q_refused,
-    two_cells_beside_named_tags(1100, "p?", "[Tags, i64]"),
+    two_cells_beside_named_tags(1100, "p?", "[Tags, Array<i64>]"),
     refused("'b: string");
     FuseExpect::None
 );
 
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_holds_both_cells_with_dollar,
-    two_cells_beside_named_tags(1100, "p$", "[Tags, i64, string]"),
+    two_cells_beside_named_tags(1100, "p$", "[Tags, Array<i64>, List<string>]"),
     is(Value::String("hello".into()));
     FuseExpect::Jit
 );
@@ -1465,24 +1469,25 @@ run!(
     two_cells_beside_named_tags(
         1100,
         "{ catch(e) println(\"[e]\"); p? }",
-        "[Tags, i64, string]"
+        "[Tags, Array<i64>, List<string>]"
     ),
     is(Value::String("hello".into()));
     FuseExpect::Jit
 );
 
-/// `n` named tags (`Tags`) beside one name applied to two open cells, `G<'a>`
-/// and `G<'b>` with `G<'t> = Error<'t>`, reached through the wrapper
-/// `Q<'x, 'y> = [Tags, G<'x>, G<'y>]`; `?` raises the parameter to a handler
-/// with `arms`, and the call decides the cells as `A and `B.
+/// `n` named tags (`Tags`) beside one name applied to two types holding an
+/// open cell each, `G<`L('a)>` and `G<`R('b)>` with `G<'t> = Error<'t>`,
+/// reached through the wrapper `Q<'x, 'y> = [Tags, G<`L('x)>, G<`R('y)>]`;
+/// `?` raises the parameter to a handler with `arms`, and the call decides
+/// the cells as `A and `B.
 fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
     with_named_tags(
         n,
         "type Tags = [{names}];\ntype G<'t> = Error<'t>;\n\
-         type Q<'x, 'y> = [Tags, G<'x>, G<'y>];",
+         type Q<'x, 'y> = [Tags, G<`L('x)>, G<`R('y)>];",
         &format!(
             "let f = 'a: Any, 'b: Any |p: Q<'a, 'b>| p?;\n\
-             let s: Q<`A, `B> = error(`B);\n\
+             let s: Q<`A, `B> = error(`R(`B));\n\
              let caught = never();\n\
              let r = {{ catch(e) caught <- select e.0.error {{ {arms} }}; f(s) }};\n\
              caught"
@@ -1494,14 +1499,14 @@ fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
 // applied to.
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_raises_both_cells_missing_arm_refused,
-    two_raised_cells_beside_named_tags(1100, "`A => 1"),
-    refused("missing match cases: no arm covers `B");
+    two_raised_cells_beside_named_tags(1100, "`L(`A) => 1"),
+    refused("missing match cases: no arm covers `R(");
     FuseExpect::None
 );
 
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_raises_both_cells_caught_by_both_arms,
-    two_raised_cells_beside_named_tags(1100, "`A => 1, `B => 2"),
+    two_raised_cells_beside_named_tags(1100, "`L(`A) => 1, `R(`B) => 2"),
     is(Value::I64(2));
     FuseExpect::Jit
 );

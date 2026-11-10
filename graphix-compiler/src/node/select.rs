@@ -664,9 +664,24 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
+            // CR claude for claude: [readability/low] An undecided scrutinee takes the
+            // union of its arms' predicates, and a slice pattern's predicate gives every
+            // element a cell of its own (`[h, ..]` is `Array<['h, 'rest]>`), so an
+            // unannotated parameter a select takes apart with slice patterns is typed by a
+            // union of undecided cells. Under formal-union-order-01's rule a call with a
+            // decided array is then refused (AmbiguousMember), naming the parameter: `let f
+            // = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])`, which base-r20 ran by
+            // giving `i64` to the first cell and leaving the rest's open. `|x: Array<'e>|`
+            // passes. No stdlib, book or netidx-admin file has the shape (census of 2949
+            // files: only design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx);
+            // two test fixtures were annotated. If the annotation is too costly, the fix is
+            // here, not at the pick: the elements of one slice over an undecided scrutinee
+            // could share one element cell, since an array that arrives later gives every
+            // position the same type. probes: ~/ptmp/cr29/scratch/r20/20b/{gs,sl1,sl2}.gx
+            // (slice-param-union-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
-                    let _ = itype.contains(env, scrut);
+                    let _ = itype.contains_ordered(env, scrut);
                 }
                 false => {
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -1053,7 +1068,7 @@ impl Reach {
         if !undecided.is_empty() && covered.contains_holding(env, scrut, undecided)? {
             return Ok(());
         }
-        if covered.contains(env, scrut)? {
+        if covered.contains_ordered(env, scrut)? {
             return Ok(());
         }
         // the hint names a ladder slice arms claimed, whose member still
