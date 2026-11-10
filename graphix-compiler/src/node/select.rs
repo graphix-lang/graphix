@@ -2510,6 +2510,21 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
+                // CR claude for claude: [bug/high] A select inside a woken arm that
+                // re-routes by a stale scrutinee answers differently in the two
+                // engines. The node-walk enters the new arm as below: a first entry is
+                // a Step (its constants fire) and a re-entry catches up the fires no
+                // selected reader saw. A fused kernel does neither. On main 3d73e2e1c,
+                // node-walk vs fused: w_newarm count 2 vs 1, w_pend2 3 vs 2, w_default
+                // 2 vs 1, reent_w `w` 1007 vs stuck at 4, io_ir_x prints "IO 3" vs
+                // nothing. The node-walk follows the first-entry and catch-up rules
+                // (design/wake_catchup.md), so the kernel is wrong; fusion must lose
+                // fusion here, never answer otherwise. D20 (b) (bound-bind-policy-01)
+                // fuses every run-time bind and spreads this, so this lands first. The
+                // fuzz corpus has no wake that re-routes a select inside the woken arm.
+                // probes: ~/ptmp/cr29/d20x/probes/design-B/{w_newarm,w_pend2}.gx,
+                // verify-B-engines/w_default.gx, verify-D-events/reent_w.gx,
+                // engines-impl/io_ir_x.gx (wake-entry-split-01)
                 let view = match entered.replace(i) {
                     true => {
                         if !sleep_on_deselect.get(i) {
