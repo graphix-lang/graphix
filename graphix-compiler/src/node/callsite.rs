@@ -1325,6 +1325,26 @@ fn data_positions(
     })
 }
 
+// CR claude for claude: [perf/medium] A call whose signature holds a DAG of
+// parametrized named unions checks in time exponential in the DAG's depth: `type
+// L0<'t> = ['t, null, `A]; type M0<'t> = [Array<'t>, `B]; type L<i><'t> =
+// [L<i-1><'t>, M<i-1><'t>]`, `M<i>` the same, then `let f = |x0: L<n><string>| 1;
+// f(null)`. --no-cache --check, debug, instructions: n = 10 / 12 / 14 / 16 / 18 0.82 /
+// 1.03 / 1.89 / 5.29 / 18.9 G (an empty program 0.75 G); as the return type (`|x0: i64|
+// -> L<n><string> null`, `f(1)`) 0.79 / 0.89 / 1.31 / 2.98 / 9.68 G. The uncalled
+// definition, `let x: L<n><string> = null` and the parameterless DAG are flat. perf at
+// 16: Widening::cells -> widenable -> data_positions (35%) and holds_invariantly (30%),
+// each through expansion -> Type::lookup_ref_probe. `clean` remembers only parameterless
+// typedefs and DataSeen keys a node by its address, where an application's expansion is
+// built anew at every visit, so each path is walked. Key an application by its
+// definition and its parameters' ids, as RefHist::ref_id and ContainsHist::pair_key do,
+// and pin the shape in deep_nesting. The contains side of the same DAG, a declared var
+// refused against `L<n><'b>` (`|x0: 'a, y0: 'b| { let x: L<n><'b> = x0; x }`, 12.0 G at
+// 18, and 1.7x main's peak memory since the probe memo keys a var), is
+// typedef-open-expansion-01's walk. Main 82569fed3 retires the same instructions on
+// each. Found by the review of union-dag-rigid-cell-01. probes:
+// ~/ptmp/cr29/scratch/r20/20g/review/{pc,pr,pv}{10,12,14,16,18}.gx
+// (call-param-dag-exp-01)
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the
