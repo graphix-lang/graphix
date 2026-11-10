@@ -664,7 +664,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [readability/low] An undecided scrutinee takes the
+            // CR claude for eric: [readability/low] An undecided scrutinee takes the
             // union of its arms' predicates, and a slice pattern's predicate gives every
             // element a cell of its own (`[h, ..]` is `Array<['h, 'rest]>`), so an
             // unannotated parameter a select takes apart with slice patterns is typed by a
@@ -679,6 +679,27 @@ impl Reach {
             // could share one element cell, since an array that arrives later gives every
             // position the same type. probes: ~/ptmp/cr29/scratch/r20/20b/{gs,sl1,sl2}.gx
             // (slice-param-union-01)
+            // 2026-11-10 claude: Reviewer of formal-union-order-01 (lane 20b): the refusal
+            // reaches the ordinary way to take an array apart. Refused at the call on the
+            // lane, run by base-r20: 'let rec len = |x| select x { [h, t..] => 1 + len(t), []
+            // => 0 }; len([1, 2])', 'let rec last = |x| select x { [h] => h, [h, t..] =>
+            // last(t), [] => never() }', '|x| select x { [h, ..] => `Some(h), [] => `None }',
+            // '|p| select p { (x, [h, ..]) => h, (x, []) => x }', '|x| select x { [h, t..] =>
+            // array::push(t, h), [] => [] }', the same over a list, and such a function
+            // passed where fn(x: Array<i64>) -> i64 is expected. Still accepted: a body that
+            // makes the elements one type ('[a, b] => a + b', 'h + sum(t)'), one that reads
+            // no element ('[h, ..] => 1': the cells are aliased), an undecided argument
+            // ('f([])'), and a callback an array HOF types. The union is not between the
+            // head's and the rest's cell alone: the scrutinee is typed [Array<['h, 'rest]>,
+            // Array<'e>], one array member an arm, so the value could go to either arm's
+            // member, and a right answer exists that no member pick gives: every cell is the
+            // element type. Base typed these loosely (result [i64, string, '_a, '_b]) but
+            // soundly (c9.txt). Whether one annotation ('|x: Array<'e>|') on every such
+            // function is within the limit of Eric's 11-10 ruling is his call; my
+            // recommendation is to fix it here (one element cell a slice pattern over an
+            // undecided scrutinee, the arms' array predicates merged) before a release, since
+            // the corpus census cannot see what users will write first. probes:
+            // ~/ptmp/cr29/scratch/r20/20b/review/{c1,c3,c9}.txt (run with cases.sh)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);

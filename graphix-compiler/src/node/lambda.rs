@@ -599,21 +599,19 @@ pub struct InstanceTypes {
 }
 
 /// The definition's signature `def` as the instance at `instance` holds
-/// it: each open cell copied under its name into `known` and bound to the
-/// instance's type. `None` when the instance's signature does not hold
-/// the definition's.
+/// it, with the copy of each open cell: each bound to the instance's type
+/// ([`FnType::held_at`]). `None` when the instance's signature does not
+/// hold the definition's.
 fn instance_sig<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
     instance: &FnType,
-    known: &mut AHashMap<usize, TVar>,
-) -> Option<Arc<FnType>> {
+) -> Option<(Arc<FnType>, AHashMap<usize, TVar>)> {
     // every open cell of the signature is the instance's own copy, a cell
     // no closed gate owns included, so the check binds nothing another
     // instance reads
-    let def = def.instantiate_owned(known);
-    instance.check_contains(&ctx.env, &def).ok()?;
-    Some(Arc::new(def))
+    let (sig, known) = def.held_at(&ctx.env, instance).ok()?;
+    Some((Arc::new(sig), known))
 }
 
 impl InstanceTypes {
@@ -646,8 +644,7 @@ impl InstanceTypes {
         instance: &FnType,
     ) -> Option<Self> {
         let open = ctx.rec_defs.clone();
-        let mut known = AHashMap::default();
-        let sig = instance_sig(ctx, def, instance, &mut known)?;
+        let (sig, known) = instance_sig(ctx, def, instance)?;
         Some(Self { tables, known: SArc::new(Mutex::new(known)), open, sig })
     }
 
@@ -1680,8 +1677,7 @@ impl<R: Rt> GXLambda<R> {
         let sig = match (&types, &typing) {
             (Some(types), _) => types.sig.clone(),
             (None, Typing::Substituted(_, def)) => {
-                instance_sig(ctx, def, &typ, &mut AHashMap::default())
-                    .unwrap_or_else(|| typ.clone())
+                instance_sig(ctx, def, &typ).map_or_else(|| typ.clone(), |(sig, _)| sig)
             }
             (None, _) => typ.clone(),
         };

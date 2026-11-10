@@ -19,7 +19,8 @@ use crate::{
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
-        Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type, Written,
+        AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
+        Written,
         settle::VariableUnion,
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
@@ -438,6 +439,38 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
+/// A use through `declared`, a val's or a method's declaration, builds its
+/// instance by holding the implementation's own type at what the use
+/// picked: where that would choose between two undecided members of a
+/// union the implementation holds, whatever the use picks, the build would
+/// refuse what the use's check, which reads `declared` alone, accepts.
+/// Judged over copies as the build holds an instance
+/// ([`FnType::held_at`]), the declaration's variables held rigid.
+pub(crate) fn instance_picks_no_member(
+    env: &Env,
+    declared: &Type,
+    implemented: &Type,
+) -> Result<()> {
+    if !implemented.may_choose_member(env) {
+        return Ok(());
+    }
+    let held = declared.reset_tvars();
+    let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    held.collect_tvars(&mut tvs);
+    let _gates: LPooled<Vec<_>> = tvs.values().map(|tv| tv.open_rigid()).collect();
+    let fits = |placed: bool| {
+        let own = implemented.reset_tvars();
+        if placed {
+            own.place_cells(env, &held)
+        }
+        held.check_contains(env, &own)
+    };
+    match fits(false).or_else(|_| fits(true)) {
+        Err(e) if e.downcast_ref::<AmbiguousMember>().is_some() => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `holder` what holds a
@@ -462,6 +495,7 @@ fn check_val(
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
+    instance_picks_no_member(env, declared, typ).map_err(refused)?;
     let shared = |tv: &TVar| !tv.level().copied_by(open);
     let is_function = declared.with_deref(|t| matches!(t, Some(Type::Fn(_))));
     hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {

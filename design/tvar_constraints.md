@@ -451,14 +451,20 @@ is written (`|x: Array<'e>|`).
 relation's site names: a `<-` names its target (`declare u's type where it
 is bound`, `Connect`), a call's argument the parameter
 (`callsite::ambiguous_parameter`), and any other site gets the default
-(`write the type of what holds that union`). A trait method's call checks
-against the declaration alone, so an implementation whose own signature
-would make every instance choose is refused where it is checked against
-the declaration (`traits::instance_picks_no_member`). Pins:
+(`write the type of what holds that union`). A trait method's call and a
+`.gxi` val's use check against the declaration alone and build an
+instance of the implementation, so an implementation whose own type would
+make that instance choose is refused where it is checked against the
+declaration (`module::instance_picks_no_member`, from `traits::implements`
+and `module::check_val`): `val f: fn(x: 'a) -> i64` implemented `|x: E<'a,
+'b>|` over `type E<'p, 'q> = ['p, 'q]`. It judges as the build holds an
+instance (below, An instance holds its signature cell by cell), so an
+implementation whose variables stand at the declaration's places passes
+(`val f: fn(x: E<'a, 'a>, ..)` implemented `|x: E<'a, 'b>, ..|`). Pins:
 `lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,slice_arms_over_an_unannotated_parameter}_refused*`
 and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
 `lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
-`lang::interfaces::open_union_call_refused`.
+`lang::interfaces::{open_union_call_refused,val_implementation_that_would_choose_a_member_refused,val_in_data_implementation_that_would_choose_a_member_refused,val_at_one_variable_implemented_at_two}`.
 
 ### Function types with variables of their own
 
@@ -1229,6 +1235,22 @@ variables in a signature), so only an inferred one meets that order (`|c,
 a, b| select c { true => a, false => b }`), and a type that either member
 could take is refused by both orders alike (A union's member takes a type
 by rule).
+
+**An instance holds its signature cell by cell.** The instance's
+signature is the definition's at the types the call's check decided, and
+the call may have decided a union's members from other positions than the
+containment meets first: an undecided argument (`never()`, `[]`) waits for
+the others, and a union a typedef hides (`E<'a, 'b>`) is not held back as
+a written one is. So where the containment fails, the instance's copy
+takes each cell from what stands at its own place in the instance's
+signature, wherever the two are built alike (`Type::place_cells`: a named
+type's parameters, an array's element, a tuple's, a struct's, a function's
+positions; a union's members have no places), and the containment then
+judges the whole (`FnType::held_at`). Without it the build refused what
+the check accepted: `let f = |x: E<'a, 'b>, y: 'a, z: 'b| ..; f(never(),
+1, "s")`, or `|x: ['a, Error<'e>]| -> (Array<'a>, Array<'e>) ..` called
+with an `` [Error<`A>, Error<`B>] ``. Pins:
+`lang::types::{undecided_argument_into_a_typedef_union_is_decided_by_the_other_parameters,empty_array_into_a_typedef_union_is_decided_by_the_other_parameters,empty_array_into_a_typedef_union_of_two_arrays_is_decided_by_the_other_parameters,undecided_argument_into_a_typedef_union_is_decided_by_the_result,two_members_one_constructor_member_could_take_are_placed_by_the_result}`.
 
 A type written in a body names the variables of the definitions around
 it (`lambda::body_annotation`); a labeled default is written in its

@@ -8,7 +8,7 @@ use crate::{
     format_with_flags, image,
     typ::{
         Bound, Mutability, TVar, TVarsSeen, Type,
-        contains::{ContainsFlags, ContainsHist},
+        contains::{ContainsFlags, ContainsHist, any_part_pair},
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
         normalize::NormCx,
@@ -2908,6 +2908,79 @@ fn holds_open_union(t: &Type) -> bool {
         })
     }
     go(t, &mut LPooled::take())
+}
+
+impl Type {
+    /// Bind each open cell of `self` to what stands at its place in `at`,
+    /// wherever the two types are built alike. A union's members have no
+    /// places: a cell they alone hold is left open.
+    pub fn place_cells(&self, env: &Env, at: &Self) {
+        crate::stack::ensure_sufficient(|| match (self, at) {
+            (Self::TVar(tv), _) => match tv.binding() {
+                Some(b) => b.place_cells(env, at),
+                None => {
+                    let _ = self.contains(env, at);
+                }
+            },
+            (_, Self::TVar(tv)) => {
+                if let Some(b) = tv.binding() {
+                    self.place_cells(env, &b)
+                }
+            }
+            (Self::Set(_), _) | (_, Self::Set(_)) => (),
+            (Self::Fn(f0), Self::Fn(f1)) => f0.place_cells(env, f1),
+            (Self::Ref(r0), Self::Ref(r1)) => {
+                if r0.same_definition(r1, env) && r0.params.len() == r1.params.len() {
+                    for (own, at) in r0.params.iter().zip(r1.params.iter()) {
+                        own.place_cells(env, at)
+                    }
+                }
+            }
+            (own, at) => {
+                any_part_pair(own, at, &mut |own, at| {
+                    own.place_cells(env, at);
+                    false
+                });
+            }
+        })
+    }
+}
+
+impl FnType {
+    /// [`Type::place_cells`] over two signatures, position by position.
+    pub fn place_cells(&self, env: &Env, at: &Self) {
+        for (own, at) in self.align(at).0 {
+            own.typ.place_cells(env, &at.typ)
+        }
+        if let (Some(own), Some(at)) = (&self.vargs, &at.vargs) {
+            own.place_cells(env, at)
+        }
+        self.rtype.place_cells(env, &at.rtype);
+        self.throws.place_cells(env, &at.throws)
+    }
+
+    /// `self`, a definition's signature, as an instance at `instance`
+    /// holds it, and the copy of each open cell by its address: every cell
+    /// the instance's own and bound to the instance's type. Where the
+    /// containment would have to choose a union's member before the
+    /// positions that decide it, each cell takes what stands at its own
+    /// place first ([`Type::place_cells`]).
+    pub fn held_at(
+        &self,
+        env: &Env,
+        instance: &Self,
+    ) -> Result<(Self, AHashMap<usize, TVar>)> {
+        let mut known = AHashMap::default();
+        let own = self.instantiate_owned(&mut known);
+        if instance.check_contains(env, &own).is_ok() {
+            return Ok((own, known));
+        }
+        known.clear();
+        let own = self.instantiate_owned(&mut known);
+        own.place_cells(env, instance);
+        instance.check_contains(env, &own)?;
+        Ok((own, known))
+    }
 }
 
 impl Type {

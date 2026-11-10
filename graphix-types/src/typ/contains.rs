@@ -2261,7 +2261,11 @@ fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
 /// Whether `f` holds of a pair of parts `s` and `t` place alike: a
 /// function's result and arguments, each member of a union beside the
 /// other side, the parts of one constructor on both sides.
-fn any_part_pair(s: &Type, t: &Type, f: &mut impl FnMut(&Type, &Type) -> bool) -> bool {
+pub(super) fn any_part_pair(
+    s: &Type,
+    t: &Type,
+    f: &mut impl FnMut(&Type, &Type) -> bool,
+) -> bool {
     fn zip(a: &[Type], b: &[Type], f: &mut impl FnMut(&Type, &Type) -> bool) -> bool {
         a.len() == b.len() && a.iter().zip(b.iter()).any(|(a, b)| f(a, b))
     }
@@ -4191,6 +4195,19 @@ impl Type {
                 return Ok(false);
             }
         }
+        // CR claude for claude: [risk/low] A definition's check and its instance's
+        // second check (GRAPHIX_NO_SUBST=1) still meet one union of two undecided
+        // members in two states. `let mk = |c, a, b| (select c { true => a, false => b
+        // }, [a], [b]); let g = |p, q| { let t = mk(true, never(), never()); let u =
+        // never(); u <- t.0; u <- p; u <- q; let r: (Array<string>, Array<i64>) =
+        // (t.1, t.2); r }; g(1, "s")`: the definition's check writes `p`, an open
+        // parameter, into the union whole (the rule below) and the annotation then
+        // decides the members, so `--check` and the default build accept and run it;
+        // the instance checked again holds `p` at i64 when it meets `u <- p`, before
+        // the annotation, and is refused (AmbiguousMember). An instance takes its
+        // definition's types by default, so only the debug A/B splits; base-r20
+        // splits there too, with a mismatch at the annotation. probes:
+        // ~/ptmp/cr29/scratch/r19/19g/{s3,s4}.gx (union-nosubst-order-01)
         // an undecided rhs member takes a union of undecided members whole,
         // as it would alone: no one member is picked for it
         let undecided_free = |(m, free): (&Type, &bool)| *free && undecided(m);
@@ -4522,25 +4539,84 @@ impl Type {
     }
 
     /// Whether a type going into `self` may have to choose among a union's
-    /// undecided members: `self` holds a union with an open cell, or a
-    /// named type applied to a variable, which may expand to one.
-    pub fn may_choose_member(&self) -> bool {
-        fn go(t: &Type, seen: &mut AddrSet) -> bool {
+    /// undecided members ([`Self::take`], [`Self::residue_member`]): `self`
+    /// holds, through names, a union two of whose members that hold an
+    /// open cell are bare variables, or are built by one constructor.
+    pub fn may_choose_member(&self, env: &Env) -> bool {
+        // whether one type could be a value of both: a head no walk
+        // resolved could be anything
+        fn one_constructor(h0: &Type, h1: &Type) -> bool {
+            match (h0, h1) {
+                (Type::Variant(t0, ..), Type::Variant(t1, ..)) => t0 == t1,
+                (Type::Abstract { id: i0, .. }, Type::Abstract { id: i1, .. }) => {
+                    i0 == i1
+                }
+                (Type::Tuple(ts0), Type::Tuple(ts1)) => ts0.len() == ts1.len(),
+                (Type::Ref(_) | Type::App(..) | Type::Set(_), _)
+                | (_, Type::Ref(_) | Type::App(..) | Type::Set(_)) => true,
+                (h0, h1) => std::mem::discriminant(h0) == std::mem::discriminant(h1),
+            }
+        }
+        fn chooses(env: &Env, ms: &[Type]) -> bool {
+            let heads: SmallVec<[Type; 4]> = ms
+                .iter()
+                .filter(|m| m.has_unbound())
+                .map(|m| {
+                    named_head(env, m, &mut LPooled::take()).unwrap_or_else(|| m.clone())
+                })
+                .collect();
+            heads.iter().enumerate().any(|(i, h0)| {
+                heads[i + 1..].iter().any(|h1| {
+                    match (is_unbound_tvar(h0), is_unbound_tvar(h1)) {
+                        (true, true) => true,
+                        (false, false) => one_constructor(h0, h1),
+                        (_, _) => false,
+                    }
+                })
+            })
+        }
+        fn go(env: &Env, t: &Type, names: &mut Expanded, seen: &mut AddrSet) -> bool {
             ensure_sufficient(|| match t {
-                Type::Set(ms) if ms.iter().any(|m| m.has_unbound()) => true,
-                Type::Ref(tr) if !tr.params.iter().all(|p| p.tvar_free()) => true,
-                Type::TVar(tv) => tv.binding().is_some_and(|b| go(&b, seen)),
+                Type::TVar(tv) => tv.binding().is_some_and(|b| go(env, &b, names, seen)),
+                Type::Ref(tr) if !tr.params.iter().all(|p| p.tvar_free()) => {
+                    match named_head(env, t, names) {
+                        Some(Type::Ref(_)) => true,
+                        Some(head) => go(env, &head, names, seen),
+                        None => false,
+                    }
+                }
+                Type::Set(ms) => {
+                    let chooses = match ms.iter().any(|m| names_members(env, m)) {
+                        false => chooses(env, ms),
+                        true => match &Type::unfolded(env, ms) {
+                            Ok(Type::Set(ms)) => chooses(env, ms),
+                            Ok(_) | Err(_) => true,
+                        },
+                    };
+                    chooses || ms.iter().any(|m| go(env, m, names, seen))
+                }
                 t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
                 t => {
                     let mut found = false;
-                    t.for_each_child(&mut |c| found = found || go(c, seen));
+                    t.for_each_child(&mut |c| found = found || go(env, c, names, seen));
                     found
                 }
             })
         }
-        go(self, &mut LPooled::take())
+        go(env, self, &mut LPooled::take(), &mut LPooled::take())
     }
 
+    // CR claude for claude: [risk/low] A select arm's type test over a union of two
+    // undecided members still gives the type to the first member, by order, where a
+    // write is refused (formal-union-order-01's rule): after `let mk = |c, a, b|
+    // select c { true => a, false => b }; let x = never(); let y = never(); let u =
+    // mk(true, x, y); let r = select u { i64 as n => n, _ => 0 }`, `x <- "s"; y <-
+    // 1` is refused ("x is i64, inferred from an earlier use") and `x <- 1; y <-
+    // "s"` runs. The check and the build agree, also under GRAPHIX_NO_SUBST=1, and
+    // base-r20 does the same; refusing in the pattern walks broke ordinary selects
+    // (lane 20b's fixer). Left open: whether an arm testing such a union should be
+    // refused as one testing an undecided type is, naming the binding. probes:
+    // ~/ptmp/cr29/scratch/r20/20b/review/c11.txt (pattern-union-order-01)
     /// [`Self::contains`] for a select's patterns, whose arms are consulted
     /// top down, and for a relation over copies: the first member of a
     /// union that holds a type takes it, where [`Self::contains`] refuses

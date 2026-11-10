@@ -6862,6 +6862,58 @@ run!(
     prints("i64:4")
 );
 
+// An instance holds its definition's signature at the call's types cell by
+// cell, each from its own place: a union the call left for its other
+// positions to decide is decided for the instance the same way, so the
+// build agrees with the check.
+run!(
+    undecided_argument_into_a_typedef_union_is_decided_by_the_other_parameters,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: E<'a, 'b>, y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([], []);
+  f(never(), 1, "s")
+}"#,
+    prints("[[], []]")
+);
+run!(
+    empty_array_into_a_typedef_union_is_decided_by_the_other_parameters,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: Array<E<'a, 'b>>, y: 'a, z: 'b| -> i64 array::len(x);
+  f([], 1, "s")
+}"#,
+    prints("i64:0")
+);
+run!(
+    empty_array_into_a_typedef_union_of_two_arrays_is_decided_by_the_other_parameters,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| -> i64 0;
+  f([], 1, "s")
+}"#,
+    prints("i64:0")
+);
+run!(
+    undecided_argument_into_a_typedef_union_is_decided_by_the_result,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: E<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []);
+  let u = never();
+  let r: (Array<i64>, Array<string>) = f(u);
+  r
+}"#,
+    prints("[[], []]")
+);
+run!(
+    two_members_one_constructor_member_could_take_are_placed_by_the_result,
+    r#"{
+  let f = |x: ['a, Error<'e>]| -> (Array<'a>, Array<'e>) ([], []);
+  let v: [Error<`A>, Error<`B>] = error(`A);
+  f(v)
+}"#,
+    prints("[[], []]")
+);
+
 // Every position is held, whichever round checks it: a result whose
 // variable the parameter's binding closes is checked all the same.
 run!(

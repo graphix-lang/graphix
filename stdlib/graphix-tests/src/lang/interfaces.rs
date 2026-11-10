@@ -1309,6 +1309,34 @@ run!(
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
 ; FuseExpect::None);
 
+// A val's use is checked against its declaration alone, and builds an
+// instance of the implementation: one whose own signature would have that
+// instance choose between two undecided members is refused as the val is
+// checked; one whose variables stand at the declaration's places is not.
+run!(
+    val_implementation_that_would_choose_a_member_refused,
+    refused("which nothing has decided, and the check picks none by order"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "type E<'p, 'q> = ['p, 'q];\nval f: fn(x: 'a) -> i64;",
+    "/test/m.gx" => "let f = |x: E<'a, 'b>| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    val_in_data_implementation_that_would_choose_a_member_refused,
+    refused("which nothing has decided, and the check picks none by order"),
+    "/test.gx" => "mod m; let result = m::s.g([1])",
+    "/test/m.gxi" => "type E<'p, 'q> = ['p, 'q];\nval s: {g: fn(x: Array<'a>) -> i64};",
+    "/test/m.gx" => "let s = {g: |x: Array<E<'a, 'b>>| -> i64 0}"
+; FuseExpect::None);
+
+run!(
+    val_at_one_variable_implemented_at_two,
+    prints("[[], []]"),
+    "/test.gx" => "mod m; let result = m::f(1, 2)",
+    "/test/m.gxi" => "type E<'p, 'q> = ['p, 'q];\nval f: fn(x: E<'a, 'a>, y: 'a) -> (Array<'a>, Array<'a>);",
+    "/test/m.gx" => "let f = |x: E<'a, 'b>, y: 'b| -> (Array<'a>, Array<'b>) ([], [])"
+);
+
 // No pairing of the union fits the rest of the signature: refused.
 run!(
     open_union_without_a_pairing_is_refused,
