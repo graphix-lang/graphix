@@ -243,6 +243,73 @@ run!(written_array_element_test_with_an_open_variable_over_any_refused, r#"{
     [f([`Keep(3)]), f([s])]
 }"#, refused("[`Keep(r)] tests a value of 'q, a type variable its type test"); FuseExpect::None);
 
+// Inside a tuple the narrowing reaches `Any` at the variable's position;
+// an or-pattern, a literal the test's other member holds and an abstract's
+// payload test the variable as a tag does.
+run!(written_tuple_part_test_with_an_open_variable_over_any_refused, r#"{
+    let f = |x: (Any, i64)| -> i64 select x {
+        (['q, `B(i64)], i64) as (`B(n), m) => n + m,
+        _ => 0
+    };
+    let s: Any = `B("s");
+    [f((`B(1), 1)), f((s, 1))]
+}"#, refused("(`B(n), m) tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_tuple_part_test_over_any_closed, r#"{
+    let f = |x: (Any, i64)| -> i64 select x {
+        (`B(i64), i64) as (`B(n), m) => n + m,
+        _ => 0
+    };
+    let s: Any = `B("s");
+    [f((`B(1), 1)), f((s, 1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 0]); FuseExpect::Jit);
+
+run!(written_or_test_with_an_open_variable_over_any_refused, r#"{
+    let f = |x: Any| -> i64 select x {
+        ['q, `A(i64), `B(i64)] as `A(n) | `B(n) => n,
+        _ => 0
+    };
+    let s: Any = `A("s");
+    [f(`A(3)), f(s)]
+}"#, refused("`A(n) | `B(n) tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_or_test_over_any_closed, r#"{
+    let f = |x: Any| -> i64 select x {
+        [`A(i64), `B(i64)] as `A(n) | `B(n) => n,
+        _ => 0
+    };
+    let s: Any = `A("s");
+    [f(`A(3)), f(`B(4)), f(s)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 4, 0]); FuseExpect::Jit);
+
+run!(written_null_test_with_an_open_variable_refused, r#"{
+    let f = |x: [i64, null]| -> i64 select x { ['q, null] as null => 0, _ => 1 };
+    [f(null), f(1)]
+}"#, refused("null tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_null_test_closed, r#"{
+    let f = |x: [i64, null]| -> i64 select x { [i64, null] as null => 0, _ => 1 };
+    [f(null), f(1)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1]); FuseExpect::Jit);
+
+run!(written_abstract_payload_test_with_an_open_variable_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: W<[i64, `A(i64)]>| -> i64 select x {
+        W<['q, `A(i64)]> as W(`A(n)) => n,
+        _ => 0
+    };
+    [f(W(`A(3))), f(W(1))]
+}"#, refused("W(`A(n)) tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_abstract_payload_test_closed, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: W<[i64, `A(i64)]>| -> i64 select x {
+        W<[i64, `A(i64)]> as W(`A(n)) => n,
+        _ => 0
+    };
+    [f(W(`A(3))), f(W(1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0]); FuseExpect::None);
+
 run!(written_array_element_test_closed, r#"{
     let f = |xs: Array<[i64, `Keep(i64)]>| -> i64 select xs {
         Array<[i64, `Keep(i64)]> as [`Keep(r)] => r,

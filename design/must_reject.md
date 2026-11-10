@@ -367,7 +367,7 @@ part alone, which decides its shape as an annotation would (pins
 the members' others (`TVar::narrow_per_member`), whose refusal comes at
 a later write (pins `lang::select_undecided::name_over_an_undecided_*`);
 a written test's own open variable (pins
-`lang::select_undecided::written_*_open_variable_refused`) and a written
+`lang::select_undecided::written_*_open_variable*_refused`) and a written
 test of the undecided part (`written_tests_undecided`, pins
 `lang::select_undecided::written_union_test_of_an_undecided_*`); and members
 told apart only by undecided cells under a partial struct pattern
