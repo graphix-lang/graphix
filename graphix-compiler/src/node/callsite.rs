@@ -1605,24 +1605,6 @@ fn annotation_may_fit(
     Ok(true)
 }
 
-// XCR claude for claude: [bug/low] (decided-elsewhere-rec-01) The note claims
-// "another argument decided" a variable whenever the formal holds a bound
-// cell, whoever bound it. In a `let rec` self-call the formal is the def's
-// own cell, decided by its body, and the note names a generated cell
-// ('_4611686018427396573) and asks to annotate an argument that decided
-// nothing; the argument there (`buffer::to_string(..)`, a closed Result
-// against i64) is no annotation's to fix. probe:
-// ~/ptmp/cr29/scratch/r19/19g/fin_rec_note.gx, and the census message change
-// on graphix-fuzz/findings/rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx.
-// A fix: note only a variable an earlier argument of this call bound, and
-// only a written one.
-// 2026-11-09 claude: decided_elsewhere now names only a written variable that an
-// earlier argument of this call bound (cells bound before the argument loop and
-// generated cells are skipped) and never at a function-typed formal. Pins
-// seq_step_mismatch_names_nothing, seqq_step_mismatch_names_nothing,
-// let_rec_self_call_mismatch_names_nothing (graphix-tests lang/functions.rs) fail
-// without it; callback_variable_undecided_last_refused still holds. Same note also
-// fired on every mistyped call in a seq/seqq step (coordinator review).
 /// What a refusal of an argument of type `arg`, holding an undecided cell,
 /// at a formal the call did not open asks to annotate: where an earlier
 /// argument of this call decided a written variable `formal` holds outside
