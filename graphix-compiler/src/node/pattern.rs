@@ -1248,7 +1248,7 @@ impl StructPatternNode {
         })
     }
 
-    // CR claude for claude: [bug/medium] A slice nested under another pattern takes
+    // XCR claude for claude: [bug/medium] A slice nested under another pattern takes
     // no member of the scrutinee: the recursion below passes `&[]`, so its elements are
     // typed from the predicate's own cells, not the scrutinee's part. Under D6 (b) a
     // name over the element of `Array<'b>` keeps 'b, as at the top (`[h, ..] => h.0`
@@ -1259,13 +1259,26 @@ impl StructPatternNode {
     // and over `('c<'b>, i64)`. Fix: pass each matched member's part at the child's
     // position down the recursion. probe: ~/ptmp/cr29/scratch/r19/19a/ceb/p10t.gx,
     // p9t.gx, p10.gx (nested-slice-bind-01)
+    // 2026-11-10 claude: StructPatternNode::hold_slice_members now hands each child the
+    // members of what reaches it (each matched member's part at the child's position,
+    // flattened, those the child's predicate could match; a union holding Any is Any, so
+    // the elements stay the arm's own cells there, as over an Any scrutinee) instead of
+    // none. p10t, p10 and the variant/or forms are refused naming 'b; p9t and the struct
+    // form run and answer 4. Pins in lang::select that fail without it:
+    // nested_slice_element_bind_keeps_the_variable,
+    // nested_slice_element_bind_under_a_variant_keeps_the_variable,
+    // nested_slice_collection_element_bind_keeps_the_variable,
+    // nested_slice_or_element_bind_keeps_the_variable, nested_slice_element_bind_typed;
+    // nested_slice_under_an_any_member_admits_any_element guards the Any member. Census
+    // of both repos unchanged; needs a soak.
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
     /// the union of its part of each member the element's structure admits.
-    /// `matched`, when not empty, is the scrutinee's members this slice can
-    /// match: an array or list member's elements are its own, not the
-    /// predicate's cells, which stand for any other member (`Any`).
+    /// `matched`, when not empty, is the members of what reaches this pattern
+    /// that it can match, and each child takes its part of them: an array or
+    /// list member's elements are its own, not the predicate's cells, which
+    /// stand for any other member (`Any`).
     fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -1309,13 +1322,45 @@ impl StructPatternNode {
                     }
                 }
             }
-            if !self.children_inferred(true) {
+            if ts.is_empty() || !self.children_inferred(true) {
                 return Ok(());
             }
-            for (c, t) in self.children().into_iter().zip(ts) {
-                if let Some((t, _)) = t {
-                    c.hold_slice_members(env, &t, &[])?
+            let split: SmallVec<[_; 4]> = matched
+                .iter()
+                .map(|m| {
+                    let parts = self.member_parts(env, m, false);
+                    let any =
+                        parts.is_empty() && matches!(expand(env, m), Some(Type::Any));
+                    (any, parts)
+                })
+                .collect();
+            let mut held: SmallVec<[Type; 8]> = SmallVec::new();
+            let mut reach: SmallVec<[Type; 8]> = SmallVec::new();
+            for (i, (c, t)) in self.children().into_iter().zip(ts).enumerate() {
+                let Some((t, _)) = t else { continue };
+                held.clear();
+                reach.clear();
+                for (any, parts) in split.iter() {
+                    if *any {
+                        held.push(Type::Any)
+                    }
+                    for (_, ps) in parts.iter() {
+                        if let Some(Some((p, _))) = ps.get(i) {
+                            union_members(env, p, &mut held)?
+                        }
+                    }
                 }
+                // a union with `Any` among its members is `Any`
+                if held.iter().any(|m| matches!(m, Type::Any)) {
+                    held.clear();
+                    held.push(Type::Any)
+                }
+                for m in held.drain(..) {
+                    if t.could_match(env, &m)? {
+                        reach.push(m)
+                    }
+                }
+                c.hold_slice_members(env, &t, &reach)?
             }
             Ok(())
         })

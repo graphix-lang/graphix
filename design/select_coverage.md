@@ -164,7 +164,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   one member per element and a cell for the rest, so each element
   narrows on its own; its run-time test admits any member at any
   position, so a name an element binds holds its part of every member
-  the element's structure admits (`hold_slice_members`). Pins:
+  the element's structure admits (`hold_slice_members`). A slice inside a
+  tuple, struct, variant or or-pattern takes those members from each
+  reaching member's part at its position, so a name over the element of
+  `Array<'b>` there keeps `'b`, as at the top; where a member's part is
+  `Any`, the union there is `Any` and the elements are the arm's own
+  cells, as over an `Any` scrutinee. Pins:
   `lang::select::capture_*`, `slice_elements_typed_apart`,
   `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`,
-  `let_partial_struct_capture_is_the_whole_value`.
+  `nested_slice_*`, `let_partial_struct_capture_is_the_whole_value`.

@@ -7891,6 +7891,124 @@ run!(
     FuseExpect::None
 );
 
+// A slice under a tuple, a variant or a struct takes the scrutinee's
+// element there: a name over the element of `Array<'b>` keeps 'b, as at the
+// top, so the body cannot decide it.
+run!(
+    nested_slice_element_bind_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'b: (i64, i64) |x: (Array<'b>, i64)| -> [string, null] select x {
+            ([h, ..], n) => { let q: string = h; q },
+            _ => null
+        };
+        let result = g(([(3, 4)], 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_element_bind_under_a_variant_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'b: (i64, i64) |x: [`S(Array<'b>), `N]| -> [string, null] select x {
+            `S([h, ..]) => { let q: string = h; q },
+            _ => null
+        };
+        let result = g(`S([(3, 4)]))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_collection_element_bind_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'c: Collection, 'b: (i64, i64) |x: ('c<'b>, i64)| -> [string, null] select x {
+            ([<h, ..>], n) => { let q: string = h; q },
+            _ => null
+        };
+        let result = g(([<(3, 4)>], 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_or_element_bind_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'b: (i64, i64) |x: [`A(Array<'b>), `B(Array<'b>)]| -> [string, null] select x {
+            `A([h, ..]) | `B([h, ..]) => { let q: string = h; q },
+            _ => null
+        };
+        let result = g(`A([(3, 4)]))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_element_bind_typed,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 4, 4, 4, 7, 10, 4, 5, 3, 5, 0, 0]),
+    "/test.gx" => r#"
+        let t = 'b: (i64, i64) |x: (Array<'b>, i64)| -> i64 select x {
+            ([h, ..], _) => h.0 + 1,
+            _ => 0
+        };
+        let s = 'b: (i64, i64) |x: {a: Array<'b>, n: i64}| -> i64 select x {
+            {a: [h, ..], n} => h.0 + n,
+            _ => 0
+        };
+        let c = 'c: Collection, 'b: (i64, i64) |x: ('c<'b>, i64)| -> i64 select x {
+            ([h, ..], n) => h.0 + n,
+            ([<h, ..>], n) => h.0 + n,
+            _ => 0
+        };
+        let e = 'b: (i64, i64) |x: (Array<'b>, i64)| -> i64 select x {
+            ([.., h], n) => h.1 + n,
+            _ => 0
+        };
+        let p = 'b: (i64, i64) |x: (Array<'b>, i64)| -> i64 select x {
+            ([a, b], n) => a.0 + b.1 + n,
+            _ => 0
+        };
+        let u = 'b: (i64, i64) |x: ([Array<'b>, i64], i64)| -> i64 select x {
+            ([h, ..], n) => h.0 + n,
+            _ => 0
+        };
+        let o = 'b: (i64, i64) |x: [`A(Array<'b>), `B(Array<'b>)]| -> i64 select x {
+            `A([h, ..]) | `B([h, ..]) => h.0,
+            _ => 0
+        };
+        let d = 'b: (i64, i64) |x: {a: (i64, [`S(Array<'b>), `N])}| -> i64 select x {
+            {a: (n, `S([h, ..]))} => h.1 + n,
+            _ => 0
+        };
+        let result = [
+            t(([(3, 4)], 1)), s({a: [(3, 4)], n: 1}), c(([(3, 4)], 1)), c(([<(3, 4)>], 1)),
+            e(([(3, 4), (5, 6)], 1)), p(([(3, 4), (5, 6)], 1)), u(([(3, 4)], 1)),
+            o(`B([(5, 6)])), o(`A([(3, 4)])), d({a: (1, `S([(3, 4)]))}), u((7, 1)), t(([], 1))
+        ]
+    "#;
+    FuseExpect::Jit
+);
+
+// A union with `Any` among its members is `Any`: a slice under a position
+// one member leaves as `Any` takes its elements from the arm's own cells, as
+// over an `Any` scrutinee, so a value of the `Any` member passes.
+run!(
+    nested_slice_under_an_any_member_admits_any_element,
+    prints(r#"["3 1", "no", "q s"]"#),
+    "/test.gx" => r#"
+        let g = |x: [(Array<i64>, i64), (Any, string)]| -> string select x {
+            ([h, ..], n) => "[h] [n]",
+            _ => "no"
+        };
+        let a: Any = ["q"];
+        let result = [g(([3], 1)), g(("a", "s")), g((a, "s"))]
+    "#;
+    FuseExpect::Jit
+);
+
 run!(
     written_test_closed_inside_a_declared_variable,
     r#"{
