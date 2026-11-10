@@ -1,0 +1,6 @@
+// A reference to an arm's array, rebuilt at the wake from an input that
+// fired while the arm slept: the cell stands moved and the fold outside
+// fires once.
+// Expected trace (both engines): 4; 10, counted twice.
+// schedule-v1: cap=96 events=768; in0=i64:2; in0=i64:1; in0=i64:3; in0=i64:4; in0=i64:6
+{ let v0 = i64:0; v0 <- select (in0 % i64:2) { i64:1 => in0, _ => never() }; let v1 = select (in0 % i64:2) { i64:0 => { let v2 = array::map([v0, v0], |e| e + i64:1); &v2 }, _ => { let v2 = [v0]; &v2 } }; let v3 = once(v1); let v4 = array::len(*v3) + array::fold(*v3, i64:0, |a, e| a + e); let v5 = count(v4); println("[v4]"); println("[v5]"); v4 }

@@ -2010,14 +2010,20 @@ impl<T> CachedArgs<T> {
                     None => last_result.set_bottom_as(t),
                 }
             }
-            Some(_) if !last_result.tag().is_bottom() => {
+            Some(t) if !last_result.tag().is_bottom() => {
                 // Wake catch-up: args may have drifted while asleep. A
-                // stateless value is recomputed from the present slots; a
-                // stateful one must not be (its last result is its state).
-                if matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_)) && woke {
+                // stateless value is recomputed from the present slots,
+                // and moved when an argument did; a stateful one must
+                // not be (its last result is its state), and an event it
+                // did not take did not move it.
+                let moved = matches!(T::EFFECT, Effect::Stateless(_)) && t.moved();
+                if matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_))
+                    && (woke || moved)
+                {
                     cached.evaluated = Evaluated(true);
                     match ev.quiet(ctx, cached) {
-                        Some(v) => last_result.set(TagValue::stale(v)),
+                        Some(v) => last_result
+                            .set(TagValue::tagged(v, Tag::STALE.moved_if(moved))),
                         None => last_result.set_bottom(false),
                     }
                 } else {

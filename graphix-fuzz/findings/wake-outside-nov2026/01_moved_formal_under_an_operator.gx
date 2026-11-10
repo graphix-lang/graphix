@@ -1,0 +1,7 @@
+// The same escape read under an operator and counted: the operator
+// recomputes at the wake because its input fired, and `count` ticks
+// once. Before the rule a bare read took the new value quietly and the
+// operator rode its old result.
+// Expected trace (both engines): 1; 4, counted twice.
+// schedule-v1: cap=96 events=768; in0=i64:2; in0=i64:1; in0=i64:3; in0=i64:4; in0=i64:6
+{ let v0 = i64:0; v0 <- select (in0 % i64:2) { i64:1 => in0, _ => never() }; let v1 = |v2: i64| |v3: i64| v2 + v3; let v4 = select (in0 % i64:2) { i64:0 => v1(v0), _ => v1(v0 + i64:100) }; let v5 = once(v4); let v6 = (v5(i64:1)) + i64:0; let v7 = count(v6); println("[v6]"); println("[v7]"); v6 }

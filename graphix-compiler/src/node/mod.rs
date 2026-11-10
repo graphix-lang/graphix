@@ -1,6 +1,7 @@
 use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
     ParMode, PendingSettle, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update,
+    View,
     branch::{fork_point, timed},
     cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
@@ -81,11 +82,34 @@ pub(crate) mod wake;
 /// A variable read's provenance under dense delivery — see [`read_var`].
 pub(crate) enum VarRead<'a> {
     /// Found in the overlay (this cycle's transient deliveries) or
-    /// store-stamped THIS cycle: the entry's own tag applies.
+    /// store-stamped THIS cycle: the entry's own tag applies, a wake's
+    /// moved stand excepted ([`delivered_view`]).
     Delivered(&'a TagValue),
-    /// A standing store entry from an earlier cycle: the value
+    /// Last cycle's delivery, made after the walk passed this reader and
+    /// handed to it alone now: its own tag applies.
+    Late(&'a TagValue),
+    /// A standing store entry from the earlier cycle given: the value
     /// channel. Readers view it Stale, or Fired at a birth.
-    Standing(&'a TagValue),
+    Standing(&'a TagValue, u64),
+}
+
+impl VarRead<'_> {
+    /// The production a reader under `ctx`'s view takes from the read.
+    #[inline]
+    pub(crate) fn production<R: Rt>(&self, ctx: &ExecCtx<'_, R>) -> TagValue {
+        match self {
+            VarRead::Delivered(tv) => delivered_view(ctx.event, tv),
+            VarRead::Late(tv) => (*tv).clone(),
+            VarRead::Standing(tv, stamp) => {
+                let mut tv = standing_view(ctx.event, tv);
+                if wake::slept_through(ctx, *stamp) {
+                    let tag = tv.tag().moved_if(true);
+                    tv.retag(tag);
+                }
+                tv
+            }
+        }
+    }
 }
 
 /// Read a variable: the overlay, then the persistent store. `None`
@@ -102,7 +126,7 @@ pub(crate) fn read_var<'a, R: Rt>(
     }
     match ctx.rt.store_get_var(ctx.rt.var_of(*id)) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
-        Some((tv, _)) => Some(VarRead::Standing(tv)),
+        Some((tv, stamp)) => Some(VarRead::Standing(tv, *stamp)),
         None => None,
     }
 }
@@ -120,7 +144,7 @@ pub(crate) fn read_var_by<'a, R: Rt>(
     if ctx.event.late.is_some()
         && let Some(tv) = late_fire(ctx, id, root, read)
     {
-        return Some(VarRead::Delivered(tv));
+        return Some(VarRead::Late(tv));
     }
     read_var(ctx, id)
 }
@@ -136,29 +160,84 @@ fn late_fire<'a, R: Rt>(
 ) -> Option<&'a TagValue> {
     let late = ctx.event.late.as_ref()?;
     let var = ctx.event.variables.var_of(*id);
-    let (tv, readers) = late.get(&var.id())?;
-    if ctx.event.variables.get_var(var).is_some()
-        || !readers.iter().any(|r| {
-            r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read
-        })
-    {
+    let fires = late.get(&var.id())?;
+    if ctx.event.variables.get_var(var).is_some() {
         return None;
     }
+    let (tv, _) = fires.iter().find(|(_, r)| {
+        r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read
+    })?;
     if let crate::branch::RtView::Fork(f) = &ctx.rt {
         f.note_read(*id);
     }
     Some(tv)
 }
 
+/// `GRAPHIX_QUIET=audit`: a reader in an ordinary cycle took `standing`
+/// from a store entry no delivery of this cycle made, over its last
+/// production `resident`. An awake reader saw every fire, so the two
+/// agree, or a value changed under it with no fire. A seq machine's own
+/// names are read by steps it runs one at a time, which is no sleep.
+#[inline]
+pub(crate) fn audit_quiet<R: Rt>(
+    ctx: &ExecCtx<'_, R>,
+    id: &BindId,
+    resident: &TagValue,
+    standing: &TagValue,
+    spec: &Expr,
+) {
+    if crate::dbgenv::graphix_quiet_audit() {
+        audit_standing(ctx, id, resident, standing, spec)
+    }
+}
+
+#[cold]
+fn audit_standing<R: Rt>(
+    ctx: &ExecCtx<'_, R>,
+    id: &BindId,
+    resident: &TagValue,
+    standing: &TagValue,
+    spec: &Expr,
+) {
+    let lowered = || ctx.env.by_id.get(id).is_some_and(|b| crate::is_lowered(&b.name));
+    if ctx.event.view != View::Cycle || resident.tag().is_bottom() || lowered() {
+        return;
+    }
+    let same = !standing.tag().is_bottom()
+        && resident.with_value(|a| standing.with_value(|b| a == b));
+    if !same {
+        panic!(
+            "GRAPHIX_QUIET=audit: a value changed under an awake reader with no fire: \
+             {resident:?} -> {standing:?}, at {} `{spec}`",
+            spec.pos
+        )
+    }
+}
+
+/// An entry delivered this cycle as a reader sees it: its own tag, but
+/// that what a wake stood moved ([`Tag::moved`]) is a fire to a reader
+/// that did not wake with it; a reader resuming in the same cycle reads
+/// it as it reads everything that stands, and one born into a standing
+/// world reads it stale.
+#[inline]
+pub(crate) fn delivered_view(event: &Event, tv: &TagValue) -> TagValue {
+    let tag = tv.tag();
+    let mut tv = tv.clone();
+    if tag.moved() {
+        tv.retag(match event.view {
+            View::Wake => tag,
+            View::Step => tag.quiet(),
+            View::Cycle | View::Birth => tag.fresh(),
+        });
+    }
+    tv
+}
+
 /// A standing entry as a reader sees it: fresh at a birth only. A wake
 /// or a step reads it stale: its value is a past event the graph
 /// already consumed.
 pub(crate) fn standing_view(event: &Event, tv: &TagValue) -> TagValue {
-    let tag = if event.view == crate::View::Birth {
-        tv.tag().fresh()
-    } else {
-        tv.tag().quiet()
-    };
+    let tag = if event.view == View::Birth { tv.tag().fresh() } else { tv.tag().quiet() };
     let mut tv = tv.clone();
     tv.retag(tag);
     tv
@@ -550,7 +629,7 @@ fn gather_in_order<'a, R: Rt>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 /// `$tag` is the join of the consumed productions.
-// CR claude for claude: [bug/medium] A quiet change of a standing value
+// XCR claude for claude: [bug/medium] A quiet change of a standing value
 // reaches a bare read but not an operator over it: an operator whose
 // inputs did not fire rides its resident here, so in a closure whose
 // capture is a callee's formal refreshed standing at its arm's wake, `|y|
@@ -618,6 +697,27 @@ fn gather_in_order<'a, R: Rt>(
 // ~/ptmp/cr29/d20x/d20-redesign.md, ~/ptmp/cr29/d20x/probes/. D20 (b)
 // (bound-bind-policy-01, branch r19-e-wip-bound-bind) rebases onto A after
 // wake-entry-split-01.
+// 2026-11-10 claude: Built (A) with the bit (lane 20a): Tag::MOVED rides a
+// quiet production recomputed from an input that fired while its region slept
+// (origin: wake::slept_through at a read under a resume, and a resumed arm's
+// stale pattern bind; Tag::join ORs it; stateful builtins and Io calls drop it;
+// kernels OR it where they OR TAINT). A binding stood moved is stored as a fire
+// (ExecCtx::deliver/stand) and read FIRED by a reader in an ordinary cycle,
+// stale by one resuming (node::delivered_view); passed readers take it next
+// cycle, FIRED outside the resumed regions and standing inside
+// (Boundary::resumed_in, select.rs::standing_arm_view), which is ruling (ii).
+// sf = sfp = 3 fired at clk 6, k_later_nat 38 in both engines, edge_count
+// silent, back_inside (7, 1). same_val FIRES, against the study's list: n is
+// written 1 over 1 while the arm sleeps, a fire by the bit as x * 0 is. Pins
+// that fail with the origin disabled: 35 of lang::wake_outside's 41,
+// lang::prune::standing_formal_refresh_marks_its_readers, graphix-shell
+// tests/shell/wake_outside_roots.rs;
+// graphix-fuzz/findings/wake-outside-nov2026/00 diverges on the old engines
+// (interp 8, jit 38). GRAPHIX_QUIET=audit: graphix-tests lib passes under it.
+// Left open: wake-outside-regions-01, resumed-climb-01; D30
+// (wake-entry-split-01) untouched, its five probes print what they printed.
+// Needs a soak, the netidx-admin tests and a release-profile timing (debug
+// node-walk fold loop +3.9% instructions, fused +1%).
 macro_rules! dense_gate {
     ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
@@ -628,7 +728,7 @@ macro_rules! dense_gate {
         if $bottom {
             return $resident.set_bottom_as(tag);
         }
-        if !(tag.triggers() || $resident.tag().is_bottom() || $woke) {
+        if !(tag.triggers() || tag.moved() || $resident.tag().is_bottom() || $woke) {
             return $resident.ride();
         }
     }};
@@ -3159,7 +3259,9 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
             // delivered, or woken after it moved, finds it standing
             if let Some(read) = read_var(ctx, &self.src_id) {
                 let tv = match read {
-                    VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
+                    VarRead::Delivered(tv)
+                    | VarRead::Late(tv)
+                    | VarRead::Standing(tv, _) => tv,
                 };
                 self.cell = Self::cell(tv);
                 addressless = self.cell.is_none();

@@ -2,11 +2,14 @@
 //! both engines. Bit-identical to `Value` except that the upper 8 bits
 //! of the discriminant word carry a tag of two orthogonal bits, STALE
 //! (not an event this cycle) and TAINT (no usable value), giving the
-//! four states of [`TagView`]. Over consumed inputs TAINT joins by OR
-//! and STALE by AND: a bottom anywhere bottoms, a fire anywhere fires
-//! ([`Tag::join`]). Consume through [`TagValue::view`]; the only ways to
-//! recover a `Value` mask the tag first, so a tagged disc is never read
-//! as a `Value` discriminant.
+//! four states of [`TagView`], and a third that qualifies a quiet
+//! production, MOVED (recomputed at a wake from an input that fired while
+//! its region slept, `design/wake_catchup.md`). Over consumed inputs
+//! TAINT and MOVED join by OR and STALE by AND: a bottom anywhere
+//! bottoms, a fire anywhere fires, a moved input anywhere moved a quiet
+//! result ([`Tag::join`]). Consume through [`TagValue::view`]; the only
+//! ways to recover a `Value` mask the tag first, so a tagged disc is
+//! never read as a `Value` discriminant.
 
 use netidx_value::Value;
 use std::{fmt, marker::PhantomData, mem::ManuallyDrop, sync::LazyLock};
@@ -25,19 +28,27 @@ impl Tag {
     /// "no usable value" (kernel disc bit 62). The payload under this
     /// bit is a placeholder, never usable.
     pub const TAINT_BIT: u8 = 0x40;
+    /// "recomputed from an input whose fire its region slept through"
+    /// (kernel disc bit 60). It says something of a quiet production
+    /// alone ([`Tag::moved`]): a fire says as much to every reader.
+    pub const MOVED_BIT: u8 = 0x10;
     /// Fired this cycle, not a bottom — the ordinary production.
     pub const FIRED: Tag = Tag(0);
     /// A value-channel refresh: present, valid, did not fire.
     pub const STALE: Tag = Tag(Self::STALE_BIT);
+    /// A quiet value a wake recomputed from a fire its region missed.
+    pub const MOVED: Tag = Tag(Self::STALE_BIT | Self::MOVED_BIT);
     /// A bottom that is an event.
     pub const FRESH_BOTTOM: Tag = Tag(Self::TAINT_BIT);
     /// A standing bottom, and the phantom initial state of a slot that
     /// has never produced.
     pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
 
-    /// Wrap a raw tag byte; other bits are dropped.
+    /// Wrap a raw tag byte; other bits are dropped. A kernel may leave
+    /// MOVED on a fire, where it means nothing ([`Tag::moved`]).
+    #[inline]
     pub fn from_raw(bits: u8) -> Self {
-        Tag(bits & (Self::STALE_BIT | Self::TAINT_BIT))
+        Tag(bits & (Self::STALE_BIT | Self::TAINT_BIT | Self::MOVED_BIT))
     }
 
     pub fn bits(self) -> u8 {
@@ -60,24 +71,49 @@ impl Tag {
         self.0 & Self::STALE_BIT == 0
     }
 
-    /// Bottom ORs, fired ORs (so the STALE bit ANDs). `FIRED` is the
-    /// identity for bottom and absorbing for firing.
+    /// A quiet production recomputed from an input that fired while its
+    /// region slept: a reader that did not sleep with it takes it as a
+    /// fire ([`Tag::fresh`]).
+    #[inline]
+    pub fn moved(self) -> bool {
+        const QUIET_MOVED: u8 = Tag::STALE_BIT | Tag::MOVED_BIT;
+        self.0 & QUIET_MOVED == QUIET_MOVED
+    }
+
+    /// Bottom ORs, fired ORs (so the STALE bit ANDs), and a quiet join
+    /// moved when an input did. `FIRED` is the identity for bottom and
+    /// absorbing for firing.
+    #[inline]
     pub fn join(self, other: Tag) -> Tag {
-        let taint = (self.0 | other.0) & Self::TAINT_BIT;
+        const _: () = assert!(Tag::MOVED_BIT == Tag::STALE_BIT >> 1);
+        let either = self.0 | other.0;
         let quiet = (self.0 & other.0) & Self::STALE_BIT;
-        Tag(taint | quiet)
+        let moved = either & Self::MOVED_BIT & (quiet >> 1);
+        Tag((either & Self::TAINT_BIT) | quiet | moved)
     }
 
     /// Set the STALE bit, keeping bottomness: the tag a resident
-    /// re-surfaces under when nothing triggered this cycle.
+    /// re-surfaces under when nothing triggered this cycle. A resident
+    /// moved in the cycle it was computed in, never after.
+    #[inline]
     pub fn quiet(self) -> Tag {
-        Tag(self.0 | Self::STALE_BIT)
+        Tag((self.0 | Self::STALE_BIT) & !Self::MOVED_BIT)
     }
 
     /// Clear the STALE bit, keeping bottomness: a fresh reader sees a
     /// standing value as new.
+    #[inline]
     pub fn fresh(self) -> Tag {
-        Tag(self.0 & !Self::STALE_BIT)
+        Tag(self.0 & Self::TAINT_BIT)
+    }
+
+    /// This quiet tag with MOVED when `moved`; a fire is unchanged.
+    #[inline]
+    pub fn moved_if(self, moved: bool) -> Tag {
+        match moved && !self.triggers() {
+            true => Tag(self.0 | Self::MOVED_BIT),
+            false => self,
+        }
     }
 }
 
@@ -212,6 +248,16 @@ impl TagValue {
     #[inline]
     pub fn set_bottom_as(&mut self, tag: Tag) -> &TagValue {
         self.set(Self::tagged(Value::Null, Tag::from_raw(tag.bits() | Tag::TAINT_BIT)))
+    }
+
+    /// This production as a fire: what a reader awake through a wake
+    /// takes of a value the wake stood moved ([`Tag::moved`]).
+    #[inline]
+    pub fn as_fire(&self) -> TagValue {
+        let mut tv = self.clone();
+        let tag = tv.tag().fresh();
+        tv.retag(tag);
+        tv
     }
 
     /// The quiet-cycle production: set STALE in place, keep
@@ -367,6 +413,26 @@ mod tests {
         assert!(T::STALE_BOTTOM.is_bottom() && !T::STALE_BOTTOM.is_fired());
         assert_eq!(T::from_raw(T::TAINT_BIT), T::FRESH_BOTTOM);
         assert_eq!(T::from_raw(0x01), T::FIRED);
+    }
+
+    #[test]
+    fn moved_rides_quiet_joins_alone() {
+        use Tag as T;
+        assert_eq!(T::MOVED.join(T::STALE), T::MOVED);
+        assert_eq!(T::STALE.join(T::MOVED), T::MOVED);
+        assert_eq!(T::MOVED.join(T::FIRED), T::FIRED);
+        assert_eq!(T::MOVED.join(T::STALE_BOTTOM), T::STALE_BOTTOM.moved_if(true));
+        assert_eq!(T::MOVED.join(T::FRESH_BOTTOM), T::FRESH_BOTTOM);
+        assert!(
+            !T::from_raw(T::MOVED_BIT).moved() && T::from_raw(T::MOVED_BIT).is_fired()
+        );
+        assert_eq!(T::MOVED.quiet(), T::STALE);
+        assert_eq!(T::MOVED.fresh(), T::FIRED);
+        assert_eq!(T::FIRED.moved_if(true), T::FIRED);
+        assert!(T::MOVED.moved() && !T::MOVED.triggers() && !T::STALE.moved());
+        let mut tv = TagValue::tagged(Value::from(1i64), T::MOVED);
+        assert!(matches!(tv.view(), TagView::Stale(_)));
+        assert_eq!(tv.ride().tag(), T::STALE);
     }
 
     #[test]

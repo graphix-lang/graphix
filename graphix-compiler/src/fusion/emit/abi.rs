@@ -164,6 +164,15 @@ pub(crate) const STALE: i64 = (crate::tval::Tag::STALE_BIT as i64) << 56;
 /// Whether a value fired: [`STALE`], read as a test.
 pub(crate) const FIRE_TEST: i64 = STALE;
 
+/// Disc bit 60: a quiet value recomputed at a wake from an input that
+/// fired while its region slept (`Tag::MOVED_BIT`). It rides wherever
+/// [`TAINT`] does, by OR, and nothing in a kernel tests it: the kernel's
+/// result carries it to the node that stands the value.
+pub(crate) const MOVED: i64 = (crate::tval::Tag::MOVED_BIT as i64) << 56;
+
+/// The tag bits of a disc.
+pub(crate) const TAGS: i64 = TAINT | STALE | MOVED;
+
 impl CompiledExpr {
     pub fn new(disc: ClifValue, payload: ClifValue) -> Self {
         Self { disc, payload }
@@ -175,8 +184,8 @@ pub(super) fn scalar_disc(b: &mut FunctionBuilder, prim: PrimType) -> ClifValue 
     b.ins().iconst(types::I64, prim_to_value_disc(prim))
 }
 
-/// OR each operand's [`TAINT`] into `base`: any consumed bottom taints
-/// the result.
+/// OR each operand's [`TAINT`] and [`MOVED`] into `base`: any consumed
+/// bottom taints the result, any consumed moved value moved it.
 pub(super) fn propagate_taint(
     b: &mut FunctionBuilder,
     base: ClifValue,
@@ -184,7 +193,7 @@ pub(super) fn propagate_taint(
 ) -> ClifValue {
     let mut disc = base;
     for op in operands {
-        let t = b.ins().band_imm_u(*op, TAINT);
+        let t = b.ins().band_imm_u(*op, TAINT | MOVED);
         disc = b.ins().bor(disc, t);
     }
     disc
@@ -264,10 +273,10 @@ pub(super) fn const_stale_gate(
     b.ins().select(not_init, staled, disc)
 }
 
-/// Strip [`TAINT`] and [`STALE`], leaving the netidx discriminant: a
+/// Strip the tag bits ([`TAGS`]), leaving the netidx discriminant: a
 /// flagged disc is an invalid tag to a `Value` helper or a tag compare.
 pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    b.ins().band_imm_u(disc, !(TAINT | STALE))
+    b.ins().band_imm_u(disc, !TAGS)
 }
 
 /// The kind of an owned non-scalar local.

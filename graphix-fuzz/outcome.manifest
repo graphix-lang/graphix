@@ -556,6 +556,9 @@ reject	N: type mismatch fn(x: 'a: string) -> 'b: iN does not contain fn(s: strin
 trace	wake-connect-target-sep2026/00_seq.gx
 trace	wake-connect-target-sep2026/01_never_let.gx
 trace	wake-connect-target-sep2026/02_arm_value.gx
+trace	wake-outside-nov2026/00_moved_capture_routes_a_kernel.gx
+trace	wake-outside-nov2026/01_moved_formal_under_an_operator.gx
+trace	wake-outside-nov2026/02_moved_array_through_a_reference.gx
 trace	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
 trace	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 trace	wake-stale-bottom-sep2026/00_plain_select.gx

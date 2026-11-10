@@ -499,7 +499,10 @@ node graph IS the IR — there is no parallel typed IR
 - **Sleep is pause, not reset; a wake is a resume, never a rebirth**
   (`design/wake_catchup.md`). State survives an arm's sleep; a reselected
   arm recomputes from the world as it stands, reading standing values
-  STALE, and re-raises only the fires no selected reader saw, once. Sleep
+  STALE, and re-raises only the fires no selected reader saw, once. What
+  it recomputes from a fire it slept through carries `Tag::MOVED`, and a
+  binding stood moved is a fire for the readers outside the arm, never
+  inside it: no awake reader sees a change without a fire. Sleep
   state is LOCAL: every skip-owning node owns a `slept` bit, no ExecCtx
   globals. Sleep aborts an async call in flight (one not cancel-safe
   finishes, unanswered); the wake restarts nothing

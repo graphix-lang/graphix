@@ -556,6 +556,9 @@
 10	wake-connect-target-sep2026/00_seq.gx
 4	wake-connect-target-sep2026/01_never_let.gx
 3	wake-connect-target-sep2026/02_arm_value.gx
+4	wake-outside-nov2026/00_moved_capture_routes_a_kernel.gx
+4	wake-outside-nov2026/01_moved_formal_under_an_operator.gx
+7	wake-outside-nov2026/02_moved_array_through_a_reference.gx
 10	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
 11	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 2	wake-stale-bottom-sep2026/00_plain_select.gx

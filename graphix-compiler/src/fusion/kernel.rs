@@ -328,6 +328,7 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
         let (_, mut polled) = crate::node::gather(ctx, &mut self.feeders, &mut self.fork);
         let any_updated = polled.iter().any(|tv| tv.tag().triggers());
         let any_bottom = polled.iter().any(|tv| tv.tag().is_bottom());
+        let any_moved = polled.iter().any(|tv| tv.tag().moved());
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?}",
@@ -339,6 +340,7 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
         }
         if !(any_updated
             || any_bottom
+            || any_moved
             || ctx.event.init()
             || woke
             || self.resident.tag().is_bottom())

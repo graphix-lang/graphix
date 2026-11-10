@@ -49,6 +49,7 @@ mod traits;
 mod tuples_structs;
 mod types;
 mod variants;
+mod wake_outside;
 
 /// `src` is refused with `needle` in its message, in every mode and by
 /// the check alone.

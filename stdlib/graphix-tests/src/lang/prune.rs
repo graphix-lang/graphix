@@ -125,7 +125,9 @@ async fn standing_reference_refresh_marks_its_readers() -> Result<()> {
     agrees(code, &expected).await
 }
 
-// A callee's formal refreshed standing at its wake marks its readers.
+// A callee's formal a wake re-seeds from a fire its arm slept through
+// fires for the closure's reader outside the arm, which marks it: `count`
+// ticks at clk 6, in every mode.
 #[tokio::test(flavor = "multi_thread")]
 async fn standing_formal_refresh_marks_its_readers() -> Result<()> {
     let code = "{
@@ -138,14 +140,28 @@ async fn standing_formal_refresh_marks_its_readers() -> Result<()> {
   let g = select sel { 0 => mk(n), _ => mk(n + 100) };
   let h = once(g);
   let k = 0;
-  let a = clk ~ select k { 0 => h(1), _ => -1 };
-  (clk, n, sel, a)
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
 }";
-    let (unpruned, _) = walks(code, Mode::Unpruned).await?;
-    let expected: Vec<String> = unpruned.into_iter().map(|v| show(v)).collect();
-    let expected: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
-    assert!(expected.contains(&"[6, 3, 0, 3]"), "{expected:?}");
-    agrees(code, &expected).await
+    let expected = [
+        "[0, 0, 0, 0, 1]",
+        "[1, 1, 0, 1, 2]",
+        "[2, 1, 1, 1, 2]",
+        "[3, 2, 1, 1, 2]",
+        "[4, 2, 1, 1, 2]",
+        "[5, 3, 1, 1, 2]",
+        "[6, 3, 0, 3, 3]",
+        "[7, 4, 0, 4, 4]",
+        "[8, 4, 0, 4, 4]",
+        "[9, 5, 0, 5, 5]",
+    ];
+    agrees(code, &expected).await?;
+    for mode in [Mode::Par, Mode::JitPar] {
+        let (values, _) = walks(code, mode).await?;
+        let got: Vec<String> = values.into_iter().map(|v| show(v)).collect();
+        assert_eq!(got, expected, "{mode:?}");
+    }
+    Ok(())
 }
 
 // A write that lands in the cycle its let's arm is deselected is a fire

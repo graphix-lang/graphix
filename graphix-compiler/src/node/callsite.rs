@@ -3721,7 +3721,12 @@ impl<R: Rt> CallSite<R> {
                 self.resident.set(tv);
                 self.resident.retag(tag)
             }
-            Some(tv) => self.resident.set(tv),
+            // a function that moved at a wake moved what its call gives
+            Some(mut tv) => {
+                let tag = tv.tag().moved_if(fnode_tag.moved());
+                tv.retag(tag);
+                self.resident.set(tv)
+            }
             None if matches!(self.callee, Callee::Failed { .. }) => {
                 self.resident.set_bottom(fnode_tag.triggers() || arg_fired)
             }
@@ -4814,7 +4819,8 @@ impl Absent {
             }
             unborn => {
                 let view = unborn.map_or(View::Wake, |u| u.view);
-                self.wake(ctx, view, |ctx| f.update(ctx, from).clone())
+                let body = instance_boundary(&*f).cloned();
+                self.wake(ctx, view, body.as_ref(), |ctx| f.update(ctx, from).clone())
             }
         }
     }
@@ -4840,11 +4846,13 @@ impl Absent {
 
     /// Run `update` under `view` with one catch-up fire for each argument
     /// and captured input that fired unseen and is not delivered live
-    /// this cycle, at its current value.
+    /// this cycle, at its current value. `body` is the boundary around
+    /// the instance's body.
     fn wake<R: Rt, T>(
         mut self,
         ctx: &mut ExecCtx<'_, R>,
         view: View,
+        body: Option<&BoundaryRef>,
         update: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
     ) -> T {
         let mut injected = super::wake::Injected::new();
@@ -4854,7 +4862,7 @@ impl Absent {
         let captured = &mut self.captured;
         let r = ctx.under(view, |ctx| {
             let caught_up = captured.deliver(ctx, 0);
-            let scope = captured.open(ctx, 0);
+            let scope = captured.open(ctx, 0, body);
             let r = update(ctx);
             captured.ran(ctx, 0, scope);
             TrackedFires::restore(ctx.event, caught_up);
@@ -4962,6 +4970,11 @@ pub(crate) fn publish_production<R: Rt>(
     let tag = tv.tag();
     let bottom = tag.is_bottom();
     let fired = tag.triggers();
+    // what a wake recomputed moved stands whatever the pass keeps
+    let root = match root {
+        QuietAtRoot::Skip if tag.moved() => QuietAtRoot::Stand,
+        root => root,
+    };
     if !fired && matches!(root, QuietAtRoot::Skip) {
         return false;
     }
@@ -4969,9 +4982,7 @@ pub(crate) fn publish_production<R: Rt>(
     let mut put = |id: BindId, v: Value| match (fired, root) {
         (true, _) => ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk),
         (false, QuietAtRoot::Skip) => (),
-        (false, QuietAtRoot::Stand) => {
-            ctx.rt.store_insert_standing(id, TagValue::tagged(v, tag))
-        }
+        (false, QuietAtRoot::Stand) => ctx.stand(id, TagValue::tagged(v, tag)),
         (false, QuietAtRoot::Deliver) => ctx.publish(id, TagValue::tagged(v, delivered)),
     };
     match (feeds, bottom) {

@@ -26,8 +26,9 @@ use smallvec::SmallVec;
 
 use super::{
     abi::{
-        CompiledExpr, FIRE_TEST, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
-        emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc, value_disc,
+        CompiledExpr, FIRE_TEST, JitEnv, LocalKind, MOVED, STALE, TAINT, ValueVar,
+        clean_disc, emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc,
+        value_disc,
     },
     body::{BodyCx, emit_into_slot, node_composite_source, node_is_bottom},
     lower::{
@@ -221,8 +222,21 @@ pub(crate) fn emit_builtin_call_node<R: Rt>(
     };
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
+    // a value the call computes moved when an argument it reads did; an
+    // `Io` call answers its trigger's fire alone
+    let moved = {
+        let mut moved = cx.b.ins().iconst(types::I64, 0);
+        if trigger.is_none() {
+            for d in arg_discs.iter() {
+                let m = cx.b.ins().band_imm_u(*d, MOVED);
+                moved = cx.b.ins().bor(moved, m);
+            }
+        }
+        moved
+    };
     // The returned disc's TAINT/STALE bits are the production's tag.
     let tagbits = cx.b.ins().band_imm_u(raw0, TAINT | STALE);
+    let tagbits = cx.b.ins().bor(tagbits, moved);
     match ret_abi {
         Some(AbiKind::Scalar(p)) => {
             // A bottom's placeholder payload is harmless garbage, guarded
@@ -301,8 +315,9 @@ pub(crate) fn emit_builtin_call_node<R: Rt>(
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
                     (cx.b.ins().bor(base, tagbits), raw1)
                 }
-                // `raw0` is the real Value disc with the tag already in-band
-                _ => (raw0, raw1),
+                // `raw0` is the real Value disc with the tag already in-band,
+                // but for what its arguments moved
+                _ => (cx.b.ins().bor(raw0, moved), raw1),
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
         }

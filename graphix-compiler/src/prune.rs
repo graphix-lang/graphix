@@ -26,6 +26,9 @@ pub struct Boundary {
     /// reaches a boundary only inside its parent, so the boundaries a
     /// cycle visited are closed upward.
     visited: AtomicU64,
+    /// The last cycle the subtree resumed in: a paused region whose root
+    /// this is woke.
+    resumed: AtomicU64,
 }
 
 /// A chain of parents is as long as a recursion is deep, so the last owner
@@ -75,6 +78,7 @@ impl BoundaryRef {
             depth,
             stamp: AtomicU64::new(u64::MAX),
             visited: AtomicU64::new(u64::MAX),
+            resumed: AtomicU64::new(u64::MAX),
         }))
     }
 
@@ -113,6 +117,42 @@ impl BoundaryRef {
     /// Whether a walk reached the boundary in `cycle`.
     pub fn visited(&self, cycle: u64) -> bool {
         self.0.visited.load(Relaxed) == cycle
+    }
+
+    /// Record that the region this boundary is the root of resumed in
+    /// `cycle`.
+    pub(crate) fn resume(&self, cycle: u64) {
+        self.0.resumed.store(cycle, Relaxed)
+    }
+
+    /// Whether the region this boundary is the root of resumed in `cycle`.
+    pub(crate) fn resumed_at(&self, cycle: u64) -> bool {
+        self.0.resumed.load(Relaxed) == cycle
+    }
+
+    /// Whether this boundary or one around it resumed in `cycle`: what is
+    /// inside it woke then, and read what that wake stood as standing.
+    // CR claude for claude: [perf/low] This climbs one parent a step, so a
+    // moved stand costs the depth of the boundary chain for each reader the
+    // walk passed (`ExecCtx::stand_moved`) and for each `wake::owed` over a
+    // moved entry: a recursion n deep whose every level holds a backward
+    // reader of a let its wake moves pays n squared at that wake. A resume
+    // stamp is not closed upward as `visited` is, so the jump pointers
+    // cannot cut the climb as they do in `innermost_visited`; a per-cycle
+    // list of resumed regions on the runtime, tested with `holds`, would be
+    // logarithmic. Not measured: no probe reaches it. (resumed-climb-01)
+    pub(crate) fn resumed_in(&self, cycle: u64) -> bool {
+        let mut b = self;
+        loop {
+            step();
+            if b.0.resumed.load(Relaxed) == cycle {
+                return true;
+            }
+            match &b.0.parent {
+                Some(p) => b = p,
+                None => return false,
+            }
+        }
     }
 
     /// The innermost of this boundary and its ancestors a walk reached in

@@ -88,9 +88,12 @@ bottom FreshBottom), stamped this cycle; a quiet production stands
 since nothing fired (a `let` republished at its wake, a stale
 scrutinee's binds, a trait default relayed quietly, a collection's
 element or a fold's accumulator delivered stale). A wake owes no fire
-for one, whether it kept the value or changed it, to any reader, one
-wake catch-up dates by write stamp (a callee bound at the wake)
-included. Its `Notify` says whether a fire also
+for one to any reader, one wake catch-up dates by write stamp (a callee
+bound at the wake) included, unless the production moved (`Tag::MOVED`:
+a wake recomputed it from an input that fired while its region slept),
+which is stored as a fire is and read as one by every reader outside
+the region (`design/wake_catchup.md`, What a wake stands). Its `Notify`
+says whether a fire also
 schedules the roots that read the binding (`Roots`: a let, a reference
 cell, a module's val, `pc`, a runtime write) or only the walk's readers
 (`Walk`: binds read inside their own root).

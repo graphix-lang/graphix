@@ -99,6 +99,9 @@ struct LazyArmFacts {
     guards: Option<Vec<GuardRun>>,
     /// The arms whose deselect kept a recursive callee asleep.
     kept: ArmMask,
+    /// The last cycle the scrutinee fired, or moved at a wake: an arm
+    /// asleep since binds what it slept through.
+    scrutinee_moved: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -187,6 +190,7 @@ impl LazyArmFacts {
             missed: ArmMask::new(arms.len()),
             guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
             kept: ArmMask::new(arms.len()),
+            scrutinee_moved: None,
         }
     }
 }
@@ -202,6 +206,8 @@ struct EmissionPlanes {
     anyfire: bool,
     /// A consulted guard's current channel is bottom.
     consulted_bottom: bool,
+    /// A consumed input moved at a wake ([`Tag::moved`]).
+    moved: bool,
 }
 
 impl EmissionPlanes {
@@ -212,6 +218,7 @@ impl EmissionPlanes {
             sound: arg_prod.triggers(),
             anyfire: arg_prod.triggers(),
             consulted_bottom: false,
+            moved: arg_prod.moved(),
         };
         let consulted = guard_tags.iter().filter(|(i, _)| mask.get(*i));
         for t in consulted.map(|(_, t)| *t) {
@@ -221,21 +228,24 @@ impl EmissionPlanes {
                 planes.sound |= !t.is_bottom();
             }
             planes.consulted_bottom |= t.is_bottom();
+            planes.moved |= t.moved();
         }
         planes
     }
 
     /// The taken arm's production `(t, v)` as the select's: a value
     /// fires when the arm or a sound consumed input fired; a bottom arm
-    /// sets the select bottom, fresh on the same condition.
+    /// sets the select bottom, fresh on the same condition; a quiet one
+    /// moved when the arm or a consumed input did.
     fn emit(&self, t: Tag, v: Option<Value>) -> TagValue {
+        let moved = t.moved() || self.moved;
         match v {
             Some(v) if t.is_fired() || self.sound => TagValue::fired(v),
-            Some(v) => TagValue::stale(v),
+            Some(v) => TagValue::tagged(v, Tag::STALE.moved_if(moved)),
             None if t.triggers() || self.sound => {
                 TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
             }
-            None => TagValue::tagged(Value::Null, Tag::STALE_BOTTOM),
+            None => TagValue::tagged(Value::Null, Tag::STALE_BOTTOM.moved_if(moved)),
         }
     }
 }
@@ -255,7 +265,7 @@ fn evaluate_arm<R: Rt>(
             super::wake::inject(ctx, *id, &mut injected);
         }
     }
-    let scope = tracked.open(ctx, i);
+    let scope = tracked.open(ctx, i, arm_boundary(arm));
     let tv = arm.1.update(ctx);
     let t = tv.tag();
     let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
@@ -1201,6 +1211,26 @@ fn deselect<R: Rt>(
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
     tracked
         .observe_late(ctx, |i, b| i == j && BoundaryRef::held_by(arm_boundary(arm), b));
+}
+
+/// The view the selected `arm` runs under in a cycle that neither enters
+/// nor wakes it: a resume again where its resume last cycle stood a value
+/// moved under a reader inside it the walk had passed, which takes it now
+/// as it stands ([`crate::Late`]), and so does everything inside that
+/// reads what it recomputes.
+fn standing_arm_view<R: Rt>(
+    ctx: &ExecCtx<'_, R>,
+    arm: &(PatternNode<R>, Node<R>),
+) -> View {
+    let (Some(late), Some(b)) = (&ctx.event.late, arm_boundary(arm)) else {
+        return View::Cycle;
+    };
+    let refreshed = b.resumed_at(ctx.rt.cycle().wrapping_sub(1))
+        && late
+            .values()
+            .flatten()
+            .any(|(tv, r)| !tv.tag().triggers() && b.holds(r.boundary.as_ref()));
+    if refreshed { View::Wake } else { View::Cycle }
 }
 
 /// The walk-pruning boundary around an arm's body.
@@ -2276,6 +2306,7 @@ impl<R: Rt> Update<R> for Select<R> {
             missed,
             guards,
             kept,
+            scrutinee_moved,
         } = arm_facts.as_mut().expect("arm facts built above");
         let ArmDiscriminants { shallow, scrutinee } = &**discriminants;
         let woke = slept.take();
@@ -2300,6 +2331,10 @@ impl<R: Rt> Update<R> for Select<R> {
         let mut guard_took: SmallVec<[(usize, SmallVec<[BindId; 4]>); 2]> =
             SmallVec::new();
         let arg_prod = arg.update(ctx);
+        if arg_prod.triggers() || arg_prod.moved() {
+            *scrutinee_moved = Some(ctx.rt.cycle())
+        }
+        let scrutinee_moved = *scrutinee_moved;
         tracked.observe(ctx);
         let awake = *selected;
         tracked.observe_late(ctx, |i, b| match i.checked_sub(arms.len()) {
@@ -2358,7 +2393,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 guard_took.push((i, caught_up.iter().map(|(id, _)| *id).collect()));
             }
             let t = ctx.under(view, |ctx| {
-                let scope = tracked.open(ctx, consumer);
+                let scope = tracked.open(ctx, consumer, pat.guard_boundary());
                 let t = pat.update(ctx);
                 tracked.ran(ctx, consumer, scope);
                 t
@@ -2468,7 +2503,10 @@ impl<R: Rt> Update<R> for Select<R> {
                 return resident.set_bottom(planes.anyfire);
             }
             ChainOut::Quiet(i) => {
-                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx);
+                let view = standing_arm_view(ctx, &arms[i]);
+                let (t, v) = ctx.under(view, |ctx| {
+                    evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx)
+                });
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) if *selected == Some(i) => {
@@ -2476,7 +2514,10 @@ impl<R: Rt> Update<R> for Select<R> {
                     eprintln!("SELECT[{}] same-arm i={i} arg={v:?}", spec.pos);
                 }
                 arms[i].0.bind_event(ctx, v, arg_prod);
-                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx);
+                let view = standing_arm_view(ctx, &arms[i]);
+                let (t, v) = ctx.under(view, |ctx| {
+                    evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx)
+                });
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) => {
@@ -2502,7 +2543,12 @@ impl<R: Rt> Update<R> for Select<R> {
                 // guard's flip alike.
                 let bind_tag = match arg_prod.triggers() {
                     true => arg_prod,
-                    false => Tag::STALE,
+                    // a resumed arm binds what the scrutinee's last fire
+                    // or move left it, which it slept through
+                    false => Tag::STALE.moved_if(
+                        entered.get(i)
+                            && scrutinee_moved.is_some_and(|at| at >= tracked.unseen(i)),
+                    ),
                 };
                 arms[i].0.bind_event(ctx, v, bind_tag);
                 // An arm is born at its first entry, into a world it reads

@@ -582,7 +582,9 @@ impl<X: GXExt> GX<X> {
             for (r, _) in readers.iter() {
                 match self.nodes.seq(&r.root) {
                     Some(s) if s < i && r.late => {
-                        rt.late.push((id, tv.clone(), r.clone()))
+                        // what a wake stood moved is a fire to another root
+                        let tv = if tv.tag().moved() { tv.as_fire() } else { tv.clone() };
+                        rt.late.push((id, tv, r.clone()))
                     }
                     Some(s) if s > i => {
                         rt.updated.entry(r.root).or_default();
@@ -608,9 +610,9 @@ impl<X: GXExt> GX<X> {
             }
             self.ctx.rt.updated.entry(r.root).or_insert(false);
             r.mark(cycle);
-            let (_, readers) = late.entry(id).or_insert_with(|| (tv, SmallVec::new()));
-            if !readers.contains(&r) {
-                readers.push(r)
+            let fires = late.entry(id).or_default();
+            if !fires.iter().any(|(_, known)| *known == r) {
+                fires.push((tv, r))
             }
         }
         if !late.is_empty() {

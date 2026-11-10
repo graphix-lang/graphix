@@ -4,7 +4,7 @@
 
 use super::{VarRead, read_var};
 use crate::{
-    BindId, Event, ExecCtx, Refs, Rt, TagValue,
+    BindId, Event, ExecCtx, Refs, Rt, TagValue, View,
     branch::Prior,
     env::Env,
     prune::{BoundaryRef, Reader},
@@ -109,14 +109,50 @@ pub(crate) fn in_fresh_frame<R: Rt>(ctx: &ExecCtx<'_, R>) -> bool {
 
 /// Whether the catch-up scope owes `id` a fire: it was written while the
 /// arm slept, is not delivered this cycle, and no reader saw its fire.
+/// What a wake stood moved is such a write to a reader outside the region
+/// that woke, and none to one inside it, which slept through the fire the
+/// stand stands for.
 pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
     !ctx.event.variables.contains_key(id)
-        && ctx
-            .rt
-            .store_get(id)
-            .is_some_and(|(tv, stamp)| *stamp >= scope.unseen && !tv.tag().is_bottom())
+        && ctx.rt.store_get(id).is_some_and(|(tv, stamp)| {
+            let tag = tv.tag();
+            *stamp >= scope.unseen
+                && !tag.is_bottom()
+                && !(tag.moved()
+                    && ctx.boundary.as_ref().is_some_and(|b| b.resumed_in(*stamp)))
+        })
         && scope.owes(id)
+}
+
+// CR claude for claude: [risk/medium] Three places where what a wake
+// stands moved is judged by an approximation of "outside the woken arm"
+// (design/wake_catchup.md, What a wake stands, "Judged in the build"), none
+// reached by a pin. (1) A paused collection's slots wake with no region
+// recorded (`collection::woken_slots` passes no boundary), so a reader
+// inside one that the walk passed takes a moved stand FIRED a cycle late
+// where a select arm's takes it stale; and `standing_arm_view` runs only a
+// select's arm as a resume again, so what such a reader in an absent
+// call's instance recomputes stands as a fire inside the instance too.
+// (2) A `Stateless` builtin that is not a `CachedArgs` (a custom `Apply`)
+// drops the bit, so a `let` over it in a woken arm stands unmoved and a
+// reader outside sees the change with no fire, as before the rule;
+// `GRAPHIX_QUIET=audit` panics there. Passing the bit on belongs in the
+// call site, which sees neither the builtin's effect nor its arguments'
+// tags today. (3) A reader whose own arm resumes in the stand's cycle
+// reads it stale through a function value and FIRED where its select
+// tracks the binding: Eric's ruling says fired for every reader outside
+// the woken arm, and telling a co-waking arm from the woken one needs the
+// region on the stand, not a cycle stamp on the boundary
+// (`Boundary::resumed_in`). Decide (3) with Eric if a program shows it.
+// (wake-outside-regions-01)
+/// Whether the evaluation resumes a region that slept through a write
+/// stamped `stamp`: what it recomputes from the written value moved
+/// ([`crate::Tag::moved`]).
+#[inline]
+pub(crate) fn slept_through<R: Rt>(ctx: &ExecCtx<'_, R>, stamp: u64) -> bool {
+    ctx.event.view == View::Wake
+        && ctx.catch_up.as_ref().is_some_and(|s| !s.fresh && stamp >= s.unseen)
 }
 
 /// Deliver, fired at its standing value, each input `fill` names that the
@@ -150,7 +186,9 @@ pub(crate) fn inject<R: Rt>(
 ) {
     let v = match read_var(ctx, &id) {
         Some(VarRead::Delivered(tv)) if tv.tag().triggers() => return,
-        Some(VarRead::Delivered(tv) | VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
+        Some(VarRead::Delivered(tv) | VarRead::Standing(tv, _))
+            if !tv.tag().is_bottom() =>
+        {
             tv.value_cloned()
         }
         _ => return,
@@ -429,7 +467,7 @@ impl TrackedFires {
             let carry = carried.is_some_and(|c| c.contains(id));
             if (carry || !seen.contains(id))
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
-                && tv.tag().is_fired()
+                && super::delivered_view(ctx.event, tv).is_fired()
             {
                 if carry {
                     carried_bits.insert(*id);
@@ -457,11 +495,12 @@ impl TrackedFires {
             if pending.contains(id) || ctx.event.variables.contains_key(id) {
                 continue;
             }
-            let Some((_, readers)) = late.get(&ctx.event.variables.var(*id)) else {
+            let Some(fires) = late.get(&ctx.event.variables.var(*id)) else {
                 continue;
             };
-            let inside = readers.iter().any(|r: &Reader| {
-                r.root == root
+            let inside = fires.iter().any(|(tv, r): &(TagValue, Reader)| {
+                tv.tag().triggers()
+                    && r.root == root
                     && per_arm
                         .iter()
                         .enumerate()
@@ -478,13 +517,20 @@ impl TrackedFires {
 
     /// Arm `i` runs: under a wake or step view, open the catch-up scope
     /// for what it learns as it runs; what to put back, for [`Self::ran`].
+    /// A resume is recorded on `region`, the boundary around the arm.
     pub(crate) fn open<R: Rt>(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
         i: usize,
+        region: Option<&BoundaryRef>,
     ) -> Option<Option<Arc<CatchUp>>> {
         if !ctx.event.init() {
             return None;
+        }
+        if ctx.event.view == View::Wake
+            && let Some(b) = region
+        {
+            b.resume(ctx.rt.cycle())
         }
 
         // an arm sleeps whenever the arm around it does
@@ -523,6 +569,11 @@ impl TrackedFires {
             }
         }
         self.clock[i] = ArmClock::Awake(ctx.rt.cycle());
+    }
+
+    /// The first cycle whose writes arm `i` did not see.
+    pub(crate) fn unseen(&self, i: usize) -> u64 {
+        self.clock[i].unseen()
     }
 
     /// Arm `i` stops running in `cycle` (deselected, or put to sleep

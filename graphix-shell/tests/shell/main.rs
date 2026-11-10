@@ -48,6 +48,7 @@ mod standing_bottom_logs;
 mod swallowed_error_logs;
 mod task_audit;
 mod tui_suspend_without_display;
+mod wake_outside_roots;
 mod warm_check;
 mod warm_only_compiles;
 mod warning_order;

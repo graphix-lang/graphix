@@ -1,0 +1,1025 @@
+// A wake's change is a fire for the readers that did not sleep
+// (design/wake_catchup.md, "What a wake stands"). A woken arm recomputes
+// from the world as it stands; a value it recomputes from an input that
+// fired while it slept is tagged moved, and the binding that stands it (a
+// `let`, a formal, a pattern bind, a reference's cell) fires, once, for
+// every reader outside the arm: a closure or a reference that left it.
+// Inside the arm nothing fires. Each program runs in every mode.
+
+use super::dense_deltas::run_delta_with;
+use anyhow::Result;
+use graphix_package_core::testing::{Collect, Mode, TestState, data};
+use std::time::Duration;
+
+const MODES: [Mode; 5] =
+    [Mode::Interp, Mode::Unpruned, Mode::Jit, Mode::Par, Mode::JitPar];
+
+/// `code`'s updates in `mode`, each update's data form printed without
+/// its integer type prefixes, and the regions the build fused.
+async fn updates(code: &str, mode: Mode) -> Result<(Vec<String>, usize)> {
+    let setup = |ctx: &mut TestState| ctx.control.set_prune_mode(mode.prune());
+    let d = run_delta_with(code, mode, setup, Collect::Quiet(Duration::from_millis(300)))
+        .await?;
+    let got =
+        d.values.into_iter().map(|v| data(v).to_string().replace("i64:", "")).collect();
+    Ok((got, d.regions))
+}
+
+/// `code`'s updates are `expected` in every mode.
+async fn agrees(code: impl AsRef<str>, expected: &[impl AsRef<str>]) -> Result<()> {
+    let expected: Vec<&str> = expected.iter().map(|s| s.as_ref()).collect();
+    for mode in MODES {
+        let (got, _) = updates(code.as_ref(), mode).await?;
+        assert_eq!(got, expected, "{mode:?}");
+    }
+    Ok(())
+}
+
+/// [`agrees`], and the fused modes fused a region.
+async fn fused_agrees(code: &str, expected: &[&str]) -> Result<()> {
+    for mode in MODES {
+        let (got, regions) = updates(code, mode).await?;
+        assert_eq!(got, expected, "{mode:?}");
+        if matches!(mode, Mode::Jit | Mode::JitPar) {
+            assert!(regions > 0, "{mode:?} fused nothing")
+        }
+    }
+    Ok(())
+}
+
+/// A clock of ten ticks, `n` counting the even ones and `sel` flipping at
+/// clk 1 and 5 (landing at 2 and 6): arm 0 of a select over `sel` sleeps
+/// from clk 2 while `n` goes 1, 2, 3, and wakes at clk 6.
+const CLOCK: &str = "let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);";
+
+/// The closure `mk(n)` returns in the arm that sleeps, held by a reader
+/// that never does: its body `body` reads `mk`'s formal `x`, which the
+/// wake re-seeds from 1 to 3 at clk 6; `defs` are statements before it.
+/// Each tick gives `(clk, n, sel, v, count(v))`.
+fn closure(defs: &str, body: &str) -> String {
+    format!(
+        "{{
+  {CLOCK}
+  {defs}
+  let mk = |x: i64| |y: i64| {{ let z = y; {body} }};
+  let g = select sel {{ 0 => mk(n), _ => mk(n + 100) }};
+  let h = once(g);
+  let k = 0;
+  let v = select k {{ 0 => h(1), _ => -1 }};
+  clk ~ (clk, n, sel, v, count(v))
+}}"
+    )
+}
+
+/// [`closure`]'s ticks for a body computing `f` of the formal: the formal
+/// fires at clk 6 as it does at clk 1, 7 and 9, so `count` reads 3 there.
+fn formal(f: impl Fn(i64) -> i64) -> Vec<String> {
+    const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
+    const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
+    const X: [i64; 10] = [0, 1, 1, 1, 1, 1, 3, 4, 4, 5];
+    const FIRES: [i64; 10] = [1, 2, 2, 2, 2, 2, 3, 4, 4, 5];
+    (0..10)
+        .map(|i| format!("[{i}, {}, {}, {}, {}]", N[i], SEL[i], f(X[i]), FIRES[i]))
+        .collect()
+}
+
+/// A reference to an arm's value, which the wake moves from 2 to 4 at
+/// clk 6, read as `read` by a reader that never sleeps: `(clk, v,
+/// count(v))`.
+fn reference(read: &str) -> String {
+    format!(
+        "{{
+  {CLOCK}
+  let r = select sel {{ 0 => &(n + 1), _ => &(n + 100) }};
+  let holder = once(r);
+  let k = 0;
+  let v = select k {{ 0 => {read}, _ => -1 }};
+  clk ~ (clk, v, count(v))
+}}"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bare_read_of_a_moved_formal_fires() -> Result<()> {
+    agrees(closure("", "x"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_over_a_moved_formal_fires() -> Result<()> {
+    agrees(closure("", "x + 0"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_over_a_moved_formal_fires() -> Result<()> {
+    agrees(closure("", "#[native] (x + 0)"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_select_over_a_moved_formal_fires() -> Result<()> {
+    agrees(closure("", "select x { v => v }"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lambda_argument_moved_fires() -> Result<()> {
+    agrees(closure("let id = |v: i64| v;", "id(x)"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_builtin_argument_moved_fires() -> Result<()> {
+    agrees(closure("", "max(x, 0)"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tuple_over_a_moved_formal_fires() -> Result<()> {
+    agrees(closure("", "(x, 0).0"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_over_a_moved_operator_fires() -> Result<()> {
+    agrees(closure("", "let w = x + 0; w"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_collection_over_a_moved_source_fires() -> Result<()> {
+    agrees(
+        closure("", "array::fold(array::map([x], |e| e + 0), 0, |a, e| a + e)"),
+        &formal(|x| x),
+    )
+    .await
+}
+
+// A fold's init reaches its accumulator chain: 3 + 1 + 2.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fold_over_a_moved_init_fires() -> Result<()> {
+    agrees(closure("", "array::fold([1, 2], x, |a, e| a + e)"), &formal(|x| x + 3)).await
+}
+
+// A fire is the event, never a compare of values: `x * 0` fires at 0, as it
+// would have had the arm been awake.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_product_of_a_moved_formal_fires_unchanged() -> Result<()> {
+    agrees(closure("", "x * 0"), &formal(|_| 0)).await
+}
+
+// The fire re-routes a select over the formal, in the node-walk and in a
+// kernel alike: structure follows fires, and this is one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_scrutinee_routes_its_select() -> Result<()> {
+    let expected = formal(|x| if x == 1 { 10 } else { 20 });
+    agrees(closure("", "select x { 1 => 10, _ => 20 }"), &expected).await?;
+    agrees(closure("", "#[native] select x { 1 => 10, _ => 20 }"), &expected).await
+}
+
+// And it resizes a collection whose length is the formal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_length_resizes_its_collection() -> Result<()> {
+    let expected = formal(|x| x);
+    agrees(closure("", "array::len(array::init(x, |i| i))"), &expected).await?;
+    agrees(closure("", "#[native] array::len(array::init(x, |i| i))"), &expected).await
+}
+
+const REFERENCE: [&str; 10] = [
+    "[0, 1, 1]",
+    "[1, 2, 2]",
+    "[2, 2, 2]",
+    "[3, 2, 2]",
+    "[4, 2, 2]",
+    "[5, 2, 2]",
+    "[6, 4, 3]",
+    "[7, 5, 4]",
+    "[8, 5, 4]",
+    "[9, 6, 5]",
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bare_read_of_a_moved_reference_fires() -> Result<()> {
+    agrees(reference("*holder"), &REFERENCE).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operator_over_a_moved_reference_fires() -> Result<()> {
+    agrees(reference("*holder + 0"), &REFERENCE).await
+}
+
+// The kernel's select follows the capture's fire at clk 6 (30) and its
+// argument's at clk 8 (38): no engine routes by a value that did not fire.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_capture_routes_a_kernel_once() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  let e = filter(clk, |c| c % 2 == 0);
+  n <- select e { c if c >= 6 => never(), c => c ~ (n + 1) };
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| #[native] select x { 3 => 30 + y, v => v * 1000 + y };
+  let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let yy = 0;
+  yy <- filter(clk, |c| c == 8);
+  let v = select k { 0 => h(yy), _ => -1 };
+  clk ~ (clk, v, count(v))
+}";
+    fused_agrees(
+        code,
+        &[
+            "[0, 0, 1]",
+            "[1, 1000, 2]",
+            "[2, 1000, 2]",
+            "[3, 1000, 2]",
+            "[4, 1000, 2]",
+            "[5, 1000, 2]",
+            "[6, 30, 3]",
+            "[7, 30, 3]",
+            "[8, 30, 3]",
+            "[9, 38, 4]",
+        ],
+    )
+    .await
+}
+
+// `n` stops at 3 while the arm sleeps; the wake fires the capture once: the
+// select takes `3 => 30`, `count` ticks and the write lands.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_capture_fires_a_select_and_its_writes() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  let e = filter(clk, |c| c % 2 == 0);
+  n <- select e { c if c >= 6 => never(), c => c ~ (n + 1) };
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; select x { 3 => 30, v => v } };
+  let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  let w = 0;
+  w <- v;
+  clk ~ (clk, v, count(v), w)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 1, 0]",
+            "[1, 1, 2, 0]",
+            "[2, 1, 2, 1]",
+            "[3, 1, 2, 1]",
+            "[4, 1, 2, 1]",
+            "[5, 1, 2, 1]",
+            "[6, 30, 3, 1]",
+            "[7, 30, 3, 30]",
+            "[8, 30, 3, 30]",
+            "[9, 30, 3, 30]",
+        ],
+    )
+    .await
+}
+
+// A bare `*h`, an operator over it, a `let` and a `count` all take the
+// fire at clk 6.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_reader_of_a_moved_reference_agrees() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let k = 0;
+  let g = select sel { 0 => { let z = n * 1; &z }, _ => { let z = n + 100; &z } };
+  let h = once(g);
+  let d = clk ~ select k { 0 => *h, _ => -1 };
+  let o = clk ~ select k { 0 => (*h) + 0, _ => -1 };
+  let r = select k { 0 => *h, _ => -1 };
+  let l = clk ~ r;
+  let f = clk ~ count(select k { 0 => *h, _ => -1 });
+  (clk, n, sel, d, o, l, f)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 0, 0, 1]",
+            "[1, 1, 0, 1, 1, 1, 2]",
+            "[2, 1, 1, 1, 1, 1, 2]",
+            "[3, 2, 1, 1, 1, 1, 2]",
+            "[4, 2, 1, 1, 1, 1, 2]",
+            "[5, 3, 1, 1, 1, 1, 2]",
+            "[6, 3, 0, 3, 3, 3, 3]",
+            "[7, 4, 0, 4, 4, 4, 4]",
+            "[8, 4, 0, 4, 4, 4, 4]",
+            "[9, 5, 0, 5, 5, 5, 5]",
+            "[9, 5, 1, 5, 5, 5, 5]",
+        ],
+    )
+    .await
+}
+
+// A collection in the arm rebuilt from a moved input, read through a
+// reference: the map and the fold outside fire once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_array_fires_through_a_reference() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let g = select sel {
+    0 => { let a = array::init(2, |i| i + n); &a },
+    _ => { let a = array::init(2, |i| i + n + 100); &a }
+  };
+  let h = once(g);
+  let m = array::map(*h, |x| x * 2);
+  let fm = count(m);
+  let s = array::fold(m, 0, |acc, x| acc + x);
+  clk ~ (clk, n, sel, m, fm, s, count(s))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, [0, 2], 1, 2, 1]",
+            "[1, 1, 0, [2, 4], 2, 6, 2]",
+            "[2, 1, 1, [2, 4], 2, 6, 2]",
+            "[3, 2, 1, [2, 4], 2, 6, 2]",
+            "[4, 2, 1, [2, 4], 2, 6, 2]",
+            "[5, 3, 1, [2, 4], 2, 6, 2]",
+            "[6, 3, 0, [6, 8], 3, 14, 3]",
+            "[7, 4, 0, [8, 10], 4, 18, 4]",
+            "[8, 4, 0, [8, 10], 4, 18, 4]",
+            "[9, 5, 0, [10, 12], 5, 22, 5]",
+        ],
+    )
+    .await
+}
+
+// Readers above the select take the fire at clk 7, all of them alike.
+#[tokio::test(flavor = "multi_thread")]
+async fn readers_the_walk_passed_take_the_fire_a_cycle_late() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let k = 0;
+  let hh: fn(y: i64) -> i64 = never();
+  let d = clk ~ select k { 0 => hh(1), _ => -1 };
+  let o = clk ~ select k { 0 => hh(1) + 0, _ => -1 };
+  let f = clk ~ count(select k { 0 => hh(1), _ => -1 });
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+  hh <- once(g);
+  (clk, n, sel, d, o, f)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 0, 1]",
+            "[1, 1, 0, 0, 0, 1]",
+            "[2, 1, 1, 1, 1, 2]",
+            "[3, 2, 1, 1, 1, 2]",
+            "[4, 2, 1, 1, 1, 2]",
+            "[5, 3, 1, 1, 1, 2]",
+            "[6, 3, 0, 1, 1, 2]",
+            "[7, 4, 0, 3, 3, 3]",
+            "[8, 4, 0, 4, 4, 4]",
+            "[9, 5, 0, 4, 4, 4]",
+            "[9, 5, 1, 4, 4, 4]",
+        ],
+    )
+    .await
+}
+
+// `count(n)` in the arm consumed no event while it slept: its value did not
+// move, its `let` stands as it was and nothing outside fires.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_count_that_missed_its_events_stands_silent() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let g = select sel { 0 => { let c = count(n); &c }, _ => { let c = count(n) + 100; &c } };
+  let h = once(g);
+  let k = 0;
+  let d = clk ~ select k { 0 => *h, _ => -1 };
+  let f = clk ~ count(select k { 0 => *h, _ => -1 });
+  (clk, n, sel, d, f)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 1, 1]",
+            "[1, 1, 0, 2, 2]",
+            "[2, 1, 1, 2, 2]",
+            "[3, 2, 1, 2, 2]",
+            "[4, 2, 1, 2, 2]",
+            "[5, 3, 1, 2, 2]",
+            "[6, 3, 0, 2, 2]",
+            "[7, 4, 0, 3, 3]",
+            "[8, 4, 0, 3, 3]",
+            "[9, 5, 0, 4, 4]",
+            "[9, 5, 1, 4, 4]",
+        ],
+    )
+    .await
+}
+
+// `n` is written 1 over 1 while the arm sleeps: a fire the arm missed, so
+// the capture fires at the wake with the value it had.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_of_an_equal_value_asleep_fires() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (select clk { c if c < 6 => 1, _ => n + 1 });
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let d = clk ~ select k { 0 => h(1), _ => -1 };
+  let f = clk ~ count(select k { 0 => h(1), _ => -1 });
+  (clk, n, sel, d, f)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 1]",
+            "[1, 1, 0, 1, 2]",
+            "[2, 1, 1, 1, 2]",
+            "[3, 1, 1, 1, 2]",
+            "[4, 1, 1, 1, 2]",
+            "[5, 1, 1, 1, 2]",
+            "[6, 1, 0, 1, 3]",
+            "[7, 2, 0, 2, 4]",
+            "[8, 2, 0, 2, 4]",
+            "[9, 3, 0, 3, 5]",
+            "[9, 3, 1, 3, 5]",
+        ],
+    )
+    .await
+}
+
+// `x` moved at the outer arm's wake; an arm inside it that wakes later
+// binds a callee reading `x` and is owed no fire: it slept through the
+// event with the arm around it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_inside_the_woken_arm_is_owed_nothing() -> Result<()> {
+    let code = "{
+  let n = 0;
+  n <- select n { k if k < 9 => (k ~ n) + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select n { 3 => 1, 4 => 0, _ => never() };
+  let in1 = 0;
+  in1 <- select n { 3 => 1, _ => never() };
+  let in2 = 1;
+  in2 <- select n { 1 => 0, 6 => 1, _ => never() };
+  let in3 = 0;
+  in3 <- select n { 2 => 1, _ => never() };
+  let g: fn(v: i64) -> i64 = |v| v + 100;
+  let a = select in0 {
+    0 => {
+      let x = in1 + 0;
+      g <- select in3 { 0 => never(), _ => |v| count(x) };
+      let b = select in2 { 0 => -7, _ => g(5) };
+      (count(x), b)
+    },
+    _ => (in1 * 0 - 1, -1)
+  };
+  a
+}";
+    agrees(code, &["[1, 105]", "[1, -7]", "[-1, -1]", "[1, -7]"]).await
+}
+
+// The same callee bound at the wake of an arm outside the one that moved
+// `x` is owed the fire: `count(x)` ticks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_asleep_outside_is_owed_the_fire() -> Result<()> {
+    let code = "{
+  let n = 0;
+  n <- select n { k if k < 9 => (k ~ n) + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select n { 3 => 1, 4 => 0, _ => never() };
+  let in1 = 0;
+  in1 <- select n { 3 => 1, _ => never() };
+  let in2 = 1;
+  in2 <- select n { 1 => 0, 6 => 1, _ => never() };
+  let in3 = 0;
+  in3 <- select n { 2 => 1, _ => never() };
+  let g: fn(v: i64) -> i64 = |v| v + 100;
+  let a = select in0 {
+    0 => {
+      let x = in1 + 0;
+      g <- select in3 { 0 => never(), _ => |v| count(x) };
+      count(x)
+    },
+    _ => in1 * 0 - 1
+  };
+  let b = select in2 { 0 => -7, _ => g(5) };
+  (a, b)
+}";
+    agrees(code, &["[1, 105]", "[1, -7]", "[-1, -7]", "[1, -7]", "[1, 1]"]).await
+}
+
+// `v` fired at ep 3 with no reader in the inner arm awake; the outer wake
+// stands `v` moved at ep 5 and the inner arm still catches the ep 3 fire
+// up: its initializer replaces the write of 99 with 8.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missed_fire_is_still_caught_up_over_a_moved_let() -> Result<()> {
+    let code = "{
+  let ep = 0;
+  ep <- select ep { n if n < 7 => n + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select ep { 3 => 1, 4 => 0, _ => never() };
+  let in1 = 0;
+  in1 <- select ep { 2 => 7, 3 => 8, _ => never() };
+  let in3 = 1;
+  in3 <- select ep { 1 => 0, 4 => 1, _ => never() };
+  let f = |c, a, d, e| select c {
+    0 => {
+      let v = a * 1;
+      select d { 0 => -5, _ => { let t = v + 0; t <- e ~ 99; t } }
+    },
+    _ => a * 0 - 1
+  };
+  f(in0, in1, in3, 0)
+}";
+    agrees(code, &["0", "99", "-5", "-1", "8"]).await
+}
+
+// `*r` sits above `z` in the woken arm: it takes 7 a cycle late as a
+// standing value, so neither `count(*r)` nor `count(d)` ticks, while `o`
+// fires for the reader outside.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_passed_reader_inside_the_woken_arm_takes_it_standing() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(12, |i| i));
+  let n = 0;
+  n <- select clk { 3 => 7, _ => never() };
+  let sel = 0;
+  sel <- select clk { 1 => 1, 5 => 0, _ => never() };
+  let o = select sel {
+    0 => {
+      let r: &i64 = never();
+      let cnt = count(*r);
+      let d = *r;
+      let e = count(d);
+      let z = n + 0;
+      r <- &z;
+      (d, cnt, e)
+    },
+    _ => (n * 0 - 5, 0, 0)
+  };
+  (o, count(o))
+}";
+    agrees(
+        code,
+        &[
+            "[[0, 1, 1], 1]",
+            "[[-5, 0, 0], 2]",
+            "[[-5, 0, 0], 3]",
+            "[[0, 1, 1], 4]",
+            "[[7, 1, 1], 5]",
+        ],
+    )
+    .await
+}
+
+// A function variable written while its call is awake binds its new
+// callee under a birth: the standing argument is delivered to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebound_callee_is_born_with_its_argument() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(6, |i| i));
+  let x = 5;
+  let f: fn(x: i64) -> i64 = |x: i64| count(x);
+  f <- filter(clk, |c| c == 2) ~ |x: i64| count(x) * 1000 + x;
+  let r = f(x);
+  let c = count(r);
+  (clk, r, c)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 1, 1]",
+            "[1, 1, 1]",
+            "[2, 1, 1]",
+            "[3, 1005, 2]",
+            "[4, 1005, 2]",
+            "[5, 1005, 2]",
+        ],
+    )
+    .await
+}
+
+// A handler that left the modal's arm acts once at the wake on the key
+// that opened the modal (n_acted 3 at clk 5), and once on the next key.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_escaped_handler_acts_once_at_the_wake() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let key = 0;
+  key <- select clk { 1 => 1, 3 => 2, 6 => 2, _ => never() };
+  let screen = 1;
+  screen <- select key { 2 => key ~ 1, 1 => key ~ 0, _ => never() };
+  let mk = |k: i64| |u: i64| k;
+  let g = select screen { 0 => mk(key ~ 9), _ => mk(key) };
+  let held = once(g);
+  let acted = held(0);
+  let n_acted = count(acted);
+  let inside = select screen { 0 => key ~ -1, _ => count(key) };
+  clk ~ (clk, key, screen, acted, n_acted, inside)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 1, 0, 1, 1]",
+            "[1, 0, 1, 0, 1, 1]",
+            "[2, 1, 1, 1, 2, 2]",
+            "[4, 2, 0, 1, 2, -1]",
+            "[5, 2, 1, 2, 3, 2]",
+            "[6, 2, 1, 2, 3, 2]",
+            "[7, 2, 1, 2, 4, 3]",
+            "[8, 2, 1, 2, 4, 3]",
+            "[9, 2, 1, 2, 4, 3]",
+        ],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pattern_bind_of_a_woken_arm_fires_outside() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let g = select (sel, n) { (0, x) => |y: i64| x, (_, x) => |y: i64| x + 100 };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 1]",
+            "[1, 1, 0, 1, 2]",
+            "[2, 1, 1, 1, 2]",
+            "[3, 2, 1, 1, 2]",
+            "[4, 2, 1, 1, 2]",
+            "[5, 3, 1, 1, 2]",
+            "[6, 3, 0, 3, 3]",
+            "[7, 4, 0, 4, 4]",
+            "[8, 4, 0, 4, 4]",
+            "[9, 5, 0, 5, 5]",
+        ],
+    )
+    .await
+}
+
+// A reader whose own arm wakes in the cycle of the stand is outside the
+// arm that stood it: its select tracks the capture, no arm consumed the
+// fire, and the `count` inside it ticks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_waking_in_the_same_cycle_takes_the_fire() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+  let h = once(g);
+  let v = select sel { 0 => (h(1), count(h(1))), _ => (-1, -1) };
+  clk ~ (clk, n, sel, v)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, [0, 1]]",
+            "[1, 1, 0, [1, 2]]",
+            "[2, 1, 1, [-1, -1]]",
+            "[3, 2, 1, [-1, -1]]",
+            "[4, 2, 1, [-1, -1]]",
+            "[5, 3, 1, [-1, -1]]",
+            "[6, 3, 0, [3, 3]]",
+            "[7, 4, 0, [4, 4]]",
+            "[8, 4, 0, [4, 4]]",
+            "[9, 5, 0, [5, 5]]",
+        ],
+    )
+    .await
+}
+
+// A kernel inside the woken arm ORs the bit into its result as it does
+// bottomness, so the formal it feeds fires outside.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_in_the_woken_arm_carries_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(#[native] (n * 2 + 1)), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 1, 1]",
+            "[1, 1, 0, 3, 2]",
+            "[2, 1, 1, 3, 2]",
+            "[3, 2, 1, 3, 2]",
+            "[4, 2, 1, 3, 2]",
+            "[5, 3, 1, 3, 2]",
+            "[6, 3, 0, 7, 3]",
+            "[7, 4, 0, 9, 4]",
+            "[8, 4, 0, 9, 4]",
+            "[9, 5, 0, 11, 5]",
+        ],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_select_in_the_woken_arm_carries_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(#[native] select n { 3 => max(n, 30), v => v * 2 }), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 1]",
+            "[1, 1, 0, 2, 2]",
+            "[2, 1, 1, 2, 2]",
+            "[3, 2, 1, 2, 2]",
+            "[4, 2, 1, 2, 2]",
+            "[5, 3, 1, 2, 2]",
+            "[6, 3, 0, 30, 3]",
+            "[7, 4, 0, 8, 4]",
+            "[8, 4, 0, 8, 4]",
+            "[9, 5, 0, 10, 5]",
+        ],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_loop_in_the_woken_arm_carries_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(#[native] array::fold(array::map([n, n], |e| e + 1), 0, |a, e| a + e)), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 2, 1]",
+            "[1, 1, 0, 4, 2]",
+            "[2, 1, 1, 4, 2]",
+            "[3, 2, 1, 4, 2]",
+            "[4, 2, 1, 4, 2]",
+            "[5, 3, 1, 4, 2]",
+            "[6, 3, 0, 8, 3]",
+            "[7, 4, 0, 10, 4]",
+            "[8, 4, 0, 10, 4]",
+            "[9, 5, 0, 12, 5]",
+        ],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_call_in_the_woken_arm_carries_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(#[native] { let f = |a: i64| a * 3; f(n) }), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 1]",
+            "[1, 1, 0, 3, 2]",
+            "[2, 1, 1, 3, 2]",
+            "[3, 2, 1, 3, 2]",
+            "[4, 2, 1, 3, 2]",
+            "[5, 3, 1, 3, 2]",
+            "[6, 3, 0, 9, 3]",
+            "[7, 4, 0, 12, 4]",
+            "[8, 4, 0, 12, 4]",
+            "[9, 5, 0, 15, 5]",
+        ],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_collection_in_the_woken_arm_carries_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(array::fold(array::map([n, n], |e| e + 1), 0, |a, e| a + e)), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 2, 1]",
+            "[1, 1, 0, 4, 2]",
+            "[2, 1, 1, 4, 2]",
+            "[3, 2, 1, 4, 2]",
+            "[4, 2, 1, 4, 2]",
+            "[5, 3, 1, 4, 2]",
+            "[6, 3, 0, 8, 3]",
+            "[7, 4, 0, 10, 4]",
+            "[8, 4, 0, 10, 4]",
+            "[9, 5, 0, 12, 5]",
+        ],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_builtin_in_the_woken_arm_carries_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let g = select sel { 0 => mk(max(n, 2)), _ => mk(n + 100) };
+  let h = once(g);
+  let k = 0;
+  let v = select k { 0 => h(1), _ => -1 };
+  clk ~ (clk, n, sel, v, count(v))
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 2, 1]",
+            "[1, 1, 0, 2, 2]",
+            "[2, 1, 1, 2, 2]",
+            "[3, 2, 1, 2, 2]",
+            "[4, 2, 1, 2, 2]",
+            "[5, 3, 1, 2, 2]",
+            "[6, 3, 0, 3, 3]",
+            "[7, 4, 0, 4, 4]",
+            "[8, 4, 0, 4, 4]",
+            "[9, 5, 0, 5, 5]",
+        ],
+    )
+    .await
+}
+
+const ESCAPED: [&str; 10] = [
+    "[1, 1, 0, 1, 1, 1]",
+    "[2, 1, 1, 1, 1, 1]",
+    "[3, 2, 1, 1, 1, 1]",
+    "[4, 2, 1, 1, 1, 1]",
+    "[5, 3, 1, 1, 1, 1]",
+    "[6, 3, 0, 3, 3, 2]",
+    "[7, 4, 0, 4, 4, 3]",
+    "[8, 4, 0, 4, 4, 3]",
+    "[9, 5, 0, 5, 5, 4]",
+    "[9, 5, 1, 5, 5, 4]",
+];
+
+/// A value the arm publishes by `publish` (statements ending in the
+/// select `s`) and a reader that never sleeps reads as `read`, bare,
+/// under an operator and under a `count`: `(clk, n, sel, d, o, f)`.
+fn escaped(publish: &str, read: &str) -> String {
+    format!(
+        "{{
+  {CLOCK}
+  {publish}
+  let k = 0;
+  let d = clk ~ select k {{ 0 => {read}, _ => -1 }};
+  let o = clk ~ select k {{ 0 => {read} + 0, _ => -1 }};
+  let f = clk ~ count(select k {{ 0 => {read}, _ => -1 }});
+  (clk, n, sel, d, o, f)
+}}"
+    )
+}
+
+// A closure the arm writes to a variable outside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closure_connected_out_of_the_arm_fires() -> Result<()> {
+    let publish = "let out: fn(y: i64) -> i64 = never();
+  let s = select sel {
+    0 => { let x = n * 1; out <- filter(clk, |c| c == 0) ~ |y: i64| x; 0 },
+    _ => n * 0 + 1
+  };";
+    agrees(escaped(publish, "out(1)"), &ESCAPED).await
+}
+
+// A reference the arm writes to a variable outside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reference_connected_out_of_the_arm_fires() -> Result<()> {
+    let publish = "let out: &i64 = never();
+  let s = select sel {
+    0 => { let x = n * 1; out <- filter(clk, |c| c == 0) ~ &x; 0 },
+    _ => n * 0 + 1
+  };";
+    agrees(escaped(publish, "*out"), &ESCAPED).await
+}
+
+// A closure a helper the arm calls writes out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closure_a_helper_connects_out_fires() -> Result<()> {
+    let publish = "let out: fn(y: i64) -> i64 = never();
+  let publish = |t: i64, f: fn(y: i64) -> i64| { out <- t ~ f; t };
+  let s = select sel {
+    0 => { let x = n * 1; publish(filter(clk, |c| c == 0), |y: i64| x) },
+    _ => n * 0 + 1
+  };";
+    agrees(escaped(publish, "out(1)"), &ESCAPED).await
+}
+
+// A generic function's select arms make the closure: the same fire.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_generic_callee_passes_the_move() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let pick = |s: i64, mk: fn(x: i64) -> 'a, v: i64| -> 'a select s { 0 => mk(v), _ => mk(v + 100) };
+  let mk = |x: i64| |y: i64| { let z = y; x };
+  let h = once(pick(sel, mk, n));
+  let k = 0;
+  let d = clk ~ select k { 0 => h(1), _ => -1 };
+  let o = clk ~ select k { 0 => h(1) + 0, _ => -1 };
+  let f = clk ~ count(select k { 0 => h(1), _ => -1 });
+  (clk, n, sel, d, o, f)
+}";
+    agrees(
+        code,
+        &[
+            "[0, 0, 0, 0, 0, 1]",
+            "[1, 1, 0, 1, 1, 2]",
+            "[2, 1, 1, 1, 1, 2]",
+            "[3, 2, 1, 1, 1, 2]",
+            "[4, 2, 1, 1, 1, 2]",
+            "[5, 3, 1, 1, 1, 2]",
+            "[6, 3, 0, 3, 3, 3]",
+            "[7, 4, 0, 4, 4, 4]",
+            "[8, 4, 0, 4, 4, 4]",
+            "[9, 5, 0, 5, 5, 5]",
+            "[9, 5, 1, 5, 5, 5]",
+        ],
+    )
+    .await
+}

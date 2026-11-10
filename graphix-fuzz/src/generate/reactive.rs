@@ -23,6 +23,9 @@ pub struct ReactiveStats {
     pub runaway: bool,
     pub dyn_reload: bool,
     pub slept_arms: usize,
+    /// Selects whose sleeping arm let a closure or a reference out to a
+    /// reader that never sleeps.
+    pub escaped_arms: usize,
     /// Sync subprogram slots embedded.
     pub subprograms: usize,
     /// Block-valued bindings whose body connects to an outer target.
@@ -226,7 +229,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
             }
             continue;
         }
-        match rng.below(17) {
+        match rng.below(18) {
             0 | 1 => counter(&mut ctx, rng, &mut stmts, &mut stats),
             2..=4 => accumulator(
                 &mut ctx,
@@ -255,6 +258,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
                 &mut fires_per_injection,
             ),
             13 => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
+            14 => escaped_arm(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
             _ => ceremony(
                 &mut ctx,
                 rng,
@@ -597,6 +601,73 @@ fn slept_arm(
     ));
     // not pushed into `fires_per_injection`: the select fires only on its live arm's epochs
     ctx.push(s, I64);
+}
+
+/// A toggling select whose arm 0 lets a value out to a reader that never
+/// sleeps: a closure over a callee's formal, or a reference to an arm
+/// `let`, held by `once`. The value follows a state written only on the
+/// epochs arm 0 sleeps through, so each wake re-stands it moved, a fire
+/// for the reader outside (`design/wake_catchup.md`, What a wake stands),
+/// read bare or under an operator and counted.
+fn escaped_arm(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
+) {
+    let Some((input, _)) = inputs.iter().find(|(_, t)| *t == I64) else {
+        return;
+    };
+    st.escaped_arms += 1;
+    let (d, g, h, s, c) =
+        (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
+    stmts.push(format!("let {d} = i64:0"));
+    stmts.push(format!(
+        "{d} <- select ({input} % i64:2) {{ i64:1 => {input}, _ => never() }}"
+    ));
+    let read = match rng.below(3) {
+        0 => {
+            let (mk, x, y) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
+            let body = match rng.below(3) {
+                0 => x.clone(),
+                1 => format!("{x} + {y}"),
+                _ => format!("#[native] select {x} {{ i64:0 => {y}, v => v * i64:2 }}"),
+            };
+            stmts.push(format!("let {mk} = |{x}: i64| |{y}: i64| {body}"));
+            stmts.push(format!(
+                "let {g} = select ({input} % i64:2) \
+                 {{ i64:0 => {mk}({d}), _ => {mk}({d} + i64:100) }}"
+            ));
+            format!("{h}(i64:1)")
+        }
+        1 => {
+            let z = ctx.fresh();
+            stmts.push(format!(
+                "let {g} = select ({input} % i64:2) {{ \
+                 i64:0 => {{ let {z} = {d} * i64:3; &{z} }}, \
+                 _ => {{ let {z} = {d} + i64:100; &{z} }} }}"
+            ));
+            format!("*{h}")
+        }
+        _ => {
+            let z = ctx.fresh();
+            stmts.push(format!(
+                "let {g} = select ({input} % i64:2) {{ \
+                 i64:0 => {{ let {z} = array::map([{d}, {d}], |e| e + i64:1); &{z} }}, \
+                 _ => {{ let {z} = [{d}]; &{z} }} }}"
+            ));
+            format!("array::len(*{h}) + array::fold(*{h}, i64:0, |a, e| a + e)")
+        }
+    };
+    stmts.push(format!("let {h} = once({g})"));
+    match chance(rng, 0.5) {
+        true => stmts.push(format!("let {s} = {read}")),
+        false => stmts.push(format!("let {s} = ({read}) + i64:0")),
+    }
+    stmts.push(format!("let {c} = count({s})"));
+    ctx.push(s, I64);
+    ctx.push(c, I64);
 }
 
 /// A clock `k` that `input` restarts at 0 and that then counts itself up
@@ -1069,7 +1140,8 @@ mod test {
     fn shape_presence() {
         let cfg = GenCfg::default();
         let mut rng = Rng::new(3);
-        let (mut acc, mut cc, mut ctr, mut run, mut slept) = (0, 0, 0, 0, 0);
+        let (mut acc, mut cc, mut ctr, mut run, mut slept, mut escaped) =
+            (0, 0, 0, 0, 0, 0);
         const N: usize = 1000;
         for _ in 0..N {
             let (_, st) = gen_reactive_stats(&cfg, &mut rng);
@@ -1078,6 +1150,7 @@ mod test {
             ctr += (st.counters > 0) as usize;
             run += st.runaway as usize;
             slept += (st.slept_arms > 0) as usize;
+            escaped += (st.escaped_arms > 0) as usize;
         }
         assert!(acc * 100 / N >= 25, "accumulators in only {acc}/{N}");
         assert!(cc * 100 / N >= 20, "cross-cycle in only {cc}/{N}");
@@ -1085,6 +1158,7 @@ mod test {
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
         assert!(slept * 100 / N >= 8, "slept-arm selects in only {slept}/{N}");
+        assert!(escaped * 100 / N >= 4, "escaped-arm selects in only {escaped}/{N}");
     }
 
     /// A ceremony's waits are written to end: nearly every program whose

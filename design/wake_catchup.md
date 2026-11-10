@@ -1,6 +1,6 @@
 # Wake catch-up
 
-Status: built 2026-09-01; no partial rebirth 2026-10-18 (below)
+Status: built 2026-09-01; no partial rebirth 2026-10-18; what a wake stands 2026-11-10 (both below)
 Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_entry_and_wake_deliver_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_siblings_catch_up_apart`)
 Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
@@ -431,6 +431,90 @@ arm_entry_prints_every_time}`, `lang::dense_deltas::no_arm_window_pauses`,
 net_write_not_repeated_after_wake}`, and the LSP's
 `birth_only_arm_actions_are_warnings`.
 
+## What a wake stands (2026-11-10)
+
+Eric's ruling (D20 follow-up 3, option A with a tag bit): no awake reader
+sees a value change without a fire. A woken arm recomputes from the world
+as it stands, and the bindings it stands again (a `let`, a callee's
+formal, a pattern bind, a reference's cell, a collection's element) may
+take values whose fires another arm consumed. Inside the arm that is the
+wake itself. A reader that never slept, holding a closure or a reference
+that left the arm, saw none of it, so to that reader the stand is a fire.
+
+- **The bit.** A quiet production carries `Tag::MOVED` when it was
+  recomputed from an input that fired while its region slept. Whether a
+  value moved is never decided by comparing values: `x * 0` moved when
+  `x` did, and a `let` written 1 over 1 while asleep moved, as each would
+  have fired had the arm been awake.
+- **Where it starts.** A read under a resume (`View::Wake` inside a
+  catch-up scope) of a standing entry stamped at or after the first cycle
+  the evaluating arm did not see (`wake::slept_through`,
+  `VarRead::production`). A select arm that resumes on a stale scrutinee
+  binds its pattern moved when the scrutinee fired or moved since the arm
+  last ran (`LazyArmFacts::scrutinee_moved`).
+- **Who passes it on.** Everything that computes from values: `Tag::join`
+  ORs it (it is dropped where the join fires, a fire says as much), so
+  operators, data constructors, field reads, a select's emission (the
+  arm's, the scrutinee's and the consulted guards'), a call (its function
+  value's too), a collection (a slot's, or its source's where the result
+  reads elements) and a `Stateless` builtin (`CachedArgs`, the kernel's
+  fast calls) carry it. A resident never keeps it: `Tag::quiet` clears it.
+- **Who drops it.** Everything that consumes events: a stateful builtin
+  (`count`, `uniq`, `once`, ...) keeps its state, since it took no event; a
+  sample whose trigger did not fire rides; an `Io` call answers its
+  trigger alone. So `count(n)` in a woken arm stands silent.
+- **Kernels** OR the bit into a disc wherever they OR `TAINT`
+  (`emit::abi::propagate_taint`, the slot accumulators, the fold carry)
+  and test it nowhere: codegen only, no per-select or per-instance state.
+  A kernel runs, never rides, when a feeder moved.
+- **The stand.** A quiet production that moved is published wherever it
+  is computed (`Bind::update`, `publish_production`, `ByRef::publish`), and
+  `ExecCtx::deliver`/`stand` store it as a fire is stored: stamped this
+  cycle, its readers marked, the other roots that read it scheduled. The
+  entry keeps the tag, and each reader decides by where it stands
+  (`node::delivered_view`): one in an ordinary cycle, or being born at a
+  birth, reads it FIRED; one resuming in the same cycle reads it as it
+  reads everything that stands, stale and moved, so its own stands fire in
+  turn; one born into a standing world (a `Step`) reads it stale. A
+  select's tracker counts it as a fire for its sleeping arms unless the
+  select itself is resuming (`TrackedFires::observe`).
+- **Readers the walk passed** take it next cycle (`Event::late`, one
+  delivery per reader): FIRED outside the regions that resumed this cycle
+  (`Boundary::resumed_in`), and as it stands, stale and moved, inside one.
+  The arm that holds such a reader runs that next cycle as a resume again
+  (`select.rs::standing_arm_view`), so what the reader recomputes stands
+  moved for the readers outside and fires nothing inside: a backward
+  reader inside the woken arm gets the change a cycle late, STALE.
+- **A reader asleep elsewhere** is owed the stand as it is owed any fire
+  (the tracker's bit, or `wake::owed` by the stamp), unless a region
+  around it resumed in the stand's cycle: it slept through the event with
+  that region (`wake::owed`). A standing entry over a moved stand keeps
+  the mark with the stamp (`RtView::store_insert_standing_var`).
+- **A guard's tentative binds** never stand moved: they are retracted.
+
+The price, accepted: a handler that escaped a modal's arm acts once at
+the wake on the event that opened the modal, as a handler reached through
+the select's output always did.
+
+Judged in the build, not ruled: a reader whose own arm resumes in the
+cycle of the stand reads it stale through a function value (it recomputes
+from what stands, as at any wake) and FIRED where its select tracks the
+binding and no other arm consumed it; a paused collection's slots and an
+absent call's instance record no region, so a reader inside one that the
+walk passed takes a stand FIRED; `Boundary::resumed_in` records one cycle
+a boundary, so a region that resumes twice while an arm inside it sleeps
+owes that arm the first resume's stands.
+
+`GRAPHIX_QUIET=audit` panics where a reader in an ordinary cycle reads a
+standing value that differs from its last production
+(`node::audit_quiet`). Pins: `lang::wake_outside`,
+`lang::prune::standing_formal_refresh_marks_its_readers`,
+`graphix-shell/tests/shell/wake_outside_roots.rs` for readers in other
+roots, and `graphix-fuzz/findings/wake-outside-nov2026/`, whose first
+program the engines answered apart before the rule. The reactive
+generator escapes a closure or a reference from a sleeping arm
+(`generate::reactive::escaped_arm`).
+
 ## The rules in brief
 
 - **Sleep is pause, not reset; a wake is a resume, never a rebirth.**
@@ -462,6 +546,10 @@ net_write_not_repeated_after_wake}`, and the LSP's
   back). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
+  and what it recomputes from an input that fired while it slept stands
+  moved (`Tag::MOVED`), a fire for every reader outside it, once, a cycle
+  late to one the walk passed, and for no reader inside it ("What a wake
+  stands"),
   a late fire to a reader in an arm's body or a guard that did not run, in
   a call over a bottom function or a collection over a bottom source
   included (`TrackedFires::observe_late`), once, at their current value (one fire bit per input per select, shared

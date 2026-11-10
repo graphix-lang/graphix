@@ -359,6 +359,17 @@ activation is deleted, including captures used by nested closures and labeled
 defaults. The retained values remain readable and writable; the deleted
 initializer does not keep running.
 
+A closure or reference that left a select arm, held where the arm's sleep
+does not reach (`let h = once(g)`, a `<-` to an outer variable), reads the
+arm's bindings as they stood when the arm fell asleep. When the arm wakes,
+each binding it recomputes from an input that fired meanwhile fires for
+the holder, once, whether or not the value differs: `h(1)` fires, a
+`count` over it ticks, a select over it re-routes. A handler that escaped
+a modal's arm this way acts once at the wake on the event that opened the
+modal; keep handlers inside the arm, or sample the event that should
+trigger them. A reader placed above the binding in the arm's own text
+gets the new value a cycle late, with no fire.
+
 A labeled default returning an enclosing function's open type requires a
 closed defaulted parameter type. Annotate the factory's parameter
 (`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =

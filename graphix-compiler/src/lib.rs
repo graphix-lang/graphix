@@ -216,8 +216,10 @@ pub struct Event {
     pub late: Option<Arc<Late>>,
 }
 
-/// Fires delivered a cycle late, each to its readers alone.
-pub type Late = IntMap<BindId, (TagValue, SmallVec<[prune::Reader; 1]>)>;
+/// Deliveries made a cycle late, each to its reader alone: a fire, or
+/// what a wake stood moved ([`Tag::moved`]), which a reader that woke
+/// with it takes as it stands.
+pub type Late = IntMap<BindId, SmallVec<[(TagValue, prune::Reader); 1]>>;
 
 impl Event {
     pub fn new() -> Self {
@@ -2529,10 +2531,64 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             if notify == Notify::Roots {
                 self.rt.notify_marked_var(var)
             }
+        } else if tag.moved() {
+            self.stand_moved(var, &stored, notify)
         } else {
             self.rt.store_insert_standing_var(var, stored)
         }
         self.event.variables.insert(id, tv);
+    }
+
+    /// Stand the quiet production `tv` in `id`'s store entry: no delivery,
+    /// unless a wake recomputed it from a fire its region slept through
+    /// ([`Tag::moved`]), which is one to every reader outside the region.
+    pub fn stand(&mut self, id: BindId, tv: TagValue) {
+        let var = self.rt.var_of(id);
+        match tv.tag().moved() {
+            true => self.stand_moved(var, &tv, Notify::Walk),
+            false => self.rt.store_insert_standing_var(var, tv),
+        }
+    }
+
+    /// Store what a wake stood moved as a fire is stored, stamped this
+    /// cycle under its own tag, which each reader reads by where it
+    /// stands (`node::delivered_view`): the readers the walk has passed
+    /// take it next cycle, a fire to one outside the regions that resumed
+    /// this cycle and a standing value to one inside.
+    #[cold]
+    #[inline(never)]
+    fn stand_moved(&mut self, var: branch::Var, tv: &TagValue, notify: Notify) {
+        match self.event.root {
+            None => self.rt.store_insert_var(var, tv.clone()),
+            Some(root) => {
+                let mut passed = None;
+                let elsewhere = self.rt.store_fire(
+                    var,
+                    tv.clone(),
+                    root,
+                    self.boundary.as_ref(),
+                    &mut passed,
+                );
+                if let Some(passed) = passed {
+                    let cycle = self.rt.cycle();
+                    for r in passed {
+                        let inside =
+                            r.boundary.as_ref().is_some_and(|b| b.resumed_in(cycle));
+                        let late = match inside {
+                            true => tv.clone(),
+                            false => tv.as_fire(),
+                        };
+                        self.rt.late_var(var, late, r)
+                    }
+                }
+                if elsewhere {
+                    self.rt.produced_var(var)
+                }
+            }
+        }
+        if notify == Notify::Roots {
+            self.rt.notify_marked_var(var)
+        }
     }
 
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is

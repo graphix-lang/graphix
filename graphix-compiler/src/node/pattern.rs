@@ -2828,6 +2828,8 @@ impl<R: Rt> PatternNode<R> {
         let mut saved = SmallVec::new();
         self.structure_predicate
             .ids(&mut |id| saved.push((id, ctx.rt.store_get(&id).cloned())));
+        // retracted, so never a stand an outside reader takes as a fire
+        let tag = if tag.triggers() { tag } else { tag.quiet() };
         self.bind_event(ctx, v, tag);
         saved
     }

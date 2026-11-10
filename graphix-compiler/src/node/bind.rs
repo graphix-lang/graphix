@@ -1,11 +1,11 @@
 use super::{
-    VarRead, WakeBit,
+    VarRead, WakeBit, audit_quiet,
     coretraits::with_hooks,
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
     pattern::{CompiledAbstracts, Holder, StructPatternNode, rigid_refusal},
     place::{self, Path, RefPath},
-    read_var_by, standing_view,
+    read_var_by,
 };
 use crate::{
     BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
@@ -747,7 +747,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
-        if (woke || ctx.event.wake()) && !tag.triggers() {
+        if (woke || ctx.event.wake() || tag.moved()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
                     || ctx.rt.store_get(&id).is_some_and(|(tv, _)| !tv.tag().is_bottom());
@@ -758,7 +758,8 @@ impl<R: Rt> Update<R> for Bind<R> {
         }
         let publish = tag.triggers()
             || (!self.ever_published && !tag.is_bottom())
-            || (woke && !tag.triggers());
+            || woke
+            || tag.moved();
         if dbgenv::gxdbg_letbind() {
             eprintln!(
                 "LETBIND {} tag={tag:?} val={:?} ever_published={} held={held:?} publishing={publish}",
@@ -1383,23 +1384,19 @@ impl<R: Rt> Update<R> for Ref {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = dbgenv::gxdbg_ref();
         let r = match read_var_by(ctx, &self.id, self.top_id, None) {
-            Some(VarRead::Delivered(tv)) => {
-                if dbg {
-                    eprintln!(
-                        "REF {} @{} {:?} DELIVERED tag={:?}",
-                        self.spec,
-                        self.spec.pos,
-                        self.id,
-                        tv.tag()
-                    );
+            Some(read) => {
+                let tv = read.production(ctx);
+                if let VarRead::Standing(..) = read {
+                    audit_quiet(ctx, &self.id, &self.resident, &tv, &self.spec)
                 }
-                self.resident.set(tv.clone())
-            }
-            Some(VarRead::Standing(tv)) => {
-                let tv = standing_view(ctx.event, tv);
                 if dbg {
+                    let how = match read {
+                        VarRead::Delivered(_) => "DELIVERED",
+                        VarRead::Late(_) => "LATE",
+                        VarRead::Standing(..) => "STANDING",
+                    };
                     eprintln!(
-                        "REF {} @{} {:?} STANDING (ei={} wi={}) tag={:?} val={:?}",
+                        "REF {} @{} {:?} {how} (ei={} wi={}) tag={:?} val={:?}",
                         self.spec,
                         self.spec.pos,
                         self.id,
@@ -2067,8 +2064,8 @@ impl<R: Rt> ByRef<R> {
     fn publish(&self, ctx: &mut ExecCtx<'_, R>, tv: TagValue) {
         if tv.tag().triggers() {
             ctx.deliver(self.id, tv, Notify::Roots)
-        } else if ctx.event.init() {
-            ctx.rt.store_insert_standing(self.id, tv);
+        } else if ctx.event.init() || tv.tag().moved() {
+            ctx.stand(self.id, tv);
         }
     }
 
@@ -2455,12 +2452,15 @@ impl<R: Rt> Update<R> for Deref<R> {
         // a target the arm around it learns only now may owe a fire
         let owed = super::wake::owed(ctx, &id);
         self.read.read(ctx.rt.cycle());
+        let mut standing = false;
         let res = match read_var_by(ctx, &id, self.top_id, Some(&self.read)) {
-            Some(VarRead::Delivered(tv)) => Some(tv.clone()),
-            Some(VarRead::Standing(tv)) if owed => {
+            Some(VarRead::Standing(tv, _)) if owed => {
                 Some(TagValue::fired(tv.value_cloned()))
             }
-            Some(VarRead::Standing(tv)) => Some(standing_view(ctx.event, tv)),
+            Some(read) => {
+                standing = matches!(read, VarRead::Standing(..));
+                Some(read.production(ctx))
+            }
             None => None,
         };
         let res = match (res, &self.addr) {
@@ -2494,6 +2494,9 @@ impl<R: Rt> Update<R> for Deref<R> {
                     }
                 };
                 tv.retag(t);
+                if standing && moved == Moved::No && !addr.triggers() {
+                    audit_quiet(ctx, &id, &self.resident, &tv, &self.spec)
+                }
                 self.resident.set(tv)
             }
             // a moved address with nothing to read is bottom

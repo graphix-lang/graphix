@@ -709,7 +709,7 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
         let tag = tv.tag();
         (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
     };
-    let moved = tag.triggers() || woke;
+    let moved = tag.triggers() || tag.moved() || woke;
     let source = sval.and_then(|value| C::select(value, tag.triggers()));
     let Some(source) = source else {
         match seen {
@@ -1131,7 +1131,7 @@ fn woken_slots<R: Rt, T>(
     };
     let caught_up = missed.deliver(ctx, 0);
     // every slot runs under an init view: a standing one's wake, a fresh one's birth
-    let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0));
+    let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0, None));
     let r = update(ctx, SlotViews { old_len, standing: View::Wake, skip_idle: false });
     missed.ran(ctx, 0, scope);
     TrackedFires::restore(ctx.event, caught_up);
@@ -1289,8 +1289,9 @@ fn update_slots_in_order<R: Rt>(
                 views.fresh(i)
             );
         }
-        // Only triggering productions fold into the firing decision.
-        if tag.triggers() {
+        // Only triggering productions fold into the firing decision, and
+        // what a wake moved into whether the quiet result moved.
+        if tag.triggers() || tag.moved() {
             production = merge_tag(production, tag);
         }
         slot.state.set(tv);
@@ -1799,7 +1800,7 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
             if tv.tag().triggers() || anew {
                 ctx.deliver(id, tv, Notify::Walk)
             } else {
-                ctx.rt.store_insert_standing(id, tv)
+                ctx.stand(id, tv)
             }
         };
         if let Some(slot) = self.slots.first() {
@@ -1866,7 +1867,10 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
             // A fold fires iff it resized, a slot fired, or the source came
             // back from bottom.
             Some(SlotState::Value(v)) => {
-                let tag = if prod.triggers() { Tag::FIRED } else { Tag::STALE };
+                let tag = match prod.triggers() {
+                    true => Tag::FIRED,
+                    false => Tag::STALE.moved_if(prod.moved()),
+                };
                 let v = v.clone();
                 self.resident.set(TagValue::tagged(v, tag))
             }

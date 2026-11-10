@@ -29,9 +29,9 @@ use smallvec::SmallVec;
 pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
-        CompiledExpr, FIRE_TEST, STALE, SlotView, TAINT, ValueVar, bind_local,
-        bind_scalar_var_with_disc, clean_disc, is_fresh, is_tainted, owned_words,
-        prim_to_value_disc, scalar_disc, value_disc,
+        CompiledExpr, FIRE_TEST, MOVED, STALE, SlotView, TAGS, TAINT, ValueVar,
+        bind_local, bind_scalar_var_with_disc, clean_disc, is_fresh, is_tainted,
+        owned_words, prim_to_value_disc, scalar_disc, value_disc,
     },
     body::{
         BodyCx, emit_interrupt_check_every, ensure_owned_composite_src,
@@ -136,10 +136,10 @@ fn drop_locals(cx: &mut BodyCx, locals: &[(LocalKind, ValueVar)]) -> Result<()> 
     Ok(())
 }
 
-/// An element's disc: `base` plus the source's TAINT and STALE (an
-/// element has its source collection's freshness).
+/// An element's disc: `base` plus the source's tag bits (an element has
+/// its source collection's freshness).
 fn elem_disc(cx: &mut BodyCx, base: ClifValue, src_disc: ClifValue) -> ClifValue {
-    carry_disc(cx, base, src_disc, TAINT | STALE)
+    carry_disc(cx, base, src_disc, TAGS)
 }
 
 /// Fold the caller-selected tag bits from `src_disc` onto `base`.
@@ -217,7 +217,7 @@ fn bind_elem(
     let d = elem_disc(cx, d, src_disc);
     let vv = bind_local(cx, elem.name.clone(), d, p, kind, elem.id);
     let mut leaves = match kind {
-        LocalKind::Composite => bind_leaves(cx, p, src_disc, TAINT | STALE, elem.leaves)?,
+        LocalKind::Composite => bind_leaves(cx, p, src_disc, TAGS, elem.leaves)?,
         _ => OwnedLocals::new(),
     };
     if let Some(pattern) = elem.pattern {
@@ -438,8 +438,8 @@ enum LoopKind {
     Fold,
 }
 
-/// Loop-carried slot-flags accumulators: per-slot TAINT is OR-reduced
-/// and per-slot STALE is AND-reduced across the loop's slots.
+/// Loop-carried slot-flags accumulators: per-slot TAINT and MOVED are
+/// OR-reduced and per-slot STALE is AND-reduced across the loop's slots.
 #[derive(Clone, Copy)]
 pub(super) struct Accs {
     pub(super) taint: Variable,
@@ -460,7 +460,7 @@ impl Accs {
     /// Fold one slot's disc into the accumulators.
     fn fold(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.taint);
-        let t = cx.b.ins().band_imm_u(disc, TAINT);
+        let t = cx.b.ins().band_imm_u(disc, TAINT | MOVED);
         let n = cx.b.ins().bor(cur, t);
         cx.b.def_var(self.taint, n);
         self.fold_stale(cx, disc);
@@ -535,6 +535,8 @@ impl SlotFlags {
         let src_word = cx.b.ins().band_imm_u(src, FIRE_TEST);
         let src_taint = cx.b.ins().band_imm_u(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
+        let src_moved = cx.b.ins().band_imm_u(src, MOVED);
+        r.disc = cx.b.ins().bor(r.disc, src_moved);
         let acc = if self.kind == LoopKind::Fold {
             let rs = cx.b.ins().band_imm_u(r.disc, STALE);
             cx.b.ins().band(rs, slots_acc)
@@ -1107,18 +1109,18 @@ impl FoldAcc<'_> {
 
     /// The next carried disc: the whole disc minus the other tag bits for
     /// [`FoldAcc::Value`], re-based on the shape's clean disc otherwise so
-    /// only TAINT and STALE ride.
+    /// only the tag bits ride.
     fn carry_disc(&self, cx: &mut BodyCx, from_disc: ClifValue) -> ClifValue {
         let base = match self {
             FoldAcc::Value => {
-                const KEEP: i64 = !TAG_MASK as i64 | TAINT | STALE;
+                const KEEP: i64 = !TAG_MASK as i64 | TAGS;
                 return cx.b.ins().band_imm_u(from_disc, KEEP);
             }
             FoldAcc::Scalar(p) => scalar_disc(cx.b, *p),
             FoldAcc::Composite { .. } => cx.b.ins().iconst(types::I64, value_disc::ARRAY),
             FoldAcc::Str => cx.b.ins().iconst(types::I64, value_disc::STRING),
         };
-        let t = cx.b.ins().band_imm_u(from_disc, TAINT | STALE);
+        let t = cx.b.ins().band_imm_u(from_disc, TAGS);
         cx.b.ins().bor(base, t)
     }
 }
@@ -1171,8 +1173,7 @@ where
                 FoldAcc::Composite { leaves, pattern, .. } => {
                     let CompiledExpr { disc: acc_disc, payload: acc_ptr } =
                         acc_vv.read(cx.b);
-                    let mut owned =
-                        bind_leaves(cx, acc_ptr, acc_disc, TAINT | STALE, leaves)?;
+                    let mut owned = bind_leaves(cx, acc_ptr, acc_disc, TAGS, leaves)?;
                     if let Some((pattern, typ)) = pattern {
                         bind_pattern(cx, pattern, typ, acc_disc, acc_ptr, &mut owned)?;
                     }
@@ -1270,7 +1271,7 @@ where
     if init_src == CompositeSource::Owned {
         cx.call_helper("graphix_valarray_drop", &[init_cv.payload])?;
     }
-    let c0 = cx.b.ins().band_imm_u(init_cv.disc, TAINT | STALE);
+    let c0 = cx.b.ins().band_imm_u(init_cv.disc, TAGS);
     cx.b.def_var(carry, c0);
     let lp = open_loop(cx, len, arr.disc, &facts.sites, flags.entered)?;
     let (bound, new_fields) = lp.run(
@@ -1315,7 +1316,7 @@ where
     for d in discs.iter() {
         flags.accs.fold_stale(cx, *d);
     }
-    let c = cx.b.ins().band_imm_u(new_disc, TAINT | STALE);
+    let c = cx.b.ins().band_imm_u(new_disc, TAGS);
     cx.b.def_var(carry, c);
     for (f, v) in new_fields.iter().zip(vars.iter()) {
         cx.b.def_var(*v, f.payload);
