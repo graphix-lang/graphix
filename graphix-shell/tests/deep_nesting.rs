@@ -1359,6 +1359,35 @@ fn a_foreign_write_refusal_beside_a_shared_type_dag_is_linear() {
     );
 }
 
+/// A value refused against a DAG of named unions (`L<i> = [L<i-1>,
+/// M<i-1>]`, `M<i>` the same) is refused, with its message, in time linear
+/// in the DAG's depth, where its paths are 2^depth.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_refusal_against_a_dag_of_named_unions_is_linear() {
+    const DEPTH: usize = 60;
+    let mut types =
+        String::from("type L0 = [null, Error<`E>, `A];\ntype M0 = [null, `B];\n");
+    for i in 1..=DEPTH {
+        let p = i - 1;
+        types
+            .push_str(&format!("type L{i} = [L{p}, M{p}];\ntype M{i} = [L{p}, M{p}];\n"));
+    }
+    for (value, shown) in
+        [("\"foo\"", "string"), ("{ let v: Any = 1; v }", "Any"), ("`C", "`C")]
+    {
+        let program = format!("{types}let x: L{DEPTH} = {value};\nx?\n");
+        let out = exits_within(
+            &["--check", "--no-cache"],
+            &[("program.gx", &program)],
+            10 * BILLION,
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let refusal = format!("type mismatch L{DEPTH} does not contain {shown}");
+        assert!(!out.status.success() && stderr.contains(&refusal), "{stderr}");
+    }
+}
+
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn deep_nesting_does_not_overflow() {

@@ -317,6 +317,18 @@ impl ContainsHist {
         })
     }
 
+    // CR claude for claude: [perf/medium] A rigid cell refused against a DAG of named
+    // unions is refused in time exponential in the DAG's depth: the probe memo keys no
+    // cell, so `L<n> ⊇ 'a` (`L<i> = [L<i-1>, M<i-1>]`, `M<i>` the same) walks each
+    // expansion once per path under set_commit's member probes. `let f = |x0: 'a| { let
+    // x: L<n> = x0; x }; f(1)`, --no-cache --check, debug, instructions: n = 14 / 16 /
+    // 18 0.93G / 1.43G / 3.40G (an empty program 0.77G). A primitive, Any, ⊥ and an
+    // abstract type are keyed by content (probe_key), which made the same refusal of a
+    // value linear. Keying a cell by its address needs its pin to hold the cell, not the
+    // var: a merge re-points the var, a later put under the same key pins nothing, and a
+    // fresh cell (an expansion's reset_tvars copy) may then take the address with no
+    // counted write between. probes: ~/ptmp/cr29/scratch/n9d/rig14.gx .. rig18.gx, gen.py
+    // (union-dag-rigid-cell-01)
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
     /// or not, if current. A provisional one passes the assumptions it
     /// rests on to the verdict reading it.
@@ -1481,13 +1493,22 @@ fn split_members(
     })
 }
 
-/// `t` with its bindings and named types followed to its head.
-fn named_head(env: &Env, t: &Type) -> Type {
+/// `t` with its bindings and named types followed to its head; `None`
+/// where a named type on the way is one `seen` holds, which takes each
+/// one followed.
+fn named_head(env: &Env, t: &Type, seen: &mut Expanded) -> Option<Type> {
     let mut t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
-    while let Some((_, x)) = t.lookup_ref_probe(env) {
+    while let Type::Ref(tr) = &t
+        && let Some((def, x)) = t.lookup_ref_probe(env)
+    {
+        #[cfg(test)]
+        HEAD_STEPS.with(|n| n.set(n.get() + 1));
+        if !first_expansion(seen, def, &tr.params) {
+            return None;
+        }
         t = x.with_deref(|d| d.cloned()).unwrap_or(x);
     }
-    t
+    Some(t)
 }
 
 /// Whether `expected` is, or returns, `` [`Keep(T), null] `` and `actual`
@@ -1496,14 +1517,16 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
     let members = |t: &Type| {
         let mut found: SmallVec<[Type; 4]> = SmallVec::new();
         let mut todo: SmallVec<[Type; 4]> = SmallVec::new();
-        let head = named_head(env, t);
-        todo.push(match &head {
-            Type::Fn(ft) => named_head(env, &ft.rtype),
-            _ => head,
+        let mut seen: LPooled<Expanded> = LPooled::take();
+        todo.extend(match named_head(env, t, &mut seen) {
+            Some(Type::Fn(ref ft)) => named_head(env, &ft.rtype, &mut seen),
+            head => head,
         });
         while let Some(t) = todo.pop() {
             match &t {
-                Type::Set(ms) => todo.extend(ms.iter().map(|m| named_head(env, m))),
+                Type::Set(ms) => {
+                    todo.extend(ms.iter().filter_map(|m| named_head(env, m, &mut seen)))
+                }
                 _ => found.push(t),
             }
         }
@@ -4216,6 +4239,64 @@ mod tests {
         }
     }
 
+    /// A DAG of named unions, two names a level over both names below:
+    /// `L<i> = [L<i-1>, M<i-1>]`, `M<i>` the same, to `L<n>`, over `L0`
+    /// and `M0`.
+    fn union_dag(n: usize, l0: &str, m0: &str) -> Vec<(String, String)> {
+        let mut defs = vec![("L0".into(), l0.into()), ("M0".into(), m0.into())];
+        for i in 1..=n {
+            let body = format!("[L{}, M{}]", i - 1, i - 1);
+            defs.push((format!("L{i}"), body.clone()));
+            defs.push((format!("M{i}"), body));
+        }
+        defs
+    }
+
+    // A value refused against a DAG of named unions is refused, and its
+    // refusal written, with each name walked a bounded number of times:
+    // walked as a tree, `L<n>` is 2^n paths. Over `` [`Keep(i64), null] ``
+    // the refusal still finds the value kept bare.
+    #[test]
+    fn a_refusal_against_a_dag_of_named_unions_walks_each_name_once() {
+        let error = ("[null, Error<`E>, `A]", "[null, `B]");
+        let keep = ("[`Keep(i64), null]", "[null]");
+        for n in [4, 8, 16, 32] {
+            for (leaves, leaf, refused) in [
+                (error, "string", Some("L{n} does not contain string")),
+                (error, "Any", Some("L{n} does not contain Any")),
+                (error, "`C", Some("L{n} does not contain `C")),
+                (error, "i64", Some("L{n} does not contain i64")),
+                (error, "W", Some("L{n} does not contain W")),
+                (error, "`B", None),
+                (error, "Error<`E>", None),
+                (keep, "i64", Some("i64: a [`Keep(T), null] keeps v as `Keep(v)")),
+                (keep, "`Keep(i64)", None),
+            ] {
+                let mut defs = union_dag(n, leaves.0, leaves.1);
+                defs.push(("W".into(), "Abstract<i64>".into()));
+                let defs: Vec<(&str, &str)> =
+                    defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+                let (env, l) = Env::typed_at_root(&defs, &format!("L{n}")).unwrap();
+                let leaf = at_root(&env, leaf);
+                CONTAINS_STEPS.with(|n| n.set(0));
+                HEAD_STEPS.with(|n| n.set(0));
+                let r = l.check_contains(&env, &leaf);
+                match (r, refused) {
+                    (Ok(()), None) => (),
+                    (Err(e), Some(m)) => {
+                        let m = m.replace("{n}", &n.to_string());
+                        assert!(e.to_string().ends_with(&m), "n={n}: {e}")
+                    }
+                    (r, _) => panic!("n={n}: L{n} ⊇ {leaf}: {r:?}"),
+                }
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                assert!(steps <= 16 * n, "n={n}: L{n} ⊇ {leaf} took {steps} steps");
+                let heads = HEAD_STEPS.with(|n| n.get());
+                assert!(heads <= 8 * n, "n={n}: L{n} ⊇ {leaf} named {heads} heads");
+            }
+        }
+    }
+
     // What one walk keeps is each pair's verdict wherever it is met: the
     // pairs asked in one walk, in either order, are answered as each is
     // asked alone. `U ⊇ V` holds inside `S ⊇ T`, which assumes itself,
@@ -4504,4 +4585,5 @@ pub(crate) fn find_impl(
 #[cfg(test)]
 thread_local! {
     static CONTAINS_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HEAD_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
