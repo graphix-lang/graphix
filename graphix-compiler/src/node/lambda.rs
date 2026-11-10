@@ -2147,9 +2147,14 @@ impl Lambda {
             .chain(l.rtype.iter())
             .chain(l.throws.iter())
             .chain(l.constraints.iter().map(|(_, tc)| tc));
+        let constrained: OnceCell<LPooled<AHashSet<ArcStr>>> = OnceCell::new();
         let outer: OnceCell<LPooled<AHashMap<ArcStr, TVar>>> = OnceCell::new();
         let own = |tv: &TVar| {
-            l.constraints.iter().any(|(c, _)| c.name == tv.name)
+            constrained
+                .get_or_init(|| {
+                    l.constraints.iter().map(|(c, _)| c.name.clone()).collect()
+                })
+                .contains(&tv.name)
                 || !outer
                     .get_or_init(|| {
                         let mut known = LPooled::take();
