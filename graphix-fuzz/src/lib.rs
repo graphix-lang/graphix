@@ -4814,9 +4814,6 @@ fn child_command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(child_exe());
     // a select no arm matches is a hole in the check: a crash, a finding
     cmd.env("GRAPHIX_ABORT_ON_NO_MATCH", "1");
-    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-        cmd.env("RAYON_NUM_THREADS", CHILD_COMPILE_THREADS);
-    }
     if std::env::var_os("GRAPHIX_EVAL_THREADS").is_none() {
         cmd.env("GRAPHIX_EVAL_THREADS", CHILD_COMPILE_THREADS);
     }
