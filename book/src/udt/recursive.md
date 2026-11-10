@@ -65,7 +65,7 @@ $ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 2, column: 1 in file test.gx, in: type N<'a> = [`Cons('a, N<Opt<'a>>), `Nil]
+    0: at: line: 2, column: 1 in file test.gx, in: type N<'a> = [`Cons('a, N<Opt<'a>>), `..
     1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
 ```
 

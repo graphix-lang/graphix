@@ -926,7 +926,7 @@ whose open cells are told apart by identity (`F<'a>` and `F<'b>` are two)
 strip takes, which decides the strip and is the raised type, and the rest
 is the result type (`Strip::taken`, `Strip::left`; pins
 `lang::errors::an_operand_past_the_pair_budget_*`,
-`two_cells_behind_one_name_past_the_pair_budget_*`). One unfolding and
+`one_name_behind_a_wrapper_past_the_pair_budget_*`). One unfolding and
 1000 pairs were chosen from the 1600 generated selects (review-r8
 X-r1-1): of main's 1547 finishes none changes verdict or the kind of its
 message, 52 of its 53 timeouts end, the last in matching_type's
