@@ -1624,24 +1624,29 @@ fn annotation_may_fit(
 // without it; callback_variable_undecided_last_refused still holds. Same note also
 // fired on every mistyped call in a seq/seqq step (coordinator review).
 /// What a refusal of an argument of type `arg`, holding an undecided cell,
-/// at a formal the call did not open asks to annotate: where another
-/// argument already decided a variable of `formal` to a type a wider
-/// decision could make hold `arg` ([`annotation_may_fit`]), the argument
-/// that decided it, since annotating `arg` widens nothing.
+/// at a formal the call did not open asks to annotate: where an earlier
+/// argument of this call decided a written variable `formal` holds outside
+/// function types to a type a wider decision could make hold `arg`
+/// ([`annotation_may_fit`]), the argument that decided it, since annotating
+/// `arg` widens nothing. `prebound` holds the cells bound before the call's
+/// arguments were checked.
 fn decided_elsewhere(
     env: &Env,
     formal: &Type,
     prebound: &AHashSet<usize>,
     arg: &Type,
 ) -> Result<Option<CompactString>> {
-    if matches!(formal, Type::Fn(_)) {
-        return Ok(None);
-    }
     let mut decided: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     formal.collect_tvars(&mut decided);
     decided.retain(|_, tv| {
         tv.is_bound() && !tv.generated() && !prebound.contains(&tv.cell_addr())
     });
+    if decided.is_empty() {
+        return Ok(None);
+    }
+    let mut outside: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    formal.variables_outside_functions(env, &mut outside);
+    decided.retain(|_, tv| outside.contains_key(&tv.cell_addr()));
     if decided.is_empty() || !annotation_may_fit(env, formal, &decided, arg)? {
         return Ok(None);
     }

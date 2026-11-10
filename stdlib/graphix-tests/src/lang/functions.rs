@@ -2397,6 +2397,34 @@ run!(
     FuseExpect::None
 );
 
+// An undecided argument at a callback formal is refused for its own
+// bounds: no decision of the callback's variable fits it, so the refusal
+// names nothing, however the formal wraps the function type.
+run!(
+    undecided_at_callback_formal_names_nothing,
+    r#"{ let f = |x: 'a, k: fn(v: 'a) -> i64| -> 'a x; f(1, { let v = str::parse("42")?; v }) }"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
+    undecided_at_aliased_callback_formal_names_nothing,
+    r#"{
+  type K<'a> = fn(v: 'a) -> i64;
+  let f = |x: 'a, k: K<'a>| -> 'a x;
+  f(1, { let v = str::parse("42")?; v })
+}"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
+    undecided_at_callback_field_formal_names_nothing,
+    r#"{ let f = |x: 'a, k: {g: fn(v: 'a) -> i64}| -> 'a x; f(1, { let v = str::parse("42")?; v }) }"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
 run!(
     undecided_argument_takes_the_closed_join,
     r#"{ let s = "5"; let d = opt::or_default(str::parse(s)$, 0); d + 1 }"#,

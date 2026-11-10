@@ -323,11 +323,14 @@ not widenable: the first argument decides it, an undecided one
 included, so `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v:
 'a) -> i64|` runs and `f(1, str::parse(s), |v| 0)` is refused. Annotating
 the undecided argument widens nothing there, so where a wider decision
-of the variable could hold it (`annotation_may_fit` over the formal's
-decided variables), the refusal names the argument that decided it,
-"annotate that argument as wide as this one"
-(`callsite::decided_elsewhere`); `f(1, [], |v| 0)` and an undecided
-argument at a formal with no variable are plain mismatches. An argument or an omitted default whose type holds a function
+of the variable could hold it (`annotation_may_fit` over the variables
+an earlier argument of this call decided: written ones, that the formal
+holds outside function types), the refusal names the argument that
+decided it, "annotate that argument as wide as this one"
+(`callsite::decided_elsewhere`); `f(1, [], |v| 0)`, an undecided
+argument at a formal with no variable or at a callback formal, and one
+at a variable decided before the call (by an earlier call of one
+instance, as in a seq step, or a `let rec` body) are plain mismatches. An argument or an omitted default whose type holds a function
 type with open cells does not widen either (`Widening::widen` skips a
 type with an unbound cell): it fits the variable as the arguments before
 it left it, or is refused, so order decides between a value and a

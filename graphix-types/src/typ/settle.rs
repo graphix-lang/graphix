@@ -533,9 +533,20 @@ impl Type {
     #[doc(hidden)]
     pub fn variable_outside_functions(&self, env: &Env) -> Option<TVar> {
         let mut out: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        OutsideFunctions { env, expanding: Expanding::default(), nodes: LPooled::take() }
-            .walk(self, &mut out);
+        self.variables_outside_functions(env, &mut out);
         out.values().min_by(|a, b| a.name.cmp(&b.name)).cloned()
+    }
+
+    /// Every type variable [`Self::variable_outside_functions`] finds,
+    /// keyed by its cell.
+    #[doc(hidden)]
+    pub fn variables_outside_functions(
+        &self,
+        env: &Env,
+        out: &mut AHashMap<usize, TVar>,
+    ) {
+        OutsideFunctions { env, expanding: Expanding::default(), nodes: LPooled::take() }
+            .walk(self, out);
     }
 }
 
