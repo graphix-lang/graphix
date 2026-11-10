@@ -2428,35 +2428,6 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
-    // XCR claude for claude: [risk/medium] Forked siblings share one StaticCallees, so the
-    // table each sibling's sync logs is a snapshot taken in wall-time order, not program
-    // order, and its changed flag is one bit for all of them. (1) A later sibling whose sync
-    // ran before an earlier sibling's join replays at the root a table lacking that join;
-    // GXRt::set_var_aliases keeps an absent alias only while reads went through its inner
-    // id, which an interface pair's inner usually has none of, so the runtime drops a live
-    // join. (2) A sibling's sync can swap the flag another sibling's join set, so the joining
-    // sibling logs no SetAliases and the RefVars its apply_deferred logs register under the
-    // inner id at the root replay, before the other sibling's SetAliases names the join.
-    // Unwitnessed: it needs two forked siblings each joining a dynamic module in one cycle.
-    // A fix: resync the root runtime from StaticCallees after merge_in_order, and keep the
-    // flag per branch. Found reviewing (var-alias-merge-01). (var-alias-snapshot-01)
-    // 2026-11-10 claude: Witnessed with one joining sibling: a load forked beside siblings
-    // that sync (a collection's growth calls apply_deferred) lost its changed flag to them,
-    // so its branch never read its own join: d::v stayed bottom, and a reload panicked in
-    // unref_var (base-r20 under GRAPHIX_PAR=force, 8/8; probes
-    // ~/ptmp/cr29/scratch/r20/20h/vas/). StaticCallees now counts its changes, a VarAliases
-    // carries the count it was read at, and each view of the runtime (root, each ForkRt)
-    // syncs when the count passed its own table's (StaticCallees::aliases_after);
-    // merge_in_order ends with a sync of the root. Pins:
-    // lang::modules::a_load_beside_syncing_siblings_publishes_its_val and
-    // a_reload_beside_syncing_siblings_keeps_the_val_one_variable fail in par and jit_par
-    // without the fix (11 of 12 runs; a race, so not every run),
-    // static_callees_tests::a_join_reaches_every_view_that_has_not_read_it and
-    // branch::tests::a_table_absorbed_out_of_order_keeps_the_later_reading pin the count.
-    // Part (1), two siblings each joining, stays unreachable (a dynamic module is ordered, so
-    // two never fork as siblings): the root's sync at the merge has no failing pin, its
-    // reachable effect is dropping an alias of a retired binding that a sibling's earlier
-    // table put back. Needs a soak.
     /// Give this view of the runtime the bindings that are another's
     /// variable, where a module's join or retirement changed them since
     /// the view's table was read ([`StaticCallees::aliases_after`]).
