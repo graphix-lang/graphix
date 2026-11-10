@@ -1262,29 +1262,6 @@ impl StructPatternNode {
         })
     }
 
-    // XCR claude for claude: [bug/medium] A slice nested under another pattern takes
-    // no member of the scrutinee: the recursion below passes `&[]`, so its elements are
-    // typed from the predicate's own cells, not the scrutinee's part. Under D6 (b) a
-    // name over the element of `Array<'b>` keeps 'b, as at the top (`[h, ..] => h.0`
-    // checks), but `'b: (i64, i64) |x: (Array<'b>, i64)| -> [string, null] select x {
-    // ([h, ..], n) => { let q: string = h; q }, _ => null }` checks and answers null
-    // over `([(3, 4)], 1)` (the arm's test is now of strings), and `([h, ..], _) =>
-    // h.0 + 1` is refused "reading a tuple needs its type known here". Same on base-r19,
-    // and over `('c<'b>, i64)`. Fix: pass each matched member's part at the child's
-    // position down the recursion. probe: ~/ptmp/cr29/scratch/r19/19a/ceb/p10t.gx,
-    // p9t.gx, p10.gx (nested-slice-bind-01)
-    // 2026-11-10 claude: StructPatternNode::hold_slice_members now hands each child the
-    // members of what reaches it (each matched member's part at the child's position,
-    // flattened, those the child's predicate could match; a union holding Any is Any, so
-    // the elements stay the arm's own cells there, as over an Any scrutinee) instead of
-    // none. p10t, p10 and the variant/or forms are refused naming 'b; p9t and the struct
-    // form run and answer 4. Pins in lang::select that fail without it:
-    // nested_slice_element_bind_keeps_the_variable,
-    // nested_slice_element_bind_under_a_variant_keeps_the_variable,
-    // nested_slice_collection_element_bind_keeps_the_variable,
-    // nested_slice_or_element_bind_keeps_the_variable, nested_slice_element_bind_typed;
-    // nested_slice_under_an_any_member_admits_any_element guards the Any member. Census
-    // of both repos unchanged; needs a soak.
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
