@@ -27,6 +27,7 @@ use poolshark::{global::GPooled, local::LPooled};
 use smallvec::SmallVec;
 use std::{
     future::Future,
+    mem,
     ops::{Deref, DerefMut},
     pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
@@ -244,6 +245,9 @@ pub struct ForkRt<R: Rt> {
     readers: IntMap<BindId, SmallVec<[Reader; 1]>>,
     log: Vec<RtOp>,
     aliases: VarAliases,
+    /// The core-trait hook sites this branch ran, returned to the parent
+    /// by [`merge_in_order`] once it holds their readers.
+    pub(crate) hook_sites: crate::node::coretraits::BranchSites<R>,
 }
 
 // SAFETY: `parent` is only read, and only while the parent is suspended
@@ -289,6 +293,7 @@ impl<R: Rt> ForkRt<R> {
             readers: IntMap::default(),
             log: Vec::new(),
             aliases: parent.var_aliases().clone(),
+            hook_sites: Default::default(),
         }
     }
 
@@ -682,6 +687,7 @@ impl<'a, R: Rt> RtView<'a, R> {
             readers,
             log,
             aliases,
+            hook_sites: _,
         } = child;
         match self {
             Self::Fork(f) => {
@@ -1265,9 +1271,11 @@ fn merge_in_order<R: Rt>(
             rt.queue_first(*id, tv.value());
         }
         delivered.extend(event.variables.own_ids());
+        let sites = mem::take(&mut rt.hook_sites);
         ctx.cx.merge(cx);
         ctx.rt.merge(rt);
         ctx.event.merge(event);
+        crate::node::coretraits::adopt(ctx, sites);
     }
 }
 

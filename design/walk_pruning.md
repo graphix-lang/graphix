@@ -300,7 +300,8 @@ call site's formals, a module's prime). The root's
 `wake_readers` marks for the cycle's deliveries. A fork also keeps the
 readers it registered this cycle, which the runtime learns only at the
 join, and marks them too (a core-trait hook site built in a branch and
-called again in the same cycle). A wake's catch-up injections need no
+called again in the same cycle; no other branch runs that site before
+the merge, `design/parallel_eval.md`). A wake's catch-up injections need no
 mark: they run under `Wake`.
 
 **Shared state.** An error handler keeps the boundaries of the nodes that

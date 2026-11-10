@@ -732,9 +732,14 @@ the aliasing is today's, once per job. The hook call sites are stateful
 graphs pooled per (trait, type) in `core_hook_sites`, one registry
 every branch shares (§4.4). Two branches comparing the same abstract
 type take two sites: a call takes a spare site from the pool or builds
-one in a task of its own (`build_site`), and puts it back in the shared
-pool when it returns (`return_site`); a site whose entry went stale
-meanwhile is deleted.
+one in a task of its own (`build_site`). A site a branch ran stays that
+branch's (`ForkRt::hook_sites`, taken again by its later calls) until
+the branch merges, and then returns to the view it forked from
+(`coretraits::adopt`), the shared pool at the root: a site the branch
+built registered its readers in the branch alone, so a sibling running
+it before the merge would mark none of them, and a guard in it would
+ride its last verdict. A site whose entry went stale meanwhile is
+deleted.
 
 **Ids.** Ids minted in parallel are unique (global atomics,
 T/ids.rs:187) but their values depend on scheduling. That is acceptable

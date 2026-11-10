@@ -12,6 +12,7 @@ use super::genn::SynthCall;
 use crate::{
     BindId, Event, ExecCtx, Notify, Rt, Scope, TagValue, View,
     abstract_value::{self, CastHook, GxAbstract, ValueHookDispatch},
+    branch::RtView,
     env::{Env, ImplDef},
     expr::ExprId,
     typ::{AbstractId, CoreTrait, FnType, TVar, Type},
@@ -372,6 +373,41 @@ fn call_hook<R: Rt>(
     r
 }
 
+/// The sites a forked branch ran: their readers are registered in the
+/// branch alone until it merges, so a delivery made in another branch
+/// would mark none of them. The branch keeps them, and they go back to
+/// the view it forked from at its merge ([`adopt`]).
+pub(crate) struct BranchSites<R: Rt>(Vec<Loan<R>>);
+
+impl<R: Rt> Default for BranchSites<R> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<R: Rt> BranchSites<R> {
+    fn take(
+        &mut self,
+        key: (u8, AbstractId),
+        typ: &Type,
+        version: &Version,
+    ) -> Option<Loan<R>> {
+        let i = self
+            .0
+            .iter()
+            .position(|l| l.key == key && l.typ == *typ && l.version.same(version))?;
+        Some(self.0.swap_remove(i))
+    }
+}
+
+/// Return the sites the merged branch ran to `ctx`, the view it forked
+/// from, which now holds their readers.
+pub(crate) fn adopt<R: Rt>(ctx: &mut ExecCtx<'_, R>, sites: BranchSites<R>) {
+    for loan in sites.0 {
+        return_site(ctx, loan)
+    }
+}
+
 /// The site loaned out of the registry for one dispatch: its slot, so
 /// it returns to the pool it came from, or is deleted when the entry
 /// was rebuilt meanwhile.
@@ -398,6 +434,13 @@ fn take_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, typ: &Type) -> Taken<R>
     let Type::Abstract { id, .. } = typ else { return Taken::None };
     let key = (m as u8, *id);
     let impls = ctx.env.impls.get(&m.of().id()).cloned();
+    if let RtView::Fork(f) = &mut ctx.rt {
+        let generation = ctx.core_hook_sites.lock().generation;
+        let version = Version { impls: impls.clone(), generation };
+        if let Some(loan) = f.hook_sites.take(key, typ, &version) {
+            return Taken::Site(loan);
+        }
+    }
     let (version, stale, found) = {
         let mut reg = ctx.core_hook_sites.lock();
         let version = Version { impls, generation: reg.generation };
@@ -449,6 +492,9 @@ fn take_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, typ: &Type) -> Taken<R>
 }
 
 fn return_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, loan: Loan<R>) {
+    if let RtView::Fork(f) = &mut ctx.rt {
+        return f.hook_sites.0.push(loan);
+    }
     let rejected = {
         let mut reg = ctx.core_hook_sites.lock();
         let pool = reg

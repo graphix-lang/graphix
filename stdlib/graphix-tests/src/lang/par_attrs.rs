@@ -507,6 +507,39 @@ async fn parallel_refuses_a_block_of_constants() {
     }
 }
 
+// A core trait's method runs at a call site of its own, which a forked
+// branch's first comparison builds: its readers are the branch's until the
+// merge, so a sibling comparing through it must not take it meanwhile, or
+// the guard it selects by rides a stale verdict and a map takes a key twice.
+#[tokio::test(flavor = "current_thread")]
+async fn a_core_trait_site_a_branch_built_stays_in_it() -> Result<()> {
+    let code = r#"{
+        type T = Abstract<i64>;
+        let mk = |x: i64| -> T T(x);
+        impl Eq for T { let eq = |a, b| a.0 % 2 == b.0 % 2 };
+        impl Ord for T {
+            let cmp = |a, b| select (a.0 % 2, b.0 % 2) {
+                (x, y) if x < y => `Less,
+                (x, y) if x > y => `Greater,
+                _ => `Equal
+            }
+        };
+        let tmap = |a: T, b: T| -> i64 {
+            let m = {a => 1, b => 2};
+            map::len(m) + map::len(map::insert(m, a, 3))
+        };
+        [tmap(mk(0), mk(1)), tmap(mk(1), mk(2)), tmap(mk(2), mk(3)), tmap(mk(3), mk(4)),
+         tmap(mk(4), mk(5)), tmap(mk(5), mk(6)), tmap(mk(6), mk(7)), tmap(mk(7), mk(8))]
+    }"#;
+    let serial = run_par(code, ParMode::Off).await?;
+    let fours = Value::Array(std::iter::repeat_n(Value::I64(4), 8).collect());
+    assert_eq!(serial.values, [fours]);
+    for _ in 0..16 {
+        assert_eq!(run_par(code, ParMode::Force).await?.values, serial.values);
+    }
+    Ok(())
+}
+
 // A call through a bound queuefn wrapper is ordered at run time too: a
 // dynamic call's written argument and the default its bind compiles both
 // call the wrapper, so forking keeps the serial queue order.
