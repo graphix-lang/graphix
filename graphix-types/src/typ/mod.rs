@@ -892,8 +892,6 @@ pub struct ResolvedRef {
     ori: Arc<Origin>,
     params: Arc<[(TVar, Option<Type>)]>,
     typ: Type,
-    /// [`Self::is_recursive`], once every name it met resolved
-    recursive: OnceLock<bool>,
     /// [`expansive::expansive`] found it regular with every name it
     /// reached defined, so no flow through it comes back to a definition
     /// made later.
@@ -973,54 +971,6 @@ impl ResolvedRef {
         guarded
     }
 
-    /// Whether the body reaches this definition again, through the
-    /// typedefs it names, each resolved as `env` resolves it; a name that
-    /// does not resolve may, and leaves the answer unremembered.
-    pub(crate) fn is_recursive(&self, env: &Env) -> bool {
-        fn reaches(
-            t: &Type,
-            env: &Env,
-            own: usize,
-            seen: &mut AHashSet<usize>,
-            unknown: &mut bool,
-        ) -> bool {
-            ensure_sufficient(|| match t {
-                Type::Ref(r) => match r.resolve_peek(env) {
-                    None => {
-                        *unknown = true;
-                        true
-                    }
-                    Some(d) => {
-                        d.def_key() == own
-                            || (seen.insert(d.def_key())
-                                && reaches(&d.typ, env, own, seen, unknown))
-                            || r.params
-                                .iter()
-                                .any(|p| reaches(p, env, own, seen, unknown))
-                    }
-                },
-                t => t
-                    .try_for_each_child(
-                        &mut |c| match reaches(c, env, own, seen, unknown) {
-                            true => ControlFlow::Break(()),
-                            false => ControlFlow::Continue(()),
-                        },
-                    )
-                    .is_break(),
-            })
-        }
-        if let Some(r) = self.recursive.get() {
-            return *r;
-        }
-        let mut unknown = false;
-        let r =
-            reaches(&self.typ, env, self.def_key(), &mut LPooled::take(), &mut unknown);
-        if !unknown {
-            let _ = self.recursive.set(r);
-        }
-        r
-    }
-
     pub(crate) fn new(
         canonical_scope: ModPath,
         pos: SourcePosition,
@@ -1028,15 +978,7 @@ impl ResolvedRef {
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
     ) -> Self {
-        Self {
-            canonical_scope,
-            pos,
-            ori,
-            params,
-            typ,
-            recursive: OnceLock::new(),
-            regular: OnceLock::new(),
-        }
+        Self { canonical_scope, pos, ori, params, typ, regular: OnceLock::new() }
     }
 
     pub(crate) fn pos(&self) -> SourcePosition {
@@ -1128,8 +1070,7 @@ pub(crate) fn resolved_encode(
     r: &ResolvedRef,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
-    let ResolvedRef { canonical_scope, pos, ori, params, typ, recursive: _, regular: _ } =
-        r;
+    let ResolvedRef { canonical_scope, pos, ori, params, typ, regular: _ } = r;
     canonical_scope.encode(buf)?;
     image::pos_encode(pos, buf)?;
     image::origin_encode(ori, buf)?;
@@ -1144,7 +1085,6 @@ pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackErr
         ori: image::origin_decode(buf)?,
         params: PackTrait::decode(buf)?,
         typ: PackTrait::decode(buf)?,
-        recursive: OnceLock::new(),
         regular: OnceLock::new(),
     })
 }
@@ -3375,7 +3315,6 @@ impl Type {
                     ori: _,
                     params: _,
                     typ: def_typ,
-                    recursive: _,
                     regular: _,
                 } = &*resolved;
                 resolved.check_arity(name, params)?;

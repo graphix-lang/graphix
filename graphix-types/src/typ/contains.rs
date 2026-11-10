@@ -2562,7 +2562,7 @@ impl Type {
                 tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // CR claude for claude: [bug/low] Taking two instances of one definition as
+                // XCR claude for claude: [bug/low] Taking two instances of one definition as
                 // one type when their parameters contain each other decides an open cell
                 // by equality where the expansion asks less, so the order of a function
                 // type's positions decides: `type L<'p> = fn(x: 'p) -> i64; let outer =
@@ -2638,11 +2638,42 @@ impl Type {
                 // where the shortcut answers at once, so dropping the escape needs a bound on
                 // the applications one walk unfolds, or the shortcut kept past it. Probes:
                 // ~/ptmp/cr29/scratch/r19/19f/review-tpe/.
+                // 2026-11-10 claude: The recursive escape is dropped on top of
+                // typedef-open-expansion-01's memo: two instances of one definition with an
+                // open cell in their params compare by expansion whether or not the
+                // definition reaches itself, and ResolvedRef::is_recursive with its memo
+                // field is gone. tpe_rec, tpe_nest, m1 and perm4 now check as their z-first
+                // twins do. The code comment 'two instances of one definition whose
+                // parameters contain each other...' inside this block is stale and goes with
+                // it. Pins that fail without it:
+                // typ::contains::tests::open_instances_of_one_recursive_definition_compare_by_expansion
+                // (also holds the steps to the two-definition spelling's: 2862 / 38045 for 6
+                // / 24 applications, equal to it),
+                // lang::types::{recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion,
+                // typedef_over_a_recursive_typedef_agrees_with_the_expansion,
+                // mutually_recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion,
+                // a_parameter_only_the_recursion_holds_is_not_decided,
+                // open_instances_of_one_recursive_typedef_check}. 2400 random programs, each
+                // with one definition on both sides and again with the held side a textual
+                // copy of it, agree in verdict and message on this build (gen2.py, twin.sh);
+                // against base-r20 157 are newly accepted and 8 newly refused, each of the 8
+                // refused by base-r20 in the two-definition spelling (a cell repeated in the
+                // params, bound by the first member the expansion meets: refused/). Census of
+                // 2949 files unchanged, regress 0, typemorph-scan 500 with 0 flips,
+                // graphix-tests lib 17009 pass, guicheck 40.47G to 40.54G base, 40.58G to
+                // 40.69G here (the lane before: 40.52G to 40.57G). Cost: the one-definition
+                // spelling now pays what the two-definition one pays
+                // (open-app-commit-trials-01): pk4 / pk5 0.94G / 6.96G instructions (0.75G on
+                // base-r20), pk6 (720 applications) past 120 s, perm10 (10! applications) out
+                // of 6 GB in 12 s, where the shortcut answered at once; base-r20 already runs
+                // out of memory on the same definition over ten distinct closed types
+                // (perm10distinct.gx). Needs a soak. Probes:
+                // ~/ptmp/cr29/scratch/r20/20c/tpe/.
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
                     && (!tr0.params.iter().chain(tr1.params.iter()).any(|p| p.has_free())
-                        || tr0.resolve_peek(env).is_none_or(|d| d.is_recursive(env)))
+                        || tr0.resolve_peek(env).is_none())
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
                     let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {
@@ -3673,6 +3704,17 @@ impl Type {
     // typ::contains::tests::a_kept_verdict_is_read_past_an_outdated_one; probes
     // ~/ptmp/cr29/scratch/r20/20c/review/{h2a,h2c,two}.gx). permx4.gx / permx5.gx still
     // take 0.94G / 6.85G instructions, so the trials and the scan are what remain.
+    // 2026-11-10 claude: typedef-param-equality-01's fix (lane 20c) sends two instances
+    // of ONE recursive definition over open cells onto this walk too (the
+    // same-definition shortcut no longer answers them), with the two-definition
+    // spelling's steps exactly (typ::contains::tests::permuted_steps("D", n) =
+    // permuted_steps("F", n)): pk4.gx / pk5.gx take 0.94G / 6.96G instructions, pk6.gx
+    // (720 applications) more than 120 s, pc6.gx (the plain call) 76 s, perm10.gx runs
+    // out of 6 GB, each answered at once on base-r20. Besides the one walk this CR
+    // proposes, a comparison of two instances of one definition parameter by parameter,
+    // each by its variance in the definition (a fixpoint over the body, invariant where
+    // unsure), would answer them without unfolding where no parameter stands bare in a
+    // union; untried. Probes: ~/ptmp/cr29/scratch/r20/20c/tpe/.
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither
@@ -4454,18 +4496,19 @@ mod tests {
         (head, body)
     }
 
-    /// The steps `fn(k: F<Any, ..>, z: i64) -> i64` takes to hold `fn(k:
+    /// The steps `fn(k: H<Any, ..>, z: i64) -> i64` takes to hold `fn(k:
     /// D<'q0, ..>, z: 'q0) -> 'q0` over [`permuted`] definitions of `n`
-    /// parameters, and of a probe of `D<'q0, ..>` holding `F<Any, ..>`:
-    /// the cells stay open, so every order is an application of its own.
-    fn permuted_steps(n: usize) -> (usize, usize) {
+    /// parameters, `H` being `held` (`D` itself or its twin `F`), and of a
+    /// probe of `D<'q0, ..>` holding `H<Any, ..>`: the cells stay open, so
+    /// every order is an application of its own.
+    fn permuted_steps(held: &str, n: usize) -> (usize, usize) {
         let defs = [permuted("D", n), permuted("F", n)];
         let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
         let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
         let cells: Vec<String> = (0..n).map(|i| format!("'q{i}")).collect();
         let (cells, anys) = (cells.join(", "), vec!["Any"; n].join(", "));
         let open = at_root(&env, &format!("fn(k: D<{cells}>, z: 'q0) -> 'q0"));
-        let held = at_root(&env, &format!("fn(k: F<{anys}>, z: i64) -> i64"));
+        let held = at_root(&env, &format!("fn(k: {held}<{anys}>, z: i64) -> i64"));
         let (Type::Fn(o), Type::Fn(h)) = (&open, &held) else { unreachable!() };
         let (d, f) = (&o.args[0].typ, &h.args[0].typ);
         CONTAINS_STEPS.with(|n| n.set(0));
@@ -4485,7 +4528,20 @@ mod tests {
     fn open_applications_of_a_recursive_definition_are_walked_once() {
         for n in [3, 4] {
             let apps: usize = (1..=n).product();
-            let (commit, probe) = permuted_steps(n);
+            let (commit, probe) = permuted_steps("F", n);
+            assert!(probe <= 64 * apps, "n={n}: a probe took {probe} steps");
+            assert!(commit <= 100 * apps * apps, "n={n}: a commit took {commit} steps");
+        }
+    }
+
+    // Two instances of one definition over open cells are compared as two
+    // definitions are, by their expansions: `'q0` is left for `z` to
+    // decide, within the steps the twin definition is held to.
+    #[test]
+    fn open_instances_of_one_recursive_definition_compare_by_expansion() {
+        for n in [3, 4] {
+            let apps: usize = (1..=n).product();
+            let (commit, probe) = permuted_steps("D", n);
             assert!(probe <= 64 * apps, "n={n}: a probe took {probe} steps");
             assert!(commit <= 100 * apps * apps, "n={n}: a commit took {commit} steps");
         }

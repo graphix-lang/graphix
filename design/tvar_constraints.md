@@ -992,7 +992,9 @@ through them (pins
 `typ::contains::tests::open_applications_of_a_recursive_definition_are_walked_once`,
 `a_kept_verdict_over_open_applications_is_the_pairs_own`,
 `an_application_key_holds_its_cells`,
-`lang::types::open_applications_of_recursive_typedefs_check`).
+`lang::types::open_applications_of_recursive_typedefs_check`). Two
+instances of one definition over an open cell take the same walk
+(`design/env_independent_typerefs.md`, Same definition).
 
 ### The occurs check
 

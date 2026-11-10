@@ -240,6 +240,17 @@ reload's, is compared by what each means), `union` and
 `union_identical` (`setops.rs`: refs to one definition merge or compare
 by their params) and `contains`' arm for two instances of one
 definition whose params contain each other (one type, no expansion).
+That arm is taken only where no param holds an open cell. Equal params
+would decide a cell where the expansion asks less (`T<'c>` against
+`T<Any>`, the parameter in a callback's argument, asks nothing of `'c`), so
+the order of a function type's positions would decide a program. Two
+instances over an open cell are compared by their expansions, as two
+definitions are, whether or not the definition reaches itself: the
+verdict and what it binds are the written-out type's, and the cost is
+that walk's, by the applications the definition unfolds to
+(`design/tvar_constraints.md`, Containment over a pair of definitions;
+pins `typ::contains::tests::open_instances_of_one_recursive_definition_compare_by_expansion`,
+`lang::types::recursive_typedef_instances_over_an_open_cell_agree_with_the_expansion`).
 
 `ResolvedRef::def_key` is the params allocation of one `TypeDef`,
 which every cell filled from it shares. A type a module's interface
