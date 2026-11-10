@@ -670,6 +670,13 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
 // cells are a definition's (or judges the union before it flattens). Probe:
 // ~/ptmp/cr29/scratch/r19/19g/fnmerge.gx (formal-union-fn-merge-01)
 
+// CR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
+// repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and
+// setops.rs's same_shape repeats the tuple, struct, variant, array, list and map arms, differing in
+// ByRef mutability and in leaving out Error and Fn. They already disagree on `&T` against `&mut T`.
+// One helper in graphix-types with the variants it needs, called from all three.
+// (one-constructor-dup-01)
+
 /// Whether two written union members are built by one constructor, so a
 /// value of the one may be a value of the other: two arrays, lists, maps,
 /// errors, references or function types; tuples of one arity; structs of

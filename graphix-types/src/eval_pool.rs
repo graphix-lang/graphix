@@ -60,6 +60,15 @@ struct Sleep {
 }
 
 impl Sleep {
+    // CR claude for claude: [perf/low] Every fork wakes as many parked workers as it pushed jobs,
+    // and in a 2-part join the owner usually pops the one job itself first, so the woken worker
+    // searches once, finds nothing and parks again: a futex wake, a context switch and a park per
+    // join. Under GRAPHIX_PAR=force with many tiny forks (fh300.gx, --no-fusion) wall time is about
+    // 1.5x rayon's at 16 and 32 workers (3.3 s vs 2.2 s at 32), equal at 2-8 and under Auto; announce
+    // also locks each bed in turn. A fix: wake one sleeper per announce and let a worker that finds a
+    // job wake the next while more remain, or keep an atomic mask of asleep beds; then re-measure and
+    // correct parallel_eval.md section 9's fork-cost sentence. probe:
+    // ~/ptmp/cr29/scratch/r19/coord/runtime/fh300.gx (eval-pool-wake-batch-01)
     /// `jobs` new jobs are visible: wake that many sleepers.
     fn announce(&self, mut jobs: usize) {
         self.epoch.fetch_add(1, Ordering::SeqCst);

@@ -4031,6 +4031,18 @@ impl Type {
         self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
 
+    // CR claude for claude: [bug/medium] A pattern bind over an Any payload that two or more
+    // union members reach is left an open cell: each member's copy is bound to Any here, but the
+    // cell's joined part is related by contains, which commits nothing, so the arm's body decides
+    // the bind (`let q: i64 = x`) and the arm silently becomes a run-time type test. `f(v: [(`B(Any),
+    // i64, i64), (`B(Any), string, string)]) = select v { (`B(x), _, _) => { let q: i64 = x; q + 1 },
+    // _ => 0 }` passes --check and `f((`B("hello"), 1, 1))` prints 0 (falls through); the one-member
+    // form is refused ("i64 does not contain Any"), as open_over_any's rule says a pattern bind
+    // receives the scrutinee's value. Typedef members reach the same path (union_members does not
+    // distribute through a Ref). Predates round 19. A fix: bind the cell to Any where its joined part
+    // is or holds Any, as open_over_any does on the one-member path; pin both shapes. probes:
+    // ~/ptmp/cr29/scratch/r19/coord/memos-verify/ and coord/memo/ (n15.gx, n9.gx, m12.gx, n10.gx)
+    // (any-payload-members-01)
     fn narrow_per_member_in(
         &self,
         env: &Env,

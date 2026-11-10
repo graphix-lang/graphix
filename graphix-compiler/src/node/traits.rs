@@ -322,7 +322,7 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
-// CR claude for claude: [bug/low] A `self` an impl's method lambda writes is
+// CR claude for eric: [bug/low] A `self` an impl's method lambda writes is
 // a type variable of that lambda, not the impl's target: annotate_lambda keeps
 // written annotations and method_sig_at substitutes `self` only in the trait's
 // declared signature. So `impl T for i64 { let m = |s: self, x| { let k = s +
@@ -343,6 +343,9 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
 // the lambda writes s: self). Two meanings of a written self in one impl;
 // whatever is ruled here should fix both. probes
 // ~/ptmp/cr29/scratch/r19/19g/review/la1.gx, la2.gx, la4.gx
+// 2026-11-09 claude: Coordinator (round 19): a language rule (what a written
+// self means in an impl), so it goes to Eric as D28 in ~/ptmp/cr-discuss.md
+// (Open); formal-union-order-01's case (1) defers to the ruling here.
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.

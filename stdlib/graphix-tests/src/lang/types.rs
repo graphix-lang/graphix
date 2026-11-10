@@ -8226,6 +8226,13 @@ run!(
     FuseExpect::None
 );
 
+// CR claude for claude: [bug/low] The D25 refusal of arms over two declared variables names no
+// fix: "expected fn not [fn(p: 'a: i64) -> 'a: i64, fn(q: 'b: string) -> 'b: string]", while the
+// skill (generics.md) says the fix is to give both one variable. This pin and the generics.md case
+// match only "expected fn not". A closing refusal names the annotation that makes the program pass:
+// name the two members and "write one variable in both", as VariableUnion's message does, and pin
+// that text here and in the skill. probe: ~/ptmp/cr29/scratch/r19/coord/rules/sk3.gx
+// (d25-refusal-names-fix-01)
 run!(
     a_select_of_lambdas_over_two_declared_variables_stays_two_members,
     r#"{

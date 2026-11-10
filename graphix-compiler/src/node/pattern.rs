@@ -2765,6 +2765,8 @@ impl<R: Rt> PatternNode<R> {
         v: &Value,
         tag: crate::Tag,
     ) {
+        // inside the guard's boundary: the guard read these binds as it
+        // ran, so their delivery is not one the walk passed it by
         // CR claude for claude: [perf/low] Delivering the binds inside the guard's boundary
         // spares only a reader that sits directly in the guard: one in a block statement of
         // the guard (`x if { let y = x; y > 0 }`) has that statement's boundary visited, which
@@ -2774,8 +2776,6 @@ impl<R: Rt> PatternNode<R> {
         // guards). Values are right (a `count(x)` there counts one fire, base and lane alike).
         // The re-delivery repeats what bind_tentative gave the guard: it should not make a
         // late fire to any reader inside the guard at all. (guard-bind-late-01)
-        // inside the guard's boundary: the guard read these binds as it
-        // ran, so their delivery is not one the walk passed it by
         let bind = |ctx: &mut ExecCtx<'_, R>| {
             self.structure_predicate.bind(v, &mut |id, v| {
                 ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk)
