@@ -47,7 +47,9 @@ select, and runtime forms. Each rule refuses and names the fix.
   An arm whose pattern would decide it is refused the same way: `|x|
   select (x, 0) { (`J, _) => 1, (`M, _) => 2 }` (write `x: [`J, `M]`),
   and through a reference or an abstract's payload alike (`select *r`
-  over `let r = &mut (x, 0)`, `select W((x, 0)).0`); so is a literal,
+  over `let r = &mut (x, 0)`, `select W((x, 0)).0`), whether the arms
+  would decide the part or leave it open (``[`J, _] => 1, _ => 3`` over
+  `let r = &mut [x, 0]`); so is a literal,
   `null`, `[]`, a fixed-length slice or an or-pattern there. A pattern
   that only takes it apart decides its shape: `((a, b), _)`, `({a, b},
   _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check, unless
@@ -113,6 +115,9 @@ ok |x| select (x, 0) { ((a, b), _) => a }
 no "not decided at this select" |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }
+no "[`J, _] tests a value of 'x" |x| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
+ok |x: [`J, `M]| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
+ok |x| { let r: &mut Array<[`J, `M, i64]> = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
 no "the type `r` refers to" |x| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
 no "the type `r` refers to" |x: [`J, `M]| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
 ok |x| { let r: &mut ([`J, `M], i64) = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }

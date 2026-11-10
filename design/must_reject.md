@@ -350,6 +350,7 @@ decide `tm__z`; where every arm only takes the value apart, the beside
 shape, `{ let tm__z = never(); select (select true { true => s, false =>
 tm__z }, 0) { (arm, _) .., _ => last } }`, where an arm's destructure
 chooses between `tm__z` and `s`. Rule: an open cell the scrutinee held before the arms,
+itself or through an open cell's lower bounds,
 still open at the select's end or decided by an arm's pattern, that an
 arm tests is refused (`Select::check_undecided`,
 `StructurePattern::meets_undecided`, `meets_decided`); a pattern that

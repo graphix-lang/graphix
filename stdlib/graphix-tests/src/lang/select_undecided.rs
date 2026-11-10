@@ -1007,6 +1007,78 @@ run!(destructuring_a_part_below_a_reference, r#"{
     f((1, 2))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
 
+// A part below a bound that the arms leave open is judged too: the
+// referent they decide (`Array<Any>`) holds its values without it.
+run!(tag_testing_an_open_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } };
+    f(`M)
+}"#, refused("[`J, _] tests a value of 'x, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'x the type of `x` (line 2"); FuseExpect::None);
+
+run!(tag_over_an_annotated_open_part_below_a_reference, r#"{
+    let f = |x: [`J, `M]| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(tag_over_an_annotated_reference_to_an_open_part, r#"{
+    let f = |x| {
+        let r: &mut Array<[`J, `M, i64]> = &mut [x, 0];
+        select *r { [`J, _] => 1, _ => 3 }
+    };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(tag_testing_an_open_part_the_referent_keeps_refused, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [`J, ..] => 1, _ => 3 } };
+    f(`M)
+}"#, refused("[`J, ..] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_testing_an_open_part_below_two_references_refused, r#"{
+    let f = |x| {
+        let r = &mut [x, 0];
+        let s = &mut r;
+        select **s { [`J, _] => 1, _ => 3 }
+    };
+    f(`M)
+}"#, refused("[`J, _] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_testing_an_open_part_below_an_abstract_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select W([x, 0]).0 { [`J, _] => 1, _ => 3 };
+    f(`M)
+}"#, refused("[`J, _] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_over_an_annotated_open_part_below_an_abstract_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: [`J, `M]| select W([x, 0]).0 { [`J, _] => 1, _ => 3 };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(tag_testing_a_never_let_below_a_reference_refused, r#"{
+    let z = never();
+    let r = &mut [z, 0];
+    let o = select *r { [`J, _] => 1, _ => 3 };
+    z <- `J;
+    o
+}"#, refused("[`J, _] tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_over_an_annotated_never_let_below_a_reference, r#"{
+    let z: [`J, `M] = never();
+    let r = &mut [z, 0];
+    let o = select *r { [`J, _] => 1, _ => 3 };
+    z <- `J;
+    o
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+run!(dead_arm_after_a_tested_open_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3, [_, _] => 4 } };
+    f(`M)
+}"#, refused("[`J, _] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(destructuring_an_open_part_below_a_reference, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [(a, b), _] => a, _ => 2 } };
+    [f((1, 2)), f((7, 2))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 7]); FuseExpect::None);
+
 // The referent of a reference to an expression no binding names is a cell
 // no source can write: a hint names a binding holding the reference.
 run!(tag_deciding_a_referent_names_the_reference_refused, r#"{

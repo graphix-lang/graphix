@@ -2835,6 +2835,21 @@ impl<R: Rt> Select<R> {
                     true => &pat.type_predicate,
                     false => scrut,
                 };
+                // CR claude for claude: [bug/low] A declared variable the scrutinee
+                // holds only through an open cell's lower bounds is not met: meets_rigid
+                // reads the scrutinee as it stands before the arms, an open cell there.
+                // `|x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }`
+                // checks and runs ([3, 1] for `M and `J), and so does `[`J, ..]`, where the
+                // referent the arms decide holds 'a itself (Array<[i64, 'a, `J]>), and
+                // `select W([x, 0]).0` over an abstract's parameter; the plain twin `|x:
+                // 'a| select [x, 0] { [`J, _] => 1, _ => 3 }` is refused "[`J, _] tests
+                // inside a value of 'a". No wrong value found: a tag with a payload there
+                // is refused as a runtime-form collision. Judging it means meeting the
+                // rigid cell in lower_view's reading too (undecided-lower-bound-03 did that
+                // for open cells, Deciding::left_open), with no whole-cell exemption, since
+                // no arm decides a declared variable. Same on base-r20. probes:
+                // ~/ptmp/cr29/scratch/r20/20e/ulb03/rig1.gx, rig2.gx, rig3.gx, twin
+                // rig1t.gx (rigid-lower-bound-01)
                 if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, over)? {
                     let e = rigid_refusal(&ctx.env, &ids, sp, over, &tv, Holder::Arm);
                     return Err(e).at(&site());
@@ -3011,6 +3026,7 @@ impl<R: Rt> Select<R> {
             // an arm dead for what an earlier arm's pattern decided is refused
             // for that decision
             if let Err(Dead(e)) = covered {
+                deciding.left_open(&mut decided);
                 let open = still_open(&outer);
                 self.check_undecided(
                     &ctx.env,
@@ -3029,6 +3045,7 @@ impl<R: Rt> Select<R> {
         drop(rtypes);
         match checking {
             true => {
+                deciding.left_open(&mut decided);
                 let mut undecided = still_open(&outer);
                 self.check_undecided(
                     &ctx.env,
@@ -3141,7 +3158,17 @@ impl<R: Rt> Select<R> {
 /// before the arms is theirs to decide together, unless an arm holds a
 /// partial struct pattern, whose completion has no one answer.
 #[derive(Default)]
-struct Deciding(SmallVec<[(TVar, Option<Type>); 4]>);
+struct Deciding(SmallVec<[(TVar, Kept); 4]>);
+
+/// How a [`Deciding`] holds a cell.
+enum Kept {
+    /// Open, in the scrutinee's type or a written test's.
+    Open,
+    /// Open, in the scrutinee's lower bounds alone.
+    Below,
+    /// Bound to this type, which holds open cells.
+    Holder(Type),
+}
 
 impl Deciding {
     /// `below`: the cells the scrutinee holds only through lower bounds,
@@ -3162,15 +3189,16 @@ impl Deciding {
             _ => None,
         };
         let wholes = [whole(scrut), lower.and_then(whole)];
+        let held = |tv: &TVar, open: Kept| match tv.open_cell() {
+            Some(c) => (!c.is_rigid() && !wholes.contains(&Some(c.cell_addr())))
+                .then(|| (tv.clone(), open)),
+            None => Self::holding(tv),
+        };
         Self(
             outer
                 .values()
-                .chain(below.values())
-                .filter_map(|tv| match tv.open_cell() {
-                    Some(c) => (!c.is_rigid() && !wholes.contains(&Some(c.cell_addr())))
-                        .then(|| (tv.clone(), None)),
-                    None => Self::holding(tv),
-                })
+                .filter_map(|tv| held(tv, Kept::Open))
+                .chain(below.values().filter_map(|tv| held(tv, Kept::Below)))
                 .collect(),
         )
     }
@@ -3182,13 +3210,13 @@ impl Deciding {
         crate::typ::settle::position_cells(t, &mut cells);
         self.0.extend(cells.drain().filter_map(|(_, tv)| {
             let c = tv.open_cell()?;
-            (!c.is_rigid()).then(|| (tv, None))
+            (!c.is_rigid()).then(|| (tv, Kept::Open))
         }))
     }
 
-    fn holding(tv: &TVar) -> Option<(TVar, Option<Type>)> {
+    fn holding(tv: &TVar) -> Option<(TVar, Kept)> {
         let b = tv.binding()?;
-        b.has_free().then(|| (tv.clone(), Some(b)))
+        b.has_free().then(|| (tv.clone(), Kept::Holder(b)))
     }
 
     /// The cells still open, and the holders still holding one, for the
@@ -3198,8 +3226,9 @@ impl Deciding {
             self.0
                 .iter()
                 .filter_map(|(tv, held)| match held {
-                    None => tv.open_cell().is_some().then(|| (tv.clone(), None)),
-                    Some(_) => Self::holding(tv),
+                    Kept::Open => tv.open_cell().map(|_| (tv.clone(), Kept::Open)),
+                    Kept::Below => tv.open_cell().map(|_| (tv.clone(), Kept::Below)),
+                    Kept::Holder(_) => Self::holding(tv),
                 })
                 .collect(),
         )
@@ -3210,13 +3239,26 @@ impl Deciding {
     fn decided(&self, decided: &mut Decisions) {
         for (tv, held) in self.0.iter() {
             match held {
-                None if tv.open_cell().is_none() => {
+                Kept::Open | Kept::Below if tv.open_cell().is_none() => {
                     decided.cells.insert(tv.stands_for(), tv.clone());
                 }
-                Some(b) if tv.binding().as_ref() != Some(b) => {
+                Kept::Holder(b) if tv.binding().as_ref() != Some(b) => {
                     decided.held.entry(tv.stands_for()).or_insert_with(|| b.clone());
                 }
-                None | Some(_) => (),
+                Kept::Open | Kept::Below | Kept::Holder(_) => (),
+            }
+        }
+    }
+
+    /// Add to `decided` each cell of the lower bounds the arms left open:
+    /// the scrutinee's type holds its values without it, so an arm tests
+    /// them as it tests those of a cell the arms decided.
+    fn left_open(&self, decided: &mut Decisions) {
+        for (tv, held) in self.0.iter() {
+            if let Kept::Below = held
+                && tv.open_cell().is_some()
+            {
+                decided.cells.insert(tv.stands_for(), tv.clone());
             }
         }
     }
@@ -3262,7 +3304,7 @@ fn lower_view(t: &Type) -> Option<Type> {
     go(t, &mut LPooled::take())
 }
 
-// CR claude for claude: [bug/low] A cell the scrutinee holds only through a lower
+// XCR claude for claude: [bug/low] A cell the scrutinee holds only through a lower
 // bound that the arms leave open is not judged: `below` feeds only Deciding, and
 // still_open reads `outer` alone, so meets_undecided never sees it. `|x| { let r =
 // &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }` runs ([3, 1] for `M and `J),
@@ -3272,6 +3314,22 @@ fn lower_view(t: &Type) -> Option<Type> {
 // `select *r { ((a, b), _) => a }` over `&mut (x, 0)` still checks), and the whole
 // exemption kept for a cell the bounds hold whole (`select W(x).0 { `J => 1, `M =>
 // 3 }`). probe: ~/ptmp/cr29/scratch/r19/19a/w6.gx (undecided-lower-bound-03)
+// 2026-11-10 claude: Deciding marks each cell it holds (Kept::Open, Below, Holder),
+// and Deciding::left_open adds the Below cells the arms left open to the decided set
+// before check_undecided, on both paths (the select's end and a dead arm), so they
+// are met as decided cells are, in what reaches the arm or in lower_view's reading;
+// the whole cell and an only-destructuring pattern keep their exemptions.
+// w6.gx/w6b.gx are refused naming x, w3.gx prints 3. Pins:
+// lang::select_undecided::tag_testing_an_open_part_below_a_reference_refused,
+// _the_referent_keeps_refused, _below_two_references_refused,
+// _below_an_abstract_parameter_refused,
+// tag_testing_a_never_let_below_a_reference_refused,
+// dead_arm_after_a_tested_open_part_below_a_reference_refused (24 runs fail with the
+// two left_open calls removed), and the select.md cases line (skill_fences_check
+// fails too); twins tag_over_an_annotated_open_part_below_a_reference,
+// tag_over_an_annotated_reference_to_an_open_part,
+// destructuring_an_open_part_below_a_reference pass. Census 2949 files: 0 verdict, 0
+// message changes. The same hole for a declared variable is rigid-lower-bound-01.
 /// What `meets` finds over `reaching`, else over `lower`.
 fn met_in(
     reaching: &Type,
