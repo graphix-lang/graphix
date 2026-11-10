@@ -369,6 +369,15 @@ with the trait scope glob-imported (so siblings are callable bare);
 impl methods likewise under a per-impl scope. A method lambda takes the
 declared signature (at the target) as its own parameter annotations
 (`annotate_lambda`), which is what lets `|c| c.0` see `c: Counter`.
+Its `let` takes the signature as its annotation too, where it writes
+none. A method whose value, past parentheses and a block's final
+expression, is no lambda takes neither (`signature_of`): it is typed as
+a `let` of that value is, so a read of a generalized binding (`let put =
+s.g`, a default `= s.g`) forwards its scheme and each call copies it,
+as a `val` implemented so does, and `implements` holds whatever the
+value is to the declaration (`design/module_system.md`; pins
+`lang::traits::method_value_read_*`,
+`default_method_value_read_from_a_generic_struct_runs_at_two_types`).
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,

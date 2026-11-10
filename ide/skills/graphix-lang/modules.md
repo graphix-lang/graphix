@@ -69,6 +69,20 @@ no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Arr
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
 ```
 
+A method, an impl's or a default, is generic where a `let` of its value
+is: a lambda, or a read of a generic binding or of a field or tuple of
+one (`let put = s.g`), with no annotation on the method's `let`. Any
+other value (a call's result, a literal's projection) is one instance,
+refused under a variable each call picks.
+
+```graphix,cases
+ok type C = Abstract<i64>; let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for C { let put = s.g }; (Put::put(C(1), 1), Put::put(C(1), "s"))
+ok let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a = s.g }; impl Put for i64 {}; (Put::put(1, 1), Put::put(1, "s"))
+no "so no call copies its types" let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put: fn(self, x: 'a) -> 'a = s.g }; (Put::put(1, 1), Put::put(1, "s"))
+no "so no call copies its types" let mk = |z| |s, x| x; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put = mk(0) }; (Put::put(1, 1), Put::put(1, "s"))
+ok let mk = |z| |s, x| x + z; trait Put { val put: fn(self, x: i64) -> i64 }; impl Put for i64 { let put = mk(1) }; Put::put(1, 2)
+```
+
 A trait method's `#[pure]` or `#[sync]` holds for every implementation, even
 an uncalled one. Builds reject violating bodies; dynamic modules fail to load.
 Callback parameters retain caller-dependent effects, as in ordinary definitions.
@@ -89,9 +103,10 @@ fn(x: 'a) -> 'a`, `let f = |x| { y <- x; x }` over an outer `let y =
 never()` is refused (`let y: Any`, or the val at one type), and so is a
 written `let f = |x| x; f <- |x| x` (declare the val at one type). A
 trait method alike: one that writes an
-outer binding, or whose value is no lambda and has a type its value
-fixed (`(store, 1).0` over a writer of an outer binding, `mk(0)`), is
-refused under a variable each call picks: write it as a lambda. A val that
+outer binding, or whose value is neither a lambda nor a generic
+binding's read and has a type its value fixed (`(store, 1).0` over a
+writer of an outer binding, `mk(0)`), is refused under a variable each
+call picks: write it as a lambda. A val that
 something writes (`m::f <- ..`, `&mut m::f`) must fit its
 implementation: `val f: fn(x: i64) -> i64` over a generic `let f = |x|
 x` takes no write until the `let` is annotated `fn(x: i64) -> i64`. A

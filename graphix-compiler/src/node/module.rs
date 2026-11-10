@@ -651,7 +651,7 @@ pub(crate) fn captured_cells<R: Rt>(
 
 /// Whether the implementation's binding `id` is generic in the cells its
 /// own definitions own: a generalized binding nothing writes.
-fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
+pub(crate) fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
     ctx.env.poly_binds.contains(&id) && !ctx.connect_targets.contains(&id)
 }
 

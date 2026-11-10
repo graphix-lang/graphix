@@ -408,7 +408,8 @@ generator does not write; their pins are
 `mut_ref_to_a_*_val_refused`, `mut_ref_to_a_function_field_of_a_generic_val_refused`,
 `write_through_a_typedef_val_after_*_refused`
 and `lang::traits::*method_over_an_outer_binding_refused`,
-`*method_value_no_lambda_*_refused`, `method_made_by_a_call_refused`.
+`*method_value_no_lambda_*_refused`, `method_made_by_a_call_refused`,
+`method_value_read_*_refused`.
 
 ## Labeled and optional arguments across the fuzzer
 

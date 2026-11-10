@@ -259,9 +259,14 @@ default, is held the same way (`traits.rs::implements`). A method that
 is a lambda has the cells its definition owns copied by each call, but
 an impl's `let` is annotated with the method's signature, which claims
 them at the top level; so its cell is one type only where a binding it
-captures reaches it. A method whose value is no lambda (`(f, 1).0`, a
-select, a call's result) keeps its value's types, which no call copies,
-and its cells are judged by level, as a val's implementation's are.
+captures reaches it. A method whose value is no lambda takes no
+annotation from the declaration (`traits::signature_of`): its `let` is
+typed as any `let` of that value, and its cells are judged by level, as
+a val's implementation's are. So one that reads a generalized binding,
+or a field or tuple of one (`let put = s.g`, a default `= s.g`),
+forwards the scheme (`bind::forwards`), which each call copies; any
+other (`(f, 1).0`, a select, a call's result, a read under a written
+annotation) keeps its value's types, which no call copies.
 
 What is written through a val lands on the implementation, the pair
 being one variable, and every use takes the implementation's generic

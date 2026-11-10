@@ -2986,9 +2986,10 @@ run!(
     refused("that of y, a binding outside its let: give y a type that holds every 'a")
 );
 
-// A method whose value is no lambda keeps the types its value holds, which
-// no call copies: a variable each call picks may not stand on one of them,
-// a binding's outside or a call's result's.
+// A method whose value is neither a lambda nor a read of a generic binding
+// keeps the types its value holds, which no call copies: a variable each
+// call picks may not stand on one of them, a binding's outside or a call's
+// result's.
 run!(
     method_value_no_lambda_over_an_outer_binding_refused,
     r#"{
@@ -3001,7 +3002,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "the implementation has one type all uses share: its value is no lambda, so no call copies its types; make the method a lambda over variables of its own"
+        "the implementation has one type all uses share: its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types; make the method a lambda over variables of its own"
     )
 );
 
@@ -3016,7 +3017,9 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("its value is no lambda, so no call copies its types")
+    refused(
+        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+    )
 );
 
 run!(
@@ -3029,7 +3032,9 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("its value is no lambda, so no call copies its types")
+    refused(
+        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+    )
 );
 
 run!(
@@ -3045,7 +3050,195 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"), Put::get(c, 2), Put::get(c, "t"))
 }"#,
-    refused("its value is no lambda, so no call copies its types")
+    refused(
+        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+    )
+);
+
+// A method whose value reads a generic binding, or a field or tuple of
+// one, past parentheses and a block's final expression, carries its scheme
+// as a `let` of it does: each call copies it.
+run!(
+    method_value_read_from_a_generic_struct_runs_at_two_types,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    prints("[i64:1, \"s\"]")
+);
+
+run!(
+    method_value_read_from_a_generic_tuple_runs_at_two_types,
+    r#"{
+    type C = Abstract<i64>;
+    let p = (|s, x| x, 1);
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = p.0 };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    prints("[i64:1, \"s\"]")
+);
+
+run!(
+    method_value_read_through_parens_a_block_and_a_sibling_method,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x| x};
+    trait Put {
+      val put: fn(self, x: 'a) -> 'a;
+      val two: fn(self, x: 'a) -> ('a, 'a) = |s, x| (put(s, x), put(s, x))
+    };
+    impl Put for C { let put = (s).g; let two = |s, x| (put(s, x), x) };
+    impl Put for i64 { let put = { let k = 1; s.g } };
+    impl Put for string { let put = s.g; let two = |s, x| (x, x) };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"), Put::two(c, 2), Put::two(3, "t"), Put::put("u", 4))
+}"#,
+    prints("[i64:1, \"s\", [i64:2, i64:2], [\"t\", \"t\"], i64:4]")
+);
+
+run!(
+    default_method_value_read_from_a_generic_struct_runs_at_two_types,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a = s.g };
+    impl Put for C {};
+    impl Put for i64 {};
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"), Put::put(2, 1.5))
+}"#,
+    prints("[i64:1, \"s\", f64:1.5]")
+);
+
+run!(
+    method_value_read_in_a_generic_impl_and_a_union_dispatch,
+    r#"{
+    type B<'a> = Abstract<'a>;
+    let s = {g: |s, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl<'b> Put for B<'b> { let put = s.g };
+    impl Put for string { let put = |s, x| x };
+    let c: B<i64> = B(1);
+    let d: B<string> = B("q");
+    let f = |v: [B<i64>, string], x| (Put::put(v, x), Put::put(v, 0));
+    let g = 'a: Put |v: 'a, x| Put::put(v, x);
+    (Put::put(c, 1), Put::put(d, "s"), f(c, "a"), f("z", 1.5), g(c, 2), g(d, "t"))
+}"#,
+    prints("[i64:1, \"s\", [\"a\", i64:0], [f64:1.5, i64:0], i64:2, \"t\"]")
+);
+
+// The declaration holds the scheme a method's value reads as it holds a
+// lambda's signature: its shape, its variables and its bounds.
+run!(
+    method_value_read_less_general_than_declared_is_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x: i64| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("signature has type variable 'a where implementation has i64")
+);
+
+run!(
+    method_value_read_with_a_bound_the_declaration_lacks_is_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x| x + x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "the implementation requires 'a: Number, which the signature does not declare"
+    )
+);
+
+run!(
+    method_value_read_joining_self_and_a_declared_variable_is_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s: 'q, x: 'q| -> 'q select true { true => s, false => x }};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("type variable usage mismatch: expected C, got 'a")
+);
+
+run!(
+    method_value_read_of_another_self_is_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s: i64, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused("signature has C, implementation has i64")
+);
+
+// A cell of the scheme that a binding outside holds is one type, which no
+// call copies.
+run!(
+    method_value_read_over_an_outer_binding_is_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let y = never();
+    let s = {g: |s, x| { y <- x; x }};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "the implementation has one type all uses share, that of a binding outside its let: give that binding a type that holds every 'a"
+    )
+);
+
+// An annotated `let` of a generic binding's read is one instance, a
+// method's as any other.
+run!(
+    method_value_read_under_an_annotation_is_refused,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put: fn(self, x: 'a) -> 'a = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+    )
+);
+
+// At one type the declaration decides what a method's value leaves open,
+// as an annotation on its `let` would.
+run!(
+    method_value_made_by_a_call_at_one_type,
+    r#"{
+    type C = Abstract<i64>;
+    let mk = |z| |s, x| x + z;
+    let s = {g: |s, x| x};
+    trait Put { val put: fn(self, x: i64) -> i64; val get: fn(self, x: i64) -> i64 };
+    impl Put for C { let put = mk(1); let get = s.g };
+    impl Put for i64 { let put = select 1 { _ => |s, x| s + x }; let get = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::get(c, 2), Put::put(3, 4), Put::get(5, 6), s.g(1, "a"))
+}"#,
+    prints("[i64:2, i64:2, i64:7, i64:6, \"a\"]")
 );
 
 run!(

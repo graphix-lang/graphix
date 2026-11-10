@@ -99,7 +99,7 @@ fn implements<R: Rt>(
     let pairs = declared.sig_matches(&ctx.env, &ft)?;
     let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
     let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
-    // CR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
+    // XCR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
     // and the impl's let annotation claims at the top level a free variable a declared
     // quantifier's bound names, so `trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y:
     // 'b) -> 'a }; impl T for i64 { let m = (|#x, s, y| x, 1).0 }` (or `(id, 1).0`) is
@@ -138,23 +138,44 @@ fn implements<R: Rt>(
     // method_value_projected_from_data_is_refused; it accepts more, so census and guicheck.
     // Using the Bind node's type in Impl::typecheck0 instead of env's does not help
     // (tried).
+    // 2026-11-10 claude: Round 20 (20d): a method, an impl's or a trait default's, whose
+    // value past parentheses and a block's final expression is no lambda takes no
+    // annotation from the declaration (traits::signature_of), so its let is typed as any
+    // let of the value: a read of a generalized binding or of its field or tuple (let put =
+    // s.g, p.0, a default = s.g) forwards the scheme and runs at two types, as its val twin
+    // does (probes a2, a3, d2, h9, h10 in ~/ptmp/cr29/scratch/r20/20d/tnl), and implements
+    // holds it to the declaration by sig_matches and level (h1, h2, j1, e9, h5 refused).
+    // The CR's own tq1/tq1b ((f, 1).0 over a literal) stay refused, one instance by the ML
+    // rule, and so do a call's result and an annotated read (e3, e6); their message now
+    // names the rule ('neither a lambda nor, with no annotation, a generic binding's
+    // read'), and a forwarded scheme's shared cell is told as a binding's outside. Pins
+    // lang::traits::method_value_read_from_a_generic_struct_runs_at_two_types,
+    // *_from_a_generic_tuple_*, *_through_parens_a_block_and_a_sibling_method,
+    // *_in_a_generic_impl_and_a_union_dispatch,
+    // default_method_value_read_from_a_generic_struct_runs_at_two_types,
+    // method_value_read_joining_self_and_a_declared_variable_is_refused,
+    // *_of_another_self_is_refused, *_over_an_outer_binding_is_refused: 32 runs fail with
+    // signature_of always giving the signature; method_value_read_less_general_*,
+    // *_with_a_bound_*, *_under_an_annotation_*, method_value_made_by_a_call_at_one_type
+    // guard the edges. Census 2949 files against base-r20: 0 verdict, 0 message.
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
     };
     module::hold_paired(&ctx.env, "method", &pairs, shared, |tv, v| {
-        match Holder::of(ctx, id, tv) {
-            Holder::Captured(b) => format_compact!(
+        match (Holder::of(ctx, id, tv), module::generalized_impl(ctx, id)) {
+            (Holder::Captured(b), _) => format_compact!(
                 ", that of {b}, a binding outside its let: give {b} a type that holds \
                  every {v}"
             ),
-            Holder::Lambda => format_compact!(
+            (Holder::Lambda, _) | (Holder::NoLambda, true) => format_compact!(
                 ", that of a binding outside its let: give that binding a type that \
                  holds every {v}"
             ),
-            Holder::NoLambda => format_compact!(
-                ": its value is no lambda, so no call copies its types; make the \
-                 method a lambda over variables of its own"
+            (Holder::NoLambda, false) => format_compact!(
+                ": its value is neither a lambda nor, with no annotation, a generic \
+                 binding's read, so no call copies its types; make the method a \
+                 lambda over variables of its own"
             ),
         }
     })
@@ -386,6 +407,23 @@ fn self_as_target(e: &Expr, target: &Type, generic: bool, env: &Env) -> Result<E
     res.map(|()| e)
 }
 
+/// The annotation a method's `let` takes from the declared signature
+/// where the method wrote none: `sig` where its `value`, past grouping
+/// parentheses and a block's final expression, is a lambda. Any other
+/// value is typed as a `let` of it is, so one that forwards a generic
+/// binding carries its scheme, and [`implements`] holds it to `sig`.
+fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
+    let mut e = value;
+    loop {
+        match &e.kind {
+            ExprKind::Lambda(_) => break Some(Type::Fn(Arc::new(sig.clone()))),
+            ExprKind::ExplicitParens(inner) => e = inner,
+            ExprKind::Block { exprs } => e = exprs.last()?,
+            _ => break None,
+        }
+    }
+}
+
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
@@ -519,7 +557,7 @@ impl<R: Rt> Trait<R> {
                 let b = BindExpr {
                     rec: false,
                     pattern: StructurePattern::Bind(name),
-                    typ: Some(Type::Fn(Arc::new(sig.clone()))),
+                    typ: signature_of(body, &sig),
                     value: annotate_lambda(body, &sig),
                 };
                 let mut e = body.clone();
@@ -956,7 +994,7 @@ impl<R: Rt> Impl<R> {
             let b = BindExpr {
                 rec: b.rec,
                 pattern: b.pattern.clone(),
-                typ: b.typ.clone().or_else(|| Some(Type::Fn(Arc::new(sig.clone())))),
+                typ: b.typ.clone().or_else(|| signature_of(&b.value, &sig)),
                 value: annotate_lambda(&b.value, &sig),
             };
             let dec = match &m.dec {

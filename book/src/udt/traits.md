@@ -94,10 +94,14 @@ fn(self, x: 'a) -> 'a`, a method that keeps its argument in a binding
 outside it, `let y = never(); impl Put for C { let put = |s, x| { y <-
 x; x } }`, would have one type for every call, and is refused: give `y`
 a type that holds every `'a` (`let y: Any = never()`). A method whose
-value is not a lambda (`(f, 1).0`, a call's result) keeps the types its
-value has, and no call copies one its value fixed (a type an outer
-binding shares, the type a call made): under such a variable it is
-refused, and the way out is to write the method as a lambda.
+value reads a generic binding, or a field or tuple of one (`let put =
+id`, `let put = s.g` over `let s = {g: |s, x| x}`), is as generic as
+that binding, as a `let` of it is. Any other value that is not a lambda
+(`(f, 1).0`, a call's result, a read under an annotation on the
+method's `let`) keeps the types its value has, and no call copies one
+its value fixed (a type an outer binding shares, the type a call made):
+under such a variable it is refused, and the way out is to write the
+method as a lambda.
 
 `impl Trait for Target;` (no body) implements a trait whose methods
 all have defaults, and is the form an interface file uses to declare

@@ -1256,7 +1256,7 @@ run!(
 
 run!(
     an_impl_method_over_a_select_of_lambdas_is_refused,
-    refused("its value is no lambda, so no call copies its types; make the method a lambda over variables of its own"),
+    refused("its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types; make the method a lambda over variables of its own"),
     "/test.gx" => r#"
         trait Id { val id: fn(self, x: 'a) -> 'a };
         impl Id for i64 { let id = select true { true => |s, x| x, false => |s, x| x } };
@@ -1276,7 +1276,7 @@ run!(
 
 run!(
     an_impl_methods_quantified_annotation_over_a_makers_result_is_refused,
-    refused("its value is no lambda, so no call copies its types"),
+    refused("its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: 'a) -> 'a };
         let mk = |z| { let v = never(); |s: i64, x| { v <- x; v } };
@@ -1320,7 +1320,7 @@ run!(
 
 run!(
     a_makers_result_as_an_impl_method_under_a_quantified_val_is_refused,
-    refused("its value is no lambda, so no call copies its types"),
+    refused("its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"),
     "/test.gx" => r#"
         let mk = |z| |s: i64, x| { z <- x; z };
         trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a };
