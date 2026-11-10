@@ -956,6 +956,36 @@ of coprime lengths diff walks pairs that grow with the lengths, not their
 lcm (pin
 `typ::setops::tests::diff_over_error_cycles_walks_pairs_by_their_lengths`).
 
+### Containment over a pair of definitions
+
+`contains` answers a pair of named types met again inside its own walk by
+assumption: it holds (`ContainsHist::assuming`). A verdict reached under
+an assumption still in progress is the pair's only while that assumption
+stands, so it is kept provisionally (`Provisional`, with what it rests
+on, `Rests`): dropped when an assumption it may rest on is answered
+otherwise, kept for good once each was answered as assumed. A probe's
+verdict is kept with the count of cell writes it was reached at and read
+only while the count stands; a commit's is kept for the rest of the walk,
+since what its proof bound stays bound, and only where it holds.
+
+A verdict is keyed by its two nodes. A name applied over a cell
+(`ContainsHist::open_app`) has no node to key by: its expansion holds the
+cell, so every visit builds it, and the applications inside it, anew. It
+is keyed by its definition and its parameters' content, a cell by its
+identity (`ContainsHist::pair_key`, `Type::param_key`), and the walk
+holds each such cell so no other takes its address (`TypeRef::key_cells`).
+So the applications of a recursive definition over cells that stay open,
+each reaching every other (`type D<'a, 'b> = [`N, `X(fn(x: 'a) -> i64,
+D<'b, 'a>), `Y(D<'b, 'a>)]` against an identical `F<Any, Any>`: one
+application an order of the cells), are each walked once by a probe, and
+by a commit once per trial a union with two open members runs on copies,
+where a walk that forgets a pair once it is answered takes every path
+through them (pins
+`typ::contains::tests::open_applications_of_a_recursive_definition_are_walked_once`,
+`a_kept_verdict_over_open_applications_is_the_pairs_own`,
+`an_application_key_holds_its_cells`,
+`lang::types::open_applications_of_recursive_typedefs_check`).
+
 ### The occurs check
 
 Before a cell binds, takes a lower bound or merges with another, the

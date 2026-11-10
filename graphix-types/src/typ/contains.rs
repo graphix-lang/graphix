@@ -11,7 +11,7 @@ use crate::{
         Unfolded, node_addr, probe_key,
         setops::{Identical, IdenticalMemo, strictly_identical, union_identical},
         tvar::{
-            CellFact, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
+            CellFact, CellLock, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
             cycle_toward, settled_cause_note, would_cycle_inner,
         },
     },
@@ -100,30 +100,33 @@ pub(super) struct ContainsHist {
     /// mass stays Arc-shared so repeated pairs are pruned by identity.
     expansions: Lazy<IntMap<usize, Type>>,
     /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
-    /// calls, keyed by both sides' content-Arc identities. Each entry
-    /// pins both types so an address cannot be recycled under its key,
-    /// and carries the [`cell_writes`] count it was reached at: a write
-    /// to a cell may change a verdict that read it.
-    probe_pairs: Lazy<AHashMap<ProbeKey, (u64, bool)>>,
+    /// calls, keyed by both sides' identities ([`Self::probe_side`]). Each
+    /// entry pins both types so an address cannot be recycled under its
+    /// key, and carries the [`cell_writes`] count it was reached at: a
+    /// write to a cell may change a verdict that read it.
+    probe_pairs: Lazy<AHashMap<MemoKey, (u64, bool)>>,
     probe_pins: Lazy<Vec<Type>>,
-    /// Probe verdicts that rest on assumptions still in progress, held
-    /// while those stand: one is dropped when an assumption it may rest
-    /// on is answered otherwise, and joins `probe_pairs` once every one
-    /// was answered as assumed. Pinned with `probe_pins`.
-    provisional: Lazy<AHashMap<ProbeKey, Provisional>>,
+    /// Verdicts that rest on assumptions still in progress, held while
+    /// those stand: one is dropped when an assumption it may rest on is
+    /// answered otherwise, and joins `probe_pairs` (a probe's) or
+    /// `commit_pairs` (a commit's) once every one was answered as assumed.
+    /// Pinned with `probe_pins`.
+    provisional: Lazy<AHashMap<MemoKey, Provisional>>,
     /// The keys of `provisional` in the order they were reached: an
     /// assumption's verdicts are those reached after it was made.
-    provisional_order: Lazy<Vec<ProbeKey>>,
+    provisional_order: Lazy<Vec<MemoKey>>,
     /// Committing pairs proven to hold, by both sides' identities and the
     /// flags: what the proof bound stays bound for the rest of the call,
     /// so the same pair met again holds without walking it (a DAG's
     /// shared nodes are met once per path otherwise). Pinned with
     /// `probe_pins`.
-    commit_pairs: Lazy<AHashSet<(NormKey, NormKey, BitFlags<ContainsFlags>)>>,
+    commit_pairs: Lazy<AHashSet<MemoKey>>,
     /// An id for each application [`Self::pair_key`] met, by its
     /// definition and its parameters' keys, the application pinned with
     /// `probe_pins`.
     apps: Lazy<AHashMap<AppKey, usize>>,
+    /// The cells those keys hold by address ([`TypeRef::key_cells`]).
+    app_cells: Lazy<Vec<Arc<CellLock>>>,
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
@@ -148,9 +151,10 @@ pub(super) struct ContainsHist {
     identical: IdenticalMemo,
 }
 
-/// A probe memo's key: both sides' identities, rigid cells held rigid
-/// or not.
-type ProbeKey = (NormKey, NormKey, bool);
+/// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`])
+/// and the flags the verdict was reached under, a probe's without its
+/// polarity.
+type MemoKey = (NormKey, NormKey, BitFlags<ContainsFlags>);
 
 /// What a verdict assumed of the walk in progress: the depth of the
 /// shallowest pair in progress it took to hold, the shallowest entries of
@@ -193,9 +197,15 @@ impl Rests {
             false => self.failed == usize::MAX,
         }
     }
+
+    /// Whether a verdict at `height` assumed nothing from further out: what
+    /// a commit bound it bound under no assumption.
+    fn own(self, height: usize) -> bool {
+        self.pairs >= height && self.held == usize::MAX && self.failed == usize::MAX
+    }
 }
 
-/// A probe verdict that rests on assumptions in progress, and the
+/// A verdict that rests on assumptions in progress, and the
 /// [`cell_writes`] count it was reached at.
 #[derive(Clone, Copy)]
 struct Provisional {
@@ -241,6 +251,7 @@ impl ContainsHist {
             provisional_order: Lazy::new(),
             commit_pairs: Lazy::new(),
             apps: Lazy::new(),
+            app_cells: Lazy::new(),
             in_progress: SmallVec::new(),
             rests: Rests::NOTHING,
             cycled: false,
@@ -329,11 +340,15 @@ impl ContainsHist {
     // fresh cell (an expansion's reset_tvars copy) may then take the address with no
     // counted write between. probes: ~/ptmp/cr29/scratch/n9d/rig14.gx .. rig18.gx, gen.py
     // (union-dag-rigid-cell-01)
+    // 2026-11-10 claude: ContainsHist now holds the cells an application's key reads by
+    // address (TypeRef::key_cells into app_cells; lane 20c, typedef-open-expansion-01;
+    // pin typ::contains::tests::an_application_key_holds_its_cells): the same hold would
+    // make a bare cell's address a safe probe key.
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
     /// or not, if current. A provisional one passes the assumptions it
     /// rests on to the verdict reading it.
     fn probe_get(&mut self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
-        let k = (probe_key(t0)?, probe_key(t1)?, rigid);
+        let k = (self.probe_side(t0)?, self.probe_side(t1)?, probe_flags(rigid));
         let writes = cell_writes();
         if let Some((epoch, r)) = self.probe_pairs.get().and_then(|m| m.get(&k).copied())
         {
@@ -357,8 +372,10 @@ impl ContainsHist {
         height: usize,
         rests: Rests,
     ) {
-        let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1)) else { return };
-        let k = (k0, k1, rigid);
+        let (Some(k0), Some(k1)) = (self.probe_side(t0), self.probe_side(t1)) else {
+            return;
+        };
+        let k = (k0, k1, probe_flags(rigid));
         let epoch = cell_writes();
         let new = if rests.settled(r, height) {
             self.probe_pairs.get_mut().insert(k, (epoch, r)).is_none()
@@ -377,9 +394,10 @@ impl ContainsHist {
     /// An assumption that its question is `assumed`, made when `mark`
     /// provisional verdicts were held, is answered `r`. Those reached
     /// since may rest on it: one that agrees with a wrong assumption is
-    /// dropped (a disagreeing one stands, by monotonicity), the rest take
-    /// from `update` what the answer rested on, and each then settled is
-    /// held for good.
+    /// dropped (a disagreeing probe stands, by monotonicity; a commit
+    /// bound what it bound under the assumption, and is dropped), the rest
+    /// take from `update` what the answer rested on, and each then settled
+    /// is held for good.
     fn answer_assumption(
         &mut self,
         mark: usize,
@@ -405,17 +423,25 @@ impl ContainsHist {
         for i in mark..order.len() {
             let k = order[i];
             let Some(p) = map.get_mut(&k) else { continue };
-            if wrong == Some(p.verdict) {
+            let commit = k.2.contains(ContainsFlags::Commit);
+            if wrong == Some(p.verdict) || (commit && wrong.is_some()) {
                 map.remove(&k);
                 continue;
             }
             update(&mut p.rests);
-            if p.rests.settled(p.verdict, usize::MAX) {
-                let p = map.remove(&k).unwrap();
-                self.probe_pairs.get_mut().insert(k, (p.epoch, p.verdict));
-            } else {
-                order[kept] = k;
-                kept += 1;
+            match commit {
+                true if p.rests.own(usize::MAX) => {
+                    map.remove(&k);
+                    self.commit_pairs.get_mut().insert(k);
+                }
+                false if p.rests.settled(p.verdict, usize::MAX) => {
+                    let p = map.remove(&k).unwrap();
+                    self.probe_pairs.get_mut().insert(k, (p.epoch, p.verdict));
+                }
+                _ => {
+                    order[kept] = k;
+                    kept += 1;
+                }
             }
         }
         order.truncate(kept);
@@ -440,15 +466,9 @@ impl ContainsHist {
         (self.len(), mem::replace(&mut self.rests, Rests::NOTHING))
     }
 
-    /// End it: whether the verdict assumed nothing from further out, so
-    /// it holds outside this call; the outer verdict takes its assumptions.
-    fn leave_verdict(&mut self, height: usize, outer: Rests) -> bool {
-        let r = self.leave_probe_verdict(outer);
-        r.pairs >= height && r.held == usize::MAX && r.failed == usize::MAX
-    }
-
-    /// [`Self::leave_verdict`]: what the verdict assumed.
-    fn leave_probe_verdict(&mut self, outer: Rests) -> Rests {
+    /// End it: what the verdict assumed, which the outer verdict takes
+    /// too.
+    fn leave_verdict(&mut self, outer: Rests) -> Rests {
         let rests = self.rests;
         self.rests = outer.join(rests);
         rests
@@ -466,12 +486,32 @@ impl ContainsHist {
             Entry::Occupied(e) => *e.get(),
             Entry::Vacant(e) => {
                 self.probe_pins.get_mut().push(t.clone());
+                tr.key_cells(self.app_cells.get_mut());
                 *e.insert(next)
             }
         };
         Some((mem::discriminant(t), def, id))
     }
 
+    /// Whether `t` is a name applied over a cell: its expansion holds the
+    /// cell, so it is built anew, of new nodes, wherever the name is met.
+    #[inline]
+    fn open_app(&mut self, t: &Type) -> bool {
+        matches!(t, Type::Ref(tr) if !tr.params.is_empty()) && !self.holds_no_cell(t)
+    }
+
+    /// The key a probe's side is held under: its node's identity, or an
+    /// [`Self::open_app`]'s [`Self::pair_key`], once its name is resolved.
+    #[inline]
+    fn probe_side(&mut self, t: &Type) -> Option<NormKey> {
+        match self.open_app(t) {
+            true => self.pair_key(t).or_else(|| probe_key(t)),
+            false => probe_key(t),
+        }
+    }
+
+    /// Whether the committing pair was proven to hold. One proven under
+    /// assumptions still in progress passes them to the verdict reading it.
     fn commit_held(
         &mut self,
         flags: BitFlags<ContainsFlags>,
@@ -481,13 +521,44 @@ impl ContainsHist {
         let (Some(k0), Some(k1)) = (self.pair_key(t0), self.pair_key(t1)) else {
             return false;
         };
-        self.commit_pairs.get().is_some_and(|m| m.contains(&(k0, k1, flags)))
+        let k = (k0, k1, flags);
+        if self.commit_pairs.get().is_some_and(|m| m.contains(&k)) {
+            return true;
+        }
+        let Some(p) = self.provisional.get().and_then(|m| m.get(&k)) else {
+            return false;
+        };
+        self.rests = self.rests.join(p.rests);
+        true
     }
 
-    fn commit_put(&mut self, flags: BitFlags<ContainsFlags>, t0: &Type, t1: &Type) {
-        if let (Some(k0), Some(k1)) = (self.pair_key(t0), self.pair_key(t1))
-            && self.commit_pairs.get_mut().insert((k0, k1, flags))
-        {
+    /// Keep a committing pair proven to hold by a verdict at `height`
+    /// assuming `rests`: for good where it assumed nothing further out; an
+    /// [`Self::open_app`]'s, whose walk a sibling would repeat, while what
+    /// it assumed stands.
+    fn commit_put(
+        &mut self,
+        (flags, t0, t1): (BitFlags<ContainsFlags>, &Type, &Type),
+        height: usize,
+        rests: Rests,
+    ) {
+        let own = rests.own(height);
+        if !own && !self.open_app(t0) && !self.open_app(t1) {
+            return;
+        }
+        let (Some(k0), Some(k1)) = (self.pair_key(t0), self.pair_key(t1)) else {
+            return;
+        };
+        let k = (k0, k1, flags);
+        let new = match own {
+            true => self.commit_pairs.get_mut().insert(k),
+            false => {
+                let p = Provisional { verdict: true, epoch: cell_writes(), rests };
+                self.provisional_order.get_mut().push(k);
+                self.provisional.get_mut().insert(k, p).is_none()
+            }
+        };
+        if new {
             let pins = self.probe_pins.get_mut();
             pins.push(t0.clone());
             pins.push(t1.clone());
@@ -571,6 +642,14 @@ impl ContainsHist {
         let r = fresh(&e);
         self.expansions.get_mut().insert(id, e);
         Ok(Some(r))
+    }
+}
+
+/// The flags a probe's verdict is held under.
+fn probe_flags(rigid: bool) -> BitFlags<ContainsFlags> {
+    match rigid {
+        true => ContainsFlags::RigidCheck.into(),
+        false => BitFlags::empty(),
     }
 }
 
@@ -2354,10 +2433,10 @@ impl Type {
             }
             let (height, outer) = hist.enter_verdict();
             let r = self.contains_dispatch(flags, env, hist, t);
-            let own = hist.leave_verdict(height, outer);
+            let rests = hist.leave_verdict(outer);
             let r = r?;
-            if r && own && hist.gated == 0 {
-                hist.commit_put(flags, self, t);
+            if r && hist.gated == 0 {
+                hist.commit_put((flags, self, t), height, rests);
             }
             return Ok(r);
         }
@@ -2376,7 +2455,7 @@ impl Type {
 
         let (height, outer) = hist.enter_verdict();
         let r = self.contains_dispatch(flags, env, hist, t);
-        let rests = hist.leave_probe_verdict(outer);
+        let rests = hist.leave_verdict(outer);
         let r = r?;
         if hist.gated == 0 {
             hist.probe_put((rigid, self, t), r, height, rests);
@@ -2550,6 +2629,14 @@ impl Type {
                 // go; pin it with permc4/pb0 timed in a unit count. The two-definition
                 // spelling hangs on main already (typedef-open-expansion-01). Probes:
                 // ~/ptmp/cr29/scratch/r19/19f/review-tpe/.
+                // 2026-11-10 claude: typedef-open-expansion-01's fix (lane 20c) walks each
+                // pair of open applications once. With the is_recursive escape dropped on top
+                // of it (an experiment, not landed): permc4 0.18 s, pb0 0.19 s, permcx4 0.21
+                // s, and perm4, tpe_rec, tpe_nest and m1 check as their z-first twins do;
+                // perm10 (10! applications of one definition) runs out of 6 GB in about 10 s
+                // where the shortcut answers at once, so dropping the escape needs a bound on
+                // the applications one walk unfolds, or the shortcut kept past it. Probes:
+                // ~/ptmp/cr29/scratch/r19/19f/review-tpe/.
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
@@ -2572,7 +2659,7 @@ impl Type {
                         return tr0.hold_bounds_with(tr1, env, commit);
                     }
                 }
-                // CR claude for claude: [perf/high] The expansion walk over a recursive
+                // XCR claude for claude: [perf/high] The expansion walk over a recursive
                 // definition whose open cells stay open enumerates paths: each application is
                 // answered under ContainsHist::assuming and forgotten, expand_ref caches no
                 // expansion whose params hold a cell, and the probe memo keys by content
@@ -2587,6 +2674,27 @@ impl Type {
                 // across siblings once their assumptions are answered. probes:
                 // ~/ptmp/cr29/scratch/r19/19f/review-tpe/{permx4,permc4,pb0}.gx
                 // (typedef-open-expansion-01)
+                // 2026-11-10 claude: The probe memo keys a name applied over a cell
+                // (ContainsHist::open_app) by its application (pair_key: its definition and its
+                // parameters' content, a cell by identity, the walk holding each such cell
+                // through TypeRef::key_cells), and a commit over such an application that holds
+                // under an assumption still in progress is kept provisionally, as a probe's
+                // verdict is, and dropped when the assumption is answered otherwise. permx4.gx:
+                // killed at 60 s on base-r20, checks in 0.17 s. contains steps over 3 / 4 / 5
+                // parameters: a commit 47527 / hang before, 2368 / 33333 / 795732 now (about 55
+                // per pair of applications: the trials place_in_order runs on copies make it
+                // once per application per application), a probe 115 / 457 / 2281 (19 an
+                // application). Pins that fail without it:
+                // typ::contains::tests::open_applications_of_a_recursive_definition_are_walked_once
+                // (fails at 3 parameters),
+                // lang::types::open_applications_of_recursive_typedefs_check (hangs),
+                // an_application_key_holds_its_cells (fails without the cell hold);
+                // a_kept_verdict_over_open_applications_is_the_pairs_own fails when a
+                // provisional commit survives a failed assumption (and hangs without the memo).
+                // Census of 2949 files unchanged, regress 0, typemorph-scan 400 with 0 flips,
+                // guicheck 40.52G base (40.46 to 40.59) against 40.58G (40.53 to 40.63). The
+                // same-definition shortcut is untouched (typedef-param-equality-01). Design:
+                // tvar_constraints.md, Containment over a pair of definitions. Needs a soak.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
@@ -3573,6 +3681,20 @@ impl Type {
         })
     }
 
+    // CR claude for claude: [perf/low] A commit over open applications of a recursive
+    // definition is walked once per application per trial, not once: every union with
+    // two members holding open cells runs these trials on copies in a walk of their own,
+    // which knows nothing the outer walk proved, so n applications reaching each other
+    // take about 55 n^2 contains steps (typ::contains::tests::permuted_steps: 2368 /
+    // 33333 / 795732 for 6 / 24 / 120 applications, where a probe takes 19 n), and
+    // ContainsHist::answer_assumption scans every provisional verdict reached since its
+    // assumption at each answer, a further factor: --no-cache --check on lane 20c's
+    // debug build takes 0.93G / 6.8G instructions for permx4.gx / permx5.gx (24 / 120
+    // applications; an empty program 0.75G) and 73 s for permx6.gx (720). Verdicts kept
+    // by application across the trials of one outer walk (a copy's cells map back to the
+    // cells they copy), or a trial asked only where the order as written could decide a
+    // cell differently, would make it one walk. probes:
+    // ~/ptmp/cr29/scratch/r20/20c/{permx4,permx5,permx6}.gx (open-app-commit-trials-01)
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither
@@ -4336,6 +4458,159 @@ mod tests {
             assert_eq!(alone[i], forward[i], "{a} ⊇ {b}");
             assert_eq!(alone[i], backward[i], "{a} ⊇ {b}");
         }
+    }
+
+    /// `D<'a0, ..> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, ..>), `Y(D<'a1, ..,
+    /// 'a0>)]` over `n` parameters: a swap and a rotation, so its
+    /// applications over `n` cells are their `n!` orders, each reaching
+    /// every other.
+    fn permuted(name: &str, n: usize) -> (String, String) {
+        let ps = |order: &mut dyn Iterator<Item = usize>| {
+            order.map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ")
+        };
+        let swap = ps(&mut [1, 0].into_iter().chain(2..n));
+        let rotate = ps(&mut (1..n).chain([0]));
+        let head = format!("{name}<{}>", ps(&mut (0..n)));
+        let body =
+            format!("[`N, `X(fn(x: 'a0) -> i64, {name}<{swap}>), `Y({name}<{rotate}>)]");
+        (head, body)
+    }
+
+    /// The steps `fn(k: F<Any, ..>, z: i64) -> i64` takes to hold `fn(k:
+    /// D<'q0, ..>, z: 'q0) -> 'q0` over [`permuted`] definitions of `n`
+    /// parameters, and of a probe of `D<'q0, ..>` holding `F<Any, ..>`:
+    /// the cells stay open, so every order is an application of its own.
+    fn permuted_steps(n: usize) -> (usize, usize) {
+        let defs = [permuted("D", n), permuted("F", n)];
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        let cells: Vec<String> = (0..n).map(|i| format!("'q{i}")).collect();
+        let (cells, anys) = (cells.join(", "), vec!["Any"; n].join(", "));
+        let open = at_root(&env, &format!("fn(k: D<{cells}>, z: 'q0) -> 'q0"));
+        let held = at_root(&env, &format!("fn(k: F<{anys}>, z: i64) -> i64"));
+        let (Type::Fn(o), Type::Fn(h)) = (&open, &held) else { unreachable!() };
+        let (d, f) = (&o.args[0].typ, &h.args[0].typ);
+        CONTAINS_STEPS.with(|n| n.set(0));
+        let mut hist = ContainsHist::new();
+        assert!(d.contains_int(BitFlags::empty(), &env, &mut hist, f).unwrap());
+        let probe = CONTAINS_STEPS.with(|n| n.replace(0));
+        held.check_contains(&env, &open).unwrap();
+        (CONTAINS_STEPS.with(|n| n.get()), probe)
+    }
+
+    // An application answered inside a pair still in progress is kept
+    // while that pair stands, so a sibling meeting it does not walk it
+    // again: a probe walks each of the `n!` pairs once, a commit once per
+    // trial a union with two open members runs on copies. A walk that
+    // forgets an answered pair takes every path through them.
+    #[test]
+    fn open_applications_of_a_recursive_definition_are_walked_once() {
+        for n in [3, 4] {
+            let apps: usize = (1..=n).product();
+            let (commit, probe) = permuted_steps(n);
+            assert!(probe <= 64 * apps, "n={n}: a probe took {probe} steps");
+            assert!(commit <= 100 * apps * apps, "n={n}: a commit took {commit} steps");
+        }
+    }
+
+    // What one walk keeps of applications over open cells is each pair's
+    // verdict wherever it is met, probed or committed: the pairs asked in
+    // one walk, in either order, are answered as each is asked alone. The
+    // cells are declared, so no commit binds one. `U<'c> ⊇ V<'c>` holds
+    // inside `S<'c> ⊇ T<'c>`, which assumes itself, and fails alone, as
+    // `S<'c> ⊇ T<'c>` does.
+    #[test]
+    fn a_kept_verdict_over_open_applications_is_the_pairs_own() {
+        let mut defs: Vec<(String, String)> = vec![];
+        for (p, tag) in [("X", "`P"), ("Y", "`Q")] {
+            for i in 0..3 {
+                let (a, b, c) = ((i + 1) % 3, (i * 2) % 3, (i + 2) % 3);
+                let body = format!(
+                    "[Error<{p}{a}<'a>>, Error<{p}{b}<'a>>, Error<Error<{p}{c}<'a>>>, \
+                     {tag}('a)]"
+                );
+                defs.push((format!("{p}{i}<'a>"), body));
+            }
+        }
+        defs.extend(
+            [
+                ("S<'a>", "[Error<U<'a>>, `A('a)]"),
+                ("T<'a>", "[Error<V<'a>>, Error<`B>]"),
+                ("U<'a>", "[Error<S<'a>>, `C]"),
+                ("V<'a>", "[Error<T<'a>>, `C]"),
+                ("G<'a, 'b>", "[Error<G<'b, 'a>>, Error<H<'a, 'b>>, `P('a)]"),
+                ("H<'a, 'b>", "[Error<H<'b, 'a>>, `P('b)]"),
+            ]
+            .map(|(n, b)| (n.to_string(), b.to_string())),
+        );
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        let mut names: Vec<String> = vec![];
+        for (n, _) in defs.iter() {
+            let n = n.split_once('<').unwrap().0;
+            match n {
+                "G" | "H" => names.extend(
+                    ["'c, 'd", "'d, 'c", "'c, Any", "Any, 'c", "Any, Any"]
+                        .map(|ps| format!("{n}<{ps}>")),
+                ),
+                n => names.extend(["'c", "'d", "Any"].map(|p| format!("{n}<{p}>"))),
+            }
+        }
+        names.extend(["Error<[X2<'c>, Y0<Any>]>".into(), "`P('c)".into()]);
+        let all = at_root(&env, &format!("({})", names.join(", ")));
+        let Type::Tuple(types) = &all else { unreachable!() };
+        let mut cells = AHashMap::default();
+        all.collect_tvars(&mut cells);
+        let pairs: Vec<(&Type, &Type)> =
+            types.iter().flat_map(|a| types.iter().map(move |b| (a, b))).collect();
+        for (flags, declared) in [
+            (BitFlags::empty(), false),
+            (ContainsFlags::RigidCheck.into(), false),
+            (ContainsFlags::RigidCheck.into(), true),
+            (ContainsFlags::Commit.into(), true),
+        ] {
+            let _gates: Vec<RigidGate> = match declared {
+                true => cells.values().map(|c| c.open_rigid()).collect(),
+                false => vec![],
+            };
+            let ask = |hist: &mut ContainsHist, (a, b): (&Type, &Type)| {
+                a.contains_int(flags, &env, hist, b).unwrap()
+            };
+            let alone: Vec<bool> =
+                pairs.iter().map(|p| ask(&mut ContainsHist::new(), *p)).collect();
+            let mut hist = ContainsHist::new();
+            let forward: Vec<bool> = pairs.iter().map(|p| ask(&mut hist, *p)).collect();
+            let mut hist = ContainsHist::new();
+            let mut backward: Vec<bool> =
+                pairs.iter().rev().map(|p| ask(&mut hist, *p)).collect();
+            backward.reverse();
+            for (i, (a, b)) in pairs.iter().enumerate() {
+                assert_eq!(alone[i], forward[i], "{flags:?}: {a} ⊇ {b}");
+                assert_eq!(alone[i], backward[i], "{flags:?}: {a} ⊇ {b}");
+            }
+            assert!(alone.iter().any(|r| *r) && alone.iter().any(|r| !*r));
+            assert!(cells.values().all(|c| !c.is_bound()));
+        }
+    }
+
+    // An application's key reads its cells' addresses, so the walk holds
+    // the cells: one a merge leaves no var reading keeps its address.
+    #[test]
+    fn an_application_key_holds_its_cells() {
+        let defs = [("L<'a>", "['a, null]")];
+        let (env, apps) = Env::typed_at_root(&defs, "(L<'c>, L<'d>)").unwrap();
+        let mut cells = AHashMap::default();
+        apps.collect_tvars(&mut cells);
+        let (c, d): (TVar, TVar) = (cells["c"].clone(), cells["d"].clone());
+        let before = [c.cell(), d.cell()];
+        let Type::Tuple(apps) = &apps else { unreachable!() };
+        let mut hist = ContainsHist::new();
+        assert_ne!(hist.pair_key(&apps[0]).unwrap(), hist.pair_key(&apps[1]).unwrap());
+        Type::TVar(c.clone()).check_contains(&env, &Type::TVar(d.clone())).unwrap();
+        assert!(c.same_cell(&d));
+        let merged = c.cell();
+        let absorbed = before.iter().find(|b| !Arc::ptr_eq(b, &merged)).unwrap();
+        assert_eq!(Arc::count(absorbed), 2, "held here and by the walk");
     }
 
     fn parsed(s: &str) -> Type {

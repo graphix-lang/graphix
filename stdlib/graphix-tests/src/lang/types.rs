@@ -8027,6 +8027,22 @@ run!(
     FuseExpect::None
 );
 
+// Two recursive typedefs whose applications over cells that stay open
+// are every order of the cells, each reaching every other: an application
+// answered inside one still in progress is not walked again by a sibling.
+run!(
+    open_applications_of_recursive_typedefs_check,
+    r#"{
+  type D<'a0, 'a1, 'a2, 'a3> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2, 'a3>), `Y(D<'a1, 'a2, 'a3, 'a0>)];
+  type F<'a0, 'a1, 'a2, 'a3> = [`N, `X(fn(x: 'a0) -> i64, F<'a1, 'a0, 'a2, 'a3>), `Y(F<'a1, 'a2, 'a3, 'a0>)];
+  let outer = |k: D<'q0, 'q1, 'q2, 'q3>, z: 'q0| z;
+  let g: fn(k: F<Any, Any, Any, Any>, z: i64) -> i64 = outer;
+  g(`N, 1)
+}"#,
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
 run!(
     a_dag_of_union_bounds_types_its_instances,
     r#"{

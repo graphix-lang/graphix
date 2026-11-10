@@ -273,6 +273,25 @@ impl TypeRef {
     pub fn app_key(&self, def: usize) -> AppKey {
         (def, self.params.iter().map(Type::param_key).collect())
     }
+
+    /// The cells [`Self::app_key`] keys by address, into `out`: held, each
+    /// address stays its cell's.
+    pub(crate) fn key_cells(&self, out: &mut Vec<Arc<tvar::CellLock>>) {
+        fn walk(t: &Type, out: &mut Vec<Arc<tvar::CellLock>>, seen: &mut AddrSet) {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    if seen.insert(tv.cell_addr()) {
+                        out.push(tv.cell())
+                    }
+                }
+                Type::Fn(f) if !f.quantifiers.is_empty() => (),
+                t if node_addr(t).is_some_and(|a| !seen.insert(a)) => (),
+                t => t.for_each_child(&mut |c| walk(c, out, seen)),
+            })
+        }
+        let mut seen: LPooled<AddrSet> = LPooled::take();
+        self.params.iter().for_each(|p| walk(p, out, &mut seen))
+    }
 }
 
 /// The typedef applications a walk has expanded, by [`AppKey`], each held
