@@ -778,7 +778,10 @@ a value of such a cell is refused, naming the binding whose type it is
 can write: a lowering's, or the cell of a reference's referent that no
 binding names (`env::Binder::Referent`), which a binding holding the
 reference declares (``let r: &mut ([`J, `M], i64) = &mut (x, 0)``; `x`
-annotated leaves the referent's cell open). The cells counted are those
+annotated leaves the referent's cell open). Every hint names such a
+cell after the first binding whose type is a reference to it, `'r` "the
+type `r` refers to" (`Holders::name_cell`, where no binding's type is
+the cell itself). The cells counted are those
 the scrutinee's type held before the arms ran (`settle::position_cells`),
 still open at the end: a cell an arm's own pattern brought, a bind's or
 a `_`'s, which the arms' settle put into an open scrutinee, is the arms'
@@ -1571,7 +1574,8 @@ Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`;
 under it a union's members that name one cell or print alike (two cells
 bound to one type) print once. A hint's declaration writes a type as a
 program can (`Type::written_form`): an open cell as `'x` for the binding
-`x` it waits for (`node::Holders`), else as the variable a program wrote,
+`x` it waits for (`node::Holders`), an unnamed referent's as `'r` for the
+binding `r` holding its reference, else as the variable a program wrote,
 else none, and the hint names no type. A refused write into a payload
 an earlier use decided is told both: the payload union, then a named
 recursive type for a value that reads the target; one whose own

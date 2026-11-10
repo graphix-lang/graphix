@@ -1012,12 +1012,52 @@ run!(destructuring_a_part_below_a_reference, r#"{
 run!(tag_deciding_a_referent_names_the_reference_refused, r#"{
     let f = |x| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 } };
     f(`M)
-}"#, refused("((`J, _), _) tests a value whose type is a part of 'r, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'r the type of `r` (line 2"); FuseExpect::None);
+}"#, refused("((`J, _), _) tests a value of 'r, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'r the type `r` refers to (line 2"); FuseExpect::None);
 
 run!(tag_deciding_a_referent_of_an_annotated_part_names_the_reference_refused, r#"{
     let f = |x: [`J, `M]| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 } };
     f(`M)
-}"#, refused("annotate it, writing for 'r the type of `r` (line 2"); FuseExpect::None);
+}"#, refused("annotate it, writing for 'r the type `r` refers to (line 2"); FuseExpect::None);
+
+run!(tag_deciding_a_referent_names_the_first_reference_refused, r#"{
+    let f = |x| {
+        let r = &mut (x, 0);
+        let s = r;
+        select (*s, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 }
+    };
+    f(`M)
+}"#, refused("tests a value of 'r, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'r the type `r` refers to (line 3"); FuseExpect::None);
+
+run!(tag_deciding_a_referent_in_a_struct_names_the_struct_refused, r#"{
+    let f = |x| {
+        let st = {r: &mut (x, 0), n: 1};
+        select (*st.r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 }
+    };
+    f(`M)
+}"#, refused("tests a value whose type is a part of 'st, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'st the type of `st` (line 3"); FuseExpect::None);
+
+run!(tag_deciding_a_referent_nothing_holds_refused, r#"{
+    let f = |x| select (*(&mut (x, 0)), 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 };
+    f(`M)
+}"#, refused("((`J, _), _) tests a value whose type is not decided at this select, which a later use could decide apart from what the arms test: annotate the scrutinee's type where it is built"); FuseExpect::None);
+
+run!(tag_over_a_referent_read_into_an_annotated_binding, r#"{
+    let f = |x| {
+        let r = &mut (x, 0);
+        let y: ([`J, `M], i64) = *r;
+        select (y, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 }
+    };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::Jit);
+
+run!(tag_deciding_a_referent_read_into_a_binding_names_it_refused, r#"{
+    let f = |x| {
+        let r = &mut (x, 0);
+        let y = *r;
+        select (y, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 }
+    };
+    f(`M)
+}"#, refused("tests a value of 'y, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'y the type of `y` (line 4"); FuseExpect::None);
 
 run!(tag_deciding_a_referent_through_a_call_names_the_reference_refused, r#"{
     let f = |x| {

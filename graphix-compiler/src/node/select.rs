@@ -3306,16 +3306,18 @@ struct Decisions {
     held: AHashMap<usize, Type>,
 }
 
-// CR claude for claude: [bug/low] A cell that is only a reference's referent, held by
-// no binding but through the reference, has no name in `Holders` (a referent's own
-// binding is not nameable, `env::Binder::Referent`), so undecided_members leaves the
-// refusal raw and `Reach::untyped_binds` drops to its form without a type: with `let
-// rx = &mut never(); let ry = &mut never()`, `{a, ..}` over `{a: [1], c: *rx}` and
-// `{a: ["s"], c: *ry}` is refused "... c: '_8666: unbound } and { a: Array<string>,
-// c: '_8668: unbound } ...". Naming the binding that holds the reference, told as
-// "the type `rx` refers to", would tell both (undecided_refusal names it through
-// `Holders::name_part`). probes: ~/ptmp/cr29/scratch/r20/20e/ulb02/h1.gx, h2.gx
-// (referent-holder-name-01)
+// CR claude for claude: [bug/low] A member's undecided cell that no binding names is
+// printed raw. With `let rx = &never(); let ry = &never()`, `{a, ..}` over `{a: [1],
+// c: *rx}` and `{a: ["s"], c: *ry}` is refused "the pattern { a, .. } matches two
+// members, { a: Array<i64>, c: '_8664: unbound } and { a: Array<string>, c: '_8666:
+// unbound }, told apart by types not decided at this select; ...": `written` finds
+// no name for the cell a read through a read-only reference to an unnamed expression
+// has, so undecided_members returns the UndecidedMembers error as it came, whose
+// Display prints the cells. Binding the read (`let x = *rx`), naming the referent
+// (`&n`) or a writable reference each gets a name. The refusal should name the
+// reference read there too, or write the members with no name for such a cell.
+// Same on base-r20. probe: ~/ptmp/cr29/scratch/r20/20e/ulb02/d1.gx
+// (undecided-member-raw-cell-01)
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {

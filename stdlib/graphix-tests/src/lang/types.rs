@@ -4506,6 +4506,77 @@ run!(
     FuseExpect::None
 );
 
+// What was built holds the referent of a reference to an expression no
+// binding names: the annotation names the binding holding the reference.
+run!(
+    select_arms_at_two_depths_over_a_referents_payloads,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let rx = &mut never();
+    let b = B([[*rx]]);
+    b <- B([*rx]);
+    let v = select b.0 { [[h, ..], ..] => `A(h), [h, ..] => `B(h), _ => `C };
+    *rx <- t ~ 1;
+    v
+}"#,
+    refused(
+        "the arms decide this scrutinee's type from their patterns, and their binds \
+         cannot hold what was built into it, [Array<'rx>, Array<Array<'rx>>]: annotate \
+         that type where it is built, writing for 'rx the type `rx` refers to (line 4, \
+         column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_arms_at_two_depths_over_a_referents_payloads_declared,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let t = sys::time::timer(duration:10.ms, false);
+    let rx = &mut never();
+    let b: B<[Array<i64>, Array<Array<i64>>]> = B([[*rx]]);
+    b <- B([*rx]);
+    let v = select b.0 { [[h, ..], ..] => `A(h), [h, ..] => `B(h), _ => `C };
+    *rx <- t ~ 1;
+    let vs = [];
+    vs <- array::window(#n: 2, v ~ vs, v);
+    select array::len(vs) { 2 => vs, _ => never() }
+}"#,
+    prints(r#"[["A", i64:1], ["B", i64:1]]"#)
+);
+
+// A write a binding's type cannot hold, over such a referent.
+run!(
+    write_wider_than_a_binding_holding_a_referent,
+    r#"{
+    let rx = &mut never();
+    let v = {a: 1, c: *rx};
+    v <- {a: "s", c: *rx};
+    v
+}"#,
+    refused(
+        "declare v: { a: [i64, string], c: 'rx } where it is bound (line 3, column 9), \
+         writing for 'rx the type `rx` refers to (line 2, column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    write_wider_than_a_binding_holding_a_referent_declared,
+    r#"{
+    let t = sys::time::timer(duration:10.ms, false);
+    let rx = &mut never();
+    let v: {a: [i64, string], c: i64} = {a: 1, c: *rx};
+    v <- {a: "s", c: *rx};
+    *rx <- t ~ 1;
+    let vs = [];
+    vs <- array::window(#n: 2, v ~ vs, v);
+    select array::len(vs) { 2 => vs, _ => never() }
+}"#,
+    prints(r#"[[["a", i64:1], ["c", i64:1]], [["a", "s"], ["c", i64:1]]]"#)
+);
+
 /// A select over a payload built as `[x]` ahead of a write of `[[x]]`,
 /// `b` declared as `decl`: each value of `v`.
 fn select_before_a_deeper_write(decl: &str) -> String {

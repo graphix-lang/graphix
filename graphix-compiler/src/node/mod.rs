@@ -2547,24 +2547,44 @@ fn lower_shown(t: &Type) -> Type {
     }
 }
 
+/// How a binding names a cell: as its type, or as the type its
+/// reference refers to.
+#[derive(Clone, Copy, PartialEq)]
+enum Role {
+    Typ,
+    Referent,
+}
+
+type Cells<'a> = LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>>;
+
 /// The bindings a hint names for the cells a type it writes waits for,
-/// by the cell each stands for, those [`Holders::nameable`] admits.
+/// by the cell each stands for, those [`Holders::nameable`] admits. The
+/// cell of a reference's referent no binding names goes by the bindings
+/// holding the reference.
 pub(crate) struct Holders<'a> {
-    by_cell: LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>>,
-    named: SmallVec<[(TVar, &'a env::Bind); 2]>,
+    by_cell: Cells<'a>,
+    by_referent: Cells<'a>,
+    named: SmallVec<[(TVar, &'a env::Bind, Role); 2]>,
 }
 
 impl<'a> Holders<'a> {
     /// Each binding's cell but `except`'s, and the cells of a union its
     /// cell is bound to (`x` is `['h, 'r]`: its type waits for theirs).
     pub(crate) fn new(env: &'a env::Env, except: Option<BindId>) -> Self {
-        let mut by_cell: LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>> =
-            LPooled::take();
+        let mut by_cell: Cells<'a> = LPooled::take();
+        let mut by_referent: Cells<'a> = LPooled::take();
+        let mut unnamed: LPooled<AHashSet<usize>> = LPooled::take();
         for (_, b) in env.by_id.iter() {
-            let Type::TVar(tv) = &b.typ else { continue };
+            if let (Some(env::Binder::Referent), Type::TVar(tv)) = (&b.binder, &b.typ) {
+                unnamed.insert(tv.stands_for());
+            }
             if !Self::nameable(b) || Some(b.id) == except {
                 continue;
             }
+            if let Some(cell) = Self::referent(&b.typ) {
+                by_referent.entry(cell).or_default().push(b);
+            }
+            let Type::TVar(tv) = &b.typ else { continue };
             by_cell.entry(tv.stands_for()).or_default().push(b);
             if let Some(Type::Set(ref ms)) = Type::TVar(tv.clone()).deref_cloned() {
                 for m in ms.iter() {
@@ -2574,7 +2594,25 @@ impl<'a> Holders<'a> {
                 }
             }
         }
-        Self { by_cell, named: SmallVec::new() }
+        by_referent.retain(|cell, _| unnamed.contains(cell));
+        Self { by_cell, by_referent, named: SmallVec::new() }
+    }
+
+    /// The cell the reference type `t` refers to.
+    fn referent(t: &Type) -> Option<usize> {
+        let mut t = t.clone();
+        loop {
+            t = match &t {
+                Type::ByRef(_, r) => {
+                    return match &**r {
+                        Type::TVar(tv) => Some(tv.stands_for()),
+                        _ => None,
+                    };
+                }
+                Type::TVar(tv) => tv.binding()?,
+                _ => return None,
+            }
+        }
     }
 
     /// Whether a hint may name `b`: what a hint asks to annotate is built
@@ -2595,14 +2633,14 @@ impl<'a> Holders<'a> {
             && Type::TVar(tv.clone()).has_unbound()
     }
 
-    /// The binding written first among those `prefer` admits whose type
-    /// is the cell `tv` stands for, else among them all.
-    fn holder(
-        &self,
+    /// The binding written first among those of `cells` `prefer` admits
+    /// that go by the cell `tv` stands for, else among them all.
+    fn first(
+        cells: &Cells<'a>,
         tv: &TVar,
         prefer: impl Fn(&env::Bind) -> bool,
     ) -> Option<&'a env::Bind> {
-        let holders = self.by_cell.get(&tv.stands_for())?;
+        let holders = cells.get(&tv.stands_for())?;
         let first = |bs: &mut dyn Iterator<Item = &&'a env::Bind>| {
             bs.min_by_key(|b| (b.pos.line, b.pos.column)).copied()
         };
@@ -2610,25 +2648,42 @@ impl<'a> Holders<'a> {
             .or_else(|| first(&mut holders.iter()))
     }
 
-    /// `'x` for the binding `x`.
-    fn name(&mut self, b: &'a env::Bind) -> Type {
-        if let Some((name, _)) = self.named.iter().find(|(_, n)| std::ptr::eq(*n, b)) {
+    /// The binding written first among those `prefer` admits whose type
+    /// is the cell `tv` stands for, else among them all.
+    fn holder(
+        &self,
+        tv: &TVar,
+        prefer: impl Fn(&env::Bind) -> bool,
+    ) -> Option<&'a env::Bind> {
+        Self::first(&self.by_cell, tv, prefer)
+    }
+
+    /// `'x` for the binding `x`, standing for what `role` says.
+    fn name(&mut self, b: &'a env::Bind, role: Role) -> Type {
+        let named =
+            |(_, n, how): &&(TVar, &env::Bind, Role)| std::ptr::eq(*n, b) && *how == role;
+        if let Some((name, _, _)) = self.named.iter().find(named) {
             return Type::TVar(name.clone());
         }
         let mut name = ArcStr::from(b.name.as_str());
         let mut i = 1;
-        while self.named.iter().any(|(n, _)| n.name == name) {
+        while self.named.iter().any(|(n, _, _)| n.name == name) {
             i += 1;
             name = ArcStr::from(format_compact!("{}{i}", b.name).as_str());
         }
         let name = TVar::empty_named(name);
-        self.named.push((name.clone(), b));
+        self.named.push((name.clone(), b, role));
         Type::TVar(name)
     }
 
-    /// The cell `tv` stands for named after its binding.
+    /// The cell `tv` stands for named after its binding, else after the
+    /// binding holding the reference it is the unnamed referent of.
     pub(crate) fn name_cell(&mut self, tv: &TVar) -> Option<Type> {
-        self.holder(tv, |_| true).map(|b| self.name(b))
+        match self.holder(tv, |_| true) {
+            Some(b) => Some(self.name(b, Role::Typ)),
+            None => Self::first(&self.by_referent, tv, |_| true)
+                .map(|b| self.name(b, Role::Referent)),
+        }
     }
 
     /// The binding to annotate where the cell `tv` stands for is a part of
@@ -2666,7 +2721,7 @@ impl<'a> Holders<'a> {
             .filter(|b| *b.ori == *at.ori && pos(b) <= (at.pos.line, at.pos.column))
             .max_by_key(|b| pos(b))
             .or_else(|| held().min_by_key(|b| pos(b)))?;
-        Some(self.name(b))
+        Some(self.name(b, Role::Typ))
     }
 
     /// [`Self::name_cell`] where a hint names the cell.
@@ -2678,20 +2733,23 @@ impl<'a> Holders<'a> {
     }
 
     /// What each name stands for: `, writing for 'x the type of `x`
-    /// (line 3, column 5)`.
+    /// (line 3, column 5)`, or `the type `r` refers to`.
     pub(crate) fn meanings(&self, at: &Origin) -> CompactString {
         let mut out = CompactString::new("");
-        for (i, (name, b)) in self.named.iter().enumerate() {
+        for (i, (name, b, role)) in self.named.iter().enumerate() {
             let sep = match i {
                 0 => ", writing for ",
                 _ => " and for ",
             };
-            out.push_str(&format_compact!(
-                "{sep}'{} the type of `{}` ({})",
-                name.name,
-                b.name,
-                BoundAt(b, Some(at))
-            ));
+            let (name, at) = (&name.name, BoundAt(b, Some(at)));
+            out.push_str(&match role {
+                Role::Typ => {
+                    format_compact!("{sep}'{name} the type of `{}` ({at})", b.name)
+                }
+                Role::Referent => {
+                    format_compact!("{sep}'{name} the type `{}` refers to ({at})", b.name)
+                }
+            });
         }
         out
     }
@@ -2728,7 +2786,7 @@ fn decided_decl(
             return None;
         }
         match holders.holder(tv, built_by) {
-            Some(b) if built_by(b) && !lowered => Some(holders.name(b)),
+            Some(b) if built_by(b) && !lowered => Some(holders.name(b, Role::Typ)),
             Some(b) if built_by(b) => None,
             Some(_) => {
                 foreign = true;

@@ -4857,6 +4857,30 @@ run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     "[r] [s]"
 }"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: Array<string>, c: 'y }"); FuseExpect::None);
 
+// A member's undecided cell that is the referent of a reference to an
+// expression no binding names goes by the binding holding the reference.
+run!(partial_struct_over_members_told_apart_by_referents_refused, r#"{
+    let t = true;
+    let rx = &mut never();
+    let ry = &mut never();
+    let v = select t { true => {a: [1], c: *rx}, false => {a: ["s"], c: *ry} };
+    let r = select v { {a: Array<string>, c: string} as s => "second [s.c]", {a, ..} => "[a]" };
+    *rx <- 1;
+    *ry <- "w";
+    r
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: 'rx } and { a: Array<string>, c: 'ry }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'rx the type `rx` refers to (line 3, column 9) and for 'ry the type `ry` refers to (line 4, column 9)"); FuseExpect::None);
+
+run!(partial_struct_over_members_told_apart_by_annotated_referents, r#"{
+    let t = true;
+    let rx: &mut i64 = &mut never();
+    let ry: &mut string = &mut never();
+    let v = select t { true => {a: [1], c: *rx}, false => {a: ["s"], c: *ry} };
+    let r = select v { {a: Array<string>, c: string} as s => "second [s.c]", {a, ..} => "[a]" };
+    *rx <- 1;
+    *ry <- "w";
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "[1]"); FuseExpect::Jit);
+
 // A written test that would decide a member's undecided cells tests them;
 // over the cells annotated, the other member alone reaches the partial
 // pattern.
