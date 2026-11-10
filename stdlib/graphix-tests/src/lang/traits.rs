@@ -3295,6 +3295,114 @@ run!(
     "#
 );
 
+// The target's names are the head's: a `type` a block in the method
+// declares under one of them is not what `self` reads there.
+run!(
+    impl_self_is_the_target_under_a_block_type_of_its_name,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        type Foo = i64;
+        trait T { val m: fn(self) -> i64 };
+        impl T for Array<Foo> {
+            let m = |s| { type Foo = string; let f = |x: self| -> i64 x[0]$ + 1; f(s) }
+        };
+        let result = T::m([1])
+    "#
+);
+
+run!(
+    impl_self_is_the_target_above_a_block_type_of_its_name,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        type Foo = i64;
+        trait T { val m: fn(self) -> i64 };
+        impl T for Array<Foo> {
+            let m = |s| { let f = |x: self| -> i64 x[0]$ + 1; type Foo = string; f(s) }
+        };
+        let result = T::m([1])
+    "#
+);
+
+run!(
+    impl_self_under_a_block_type_of_its_name_takes_the_target_alone,
+    refused("Array<i64> does not contain Array<string>"),
+    "/test.gx" => r#"
+        type Foo = i64;
+        trait T { val m: fn(self) -> i64 };
+        impl T for Array<Foo> {
+            let m = |s| { type Foo = string; let f = |x: self| -> i64 0; f(["a"]) }
+        };
+        let result = T::m([1])
+    "#
+; FuseExpect::None);
+
+run!(
+    generic_impl_self_keeps_its_bound_under_a_block_type_of_the_trait_s_name,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "i"),
+    "/test.gx" => r#"
+        trait Sh { val sh: fn(self) -> string };
+        impl Sh for i64 { let sh = |s| "i" };
+        trait T { val m: fn(self) -> string };
+        impl<'a: Sh> T for Array<'a> {
+            let m = |s: self| {
+                type Sh = string;
+                let g = |y: self| -> string Sh::sh(y[0]$);
+                g(s)
+            }
+        };
+        let result = T::m([1])
+    "#
+);
+
+// A `type` names only its own parameters, so one that writes `self` in a
+// generic impl, whose target holds the impl's variables, is refused; it
+// takes the variable as a parameter.
+run!(
+    generic_impl_self_in_a_type_definition_refused,
+    refused("type P writes `self`, which here is Array<'a>, over the impl's type variables"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a> T for Array<'a> {
+            let m = |s| {
+                type P<'a> = (self, 'a);
+                let p: P<string> = (["x"], "y");
+                array::len(s) + array::len(p.0)
+            }
+        };
+        let result = T::m([1, 2])
+    "#
+; FuseExpect::None);
+
+run!(
+    generic_impl_type_definition_applied_at_the_target,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a> T for Array<'a> {
+            let m = |s| { type P<'b> = (Array<'b>, i64); let p: P<'a> = (s, 1); array::len(p.0) }
+        };
+        let result = T::m([1, 2])
+    "#
+);
+
+run!(
+    constructor_impl_self_applied_in_a_type_definition,
+    prints("[i64:4, i64:2]"),
+    "/test.gx" => r#"
+        trait C { val f: fn(self<'a>, x: 'a) -> i64 };
+        impl C for Array<'_> {
+            let f = |s, x| {
+                type P<'e> = (self<'e>, i64);
+                type Q = self<i64>;
+                let p: P<'a> = (s, 1);
+                let q: Q = [1];
+                array::len(p.0) + array::len(q)
+            }
+        };
+        let result = [C::f([1, 2, 3], 4), C::f(["a"], "b")]
+    "#
+);
+
 // A generic impl's `self` is its target over the impl's variables.
 run!(
     generic_impl_self_is_the_target,

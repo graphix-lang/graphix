@@ -1468,9 +1468,14 @@ impl Env {
 
     /// Where the written name `tr` means a type its block declares below
     /// it while the name means something else at the block's door (an
-    /// outer type or trait, or an import): what its reader is told.
+    /// outer type or trait, or an import): what its reader is told. A name
+    /// already resolved to a trait or to another definition means that
+    /// one: no note.
     pub fn later_block_type_note(&self, tr: &TypeRef) -> Option<CompactString> {
         let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) else { return None };
+        if tr.trait_id().is_some() {
+            return None;
+        }
         let mut level = CompactString::default();
         let hit = self
             .resolve_visible(&tr.scope, &tr.name, NameNs::Type, |s, n| {
@@ -1479,16 +1484,18 @@ impl Env {
                 Some(hit)
             })
             .ok()??;
+        let named = tr.def_key();
         let declared = match hit {
-            Err(Unseen::Later) => None,
+            Err(Unseen::Later) if named.is_none() => None,
             Ok(TypeName::Def(d))
                 if is_block_scope(&level)
                     && same_origin(d.ori(), ori)
-                    && d.pos() > pos =>
+                    && d.pos() > pos
+                    && named.is_none_or(|k| k == d.def_key()) =>
             {
                 Some(d.pos())
             }
-            Ok(_) | Err(Unseen::Dead) => return None,
+            Ok(_) | Err(Unseen::Later | Unseen::Dead) => return None,
         };
         let other = self
             .resolve_visible(&tr.scope, &tr.name, NameNs::Type, |s, n| {

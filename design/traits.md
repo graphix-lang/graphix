@@ -378,6 +378,12 @@ generic impl's target keeps the head's variables). So `|s: self, x|` in
 `impl T for i64` is `|s: i64, x|`, `[self, 'c]` is `[i64, 'c]`, and a
 written `self` that disagrees with the trait (`x: self` where the trait
 declares `x: string`) is an impl that does not implement it.
+The target's names mean what the head reads: they are resolved before
+the substitution, so a block in the method that declares a `type` of
+one of those names does not take `self` (nor is the reader warned of
+it). A `type` names only its own parameters, so one that writes `self`
+in a generic impl, whose target holds the impl's variables, is refused
+(`type P<'b> = ..` applied as `P<'a>` is the form).
 
 **Constraint discharge** (`typ/contains.rs`): a trait `Ref` on the
 left of `contains` is the predicate `trait_contains`: ⊥ yes, `Any` no,

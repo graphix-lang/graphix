@@ -401,7 +401,8 @@ run!(
 // A name above its block's declaration of it, with another of the name in
 // view there (an outer type, an import), is the block's type, and the
 // check says so at the name; with nothing else in view, or below the
-// declaration, it says nothing.
+// declaration, it says nothing, nor of an impl's `self`, which is the
+// target as its head names it.
 async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     let files = [(
@@ -460,6 +461,11 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
          let f = |v: [i64, string]| select v { L as l => l, _ => 0 };\n    f(z)\n}",
         "let g = |z: i64| {\n    let f = |v: [i64, string]| select v { L as l => l, _ => 0 };\n    \
          type L = i64;\n    f(z)\n}",
+        "type L = i64;\ntrait Later { val m: fn(self) -> i64 };\nimpl Later for L {\n    \
+         let m = |s| { let f = |x: self| -> i64 x + 1; type L = string; f(s) }\n}",
+        "trait B { val b: fn(self) -> i64 };\ntrait Bounded { val m: fn(self) -> i64 };\n\
+         impl<'a: B> Bounded for Array<'a> {\n    \
+         let m = |s| { let f = |x: self| -> i64 B::b(x[0]$); type B = string; f(s) }\n}",
     ] {
         let _quiet = ctx.rt.compile(ArcStr::from(source)).await?;
     }

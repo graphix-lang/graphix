@@ -2071,6 +2071,19 @@ impl Expr {
         self.with_kind(kind)
     }
 
+    // CR claude for claude: [bug/low] A dynamic module declared inside an
+    // impl's method keeps a `self` its sig writes as a type variable, where
+    // D28 reads `self` as the impl's target in every type the impl writes:
+    // `impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox
+    // whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f =
+    // |x| x" }; select st { error as e => 0, null as _ =>
+    // str::len(foo::f("ab")) + s } } }` checks and prints 3, `foo::f` taken at
+    // string. Expr::map_written_types leaves a module's sig (SigKind::Bind and
+    // SigKind::TypeDef hold its written types), so traits::self_as_target never
+    // sees it. Mapping a dynamic module's sig there, or refusing a `self` in
+    // it, would close this. Found by the review of impl-self-written-01
+    // (round 20, lane 20d). probe: ~/ptmp/cr29/scratch/r20/20d/review/m1.gx
+    // (impl-self-dynamic-sig-01)
     /// This node with each type it writes itself, never a child's, replaced
     /// by `f(type)` (`None`: unchanged), its id kept; `None` when `f`
     /// changes none. Those are a let's annotation (a seq trigger's too), a

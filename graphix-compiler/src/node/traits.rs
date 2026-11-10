@@ -383,8 +383,11 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
 /// An impl's method `e` with `self` read as the impl's `target` in every
 /// type it writes, at every depth: in an impl `self` is its target, as in a
 /// trait's default it is the trait's. A trait or impl nested inside has a
-/// `self` of its own.
-fn self_as_target(e: &Expr, target: &Type) -> Expr {
+/// `self` of its own. The target's names are resolved first, as the head
+/// reads them: a block inside the method that declares a type of one of
+/// those names does not take it. A `type` names only its own parameters, so
+/// one that writes `self` is refused where the target holds the impl's.
+fn self_as_target(e: &Expr, target: &Type, generic: bool, env: &Env) -> Result<Expr> {
     fn writes_self(e: &Expr) -> bool {
         ensure_sufficient(|| {
             let mut found = false;
@@ -398,23 +401,47 @@ fn self_as_target(e: &Expr, target: &Type) -> Expr {
             found
         })
     }
-    fn subst(e: &Expr, known: &AHashMap<ArcStr, Type>) -> Expr {
+    fn subst(
+        e: &Expr,
+        known: &AHashMap<ArcStr, Type>,
+        generic: bool,
+        res: &mut Result<()>,
+    ) -> Expr {
         ensure_sufficient(|| {
             let mut m = e.map_children(&mut |c| match writes_self(c) {
-                true => subst(c, known),
+                true => subst(c, known, generic, res),
                 false => c.clone(),
             });
             m.id = e.id;
             let mut sub = |t: &Type| t.mentions_self().then(|| t.replace_tvars(known));
-            m.map_written_types(&mut sub).unwrap_or(m)
+            let Some(written) = m.map_written_types(&mut sub) else { return m };
+            if generic
+                && res.is_ok()
+                && let ExprKind::TypeDef(td) = &e.kind
+            {
+                *res = Err(anyhow!(
+                    "type {} writes `self`, which here is {}, over the impl's type \
+                     variables; a type definition names only its own parameters: \
+                     give it one and apply it",
+                    td.name.name,
+                    known["self"]
+                ))
+                .at(e)
+            }
+            written
         })
     }
     if !writes_self(e) {
-        return e.clone();
+        return Ok(e.clone());
     }
+    target.for_each_written_name(&mut |tr| {
+        let _ = tr.resolve_only_in(env);
+    });
     let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
     known.insert(literal!("self"), target.clone());
-    subst(e, &known)
+    let mut res = Ok(());
+    let e = subst(e, &known, generic, &mut res);
+    res.map(|()| e)
 }
 
 /// Fill a method lambda's missing parameter and return annotations
@@ -967,7 +994,7 @@ impl<R: Rt> Impl<R> {
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         let mut provided: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for m in im.methods.iter() {
-            let m = &self_as_target(m, &target);
+            let m = &self_as_target(m, &target, !params.is_empty(), &ctx.env)?;
             let ExprKind::Bind(b) = &m.kind else {
                 unreachable!("impl methods are binds")
             };

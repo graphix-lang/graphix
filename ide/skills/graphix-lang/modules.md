@@ -56,12 +56,17 @@ In an impl, `self` is the impl's target in every type the impl writes (a
 method's `let` annotation, its lambda's parameters and result, anything
 inside it), as in a default it is the trait's: `|s: self, x|` in `impl T
 for i64` is `|s: i64, x|`, and `[self, 'c]` there is `[i64, 'c]`. A
-written `self` the trait does not declare there is refused.
+written `self` the trait does not declare there is refused, and so is
+a `self` in a `type` definition inside a generic impl's method (the
+target holds the impl's variables, which a definition cannot name: give
+it a parameter).
 
 ```graphix,cases
 ok trait T { val m: fn(self, x: i64) -> i64 }; impl T for i64 { let m = |s: self, x| s + x }; T::m(1, 2)
 ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
 no "string does not contain i64" trait T { val m: fn(self, x: string) -> string }; impl T for i64 { let m = |s, x: self| x }; T::m(1, "q")
+no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P = self; let p: P = s; array::len(p) } }; T::m([1])
+ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
 ```
 
 A trait method's `#[pure]` or `#[sync]` holds for every implementation, even
