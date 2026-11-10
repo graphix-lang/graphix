@@ -108,65 +108,6 @@ fn implements<R: Rt>(
     let pairs = declared.sig_matches(&ctx.env, &ft).map_err(told)?;
     let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
     let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
-    // XCR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
-    // and the impl's let annotation claims at the top level a free variable a declared
-    // quantifier's bound names, so `trait T { val m: fn<'a: ['b, null]>(#x: 'a, self, y:
-    // 'b) -> 'a }; impl T for i64 { let m = (|#x, s, y| x, 1).0 }` (or `(id, 1).0`) is
-    // refused, "where the method declares 'b ... its value is no lambda", though both run
-    // at two types; main 968fa9bc0 runs them (`2 null`). Over-refusal only, introduced by
-    // cf39b8d82's level test for non-lambda methods; the way out the message names (a
-    // lambda) passes, as do the same values under fn(self, x: 'a) -> 'a, an unbounded
-    // free 'b, or a val (vq1). Telling the annotation's own claim from a binding outside
-    // needs what claimed the cell, which the level does not record; the XCR
-    // trait-generic-written-01 notes the same claim for lambdas. No census file has the
-    // shape. probes ~/ptmp/cr29/scratch/review-r14/A-r2-2/p/{tq1,tq1b} (controls tq1d,
-    // tq1e, tq1f, vq1) (trait-nolambda-bound-01)
-    // 2026-11-05 claude: Lane Q (cr51-Q, Eric's 11-05 ML rule): a method whose value is no
-    // lambda ((|#x, s, y| x, 1).0, (id, 1).0) is now one instance by rule, since no binding
-    // names the lambda inside the tuple, so its refusal under a variable each call picks is
-    // the intended verdict, not an over-refusal (pin
-    // lang::traits::method_value_projected_from_data_is_refused). Whether the message
-    // should cite the ML rule rather than the level test is what remains; the probes tq1,
-    // tq1b are refused as before.
-    // 2026-11-09 claude: Review r19 (19c) reopened it: the fixer's X (1fa476658, reverted)
-    // judged the text accurate, but one step over the refusal and its message are wrong.
-    // Eric's 11-05 D3 follow-up Q1 (a) generalizes a let whose value is a field or tuple
-    // read of a generalized binding, and a val implemented so runs at two types
-    // (~/ptmp/cr29/scratch/r19/19c/trait-nolambda/v2: let go = s.g, v3: let go = p.0, both
-    // print '1 s' on base-r19), yet the same value as a trait method is refused 'its value
-    // is no lambda, so no call copies its types' (a2: impl Put for C { let put = s.g }, a3:
-    // let put = p.0, with trait Put { val put: fn(self, x: 'a) -> 'a }). Cause:
-    // Impl::compile gives each method's let the trait signature as its annotation
-    // (traits.rs:877, typ: b.typ.clone().or_else(..sig..)) and bind::forwards
-    // (bind.rs:1009) requires b.typ.is_none(), so the method's let is never in poly_binds
-    // and its cells sit at Top (a debug print showed poly=false for a2's put). The CR's own
-    // probes tq1/tq1b ((f, 1).0 over a literal tuple) stay refused rightly. A fix: let a
-    // forwarding method value carry the scheme despite the synthesized annotation (forwards
-    // keyed on a written annotation only, or Impl not annotating a value that forwards),
-    // then pin a2/a3 as running at two types beside
-    // method_value_projected_from_data_is_refused; it accepts more, so census and guicheck.
-    // Using the Bind node's type in Impl::typecheck0 instead of env's does not help
-    // (tried).
-    // 2026-11-10 claude: Round 20 (20d): a method, an impl's or a trait default's, whose
-    // value past parentheses and a block's final expression is no lambda takes no
-    // annotation from the declaration (traits::signature_of), so its let is typed as any
-    // let of the value: a read of a generalized binding or of its field or tuple (let put =
-    // s.g, p.0, a default = s.g) forwards the scheme and runs at two types, as its val twin
-    // does (probes a2, a3, d2, h9, h10 in ~/ptmp/cr29/scratch/r20/20d/tnl), and implements
-    // holds it to the declaration by sig_matches and level (h1, h2, j1, e9, h5 refused).
-    // The CR's own tq1/tq1b ((f, 1).0 over a literal) stay refused, one instance by the ML
-    // rule, and so do a call's result and an annotated read (e3, e6); their message now
-    // names the rule ('neither a lambda nor, with no annotation, a generic binding's
-    // read'), and a forwarded scheme's shared cell is told as a binding's outside. Pins
-    // lang::traits::method_value_read_from_a_generic_struct_runs_at_two_types,
-    // *_from_a_generic_tuple_*, *_through_parens_a_block_and_a_sibling_method,
-    // *_in_a_generic_impl_and_a_union_dispatch,
-    // default_method_value_read_from_a_generic_struct_runs_at_two_types,
-    // method_value_read_joining_self_and_a_declared_variable_is_refused,
-    // *_of_another_self_is_refused, *_over_an_outer_binding_is_refused: 32 runs fail with
-    // signature_of always giving the signature; method_value_read_less_general_*,
-    // *_with_a_bound_*, *_under_an_annotation_*, method_value_made_by_a_call_at_one_type
-    // guard the edges. Census 2949 files against base-r20: 0 verdict, 0 message.
     let shared = |tv: &TVar| {
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
