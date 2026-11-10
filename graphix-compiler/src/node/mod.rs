@@ -529,7 +529,7 @@ fn gather_in_order<'a, R: Rt>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 /// `$tag` is the join of the consumed productions.
-// CR claude for eric: [bug/medium] A quiet change of a standing value
+// CR claude for claude: [bug/medium] A quiet change of a standing value
 // reaches a bare read but not an operator over it: an operator whose
 // inputs did not fire rides its resident here, so in a closure whose
 // capture is a callee's formal refreshed standing at its arm's wake, `|y|
@@ -582,6 +582,21 @@ fn gather_in_order<'a, R: Rt>(
 // above; or reconsider (1), whose kernel half is close to free (a kernel
 // already routes stale, constants standing) and needs only the resize gate.
 // Probes: ~/ptmp/cr29/scratch/r19/19e/.
+// 2026-11-10 claude: Eric ruled (2026-11-10, D20 follow-up 3): (A), superseding
+// (a) of 11-05 and (3) of 11-09, which do not land (7bff09057, 6443adef9;
+// branch r19-e-wip-quiet-refresh is dropped, its lang::quiet_refresh fixtures
+// kept as shapes and re-pinned). A value a wake re-stands differently is a FIRE
+// for every reader outside the woken arm: once, a cycle late to readers already
+// passed; inside the arm nothing fires. Whether a stand changed is decided by a
+// production tag bit (the vacated WAKE slot), not by comparing values: a stand
+// recomputed from an input that fired while the arm slept carries it, nodes
+// that compute from values pass it on, nodes that consume events (count,
+// samplers) drop it; kernels OR it into their result like TAINT, no per-select
+// state. (ii) a backward reader inside the woken arm (back_inside.gx) gets the
+// change a cycle late STALE, not fired. Study and probes:
+// ~/ptmp/cr29/d20x/d20-redesign.md, ~/ptmp/cr29/d20x/probes/. D20 (b)
+// (bound-bind-policy-01, branch r19-e-wip-bound-bind) rebases onto A after
+// wake-entry-split-01.
 macro_rules! dense_gate {
     ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
