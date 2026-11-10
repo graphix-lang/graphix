@@ -167,6 +167,17 @@
 <ul>
 <li>Input is read line by line from the user</li>
 <li>Each line is compiled and executed immediately</li>
+<li>Each statement is checked alone, those of one line one after another,
+so a type a statement leaves undecided is decided when it ends: <code>_</code>
+where nothing says otherwise (<code>let e = []</code> is <code>Array&lt;_&gt;</code>, <code>let y = never()</code> is <code>_</code>). A later statement, on the same line or a later one,
+that would decide it otherwise is refused, naming the binding to
+annotate: after <code>let e = []</code>, <code>e &lt;- [1]</code> asks for <code>let e: Array&lt;i64&gt; = []</code>. A function a later statement writes such a binding from is held to
+its type: after <code>let y = never()</code>, <code>let p = |x| { y &lt;- x; x }</code> takes
+only <code>_</code>, so <code>p(1)</code> is refused. Lambdas that meet as one type, in an
+array or a select's arms, are one function type whose parameters were
+decided by nothing, so they settle too: after <code>let fs = [|x| x, |y| y]</code>, <code>fs[0]$(1)</code> is refused; write <code>let fs: Array&lt;fn(x: i64) -&gt; i64&gt; = ..</code>. A generic function a statement leaves in a binding (<code>let j = s.g</code>, <code>s</code> a struct of functions) stays generic: every later statement's
+use copies it, so <code>j(1)</code>, <code>j(1.5)</code> and <code>app(j)</code> after <code>let app = |f: fn(x: i64) -&gt; i64| f(1)</code> all pass and decide nothing of <code>j</code>. A dynamic
+module's load is checked the same way, after the statements before it</li>
 <li>Completion is available via the Tab key</li>
 <li>The value and type of output expressions are
 <ul>

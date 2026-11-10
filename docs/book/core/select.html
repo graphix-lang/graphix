@@ -396,6 +396,11 @@ is dead (both match every non-empty array), and a <code>_</code> behind a
 complete ladder like the one above is dead exactly as it would be
 behind a full variant set. Order exact-length arms above the rest
 arm that subsumes them.</p>
+<p>A slice inside a tuple, struct or variant counts the same way, at
+its own position, when its arm tests nothing else: <code>([], _)</code> and
+<code>([x, ..], _)</code> cover <code>(Array&lt;i64&gt;, i64)</code>, and <code>([x, y, ..], _)</code> after
+<code>([x, ..], _)</code> is dead. An arm that also tests another position, as
+<code>([x, ..], 0)</code> does, claims no lengths.</p>
 <h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
 <p>Lists (see <a href="./fundamental_types.html#list">Fundamental Types</a>) have
 their own slice-like patterns, written with the list literal's
@@ -484,11 +489,68 @@ compiler asks you to annotate the member you mean:</p>
 </code></pre>
 <p>Any type in scope (or an inline structural type,
 <code>{x: i64, y: i64} as {x, ..}</code>) works as the annotation.</p>
-<p>Two members whose left-out fields differ only in types the program has
-not decided yet, where the pattern is checked, look alike, and the
-pattern takes them for one member. Once the whole program (or REPL
-input) is checked, the pattern is refused the same way if they turned
-out different:</p>
+<p>A type the program has not decided yet where a select is checked, such
+as a <code>never()</code> binding written after it or a function's unannotated
+parameter, is one unknown type there, equal only to itself, whatever
+the program decides later. An arm that tests a value of such a type is
+refused, since a later decision could make the test match what the
+arms assumed it would not, and the refusal names the binding to
+annotate:</p>
+<pre><code class="language-graphix refused">let b = true;
+let z = never();
+let v = select b { true =&gt; {a: [1], c: 1}, false =&gt; z };
+let r = select v { {a, ..} =&gt; "[a]" };
+// z is decided here, after the select
+z &lt;- {a: ["s"], c: "w"};
+r
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 4, column: 1 in file test.gx, in: let r = select v { { a, .. } =&gt; "[a]" ..
+    1: at: line: 4, column: 9 in file test.gx, in: select v { { a, .. } =&gt; "[a]" }
+    2: at: line: 4, column: 20 in file test.gx
+    3: { a, .. } tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line 2, column 5)
+</code></pre>
+<p>An arm whose pattern would decide such a type itself is refused the
+same way. Here the first arm would make <code>x</code> a <code>`J</code> alone, and the
+second arm could then never match:</p>
+<pre><code class="language-graphix refused">let f = |x| select (x, 0) { (`J, _) =&gt; 1, (`M, _) =&gt; 2 };
+f(`M)
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 1, column: 1 in file test.gx, in: let f = |x| select (x, 0) { (`J, _) =&gt;..
+    1: at: line: 1, column: 9 in file test.gx, in: |x| select (x, 0) { (`J, _) =&gt; 1, (`M,..
+    2: at: line: 1, column: 13 in file test.gx, in: select (x, 0) { (`J, _) =&gt; 1, (`M, _) ..
+    3: at: line: 1, column: 29 in file test.gx
+    4: (`J, _) tests a value of 'x, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'x the type of `x` (line 1, column 10)
+</code></pre>
+<p>Annotated, <code>|x: [</code>J, <code>M]|</code>, both arms check. A pattern that only takes
+such a part apart decides its shape, as an annotation would: <code>|x| select (x, 0) { ((a, b), _) =&gt; a + b }</code> makes <code>x</code> a pair. That is a tuple, a
+struct naming every field, a slice or list with a rest (<code>[a, ..]</code>,
+<code>[&lt;h, t..&gt;]</code>) or an abstract payload, holding only names, <code>_</code> and such
+patterns. A literal, a tag, <code>null</code>, <code>[]</code>, a slice of a fixed length, an
+or-pattern or a written test chooses among the part's values, and is
+refused as above; so is a literal beside a member that holds its type,
+<code>(null, _)</code> over a <code>y</code> that is <code>x</code> or <code>null</code>, and a destructure beside a
+member of its shape, <code>((a, b), _)</code> over a <code>y</code> that is <code>x</code> or a pair,
+which chooses between them. A rest
+leaves the lengths it does not take to a later name or <code>_</code>: after <code>([a, ..], _)</code>, a <code>([], _)</code> arm chooses a length and is refused. A scrutinee that is wholly
+such a type is the arms' to decide together: <code>|x| select x { </code>J =&gt; 1, <code>M =&gt; 2 }</code> makes <code>x</code> a <code>[`J, `M]</code>. A partial struct pattern decides
+nothing there, since it names only some of the fields: <code>|x| select x { {a, ..} =&gt; a }</code> is refused until <code>x</code> is annotated.</p>
+<p>A part that only a name or <code>_</code> meets passes, and a name there holds that
+type beside the other members' parts: over <code>[(`A, z), (`B, "s")]</code>,
+<code>(_, x) =&gt; str::len(x)</code> makes <code>z</code> a string, so a later <code>z &lt;- 5</code> is
+refused where it is written. A type test tests what it reads as a
+pattern does: <code>(`J, [i64, string]) as (`J, s)</code> over <code>(`J, z)</code> is
+refused until <code>z</code> is annotated, since <code>z</code> might become neither.</p>
+<p>For the same reason, two members whose left-out fields differ only in
+types not decided yet are two members, and a partial pattern over both
+is refused:</p>
 <pre><code class="language-graphix refused">let b = true;
 let x = never();
 let y = never();
@@ -496,25 +558,19 @@ let v = select b { true =&gt; {a: [1], c: x}, false =&gt; {a: ["s"], c: y} };
 let r = select v { {a, ..} =&gt; "[a]" };
 // x and y are decided here, after the select
 x &lt;- 1;
-y &lt;- "w";
+y &lt;- 2;
 r
 </code></pre>
 <pre><code>$ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 5, column: 20 in file test.gx
-    1: the pattern { a, .. } matches more than one member of [{ a: Array&lt;i64&gt;, c: i64 }, { a: Array&lt;string&gt;, c: string }] once its cells are decided; annotate the member you mean, e.g. `T as { a, .. }`, or name every field
+    0: at: line: 5, column: 1 in file test.gx, in: let r = select v { { a, .. } =&gt; "[a]" ..
+    1: at: line: 5, column: 9 in file test.gx, in: select v { { a, .. } =&gt; "[a]" }
+    2: at: line: 5, column: 20 in file test.gx
+    3: the pattern { a, .. } matches two members, { a: Array&lt;i64&gt;, c: 'x } and { a: Array&lt;string&gt;, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
 </code></pre>
-<p>Inside a function, a type its callers decide counts as different from
-every other, since two calls may decide them apart: a type whose values
-a caller passes in, as a parameter's are, or can put in later (under a
-<code>&amp;mut</code>, or as a parameter of a function it returns). A type that holds
-no value, such as the element type of an empty <code>[]</code> nothing else
-decides, differs from none, even when the function returns it. The
-first member is what the arm tests at run time, though, so an empty
-<code>[]</code> there that the function returns, whose element a caller may name,
-still differs from a type in another member that holds values. Naming
+<p>Annotating <code>x</code> and <code>y</code> (<code>let x: i64 = never()</code>) decides them, and naming
 every field, <code>{a, c: _}</code>, matches both members as they are.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>

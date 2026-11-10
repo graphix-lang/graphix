@@ -251,6 +251,12 @@ mod statement. However, the signature checking only cares that every item
 mentioned in the signature is present in the dynamic module and that the types
 match. If extra items are present in the dynamic module they will simply be
 ignored, and will be inaccessible to the loading program.</p>
+<p>A load is checked after the program that loads it, so the program's types are
+decided by then: what the program left undecided is <code>_</code>, and a load that would
+decide it otherwise is refused, naming the binding to annotate, and leaves the
+program's types as they were. A loaded body that writes a binding of the
+program is held to its type. With <code>let y = never()</code> in the program, the body
+<code>let h = |x| { super::y &lt;- x; x }</code> takes only <code>_</code>, so a <code>sig { val h: fn(x: 'a) -&gt; 'a }</code> is refused; declare <code>let y: i64 = never()</code> and <code>val h: fn(x: i64) -&gt; i64</code>.</p>
 
                     </main>
 

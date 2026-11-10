@@ -408,7 +408,10 @@ the members of the kind it parses as next: <code>cast&lt;[duration, decimal]&gt;
 is the decimal 3.0, as <code>cast&lt;[duration, decimal]&gt;(3.0)</code> is. Among the
 members of one kind, one that holds the value exactly comes first, then one
 that holds it rounded to its precision, then one that would drop part of
-it: <code>cast&lt;[i64, f32]&gt;(0.1)</code> is the <code>f32</code> 0.1, not the integer 0. A float
+it: <code>cast&lt;[i64, f32]&gt;(0.1)</code> is the <code>f32</code> 0.1, not the integer 0. A
+number too large for a member is read as that member's infinity only when
+no member of any kind holds it: <code>cast&lt;[f32, string]&gt;(1e300)</code> is the
+string, <code>cast&lt;f32&gt;(1e300)</code> is <code>inf</code>. A float
 or a decimal, or its text, goes to an integer member only where no <code>f32</code>,
 <code>f64</code> or <code>decimal</code> member holds it exactly: <code>cast&lt;[i64, decimal]&gt;(3.0)</code>
 and <code>cast&lt;[i64, decimal]&gt;("3.0")</code> are both the decimal 3.0 (a decimal made

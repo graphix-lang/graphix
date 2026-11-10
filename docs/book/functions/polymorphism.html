@@ -223,7 +223,7 @@ doesn't unify with <code>f64</code>.</p>
 for any <code>'a</code> and any <code>'b</code>, chosen independently. The body is checked
 against that promise, so a body that only works when the two are the
 same type is refused at the definition rather than at some later call,</p>
-<pre><code class="language-graphix">〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -&gt; ['a, 'b] x + y
+<pre><code class="language-graphix">〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -&gt; 'a x + y
 error: ... cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type (cast one side explicitly)
 </code></pre>
 <p><code>+</code> takes two values of one type, so <code>x + y</code> needs <code>'a</code> and <code>'b</code> to be
@@ -241,6 +241,26 @@ refused,</p>
 error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 </code></pre>
 <p>A written function type follows the same rule: <code>fn&lt;'a: Number&gt;(x: i64) -&gt; i64</code> is refused too.</p>
+<p>In the body a declared variable is whatever type a call picks, so a
+<code>select</code> may not look inside a value of it on its own: a pattern that
+tests or binds inside one needs a written type test (see
+<a href="../core/select.html">Select</a>), which types what it binds. A name or <code>_</code>
+over the whole value keeps the variable,</p>
+<pre><code class="language-graphix">〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(z) =&gt; z + 1, _ =&gt; 0 }
+error: ... `A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, ``A(i64) as `A(z)`
+〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(i64) as `A(z) =&gt; z + 1, _ =&gt; 0 }
+〉g(`A(3))
+-: i64
+4
+〉let same = 'b: [`A(i64), `B(i64)] |x: 'b| -&gt; 'b select x { v =&gt; v }
+</code></pre>
+<p>A destructuring <code>let</code> or parameter over such a value takes an annotation
+the same way (<code>let {x, y}: {x: i64, y: i64} = p</code>, <code>|{x, y}: {x: i64, y: i64}|</code>). Beside other members, the variable's values are covered only by
+a name or <code>_</code> at its position, or by written tests that split its bound:</p>
+<pre><code class="language-graphix">〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) =&gt; 1, (false, null) =&gt; 2 }
+error: ... missing match cases: no arm covers (bool, [null, 'b: unbound within [i64, string]])
+〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) =&gt; 1, (false, null) =&gt; 2, (false, v) =&gt; 3 }
+</code></pre>
 <p>A bound may not reach its own variable, directly (<code>'a: 'a</code>), inside
 another type (<code>'a: Array&lt;'a&gt;</code>) or through the bound of another variable
 (<code>'a: 'b, 'b: 'a</code>); a definition, a written function type and an impl
@@ -253,6 +273,33 @@ error: ... 'a's bound names 'a: a bound may not reach its own variable; a recurs
 〉n([1, [2, [3]]])
 -: Array&lt;[i64, Array&lt;[i64, Array&lt;i64&gt;]&gt;]&gt;
 [1, [2, [3]]]
+</code></pre>
+<p>A function type with variables of its own (<code>fn&lt;'a: Number&gt;(x: 'a) -&gt; 'a</code>, or a trait as a parameter's type, <code>fn(c: Collection) -&gt; i64</code>, which
+declares one) stands only as a definition's own signature: an interface
+<code>val</code>'s type, a trait method's, a builtin's at the top of its
+declaration. Anywhere else, a parameter's type, a field, an element, a
+<code>let</code> annotation, a typedef, another function type's argument or result,
+it is refused. Declare the variable on the definition instead, which each
+call picks, or bind the generic function with <code>let</code> and call it by name,</p>
+<pre><code class="language-graphix">〉let apply = |f: fn&lt;'a: Number&gt;(x: 'a) -&gt; 'a| f(1)
+error: ... a function type with type variables of its own (`fn&lt;'a: ..&gt;(..)`, or a trait as a parameter's type, `fn(c: Collection)`) stands only as a definition's signature: declare the variables on the definition (`'a: Number |f: fn(x: 'a) -&gt; 'a| ..`), or bind the generic function with `let` and call it by name
+〉let apply = 'a: Number |f: fn(x: 'a) -&gt; 'a, x: 'a| f(x)
+〉apply(|x| x * 2, 3)
+-: i64
+6
+</code></pre>
+<p>A function stays generic only where a binding names it: a <code>let</code> of a
+lambda or of a data literal holding lambdas, a <code>let</code> of a generic name or
+of a field of one (<code>let j = s.g</code>), or of a block ending in one of these,
+a <code>val</code>, a trait method. Anywhere else, an element of a collection a call
+returns, a callback's result, a field of a call's result, an argument, a
+reference (<code>&amp;f</code>), it is one instance,
+which its uses decide. Here <code>g</code> is one instance of the lambda the
+callback returns, decided to <code>i64</code> by its first call, so a second call
+<code>g(1.5)</code> would be refused:</p>
+<pre><code class="language-graphix">let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -&gt; 'a x + x);
+let g = fs[0]$;
+g(3)
 </code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type

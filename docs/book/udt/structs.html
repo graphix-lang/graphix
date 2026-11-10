@@ -211,8 +211,7 @@ takes <code>.field</code> the same way,</p>
 <p>A field can be read from a union of struct types when every member has that
 field. The result has the union of their field types. The other fields may
 differ, and the shared field need not have the same position in each struct.
-A functional update over such a union requires the replacement to fit that
-field in every member.</p>
+A functional update over such a union replaces that field in every member.</p>
 <h2 id="mutability-and-functional-update"><a class="header" href="#mutability-and-functional-update">Mutability and Functional Update</a></h2>
 <p>Structs are not mutable, like everything else in Graphix. However There is a
 quick way create a new struct from an existing struct with only some fields
@@ -225,6 +224,11 @@ changed. This is called functional struct update syntax. For example,</p>
 {bar: 21, foo: "I am foo"}
 </code></pre>
 <p>Notice that the type printed is the full type of the struct, this is because of structural typing.</p>
+<p>A replaced field takes the replacement's own type, exactly as the same
+field in a struct literal would, so an update can change a field's type.
+<code>{ s with bar: null }</code> has <code>bar: null</code>, not whatever <code>s.bar</code> was. To keep
+the wider type, annotate the binding:
+<code>let t: {bar: [i64, null], foo: string} = { s with bar: null }</code>.</p>
 <h2 id="implementation"><a class="header" href="#implementation">Implementation</a></h2>
 <p>A struct is an array whose first element is the struct marker, a value
 no data can hold that tells a struct apart from an array at run time,

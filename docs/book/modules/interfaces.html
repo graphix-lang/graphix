@@ -315,7 +315,32 @@ val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;
 val fold: fn(a: Array&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 </code></pre>
 <p>Type variables (like <code>'a</code>, <code>'b</code>, <code>'e</code>) work the same as in regular type
-annotations.</p>
+annotations: each use of <code>map</code> picks its own <code>'a</code> and <code>'b</code>. A variable
+stands only inside a function type, where each use can pick it. One
+outside every function type, as in <code>val v: Array&lt;'a&gt;</code>, would be one type
+that every use shares, so it is refused: declare the val at one type,
+<code>val v: Array&lt;i64&gt;</code>.</p>
+<p>The implementation must be as general as its <code>val</code>. Under <code>val f: fn(x: 'a) -&gt; 'a</code>, an implementation that keeps its argument in a binding
+outside it, <code>let y = never(); let f = |x| { y &lt;- x; x }</code>, has one type
+for every call, and is refused: give <code>y</code> a type that holds every <code>'a</code>
+(<code>let y: Any = never()</code>), or declare <code>f</code> at one type. So is one that
+something writes, <code>let f = |x| x; f &lt;- |x| x</code>, whose writers share one
+type: declare <code>f</code> at one type.</p>
+<p>A <code>val</code> whose type holds a variable is generic wherever its function
+types stand: in a struct (<code>val c: {f: fn(x: 'a) -&gt; 'a}</code>), an array or a
+type alias, and with its own quantifiers written (<code>val f: fn&lt;'a: Any&gt;(..)</code>) or not; each use takes it at its own types. What is written
+through it must be as general as it is (<code>m::c &lt;- {f: |x| x}</code>, not <code>{f: |x: i64| -&gt; i64 x}</code>), each of its function types on its own, and a
+writable reference to it is refused where the referenced place holds
+one of its variables: <code>&amp;mut m::c</code> and <code>&amp;mut m::c.f</code> are, <code>&amp;mut m::c.n</code>
+over a field <code>n: i64</code> is not. A function type with quantifiers of its
+own stands only as the val's whole type: inside its data, <code>val c: {f: fn&lt;'b: Any&gt;(x: 'b) -&gt; 'b}</code>, it is refused. A name
+that copies a generic <code>val</code> and is written, <code>let g = m::c; g &lt;- ..</code>, is
+one instance of it: what is written decides its type for every use of
+<code>g</code>.</p>
+<p>A <code>val</code> declared at one type over a generic implementation can be
+called, but what is written through it (<code>m::f &lt;- ..</code>, or through <code>&amp;mut m::f</code>) lands on the implementation, which other uses take at other
+types, so a <code>val</code> something writes must fit its implementation:
+annotate the implementation's <code>let</code> with the val's type.</p>
 <h2 id="module-hierarchies"><a class="header" href="#module-hierarchies">Module Hierarchies</a></h2>
 <p>For module hierarchies, each level can have its own interface. Here's an example
 structure:</p>

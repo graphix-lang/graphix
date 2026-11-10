@@ -229,8 +229,7 @@ representation), and a read takes it only so.</li>
 <p><code>[`A, `B(i64), Port, null]</code> and <code>[T, null]</code>, for a <code>T</code> that is not
 itself a union, read back. <code>[i64, string]</code>, <code>[u8, i64]</code>, <code>[Port, u8]</code>, <code>[string, `A]</code>,
 <code>[{a: i64}, {b: i64}]</code> and a type variable beside another member are
-refused, as a target and as a written value. So is a typedef whose
-parameters grow as it recurses, such as <code>type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Array&lt;'a&gt;&gt;)]</code>.</p>
+refused, as a target and as a written value.</p>
 <p>The data inside an abstract value's object is written for its reader:
 where <code>T</code>'s <code>Cast</code> implementation writes <code>from_value</code>, which casts it as
 data, the abstract values in it are written bare (<code>{"Tags":["a","b"]}</code>

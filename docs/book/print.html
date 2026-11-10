@@ -965,7 +965,10 @@ the members of the kind it parses as next: <code>cast&lt;[duration, decimal]&gt;
 is the decimal 3.0, as <code>cast&lt;[duration, decimal]&gt;(3.0)</code> is. Among the
 members of one kind, one that holds the value exactly comes first, then one
 that holds it rounded to its precision, then one that would drop part of
-it: <code>cast&lt;[i64, f32]&gt;(0.1)</code> is the <code>f32</code> 0.1, not the integer 0. A float
+it: <code>cast&lt;[i64, f32]&gt;(0.1)</code> is the <code>f32</code> 0.1, not the integer 0. A
+number too large for a member is read as that member's infinity only when
+no member of any kind holds it: <code>cast&lt;[f32, string]&gt;(1e300)</code> is the
+string, <code>cast&lt;f32&gt;(1e300)</code> is <code>inf</code>. A float
 or a decimal, or its text, goes to an integer member only where no <code>f32</code>,
 <code>f64</code> or <code>decimal</code> member holds it exactly: <code>cast&lt;[i64, decimal]&gt;(3.0)</code>
 and <code>cast&lt;[i64, decimal]&gt;("3.0")</code> are both the decimal 3.0 (a decimal made
@@ -1656,6 +1659,17 @@ current cycle proceeds as normal to it's conclusion as if the connect didn't
 happen yet, because it didn't. In the above case the event loop would never
 wait, because there is always work to do adding 1 to <code>x</code>, however it will still
 check for other events every cycle.</p>
+<p>A cycle evaluates statements in the order they are written, and REPL
+inputs in the order they were entered. A reader can sit before the value it
+reads only through a function value that names a later binding (one of its
+parameters or pattern bindings included), a reference to a later binding,
+an earlier REPL input, or a module reloaded later; such a reader gets each
+new value the same way a connect delivers one, in the next cycle, while
+readers after it see the value in the cycle it is made. A reader that sits
+before a value and feeds it back (<code>let r = h(1); let w = r + 1; h &lt;- |x| x + w</code>) is a loop like <code>x &lt;- x + 1</code>: it takes one step per cycle and never stops.
+This holds inside one statement too: in <code>(*r, { let v = ..; r &lt;- &amp;v; v })</code>,
+or <code>(*r, mk(t))</code> where <code>mk</code> makes <code>r</code>'s target, the <code>*r</code> reads each new value
+in the next cycle, as it would in a statement of its own.</p>
 <p>When combined with other operations, specifically select, connect becomes a
 looping construct that runs one step per cycle: connect is the only way to
 make a cycle in the graph. To iterate over a collection, use the collection
@@ -2115,6 +2129,11 @@ is dead (both match every non-empty array), and a <code>_</code> behind a
 complete ladder like the one above is dead exactly as it would be
 behind a full variant set. Order exact-length arms above the rest
 arm that subsumes them.</p>
+<p>A slice inside a tuple, struct or variant counts the same way, at
+its own position, when its arm tests nothing else: <code>([], _)</code> and
+<code>([x, ..], _)</code> cover <code>(Array&lt;i64&gt;, i64)</code>, and <code>([x, y, ..], _)</code> after
+<code>([x, ..], _)</code> is dead. An arm that also tests another position, as
+<code>([x, ..], 0)</code> does, claims no lengths.</p>
 <h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
 <p>Lists (see <a href="core/./fundamental_types.html#list">Fundamental Types</a>) have
 their own slice-like patterns, written with the list literal's
@@ -2203,11 +2222,68 @@ compiler asks you to annotate the member you mean:</p>
 </code></pre>
 <p>Any type in scope (or an inline structural type,
 <code>{x: i64, y: i64} as {x, ..}</code>) works as the annotation.</p>
-<p>Two members whose left-out fields differ only in types the program has
-not decided yet, where the pattern is checked, look alike, and the
-pattern takes them for one member. Once the whole program (or REPL
-input) is checked, the pattern is refused the same way if they turned
-out different:</p>
+<p>A type the program has not decided yet where a select is checked, such
+as a <code>never()</code> binding written after it or a function's unannotated
+parameter, is one unknown type there, equal only to itself, whatever
+the program decides later. An arm that tests a value of such a type is
+refused, since a later decision could make the test match what the
+arms assumed it would not, and the refusal names the binding to
+annotate:</p>
+<pre><code class="language-graphix refused">let b = true;
+let z = never();
+let v = select b { true =&gt; {a: [1], c: 1}, false =&gt; z };
+let r = select v { {a, ..} =&gt; "[a]" };
+// z is decided here, after the select
+z &lt;- {a: ["s"], c: "w"};
+r
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 4, column: 1 in file test.gx, in: let r = select v { { a, .. } =&gt; "[a]" ..
+    1: at: line: 4, column: 9 in file test.gx, in: select v { { a, .. } =&gt; "[a]" }
+    2: at: line: 4, column: 20 in file test.gx
+    3: { a, .. } tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line 2, column 5)
+</code></pre>
+<p>An arm whose pattern would decide such a type itself is refused the
+same way. Here the first arm would make <code>x</code> a <code>`J</code> alone, and the
+second arm could then never match:</p>
+<pre><code class="language-graphix refused">let f = |x| select (x, 0) { (`J, _) =&gt; 1, (`M, _) =&gt; 2 };
+f(`M)
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 1, column: 1 in file test.gx, in: let f = |x| select (x, 0) { (`J, _) =&gt;..
+    1: at: line: 1, column: 9 in file test.gx, in: |x| select (x, 0) { (`J, _) =&gt; 1, (`M,..
+    2: at: line: 1, column: 13 in file test.gx, in: select (x, 0) { (`J, _) =&gt; 1, (`M, _) ..
+    3: at: line: 1, column: 29 in file test.gx
+    4: (`J, _) tests a value of 'x, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'x the type of `x` (line 1, column 10)
+</code></pre>
+<p>Annotated, <code>|x: [</code>J, <code>M]|</code>, both arms check. A pattern that only takes
+such a part apart decides its shape, as an annotation would: <code>|x| select (x, 0) { ((a, b), _) =&gt; a + b }</code> makes <code>x</code> a pair. That is a tuple, a
+struct naming every field, a slice or list with a rest (<code>[a, ..]</code>,
+<code>[&lt;h, t..&gt;]</code>) or an abstract payload, holding only names, <code>_</code> and such
+patterns. A literal, a tag, <code>null</code>, <code>[]</code>, a slice of a fixed length, an
+or-pattern or a written test chooses among the part's values, and is
+refused as above; so is a literal beside a member that holds its type,
+<code>(null, _)</code> over a <code>y</code> that is <code>x</code> or <code>null</code>, and a destructure beside a
+member of its shape, <code>((a, b), _)</code> over a <code>y</code> that is <code>x</code> or a pair,
+which chooses between them. A rest
+leaves the lengths it does not take to a later name or <code>_</code>: after <code>([a, ..], _)</code>, a <code>([], _)</code> arm chooses a length and is refused. A scrutinee that is wholly
+such a type is the arms' to decide together: <code>|x| select x { </code>J =&gt; 1, <code>M =&gt; 2 }</code> makes <code>x</code> a <code>[`J, `M]</code>. A partial struct pattern decides
+nothing there, since it names only some of the fields: <code>|x| select x { {a, ..} =&gt; a }</code> is refused until <code>x</code> is annotated.</p>
+<p>A part that only a name or <code>_</code> meets passes, and a name there holds that
+type beside the other members' parts: over <code>[(`A, z), (`B, "s")]</code>,
+<code>(_, x) =&gt; str::len(x)</code> makes <code>z</code> a string, so a later <code>z &lt;- 5</code> is
+refused where it is written. A type test tests what it reads as a
+pattern does: <code>(`J, [i64, string]) as (`J, s)</code> over <code>(`J, z)</code> is
+refused until <code>z</code> is annotated, since <code>z</code> might become neither.</p>
+<p>For the same reason, two members whose left-out fields differ only in
+types not decided yet are two members, and a partial pattern over both
+is refused:</p>
 <pre><code class="language-graphix refused">let b = true;
 let x = never();
 let y = never();
@@ -2215,25 +2291,19 @@ let v = select b { true =&gt; {a: [1], c: x}, false =&gt; {a: ["s"], c: y} };
 let r = select v { {a, ..} =&gt; "[a]" };
 // x and y are decided here, after the select
 x &lt;- 1;
-y &lt;- "w";
+y &lt;- 2;
 r
 </code></pre>
 <pre><code>$ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 5, column: 20 in file test.gx
-    1: the pattern { a, .. } matches more than one member of [{ a: Array&lt;i64&gt;, c: i64 }, { a: Array&lt;string&gt;, c: string }] once its cells are decided; annotate the member you mean, e.g. `T as { a, .. }`, or name every field
+    0: at: line: 5, column: 1 in file test.gx, in: let r = select v { { a, .. } =&gt; "[a]" ..
+    1: at: line: 5, column: 9 in file test.gx, in: select v { { a, .. } =&gt; "[a]" }
+    2: at: line: 5, column: 20 in file test.gx
+    3: the pattern { a, .. } matches two members, { a: Array&lt;i64&gt;, c: 'x } and { a: Array&lt;string&gt;, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
 </code></pre>
-<p>Inside a function, a type its callers decide counts as different from
-every other, since two calls may decide them apart: a type whose values
-a caller passes in, as a parameter's are, or can put in later (under a
-<code>&amp;mut</code>, or as a parameter of a function it returns). A type that holds
-no value, such as the element type of an empty <code>[]</code> nothing else
-decides, differs from none, even when the function returns it. The
-first member is what the arm tests at run time, though, so an empty
-<code>[]</code> there that the function returns, whose element a caller may name,
-still differs from a type in another member that holds values. Naming
+<p>Annotating <code>x</code> and <code>y</code> (<code>let x: i64 = never()</code>) decides them, and naming
 every field, <code>{a, c: _}</code>, matches both members as they are.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
@@ -2599,10 +2669,12 @@ called again. State inside the function starts afresh too, so a
 function whose answer starts from a constant completes the step on that
 constant: <code>let counter = |t| { let n = 0; n &lt;- t ~ n + 1; n }</code> makes
 <code>let a = counter(t)</code> 0 at every run, its count arriving a cycle later.
-What the function captures from outside keeps its value: keep a count
-that must last across runs outside the function. An event it captures
-is read as it stands too: a call to <code>let wait = |u| ev</code> answers <code>ev</code>'s
-last event at once at every run, never waiting for the next one. A call
+A <code>let</code> whose initializer never fires, and a <code>catch</code>'s binder, which has
+no initializer, keep their last value. What the function captures from
+outside keeps its value: keep a count that must last across runs outside
+the function. An event it captures is read as it stands too: a call to
+<code>let wait = |u| ev</code> answers <code>ev</code>'s last event at once at every run, never
+waiting for the next one. A call
 through a function value that is bottom when the step issues it is made
 when the function arrives, and is a fresh call all the same.</p>
 <p>This clocks the call site, not the function body: callbacks and captured
@@ -3004,10 +3076,6 @@ is refused. A closure returned this way keeps its default per call of the
 factory: <code>mk(1)</code> and <code>mk("s")</code> each omit <code>#d</code> at their own type. A type
 written inside the default names the enclosing function's variables too,
 as one written in its body does: <code>|#d: fn(q: i64) -&gt; 'a = |q: i64| -&gt; 'a z, y: i64|</code> is a function returning the factory's <code>'a</code>.</p>
-<p>The same holds inside a function passed for a polymorphic parameter
-(<code>f: fn&lt;'b: Any&gt;(x: 'b) -&gt; ..</code>): there <code>'b</code> is closed, so <code>app(|x| { let g = |#d = x, y: i64| d; g })</code> gives <code>g</code> the type <code>fn(?#d: 'b, y: i64) -&gt; 'b</code>,
-which a parameter typed <code>fn&lt;'b: Any&gt;(x: 'b) -&gt; fn(y: i64) -&gt; string</code>
-refuses.</p>
 <p>The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 <code>foo</code>, you can pass any function that has a labeled argument <code>foo</code>, even if it
@@ -3153,7 +3221,7 @@ doesn't unify with <code>f64</code>.</p>
 for any <code>'a</code> and any <code>'b</code>, chosen independently. The body is checked
 against that promise, so a body that only works when the two are the
 same type is refused at the definition rather than at some later call,</p>
-<pre><code class="language-graphix">〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -&gt; ['a, 'b] x + y
+<pre><code class="language-graphix">〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -&gt; 'a x + y
 error: ... cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a — both operands must be one numeric type (cast one side explicitly)
 </code></pre>
 <p><code>+</code> takes two values of one type, so <code>x + y</code> needs <code>'a</code> and <code>'b</code> to be
@@ -3171,6 +3239,26 @@ refused,</p>
 error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 </code></pre>
 <p>A written function type follows the same rule: <code>fn&lt;'a: Number&gt;(x: i64) -&gt; i64</code> is refused too.</p>
+<p>In the body a declared variable is whatever type a call picks, so a
+<code>select</code> may not look inside a value of it on its own: a pattern that
+tests or binds inside one needs a written type test (see
+<a href="functions/../core/select.html">Select</a>), which types what it binds. A name or <code>_</code>
+over the whole value keeps the variable,</p>
+<pre><code class="language-graphix">〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(z) =&gt; z + 1, _ =&gt; 0 }
+error: ... `A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, ``A(i64) as `A(z)`
+〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(i64) as `A(z) =&gt; z + 1, _ =&gt; 0 }
+〉g(`A(3))
+-: i64
+4
+〉let same = 'b: [`A(i64), `B(i64)] |x: 'b| -&gt; 'b select x { v =&gt; v }
+</code></pre>
+<p>A destructuring <code>let</code> or parameter over such a value takes an annotation
+the same way (<code>let {x, y}: {x: i64, y: i64} = p</code>, <code>|{x, y}: {x: i64, y: i64}|</code>). Beside other members, the variable's values are covered only by
+a name or <code>_</code> at its position, or by written tests that split its bound:</p>
+<pre><code class="language-graphix">〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) =&gt; 1, (false, null) =&gt; 2 }
+error: ... missing match cases: no arm covers (bool, [null, 'b: unbound within [i64, string]])
+〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) =&gt; 1, (false, null) =&gt; 2, (false, v) =&gt; 3 }
+</code></pre>
 <p>A bound may not reach its own variable, directly (<code>'a: 'a</code>), inside
 another type (<code>'a: Array&lt;'a&gt;</code>) or through the bound of another variable
 (<code>'a: 'b, 'b: 'a</code>); a definition, a written function type and an impl
@@ -3183,6 +3271,33 @@ error: ... 'a's bound names 'a: a bound may not reach its own variable; a recurs
 〉n([1, [2, [3]]])
 -: Array&lt;[i64, Array&lt;[i64, Array&lt;i64&gt;]&gt;]&gt;
 [1, [2, [3]]]
+</code></pre>
+<p>A function type with variables of its own (<code>fn&lt;'a: Number&gt;(x: 'a) -&gt; 'a</code>, or a trait as a parameter's type, <code>fn(c: Collection) -&gt; i64</code>, which
+declares one) stands only as a definition's own signature: an interface
+<code>val</code>'s type, a trait method's, a builtin's at the top of its
+declaration. Anywhere else, a parameter's type, a field, an element, a
+<code>let</code> annotation, a typedef, another function type's argument or result,
+it is refused. Declare the variable on the definition instead, which each
+call picks, or bind the generic function with <code>let</code> and call it by name,</p>
+<pre><code class="language-graphix">〉let apply = |f: fn&lt;'a: Number&gt;(x: 'a) -&gt; 'a| f(1)
+error: ... a function type with type variables of its own (`fn&lt;'a: ..&gt;(..)`, or a trait as a parameter's type, `fn(c: Collection)`) stands only as a definition's signature: declare the variables on the definition (`'a: Number |f: fn(x: 'a) -&gt; 'a| ..`), or bind the generic function with `let` and call it by name
+〉let apply = 'a: Number |f: fn(x: 'a) -&gt; 'a, x: 'a| f(x)
+〉apply(|x| x * 2, 3)
+-: i64
+6
+</code></pre>
+<p>A function stays generic only where a binding names it: a <code>let</code> of a
+lambda or of a data literal holding lambdas, a <code>let</code> of a generic name or
+of a field of one (<code>let j = s.g</code>), or of a block ending in one of these,
+a <code>val</code>, a trait method. Anywhere else, an element of a collection a call
+returns, a callback's result, a field of a call's result, an argument, a
+reference (<code>&amp;f</code>), it is one instance,
+which its uses decide. Here <code>g</code> is one instance of the lambda the
+callback returns, decided to <code>i64</code> by its first call, so a second call
+<code>g(1.5)</code> would be refused:</p>
+<pre><code class="language-graphix">let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -&gt; 'a x + x);
+let g = fs[0]$;
+g(3)
 </code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
@@ -3685,8 +3800,7 @@ takes <code>.field</code> the same way,</p>
 <p>A field can be read from a union of struct types when every member has that
 field. The result has the union of their field types. The other fields may
 differ, and the shared field need not have the same position in each struct.
-A functional update over such a union requires the replacement to fit that
-field in every member.</p>
+A functional update over such a union replaces that field in every member.</p>
 <h2 id="mutability-and-functional-update"><a class="header" href="#mutability-and-functional-update">Mutability and Functional Update</a></h2>
 <p>Structs are not mutable, like everything else in Graphix. However There is a
 quick way create a new struct from an existing struct with only some fields
@@ -3699,6 +3813,11 @@ changed. This is called functional struct update syntax. For example,</p>
 {bar: 21, foo: "I am foo"}
 </code></pre>
 <p>Notice that the type printed is the full type of the struct, this is because of structural typing.</p>
+<p>A replaced field takes the replacement's own type, exactly as the same
+field in a struct literal would, so an update can change a field's type.
+<code>{ s with bar: null }</code> has <code>bar: null</code>, not whatever <code>s.bar</code> was. To keep
+the wider type, annotate the binding:
+<code>let t: {bar: [i64, null], foo: string} = { s with bar: null }</code>.</p>
 <h2 id="implementation"><a class="header" href="#implementation">Implementation</a></h2>
 <p>A struct is an array whose first element is the struct marker, a value
 no data can hold that tells a struct apart from an array at run time,
@@ -3911,7 +4030,43 @@ they come from lisp, the original functional programming language from the late
 <p>The recursion must pass through a structure, as <code>Lst</code> does through the payload
 of <code>`Cons</code>: a type that refers back to itself through unions and aliases alone,
 <code>type T = [i64, T]</code> or <code>type A = B; type B = A</code>, describes no value, and it is
-refused where it is defined.</p>
+refused where it is defined. And it must pass its parameters on as they are: a
+type that applies itself to a parameter wrapped in a constructor (a nested
+datatype) unfolds to ever larger types, which no check could finish, so it is
+refused where it is defined too.</p>
+<pre><code class="language-graphix refused">type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Array&lt;'a&gt;&gt;)];
+let n: N&lt;i64&gt; = `Nil;
+n
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 1, column: 1 in file test.gx, in: type N&lt;'a&gt; = [`Cons('a, N&lt;Array&lt;'a&gt;&gt;),..
+    1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
+</code></pre>
+<p>Passing a parameter to another position (<code>type S&lt;'a, 'b&gt; = [</code>Nil, <code>C('a, S&lt;'b, 'a&gt;)]</code>) or replacing it with a type that holds no parameter (<code>N&lt;Array&lt;i64&gt;&gt;</code>)
+is fine, and so is adding members to it as a union written out in place
+(<code>N&lt;['a, null]&gt;</code>). The check compares the application as written, so an alias
+counts as a constructor around the parameter, even one that expands to such a
+union: <code>N&lt;Opt&lt;'a&gt;&gt;</code> over <code>type Opt&lt;'a&gt; = ['a, null]</code> is refused where <code>N</code> is
+defined, and the written-out union beside it is not.</p>
+<pre><code class="language-graphix refused">type Opt&lt;'a&gt; = ['a, null];
+type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Opt&lt;'a&gt;&gt;)];
+let n: N&lt;i64&gt; = `Nil;
+n
+</code></pre>
+<pre><code>$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 2, column: 1 in file test.gx, in: type N&lt;'a&gt; = [`Cons('a, N&lt;Opt&lt;'a&gt;&gt;), `..
+    1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
+</code></pre>
+<pre><code class="language-graphix">type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;['a, null]&gt;)];
+let n: N&lt;i64&gt; = `Nil;
+n
+</code></pre>
 <p>Anyway, lets define some functions to work on our new list type,</p>
 <pre><code class="language-graphix">type Lst&lt;'a&gt; = [
   `Cons('a, Lst&lt;'a&gt;),
@@ -4214,6 +4369,14 @@ against the trait's signature with <code>self</code> replaced by the target
 annotations. A required method left out is a compile error; a method
 the trait does not declare is too. The trait's methods are visible
 bare inside the block, so one method may call another.</p>
+<p>A method's type variables are each call's to pick, so a method must be
+as general as its declaration, a default included. Under <code>val put: fn(self, x: 'a) -&gt; 'a</code>, a method that keeps its argument in a binding
+outside it, <code>let y = never(); impl Put for C { let put = |s, x| { y &lt;- x; x } }</code>, would have one type for every call, and is refused: give <code>y</code>
+a type that holds every <code>'a</code> (<code>let y: Any = never()</code>). A method whose
+value is not a lambda (<code>(f, 1).0</code>, a call's result) keeps the types its
+value has, and no call copies one its value fixed (a type an outer
+binding shares, the type a call made): under such a variable it is
+refused, and the way out is to write the method as a lambda.</p>
 <p><code>impl Trait for Target;</code> (no body) implements a trait whose methods
 all have defaults, and is the form an interface file uses to declare
 that the implementation provides the impl (see below).</p>
@@ -4972,7 +5135,32 @@ val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;
 val fold: fn(a: Array&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
 </code></pre>
 <p>Type variables (like <code>'a</code>, <code>'b</code>, <code>'e</code>) work the same as in regular type
-annotations.</p>
+annotations: each use of <code>map</code> picks its own <code>'a</code> and <code>'b</code>. A variable
+stands only inside a function type, where each use can pick it. One
+outside every function type, as in <code>val v: Array&lt;'a&gt;</code>, would be one type
+that every use shares, so it is refused: declare the val at one type,
+<code>val v: Array&lt;i64&gt;</code>.</p>
+<p>The implementation must be as general as its <code>val</code>. Under <code>val f: fn(x: 'a) -&gt; 'a</code>, an implementation that keeps its argument in a binding
+outside it, <code>let y = never(); let f = |x| { y &lt;- x; x }</code>, has one type
+for every call, and is refused: give <code>y</code> a type that holds every <code>'a</code>
+(<code>let y: Any = never()</code>), or declare <code>f</code> at one type. So is one that
+something writes, <code>let f = |x| x; f &lt;- |x| x</code>, whose writers share one
+type: declare <code>f</code> at one type.</p>
+<p>A <code>val</code> whose type holds a variable is generic wherever its function
+types stand: in a struct (<code>val c: {f: fn(x: 'a) -&gt; 'a}</code>), an array or a
+type alias, and with its own quantifiers written (<code>val f: fn&lt;'a: Any&gt;(..)</code>) or not; each use takes it at its own types. What is written
+through it must be as general as it is (<code>m::c &lt;- {f: |x| x}</code>, not <code>{f: |x: i64| -&gt; i64 x}</code>), each of its function types on its own, and a
+writable reference to it is refused where the referenced place holds
+one of its variables: <code>&amp;mut m::c</code> and <code>&amp;mut m::c.f</code> are, <code>&amp;mut m::c.n</code>
+over a field <code>n: i64</code> is not. A function type with quantifiers of its
+own stands only as the val's whole type: inside its data, <code>val c: {f: fn&lt;'b: Any&gt;(x: 'b) -&gt; 'b}</code>, it is refused. A name
+that copies a generic <code>val</code> and is written, <code>let g = m::c; g &lt;- ..</code>, is
+one instance of it: what is written decides its type for every use of
+<code>g</code>.</p>
+<p>A <code>val</code> declared at one type over a generic implementation can be
+called, but what is written through it (<code>m::f &lt;- ..</code>, or through <code>&amp;mut m::f</code>) lands on the implementation, which other uses take at other
+types, so a <code>val</code> something writes must fit its implementation:
+annotate the implementation's <code>let</code> with the val's type.</p>
 <h2 id="module-hierarchies-1"><a class="header" href="#module-hierarchies-1">Module Hierarchies</a></h2>
 <p>For module hierarchies, each level can have its own interface. Here's an example
 structure:</p>
@@ -5331,6 +5519,12 @@ mod statement. However, the signature checking only cares that every item
 mentioned in the signature is present in the dynamic module and that the types
 match. If extra items are present in the dynamic module they will simply be
 ignored, and will be inaccessible to the loading program.</p>
+<p>A load is checked after the program that loads it, so the program's types are
+decided by then: what the program left undecided is <code>_</code>, and a load that would
+decide it otherwise is refused, naming the binding to annotate, and leaves the
+program's types as they were. A loaded body that writes a binding of the
+program is held to its type. With <code>let y = never()</code> in the program, the body
+<code>let h = |x| { super::y &lt;- x; x }</code> takes only <code>_</code>, so a <code>sig { val h: fn(x: 'a) -&gt; 'a }</code> is refused; declare <code>let y: i64 = never()</code> and <code>val h: fn(x: i64) -&gt; i64</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-graphix-shell"><a class="header" href="#the-graphix-shell">The Graphix Shell</a></h1>
 <p>The Graphix shell (<code>graphix</code>) is the primary way to interact with Graphix programs. It provides both an interactive REPL for experimentation and a runtime for executing Graphix scripts. This chapter explores the shell's behavior in depth, covering topics like output handling, module resolution, and project structure.</p>
 <h2 id="running-modes"><a class="header" href="#running-modes">Running Modes</a></h2>
@@ -5343,6 +5537,17 @@ ignored, and will be inaccessible to the loading program.</p>
 <ul>
 <li>Input is read line by line from the user</li>
 <li>Each line is compiled and executed immediately</li>
+<li>Each statement is checked alone, those of one line one after another,
+so a type a statement leaves undecided is decided when it ends: <code>_</code>
+where nothing says otherwise (<code>let e = []</code> is <code>Array&lt;_&gt;</code>, <code>let y = never()</code> is <code>_</code>). A later statement, on the same line or a later one,
+that would decide it otherwise is refused, naming the binding to
+annotate: after <code>let e = []</code>, <code>e &lt;- [1]</code> asks for <code>let e: Array&lt;i64&gt; = []</code>. A function a later statement writes such a binding from is held to
+its type: after <code>let y = never()</code>, <code>let p = |x| { y &lt;- x; x }</code> takes
+only <code>_</code>, so <code>p(1)</code> is refused. Lambdas that meet as one type, in an
+array or a select's arms, are one function type whose parameters were
+decided by nothing, so they settle too: after <code>let fs = [|x| x, |y| y]</code>, <code>fs[0]$(1)</code> is refused; write <code>let fs: Array&lt;fn(x: i64) -&gt; i64&gt; = ..</code>. A generic function a statement leaves in a binding (<code>let j = s.g</code>, <code>s</code> a struct of functions) stays generic: every later statement's
+use copies it, so <code>j(1)</code>, <code>j(1.5)</code> and <code>app(j)</code> after <code>let app = |f: fn(x: i64) -&gt; i64| f(1)</code> all pass and decide nothing of <code>j</code>. A dynamic
+module's load is checked the same way, after the statements before it</li>
 <li>Completion is available via the Tab key</li>
 <li>The value and type of output expressions are
 <ul>
@@ -8060,8 +8265,7 @@ representation), and a read takes it only so.</li>
 <p><code>[`A, `B(i64), Port, null]</code> and <code>[T, null]</code>, for a <code>T</code> that is not
 itself a union, read back. <code>[i64, string]</code>, <code>[u8, i64]</code>, <code>[Port, u8]</code>, <code>[string, `A]</code>,
 <code>[{a: i64}, {b: i64}]</code> and a type variable beside another member are
-refused, as a target and as a written value. So is a typedef whose
-parameters grow as it recurses, such as <code>type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Array&lt;'a&gt;&gt;)]</code>.</p>
+refused, as a target and as a written value.</p>
 <p>The data inside an abstract value's object is written for its reader:
 where <code>T</code>'s <code>Cast</code> implementation writes <code>from_value</code>, which casts it as
 data, the abstract values in it are written bare (<code>{"Tags":["a","b"]}</code>
@@ -18131,8 +18335,8 @@ your application. Then you can:</p>
 <li>inject events into Graphix pipelines</li>
 <li>call Graphix functions</li>
 </ul>
-<p>The runtime uses tokio and runs in a background task so it integrates well into
-a normal async workflow.</p>
+<p>The runtime uses tokio and runs on a thread of its own, driven by your tokio
+runtime, so it integrates well into a normal async workflow.</p>
 <p>See <a href="embedding/./rt.html">Using Graphix as Embedded Scripting</a> for details.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="writing-built-in-functions-1"><a class="header" href="#writing-built-in-functions-1">Writing Built in Functions</a></h1>
 <p>As mentioned in the introduction you can extend Graphix by writing
@@ -18570,11 +18774,14 @@ this application we leave the shell behind and move to the
 lower level crate that gives you a lot more control over the compiler and
 runtime.</p>
 <h2 id="tokio"><a class="header" href="#tokio">Tokio</a></h2>
-<p><code>graphix-rt</code> uses tokio internally. It will run the compiler and run loop in
-its own tokio task. You interface with this task via a
+<p><code>graphix-rt</code> uses tokio internally. It runs the compiler and run loop on a
+thread of its own, driven by your tokio runtime (on a current-thread runtime,
+in a task of it). You interface with it via a
 <a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html"><code>GXHandle</code></a>.
 As a result, all operations on Graphix objects are async, and the compiler/run
-loop will run in parallel with your application.</p>
+loop will run in parallel with your application. Dropping the last handle stops
+the runtime, and so does shutting your tokio runtime down, which waits for the
+runtime's thread to end.</p>
 <h2 id="setting-it-up"><a class="header" href="#setting-it-up">Setting it up</a></h2>
 <p>The shell itself is the best example of using the <code>graphix-rt</code> crate. As we get
 further into internals, the details can change more often, but in general

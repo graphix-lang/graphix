@@ -162,11 +162,14 @@ this application we leave the shell behind and move to the
 lower level crate that gives you a lot more control over the compiler and
 runtime.</p>
 <h2 id="tokio"><a class="header" href="#tokio">Tokio</a></h2>
-<p><code>graphix-rt</code> uses tokio internally. It will run the compiler and run loop in
-its own tokio task. You interface with this task via a
+<p><code>graphix-rt</code> uses tokio internally. It runs the compiler and run loop on a
+thread of its own, driven by your tokio runtime (on a current-thread runtime,
+in a task of it). You interface with it via a
 <a href="https://docs.rs/graphix-rt/latest/graphix_rt/struct.GXHandle.html"><code>GXHandle</code></a>.
 As a result, all operations on Graphix objects are async, and the compiler/run
-loop will run in parallel with your application.</p>
+loop will run in parallel with your application. Dropping the last handle stops
+the runtime, and so does shutting your tokio runtime down, which waits for the
+runtime's thread to end.</p>
 <h2 id="setting-it-up"><a class="header" href="#setting-it-up">Setting it up</a></h2>
 <p>The shell itself is the best example of using the <code>graphix-rt</code> crate. As we get
 further into internals, the details can change more often, but in general
