@@ -53,6 +53,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check, unless
   the part stands beside a member of that shape (`y` is `x` or a pair):
   the destructure then chooses between them, refused.
+  The referent of `&mut (x, 0)` is a type of its own, which ``x: [`J,
+  `M]`` leaves open: where the scrutinee holds it as a part (`select
+  (*r, 1)`), the check names `r`, to annotate as ``r: &mut ([`J, `M],
+  i64)``.
   A rest leaves the other lengths to a later name or `_`: a later `([],
   _)` is a length choice, refused.
   Only a scrutinee wholly of such a type is the arms' to decide together
@@ -109,6 +113,9 @@ ok |x| select (x, 0) { ((a, b), _) => a }
 no "not decided at this select" |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }
+no "is a part of 'r" |x| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
+no "is a part of 'r" |x: [`J, `M]| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
+ok |x| { let r: &mut ([`J, `M], i64) = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
 ok type W<'a> = Abstract<'a>; |x| select W(x).0 { `J => 1, `M => 2 }
 ok |x| select x { `J => 1, `M => 2 }
 no "a type variable its type test" |xs: Array<[i64, `A(i64)]>| select xs { Array<['b, `A(i64)]> as [`A(n)] => n, _ => 0 }

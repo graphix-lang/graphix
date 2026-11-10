@@ -56,11 +56,11 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
-    /// The pattern that bound it, where that matters past its compile.
+    /// What bound it, where that matters past its compile.
     pub binder: Option<Binder>,
 }
 
-/// A pattern that bound a binding.
+/// What bound a binding, when it is not a plain name.
 #[derive(Debug, Clone, Pack)]
 pub enum Binder {
     /// A select arm's pattern, with the inputs whose fires reach that
@@ -71,6 +71,9 @@ pub enum Binder {
     /// A destructuring `let`'s pattern: the type a wider writer needs is
     /// written on the pattern, not the name.
     LetPattern,
+    /// A reference to an expression no binding names: its referent's
+    /// cell, whose type no source can write.
+    Referent,
 }
 
 impl fmt::Debug for Bind {
@@ -2725,7 +2728,7 @@ impl Env {
     pub fn pattern_inputs(&self, id: BindId) -> Option<&[BindId]> {
         match self.by_id.get(&id).and_then(|b| b.binder.as_ref()) {
             Some(Binder::SelectPattern(inputs)) => Some(inputs),
-            Some(Binder::LetPattern) | None => None,
+            Some(Binder::LetPattern | Binder::Referent) | None => None,
         }
     }
 

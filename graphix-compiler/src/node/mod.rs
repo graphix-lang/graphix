@@ -2548,9 +2548,7 @@ fn lower_shown(t: &Type) -> Type {
 }
 
 /// The bindings a hint names for the cells a type it writes waits for,
-/// by the cell each stands for. A select arm's binds and a lowering's are
-/// not named: what a hint asks to annotate is built before the arms, and
-/// a lowering's name cannot be written.
+/// by the cell each stands for, those [`Holders::nameable`] admits.
 pub(crate) struct Holders<'a> {
     by_cell: LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>>,
     named: SmallVec<[(TVar, &'a env::Bind); 2]>,
@@ -2564,10 +2562,7 @@ impl<'a> Holders<'a> {
             LPooled::take();
         for (_, b) in env.by_id.iter() {
             let Type::TVar(tv) = &b.typ else { continue };
-            if crate::is_lowered(&b.name)
-                || matches!(b.binder, Some(env::Binder::SelectPattern(_)))
-                || Some(b.id) == except
-            {
+            if !Self::nameable(b) || Some(b.id) == except {
                 continue;
             }
             by_cell.entry(tv.stands_for()).or_default().push(b);
@@ -2580,6 +2575,17 @@ impl<'a> Holders<'a> {
             }
         }
         Self { by_cell, named: SmallVec::new() }
+    }
+
+    /// Whether a hint may name `b`: what a hint asks to annotate is built
+    /// before a select's arms, and the type of a lowering's binding or a
+    /// reference's referent cannot be written.
+    fn nameable(b: &env::Bind) -> bool {
+        !crate::is_lowered(&b.name)
+            && !matches!(
+                b.binder,
+                Some(env::Binder::SelectPattern(_) | env::Binder::Referent)
+            )
     }
 
     /// Whether a hint names `tv`: a cell no value was written to whose
@@ -2627,9 +2633,9 @@ impl<'a> Holders<'a> {
 
     /// The binding to annotate where the cell `tv` stands for is a part of
     /// a binding's type where the select `at` tests it, named: among the
-    /// bindings other than functions and select binds whose type holds
-    /// the cell outside a function type, the nearest one written above
-    /// `at`, else the one written first.
+    /// bindings [`Self::nameable`] admits whose type holds the cell outside
+    /// a function type, the nearest one written above `at`, else the one
+    /// written first.
     pub(crate) fn name_part(
         &mut self,
         env: &'a env::Env,
@@ -2652,9 +2658,7 @@ impl<'a> Holders<'a> {
         let cell = tv.stands_for();
         let held = || {
             env.by_id.iter().map(|(_, b)| &**b).filter(|b| {
-                !crate::is_lowered(&b.name)
-                    && !matches!(b.binder, Some(env::Binder::SelectPattern(_)))
-                    && holds(&b.typ, cell, &mut LPooled::take())
+                Self::nameable(b) && holds(&b.typ, cell, &mut LPooled::take())
             })
         };
         let pos = |b: &env::Bind| (b.pos.line, b.pos.column);

@@ -773,14 +773,19 @@ position, meets no later arm; that arm passed the rule itself) with
 the walk the declared-variable rule takes (`meets`, met over open cells
 instead of rigid ones): a pattern other than a name or `_` standing over
 a value of such a cell is refused, naming the binding whose type it is
-(`Holders`). The cells counted are those the scrutinee's type held
-before the arms ran (`settle::position_cells`), still open at the end:
-a cell an arm's own pattern brought, a bind's or a `_`'s, which the
-arms' settle put into an open scrutinee, is the arms' decision and not
-counted. A written test is judged over its own type, where any cell
-open before the arms is its own variable nothing declares, met as the
-open cell it was where the narrowing against what reaches the arm bound
-it (`Array<['q, `K(i64)]>` over an array of `[i64, `K(i64)]` binds `'q`,
+(`Holders`), else the nearest one whose type holds it
+(`Holders::name_part`). Neither is ever a binding whose type no source
+can write: a lowering's, or the cell of a reference's referent that no
+binding names (`env::Binder::Referent`), which a binding holding the
+reference declares (``let r: &mut ([`J, `M], i64) = &mut (x, 0)``; `x`
+annotated leaves the referent's cell open). The cells counted are those
+the scrutinee's type held before the arms ran (`settle::position_cells`),
+still open at the end: a cell an arm's own pattern brought, a bind's or
+a `_`'s, which the arms' settle put into an open scrutinee, is the arms'
+decision and not counted. A written test is judged over its own type,
+where any cell open before the arms is its own variable nothing
+declares, met as the open cell it was where the narrowing against what
+reaches the arm bound it (`Array<['q, `K(i64)]>` over an array of `[i64, `K(i64)]` binds `'q`,
 over `Any` to `Any`: `Deciding::hold_written`, `meets_decided`, so a
 destructure that takes apart all it bound passes), and over what
 reaches it: it

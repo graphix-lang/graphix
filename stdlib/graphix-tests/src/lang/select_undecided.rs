@@ -1007,6 +1007,35 @@ run!(destructuring_a_part_below_a_reference, r#"{
     f((1, 2))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
 
+// The referent of a reference to an expression no binding names is a cell
+// no source can write: a hint names a binding holding the reference.
+run!(tag_deciding_a_referent_names_the_reference_refused, r#"{
+    let f = |x| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 } };
+    f(`M)
+}"#, refused("((`J, _), _) tests a value whose type is a part of 'r, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'r the type of `r` (line 2"); FuseExpect::None);
+
+run!(tag_deciding_a_referent_of_an_annotated_part_names_the_reference_refused, r#"{
+    let f = |x: [`J, `M]| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 } };
+    f(`M)
+}"#, refused("annotate it, writing for 'r the type of `r` (line 2"); FuseExpect::None);
+
+run!(tag_deciding_a_referent_through_a_call_names_the_reference_refused, r#"{
+    let f = |x| {
+        let r = &mut (x, 0);
+        let g = |q: &mut ('a, i64)| *q;
+        select (g(r), 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 }
+    };
+    f(`M)
+}"#, refused("tests a value whose type is a part of 'r, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'r the type of `r` (line 3"); FuseExpect::None);
+
+run!(tag_over_an_annotated_reference, r#"{
+    let f = |x| {
+        let r: &mut ([`J, `M], i64) = &mut (x, 0);
+        select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 3 }
+    };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
 // A cell the bounds hold whole is the arms' to decide, as a whole open
 // scrutinee is.
 run!(tags_deciding_a_whole_abstract_parameter, r#"{

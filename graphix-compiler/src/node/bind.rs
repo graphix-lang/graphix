@@ -2059,7 +2059,7 @@ impl<R: Rt> ByRef<R> {
                         name: format_compact!("{spec}"),
                         pos: spec.pos,
                         ori: spec.ori.clone(),
-                        binder: None,
+                        binder: Some(env::Binder::Referent),
                     };
                     ctx.env.by_id.insert(id, Arc::new(cell));
                 }
