@@ -5305,6 +5305,81 @@ run!(
 );
 
 run!(
+    bind_over_any_members_is_any,
+    r#"{
+    type P = [(`B(Any), i64, i64), (`B(Any), string, string)];
+    let f = |v: P| select v {
+        (`B(x), _, _) => select x { i64 as n => n + 1, _ => 0 }
+    };
+    let g = |v: [(`B(Any), i64, i64), (`B(i64), string, string)]| select v {
+        (`B(x), _, _) => "[x]"
+    };
+    let w: Any = "hello";
+    let a = f((`B(w), 1, 1));
+    let b = f((`B(41), "s", "s"));
+    ["[a]", "[b]", g((`B(w), 1, 1)), g((`B(7), "s", "s"))]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => a
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.as_str(),
+                _ => "",
+            })
+            .eq(["0", "42", "hello", "7"]),
+        _ => false,
+    }
+);
+
+run!(
+    bind_over_any_members_refused,
+    r#"{
+    let f = |v: [(`B(Any), i64, i64), (`B(Any), string, string)]| select v {
+        (`B(x), _, _) => { let q: i64 = x; q + 1 },
+        _ => 0
+    };
+    f((`B("hello"), 1, 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
+    bind_over_any_mixed_members_refused,
+    r#"{
+    let f = |v: [(`B(Any), i64, i64), (`B(i64), string, string)]| select v {
+        (`B(x), _, _) => str::len(x),
+        _ => 0
+    };
+    f((`B(1), 1, 1))
+}"#,
+    refused("string does not contain Any")
+);
+
+run!(
+    bind_over_any_typedef_members_refused,
+    r#"{
+    type T0 = [`B(Any), null];
+    type T2 = [T0, (T0, T0, i64)];
+    let f = |v: [(T0, T0, i64), (T2, T2, i64)]| select v {
+        (`B(x), null, _) => { let q: i64 = x; q },
+        _ => 0
+    };
+    f((`B(1), null, 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
+    bind_over_any_bare_members_refused,
+    r#"{
+    type P = [(Any, i64, i64), (Any, string, string)];
+    let f = |v: P| select v { (x, _, _) => { let q: i64 = x; q + 1 }, _ => 0 };
+    f((1, 1, 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
     nested_union_slice_bind_is_the_union,
     r#"{
     let g = |v: Array<[{a: i64, b: string}, {a: string, b: i64}]>|

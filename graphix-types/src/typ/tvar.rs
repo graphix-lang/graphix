@@ -4025,13 +4025,14 @@ impl Type {
     /// arm, `members` being the members of that union it can match: each
     /// open cell of self takes the union of its parts over every member and
     /// each alternative of self that matches it, where containment against
-    /// the union commits it to the first member. A cell a matching
-    /// alternative leaves open stays open.
+    /// the union commits it to the first member, and is `Any` where that
+    /// union is ([`Self::open_over_any`]). A cell a matching alternative
+    /// leaves open stays open.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
 
-    // CR claude for claude: [bug/medium] A pattern bind over an Any payload that two or more
+    // XCR claude for claude: [bug/medium] A pattern bind over an Any payload that two or more
     // union members reach is left an open cell: each member's copy is bound to Any here, but the
     // cell's joined part is related by contains, which commits nothing, so the arm's body decides
     // the bind (`let q: i64 = x`) and the arm silently becomes a run-time type test. `f(v: [(`B(Any),
@@ -4043,6 +4044,16 @@ impl Type {
     // is or holds Any, as open_over_any does on the one-member path; pin both shapes. probes:
     // ~/ptmp/cr29/scratch/r19/coord/memos-verify/ and coord/memo/ (n15.gx, n9.gx, m12.gx, n10.gx)
     // (any-payload-members-01)
+    // 2026-11-10 claude: Fixed in Type::narrow_per_member_in: a cell its members' parts join to Any
+    // (contains binds nothing there) is opened over that join by open_over_any, the one-member rule,
+    // so the bind is Any and the arm body cannot decide it. Pins in lang::select, each failing in all
+    // four modes without the fix: bind_over_any_members_refused (the witness above),
+    // bind_over_any_mixed_members_refused (`B(Any) beside `B(i64)),
+    // bind_over_any_typedef_members_refused (n9's typedef members),
+    // bind_over_any_bare_members_refused (a bare Any position under a typedef'd union), and
+    // bind_over_any_members_is_any (a type test on the bind and a bare read run, [0, 42, hello, 7]).
+    // A catch-all after such an arm is now dead, as on the one-member form. Census of both repos: no
+    // verdict or message changes.
     fn narrow_per_member_in(
         &self,
         env: &Env,
@@ -4120,7 +4131,11 @@ impl Type {
                 && !p.is_empty()
             {
                 let p: LPooled<Vec<&Type>> = p.iter().collect();
-                Type::union_exact(env, &p)?.contains(env, &Type::TVar(c.clone()))?;
+                let joined = Type::union_exact(env, &p)?;
+                let cell = Type::TVar(c.clone());
+                if joined.contains(env, &cell)? && c.binding().is_none() {
+                    joined.open_over_any(env, &cell)?
+                }
             }
         }
         Ok(())
