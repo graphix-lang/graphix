@@ -2374,6 +2374,30 @@ run!(
 );
 
 run!(
+    seq_step_mismatch_names_nothing,
+    r#"{ let t = 1; seq t { let v = (|x| x, 1).0; (v(1), v("s")) } }"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
+    seqq_step_mismatch_names_nothing,
+    r#"{ let t = 1; seqq t { let v = select true { true => |x| x, false => |y| y }; (v(1), v("s")) } }"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
+    let_rec_self_call_mismatch_names_nothing,
+    r#"{
+  let rec f = |n, acc| select n { 0 => acc, _ => f(buffer::to_string(buffer::from_string("hello")), acc + n) };
+  f(i64:100, i64:0)
+}"#,
+    refused_naming_nothing;
+    FuseExpect::None
+);
+
+run!(
     undecided_argument_takes_the_closed_join,
     r#"{ let s = "5"; let d = opt::or_default(str::parse(s)$, 0); d + 1 }"#,
     prints("i64:6")

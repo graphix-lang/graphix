@@ -767,6 +767,7 @@ fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
     opening: Option<&Type>,
+    prebound: &AHashSet<usize>,
     n: &mut Node<R>,
 ) -> Result<ArgFit> {
     // A reference instantiates its signature in its own typecheck0,
@@ -775,7 +776,9 @@ fn typecheck_arg<R: Rt>(
         wrap!(n, n.typecheck0(ctx))?;
     }
     let note = match opening {
-        None if n.typ().has_free_in_data() => decided_elsewhere(&ctx.env, typ, n.typ())?,
+        None if n.typ().has_free_in_data() => {
+            decided_elsewhere(&ctx.env, typ, prebound, n.typ())?
+        }
         _ => None,
     };
     let refused = |e: anyhow::Error| match &note {
@@ -1602,7 +1605,7 @@ fn annotation_may_fit(
     Ok(true)
 }
 
-// CR claude for claude: [bug/low] (decided-elsewhere-rec-01) The note claims
+// XCR claude for claude: [bug/low] (decided-elsewhere-rec-01) The note claims
 // "another argument decided" a variable whenever the formal holds a bound
 // cell, whoever bound it. In a `let rec` self-call the formal is the def's
 // own cell, decided by its body, and the note names a generated cell
@@ -1613,6 +1616,13 @@ fn annotation_may_fit(
 // on graphix-fuzz/findings/rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx.
 // A fix: note only a variable an earlier argument of this call bound, and
 // only a written one.
+// 2026-11-09 claude: decided_elsewhere now names only a written variable that an
+// earlier argument of this call bound (cells bound before the argument loop and
+// generated cells are skipped) and never at a function-typed formal. Pins
+// seq_step_mismatch_names_nothing, seqq_step_mismatch_names_nothing,
+// let_rec_self_call_mismatch_names_nothing (graphix-tests lang/functions.rs) fail
+// without it; callback_variable_undecided_last_refused still holds. Same note also
+// fired on every mistyped call in a seq/seqq step (coordinator review).
 /// What a refusal of an argument of type `arg`, holding an undecided cell,
 /// at a formal the call did not open asks to annotate: where another
 /// argument already decided a variable of `formal` to a type a wider
@@ -1621,11 +1631,17 @@ fn annotation_may_fit(
 fn decided_elsewhere(
     env: &Env,
     formal: &Type,
+    prebound: &AHashSet<usize>,
     arg: &Type,
 ) -> Result<Option<CompactString>> {
+    if matches!(formal, Type::Fn(_)) {
+        return Ok(None);
+    }
     let mut decided: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     formal.collect_tvars(&mut decided);
-    decided.retain(|_, tv| tv.is_bound());
+    decided.retain(|_, tv| {
+        tv.is_bound() && !tv.generated() && !prebound.contains(&tv.cell_addr())
+    });
     if decided.is_empty() || !annotation_may_fit(env, formal, &decided, arg)? {
         return Ok(None);
     }
@@ -4356,12 +4372,25 @@ impl<R: Rt> CallSite<R> {
             })
             .collect();
         formals.sort_by_key(|(later, ..)| *later);
+        let mut prebound: LPooled<AHashSet<usize>> = LPooled::take();
+        {
+            let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            for farg in ftype.args.iter() {
+                farg.typ.collect_tvars(&mut cells);
+            }
+            if let Some(typ) = &ftype.vargs {
+                typ.collect_tvars(&mut cells);
+            }
+            prebound.extend(
+                cells.values().filter(|tv| tv.is_bound()).map(|tv| tv.cell_addr()),
+            );
+        }
         for (_, farg, key) in formals {
             let Some(arg) = self.args.get_mut(&key) else { continue };
             if let Some(n) = arg.node.as_mut() {
                 let opening =
                     widening.opening(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let fit = typecheck_arg(ctx, &farg.typ, opening.as_ref(), n)?;
+                let fit = typecheck_arg(ctx, &farg.typ, opening.as_ref(), &prebound, n)?;
                 widening.fit(
                     &ctx.env,
                     self.fnode.typ(),
@@ -4380,7 +4409,7 @@ impl<R: Rt> CallSite<R> {
                 if let Some(n) = arg.node.as_mut() {
                     let opening =
                         widening.opening(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let fit = typecheck_arg(ctx, typ, opening.as_ref(), n)?;
+                    let fit = typecheck_arg(ctx, typ, opening.as_ref(), &prebound, n)?;
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }

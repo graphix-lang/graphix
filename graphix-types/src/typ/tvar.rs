@@ -1499,7 +1499,7 @@ impl fmt::Display for ShortName<'_> {
 impl TVar {
     /// Whether the checker made this variable up (an inferred cell), as
     /// opposed to one a program wrote.
-    fn generated(&self) -> bool {
+    pub fn generated(&self) -> bool {
         self.name.strip_prefix('_').is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
     }
 
