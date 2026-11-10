@@ -351,8 +351,9 @@ impl ContainsHist {
         let k = (self.probe_side(t0)?, self.probe_side(t1)?, probe_flags(rigid));
         let writes = cell_writes();
         if let Some((epoch, r)) = self.probe_pairs.get().and_then(|m| m.get(&k).copied())
+            && epoch == writes
         {
-            return (epoch == writes).then_some(r);
+            return Some(r);
         }
         let p = self.provisional.get()?.get(&k).copied()?;
         if p.epoch != writes {
@@ -3695,6 +3696,19 @@ impl Type {
     // cells they copy), or a trial asked only where the order as written could decide a
     // cell differently, would make it one walk. probes:
     // ~/ptmp/cr29/scratch/r20/20c/{permx4,permx5,permx6}.gx (open-app-commit-trials-01)
+    // 2026-11-10 claude: Review of lane 20c's dee7a8739: the counts above do not
+    // reproduce on the committed code. typ::contains::tests::permuted_steps gives 2862 /
+    // 38045 / 904051 steps for a commit over 6 / 24 / 120 applications (about 63 n^2)
+    // and 153 / 590 / 2965 for a probe (about 25 n), the same before and after the
+    // review's correction. A second cause of repeated walks was found and fixed in the
+    // review, so it is not part of what is left here: ContainsHist::probe_get answered
+    // nothing for a pair whose settled verdict a cell write had outdated, never reading
+    // the pair's current provisional verdict, so a commit that binds cells walked every
+    // path again (two definitions reaching each other over three cells: 3823030 steps
+    // for 24 pairs, 9307 now; pin
+    // typ::contains::tests::a_kept_verdict_is_read_past_an_outdated_one; probes
+    // ~/ptmp/cr29/scratch/r20/20c/review/{h2a,h2c,two}.gx). permx4.gx / permx5.gx still
+    // take 0.94G / 6.85G instructions, so the trials and the scan are what remain.
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither
@@ -4513,6 +4527,43 @@ mod tests {
         }
     }
 
+    // A commit that writes a cell outdates the probes settled before it. A
+    // pair settled then and answered since, under an assumption still in
+    // progress, is read from the verdicts kept while that stands: two
+    // definitions reaching each other, 12 applications over three cells
+    // against 2, take steps by their pairs, not by the paths through them.
+    #[test]
+    fn a_kept_verdict_is_read_past_an_outdated_one() {
+        let (swap, rotate) = ("'a1, 'a0, 'a2", "'a1, 'a2, 'a0");
+        let defs: Vec<(String, String)> = ["D", "F"]
+            .iter()
+            .flat_map(|n| {
+                [
+                    format!(
+                        "[Array<{n}0<{swap}>>, `X({n}0<{swap}>, 'a0), `Y({n}1<{rotate}>)]"
+                    ),
+                    format!(
+                        "[Error<{n}0<{swap}>>, `X(fn(x: {n}0<{swap}>) -> 'a0), \
+                         `Y({n}1<{rotate}>)]"
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(move |(i, body)| (format!("{n}{i}<'a0, 'a1, 'a2>"), body))
+            })
+            .collect();
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        let open = at_root(&env, "fn(k: D0<'q0, 'q1, 'q2>) -> i64");
+        let held = at_root(&env, "fn(k: F0<Any, Any, Any>) -> i64");
+        CONTAINS_STEPS.with(|n| n.set(0));
+        let writes = cell_writes();
+        held.check_contains(&env, &open).unwrap();
+        let (steps, writes) = (CONTAINS_STEPS.with(|n| n.get()), cell_writes() - writes);
+        assert!(writes > 1, "the walk wrote {writes} cells");
+        assert!(steps <= 1000 * 12 * 2, "the walk took {steps} steps");
+    }
+
     // What one walk keeps of applications over open cells is each pair's
     // verdict wherever it is met, probed or committed: the pairs asked in
     // one walk, in either order, are answered as each is asked alone. The
@@ -4557,7 +4608,14 @@ mod tests {
             }
         }
         names.extend(["Error<[X2<'c>, Y0<Any>]>".into(), "`P('c)".into()]);
-        let all = at_root(&env, &format!("({})", names.join(", ")));
+        asked_together_as_alone(&env, &names);
+    }
+
+    /// Every pair of `names` asked of one walk, in either order, is
+    /// answered as it is asked alone, probed, and committed over declared
+    /// cells, which no commit binds; some hold and some do not.
+    fn asked_together_as_alone(env: &Env, names: &[String]) {
+        let all = at_root(env, &format!("({})", names.join(", ")));
         let Type::Tuple(types) = &all else { unreachable!() };
         let mut cells = AHashMap::default();
         all.collect_tvars(&mut cells);
@@ -4574,7 +4632,7 @@ mod tests {
                 false => vec![],
             };
             let ask = |hist: &mut ContainsHist, (a, b): (&Type, &Type)| {
-                a.contains_int(flags, &env, hist, b).unwrap()
+                a.contains_int(flags, env, hist, b).unwrap()
             };
             let alone: Vec<bool> =
                 pairs.iter().map(|p| ask(&mut ContainsHist::new(), *p)).collect();
@@ -4591,6 +4649,50 @@ mod tests {
             assert!(alone.iter().any(|r| *r) && alone.iter().any(|r| !*r));
             assert!(cells.values().all(|c| !c.is_bound()));
         }
+    }
+
+    // A verdict that read a kept one rests on what that one rests on, and a
+    // kept one whose own assumption is answered still rests on those
+    // further out. `S ⊇ T` fails at its last member (`ZZ) or its first
+    // (`AA), whichever order a union's members are walked in. In J, `U ⊇ V`
+    // holds assuming it, and `W0 ⊇ Z0` and `W2 ⊇ Z2`, on either side of
+    // it, hold by `U ⊇ V`: the later one reads it kept, and no union
+    // between them probes it first. In L, `W ⊇ Z` holds assuming `S ⊇ T`
+    // and is kept inside `U ⊇ V`, answered as assumed before `S ⊇ T`
+    // fails. None holds alone.
+    #[test]
+    fn a_kept_verdict_rests_on_what_it_read() {
+        let mut defs: Vec<(String, String)> = vec![];
+        for (f, fail) in [("A", "`AA"), ("Z", "`ZZ")] {
+            let d = |name: &str, body: String| (format!("{name}{f}<'a>"), body);
+            let side = |s: &str, u: &str, w: &str, fail: &str| {
+                [
+                    d(
+                        &format!("J{s}"),
+                        format!(
+                            "[`K0(J{w}0{f}<'a>), `K1(J{u}{f}<'a>), `K2(J{w}2{f}<'a>), \
+                             `P('a){fail}]"
+                        ),
+                    ),
+                    d(&format!("J{u}"), format!("[`E(J{s}{f}<'a>), `C]")),
+                    d(&format!("J{w}0"), format!("`R(J{u}{f}<'a>)")),
+                    d(&format!("J{w}2"), format!("`R(J{u}{f}<'a>)")),
+                    d(&format!("L{s}"), format!("[`K(L{u}{f}<'a>), `P('a){fail}]")),
+                    d(&format!("L{u}"), format!("[`E(L{w}{f}<'a>), `C]")),
+                    d(&format!("L{w}"), format!("[`R(L{s}{f}<'a>), `C]")),
+                ]
+            };
+            defs.extend(side("S", "U", "W", ""));
+            defs.extend(side("T", "V", "Z", &format!(", {fail}")));
+        }
+        let names: Vec<String> = defs
+            .iter()
+            .flat_map(|(n, _)| ["'c", "Any"].map(|p| n.replace("'a", p)))
+            .chain(["`P('c)".to_string()])
+            .collect();
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        asked_together_as_alone(&env, &names);
     }
 
     // An application's key reads its cells' addresses, so the walk holds

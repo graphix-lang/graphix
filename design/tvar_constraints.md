@@ -963,10 +963,18 @@ assumption: it holds (`ContainsHist::assuming`). A verdict reached under
 an assumption still in progress is the pair's only while that assumption
 stands, so it is kept provisionally (`Provisional`, with what it rests
 on, `Rests`): dropped when an assumption it may rest on is answered
-otherwise, kept for good once each was answered as assumed. A probe's
+otherwise, kept for good once each was answered as assumed. A verdict that
+reads a provisional one rests on what that one rests on (pin
+`typ::contains::tests::a_kept_verdict_rests_on_what_it_read`). A probe's
 verdict is kept with the count of cell writes it was reached at and read
 only while the count stands; a commit's is kept for the rest of the walk,
-since what its proof bound stays bound, and only where it holds.
+since what its proof bound stays bound, and only where it holds. A write
+outdates the probes kept for good before it, and a pair answered again
+since is read from the provisional verdicts while it rests on an
+assumption, so a commit that binds cells walks a pair again after a
+write, not at every path to it (pins
+`typ::contains::tests::a_kept_verdict_is_read_past_an_outdated_one`,
+`lang::types::open_applications_of_mutually_recursive_typedefs_check`).
 
 A verdict is keyed by its two nodes. A name applied over a cell
 (`ContainsHist::open_app`) has no node to key by: its expansion holds the

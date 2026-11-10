@@ -8043,6 +8043,25 @@ run!(
     FuseExpect::None
 );
 
+// Two recursive typedefs reaching each other, applied over cells the call
+// binds one by one: a pair of applications answered before a cell was
+// bound and again since, inside one still in progress, is not walked
+// again by a sibling.
+run!(
+    open_applications_of_mutually_recursive_typedefs_check,
+    r#"{
+  type D0<'a0, 'a1, 'a2> = [Array<D0<'a1, 'a0, 'a2>>, `X(D0<'a1, 'a0, 'a2>, 'a0), `Y(D1<'a1, 'a2, 'a0>)];
+  type D1<'a0, 'a1, 'a2> = [Error<D0<'a1, 'a0, 'a2>>, `X(fn(x: D0<'a1, 'a0, 'a2>) -> 'a0), `Y(D1<'a1, 'a2, 'a0>)];
+  type F0<'a0, 'a1, 'a2> = [Array<F0<'a1, 'a0, 'a2>>, `X(F0<'a1, 'a0, 'a2>, 'a0), `Y(F1<'a1, 'a2, 'a0>)];
+  type F1<'a0, 'a1, 'a2> = [Error<F0<'a1, 'a0, 'a2>>, `X(fn(x: F0<'a1, 'a0, 'a2>) -> 'a0), `Y(F1<'a1, 'a2, 'a0>)];
+  let h = |k: D0<'q0, 'q1, 'q2>, z: 'q0| z;
+  let x: F0<i64, string, i64> = `X([], 7);
+  h(x, 1)
+}"#,
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
 run!(
     a_dag_of_union_bounds_types_its_instances,
     r#"{
