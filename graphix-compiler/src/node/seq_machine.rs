@@ -369,21 +369,6 @@ fn evaluate<R: Rt>(
         if entered {
             tracked.enter(k)
         }
-        // XCR claude for claude: [test-gap/low] Nothing pins a step's entry catch-up: with
-        // this deliver replaced by an empty `Injected`, all 16443 graphix-tests lib tests
-        // pass. A step's entry samples what it reads and issues each call as a fresh frame,
-        // so a missed fire may change nothing at entry; either find the program it changes
-        // and pin it, or show it is unobservable and delete the machine's TrackedFires.
-        // (seq-catchup-01)
-        // 2026-11-10 claude: Observable, so pinned rather than deleted:
-        // lang::seq_steps::{a_fire_while_a_step_waits_reaches_live,
-        // a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
-        // let_fire_reaches_a_later_cycle} fail in all four modes with this deliver replaced
-        // by an empty Injected; {a_target_written_while_a_step_waited_is_caught_up,
-        // a_callee_bound_at_a_step_entry_is_caught_up} fail with the open/ran scope
-        // dropped; let_fire_reaches_a_later_cycle (its old body passed without its claim)
-        // fails with observe_except given no carried lets. What the catch-up reaches is
-        // written in design/seq_blocks.md 6.4. Probes: ~/ptmp/cr29/scratch/r20/20a/.
         let injected = tracked.deliver(ctx, k);
         let scope = tracked.open(ctx, k);
         let mut done = false;
