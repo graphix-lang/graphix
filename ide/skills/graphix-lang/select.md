@@ -61,8 +61,11 @@ select, and runtime forms. Each rule refuses and names the fix.
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
-  `A(i64)] as `A(n) `` with `'b` declared nowhere is refused, and a
-  written test that tests the undecided part is refused as a pattern is:
+  `A(i64)] as `A(n) `` with `'b` declared nowhere is refused, whatever
+  reaches the arm (`Any`, an array's element: `` Array<['b, `A(i64)]> as
+  [`A(n)] ``); a name over `'b` passes, and so does a destructure that
+  takes apart all of it (`Array<'b> as [(a, b), ..]`). A written test
+  that tests the undecided part is refused as a pattern is:
   `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``.
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
@@ -108,5 +111,10 @@ ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 }
 ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }
 ok type W<'a> = Abstract<'a>; |x| select W(x).0 { `J => 1, `M => 2 }
 ok |x| select x { `J => 1, `M => 2 }
+no "a type variable its type test" |xs: Array<[i64, `A(i64)]>| select xs { Array<['b, `A(i64)]> as [`A(n)] => n, _ => 0 }
+no "a type variable its type test" |x: Any| select x { ['b, `A(i64)] as `A(n) => 1, _ => 0 }
+ok |xs: Array<[i64, `A(i64)]>| select xs { Array<[i64, `A(i64)]> as [`A(n)] => n, _ => 0 }
+ok |xs: Array<[i64, `A(i64)]>| select xs { Array<'b> as [a, ..] => 1, _ => 0 }
+ok |xs: Array<(i64, i64)>| select xs { Array<'b> as [(a, b), ..] => a + b, _ => 0 }
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
 ```

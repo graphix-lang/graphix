@@ -72,11 +72,16 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   unguarded arm may take its member whole) that the arm tests, a
   pattern other than a name or `_` standing over its values, is refused,
   naming the binding to annotate (`StructurePattern::meets_undecided`,
-  the walk the declared-variable rule below takes), and so is any open
-  cell of a written test that its structure tests, and a written test
-  that takes such a member only whatever the cell becomes, not with the
-  cell one type of its own (`written_tests_undecided`); a name over it takes
-  the open part beside the members' others (`TVar::narrow_per_member`).
+  the walk the declared-variable rule below takes), and so is any cell
+  of a written test open before the arms (its own variable, nothing
+  declares it) that its structure tests, whether the narrowing against
+  what reaches the arm (an array's element, `Any`) bound it since or
+  not: a bound one is met as a decided cell is, below
+  (`Deciding::hold_written`), and
+  a written test that takes such a member only whatever the cell becomes,
+  not with the cell one type of its own (`written_tests_undecided`); a
+  name over it takes the open part beside the members' others
+  (`TVar::narrow_per_member`).
   A cell an arm's pattern decided (the arms' settle, a completion, the
   narrowing, the coverage) counts as one still open there, a binding the
   decision rewrote read as it was (`Deciding`,

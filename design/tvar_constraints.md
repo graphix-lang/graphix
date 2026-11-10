@@ -777,8 +777,13 @@ a value of such a cell is refused, naming the binding whose type it is
 before the arms ran (`settle::position_cells`), still open at the end:
 a cell an arm's own pattern brought, a bind's or a `_`'s, which the
 arms' settle put into an open scrutinee, is the arms' decision and not
-counted. A written test is judged over its own type, where any open
-cell is its own variable nothing declares, and over what reaches it: it
+counted. A written test is judged over its own type, where any cell
+open before the arms is its own variable nothing declares, met as the
+open cell it was where the narrowing against what reaches the arm bound
+it (`Array<['q, `K(i64)]>` over an array of `[i64, `K(i64)]` binds `'q`,
+over `Any` to `Any`: `Deciding::hold_written`, `meets_decided`, so a
+destructure that takes apart all it bound passes), and over what
+reaches it: it
 tests an undecided cell of a member when the member passes the test
 with the cells copied (whatever they become) but not with its undecided
 cells held rigid together, each one type of its own

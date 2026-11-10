@@ -2820,9 +2820,13 @@ impl<R: Rt> Select<R> {
             ),
             _ => Deciding::default(),
         };
+        let mut written = Deciding::default();
         if checking && let ExprKind::Select(se) = &self.spec.kind {
             let scrut = self.arg.node.typ();
             for ((pat, n), (spec_pat, _)) in self.arms.iter().zip(se.arms.iter()) {
+                if pat.explicit_type_predicate {
+                    written.hold_written(&pat.type_predicate)
+                }
                 let sp = &spec_pat.structure_predicate;
                 let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
                 let ids = |p: &StructurePattern| ids.get(p);
@@ -3012,6 +3016,7 @@ impl<R: Rt> Select<R> {
                     &ctx.env,
                     &open,
                     &decided,
+                    &written,
                     &reached,
                     lower.as_ref(),
                 )?;
@@ -3029,6 +3034,7 @@ impl<R: Rt> Select<R> {
                     &ctx.env,
                     &undecided,
                     &decided,
+                    &written,
                     &reached,
                     lower.as_ref(),
                 )?;
@@ -3049,14 +3055,17 @@ impl<R: Rt> Select<R> {
     /// patterns decided, unless the arm's pattern there only takes apart
     /// every value of the shape decided, in the part of the scrutinee that
     /// reaches the arm (`reached`, one per arm judged: every arm, or up to
-    /// the one the coverage found dead), or any open cell of a written test.
-    /// A cell decided through the scrutinee's lower bounds is met in
-    /// `lower`, the scrutinee as those bounds held it ([`lower_view`]).
+    /// the one the coverage found dead), or any cell of a written test open
+    /// before the arms (`written`), its own variable, still open or decided
+    /// since, as one of `decided` is met. A cell decided through the
+    /// scrutinee's lower bounds is met in `lower`, the scrutinee as those
+    /// bounds held it ([`lower_view`]).
     fn check_undecided(
         &self,
         env: &Env,
         undecided: &AHashMap<usize, TVar>,
         decided: &Decisions,
+        written: &Deciding,
         reached: &[Type],
         lower: Option<&Type>,
     ) -> Result<()> {
@@ -3065,6 +3074,10 @@ impl<R: Rt> Select<R> {
         let was_open = |tv: &TVar| decided.cells.contains_key(&tv.stands_for());
         let held = |tv: &TVar| decided.held.get(&tv.stands_for()).cloned();
         let was = Decided { cell: &was_open, held: &held };
+        let mut own = Decisions::default();
+        written.decided(&mut own);
+        let own_open = |tv: &TVar| own.cells.contains_key(&tv.stands_for());
+        let own_was = Decided { cell: &own_open, held: &|_| None };
         for (((pat, n), (spec_pat, _)), reaching) in
             self.arms.iter().zip(se.arms.iter()).zip(reached.iter())
         {
@@ -3074,15 +3087,19 @@ impl<R: Rt> Select<R> {
             let e = match pat.explicit_type_predicate {
                 true => {
                     let t = &pat.type_predicate;
-                    match sp.meets_undecided(env, &ids, t, &|_| true)? {
+                    let own_met = match sp.meets_undecided(env, &ids, t, &|_| true)? {
+                        Some(tv) => Some(tv),
+                        None if own.cells.is_empty() => None,
+                        None => sp.meets_decided(env, &ids, t, &own_was)?,
+                    };
+                    match own_met {
                         Some(tv) => {
-                            Some(format_with_flags(PrintFlag::DerefTVars, || {
-                                anyhow!(
-                                    "{sp} tests a value of '{}, a type variable its type test \
-                                 {t} leaves open: write the type it tests",
-                                    tv.name
-                                )
-                            }))
+                            let w = spec_pat.type_predicate.as_ref().unwrap_or(t);
+                            Some(anyhow!(
+                                "{sp} tests a value of '{}, a type variable its type test \
+                                 {w} leaves open: write the type it tests",
+                                tv.name
+                            ))
                         }
                         None => {
                             match written_tests_undecided(env, t, reaching, undecided)? {
@@ -3156,6 +3173,17 @@ impl Deciding {
                 })
                 .collect(),
         )
+    }
+
+    /// Add the open cells of `t`, a written test: its own variables, which
+    /// nothing declares.
+    fn hold_written(&mut self, t: &Type) {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        crate::typ::settle::position_cells(t, &mut cells);
+        self.0.extend(cells.drain().filter_map(|(_, tv)| {
+            let c = tv.open_cell()?;
+            (!c.is_rigid()).then(|| (tv, None))
+        }))
     }
 
     fn holding(tv: &TVar) -> Option<(TVar, Option<Type>)> {

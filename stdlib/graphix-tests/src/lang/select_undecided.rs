@@ -210,6 +210,67 @@ run!(written_collection_test_with_an_open_variable_refused, r#"{
     [f([`Keep(3)]), f([1])]
 }"#, refused("[`Keep(r)] tests a value of 'q, a type variable its type test"); FuseExpect::None);
 
+// The narrowing over what reaches the arm decides a written test's own
+// variable: one its structure tests is refused all the same.
+run!(written_array_element_test_with_an_open_variable_refused, r#"{
+    let f = |xs: Array<[i64, `Keep(i64)]>| -> i64 select xs {
+        Array<['q, `Keep(i64)]> as [`Keep(r)] => r,
+        _ => 0
+    };
+    [f([`Keep(3)]), f([1])]
+}"#, refused("[`Keep(r)] tests a value of 'q, a type variable its type test Array<['q, `Keep(i64)]> leaves open"); FuseExpect::None);
+
+run!(written_list_element_test_with_an_open_variable_refused, r#"{
+    let f = |xs: List<[i64, `Keep(i64)]>| -> i64 select xs {
+        List<['q, `Keep(i64)]> as [<`Keep(r), ..>] => r,
+        _ => 0
+    };
+    [f([<`Keep(3)>]), f([<1>])]
+}"#, refused("[<`Keep(r), ..>] tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_test_with_an_open_variable_over_any_refused, r#"{
+    let f = |x: Any| -> i64 select x { ['q, `A(i64)] as `A(n) => n, _ => 0 };
+    let s: Any = `A("s");
+    [f(`A(3)), f(s)]
+}"#, refused("`A(n) tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_array_element_test_with_an_open_variable_over_any_refused, r#"{
+    let f = |xs: Array<Any>| -> i64 select xs {
+        Array<['q, `Keep(i64)]> as [`Keep(r)] => r,
+        _ => 0
+    };
+    let s: Any = `Keep("s");
+    [f([`Keep(3)]), f([s])]
+}"#, refused("[`Keep(r)] tests a value of 'q, a type variable its type test"); FuseExpect::None);
+
+run!(written_array_element_test_closed, r#"{
+    let f = |xs: Array<[i64, `Keep(i64)]>| -> i64 select xs {
+        Array<[i64, `Keep(i64)]> as [`Keep(r)] => r,
+        _ => 0
+    };
+    [f([`Keep(3)]), f([1])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0]); FuseExpect::Jit);
+
+// A name over a written test's own variable tests nothing, and a
+// destructure that takes apart every value the narrowing gives it decides
+// its shape as an annotation would.
+run!(written_array_test_binding_an_open_variable, r#"{
+    let f = |xs: Array<[i64, `Keep(i64)]>| -> i64 select xs {
+        Array<'q> as [a, ..] => 1,
+        _ => 0
+    };
+    [f([`Keep(3)]), f([1]), f([])]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 0]); FuseExpect::Jit);
+
+run!(written_test_destructuring_an_open_variable, r#"{
+    let f = |xs: Array<(i64, i64)>, x: ((i64, i64), i64)| -> i64 {
+        let a = select xs { Array<'q> as [(a, b), ..] => a + b, _ => 0 };
+        let c = select x { ('p, i64) as ((a, b), c) => a + b + c };
+        a + c
+    };
+    f([(1, 2)], ((3, 4), 5))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(15))); FuseExpect::Jit);
+
 // A written test tests what it reads as any other pattern does: one
 // that takes a member only through an undecided part is refused.
 run!(written_union_test_of_an_undecided_part_refused, r#"{
