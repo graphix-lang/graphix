@@ -1847,58 +1847,100 @@ impl FnType {
         let mut paired_to: LPooled<AHashMap<usize, SmallVec<[usize; 1]>>> =
             LPooled::take();
         let mut indexed = 0;
+        // the impl cells the signature's was matched with, else the
+        // same-named variable: either form of a bound (`'c: C`, `c: C`)
+        // names its variable its own way
+        let mut matched = |tvar_map: &SigPairs, sig_tv: &TVar| {
+            for (addr, t) in tvar_map.paired_since(indexed) {
+                if let Type::TVar(s) = t
+                    && let Some(i) = place.get(&addr)
+                {
+                    paired_to.entry(s.cell_addr()).or_default().push(*i);
+                }
+            }
+            indexed = tvar_map.paired_len();
+            let mut matched: LPooled<Vec<&TVar>> =
+                match paired_to.get_mut(&sig_tv.cell_addr()) {
+                    None => LPooled::take(),
+                    Some(places) => {
+                        places.sort_unstable();
+                        places.iter().map(|i| &impl_cells[*i].1).collect()
+                    }
+                };
+            // CR claude for claude: [bug/low] This pairs a signature variable no cell is
+            // paired with yet with the implementation's variable of its name, in the
+            // first pass, before a later bound pairs it, so an implementation that is its
+            // signature with the names moved round is refused: `val f: fn<'a: Array<'z>,
+            // 'b: Array<'a>, 'z: i64>(x: 'b) -> 'b;` over `let f = 'a: Array<'q>, 'q:
+            // Array<'r>, 'r: i64 |x: 'a| -> 'a x` ("the implementation requires 'b:
+            // Array<'q>, which the signature does not declare"; with 'p for the
+            // implementation's 'a it passes), and `fn<'a: [`P, `Q], 'b: ['a, `X]>(x: 'b)
+            // -> 'b` over `'b: [`P, `Q], 'a: ['b, `X] |x: 'a| -> 'a x` (a union that
+            // cannot pair). Taking the same-named variable only in a pass that pairs
+            // nothing without it would accept both. Nothing in lang::{interfaces, traits,
+            // modules, quantified, cast_trait} fails with this arm removed, so what it is
+            // for has no pin: find that first. On base-r20 and lane 20d alike. probes:
+            // ~/ptmp/cr29/scratch/r20/20d/ibo-rv/{n3,n4,n5}/main.gx (iface-same-name-01)
+            if matched.is_empty()
+                && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
+            {
+                matched.push(&impl_tvs[i].1);
+            }
+            matched
+        };
         let view = self.constraint_view();
-        // each (conjunct, impl cell) pairing tried: a pairing only grows,
-        // so one that failed fails again
+        let bounds = || view.iter().enumerate().filter(|(_, (_, tc))| *tc != Type::Any);
+        // each (bound, impl cell) pairing tried: a pairing only grows, so
+        // one that failed fails again
         let mut tried: LPooled<AHashSet<(usize, usize)>> = LPooled::take();
+        // each impl conjunct, by its cell and place, a bound has paired
+        // with, and each (bound, impl conjunct) tried after the first
+        let mut met: LPooled<AHashSet<(usize, usize)>> = LPooled::take();
+        let mut tried_rest: LPooled<AHashSet<(usize, usize, usize)>> = LPooled::take();
         // passes until one pairs nothing: a variable met only in a bound
         // later in the view, or in a union the settle pairs, has its own
         // bound paired by the next
         loop {
             let start = tvar_map.paired_len();
-            for (k, (sig_tv, sig_tc)) in view.iter().enumerate() {
-                if *sig_tc == Type::Any {
-                    continue;
-                }
-                for (addr, t) in tvar_map.paired_since(indexed) {
-                    if let Type::TVar(s) = t
-                        && let Some(i) = place.get(&addr)
-                    {
-                        paired_to.entry(s.cell_addr()).or_default().push(*i);
-                    }
-                }
-                indexed = tvar_map.paired_len();
-                // the impl cells the signature's was matched with, else the
-                // same-named variable: either form of a bound (`'c: C`, `c:
-                // C`) names its variable its own way
-                let mut matched: LPooled<Vec<&TVar>> =
-                    match paired_to.get_mut(&sig_tv.cell_addr()) {
-                        None => LPooled::take(),
-                        Some(places) => {
-                            places.sort_unstable();
-                            places.iter().map(|i| &impl_cells[*i].1).collect()
-                        }
-                    };
-                if matched.is_empty()
-                    && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
-                {
-                    matched.push(&impl_tvs[i].1);
-                }
-                for impl_tv in matched.iter() {
-                    if !tried.insert((k, impl_tv.cell_addr())) {
+            for (k, (sig_tv, sig_tc)) in bounds() {
+                for impl_tv in matched(tvar_map, sig_tv).iter() {
+                    let addr = impl_tv.cell_addr();
+                    if !tried.insert((k, addr)) {
                         continue;
                     }
-                    for c in impl_tv.cell_constraints().iter() {
+                    for (j, c) in impl_tv.cell_constraints().iter().enumerate() {
                         if tvar_map
                             .trial(|m| sig_tc.sig_matches_int(env, c, m, hist))
                             .is_ok()
                         {
+                            met.insert((addr, j));
                             break;
                         }
                     }
                 }
             }
             tvar_map.settle(env, hist)?;
+            // a cell may carry several conjuncts of one shape (`'q:
+            // Array<'p> + Array<'r>`, a method's own beside its trait's):
+            // each that no bound paired with pairs with a bound that takes
+            // it whole, its unions too
+            for (k, (sig_tv, sig_tc)) in bounds() {
+                for impl_tv in matched(tvar_map, sig_tv).iter() {
+                    let addr = impl_tv.cell_addr();
+                    for (j, c) in impl_tv.cell_constraints().iter().enumerate() {
+                        if met.contains(&(addr, j)) || !tried_rest.insert((k, addr, j)) {
+                            continue;
+                        }
+                        let whole = tvar_map.trial(|m| {
+                            sig_tc.sig_matches_int(env, c, m, hist)?;
+                            m.settle(env, hist)
+                        });
+                        if whole.is_ok() {
+                            met.insert((addr, j));
+                        }
+                    }
+                }
+            }
             if tvar_map.paired_len() == start {
                 break;
             }
@@ -1933,6 +1975,28 @@ impl FnType {
                 });
                 gates
             });
+            // CR claude for claude: [bug/medium] An implementation bound of another shape
+            // than the signature's pairs nothing, and this asks `implies` of a conjunct
+            // that still holds an open implementation cell, which a probe lets stand for
+            // a signature variable whatever its own bound says (Type::contains_tvars's
+            // open pair holds a flexible cell's lower bounds of a rigid one, never its
+            // conjuncts). `val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;` over
+            // `let f = 'p: [i64, f64], 'q: ['p, `X, `Y] |x: 'q| -> 'q x` passes --check
+            // with `m::f("s")` in main, and the run fails "an instance at fn(x: string)
+            // -> string of a definition typed fn<'p: [i64, f64], ..". The same with `'b:
+            // Array<'a>` over `'q: [Array<'p>, null]`, `'b: (i64, 'a)` over `'q: [(i64,
+            // 'p), null]`, and with 'a at a position (`(x: Array<'a>) -> Array<'a>` over
+            // `'q: [Array<'p>, null] |x: 'q|`). `'p: [i64, string]` in each is valid and
+            // passes, as it must, and so does `'b: [i64, null]` over `'p: Number, 'q:
+            // ['p, null]`: refusing every bounded open cell left in `in_sig` would refuse
+            // those. Either the open pair holds the flexible cell's conjuncts of the
+            // rigid one under RigidCheck, or this judges the cells `in_sig` leaves open
+            // itself. The other way round, a union bound of the signature's length that
+            // cannot pair is a hard refusal of a valid implementation: `'b: [`A(i64),
+            // 'a]` over `'p: [i64, string], 'q: [`A(Number), 'p]` ("signature has i64,
+            // implementation has [Int, Real]"). On base-r20 and lane 20d alike. probes:
+            // ~/ptmp/cr29/scratch/r20/20d/ibo-rv/{f1,f2,g1,g3,g6,k4}/main.gx
+            // (iface-bound-shape-01)
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());

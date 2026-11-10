@@ -1437,7 +1437,14 @@ bound it does carry pairs the variables inside it with the signature's.
 That pairing repeats, the unions it defers paired between passes, until
 a pass pairs nothing new, so a variable met only inside a bound (``'b:
 ['a, `X]``), at the end of a chain of bounds, or through a bound later in
-the signature, is judged as one at a position is.
+the signature, is judged as one at a position is. Every conjunct of a
+paired cell pairs, not the first alone: a cell may carry several of one
+shape (`'q: Array<'p> + Array<'r>`, and a trait method's cell carries
+its trait's bound beside its own), and each one that no bound paired
+with pairs with a bound that takes it whole, so the variables inside
+each are judged. A conjunct of another shape than every bound pairs
+nothing, and a bounded variable inside it is not judged
+(`iface-bound-shape-01`).
 
 ### `FnType` derives its constraint list from the cells
 

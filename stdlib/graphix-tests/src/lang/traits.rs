@@ -4022,3 +4022,58 @@ run!(
         let result = Pick::pick(C(1), 2, 3)
     "#
 );
+
+// A method's cell carries its trait's bound beside its own: the variables
+// inside its own are judged as an interface val's are, a default's too.
+run!(
+    method_bound_inside_a_union_bound_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'a: [i64, f64], 'b: ['a, `X] |s, x: 'b| -> 'b x };
+        let result = T::m(1, "s")
+    "#
+);
+
+run!(
+    method_bound_inside_an_array_bound_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'b: Array<'a>>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'p: [i64, f64], 'q: Array<'p> |s, x: 'q| -> 'q x };
+        let result = T::m(1, ["s"])
+    "#
+);
+
+run!(
+    default_method_bound_inside_a_union_bound_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b =
+                'p: [i64, f64], 'q: ['p, `X] |s, x: 'q| -> 'q x
+        };
+        impl T for i64 {};
+        let result = T::m(1, "s")
+    "#
+);
+
+run!(
+    method_declared_bound_inside_a_union_bound_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'p: [i64, string, f64], 'q: ['p, `X] |s, x: 'q| -> 'q x };
+        let result = T::m(1, "s")
+    "#
+);
+
+run!(
+    method_bound_of_another_shape_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: ['p, `Y] |s, x: 'q| -> 'q x };
+        let result = T::m(1, "s")
+    "#
+);

@@ -1535,6 +1535,24 @@ run!(
     "/test/m.gx" => "let f = 'p: Array<'r>, 'q: Array<'p>, 'r: [i64, string, f64] |x: 'q| -> 'q x"
 );
 
+// A cell carrying several conjuncts of one shape has each paired with
+// the signature's bound, so every variable inside them is judged.
+run!(
+    each_conjunct_of_a_bound_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'r: [i64, f64], 'q: Array<'p> + Array<'r> |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    each_declared_conjunct_of_a_bound_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 1),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'r: [i64, string, f64], 'q: Array<'p> + Array<'r> |x: 'q| -> 'q x"
+);
+
 // A predicate the implementation needs of a compound signature type asks
 // it of the variables inside: Array<'a> is discernible only if 'a is.
 run!(
