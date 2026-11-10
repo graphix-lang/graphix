@@ -90,7 +90,10 @@ mk(0)` takes `a(1)` and `b("s")`. Whatever holds such an instance beside
 a generic value is that instance too: with `let j = s.f; j <- ..`, a
 `{s with f: j}`, a `[s, {f: j}]` (an array, list or map of composites),
 a `[(s.f, 0), (j, 1)]` or a `select b { true => s, false => {f: j} }`
-takes `j`'s one type in every element and arm. A `j` that starts as
+takes `j`'s one type in every element and arm. A select arm's name over
+members that hold lambdas is those lambdas, not a copy: `select t { (r, n)
+=> r.f(v) }` over `({f: |x| x}, 1)` and `({f: |y| y}, "s")` calls either
+one, and `v`'s type is then the type both take. A `j` that starts as
 `never()` stays open in `{s with f: j}`, whose field is `j`'s own type, so a
 call through the update before the write is refused until `j`'s type is
 written on its `let` (`let j: fn(x: i64) -> i64 = never()`). A write the
@@ -111,6 +114,8 @@ no "i64 does not contain string" let s = {f: |x| x}; let j = s.f; let p = |b| se
 ok let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; (p(true).f("s"), p(false).f(1))
 no "needs its type known here" let s = {f: |x| x}; let j = never(); let t = {s with f: j}; let r = t.f("s"); j <- |x: i64| x + 1; r
 ok let s = {f: |x| x}; let j: fn(x: i64) -> i64 = never(); let t = {s with f: j}; let r = t.f(2); j <- |x: i64| x + 1; r
+ok let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => r.f(v) } }; (k(2), k(-2))
+no "i64 does not contain string" let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => (r.f(v), r.f("s")) } }; k(2)
 no "expected fn not" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)
 ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} }; f(false, 1, "s").g(2)
 ```

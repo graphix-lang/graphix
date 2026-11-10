@@ -66,7 +66,9 @@ select, and runtime forms. Each rule refuses and names the fix.
   by a partial struct pattern (`{a, ..}`).
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
-  `str::len(x)` makes `z` a string. A written test is closed: `` ['b,
+  `str::len(x)` makes `z` a string, and `(a, _)` over `[(e1, 1), (e2,
+  "s")]` with `a[0]$ + 1` makes `e1` and `e2` both `Array<i64>`, so a
+  later `e2 <- ["s"]` is refused. A written test is closed: `` ['b,
   `A(i64)] as `A(n) `` with `'b` declared nowhere is refused, whatever
   reaches the arm (`Any`, an array's element: `` Array<['b, `A(i64)]> as
   [`A(n)] ``); a name over `'b` passes, and so does a destructure that
@@ -128,5 +130,7 @@ no "a type variable its type test" |x: Any| select x { ['b, `A(i64)] as `A(n) =>
 ok |xs: Array<[i64, `A(i64)]>| select xs { Array<[i64, `A(i64)]> as [`A(n)] => n, _ => 0 }
 ok |xs: Array<[i64, `A(i64)]>| select xs { Array<'b> as [a, ..] => 1, _ => 0 }
 ok |xs: Array<(i64, i64)>| select xs { Array<'b> as [(a, b), ..] => a + b, _ => 0 }
+no "cannot hold Array<string>" let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- ["s"]; z
+ok let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- [2]; z
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
 ```

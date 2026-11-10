@@ -4584,6 +4584,98 @@ run!(coverage_slice_bind_covers_every_member, r#"{
     (f(["s"]), h(["s"]), l([<"s">]))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("one"), Value::I64(1), Value::I64(1)]); FuseExpect::Jit);
 
+// A name over two members' parts holds the members' own parts, cells and
+// all: what the arm decides of the name, the members learn.
+run!(arm_bind_over_members_calls_their_lambdas, r#"{
+    let k = |v| {
+        let t = select v > 0 { true => ({f: |x| x}, 1, 1), false => ({f: |y| y}, "s", "s") };
+        let u = select v > 0 { true => (|x| x, 1), false => (|y| y, "s") };
+        [
+            select t { (r, n, m) => r.f(v) },
+            select t { ({f}, n, m) => f(v) },
+            select t { q@ (r, n, m) => (q.0.f)(v) + r.f(v) },
+            select u { (r, n) => r(v) },
+            select t { (r, n, m) => 1 }
+        ]
+    };
+    (k(2), k(-2))
+}"#, prints("[[i64:2, i64:2, i64:4, i64:2, i64:1], [i64:-2, i64:-2, i64:-4, i64:-2, i64:1]]"); FuseExpect::Jit);
+
+run!(arm_bind_over_members_calls_their_written_lambdas, r#"{
+    let k = |v: i64| {
+        let t = select v > 0 { true => ({f: |x: i64| x}, 1, 1), false => ({f: |y: i64| y + 1}, "s", "s") };
+        select t { (r, n, m) => r.f(v) }
+    };
+    (k(2), k(-2))
+}"#, prints("[i64:2, i64:-1]"); FuseExpect::Jit);
+
+run!(arm_bind_over_members_calls_a_nested_or_optional_lambda, r#"{
+    let k = |v| {
+        let t = select v > 0 { true => (({f: |x| x}, 1), 1), false => (({f: |y| y}, "s"), "s") };
+        let u = select v > 0 { true => (|x| x, 1), false => (null, "s") };
+        (
+            select t { ((r, j), n) => r.f(v) },
+            select u { (r, n) => select r { null as _ => 0, f => f(v) } }
+        )
+    };
+    (k(2), k(-2))
+}"#, prints("[[i64:2, i64:2], [i64:-2, i64:0]]"); FuseExpect::Jit);
+
+run!(arm_bind_over_members_calls_their_lambdas_at_top_level, r#"{
+    let b = true;
+    let t = select b { true => ({f: |x| x}, 1, 1), false => ({f: |y| y}, "s", "s") };
+    select t { (r, n, m) => r.f(2) }
+}"#, prints("i64:2"); FuseExpect::None);
+
+run!(arm_bind_over_members_decides_their_lambdas, r#"{
+    let k = |v| {
+        let t = select v > 0 { true => ({f: |x| x}, 1, 1), false => ({f: |y| y}, "s", "s") };
+        select t { (r, n, m) => (r.f(v), r.f("s")) }
+    };
+    k(2)
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(arm_bind_over_members_decides_their_lambdas_for_a_later_read, r#"{
+    let k = |v| {
+        let t = select v > 0 { true => ({f: |x| x}, 1, 1), false => ({f: |y| y}, "s", "s") };
+        let z = select t { (r, n, m) => r.f(v) };
+        (z, t.0.f("s"))
+    };
+    k(2)
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(arm_bind_over_members_decides_their_open_parts, r#"{
+    let e1 = [];
+    let e2 = [];
+    let b = true;
+    let t = select b { true => (e1, 1), false => (e2, "s") };
+    let z = select t { (a, n) => a[0]$ + 1 };
+    e1 <- [1];
+    e2 <- ["s"];
+    z
+}"#, refused("e2 is Array<i64> and cannot hold Array<string>"); FuseExpect::None);
+
+run!(arm_bind_over_members_decides_their_open_parts_alike, r#"{
+    let e1 = [];
+    let e2 = [];
+    let b = true;
+    let t = select b { true => (e1, 1), false => (e2, "s") };
+    let z = select t { (a, n) => a[0]$ + 1 };
+    e1 <- [1];
+    e2 <- [2];
+    z
+}"#, prints("i64:2"); FuseExpect::Jit);
+
+// Or-alternatives over members of two shapes that hold lambdas: the name
+// is one function, the lambdas' cells one cell each.
+run!(or_arm_bind_over_members_calls_their_lambdas, r#"{
+    let k = |b| {
+        let t = select b { true => `A(|x| x, 1), false => `B(|y| y, "s") };
+        select t { `A(r, n) | `B(r, n) => r(1) }
+    };
+    (k(true), k(false))
+}"#, prints("[i64:1, i64:1]"); FuseExpect::None);
+
 // Under a written union, a constructor pattern's binds take the union of
 // their parts over every member it matches, as under an inferred one.
 run!(written_union_binds_every_member, r#"{

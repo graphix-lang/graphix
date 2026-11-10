@@ -41,6 +41,22 @@ what makes the site's facts collide in one cell so the strict
 argument-boundary check fires, and it makes the null witnesses reject
 in both modes, consistent with their direct forms.
 
+### A select arm's bind is its member's part
+
+An arm's name over a union that stays two or more members takes the
+union of each member's part (`Type::narrow_per_member`), and each part
+is the member's own type, cells and all. A copy there forks the
+scrutinee: the arm's body decides the copy's cells (a call through a
+lambda the member holds, arithmetic on an element of an array still
+empty), the member's own cells stay open, and a later write or read
+decides them another way. Parts that are one function up to the names
+of their cells collapse to one and weld those cells
+(`setops::union_collapses`); a var that shared a welded cell stands for
+the surviving one through the forward link the weld leaves, and
+`setops::Identity` reads through it. Pins:
+`lang::select::arm_bind_over_members_*`,
+`or_arm_bind_over_members_calls_their_lambdas`.
+
 ### `reset_tvars` — the legal deep copies
 
 | site | why it is legal |

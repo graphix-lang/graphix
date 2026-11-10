@@ -2997,6 +2997,20 @@ impl<R: Rt> Select<R> {
                 let spec = Arc::new(site.clone());
                 for (test, among) in tests {
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
+                    // CR claude for claude: [bug/low] An arm of names alone over
+                    // members that hold two different function types is refused as
+                    // unable to tell them apart, though it tests nothing: `let t =
+                    // select v > 0 { true => (|x: i64| x, 1), false => (|y: string|
+                    // y, "s") }; select t { (r, n) => 0 }` says "this pattern can't
+                    // tell fn(y: string) -> string from fn(x: i64) -> i64", and so
+                    // does the same over `(.., 1)` and `(.., 2)`; `let (r, n) = t`
+                    // and `select t { q => 0 }` check. The test is `([fn, fn], [i64,
+                    // string])`; Type::diff of two tuples subtracts only an
+                    // identical one, so `rest` is every member, and the test's
+                    // union of functions collides with each member's own. base-r20
+                    // refuses it too, naming one type twice. probes:
+                    // ~/ptmp/cr29/scratch/r20/20f/ans/p2/{c5,c8}.gx
+                    // (names-arm-fn-union-01)
                     if let Some(why) = test.rep_collision(&ctx.env, &rest) {
                         return Err(format_with_flags(PrintFlag::DerefTVars, || {
                             why.untold("this pattern")

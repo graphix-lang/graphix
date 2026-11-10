@@ -484,7 +484,8 @@ impl<'a> Identity<'a> {
             (Type::TVar(a), Type::TVar(b)) => match (a.binding(), b.binding()) {
                 (Some(x), Some(y)) => a.same_cell(b) || self.same(&x, &y),
                 (None, None) => self.cells(a, b),
-                (None, Some(_)) | (Some(_), None) => false,
+                (None, Some(y)) => matches!(y, Type::TVar(_)) && self.same(t0, &y),
+                (Some(x), None) => matches!(x, Type::TVar(_)) && self.same(&x, t1),
             },
             (Type::TVar(a), t) | (t, Type::TVar(a)) => {
                 a.binding().is_some_and(|x| self.same(&x, t))
@@ -1668,7 +1669,7 @@ pub(crate) mod tests {
             Bound, NodePairs, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
-            setops::{Identical, IdenticalMemo, WALK_PAIRS},
+            setops::{Identical, IdenticalMemo, WALK_PAIRS, union_identical},
         },
     };
     use ahash::AHashMap;
@@ -2484,6 +2485,26 @@ pub(crate) mod tests {
                 Identical::Renamed
             );
         }
+    }
+
+    // A weld moves one function's cell into the other's; a var that shared
+    // the moved cell reads on through the forward link the weld left.
+    #[test]
+    fn identical_reads_a_welded_cell_through_its_forward_link() {
+        let f = |arg: &str, ret: &str| {
+            let t = parse_type(&format!("fn(x: '{arg}) -> '{ret}")).unwrap();
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells[ret].alias(&cells[arg]);
+            (t, cells[arg].clone(), cells[ret].clone())
+        };
+        let ((f0, a, r), (f1, b, _)) = (f("a", "r"), f("b", "s"));
+        assert!(union_identical(&f0, &f1));
+        crate::typ::contains::weld(&a, &b);
+        assert!(a.same_cell(&b));
+        assert!(!r.same_cell(&b) && r.stands_for() == b.stands_for());
+        assert!(union_identical(&f0, &f1));
+        assert!(union_identical(&f1, &f0));
     }
 
     // A pair found identical is not kept past a write to a cell it read.

@@ -4031,7 +4031,8 @@ impl Type {
     /// each alternative of self that matches it, where containment against
     /// the union commits it to the first member, and is `Any` where that
     /// union is ([`Self::open_over_any`]). A cell a matching alternative
-    /// leaves open stays open.
+    /// leaves open stays open. A part is the member's own, never a copy:
+    /// what the arm decides of its bind decides the member's cells.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
@@ -4083,7 +4084,7 @@ impl Type {
                 super::settle::position_cells(m, &mut taken);
                 for (c, p) in cells.iter().zip(parts.iter_mut()) {
                     let Some(f) = known.get(&c.cell_addr()) else { continue };
-                    // CR claude for claude: [bug/medium] A select arm's bind over a union
+                    // XCR claude for claude: [bug/medium] A select arm's bind over a union
                     // that stays two members takes each member's part through
                     // resolve_tvars, a snapshot whose open cells are fresh: the
                     // lambdas' own live cells never learn what the arm's calls decide.
@@ -4097,8 +4098,29 @@ impl Type {
                     // refusal ("can't tell fn(x: ..) from fn(y: ..)"), so the snapshot
                     // has a job there to find first. probes:
                     // ~/ptmp/cr29/scratch/r19/h/{e2,d3}.gx (arm-narrow-snapshot-01)
+                    // 2026-11-10 claude: The bind takes each member's part itself
+                    // (p.push(t)), so the arm's calls decide the members' own cells;
+                    // base-r20 refused the CR's probes at --check (two snapshots of the
+                    // one met function, 'can't tell fn(y: ..) from fn(y: ..)'), and still
+                    // failed the run-time bind for (|x| x, 1) beside (null, "s"). The
+                    // snapshot had no job a test or the census shows: with the live push
+                    // alone graphix-types (475) and graphix-tests --lib (17077) pass and
+                    // the census of both repos is unchanged; the r19 refusal is gone
+                    // because the members' functions now meet as one type (ac5edd352).
+                    // What the live parts did break, or-alternatives over members of two
+                    // shapes (the weld leaves a forward link that setops::Identity read
+                    // as a bound cell), is fixed in Identity::same_inner. Pins that fail
+                    // without the push:
+                    // lang::select::arm_bind_over_members_{calls_their_lambdas,calls_their_written_lambdas,calls_a_nested_or_optional_lambda,calls_their_lambdas_at_top_level,decides_their_lambdas,decides_their_lambdas_for_a_later_read,decides_their_open_parts}
+                    // (28 runs); without the Identity change:
+                    // or_arm_bind_over_members_calls_their_lambdas (4 runs) and
+                    // typ::setops::tests::identical_reads_a_welded_cell_through_its_forward_link.
+                    // Newly refused: a write that contradicts what an arm decided of a
+                    // member's open part (e2 <- ["s"] after a[0]$ + 1 over (e1, 1) and
+                    // (e2, "s")), which base ran into 'no arm matches: a coverage hole in
+                    // the check'. Probes ~/ptmp/cr29/scratch/r20/20f/ans/.
                     match (f.binding(), p.as_mut()) {
-                        (Some(t), Some(p)) => p.push(t.resolve_tvars()),
+                        (Some(t), Some(p)) => p.push(t),
                         (None, Some(p)) if taken.contains_key(&f.cell_addr()) => {
                             p.push(Type::TVar(f.clone()))
                         }
