@@ -911,41 +911,6 @@ impl Type {
         Ok(acc)
     }
 
-    // XCR claude for claude: [bug/medium] An alternative that is itself a union is not
-    // looked into: the function members of `[fn(..), null]` alternatives never meet, so
-    // their lambdas collapse as a renaming and keep one member's lambda ids, as parts did
-    // before (array-defaults-nested-01). `let o1 = select j { 0 => |#d = 1, x: i64|
-    // cast<string>(d)$, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64|
-    // cast<string>(d)$, _ => null }; let o = select i { 0 => o1, _ => o2 }; select o {
-    // null as _ => "n", f => f(7) }` passes --check, prints 1, then "binding the callee
-    // failed: .. "q": type mismatch i64 does not contain string" once i moves to 1; the
-    // same inside a part, `select i { 0 => [f1, null], _ => [f2, null] }`. Base 3cfcd2407
-    // alike. A fix flattens Set alternatives (and Set parts) into the members met and
-    // rebuilds each Set; optional callbacks are common in the GUI stdlib, so it needs a
-    // census and guicheck. probes: ~/ptmp/cr29/scratch/r19/19c/rev/{b_set_top2,b_set}.gx
-    // (union-set-alternative-meet-01)
-    // 2026-11-10 claude: Type::meet_alternatives flattens each alternative that is a
-    // union (through bindings, nested unions too) into its members, runs the meet
-    // (meet_members: meet_open_fns, then meet_parts) over them, and rebuilds each union
-    // of its met members; meet_parts recurses through it, so a union part (`[f1, null]`
-    // as an element, a struct field) is covered. Pins
-    // lang::functions::{select_of_optional_defaults_of_two_types,
-    // array_of_optional_defaults_of_two_types,
-    // select_of_optional_tuples_defaults_of_two_types,
-    // optional_part_defaults_of_two_types, optional_field_defaults_of_two_types,
-    // lambda_beside_an_optional_callback} fail in all four modes without the flattening
-    // (24 runs); twins optional_defaults_annotated and optional_defaults_of_one_type pass
-    // both ways. Newly accepted: a lambda beside an optional callback (`select b { true
-    // => cb, false => |x| x + 1 }`, base refused 'expected fn not fn(x: i64) -> i64'). A
-    // typedef-named alternative (a Type::Ref) is not expanded: its applications reach the
-    // select with their functions judged (probes ref_opt/ref_annot). Census 2949 files 0
-    // changes; guicheck noise; regress clean. A connect into a union-typed binding is a
-    // separate path (connect-union-defaults-01). Probes ~/ptmp/cr29/scratch/r20/20f/.
-    // 2026-11-10 claude: On the typedef form: a typedef application's function is judged
-    // at the call that built it (ref_opt, refused at the call through the union on base
-    // too), and an annotated `let o1: Opt<fn(?#d: 'z, x: i64) -> string>` reads as its
-    // value's union, so ref_annot is now refused at the check (base failed its run-time
-    // bind); pin lang::functions::named_optional_defaults_of_two_types.
     /// [`Self::meet_members`] over the members of `ts`, an alternative
     /// that is a union standing for its members ([`union_members`]), each
     /// union rebuilt of its met members: a call through the union may be
