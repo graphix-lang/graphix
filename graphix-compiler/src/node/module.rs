@@ -606,7 +606,7 @@ fn free_variable(t: &Type) -> Option<TVar> {
 
 /// The lambdas the binding `id` holds: its own when it is a lambda, else,
 /// where its value is data and not a function, those its type's function
-/// types carry.
+/// types carry, in the order the program writes them.
 fn held_lambdas<'a, R: Rt>(
     ctx: &'a CompileCtx<R>,
     id: BindId,
@@ -619,13 +619,15 @@ fn held_lambdas<'a, R: Rt>(
     if b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
         return;
     }
+    let start = out.len();
     b.typ.each_held_fn(&mut |ft| {
         for lid in ft.lambda_ids.ids().iter() {
             let def =
                 ctx.lambda_defs.get(lid).and_then(|v| v.downcast_ref::<LambdaDef<R>>());
             out.extend(def);
         }
-    })
+    });
+    out[start..].sort_by(|a, b| a.written_order(b))
 }
 
 /// The lambda the binding `id` holds, if it holds one.

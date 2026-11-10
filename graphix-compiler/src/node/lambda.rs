@@ -54,6 +54,7 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     cell::OnceCell,
+    cmp::Ordering,
     fmt,
     hash::Hash,
     mem,
@@ -1091,6 +1092,26 @@ impl<R: Rt> LambdaDef<R> {
         }
     }
 
+    /// The order the program writes `self` and `other` in: a source
+    /// definition by where its lambda is written, before one Rust built at
+    /// run time; the id decides only between two of one place.
+    pub(crate) fn written_order(&self, other: &Self) -> Ordering {
+        let place = match (&self.origin, &other.origin) {
+            (DefOrigin::Source { spec: a, .. }, DefOrigin::Source { spec: b, .. }) => {
+                let ori = if Arc::ptr_eq(&a.ori, &b.ori) {
+                    Ordering::Equal
+                } else {
+                    a.ori.partial_cmp(&b.ori).unwrap_or(Ordering::Equal)
+                };
+                ori.then(a.pos.cmp(&b.pos))
+            }
+            (DefOrigin::Source { .. }, DefOrigin::Runtime) => Ordering::Less,
+            (DefOrigin::Runtime, DefOrigin::Source { .. }) => Ordering::Greater,
+            (DefOrigin::Runtime, DefOrigin::Runtime) => Ordering::Equal,
+        };
+        place.then(self.id.cmp(&other.id))
+    }
+
     /// `f` compiling an expression the signature holds, a labeled
     /// default: a type it writes names the variables of the definitions
     /// around this one, as the signature does.
@@ -1136,13 +1157,13 @@ impl<R: Rt> Eq for LambdaDef<R> {}
 /// Functions have no order (`Ordered` refuses them); under `Any` one orders
 /// by its id, minted in run order, so such an order is nondeterministic.
 impl<R: Rt> PartialOrd for LambdaDef<R> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.id.cmp(&other.id))
     }
 }
 
 impl<R: Rt> Ord for LambdaDef<R> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.id.cmp(&other.id)
     }
 }

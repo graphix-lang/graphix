@@ -3109,6 +3109,26 @@ run!(array_defaults_of_three_named, r#"{
     fs[0]$(7)
 }"#, refused("i64 does not contain string"); FuseExpect::None);
 
+// Met defaults are judged in the order the program writes them, though a
+// struct literal compiles its fields sorted by name: `1` first, so `"q"` is
+// refused, at a formal that hides the label and at a call that omits it.
+run!(met_defaults_judged_as_written_at_a_formal, r#"{
+    let s = {
+        b: |#d = 1, x: i64| cast<string>(d)$,
+        a: |#d = "q", x: i64| cast<string>(d)$
+    };
+    array::len([s.a, s.b])
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(met_defaults_judged_as_written_at_a_call, r#"{
+    let s = {
+        b: |#d = 1, x: i64| cast<string>(d)$,
+        a: |#d = "q", x: i64| cast<string>(d)$
+    };
+    let f = select true { true => s.a, false => s.b };
+    f(7)
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
 // A function the array is passed to may call through it: the refusal names
 // the annotation, whose twin passes.
 run!(array_defaults_passed_on_name_the_annotation, r#"{

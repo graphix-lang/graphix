@@ -1891,6 +1891,17 @@ run!(
     "/test/m.gx" => "let y = never(); let store = |x| { y <- x; y }; let c = {f: |x| x, g: store}"
 );
 
+// Two lambdas of the literal capture bindings holding the cell: the refusal
+// names the capture of the one written first, though a struct literal
+// compiles its fields sorted by name.
+run!(
+    val_struct_names_the_capture_written_first,
+    refused("that of q, a binding outside its let"),
+    "/test.gx" => "mod m; let result = (m::c.a(1), m::c.a(\"s\"))",
+    "/test/m.gxi" => "val c: {a: fn(x: 'a) -> 'a, b: fn(x: 'b) -> i64}",
+    "/test/m.gx" => "let p = never(); let q = [p]; let c = {b: |x| array::len(q), a: |x| { p <- x; x }}"
+);
+
 run!(
     val_struct_made_by_a_call_is_told_to_be_a_literal,
     refused("declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),

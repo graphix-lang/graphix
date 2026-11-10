@@ -325,7 +325,7 @@ fn checked_default<R: Rt>(
     }
 }
 
-// CR claude for claude: [bug/low] Which default is judged first, and so which refusal a
+// XCR claude for claude: [bug/low] Which default is judged first, and so which refusal a
 // conflict names, follows the iteration order of LambdaIds::ids, a nohash IntSet keyed by
 // LambdaId, whose values come from one process-wide counter. Compiles running side by side
 // in one process (the skill fence harness checks 8 at once) shift the ids, and the order
@@ -336,6 +336,19 @@ fn checked_default<R: Rt>(
 // standalone --check runs on base-r19 and the lane all print the latter. A fix: judge
 // `defs` in program order (each LambdaDef's source position), not id order.
 // (default-judge-order-01)
+// 2026-11-10 claude: Defaults are judged in the order the program writes them:
+// LambdaDef::written_order (origin, then position; a run-time def after source ones; id
+// only between two of one place) orders the defs at judge_hidden_defaults and at the
+// call's omitted defaults (callsite::written_defs, which replaced that site's id sort),
+// and module::held_lambdas, whose order picks the binding a val refusal names. Probes
+// ~/ptmp/cr29/scratch/r20/20d/djo/: dj40.gx printed 'string does not contain i64' on
+// base-r20, now 'i64 does not contain string' over a 0..180 prefix sweep. Pins (fail x4
+// with the fix undone: a struct literal compiles its fields sorted, so the id order is the
+// reverse of the written one; the call and val pins always, the formal one unless the
+// ids' hash order wraps): lang::functions::met_defaults_judged_as_written_at_a_formal,
+// met_defaults_judged_as_written_at_a_call,
+// lang::interfaces::val_struct_names_the_capture_written_first. The order also decides a
+// verdict, see (met-default-order-verdict-01).
 /// The labeled defaults of the lambdas `value` may hold that `formal`
 /// hides or makes optional, each judged at `formal`'s view.
 fn judge_hidden_defaults<R: Rt>(
@@ -346,9 +359,18 @@ fn judge_hidden_defaults<R: Rt>(
     formal: &FnType,
     value: &FnType,
 ) -> Result<()> {
-    let ids = value.lambda_ids.ids();
-    let defs: SmallVec<[Option<Value>; 2]> =
-        ids.iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
+    let defs = written_defs(ctx, value);
+    // CR claude for claude: [bug/low] The verdict depends on the order the defaults are
+    // judged in: each narrows `formal`'s label, and a later one must fit what an earlier
+    // one decided. With `let n: [i64, null] = null`, `[|#d = n, x: i64| x, |#d = 1, x:
+    // i64| x]` passed to `array::len` checks, and the same two written the other way
+    // round are refused (`i64 does not contain [i64, null]`); a call that omits the label
+    // (`fs[0]$(7)`) accepts both, its omitted defaults joined by `Widening` whatever the
+    // order. The order is now the written one (default-judge-order-01); it was the ids'
+    // hash order, so the verdict could flip between runs. A fix: judge as the call does,
+    // the label taking the widest default, or refuse any two defaults of different types
+    // naming the annotation. probes: ~/ptmp/cr29/scratch/r20/20d/djo/ord1.gx .. ord6.gx
+    // (met-default-order-verdict-01)
     for def in defs.iter() {
         let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()) else {
             continue;
@@ -380,6 +402,22 @@ fn judge_hidden_defaults<R: Rt>(
         }
     }
     Ok(())
+}
+
+/// The definitions a function of type `ft` may be, in the order the
+/// program writes them ([`LambdaDef::written_order`]); an id no definition
+/// is registered for comes last.
+fn written_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Option<Value>; 2]> {
+    let mut defs: SmallVec<[Option<Value>; 2]> =
+        ft.lambda_ids.ids().iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
+    fn def<R: Rt>(v: &Option<Value>) -> Option<&LambdaDef<R>> {
+        v.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+    }
+    defs.sort_by(|a, b| match (def::<R>(a), def::<R>(b)) {
+        (Some(a), Some(b)) => a.written_order(b),
+        (a, b) => b.is_some().cmp(&a.is_some()),
+    });
+    defs
 }
 
 /// A refused default of one of several functions met into one type,
@@ -2474,10 +2512,7 @@ impl<R: Rt> CallSite<R> {
         // the definitions the callee may be: by its type's lambda ids, else
         // (a restored interface `val`'s type carries none) by the binding
         // the function names
-        let mut ids: SmallVec<[_; 2]> = ftype.lambda_ids.ids().iter().copied().collect();
-        ids.sort_unstable();
-        let mut defs: SmallVec<[Option<Value>; 2]> =
-            ids.iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
+        let mut defs = written_defs(ctx, ftype);
         if defs.is_empty()
             && let NodeView::Ref(r) = self.fnode.view()
             && let Some(fv) = ctx.bind_to_lambda.get(&r.id)
