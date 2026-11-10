@@ -680,6 +680,11 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
 // Main 3cfcd2407 alike. A fix keeps a written union's members apart where their
 // cells are a definition's (or judges the union before it flattens). Probe:
 // ~/ptmp/cr29/scratch/r19/19g/fnmerge.gx (formal-union-fn-merge-01)
+// 2026-11-10 claude: D8 follow-up 2 was ruled (c) on 2026-11-10
+// (formal-union-order-01): the order-dependent pick among a union's undecided
+// members is refused where contains makes it, which may make Type::variable_union
+// redundant. Re-check this CR against that build: whether the merged member still
+// hides two written members from the new refusal.
 
 // CR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
 // repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and

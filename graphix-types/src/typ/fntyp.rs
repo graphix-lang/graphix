@@ -1421,7 +1421,7 @@ impl FnType {
         r
     }
 
-    // CR claude for eric: [bug/low] Which member of a union of two open cells (`x: ['a,
+    // CR claude for claude: [bug/low] Which member of a union of two open cells (`x: ['a,
     // 'b]`) takes what is decided by an order, not a rule, and two orders exist: this
     // containment holds such a position after every other (instance_sig, a written
     // function type), while a call site's check relates its arguments first, deciding
@@ -1539,6 +1539,12 @@ impl FnType {
     // (base-r19) and on the lane build alike: --check accepts and the run refuses the instance ('an instance at fn(x: E<i64, string>) .. of a definition typed fn(x: E<'a, 'b>) ..')
     // for ~/ptmp/cr29/scratch/r18b-d7/x/t_later.gx, t_idarg.gx and t_idbody.gx, an elaboration refusing what the check accepted. Item (3)'s recommendation (accept, default mode
     // agrees) does not cover them.
+    // 2026-11-10 claude: Eric ruled (2026-11-10, D8 follow-up 2): (c), at the choice point. Where a type would go into a union holding two or more undecided members and more than one
+    // of them could take it, the check refuses instead of picking one by order, naming the binding to annotate. The picks are in contains.rs: residue_member (first a probe admits,
+    // else the first), set_commit (first member holding the type, open members last) and place_in_order (two member orders tried); one refusal there covers every source (written,
+    // typedef-hidden as t_later/t_idarg/t_idbody, inferred select unions as s5, nested members, callbacks, invariant positions). Eric: more annotations in exchange for a simpler
+    // implementation is a good trade, within limits; census both repos first and bring it back only if the stdlib, the book's examples or netidx-admin need many. D8's written-form
+    // rule (Type::variable_union) then is redundant: keep it as the earlier message or delete it, decided when built. Supersedes (a) and (b) of the item; s5 becomes a refusal.
     /// [`Self::contains_int`] with self's open quantifiers held rigid.
     fn contains_gated(
         &self,
