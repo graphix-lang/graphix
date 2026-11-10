@@ -4135,6 +4135,20 @@ impl Type {
                 && !p.is_empty()
             {
                 let p: LPooled<Vec<&Type>> = p.iter().collect();
+                // CR claude for claude: [bug/low] An or-arm's name over members of
+                // two shapes whose functions differ only in how far they are decided
+                // is a union of two functions, and a call through it is refused:
+                // `let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1,
+                // "s") }; select t { `A(r, n) | `B(r, n) => r(2) }` says "expected fn
+                // not [fn(x: '_) -> '_, fn(y: i64) -> i64]", naming no annotation.
+                // The same call through separate arms (`A(r, n) => r(2), `B(r, n) =>
+                // r(2)), with `|x: i64| x`, and through a field read over two struct
+                // shapes (`t.f(2)` over `{f: |x| x, n: 1}` and `{f: |y| y + 1, m:
+                // "s"}`) runs: a field read meets its function members, this join
+                // only collapses those identical up to a renaming (D25 (a)).
+                // base-r20 alike. probes:
+                // ~/ptmp/cr29/scratch/r20/20f/rev-ans/{m1,m2,m3,m4}.gx
+                // (or-bind-fn-meet-01)
                 let joined = Type::union_exact(env, &p)?;
                 let cell = Type::TVar(c.clone());
                 if joined.contains(env, &cell)? && c.binding().is_none() {

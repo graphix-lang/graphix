@@ -4676,6 +4676,31 @@ run!(or_arm_bind_over_members_calls_their_lambdas, r#"{
     (k(true), k(false))
 }"#, prints("[i64:1, i64:1]"); FuseExpect::None);
 
+// One instance whose scrutinee goes from one member to the other calls
+// the lambda of the member that arrived.
+run!(arm_bind_over_members_calls_the_member_that_arrives, r#"{
+    let b = true;
+    let t = select b { true => ({f: |x| x}, 1, 1), false => ({f: |y| y + 1}, "s", "s") };
+    let u = select b { true => (|x| x, 1), false => (null, "s") };
+    let z = select t { (r, n, m) => r.f(2) };
+    let w = select u { (r, n) => select r { null as _ => 0, f => f(5) } };
+    b <- false;
+    let first = once((z, w));
+    select count(z) { 2 => (first, z, w), _ => never() }
+}"#, prints("[[i64:2, i64:5], i64:3, i64:0]"); FuseExpect::Jit);
+
+// A function two lambdas' cells were welded into is one function again
+// beside a third lambda.
+run!(or_arm_bind_over_members_welds_a_welded_function, r#"{
+    let k = |c, v| {
+        let t = select c { true => `A(|x| x), false => `B(|y| y) };
+        let u = select t { `A(r) | `B(r) => r };
+        let w = select c { true => `A(u), false => `B(|z| z) };
+        select w { `A(r) | `B(r) => r(v) }
+    };
+    (k(true, 2), k(false, "a"))
+}"#, prints("[i64:2, \"a\"]"); FuseExpect::None);
+
 // Under a written union, a constructor pattern's binds take the union of
 // their parts over every member it matches, as under an inferred one.
 run!(written_union_binds_every_member, r#"{
