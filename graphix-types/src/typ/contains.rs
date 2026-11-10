@@ -337,39 +337,6 @@ impl ContainsHist {
         })
     }
 
-    // XCR claude for claude: [perf/medium] A rigid cell refused against a DAG of named
-    // unions is refused in time exponential in the DAG's depth: the probe memo keys no
-    // cell, so `L<n> ⊇ 'a` (`L<i> = [L<i-1>, M<i-1>]`, `M<i>` the same) walks each
-    // expansion once per path under set_commit's member probes. `let f = |x0: 'a| { let
-    // x: L<n> = x0; x }; f(1)`, --no-cache --check, debug, instructions: n = 14 / 16 /
-    // 18 0.93G / 1.43G / 3.40G (an empty program 0.77G). A primitive, Any, ⊥ and an
-    // abstract type are keyed by content (probe_key), which made the same refusal of a
-    // value linear. Keying a cell by its address needs its pin to hold the cell, not the
-    // var: a merge re-points the var, a later put under the same key pins nothing, and a
-    // fresh cell (an expansion's reset_tvars copy) may then take the address with no
-    // counted write between. probes: ~/ptmp/cr29/scratch/n9d/rig14.gx .. rig18.gx, gen.py
-    // (union-dag-rigid-cell-01)
-    // 2026-11-10 claude: ContainsHist now holds the cells an application's key reads by
-    // address (TypeRef::key_cells into app_cells; lane 20c, typedef-open-expansion-01;
-    // pin typ::contains::tests::an_application_key_holds_its_cells): the same hold would
-    // make a bare cell's address a safe probe key.
-    // 2026-11-10 claude: The probe memo now keys a var by its wrapper (memo_key,
-    // TVar::wrapper_addr), not its cell: the entry's existing pin of the var holds the
-    // wrapper, so no later var takes its address, and everything a verdict reads of a var
-    // is its immutable name or behind a counted write (a merge's re-point of the link and
-    // every cell write count in cell_writes), so the epoch drops the verdict when either
-    // changes. That needs no cell pin; aliases of one cell are judged apart, which only
-    // loses sharing. Pins that fail without it:
-    // typ::contains::tests::a_rigid_var_against_a_dag_of_named_unions_takes_polynomial_steps
-    // (n=4 took 102 steps over its 64; base 102/1662/26622/425982 at n=4/8/12/16, now
-    // 35/67/131/259 at 4/8/16/32) and deep_nesting
-    // a_refusal_against_a_dag_of_named_unions_is_linear's declared-var case (10.1G over
-    // its 10G budget). a_probe_verdict_on_a_var_is_not_a_later_vars fails with the pin
-    // removed and a_probe_verdict_on_a_var_follows_its_cell with the epoch check removed.
-    // --no-cache --check, debug, instructions: rig14/16/18 0.93G/1.42G/3.41G to
-    // 0.77G/0.77G/0.77G, rig60 0.87G (empty 0.75G). Census 2949 files: 0 verdict or
-    // message changes; guicheck 40.54G to 40.59G; regress 567 programs, 0 regressions or
-    // manifest mismatches.
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
     /// or not, if current. A provisional one passes the assumptions it
     /// rests on to the verdict reading it.
