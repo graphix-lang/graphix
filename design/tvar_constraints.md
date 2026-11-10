@@ -1434,6 +1434,10 @@ refused `f("s")` at elaboration. The other direction is not required:
 an implementation may be more general than its interface (`|x| x` under
 `fn<'a: Number>(x: 'a) -> 'a`), whatever its variables are called; a
 bound it does carry pairs the variables inside it with the signature's.
+That pairing repeats, the unions it defers paired between passes, until
+a pass pairs nothing new, so a variable met only inside a bound (``'b:
+['a, `X]``), at the end of a chain of bounds, or through a bound later in
+the signature, is judged as one at a position is.
 
 ### `FnType` derives its constraint list from the cells
 

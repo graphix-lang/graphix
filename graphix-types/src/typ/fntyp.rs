@@ -1771,7 +1771,7 @@ impl FnType {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A val whose quantifier occurs only inside
+    // XCR claude for claude: [bug/medium] A val whose quantifier occurs only inside
     // another's bound accepts an implementation that bounds it differently, and the
     // build refuses each call the signature admits and the implementation does not:
     // `val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;` over `let f = 'a:
@@ -1783,6 +1783,23 @@ impl FnType {
     // null], 'b: ['c, `X]) is accepted the same way. On base-r19 and lane 19c alike.
     // probes: ~/ptmp/cr29/scratch/r19/19c/rv/{p10,p7,p11}/main.gx
     // (iface-bound-only-01)
+    // 2026-11-10 claude: FnType::sig_bounds now pairs the signature's bounds with
+    // the implementation's in passes, settling the deferred unions between passes,
+    // until a pass pairs nothing new, and its impl cells close through bounds to any
+    // depth (they stopped one bound below a position); SigPairs::finish no longer
+    // settles after the judgment. p10 (union bound), p7 (chain of three) and a third
+    // shape, a variable met only through a bound later in the signature (sig 'a:
+    // Array<'z>, 'b: Array<'a>, 'z: [i64, string] over 'p: Array<'r>, 'q: Array<'p>,
+    // 'r: [i64, f64]), are all refused 'the implementation requires ..: [i64, f64],
+    // which the signature does not declare'. Pins in lang::interfaces:
+    // a_bound_inside_a_union_bound_must_be_declared,
+    // a_chain_of_union_bounds_must_be_declared,
+    // a_bound_met_through_a_later_bound_must_be_declared fail with the fix undone
+    // (the last two also with only the closure or only the second pass undone);
+    // twins a_declared_chain_of_union_bounds_holds,
+    // a_wider_bound_inside_a_union_bound_holds,
+    // a_wider_bound_met_through_a_later_bound_holds run. Census of both repos
+    // unchanged; guicheck 40.54G -> 40.58G.
     /// The bounds of a signature against its implementation's, once the
     /// whole signature has paired its variables ([`SigPairs::finish`]).
     pub(super) fn sig_bounds(
@@ -1797,9 +1814,23 @@ impl FnType {
         // is bound, and the cells its binding holds carry the conjuncts
         let impl_cells = {
             let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            // every cell, a variable named only inside another's bound too
             impl_fn
                 .for_each_part(&mut |t, _| super::settle::position_cells(t, &mut cells));
+            // every cell, a variable named only inside the bound of a bound
+            // too, to any depth
+            let mut todo: LPooled<Vec<TVar>> = cells.values().cloned().collect();
+            let mut found: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            while let Some(tv) = todo.pop() {
+                for tc in tv.cell_constraints() {
+                    super::settle::position_cells(&tc, &mut found);
+                }
+                for (addr, tv) in found.drain() {
+                    if !cells.contains_key(&addr) {
+                        cells.insert(addr, tv.clone());
+                        todo.push(tv);
+                    }
+                }
+            }
             sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
         };
         // An implementation may be more general than its signature: a bound
@@ -1816,41 +1847,60 @@ impl FnType {
         let mut paired_to: LPooled<AHashMap<usize, SmallVec<[usize; 1]>>> =
             LPooled::take();
         let mut indexed = 0;
-        for (sig_tv, sig_tc) in self.constraint_view().iter() {
-            if *sig_tc == Type::Any {
-                continue;
-            }
-            for (addr, t) in tvar_map.paired_since(indexed) {
-                if let Type::TVar(s) = t
-                    && let Some(i) = place.get(&addr)
-                {
-                    paired_to.entry(s.cell_addr()).or_default().push(*i);
+        let view = self.constraint_view();
+        // each (conjunct, impl cell) pairing tried: a pairing only grows,
+        // so one that failed fails again
+        let mut tried: LPooled<AHashSet<(usize, usize)>> = LPooled::take();
+        // passes until one pairs nothing: a variable met only in a bound
+        // later in the view, or in a union the settle pairs, has its own
+        // bound paired by the next
+        loop {
+            let start = tvar_map.paired_len();
+            for (k, (sig_tv, sig_tc)) in view.iter().enumerate() {
+                if *sig_tc == Type::Any {
+                    continue;
                 }
-            }
-            indexed = tvar_map.paired_len();
-            // the impl cells the signature's was matched with, else the
-            // same-named variable: either form of a bound (`'c: C`, `c: C`)
-            // names its variable its own way
-            let mut matched: LPooled<Vec<&TVar>> =
-                match paired_to.get_mut(&sig_tv.cell_addr()) {
-                    None => LPooled::take(),
-                    Some(places) => {
-                        places.sort_unstable();
-                        places.iter().map(|i| &impl_cells[*i].1).collect()
-                    }
-                };
-            if matched.is_empty()
-                && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
-            {
-                matched.push(&impl_tvs[i].1);
-            }
-            for impl_tv in matched.iter() {
-                for c in impl_tv.cell_constraints().iter() {
-                    if tvar_map.trial(|m| sig_tc.sig_matches_int(env, c, m, hist)).is_ok()
+                for (addr, t) in tvar_map.paired_since(indexed) {
+                    if let Type::TVar(s) = t
+                        && let Some(i) = place.get(&addr)
                     {
-                        break;
+                        paired_to.entry(s.cell_addr()).or_default().push(*i);
                     }
                 }
+                indexed = tvar_map.paired_len();
+                // the impl cells the signature's was matched with, else the
+                // same-named variable: either form of a bound (`'c: C`, `c:
+                // C`) names its variable its own way
+                let mut matched: LPooled<Vec<&TVar>> =
+                    match paired_to.get_mut(&sig_tv.cell_addr()) {
+                        None => LPooled::take(),
+                        Some(places) => {
+                            places.sort_unstable();
+                            places.iter().map(|i| &impl_cells[*i].1).collect()
+                        }
+                    };
+                if matched.is_empty()
+                    && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
+                {
+                    matched.push(&impl_tvs[i].1);
+                }
+                for impl_tv in matched.iter() {
+                    if !tried.insert((k, impl_tv.cell_addr())) {
+                        continue;
+                    }
+                    for c in impl_tv.cell_constraints().iter() {
+                        if tvar_map
+                            .trial(|m| sig_tc.sig_matches_int(env, c, m, hist))
+                            .is_ok()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            tvar_map.settle(env, hist)?;
+            if tvar_map.paired_len() == start {
+                break;
             }
         }
         let mut param_bounds = LPooled::take();

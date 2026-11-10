@@ -130,7 +130,7 @@ impl SigPairs {
             sig.sig_bounds(env, &imp, self, hist)?;
             i += 1;
         }
-        self.settle(env, hist)
+        Ok(())
     }
 
     /// Pair every deferred union: the first assignment of signature

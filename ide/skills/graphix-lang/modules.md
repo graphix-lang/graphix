@@ -101,6 +101,12 @@ A `val` in a `.gxi` declares exactly the type its implementation has:
 but implemented i64`). When a use needs the wider type, annotate the
 binding (`let x: [i64, null] = 3`); every module then sees the declared
 type, so the others take the null off with `a::x$`.
+A function val declares every bound its implementation needs, of a
+variable named only inside another's bound too: ``val f: fn<'a: [i64,
+string], 'b: ['a, `X]>(x: 'b) -> 'b`` over ``let f = 'a: [i64, f64], 'b:
+['a, `X] |x: 'b| -> 'b x`` is refused (`the implementation requires 'a:
+[i64, f64], which the signature does not declare`); a wider bound in
+the implementation (`'a: [i64, string, f64]`) is fine.
 A `val`'s type variable stands only inside a function type, where each
 use picks it: `val v: Array<'a>` is refused (declare it at one type,
 `Array<i64>`), and so is `val c: {f: fn(x: 'a) -> string, last: ['a,

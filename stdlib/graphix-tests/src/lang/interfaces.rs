@@ -1484,6 +1484,57 @@ run!(
     "/test/m.gx" => "let f = |x| x"
 ; FuseExpect::None);
 
+// A variable named only inside a union bound, at the end of a chain of
+// bounds, or met through a bound later in the signature is judged as one
+// at a position is.
+run!(
+    a_bound_inside_a_union_bound_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'a: [i64, f64], 'b: ['a, `X] |x: 'b| -> 'b x"
+; FuseExpect::None);
+
+run!(
+    a_chain_of_union_bounds_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: ['a, null], 'b: ['c, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, f64], 'r: ['p, null], 'q: ['r, `X] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    a_bound_met_through_a_later_bound_must_be_declared,
+    refused("the implementation requires 'z: [i64, f64], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f([[\"s\"]])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Array<'r>, 'q: Array<'p>, 'r: [i64, f64] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    a_declared_chain_of_union_bounds_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: ['a, null], 'b: ['c, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'r: ['p, null], 'q: ['r, `X] |x: 'q| -> 'q x"
+);
+
+run!(
+    a_wider_bound_inside_a_union_bound_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string, f64], 'q: ['p, `X] |x: 'q| -> 'q x"
+);
+
+run!(
+    a_wider_bound_met_through_a_later_bound_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 1),
+    "/test.gx" => "mod m; let result = m::f([[\"s\"]])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Array<'r>, 'q: Array<'p>, 'r: [i64, string, f64] |x: 'q| -> 'q x"
+);
+
 // A predicate the implementation needs of a compound signature type asks
 // it of the variables inside: Array<'a> is discernible only if 'a is.
 run!(
