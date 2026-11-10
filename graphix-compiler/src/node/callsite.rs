@@ -88,8 +88,7 @@ fn reject_dead_variadic_call<R: Rt>(
     let Some((_, bind)) = ctx.env.lookup_bind(&scope.lexical, path).ok().flatten() else {
         return Ok(());
     };
-    let key = (bind.scope.clone(), bind.name.clone());
-    let Some(info) = ctx.builtin_bindings.get(&key) else {
+    let Some(info) = ctx.builtin_bindings.get(&bind.id) else {
         return Ok(());
     };
     if info.typ.vargs.is_none()
@@ -1987,8 +1986,7 @@ pub(crate) fn static_builtin<'a, R: Rt>(
     {
         return d.builtin_name();
     }
-    let bind = ctx.env.by_id.get(&r.id)?;
-    ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone())).map(|i| &i.name)
+    ctx.builtin_bindings.get(&r.id).map(|i| &i.name)
 }
 
 impl<R: Rt> CallSite<R> {

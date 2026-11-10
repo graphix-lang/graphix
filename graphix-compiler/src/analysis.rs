@@ -1096,9 +1096,7 @@ fn calls_builtin<R: Rt>(cs: &CallSite<R>, ctx: &CompileCtx<R>) -> bool {
     match callee_def(cs, ctx) {
         Some(d) => d.is_builtin(),
         None => match cs.fnode().view() {
-            NodeView::Ref(r) => ctx.env.by_id.get(&r.id).is_some_and(|b| {
-                ctx.builtin_bindings.contains_key(&(b.scope.clone(), b.name.clone()))
-            }),
+            NodeView::Ref(r) => ctx.builtin_bindings.contains_key(&r.id),
             _ => false,
         },
     }
@@ -1333,10 +1331,7 @@ fn callee_own_facts<R: Rt>(
         if let Some(lid) = ctx.fn_forward_resolutions.get(&r.id) {
             return of_def(*lid);
         }
-        if let Some(bind) = ctx.env.by_id.get(&r.id)
-            && let Some(info) =
-                ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
-        {
+        if let Some(info) = ctx.builtin_bindings.get(&r.id) {
             return ctx.builtin_effect(info.name.as_str()).facts();
         }
     }

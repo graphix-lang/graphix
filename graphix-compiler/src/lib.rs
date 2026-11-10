@@ -394,8 +394,6 @@ pub struct BuiltinBindInfo {
     pub name: ArcStr,
     pub argspec: triomphe::Arc<[expr::Arg]>,
     pub typ: triomphe::Arc<typ::FnType>,
-    /// The lambda definition that wrote the entry: its deletion forgets it.
-    pub lambda_id: Option<LambdaId>,
 }
 
 /// One source binding's entry: every instance of it describes it alike,
@@ -1527,10 +1525,10 @@ pub struct CompileCtx<R: Rt> {
     /// scope and the names its type definitions declare
     /// ([`node::later_typedef`]).
     pub(crate) block_typedefs: Vec<(ModPath, SmallVec<[ArcStr; 4]>)>,
-    /// Builtin metadata for `let foo = |...| 'builtin_name` bindings.
-    /// Keyed by `(scope, name)` because a sig and its impl share the
-    /// name but have distinct `BindId`s.
-    pub builtin_bindings: TrackedMap<(ModPath, CompactString), BuiltinBindInfo>,
+    /// Builtin metadata for `let foo = |...| 'builtin_name` bindings, and
+    /// a `let` naming one, by binding: a sig's `val` takes its impl's
+    /// entry where the module proxies it ([`node::module`]).
+    pub builtin_bindings: TrackedMap<BindId, BuiltinBindInfo>,
     /// `LambdaId`s whose def-time body typecheck is in progress: a
     /// self-call inside such a body unifies against the def's own
     /// ftype cells (monomorphic recursion), not a freshening.
@@ -4195,7 +4193,7 @@ pub struct Saved {
     env: Env,
     lambda_defs: TrackedMap<LambdaId, Value>,
     bind_to_lambda: TrackedMap<BindId, Value>,
-    builtin_bindings: TrackedMap<(ModPath, CompactString), BuiltinBindInfo>,
+    builtin_bindings: TrackedMap<BindId, BuiltinBindInfo>,
     fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
     connect_targets: TrackedSet<BindId>,
     batch_connect_targets: TrackedSet<BindId>,

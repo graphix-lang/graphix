@@ -19,7 +19,7 @@ use crate::{
     BindId, BuiltinBindInfo, CompileCtx, DefAssertion, ExecCtx, ExecState, LambdaId,
     LambdaInstanceId, Node, Rt, Saved, Scope,
     env::Env,
-    expr::{ExprId, ModPath},
+    expr::ExprId,
     image,
     node::{callsite::InstanceRefs, lambda::LambdaDef},
     profile::{self, Phase},
@@ -28,7 +28,6 @@ use crate::{
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes};
-use compact_str::CompactString;
 use log::{info, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 
@@ -90,7 +89,7 @@ pub struct Registration<R: Rt> {
 struct Tables<'a, R: Rt> {
     defs: Vec<&'a LambdaDef<R>>,
     bind_to_lambda: Vec<(BindId, LambdaId)>,
-    builtin_bindings: Vec<(ModPath, CompactString, BuiltinBindInfo)>,
+    builtin_bindings: Vec<(BindId, BuiltinBindInfo)>,
     fn_forward_resolutions: Vec<(BindId, LambdaId)>,
     connect_targets: Vec<BindId>,
     batch_connect_targets: Vec<BindId>,
@@ -120,12 +119,9 @@ impl<'a, R: Rt> Tables<'a, R> {
             })
             .collect::<Result<_, PackError>>()?;
         bind_to_lambda.sort();
-        let mut builtin_bindings: Vec<_> = ctx
-            .builtin_bindings
-            .iter()
-            .map(|((s, n), i)| (s.clone(), n.clone(), i.clone()))
-            .collect();
-        builtin_bindings.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        let mut builtin_bindings: Vec<_> =
+            ctx.builtin_bindings.iter().map(|(b, i)| (*b, i.clone())).collect();
+        builtin_bindings.sort_by_key(|(b, _)| *b);
         let mut fn_forward_resolutions: Vec<_> =
             ctx.fn_forward_resolutions.iter().map(|(b, l)| (*b, *l)).collect();
         fn_forward_resolutions.sort();
@@ -177,10 +173,9 @@ fn restore_tables<R: Rt>(
         let v = ctx.lambda_defs.get(&l).ok_or(PackError::InvalidFormat)?.clone();
         ctx.bind_to_lambda.insert(b, v);
     }
-    let builtin_bindings: Vec<(ModPath, CompactString, BuiltinBindInfo)> =
-        Pack::decode(buf)?;
-    for (s, n, i) in builtin_bindings {
-        ctx.builtin_bindings.insert((s, n), i);
+    let builtin_bindings: Vec<(BindId, BuiltinBindInfo)> = Pack::decode(buf)?;
+    for (b, i) in builtin_bindings {
+        ctx.builtin_bindings.insert(b, i);
     }
     ctx.fn_forward_resolutions.extend(<Vec<(BindId, LambdaId)> as Pack>::decode(buf)?);
     ctx.connect_targets.extend(<Vec<BindId> as Pack>::decode(buf)?);

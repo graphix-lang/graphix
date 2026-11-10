@@ -34,6 +34,37 @@ run!(builtin_alias_fuses, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
 
+// The builtin is the binding's, not the name's: a later `let` of the name
+// leaves an earlier reader the builtin it read..
+run!(builtin_alias_outlives_a_later_let_of_its_name, r#"
+{
+    let f = str::len;
+    let g = |s: string| -> i64 #[native] f(s) + 1;
+    let f = 3;
+    g("abc") + f
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
+
+// ..and a reader of the name before a later alias is no call of its builtin.
+run!(a_name_a_later_alias_shadows_is_not_its_builtin, r#"
+{
+    let f = |x: i64| -> i64 x + 1;
+    let g = |y: i64| -> i64 f(y) * 10;
+    let f = dbg;
+    g(4)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(50))); FuseExpect::Jit);
+
+// An alias whose written type leaves out the builtin's defaulted label is
+// called as that type says: its site has no default to marshal, so it runs
+// in the node-walk.
+run!(an_alias_typed_without_a_builtin_label, r#"
+{
+    let g: fn(x: i64) -> i64 = dbg;
+    g(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::None);
+
 run!(neg_widened_f64, r#"
 {
     let y = f64:2.5;

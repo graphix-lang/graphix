@@ -1671,8 +1671,8 @@ impl<R: Rt> Module<R> {
         }
     }
 
-    /// Map each signature `BindId` to its impl binding's `LambdaDef` so
-    /// cross-module calls resolve statically.
+    /// Map each signature `BindId` to its impl binding's `LambdaDef`, and
+    /// to the builtin it names, so cross-module calls resolve statically.
     pub(crate) fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R>) {
         // a dynamic body's outer bindings are rebound at each load, so a
         // call through one dispatches dynamically
@@ -1686,6 +1686,9 @@ impl<R: Rt> Module<R> {
             }
             if let Some(fv) = ctx.bind_to_lambda.get(inner).cloned() {
                 ctx.bind_to_lambda.insert(*outer, fv);
+            }
+            if let Some(info) = ctx.builtin_bindings.get(inner).cloned() {
+                ctx.builtin_bindings.insert(*outer, info);
             }
         }
     }

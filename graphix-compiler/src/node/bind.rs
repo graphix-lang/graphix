@@ -8,8 +8,8 @@ use super::{
     read_var_by, standing_view,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, LambdaId, Node, NodeView,
-    Notify, PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
+    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
+    PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
     compiler::compile,
     dbgenv,
     env::{self, Env},
@@ -204,7 +204,6 @@ fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInf
         name: name.clone(),
         argspec: lam.args.clone(),
         typ: typ.clone(),
-        lambda_id: Some(def.id),
     })
 }
 
@@ -214,8 +213,7 @@ fn aliased_builtin<R: Rt>(
     node: &Node<R>,
 ) -> Option<BuiltinBindInfo> {
     let NodeView::Ref(r) = node.view() else { return None };
-    let bind = ctx.env.by_id.get(&r.id)?;
-    ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone())).cloned()
+    ctx.builtin_bindings.get(&r.id).cloned()
 }
 
 impl<R: Rt> Bind<R> {
@@ -502,33 +500,16 @@ impl<R: Rt> Bind<R> {
         if !matches!(pat, expr::StructurePattern::Bind(_)) {
             pattern.ids(&mut |id| ctx.env.mark_let_pattern(id));
         }
-        // Keyed by (scope, name), not BindId: sig and impl get different
-        // ids for one builtin binding. A later `let` of the name shadows it.
-        // every name the pattern rebinds forgets the builtin it named; a
-        // single name over a builtin, or over a name of one, names that one,
-        // and an instance of the binding the table names already writes nothing
-        let mut builtin = match pat {
-            expr::StructurePattern::Bind(_) => {
+        // a single name over a builtin, or over a name of one, names that
+        // one; an instance of the binding the table names writes nothing new
+        if let Some(id) = pattern.single_bind_id()
+            && let expr::StructurePattern::Bind(_) = pat
+            && let Some(info) =
                 builtin_binding(&node, value).or_else(|| aliased_builtin(ctx, &node))
-            }
-            _ => None,
-        };
-        pat.with_names(&mut |name| {
-            let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
-            match builtin.take() {
-                None => {
-                    ctx.builtin_bindings.remove(&key);
-                }
-                Some(info)
-                    if ctx
-                        .builtin_bindings
-                        .get(&key)
-                        .is_some_and(|i| i.same_value(&info)) => {}
-                Some(info) => {
-                    ctx.builtin_bindings.insert(key, info);
-                }
-            }
-        });
+            && !ctx.builtin_bindings.get(&id).is_some_and(|i| i.same_value(&info))
+        {
+            ctx.builtin_bindings.insert(id, info);
+        }
         Ok(Self::with(spec, typ, pattern, node, deferred, reads))
     }
 
@@ -821,32 +802,11 @@ impl<R: Rt> Update<R> for Bind<R> {
         // bind's entry must go with it.
         self.pattern.ids(&mut |id| {
             ctx.bind_to_lambda.remove(&id);
+            ctx.builtin_bindings.remove(&id);
             ctx.static_callees.forget(id);
             ctx.connect_targets.remove(&id);
             ctx.batch_connect_targets.remove(&id);
         });
-        if let Some(id) = self.pattern.single_bind_id()
-            && let Some(b) = ctx.env.by_id.get(&id)
-        {
-            let key = (b.scope.clone(), b.name.clone());
-            let ours = |lambda: LambdaId| match lambda_value(&self.node) {
-                Some(l) => l.lambda_id::<R>() == Some(lambda),
-                None => {
-                    matches!(self.node.view(), NodeView::Ref(_))
-                        && self.node.typ().with_deref(|t| match t {
-                            Some(Type::Fn(ft)) => ft.lambda_ids.ids().contains(&lambda),
-                            _ => false,
-                        })
-                }
-            };
-            if ctx
-                .builtin_bindings
-                .get(&key)
-                .is_some_and(|i| i.lambda_id.is_some_and(ours))
-            {
-                ctx.builtin_bindings.remove(&key);
-            }
-        }
         self.node.delete(ctx);
         self.pattern.delete(ctx);
     }

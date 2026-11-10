@@ -369,9 +369,7 @@ pub(crate) fn performing_args<'a, R: Rt>(
     ctx: &CompileCtx<R>,
 ) -> Option<SmallVec<[&'a Node<R>; 4]>> {
     let builtin = match cs.fnode().view() {
-        NodeView::Ref(r) => ctx.env.by_id.get(&r.id).and_then(|bind| {
-            ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
-        }),
+        NodeView::Ref(r) => ctx.builtin_bindings.get(&r.id),
         _ => None,
     };
     if let Some(info) = builtin {
@@ -508,12 +506,7 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
         _ => return None,
     };
     let NodeView::Ref(r) = cs.fnode().view() else { return None };
-    let bind = ctx.env.by_id.get(&r.id)?;
-    let key = (bind.scope.clone(), bind.name.clone());
-    let info = match ctx.builtin_bindings.get(&key) {
-        Some(i) => i.clone(),
-        None => return None,
-    };
+    let info = ctx.builtin_bindings.get(&r.id)?.clone();
     let effect = ctx.builtin_effect(info.name.as_str());
     let fastcall = match effect.fastcall() {
         Some(fastcall) => fastcall,
@@ -530,6 +523,9 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
         Some(ft) => ft.resolve_tvars(),
         None => (*info.typ).clone(),
     };
+    if !passes_builtin_args(&fn_type, &info.typ) {
+        return None;
+    }
     if let Some(arg) = ctx.builtin_order_arg(info.name.as_str())
         && fn_type.args[arg].typ.orders_refs(&ctx.env)
     {
@@ -663,6 +659,19 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
         BuiltinCallSiteInfo { marshal_args, arg_types, return_type, dispatch },
     )
     .err()
+}
+
+/// Whether a call through `ft` marshals the arguments `builtin` declares,
+/// in its order: an alias whose written type leaves out a defaulted label
+/// passes fewer, and the builtin's trigger counts its own.
+fn passes_builtin_args(ft: &FnType, builtin: &FnType) -> bool {
+    ft.vargs.is_some() == builtin.vargs.is_some()
+        && ft.args.len() == builtin.args.len()
+        && ft
+            .args
+            .iter()
+            .zip(builtin.args.iter())
+            .all(|(a, b)| a.kind.label() == b.kind.label())
 }
 
 /// The bare identifier of a single-level path; a kernel reads a `Ref`
