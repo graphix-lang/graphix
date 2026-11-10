@@ -8009,6 +8009,65 @@ run!(
     FuseExpect::Jit
 );
 
+// Every reaching member gives its part: two tuple members that differ at
+// another position, and a slice that is itself a slice's element.
+run!(
+    nested_slice_element_bind_over_two_members_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'b: (i64, i64) |x: [(Array<'b>, i64), (Array<'b>, string)]| -> [string, null] select x {
+            ([h, ..], _) => { let q: string = h; q },
+            _ => null
+        };
+        let result = g(([(3, 4)], 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_under_a_slice_element_bind_keeps_the_variable,
+    refused("type mismatch string does not contain '"),
+    "/test.gx" => r#"
+        let g = 'b: (i64, i64) |x: (Array<Array<'b>>, i64)| -> [string, null] select x {
+            ([[h, ..], ..], _) => { let q: string = h; q },
+            _ => null
+        };
+        let result = g(([[(3, 4)]], 1))
+    "#;
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_element_bind_typed_per_member,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 5, 7, 9, 3, 6, 0, 4, 0]),
+    "/test.gx" => r#"
+        let m = 'b: (i64, i64) |x: [(Array<'b>, i64), (Array<'b>, string)]| -> i64 select x {
+            ([h, ..], _) => h.0,
+            _ => 0
+        };
+        let c = 'b: (i64, i64) |x: (Array<Array<'b>>, i64)| -> i64 select x {
+            ([[h, ..], ..], _) => h.0,
+            _ => 0
+        };
+        let w = 'b: (i64, i64) |x: (Array<'b>, Array<'b>)| -> i64 select x {
+            ([h, ..], [k, ..]) => h.0 + k.1,
+            ([h, ..], _) => h.0,
+            (_, [k, ..]) => k.1,
+            _ => 0
+        };
+        let q = 'b: (i64, i64) |x: (Array<'b>, i64)| -> i64 select x {
+            ([h, ..], n) if h.0 > 2 => h.0 + n,
+            _ => 0
+        };
+        let result = [
+            m(([(3, 4)], 1)), m(([(5, 4)], "s")), c(([[(7, 8)]], 1)),
+            w(([(3, 4)], [(5, 6)])), w(([(3, 4)], [])), w(([], [(5, 6)])), w(([], [])),
+            q(([(3, 4)], 1)), q(([(1, 4)], 1))
+        ]
+    "#;
+    FuseExpect::Jit
+);
+
 run!(
     written_test_closed_inside_a_declared_variable,
     r#"{

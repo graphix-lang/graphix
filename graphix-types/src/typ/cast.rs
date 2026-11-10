@@ -1923,6 +1923,23 @@ impl ShallowScrutinee {
             .as_deref()
     }
 
+    // CR claude for claude: [bug/high] An inferred predicate narrower than its member under
+    // an `Any` part is shallowed as if it held the member whole. Over `(Any, i64)` the arm
+    // `((a, b), n) => a + b + n` checks: the body decides the cells under the `Any`, so the
+    // arm is a run-time test of `((i64, i64), i64)`. But this answers `(Any, Any)` for it
+    // (GXDBG_SHALLOW: `((i64, i64), i64) => (Any, Any)`), and the structure test alone
+    // admits `(("s", "t"), 1)`: the node-walk logs an arith error, the fused run panics
+    // "kernel param `a`: runtime String("s") does not match the compiled Scalar(I64) slot".
+    // `|x: (Any, i64)| -> [string, null] select x { ([h, ..], n) => { let q: string = h; q
+    // }, _ => null }` over `([3], 2)` prints 3 under --no-fusion and panics fused. Same
+    // under a struct field (`{a: Any}`) and a variant payload (`` `S(Any) ``). A top-level
+    // `Any` scrutinee and a second member (`[(Array<i64>, i64), (Any, string)]`) keep the
+    // deep walk and answer right. Same on base-r20. A fix: no shallow test for a predicate
+    // that is narrower than the member it meets at a position the member holds `Any` (or
+    // `facts` answers None for a member holding `Any` below its top, if the cost on
+    // Any-payload scrutinees is acceptable); pin both engines. probes:
+    // ~/ptmp/cr29/scratch/r20/20e/review/h10.gx, h4.gx, h8.gx, h9.gx, h11.gx, e7.gx, e5.gx; right:
+    // h5.gx, h6.gx (shallow-any-part-01)
     pub fn discriminant(&self, env: &Env, predicate: &Type) -> Option<Type> {
         let mut preds: LPooled<Vec<Type>> = LPooled::take();
         flatten_union_members(predicate, env, &mut preds)?;

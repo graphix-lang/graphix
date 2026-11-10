@@ -1187,6 +1187,20 @@ impl StructPatternNode {
         })
     }
 
+    // CR claude for claude: [bug/low] A slice element that tests a tag beside a bind
+    // holds the bind's part of members its tag cannot match: `|x: Array<[(`A, i64), (`B,
+    // string)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 }` is refused "type
+    // mismatch i64 does not contain [i64, string]", and so are the struct form (`[{t: `A,
+    // v}, ..]`) and the same slice under a tuple; `[`A(h), ..]` over `[`A(i64), `B(string)]`
+    // and a literal sibling (`[(0, h), ..]`) check and run. The run-time test of `(`A, h)`
+    // never admits a `(`B, string)`, so the program is valid. Cause: over a member whose
+    // tag differs, StructPatternNode::footprint's `Self::Variant` arm falls back to the
+    // member's own type (`None => typ.clone()`), so the footprint `(`B, Any)` could match
+    // `(`B, string)` and hold_slice_members takes h's part of it. With that fallback giving
+    // the pattern's own shape (its tag over `Any` parts) all five probes print [4, 0];
+    // footprint's other callers (or-alternatives) and the census were not checked. Same on
+    // base-r20. probes: ~/ptmp/cr29/scratch/r20/20e/review/pp16.gx, pp13.gx, pp17.gx,
+    // pp19.gx, pp20.gx; working twins pp15.gx, pp22.gx (slice-footprint-tag-01)
     /// What this pattern's structure test admits over `typ`: `typ` with
     /// every position the structure does not test as `Any`. An
     /// or-alternative is taken by its structure alone, so a value of
