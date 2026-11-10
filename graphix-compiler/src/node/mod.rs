@@ -4013,6 +4013,16 @@ impl<R: Rt> Connect<R> {
             })
             .map_err(|e| e.at(&self.spec));
         }
+        // CR claude for claude: [bug/medium] A lambda written to a binding whose union
+        // holds an open function is never judged against that function's defaults: `let o
+        // = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }; o <- select i
+        // { 0 => never(), _ => |#d = "q", x: i64| cast<string>(d)$ }; (o$)(7)` passes
+        // --check, prints 1, then "binding the callee failed: .. "q": type mismatch i64
+        // does not contain string" once i moves to 1. Without the null (`_ => never()` in
+        // o's select) the write is refused, "the functions met here share one #d". Not a
+        // select's meet (union-set-alternative-meet-01 left it); base-r20 alike. probes:
+        // ~/ptmp/cr29/scratch/r20/20f/{connect_set,connect_set2,connect_set3,connect_sel1}.gx
+        // (connect-union-defaults-01)
         let scope = Scope::root();
         wrap!(
             self,

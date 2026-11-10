@@ -3187,6 +3187,93 @@ run!(select_of_structs_of_lambdas_in_a_definition, r#"{
     "[mk(true).f(1)] [mk(false).f("s")]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s"); FuseExpect::None);
 
+// An alternative that is a union meets as its members do: the lambdas of
+// optional alternatives are one function, whose call judges every default.
+run!(select_of_optional_defaults_of_two_types, r#"{
+    let i = 0;
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let o = select i { 0 => o1, _ => o2 };
+    select o { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(array_of_optional_defaults_of_two_types, r#"{
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let a = [o1, o2];
+    select a[1]$ { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(select_of_optional_tuples_defaults_of_two_types, r#"{
+    let i = 0;
+    let j = 0;
+    let o1 = select j { 0 => (|#d = 1, x: i64| cast<string>(d)$, 0), _ => null };
+    let o2 = select j { 0 => (|#d = "q", x: i64| cast<string>(d)$, 0), _ => null };
+    let o = select i { 0 => o1, _ => o2 };
+    select o { null as _ => "n", (f, _) => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(named_optional_defaults_of_two_types, r#"{
+    type Opt<'a> = ['a, null];
+    let i = 0;
+    let j = 0;
+    let o1: Opt<fn(?#d: 'z, x: i64) -> string> =
+        select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2: Opt<fn(?#d: 'w, x: i64) -> string> =
+        select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let o = select i { 0 => o1, _ => o2 };
+    select o { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(optional_part_defaults_of_two_types, r#"{
+    let i = 0;
+    let a = select i {
+        0 => [|#d = 1, x: i64| cast<string>(d)$, null],
+        _ => [|#d = "q", x: i64| cast<string>(d)$, null]
+    };
+    select a[0]$ { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(optional_field_defaults_of_two_types, r#"{
+    let i = 0;
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let s = select i { 0 => {f: o1, a: 1}, _ => {f: o2, a: 2} };
+    select s.f { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(optional_defaults_annotated, r#"{
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let a: Array<[fn(?#d: [i64, string], x: i64) -> string, null]> = [o1, o2];
+    let call = |o: [fn(?#d: [i64, string], x: i64) -> string, null]|
+        select o { null as _ => "n", f => f(7) };
+    "[call(a[0]$)] [call(a[1]$)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 q"); FuseExpect::None);
+
+run!(optional_defaults_of_one_type, r#"{
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| d + x, _ => null };
+    let o2 = select j { 0 => |#d = 2, x: i64| d * x, _ => null };
+    let a = [o1, o2];
+    let r0 = select a[0]$ { null as _ => 0, f => f(7) };
+    let r1 = select a[1]$ { null as _ => 0, f => f(7) };
+    "[r0] [r1]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "8 14"); FuseExpect::Jit);
+
+// A lambda beside an optional callback is the callback's instance.
+run!(lambda_beside_an_optional_callback, r#"{
+    let g = |cb: [fn(x: i64) -> i64, null], b: bool| {
+        let h = select b { true => cb, false => |x| x + 1 };
+        select h { null as _ => 0, f => f(2) }
+    };
+    "[g(null, false)] [g(|x| x * 10, true)] [g(null, true)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "3 20 0"); FuseExpect::None);
+
 // Only one of the functions met has the default: no annotation of the
 // label holds it, so the refusal names none.
 run!(one_met_default_names_no_annotation, r#"{

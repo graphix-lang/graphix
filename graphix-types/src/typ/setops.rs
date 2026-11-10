@@ -613,6 +613,46 @@ fn same_shape(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// The members of the union `t` stands for through its bindings.
+fn members_of(t: &Type) -> Option<Arc<[Type]>> {
+    t.with_deref(|t| match t {
+        Some(Type::Set(ms)) => Some(ms.clone()),
+        _ => None,
+    })
+}
+
+/// The members of `t` ([`members_of`]), nested unions flattened, or `t`
+/// where it is no union. `shape` takes the tree in preorder: a union's
+/// member count, `None` for a member.
+fn union_members(
+    t: &Type,
+    out: &mut LPooled<Vec<Type>>,
+    shape: &mut LPooled<Vec<Option<usize>>>,
+) {
+    ensure_sufficient(|| match members_of(t) {
+        Some(ms) => {
+            shape.push(Some(ms.len()));
+            ms.iter().for_each(|m| union_members(m, out, shape))
+        }
+        None => {
+            shape.push(None);
+            out.push(t.clone())
+        }
+    })
+}
+
+/// The type [`union_members`] took apart into `shape`, each member taken
+/// from `met`, in order.
+fn rebuilt(
+    shape: &mut impl Iterator<Item = Option<usize>>,
+    met: &mut impl Iterator<Item = Type>,
+) -> Type {
+    ensure_sufficient(|| match shape.next().expect("a shape for each alternative") {
+        Some(n) => Type::Set(Arc::from_iter((0..n).map(|_| rebuilt(shape, met)))),
+        None => met.next().expect("a met member for each member"),
+    })
+}
+
 /// The two-member union of `a` and `b`.
 fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
@@ -871,7 +911,7 @@ impl Type {
         Ok(acc)
     }
 
-    // CR claude for claude: [bug/medium] An alternative that is itself a union is not
+    // XCR claude for claude: [bug/medium] An alternative that is itself a union is not
     // looked into: the function members of `[fn(..), null]` alternatives never meet, so
     // their lambdas collapse as a renaming and keep one member's lambda ids, as parts did
     // before (array-defaults-nested-01). `let o1 = select j { 0 => |#d = 1, x: i64|
@@ -884,21 +924,60 @@ impl Type {
     // rebuilds each Set; optional callbacks are common in the GUI stdlib, so it needs a
     // census and guicheck. probes: ~/ptmp/cr29/scratch/r19/19c/rev/{b_set_top2,b_set}.gx
     // (union-set-alternative-meet-01)
-    /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
-    /// of members of one shape ([`same_shape`]): a call through a part of
-    /// the union may be any member's. `None` when no member changes.
+    // 2026-11-10 claude: Type::meet_alternatives flattens each alternative that is a
+    // union (through bindings, nested unions too) into its members, runs the meet
+    // (meet_members: meet_open_fns, then meet_parts) over them, and rebuilds each union
+    // of its met members; meet_parts recurses through it, so a union part (`[f1, null]`
+    // as an element, a struct field) is covered. Pins
+    // lang::functions::{select_of_optional_defaults_of_two_types,
+    // array_of_optional_defaults_of_two_types,
+    // select_of_optional_tuples_defaults_of_two_types,
+    // optional_part_defaults_of_two_types, optional_field_defaults_of_two_types,
+    // lambda_beside_an_optional_callback} fail in all four modes without the flattening
+    // (24 runs); twins optional_defaults_annotated and optional_defaults_of_one_type pass
+    // both ways. Newly accepted: a lambda beside an optional callback (`select b { true
+    // => cb, false => |x| x + 1 }`, base refused 'expected fn not fn(x: i64) -> i64'). A
+    // typedef-named alternative (a Type::Ref) is not expanded: its applications reach the
+    // select with their functions judged (probes ref_opt/ref_annot). Census 2949 files 0
+    // changes; guicheck noise; regress clean. A connect into a union-typed binding is a
+    // separate path (connect-union-defaults-01). Probes ~/ptmp/cr29/scratch/r20/20f/.
+    // 2026-11-10 claude: On the typedef form: a typedef application's function is judged
+    // at the call that built it (ref_opt, refused at the call through the union on base
+    // too), and an annotated `let o1: Opt<fn(?#d: 'z, x: i64) -> string>` reads as its
+    // value's union, so ref_annot is now refused at the check (base failed its run-time
+    // bind); pin lang::functions::named_optional_defaults_of_two_types.
+    /// [`Self::meet_members`] over the members of `ts`, an alternative
+    /// that is a union standing for its members ([`union_members`]), each
+    /// union rebuilt of its met members: a call through the union may be
+    /// any member's. `None` when no member changes.
     fn meet_alternatives(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         ensure_sufficient(|| {
-            let fns = Self::meet_open_fns(env, ts)?;
-            let parts = match &fns {
-                Some(met) => {
-                    let met: LPooled<Vec<&Type>> = met.iter().collect();
-                    Self::meet_parts(env, &met)?
-                }
-                None => Self::meet_parts(env, ts)?,
-            };
-            Ok(parts.or(fns))
+            if !ts.iter().any(|t| members_of(t).is_some()) {
+                return Self::meet_members(env, ts);
+            }
+            let mut flat: LPooled<Vec<Type>> = LPooled::take();
+            let mut shape: LPooled<Vec<Option<usize>>> = LPooled::take();
+            ts.iter().for_each(|t| union_members(t, &mut flat, &mut shape));
+            let flat: LPooled<Vec<&Type>> = flat.iter().collect();
+            let Some(mut met) = Self::meet_members(env, &flat)? else { return Ok(None) };
+            let (mut shape, mut met) = (shape.drain(..), met.drain(..));
+            Ok(Some(ts.iter().map(|_| rebuilt(&mut shape, &mut met)).collect()))
         })
+    }
+
+    /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
+    /// of members of one shape ([`same_shape`]). `None` when no member
+    /// changes.
+    fn meet_members(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+        let fns = Self::meet_open_fns(env, ts)?;
+        let parts = match &fns {
+            Some(met) => {
+                let met: LPooled<Vec<&Type>> = met.iter().collect();
+                Self::meet_parts(env, &met)?
+            }
+            None => Self::meet_parts(env, ts)?,
+        };
+        Ok(parts.or(fns))
     }
 
     /// The members of `ts` of one shape meet part by part

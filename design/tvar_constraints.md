@@ -498,7 +498,12 @@ the definition gates:
   (`Type::meet_parts`), so a call through a part of the union judges
   every member's defaults and binds every member's lambda (pins
   `lang::functions::nested_array_defaults_of_two_types` and its
-  neighbours). A written cell is: an enclosing
+  neighbours). An alternative or a part that is itself a union meets as
+  its members (`Type::meet_alternatives`), each union rebuilt of its met
+  members: optional lambdas (`[fn(..), null]`) two arms hold are one
+  function, and a lambda beside an optional callback is the callback's
+  instance (pins `lang::functions::select_of_optional_defaults_of_two_types`,
+  `lambda_beside_an_optional_callback` and their neighbours). A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
   Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
   of the enclosing definition's inner functions shares.
