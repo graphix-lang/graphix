@@ -14,13 +14,15 @@
 
 use crate::mutate;
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use graphix_compiler::{
     expr::{
-        ApplyExpr, ArgKind, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr, ModPath,
-        Name, SeqExpr, SeqTrigger, StructurePattern, TypeDefBody, TypeDefExpr,
+        ApplyExpr, Arg, ArgKind, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
+        ModPath, Name, SeqExpr, SeqTrigger, StructurePattern, TypeDefBody, TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
+use poolshark::local::LPooled;
 use std::collections::{HashMap, HashSet};
 use triomphe::Arc;
 
@@ -221,19 +223,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             find_lambda_args(stmt, &mut idx, false, &mut |gi| found.push((si, gi)));
         }
         for (si, gi) in sample(&found, cap) {
-            let r = ExprKind::Ref { name: mp(VAL) }.to_expr_nopos();
-            let replaced = mutate::replace(&root, gi, &r);
-            let ExprKind::Block { exprs } = &replaced.kind else { continue };
-            let bind = ExprKind::Bind(Arc::new(BindExpr {
-                rec: false,
-                pattern: StructurePattern::Bind(Name::from(VAL)),
-                typ: None,
-                value: pre[gi].clone(),
-            }))
-            .to_expr_nopos();
-            let mut v: Vec<Expr> = exprs.to_vec();
-            v.insert(si, bind);
-            let cand = ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos();
+            let Some(cand) = extracted(&root, si, gi, pre[gi].clone()) else { continue };
             push(&mut out, &mut noparse, TmKind::LetExtract, gi, &cand);
         }
     }
@@ -503,6 +493,102 @@ fn sample<T: Copy>(sites: &[T], cap: usize) -> Vec<T> {
     }
     let step = (sites.len() / cap).max(1);
     sites.iter().copied().step_by(step).take(cap).collect()
+}
+
+/// `root` with the lambda at preorder `gi`, in top statement `si`, hoisted
+/// into `let tm__0 = lambda` before that statement and read by name where
+/// it stood.
+fn extracted(root: &Expr, si: usize, gi: usize, lambda: Expr) -> Option<Expr> {
+    let r = ExprKind::Ref { name: mp(VAL) }.to_expr_nopos();
+    let replaced = mutate::replace(root, gi, &r);
+    let ExprKind::Block { exprs } = &replaced.kind else { return None };
+    let bind = ExprKind::Bind(Arc::new(BindExpr {
+        rec: false,
+        pattern: StructurePattern::Bind(Name::from(VAL)),
+        typ: None,
+        value: lambda,
+    }))
+    .to_expr_nopos();
+    let mut v: Vec<Expr> = exprs.to_vec();
+    v.insert(si, bind);
+    Some(ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos())
+}
+
+/// The let-extract candidate at `site` with each unannotated parameter of
+/// the hoisted lambda annotated by the type the base's check gave it at
+/// its call, `typ` reading the lambda's checked function type off the
+/// base. `None` where that type cannot be written: no function type of
+/// the lambda's arity, or an open cell carrying a bound or a lower bound,
+/// which a written variable would drop.
+pub fn extract_typed(
+    body: &str,
+    site: usize,
+    typ: impl FnOnce(&Expr) -> Option<Type>,
+) -> Option<String> {
+    let root = mutate::parse_body(body)?;
+    let pre = mutate::preorder(&root);
+    let sizes = mutate::sizes(&root);
+    let lambda = pre.get(site)?;
+    let ExprKind::Lambda(l) = &lambda.kind else { return None };
+    let (si, _, _) = mutate::top_statements(&root, &sizes)
+        .into_iter()
+        .find(|(_, at, _)| *at <= site && site < at + sizes[*at])?;
+    let ft = typ(lambda)?.with_deref(|d| match d {
+        Some(Type::Fn(ft)) => Some(ft.clone()),
+        _ => None,
+    })?;
+    if ft.args.len() != l.args.len() {
+        return None;
+    }
+    let mut names: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+    let mut args: LPooled<Vec<Arg>> = LPooled::take();
+    for (a, fa) in l.args.iter().zip(ft.args.iter()) {
+        let constraint = match &a.constraint {
+            Some(t) => Some(t.clone()),
+            None => Some(written(&fa.typ, &mut names)?),
+        };
+        args.push(Arg { constraint, ..a.clone() });
+    }
+    let typed = LambdaExpr { args: Arc::from_iter(args.drain(..)), ..(**l).clone() };
+    let typed = ExprKind::Lambda(Arc::new(typed)).to_expr_nopos();
+    let cand = extracted(&root, si, site, typed)?;
+    let text = cand.to_string();
+    mutate::parse(&text).is_some_and(|back| back == cand).then_some(text)
+}
+
+/// `t` as an annotation writes it: every binding followed, each open cell
+/// a variable of its own (`'tm__0`, ..). `None` at an open cell with a
+/// bound or a lower bound.
+fn written(t: &Type, names: &mut Vec<(TVar, Type)>) -> Option<Type> {
+    match t {
+        Type::TVar(tv) => match tv.open_cell() {
+            None => written(&tv.binding()?, names),
+            Some(c) => {
+                if !c.cell_constraints().is_empty() || !c.cell_lower().is_empty() {
+                    return None;
+                }
+                if let Some((_, n)) = names.iter().find(|(o, _)| o.same_cell(&c)) {
+                    return Some(n.clone());
+                }
+                let name = format_compact!("tm__{}", names.len());
+                let n = Type::TVar(TVar::empty_named(name.as_str().into()));
+                names.push((c, n.clone()));
+                Some(n)
+            }
+        },
+        t => {
+            let mut ok = true;
+            let r = t.cow_children(&mut |c| match ok {
+                false => None,
+                true => {
+                    let w = written(c, names);
+                    ok = w.is_some();
+                    w
+                }
+            });
+            ok.then(|| r.unwrap_or_else(|| t.clone()))
+        }
+    }
 }
 
 /// Lambda literals in ARGUMENT position of an Apply reachable from the
@@ -993,6 +1079,53 @@ mod test {
             let (probes, _) = probes(body, 3);
             assert!(!probes.iter().any(|p| p.kind == TmKind::LetExtract), "{body}");
         }
+    }
+
+    /// The typed re-derivation annotates only what the lambda left
+    /// unannotated, one variable per open cell, and writes nothing for a
+    /// cell whose bound or lower bound a variable would drop.
+    #[test]
+    fn extract_typed_writes_the_call_types() {
+        use graphix_compiler::typ::{FnArgKind, FnArgType, FnType};
+        use netidx_value::Typ;
+        let body = "{ let k = i64:1; g(k, |a, b: i64, c| a) }";
+        let (probes, _) = probes(body, 8);
+        let site = probes.iter().find(|p| p.kind == TmKind::LetExtract).unwrap().site;
+        let arg = |n: &str, typ: Type| FnArgType {
+            kind: FnArgKind::Positional { name: Some(ArcStr::from(n)) },
+            typ,
+        };
+        let open = Type::TVar(TVar::empty_named(ArcStr::from("q")));
+        let fn_of = |a: Type, c: Type| {
+            let args =
+                [arg("a", a), arg("b", Type::Primitive(Typ::String.into())), arg("c", c)];
+            Type::Fn(Arc::new(FnType { args: Arc::from_iter(args), ..FnType::default() }))
+        };
+        let f64_ = Type::Primitive(Typ::F64.into());
+        let typed =
+            extract_typed(body, site, |_| Some(fn_of(open.clone(), open.clone())));
+        assert_eq!(
+            typed.as_deref(),
+            Some(
+                "{ let k = 1; let tm__0 = |a: 'tm__0, b: i64, c: 'tm__0| a; g(k, tm__0) }"
+            )
+        );
+        let other = Type::TVar(TVar::empty_named(ArcStr::from("q")));
+        let typed = extract_typed(body, site, |_| Some(fn_of(f64_.clone(), other)));
+        assert_eq!(
+            typed.as_deref(),
+            Some("{ let k = 1; let tm__0 = |a: f64, b: i64, c: 'tm__0| a; g(k, tm__0) }")
+        );
+        let bounded = TVar::empty_named(ArcStr::from("n"));
+        bounded.add_cell_constraint(f64_.clone());
+        let typed =
+            extract_typed(body, site, |_| Some(fn_of(f64_.clone(), Type::TVar(bounded))));
+        assert_eq!(typed, None);
+        let short = Type::Fn(Arc::new(FnType {
+            args: Arc::from_iter([arg("a", f64_)]),
+            ..FnType::default()
+        }));
+        assert_eq!(extract_typed(body, site, |_| Some(short)), None);
     }
 
     /// A body of bare statements is probed as the block it compiles as.

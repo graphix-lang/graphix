@@ -176,8 +176,11 @@ can take `U` too: one that derives from `v` (`v < v`, a capture of it)
 or an open cell the comparison binds. One hop is built (see Hops). A
 widened value that makes a union of structs whose members' fields differ
 is refused at a writable reference to such a field (`&mut s.c`: a
-writable field step needs one field type), which the family counts as
-its own refusal.
+writable field step needs one field type), and one that reaches a select
+through an abstract constructor's parameter (`select W(v).0 { 0 => ..,
+_ => .. }`) leaves that parameter a cell its lower bound holds, which the
+arms cannot decide to the literal they test ("not decided at this
+select"): the family counts both as its own refusals.
 
 **5. Variant widening (the common case of 4).** Built: the widened
 scrutinee, directly under a select with no catch-all and no type-test

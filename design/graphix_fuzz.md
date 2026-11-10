@@ -578,7 +578,14 @@ callback whose body selects over a value an unannotated parameter's type
 decides, or reads a field of or `with`-updates such a parameter, which
 by language rule only the call types, or writes such a parameter or flows
 one into a written composite type, which a `let` decides before the call
-would), let-inline (the reverse: the
+would; a refused mutant that checks once the hoisted lambda's unannotated
+parameters carry the types the base's check gave them at the call is
+body-first inference, not filed (`accept-typed`): the `let` decides them
+from the body alone, narrower than the call's arguments (a select's
+literal arm, a default the widening hands an undecided argument), or
+holds the generic binding to a rule one instance escapes (a default
+reading an open type) — so a wrong body-alone decision of an unannotated
+parameter is beyond this probe), let-inline (the reverse: the
 value goes in parenthesized, never a `never()`, never where a later
 binder at any depth rebinds the name or a name the value reads, and never
 what may be a generic function into a field or tuple read, where a `let`
@@ -620,7 +627,8 @@ runtime of its own at the slow budget, and a second hang is a flip
 normalized (digit runs collapsed) so
 positions and fresh-counter ids do not split buckets. `typemorph
 <file>` is the triage tool; `typemorph-scan [n] [seed]` scans the
-findings corpus plus generated subjects — a hand-run gate, re-run when
+findings corpus plus generated subjects and prints each transform's and
+family's probes and flips — a hand-run gate, re-run when
 the transform catalog or the typechecker changes. **In a soak** it is
 the fourth source: its orders take the regression corpus once, then
 generated, reactive and mutant subjects a third each (mutants breed

@@ -99,6 +99,7 @@ impl Family {
                 "cannot compare",
                 "expected struct not",
                 "the members' fields differ",
+                "not decided at this select",
             ],
             Family::VariantWiden => &["missing match cases"],
             Family::Retype => &[
@@ -217,7 +218,7 @@ impl TypeMap {
         self.0.get(&(e.pos.line, e.pos.column, end.line, end.column))
     }
 
-    fn of(&self, e: &Expr) -> &[Type] {
+    pub(crate) fn of(&self, e: &Expr) -> &[Type] {
         self.entry(e).map_or(&[], |x| &x.types[..])
     }
 

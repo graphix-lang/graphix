@@ -3514,6 +3514,11 @@ fn schedule_reductions(s: &schedule::Schedule) -> Vec<schedule::Schedule> {
 pub enum TmVerdict {
     Accept,
     Reject(String),
+    /// A let-extract mutant refused that checks once the hoisted lambda's
+    /// unannotated parameters carry the types its call gave them: the `let`
+    /// decides them from the body alone, where the call pushed its
+    /// arguments' types first. Expected, never a flip.
+    AcceptTyped,
     /// The check didn't finish inside its budget: a measurement failure,
     /// never a flip ([`TmReport::hang`] is the confirmed one).
     Hung,
@@ -3549,7 +3554,7 @@ impl TmReport {
         use std::fmt::Write;
         let mut s = String::new();
         match &self.base {
-            TmVerdict::Accept => s.push_str("BASE accept\n"),
+            TmVerdict::Accept | TmVerdict::AcceptTyped => s.push_str("BASE accept\n"),
             TmVerdict::Reject(e) => {
                 let _ = writeln!(s, "BASE reject {e}");
             }
@@ -3577,6 +3582,9 @@ impl TmReport {
             match p.verdict {
                 TmVerdict::Accept => {
                     let _ = writeln!(s, "PROBE {} accept", p.id);
+                }
+                TmVerdict::AcceptTyped => {
+                    let _ = writeln!(s, "PROBE {} accept-typed", p.id);
                 }
                 TmVerdict::Hung => {
                     let _ = writeln!(s, "PROBE {} hung", p.id);
@@ -3627,10 +3635,12 @@ fn tm_error_head(e: &str) -> String {
 pub const TM_CAP: usize = 3;
 
 /// The most checks one typemorph subject runs: its base, every
-/// transform kind's probes, the typed base, and every must-reject
-/// family's.
+/// transform kind's probes, the typed base for a refused let-extract and
+/// that probe again with its parameters typed, the typed base for the
+/// must-reject families, and every family's.
 pub fn tm_checks(cap: usize) -> u32 {
-    (2 + (typemorph::TmKind::ALL.len() + mustreject::Family::ALL.len()) * cap) as u32
+    let kinds = typemorph::TmKind::ALL.len() + mustreject::Family::ALL.len();
+    (3 + (kinds + 1) * cap) as u32
 }
 
 /// One check of a subject's full text.
@@ -3712,11 +3722,43 @@ pub async fn typemorph_subject(
         _ => None,
     };
     if base == TmVerdict::Accept {
+        let mut types: Option<Option<mustreject::TypeMap>> = None;
         for p in &probes {
-            let verdict =
+            let mut verdict =
                 accept(tm_check(&ctx, &compose(&p.body), false, per_check).await);
             if verdict == TmVerdict::Hung {
                 hung = Some((p.id(), p.body.clone()));
+            }
+            if p.kind == typemorph::TmKind::LetExtract
+                && let TmVerdict::Reject(_) = verdict
+            {
+                let types = match &mut types {
+                    Some(t) => t,
+                    None => types.insert(
+                        match tm_check(&ctx, &compose(body), true, per_check).await {
+                            TmCheck::Done(Ok(c)) => Some(mustreject::TypeMap::new(
+                                &c.ide.expr_types,
+                                &c.env,
+                                "test",
+                            )),
+                            TmCheck::Hung => {
+                                hung = Some(("base".to_string(), body.to_string()));
+                                None
+                            }
+                            _ => None,
+                        },
+                    ),
+                };
+                let typed = types.as_ref().and_then(|t| {
+                    typemorph::extract_typed(body, p.site, |l| t.of(l).first().cloned())
+                });
+                if let Some(typed) = typed {
+                    match tm_check(&ctx, &compose(&typed), false, per_check).await {
+                        TmCheck::Done(Ok(_)) => verdict = TmVerdict::AcceptTyped,
+                        TmCheck::Hung => hung = Some((p.id(), typed)),
+                        _ => (),
+                    }
+                }
             }
             results.push(Probed { id: p.id(), mutant: p.body.clone(), verdict });
             if hung.is_some() {
@@ -3895,6 +3937,7 @@ pub async fn typemorph_scan(
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut noparse_total = 0usize;
+    let mut per_kind: BTreeMap<CompactString, [usize; 3]> = BTreeMap::new();
     let job = |i: usize| {
         let prog = programs[i].1.clone();
         async move {
@@ -3920,6 +3963,18 @@ pub async fn typemorph_scan(
             .find_map(|l| l.strip_prefix("NOPARSE "))
             .and_then(|n| n.parse::<usize>().ok())
             .unwrap_or(0);
+        for l in rep.lines() {
+            let (flip, rest) = match l.split_once(' ') {
+                Some(("FLIP", r)) => (true, r),
+                Some(("PROBE" | "REJECT", r)) => (false, r),
+                _ => continue,
+            };
+            let kind = rest.split(['#', ' ']).next().unwrap_or(rest);
+            let n = per_kind.entry(kind.into()).or_default();
+            n[0] += 1;
+            n[1] += flip as usize;
+            n[2] += l.ends_with(" accept-typed") as usize;
+        }
         let rep2 = match confirm {
             None => return,
             Some(Err(e)) => {
@@ -3943,6 +3998,14 @@ pub async fn typemorph_scan(
     if noparse_total > 0 {
         eprintln!("typemorph: {noparse_total} candidates failed print->parse round trip");
     }
+    eprint!("typemorph: probes/flips per transform:");
+    for (k, [n, f, typed]) in &per_kind {
+        match typed {
+            0 => eprint!(" {k} {n}/{f}"),
+            t => eprint!(" {k} {n}/{f} ({t} accept-typed)"),
+        }
+    }
+    eprintln!();
     out
 }
 
@@ -6240,6 +6303,13 @@ mod tests {
                  n * 1000 + last }",
                 "widen-hop#",
             ),
+            // the widened `v` reaches a select through an abstract's
+            // parameter, which the arms' literal cannot decide to hold it
+            (
+                "{ type W<'a> = Abstract<'a>; let v = 3; \
+                 let s = select W(v).0 { 0 => 1, _ => 2 }; v + s }",
+                "widen-hop#",
+            ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             let up: Vec<_> =
@@ -6312,6 +6382,38 @@ mod tests {
                 flips.is_empty(),
                 "{prog}: {:?}",
                 flips.iter().map(|f| &f.id).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A `let` of a callback decides its unannotated parameters from its
+    /// body alone, where the call pushed its arguments' types first: a
+    /// refusal the call's types explain is expected, never filed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn let_extract_files_no_flip_the_call_types_explain() {
+        let per = Duration::from_secs(60);
+        for prog in [
+            // the select's literal arm decides `v`
+            "{ let x = array::iter([1, 1.0 / 0.0, 3, 4, 5, 6]); \
+             filter(x, |v| v == select 5 { 2 => v, _ => 6 }) ~ count(once(x)) }",
+            // the default decides `'a`, and the widening gives it to `j`
+            "{ let f = |#x: Array<'a> = [1], y: 'a| -> 'a y; \
+             array::map([((1, 2), (0, 100)), 2], |j| f(j)) }",
+            // a default reading an open type is refused in a generic factory
+            "{ let f = |c| cast<Array<i64>>(c); \
+             f(|k| { let mul = |#by = k, x| array::group; mul(0) }) }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            assert!(rep.base == TmVerdict::Accept, "{prog}");
+            let extract: Vec<_> =
+                rep.probes.iter().filter(|p| p.id.starts_with("let-extract#")).collect();
+            assert!(
+                !extract.is_empty()
+                    && extract.iter().all(|p| matches!(
+                        p.verdict,
+                        TmVerdict::Accept | TmVerdict::AcceptTyped
+                    )),
+                "{prog}: {extract:?}"
             );
         }
     }
