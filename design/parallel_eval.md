@@ -723,14 +723,17 @@ that safe: they are independent.
 internal `par_iter` (C/node/mod.rs:949) nests in the evaluation pool. A
 dynamic module is `opaque` in its summary (it reads and writes every
 variable and is ordered), so a sibling forks beside it only where it
-makes no ordered call, publishes nothing when it stands before the
-module, and after it reads nothing the module's sibling publishes and
-publishes nothing a reference or a lambda hands out
-(`analysis::ids_verdict`). A load joins each `val` with the binding
-implementing it in `StaticCallees`, the one table every branch shares,
-and each view of the runtime reads the joins for itself
-(`design/module_system.md`, "one variable"): a sibling's sync between a
-load's join and the load's own takes nothing from the loading branch.
+makes no ordered call and publishes nothing the module could read
+(`analysis::independent`).
+
+**Interface joins** are made in a cycle by a dynamic module's load and
+by each instance of a function whose body declares a module with an
+interface (a collection's new slot), so forked siblings can each join
+in one cycle. The joins live in `StaticCallees`,
+the one table every branch shares, and each view of the runtime reads
+them for itself (`design/module_system.md`, "one variable"): a
+sibling's sync between a branch's join and that branch's own takes
+nothing from the joining branch.
 
 **Core-trait hooks** reach `&mut ExecCtx` through a raw pointer
 published in `VALUE_HOOKS` (C/node/coretraits.rs:368) and re-enter node

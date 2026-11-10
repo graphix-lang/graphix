@@ -215,7 +215,9 @@ written through the `val` (`CompileCtx::var_written`); a seq's plan
 counts the pair one variable (`design/dependency_summaries.md` §3).
 
 The joins are one table (`StaticCallees`), shared by the runtime and
-every branch of a forked cycle, and counted at each change. A table
+every branch of a forked cycle, and counted at each change. A cycle
+makes one at a dynamic module's load and at each instance of a function
+whose body declares the module, so forked siblings can each join. A table
 read from it carries that count (`VarAliases::read_at`), and each view
 of the runtime, the runtime's own and each forked branch's, takes the
 joins again whenever the count has passed its table's

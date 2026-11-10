@@ -2174,6 +2174,62 @@ run!(
     FuseExpect::Jit
 );
 
+/// Twelve sibling collections whose callback calls `f`, a function
+/// whose body declares the interface module `m`. Each slot's instance
+/// joins `m`'s vals with its own body's bindings, so forked siblings each
+/// join in the cycles the collections grow (`ep` 3, 5 and 9; they shrink
+/// at 7). A slot writes its `m::v` once, and `m::w` is the body's read
+/// of it.
+const SIBLING_JOINS: usize = 12;
+
+fn sibling_collections_instantiating_an_interface() -> String {
+    let maps = vec!["array::map(xs, |x| f(uniq(x)))"; SIBLING_JOINS].join(", ");
+    format!(
+        r#"
+let ep = 0;
+ep <- select ep {{ n if n < 12 => n + 1, _ => never() }};
+let xs: Array<i64> = never();
+xs <- select ep {{
+    2 => [0, 1, 2, 3],
+    4 => [0, 1, 2, 3, 4, 5, 6, 7],
+    6 => [0, 1],
+    8 => [0, 1, 2],
+    _ => never()
+}};
+let f = |x: i64| {{
+    mod m;
+    m::v <- once(x) ~ x + 10;
+    (m::v, m::w)
+}};
+let r = ({maps});
+let result = select ep {{ 12 => ep ~ "[r]", _ => never() }}
+"#
+    )
+}
+
+fn interface_body() -> String {
+    let lets: Vec<String> = (0..60).map(|i| format!("let a{i} = {i} + v")).collect();
+    format!("let v = 1; let w = v * 2; {}", lets.join("; "))
+}
+
+// Forked siblings that each join read their own joins, and the runtime
+// keeps every one: a write through a slot's val reaches its body, and a
+// deleted slot's readers leave under the variable they registered.
+run!(
+    forked_siblings_that_each_join_an_interface_keep_every_join,
+    is(Value::String(
+        format!(
+            "({})",
+            vec!["[(10, 20), (11, 22), (12, 24)]"; SIBLING_JOINS].join(", ")
+        )
+        .into()
+    )),
+    "/test.gx" => sibling_collections_instantiating_an_interface(),
+    "/test/m.gxi" => "val v: i64; val w: i64",
+    "/test/m.gx" => interface_body();
+    FuseExpect::Jit
+);
+
 // A sibling's write through a val reaches the implementation's own calls,
 // whichever module's check ran first.
 run!(
