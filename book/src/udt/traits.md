@@ -83,6 +83,11 @@ annotations. A required method left out is a compile error; a method
 the trait does not declare is too. The trait's methods are visible
 bare inside the block, so one method may call another.
 
+Inside an `impl`, the type `self` is the target wherever the block
+writes a type: a method's own annotations, its `let`'s, and any lambda,
+cast or type test inside it. In `impl Show for i64`, `|x: self| "int
+[x + 1]"` reads `x: i64`.
+
 A method's type variables are each call's to pick, so a method must be
 as general as its declaration, a default included. Under `val put:
 fn(self, x: 'a) -> 'a`, a method that keeps its argument in a binding

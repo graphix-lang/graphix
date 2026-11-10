@@ -52,6 +52,18 @@ printing); only abstract types may implement them outside core. The io
 traits `Read`/`Lines`/`Write`/`Close`/`Seek`/`Socket` describe streams
 whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
 
+In an impl, `self` is the impl's target in every type the impl writes (a
+method's `let` annotation, its lambda's parameters and result, anything
+inside it), as in a default it is the trait's: `|s: self, x|` in `impl T
+for i64` is `|s: i64, x|`, and `[self, 'c]` there is `[i64, 'c]`. A
+written `self` the trait does not declare there is refused.
+
+```graphix,cases
+ok trait T { val m: fn(self, x: i64) -> i64 }; impl T for i64 { let m = |s: self, x| s + x }; T::m(1, 2)
+ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
+no "string does not contain i64" trait T { val m: fn(self, x: string) -> string }; impl T for i64 { let m = |s, x: self| x }; T::m(1, "q")
+```
+
 A trait method's `#[pure]` or `#[sync]` holds for every implementation, even
 an uncalled one. Builds reject violating bodies; dynamic modules fail to load.
 Callback parameters retain caller-dependent effects, as in ordinary definitions.

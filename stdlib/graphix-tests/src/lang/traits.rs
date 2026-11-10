@@ -3170,27 +3170,155 @@ run!(
     "#
 );
 
-// An impl's `self` is filled in as its target: a `self` its method writes
-// is that lambda's own variable.
+// An impl's `self` is its target in every type the impl writes: `[self,
+// 'c]` in `impl T for i64` is `[i64, 'c]`, one variable beside a written
+// type.
 run!(
-    impl_method_self_beside_a_variable_refused,
-    refused("[self, 'c] is a union of the type variables 'c and 'self"),
+    impl_method_self_beside_a_variable,
+    is(Value::I64(0)),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: [i64, string]) -> i64 };
         impl T for i64 { let m = |s, x: [self, 'c]| 0 };
         let result = T::m(1, "q")
     "#
-; FuseExpect::None);
+);
 
 run!(
-    impl_method_let_annotation_self_beside_a_variable_refused,
-    refused("[self, 'c] is a union of the type variables 'c and 'self"),
+    impl_method_let_annotation_self_beside_a_variable,
+    is(Value::I64(0)),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: [i64, string]) -> i64 };
         impl T for i64 { let m: fn(s: i64, x: [self, 'c]) -> i64 = |s, x| 0 };
         let result = T::m(1, "q")
     "#
+);
+
+run!(
+    impl_method_written_self_parameter_is_the_target,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "q"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: string) -> string };
+        impl T for i64 { let m = |s: self, x| { let k = s + 1; x } };
+        let result = T::m(1, "q")
+    "#
+);
+
+run!(
+    impl_method_written_self_beside_the_filled_one,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: i64) -> i64 };
+        impl T for i64 { let m = |s, x: self| x + s };
+        let result = T::m(1, 2)
+    "#
+);
+
+run!(
+    impl_method_let_annotation_self_is_the_target,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "q"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: string) -> string };
+        impl T for i64 {
+            let m: fn(s: self, x: string) -> string = |s, x| { let k = s + 1; x }
+        };
+        let result = T::m(1, "q")
+    "#
+);
+
+// A written `self` that is not the trait's type is a method the trait does
+// not declare.
+run!(
+    impl_method_let_annotation_self_against_the_trait_refused,
+    refused("fn(s: i64, x: i64) -> i64 does not contain fn(s: i64, x: string) -> string"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: string) -> string };
+        impl T for i64 { let m: fn(s: i64, x: self) -> self = |s, x| x };
+        let result = T::m(1, "q")
+    "#
 ; FuseExpect::None);
+
+run!(
+    impl_method_written_self_against_the_trait_refused,
+    refused("string does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: string) -> string };
+        impl T for i64 { let m = |s, x: self| x };
+        let result = T::m(1, "q")
+    "#
+; FuseExpect::None);
+
+// Inside the method too: a lambda in its body, a lambda beside it, a cast,
+// `never<T>`, a type test and a `type`.
+run!(
+    impl_self_in_a_body_lambda_is_the_target,
+    is(Value::I64(4)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: i64) -> i64 };
+        impl T for i64 { let m = |s, x| { let g = |y: self| y + 1; g(s) + x } };
+        let result = T::m(1, 2)
+    "#
+);
+
+run!(
+    impl_self_in_a_block_lambda_is_the_target,
+    is(Value::I64(4)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: i64) -> i64 };
+        impl T for i64 { let m = { let g = |y: self| y + 1; |s, x| g(s) + x } };
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_self_in_a_cast_a_never_and_a_type_test,
+    is(Value::I64(5)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: Any) -> i64 };
+        impl T for i64 {
+            let m = |s, x| {
+                let c = cast<self>(x)$;
+                let n: self = never<self>();
+                select x { self as v => v + c + s, _ => s }
+            }
+        };
+        let result = T::m(1, 2)
+    "#
+);
+
+run!(
+    impl_self_in_a_type_definition,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: i64) -> i64 };
+        impl T for i64 { let m = |s, x| { type X = self; let y: X = x; y + s } };
+        let result = T::m(1, 2)
+    "#
+);
+
+// A generic impl's `self` is its target over the impl's variables.
+run!(
+    generic_impl_self_is_the_target,
+    prints("[i64:3, i64:5, i64:4]"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'b) -> 'b };
+        impl<'a> T for Array<'a> {
+            let m = |s: self, x: 'b| -> 'b { let y: Array<'a> = s; x }
+        };
+        trait L { val l: fn(self, x: i64) -> i64 };
+        impl<'a> L for Array<'a> { let l = |s: self, x| array::len(s) + x };
+        let result = [T::m([1, 2], 3), L::l([1, 2], 3), L::l(["a"], 3)]
+    "#
+);
+
+run!(
+    constructor_impl_self_applied_is_the_target,
+    prints("[i64:3, i64:1]"),
+    "/test.gx" => r#"
+        trait C { val f: fn(self<'a>, x: 'a) -> i64 };
+        impl C for Array<'_> { let f = |s: self<'a>, x: 'a| array::len(s) };
+        let result = [C::f([1, 2, 3], 4), C::f(["a"], "b")]
+    "#
+);
 
 run!(
     impl_method_self_beside_a_written_type,
@@ -3299,9 +3427,10 @@ run!(
     "#
 ; FuseExpect::None);
 
-// Only the method's own lambda holds an impl's head variables and `self`:
-// every other lambda its value writes outside a lambda's body names
-// variables of its own, as at the top level.
+// Only the method's own lambda holds an impl's head variables: every other
+// lambda its value writes outside a lambda's body names variables of its
+// own, as at the top level. Its `self` is the impl's target, as everywhere
+// in the impl.
 run!(
     impl_head_variables_in_a_block_lambda_are_its_own,
     refused("['a, 'b] is a union of the type variables 'a and 'b"),
@@ -3328,7 +3457,7 @@ run!(
 
 run!(
     self_in_a_lambda_a_call_builds_the_method_from,
-    refused("[self, 'b] is a union of the type variables 'b and 'self"),
+    is(Value::I64(0)),
     "/test.gx" => r#"
         let mk = |f: fn(x: [i64, string], y: string) -> i64| |s: i64, n: i64| -> i64 f(n, "s");
         trait Sz { val sz: fn(self, n: i64) -> i64 };

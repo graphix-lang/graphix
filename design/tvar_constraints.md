@@ -359,8 +359,9 @@ trait's default body is judged over the types it writes itself, an impl
 `let`'s annotation and every lambda its value writes outside a lambda's
 body: in its own lambda's signature, the rest being its trait's
 declaration, an impl's head variables are the impl's and a default's
-`self` the trait's (an impl's `self` is filled in as its target, so a
-`self` an impl's method writes is that lambda's own variable), and every
+`self` the trait's (an impl's `self` is its target in every type the
+impl writes, so `[self, 'c]` there is one variable beside a written
+type), and every
 other lambda there (one a call that builds it is handed, a labeled
 default's, one in a block) names variables of its own, as at the top
 level, since no definition encloses a method's scope:
@@ -1710,7 +1711,7 @@ references name the target is told the recursive type alone
   method, one a body's annotation writes) holds no union written with two
   or more of its own bare variables (`['a, 'b]`, under any constructor as
   written; a typedef is not looked through; a trait's `self` and an impl's
-  head are no method's own, a `self` an impl's method writes is), nor two
+  head are no method's own, and an impl's `self` is its target), nor two
   members of one constructor holding two distinct
   ones (`[Array<'c>, Array<'d>]`), refused, naming one variable or written
   types as the fix

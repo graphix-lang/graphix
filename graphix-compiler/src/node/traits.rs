@@ -265,9 +265,9 @@ pub(crate) fn impl_outside_functions(
 /// leaves to this one. The method's own lambda (the value, through
 /// parentheses) holds what its trait's declaration fills in, judged at the
 /// trait, and there a variable `own` refuses is the trait's (a default's
-/// `self`) or the impl's (its head's); an impl's `self` is filled in as its
-/// target, so a `self` it writes is its own. Every variable of any other
-/// lambda is its own, since no definition encloses a method's scope.
+/// `self`) or the impl's (its head's); an impl's `self` is its target here
+/// ([`self_as_target`]). Every variable of any other lambda is its own,
+/// since no definition encloses a method's scope.
 fn written_method_unions(
     typ: Option<&Type>,
     value: &Expr,
@@ -322,7 +322,7 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
-// CR claude for claude: [bug/low] A `self` an impl's method lambda writes is
+// XCR claude for claude: [bug/low] A `self` an impl's method lambda writes is
 // a type variable of that lambda, not the impl's target: annotate_lambda keeps
 // written annotations and method_sig_at substitutes `self` only in the trait's
 // declared signature. So `impl T for i64 { let m = |s: self, x| { let k = s +
@@ -357,6 +357,66 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
 // 'c], one variable beside a written type. Probes
 // ~/ptmp/cr29/scratch/review-r16/d7-r3-1/n_iself*.gx,
 // ~/ptmp/cr29/scratch/r19/19g/review/la*.gx.
+// 2026-11-10 claude: Fixed (lane 20d, round 20) per D28 (a):
+// traits::self_as_target substitutes self := the impl's target into every type
+// an impl's method writes (its let annotation, its lambda's parameters, result,
+// throws and bounds, and every lambda, let, cast, never<T>, type test, catch or
+// with binder, seq trigger let and type definition inside its value; a nested
+// trait or impl keeps its own self) before written_method_unions and
+// annotate_lambda see it, through the new Expr::map_written_types
+// (graphix-types: one node's own written types). n_iself2, n_iself4, n_iself6,
+// la1, la4 now run; la2 and n_iself are refused as not implementing the trait.
+// Inverted pins: lang::traits::impl_method_self_beside_a_variable (was
+// _refused), impl_method_let_annotation_self_beside_a_variable (was _refused),
+// self_in_a_lambda_a_call_builds_the_method_from. Pins that fail without it (x4
+// modes): those three, impl_method_written_self_parameter_is_the_target,
+// impl_method_written_self_beside_the_filled_one,
+// impl_method_let_annotation_self_is_the_target,
+// impl_method_let_annotation_self_against_the_trait_refused,
+// impl_method_written_self_against_the_trait_refused,
+// impl_self_in_a_body_lambda_is_the_target,
+// impl_self_in_a_block_lambda_is_the_target,
+// impl_self_in_a_cast_a_never_and_a_type_test, impl_self_in_a_type_definition,
+// generic_impl_self_is_the_target, constructor_impl_self_applied_is_the_target;
+// unit expr::test::map_written_types_reaches_each_kind. Census of both repos:
+// no verdict or message change. Needs a soak.
+/// An impl's method `e` with `self` read as the impl's `target` in every
+/// type it writes, at every depth: in an impl `self` is its target, as in a
+/// trait's default it is the trait's. A trait or impl nested inside has a
+/// `self` of its own.
+fn self_as_target(e: &Expr, target: &Type) -> Expr {
+    fn writes_self(e: &Expr) -> bool {
+        ensure_sufficient(|| {
+            let mut found = false;
+            if !matches!(e.kind, ExprKind::Trait(_) | ExprKind::Impl(_)) {
+                e.map_written_types(&mut |t| {
+                    found |= t.mentions_self();
+                    None
+                });
+                e.for_each_child(&mut |c| found = found || writes_self(c));
+            }
+            found
+        })
+    }
+    fn subst(e: &Expr, known: &AHashMap<ArcStr, Type>) -> Expr {
+        ensure_sufficient(|| {
+            let mut m = e.map_children(&mut |c| match writes_self(c) {
+                true => subst(c, known),
+                false => c.clone(),
+            });
+            m.id = e.id;
+            let mut sub = |t: &Type| t.mentions_self().then(|| t.replace_tvars(known));
+            m.map_written_types(&mut sub).unwrap_or(m)
+        })
+    }
+    if !writes_self(e) {
+        return e.clone();
+    }
+    let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+    known.insert(literal!("self"), target.clone());
+    subst(e, &known)
+}
+
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
@@ -907,6 +967,7 @@ impl<R: Rt> Impl<R> {
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         let mut provided: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for m in im.methods.iter() {
+            let m = &self_as_target(m, &target);
             let ExprKind::Bind(b) = &m.kind else {
                 unreachable!("impl methods are binds")
             };

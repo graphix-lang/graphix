@@ -2070,4 +2070,147 @@ impl Expr {
         };
         self.with_kind(kind)
     }
+
+    /// This node with each type it writes itself, never a child's, replaced
+    /// by `f(type)` (`None`: unchanged), its id kept; `None` when `f`
+    /// changes none. Those are a let's annotation (a seq trigger's too), a
+    /// lambda's parameters, rest, result, bounds and throws, a cast's
+    /// target, `never<T>`'s, a select arm's type test, a catch's or a
+    /// `with`'s binder, a `type` definition's bounds and body. A trait's,
+    /// an impl's and a module's declarations are left.
+    pub fn map_written_types(
+        &self,
+        f: &mut impl FnMut(&Type) -> Option<Type>,
+    ) -> Option<Expr> {
+        use ExprKind::*;
+        let bind = |f: &mut dyn FnMut(&Type) -> Option<Type>, b: &BindExpr| {
+            Some(Arc::new(BindExpr { typ: Some(f(b.typ.as_ref()?)?), ..b.clone() }))
+        };
+        let kind = match &self.kind {
+            NoOp
+            | Constant(_)
+            | Module { .. }
+            | ExplicitParens(_)
+            | Block { .. }
+            | Use { .. }
+            | Ref { .. }
+            | Connect { .. }
+            | StringInterpolate { .. }
+            | StructRef { .. }
+            | TupleRef { .. }
+            | ArrayRef { .. }
+            | ArraySlice { .. }
+            | MapRef { .. }
+            | StructWith(_)
+            | Trait(_)
+            | Impl(_)
+            | Apply(_)
+            | Any { .. }
+            | Array { .. }
+            | List { .. }
+            | Map { .. }
+            | Tuple { .. }
+            | Variant { .. }
+            | Construct { .. }
+            | Struct(_)
+            | Until(_)
+            | Live(_)
+            | Qop { .. }
+            | Rethrow(_)
+            | SeqGuard(_)
+            | SeqAbort(_)
+            | SeqMachine(_)
+            | SeqCapture(_)
+            | OrNever(_)
+            | ByRef(..)
+            | Deref(_)
+            | Neg(_)
+            | BinOp { .. }
+            | Not { .. } => {
+                return None;
+            }
+            Bind(b) => Bind(bind(f, b)?),
+            Seq(s) => match &s.trigger {
+                Some(SeqTrigger::Bind(b)) => Seq(Arc::new(SeqExpr {
+                    trigger: Some(SeqTrigger::Bind(bind(f, b)?)),
+                    ..(**s).clone()
+                })),
+                None | Some(SeqTrigger::Expr(_)) => return None,
+            },
+            Lambda(l) => {
+                let args = Type::cow_slice(&l.args, |a| {
+                    Some(Arg {
+                        constraint: Some(f(a.constraint.as_ref()?)?),
+                        ..a.clone()
+                    })
+                });
+                let vargs = match &l.vargs {
+                    Some(Some(t)) => f(t).map(|t| Some(Some(t))),
+                    None | Some(None) => None,
+                };
+                let rtype = l.rtype.as_ref().and_then(&mut *f);
+                let constraints =
+                    Type::cow_slice(&l.constraints, |(tv, t)| Some((tv.clone(), f(t)?)));
+                let throws = l.throws.as_ref().and_then(&mut *f);
+                if args.is_none()
+                    && vargs.is_none()
+                    && rtype.is_none()
+                    && constraints.is_none()
+                    && throws.is_none()
+                {
+                    return None;
+                }
+                Lambda(Arc::new(LambdaExpr {
+                    args: args.unwrap_or_else(|| l.args.clone()),
+                    vargs: vargs.unwrap_or_else(|| l.vargs.clone()),
+                    rtype: rtype.or_else(|| l.rtype.clone()),
+                    constraints: constraints.unwrap_or_else(|| l.constraints.clone()),
+                    throws: throws.or_else(|| l.throws.clone()),
+                    ..(**l).clone()
+                }))
+            }
+            TypeCast { expr, typ } => {
+                TypeCast { expr: expr.clone(), typ: Arc::new(f(typ)?) }
+            }
+            Never { typ, args } => {
+                Never { typ: Some(Arc::new(f(typ.as_deref()?)?)), args: args.clone() }
+            }
+            Select(SelectExpr { arg, arms }) => Select(SelectExpr {
+                arg: arg.clone(),
+                arms: Type::cow_slice(arms, |(p, e)| {
+                    let type_predicate = Some(f(p.type_predicate.as_ref()?)?);
+                    Some((Pattern { type_predicate, ..p.clone() }, e.clone()))
+                })?,
+            }),
+            Catch(c) => Catch(Arc::new(CatchExpr {
+                constraint: Some(f(c.constraint.as_ref()?)?),
+                ..(**c).clone()
+            })),
+            TryWith(t) => TryWith(Arc::new(TryWithExpr {
+                constraint: Some(f(t.constraint.as_ref()?)?),
+                ..(**t).clone()
+            })),
+            TypeDef(td) => {
+                let params = Type::cow_slice(&td.params, |(tv, b)| {
+                    Some((tv.clone(), Some(f(b.as_ref()?)?)))
+                });
+                let body = match &td.body {
+                    TypeDefBody::Alias(t) => f(t).map(TypeDefBody::Alias),
+                    TypeDefBody::Abstract(Some(t)) => {
+                        f(t).map(|t| TypeDefBody::Abstract(Some(t)))
+                    }
+                    TypeDefBody::Abstract(None) => None,
+                };
+                if params.is_none() && body.is_none() {
+                    return None;
+                }
+                TypeDef(Arc::new(TypeDefExpr {
+                    params: params.unwrap_or_else(|| td.params.clone()),
+                    body: body.unwrap_or_else(|| td.body.clone()),
+                    ..(**td).clone()
+                }))
+            }
+        };
+        Some(self.rekind(kind))
+    }
 }

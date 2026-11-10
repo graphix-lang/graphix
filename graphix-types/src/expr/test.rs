@@ -3370,6 +3370,42 @@ fn compiler_kinds_children_agree() {
     }
 }
 
+/// `map_written_types` reaches every type a node writes itself, and only
+/// where `f` changes one does it rebuild the node, under the same id.
+#[test]
+fn map_written_types_reaches_each_kind() {
+    let e = parse_one(
+        r#"{
+        let a: 'z = cast<'z>(never<'z>());
+        let f = 'q: 'z |#y: 'z = 1, x: 'z| -> 'z throws 'z x;
+        type Y = 'z;
+        select a { 'z as b => b, _ => 0 };
+        catch(e: 'z) 1;
+        seq let t: 'z = a { try { 1 } with(e: 'z) { 2 } }
+    }"#,
+    )
+    .unwrap();
+    let (mut written, mut rebuilt) = (0, 0);
+    e.fold((), &mut |(), n| {
+        let mut own = 0;
+        assert!(n.map_written_types(&mut |_| None).is_none());
+        if let Some(m) = n.map_written_types(&mut |t| {
+            own += 1;
+            assert!(matches!(t, Type::TVar(tv) if &*tv.name == "z"), "{t}");
+            Some(Type::Bottom)
+        }) {
+            assert_eq!(m.id, n.id);
+            rebuilt += 1;
+            m.map_written_types(&mut |t| {
+                assert_eq!(t, &Type::Bottom);
+                None
+            });
+        }
+        written += own;
+    });
+    assert_eq!((written, rebuilt), (13, 9));
+}
+
 /// An image shares an expression only with a clone of the same tree: a
 /// clone that differs in a decoration, its own or a child's, is another.
 #[test]
