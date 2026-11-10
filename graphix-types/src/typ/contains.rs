@@ -2660,42 +2660,6 @@ impl Type {
                         return tr0.hold_bounds_with(tr1, env, commit);
                     }
                 }
-                // XCR claude for claude: [perf/high] The expansion walk over a recursive
-                // definition whose open cells stay open enumerates paths: each application is
-                // answered under ContainsHist::assuming and forgotten, expand_ref caches no
-                // expansion whose params hold a cell, and the probe memo keys by content
-                // identity, so a sibling meeting the same application walks it again. Over
-                // `type D<'a0, 'a1, 'a2, 'a3> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2,
-                // 'a3>), `Y(D<'a1, 'a2, 'a3, 'a0>)]` and an identical F, `let outer = |k:
-                // D<'q0, 'q1, 'q2, 'q3>, z: 'q0| z; let g: fn(k: F<Any, Any, Any, Any>, z: i64)
-                // -> i64 = outer` hangs on main 3cfcd2407 (killed at 30 s; three params take
-                // 0.5 s). The same-definition shortcut above keeps D against D off this walk,
-                // which is why typedef-param-equality-01's fix was reverted. A fix memoizes
-                // probe verdicts over open-cell applications by application key, reused
-                // across siblings once their assumptions are answered. probes:
-                // ~/ptmp/cr29/scratch/r19/19f/review-tpe/{permx4,permc4,pb0}.gx
-                // (typedef-open-expansion-01)
-                // 2026-11-10 claude: The probe memo keys a name applied over a cell
-                // (ContainsHist::open_app) by its application (pair_key: its definition and its
-                // parameters' content, a cell by identity, the walk holding each such cell
-                // through TypeRef::key_cells), and a commit over such an application that holds
-                // under an assumption still in progress is kept provisionally, as a probe's
-                // verdict is, and dropped when the assumption is answered otherwise. permx4.gx:
-                // killed at 60 s on base-r20, checks in 0.17 s. contains steps over 3 / 4 / 5
-                // parameters: a commit 47527 / hang before, 2368 / 33333 / 795732 now (about 55
-                // per pair of applications: the trials place_in_order runs on copies make it
-                // once per application per application), a probe 115 / 457 / 2281 (19 an
-                // application). Pins that fail without it:
-                // typ::contains::tests::open_applications_of_a_recursive_definition_are_walked_once
-                // (fails at 3 parameters),
-                // lang::types::open_applications_of_recursive_typedefs_check (hangs),
-                // an_application_key_holds_its_cells (fails without the cell hold);
-                // a_kept_verdict_over_open_applications_is_the_pairs_own fails when a
-                // provisional commit survives a failed assumption (and hangs without the memo).
-                // Census of 2949 files unchanged, regress 0, typemorph-scan 400 with 0 flips,
-                // guicheck 40.52G base (40.46 to 40.59) against 40.58G (40.53 to 40.63). The
-                // same-definition shortcut is untouched (typedef-param-equality-01). Design:
-                // tvar_constraints.md, Containment over a pair of definitions. Needs a soak.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
