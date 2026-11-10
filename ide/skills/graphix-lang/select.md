@@ -91,6 +91,8 @@ no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }
 ok let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [i64, null] select x { [h, ..] => h.0, _ => null }; g([(3, 4)])
+no "not decided at this select" type W<'a> = Abstract<'a>; |x| select W((x, 0)).0 { (`J, _) => 1, (`M, _) => 2 }
+no "Array<(i64, i64)> as [(a, b), ..]" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> i64 select x { [(a, b), ..] => a, _ => 0 }
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }

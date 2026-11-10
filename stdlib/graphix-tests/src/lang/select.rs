@@ -8413,8 +8413,7 @@ run!(
 );
 
 // What reaches the next arm unfolds a pair of definitions once on a path,
-// then subtracts nothing there: names that recur through Error payloads,
-// and a definition whose parameters grow, end.
+// then subtracts nothing there: names that recur through Error payloads end.
 run!(
     coverage_over_names_recurring_through_errors_ends,
     r#"{

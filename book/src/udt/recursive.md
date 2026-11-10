@@ -46,8 +46,34 @@ Caused by:
 ```
 
 Passing a parameter to another position (`type S<'a, 'b> = [`Nil, `C('a, S<'b,
-'a>)]`), replacing it with a type that holds no parameter (`N<Array<i64>>`), or
-adding members to it as a union (`N<['a, null]>`) is fine.
+'a>)]`) or replacing it with a type that holds no parameter (`N<Array<i64>>`)
+is fine, and so is adding members to it as a union written out in place
+(`N<['a, null]>`). The check compares the application as written, so an alias
+counts as a constructor around the parameter, even one that expands to such a
+union: `N<Opt<'a>>` over `type Opt<'a> = ['a, null]` is refused where `N` is
+defined, and the written-out union beside it is not.
+
+```graphix,refused
+type Opt<'a> = ['a, null];
+type N<'a> = [`Nil, `Cons('a, N<Opt<'a>>)];
+let n: N<i64> = `Nil;
+n
+```
+
+```
+$ graphix test.gx
+Error: in file test.gx
+
+Caused by:
+    0: at: line: 2, column: 1 in file test.gx, in: type N<'a> = [`Cons('a, N<Opt<'a>>), `Nil]
+    1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
+```
+
+```graphix
+type N<'a> = [`Nil, `Cons('a, N<['a, null]>)];
+let n: N<i64> = `Nil;
+n
+```
 
 Anyway, lets define some functions to work on our new list type,
 
