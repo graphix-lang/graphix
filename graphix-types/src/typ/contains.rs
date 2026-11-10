@@ -287,6 +287,15 @@ impl ContainsHist {
         t.shared_identity().is_some() && self.closure(t, false) == Closure::NoCell
     }
 
+    // CR claude for claude: [risk/low] Two walk memos key a var by its cell's address
+    // without holding the cell: ContainsHist::closure pins the var, which a merge
+    // re-points, so a fresh cell may later take the freed address and its key's verdict
+    // (a stale Closed turns a commit into a probe); RefHist::ref_id's content_ids holds
+    // nothing, so an assumption in progress could answer for a fresh cell's pair. Not
+    // shown reachable: a merge abandons only an open cell, cached Open, and a walk holds
+    // the vars it compares. Holding the cell (TVar::cell) beside each such key closes
+    // both. Found beside union-dag-rigid-cell-01, whose probe memo keys a var by its
+    // wrapper instead. (cell-addr-keys-01)
     fn closure(&mut self, t: &Type, now: bool) -> Closure {
         ensure_sufficient(|| {
             let key = t.shared_identity();
@@ -328,7 +337,7 @@ impl ContainsHist {
         })
     }
 
-    // CR claude for claude: [perf/medium] A rigid cell refused against a DAG of named
+    // XCR claude for claude: [perf/medium] A rigid cell refused against a DAG of named
     // unions is refused in time exponential in the DAG's depth: the probe memo keys no
     // cell, so `L<n> ⊇ 'a` (`L<i> = [L<i-1>, M<i-1>]`, `M<i>` the same) walks each
     // expansion once per path under set_commit's member probes. `let f = |x0: 'a| { let
@@ -344,6 +353,23 @@ impl ContainsHist {
     // address (TypeRef::key_cells into app_cells; lane 20c, typedef-open-expansion-01;
     // pin typ::contains::tests::an_application_key_holds_its_cells): the same hold would
     // make a bare cell's address a safe probe key.
+    // 2026-11-10 claude: The probe memo now keys a var by its wrapper (memo_key,
+    // TVar::wrapper_addr), not its cell: the entry's existing pin of the var holds the
+    // wrapper, so no later var takes its address, and everything a verdict reads of a var
+    // is its immutable name or behind a counted write (a merge's re-point of the link and
+    // every cell write count in cell_writes), so the epoch drops the verdict when either
+    // changes. That needs no cell pin; aliases of one cell are judged apart, which only
+    // loses sharing. Pins that fail without it:
+    // typ::contains::tests::a_rigid_var_against_a_dag_of_named_unions_takes_polynomial_steps
+    // (n=4 took 102 steps over its 64; base 102/1662/26622/425982 at n=4/8/12/16, now
+    // 35/67/131/259 at 4/8/16/32) and deep_nesting
+    // a_refusal_against_a_dag_of_named_unions_is_linear's declared-var case (10.1G over
+    // its 10G budget). a_probe_verdict_on_a_var_is_not_a_later_vars fails with the pin
+    // removed and a_probe_verdict_on_a_var_follows_its_cell with the epoch check removed.
+    // --no-cache --check, debug, instructions: rig14/16/18 0.93G/1.42G/3.41G to
+    // 0.77G/0.77G/0.77G, rig60 0.87G (empty 0.75G). Census 2949 files: 0 verdict or
+    // message changes; guicheck 40.54G to 40.59G; regress 567 programs, 0 regressions or
+    // manifest mismatches.
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
     /// or not, if current. A provisional one passes the assumptions it
     /// rests on to the verdict reading it.
@@ -501,13 +527,17 @@ impl ContainsHist {
         matches!(t, Type::Ref(tr) if !tr.params.is_empty()) && !self.holds_no_cell(t)
     }
 
-    /// The key a probe's side is held under: its node's identity, or an
-    /// [`Self::open_app`]'s [`Self::pair_key`], once its name is resolved.
+    /// The key a probe's side is held under: its node's identity; an
+    /// [`Self::open_app`]'s [`Self::pair_key`], once its name is resolved;
+    /// a var's wrapper, which the entry's pin holds. Of a var a verdict
+    /// reads its name and what its link and cells hold, each changed only
+    /// by a counted write ([`cell_writes`]).
     #[inline]
     fn probe_side(&mut self, t: &Type) -> Option<NormKey> {
-        match self.open_app(t) {
-            true => self.pair_key(t).or_else(|| probe_key(t)),
-            false => probe_key(t),
+        match t {
+            Type::TVar(tv) => Some((mem::discriminant(t), tv.wrapper_addr(), 0)),
+            t if self.open_app(t) => self.pair_key(t).or_else(|| probe_key(t)),
+            t => probe_key(t),
         }
     }
 
@@ -4360,6 +4390,78 @@ mod tests {
                 assert!(heads <= 8 * n, "n={n}: L{n} ⊇ {leaf} named {heads} heads");
             }
         }
+    }
+
+    // A declared var against a DAG of named unions, 2^n paths deep, is
+    // refused in steps linear in n, and held through a conjunct a name
+    // below reaches in steps quadratic in n.
+    #[test]
+    fn a_rigid_var_against_a_dag_of_named_unions_takes_polynomial_steps() {
+        for n in [4, 8, 16, 32] {
+            let defs = union_dag(n, "[null, Error<`E>, `A]", "[null, `B]");
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+            let (env, l) = Env::typed_at_root(&defs, &format!("L{n}")).unwrap();
+            for (conjunct, bound) in [(None, 16 * n), (Some("`B"), 16 * n * n)] {
+                let a = var("a");
+                if let Some(c) = conjunct {
+                    a.add_cell_constraint(at_root(&env, c));
+                }
+                let _gate = a.open_rigid();
+                CONTAINS_STEPS.with(|n| n.set(0));
+                let r = l.check_contains(&env, &Type::TVar(a.clone()));
+                match (r, conjunct) {
+                    (Ok(()), Some(_)) => (),
+                    (Err(e), None) => {
+                        let m = format!("L{n} does not contain 'a");
+                        assert!(e.to_string().contains(&m), "n={n}: {e}")
+                    }
+                    (r, _) => panic!("n={n}: L{n} ⊇ {a}: {r:?}"),
+                }
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                assert!(steps <= bound, "n={n}: L{n} ⊇ {a} took {steps} steps");
+            }
+        }
+    }
+
+    // The probe memo keys a var by the var itself and holds it: a var
+    // dropped after its verdict lends its address to no later var, so a
+    // later var bound otherwise is judged by its own binding.
+    #[test]
+    fn a_probe_verdict_on_a_var_is_not_a_later_vars() {
+        let defs = union_dag(2, "[null, `A]", "[null, `B]");
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, l) = Env::typed_at_root(&defs, "L2").unwrap();
+        let mut hist = ContainsHist::new();
+        let probe = BitFlags::from(ContainsFlags::RigidCheck);
+        for _ in 0..64 {
+            let open = Type::TVar(var("v"));
+            assert!(l.contains_int(probe, &env, &mut hist, &open).unwrap());
+            drop(open);
+            let s = Type::TVar(TVar::named(literal!("w"), prim(Typ::String)));
+            assert!(!l.contains_int(probe, &env, &mut hist, &s).unwrap());
+        }
+    }
+
+    // A verdict on a var is the var's as it stands: a rigid gate opened
+    // after an open var's verdict refuses what the open var held, and so
+    // does a merge into a cell bound outside the union.
+    #[test]
+    fn a_probe_verdict_on_a_var_follows_its_cell() {
+        let defs = union_dag(2, "[null, `A]", "[null, `B]");
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+        let (env, l) = Env::typed_at_root(&defs, "L2").unwrap();
+        let mut hist = ContainsHist::new();
+        let probe = BitFlags::from(ContainsFlags::RigidCheck);
+        let a = var("a");
+        let t = Type::TVar(a.clone());
+        assert!(l.contains_int(probe, &env, &mut hist, &t).unwrap());
+        let gate = a.open_rigid();
+        assert!(!l.contains_int(probe, &env, &mut hist, &t).unwrap());
+        drop(gate);
+        assert!(l.contains_int(probe, &env, &mut hist, &t).unwrap());
+        a.alias(&TVar::named(literal!("s"), prim(Typ::String)));
+        assert!(!l.contains_int(probe, &env, &mut hist, &t).unwrap());
     }
 
     // What one walk keeps is each pair's verdict wherever it is met: the

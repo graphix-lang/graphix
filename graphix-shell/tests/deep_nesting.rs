@@ -1380,9 +1380,9 @@ fn a_foreign_write_refusal_beside_a_shared_type_dag_is_linear() {
     );
 }
 
-/// A value refused against a DAG of named unions (`L<i> = [L<i-1>,
-/// M<i-1>]`, `M<i>` the same) is refused, with its message, in time linear
-/// in the DAG's depth, where its paths are 2^depth.
+/// A value or a declared var refused against a DAG of named unions
+/// (`L<i> = [L<i-1>, M<i-1>]`, `M<i>` the same) is refused, with its
+/// message, in time linear in the DAG's depth, where its paths are 2^depth.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_refusal_against_a_dag_of_named_unions_is_linear() {
@@ -1394,10 +1394,14 @@ fn a_refusal_against_a_dag_of_named_unions_is_linear() {
         types
             .push_str(&format!("type L{i} = [L{p}, M{p}];\ntype M{i} = [L{p}, M{p}];\n"));
     }
-    for (value, shown) in
-        [("\"foo\"", "string"), ("{ let v: Any = 1; v }", "Any"), ("`C", "`C")]
-    {
-        let program = format!("{types}let x: L{DEPTH} = {value};\nx?\n");
+    let value = |value: &str| format!("let x: L{DEPTH} = {value};\nx?\n");
+    for (program, shown) in [
+        (value("\"foo\""), "string"),
+        (value("{ let v: Any = 1; v }"), "Any"),
+        (value("`C"), "`C"),
+        (format!("let f = |x0: 'a| {{ let x: L{DEPTH} = x0; x }};\nf(1)\n"), "'a"),
+    ] {
+        let program = format!("{types}{program}");
         let out = exits_within(
             &["--check", "--no-cache"],
             &[("program.gx", &program)],
