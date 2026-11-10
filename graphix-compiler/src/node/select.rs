@@ -3428,26 +3428,6 @@ fn written_tests_decided(
     }))
 }
 
-// XCR claude for claude: [bug/low] A reference's referent cell is named after the
-// expression that made it, so the refusal tells the user to write a type for a name
-// no one can write: `|x| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1,
-// ((`M, _), _) => 3 } }` is refused "((`J, _), _) tests a value of '&mut (x, 0) ...:
-// annotate it, writing for '&mut (x, 0) the type of `&mut (x, 0)`". Annotating `x`
-// (or `r`) is the fix the message should name; `lower_view` meets `x` there, after
-// the arm's reaching type met the referent. Same on base-r19. probe:
-// ~/ptmp/cr29/scratch/r19/19a/w2.gx (undecided-lower-bound-02)
-// 2026-11-10 claude: A reference to an expression no binding names now marks its
-// referent's binding env::Binder::Referent, and Holders::nameable (Holders::new,
-// name_part) skips it as it skips a lowering's, so the refusal names a binding that
-// holds the reference: w2 is refused "... tests a value whose type is a part of 'r
-// ...: annotate it, writing for 'r the type of `r`". Annotating x does not fix w2
-// (the referent is a cell of its own: |x: [`J, `M]| is still refused), annotating r
-// does, so the hint names r, not x. Pins in lang::select_undecided fail without it
-// (12 runs): tag_deciding_a_referent_names_the_reference_refused,
-// tag_deciding_a_referent_of_an_annotated_part_names_the_reference_refused,
-// tag_deciding_a_referent_through_a_call_names_the_reference_refused; twin
-// tag_over_an_annotated_reference; skill select.md cases. The other two hints over
-// such a cell are referent-holder-name-01.
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
 /// at its select, naming the binding whose type it is or holds it.
 fn undecided_refusal(
