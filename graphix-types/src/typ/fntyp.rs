@@ -1771,35 +1771,6 @@ impl FnType {
         Ok(())
     }
 
-    // XCR claude for claude: [bug/medium] A val whose quantifier occurs only inside
-    // another's bound accepts an implementation that bounds it differently, and the
-    // build refuses each call the signature admits and the implementation does not:
-    // `val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;` over `let f = 'a:
-    // [i64, f64], 'b: ['a, `X] |x: 'b| -> 'b x` passes --check with `m::f("s")` in
-    // main, then the run fails "an instance at fn(x: string) -> string of a
-    // definition typed fn<'a: [i64, f64], ..". The same with 'a written at a
-    // position (`(x: 'a) -> 'a`) is refused ("the implementation requires 'a: [i64,
-    // f64], which the signature does not declare"); a chain of three ('c: ['a,
-    // null], 'b: ['c, `X]) is accepted the same way. On base-r19 and lane 19c alike.
-    // probes: ~/ptmp/cr29/scratch/r19/19c/rv/{p10,p7,p11}/main.gx
-    // (iface-bound-only-01)
-    // 2026-11-10 claude: FnType::sig_bounds now pairs the signature's bounds with
-    // the implementation's in passes, settling the deferred unions between passes,
-    // until a pass pairs nothing new, and its impl cells close through bounds to any
-    // depth (they stopped one bound below a position); SigPairs::finish no longer
-    // settles after the judgment. p10 (union bound), p7 (chain of three) and a third
-    // shape, a variable met only through a bound later in the signature (sig 'a:
-    // Array<'z>, 'b: Array<'a>, 'z: [i64, string] over 'p: Array<'r>, 'q: Array<'p>,
-    // 'r: [i64, f64]), are all refused 'the implementation requires ..: [i64, f64],
-    // which the signature does not declare'. Pins in lang::interfaces:
-    // a_bound_inside_a_union_bound_must_be_declared,
-    // a_chain_of_union_bounds_must_be_declared,
-    // a_bound_met_through_a_later_bound_must_be_declared fail with the fix undone
-    // (the last two also with only the closure or only the second pass undone);
-    // twins a_declared_chain_of_union_bounds_holds,
-    // a_wider_bound_inside_a_union_bound_holds,
-    // a_wider_bound_met_through_a_later_bound_holds run. Census of both repos
-    // unchanged; guicheck 40.54G -> 40.58G.
     /// The bounds of a signature against its implementation's, once the
     /// whole signature has paired its variables ([`SigPairs::finish`]).
     pub(super) fn sig_bounds(
