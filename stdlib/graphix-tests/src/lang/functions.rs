@@ -3245,6 +3245,52 @@ run!(optional_field_defaults_of_two_types, r#"{
     select s.f { null as _ => "n", f => f(7) }
 }"#, refused("the functions met here share one #d"); FuseExpect::None);
 
+// A field read over members of two shapes meets the fields it joins.
+run!(optional_field_of_two_shapes_defaults_of_two_types, r#"{
+    let i = 0;
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let s = select i { 0 => {f: o1, a: 1}, _ => {f: o2, b: 2} };
+    select s.f { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(optional_position_of_two_arities_defaults_of_two_types, r#"{
+    let i = 0;
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let t = select i { 0 => (o1, 1), _ => (o2, "s", 3) };
+    select t.0 { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(any_of_optional_defaults_of_two_types, r#"{
+    let i = 0;
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let o = any(o1, i ~ o2);
+    select o { null as _ => "n", f => f(7) }
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+// A lambda beside a declared variable's optional callback takes the
+// variable; one of a concrete type beside it is no one function.
+run!(lambda_beside_a_generic_optional_callback, r#"{
+    let g = |cb: [fn(x: 'a) -> 'a, null], v: 'a, b: bool| {
+        let h = select b { true => cb, false => |x| x };
+        select h { null as _ => v, f => f(v) }
+    };
+    "[g(|s: string| "[s]!", "k", true)] [g(null, 3, false)]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "k! 3"); FuseExpect::None);
+
+run!(concrete_lambda_beside_a_generic_optional_callback, r#"{
+    let g = |cb: [fn(x: 'a) -> 'a, null], v: 'a, b: bool| {
+        let h = select b { true => cb, false => |x: i64| x + 1 };
+        select h { null as _ => 0, f => f(2) }
+    };
+    g(|s: string| "[s]!", "k", true)
+}"#, refused("expected fn not"); FuseExpect::None);
+
 run!(optional_defaults_annotated, r#"{
     let j = 0;
     let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };

@@ -1424,6 +1424,27 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     let contain = |t: &Type| t.check_contains_rigid(&ctx.env, &body);
                     let rtype = &self.typ.rtype;
                     wrap!(self.body, contain(rtype))?;
+                    // CR claude for claude: [bug/medium] A function read out of a declared
+                    // return type that is a typedef application whose body holds it is called
+                    // with no default judged: `type W<'z> = {cb: fn(?#d: 'z, x: i64) ->
+                    // string, n: i64}; let mk = |j: i64| -> W<'z> {cb: |#d = 1, x: i64|
+                    // cast<string>(d)$, n: 1}; let w = mk(0); println(w.cb(7))` passes
+                    // --check, then the run prints nothing and logs "w.cb(7): binding the
+                    // callee failed: .. in: 1: type mismatch 'z: _ does not contain i64: it
+                    // holds the type of `w`". The judgment below is on a copy, and the
+                    // function `w.cb` reads comes from an expansion of W, which seems to
+                    // carry none of the body's lambda ids (Type::contains_int's Fn arm links
+                    // them onto the declared function, here one of a dropped expansion), so
+                    // 'z stays open at every call and settles to `_`. The structural return
+                    // type (`-> {cb: fn(?#d: 'z, x: i64) -> string, n: i64}`) prints 1 and
+                    // two such definitions met in a select are refused, "the functions met
+                    // here share one #d"; `-> W<i64>` and `let w: W<i64> = mk(0)` print 1.
+                    // A variant typedef and an optional field do the same. Base-r20 alike;
+                    // no union is involved (found reviewing union-set-alternative-meet-01).
+                    // probes: ~/ptmp/cr29/scratch/r20/20f/rev-usam/{w_single_ret,
+                    // x_single_struct_ret,x_single_ret_closed,x_single_ret_annot,
+                    // u_struct_ref_ret_bare,u_struct_ref_ret,u_variant_ref}.gx
+                    // (typedef-return-defaults-01)
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,
