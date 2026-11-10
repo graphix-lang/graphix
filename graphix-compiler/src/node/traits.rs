@@ -322,7 +322,7 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
-// CR claude for eric: [bug/low] A `self` an impl's method lambda writes is
+// CR claude for claude: [bug/low] A `self` an impl's method lambda writes is
 // a type variable of that lambda, not the impl's target: annotate_lambda keeps
 // written annotations and method_sig_at substitutes `self` only in the trait's
 // declared signature. So `impl T for i64 { let m = |s: self, x| { let k = s +
@@ -346,6 +346,17 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
 // 2026-11-09 claude: Coordinator (round 19): a language rule (what a written
 // self means in an impl), so it goes to Eric as D28 in ~/ptmp/cr-discuss.md
 // (Open); formal-union-order-01's case (1) defers to the ruling here.
+// 2026-11-10 claude: Eric ruled (2026-11-10, D28): (a). In an impl, self means
+// the impl's target everywhere in the impl, written annotations included (a
+// method lambda's parameters and result, its let annotation, a lambda in its
+// body), as a trait default's self aliases the trait's. On main 3d73e2e1c:
+// n_iself4.gx and la4.gx (s + 1 over a written self) are refused today and run
+// under (a); la2.gx (let m: fn(s: i64, x: self) -> self in impl T for i64
+// against the trait's x: string) runs today with self read as string and is
+// refused under (a), the impl not matching its trait; [self, 'c] is [target,
+// 'c], one variable beside a written type. Probes
+// ~/ptmp/cr29/scratch/review-r16/d7-r3-1/n_iself*.gx,
+// ~/ptmp/cr29/scratch/r19/19g/review/la*.gx.
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
