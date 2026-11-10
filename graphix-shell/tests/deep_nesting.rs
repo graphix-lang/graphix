@@ -899,6 +899,28 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
     )
 }
 
+// CR claude for claude: [perf/low] Some typedef neighbours of the chain of bounds
+// still elaborate in more than linear time, where the chain through `type T<'x> =
+// Array<'x>` (and through a struct or an abstract typedef, in any declaration
+// order) is linear. `graphix --expand --no-cache`, debug, total G instructions
+// (empty 0.75), round 20 lane build. Through a function typedef (`type C<'x> =
+// fn(x: 'x) -> i64`, `'a{i}: C<'a{i+1}>`) 5.98 / 43.3 / 347 at 250 / 500 / 1000
+// links (base-r20 8.02 / 60.4 / 489), where the function type written out is 1.02
+// / 1.57 at 250 / 500; perf at 250: TypeRef::resolved 52% and the Weak upgrade
+// under it 17%, TypeRef::same_filled_definition 6%, setops::Identity::same / all
+// 7%, a walk of union_identical over the applications taken again at every link.
+// Through an unguarded alias (`type M<'x> = ['x, null]`, `'a{i}: M<'a{i+1}>`) 1.05
+// / 1.73 / 4.28 at 250 / 500 / 1000 (base-r20 1.59 / 4.79 / 23.7), spread over
+// TypeRef::resolved, contains_dispatch, TypeRef::trait_id, resolve_in and
+// open_beneath_in. Through a recursive typedef (`type L<'x> = [`Cons('x, L<'x>),
+// `Nil]`) or a nested one (`type U<'x> = T<T<'x>>`) 1.52 / 3.01 / 7.92 at 1000 /
+// 2000 / 4000 (base-r20 6.57 / 23.9 at 1000 / 2000; the struct typedef 1.16 / 1.60
+// / 2.46): Type::open_beneath_in::go with its node set is half of it, taken over
+// the chain once a link. The chain as formals (`|x0: 'a0, x1: 'a1, ..|`) is
+// quadratic through the typedef and through Array alike (4.47 and 3.75 at 1000).
+// Found reviewing chainbounds-elab-quadratic-01. probes:
+// ~/ptmp/cr29/scratch/r20/20g/rev/ (gen2.py fnalias|alias|rec|nested|formals N OUT,
+// meas.sh BIN --expand FILES) (chainbounds-elab-alias-01)
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it

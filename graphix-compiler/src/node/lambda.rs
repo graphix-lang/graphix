@@ -1344,6 +1344,23 @@ impl Typing {
         matches!(self, Typing::Substituted(..)) && dbgenv::graphix_no_subst()
     }
 
+    // CR claude for claude: [bug/medium] A call that passes `never()` to a function
+    // whose formal holds three links of a chain of bare union bounds passes --check
+    // and its build refuses the instance: `let f = 'a0: ['a1, null], 'a1: ['a2, null],
+    // 'a2: ['a3, null], 'a3: Number |x: ('a0, 'a1, 'a2)| x; f(never())` runs to "an
+    // instance at fn(x: ([null, [null, Number]], [null, Number], [null, Number])) ->
+    // .. of a definition typed fn<'a0: [null, 'a1: ..". GRAPHIX_ELAB_AUDIT reports
+    // instance-signature at `x`; GRAPHIX_NO_SUBST=1 builds and runs it, so the check
+    // is right and InstanceTypes::new refuses a signature it should take. Two links
+    // build, and so do three with a decided argument (`f((1, 1, 1))`), with the
+    // argument annotated (`let v: (i64, i64, i64) = never(); f(v)`), with `|x: 'a0|`
+    // alone, and with the bounds written through a typedef (`type M<'x> = ['x,
+    // null]`, `'a0: M<'a1>`); other members (`['a1, string]`, `['a2, bool]`) are
+    // refused alike. The instance's `'a0` prints as the nested union the bounds
+    // settle it to, `[null, [null, Number]]`. base-r20 and the round 20 lane build
+    // alike. Found reviewing chainbounds-elab-quadratic-01. probes:
+    // ~/ptmp/cr29/scratch/r20/20g/rev/{m9x,c1,c2,c3,c4,c5,c6}.gx
+    // (inst-bare-union-never-01)
     fn instance_types<R: Rt>(
         &self,
         ctx: &CompileCtx<R>,
