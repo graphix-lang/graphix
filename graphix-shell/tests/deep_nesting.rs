@@ -807,6 +807,18 @@ fn a_chain_of_bounds_checks_in_linear_time() {
 // cells so a lower bound already held answers). probes:
 // ~/ptmp/cr29/scratch/r19/19b/cnb/ (gen.py SHAPE N OUT, genvar.py for the
 // Ordered/ambiguous twins, genr2.py, meas.sh)
+// 2026-11-09 claude: Review (r19 lane 19b) of the second-conjunct cut: the
+// stored verdict (TCell::judged) assumed environments only grow, and a REPL
+// input that fails takes its impls with it: after 'impl Eq for U {..}; let r =
+// u == u; let bad: i64 = "s"' fails, a later 'u == u' over 'let u = [U(f)]' was
+// accepted (base refuses: U has no Eq implementation), and the Ord twin alike.
+// Corrected: rep_ambiguity's walk now marks Expanded::env_read when it reads
+// the environment's word on a type (an abstract's implementation or
+// representation, a head it cannot resolve, rep_collision's same) and keeps no
+// verdict from then on. Pins: graphix-shell tests/shell/rolled_back_impl.rs
+// (both fail on 243d14dd0). twoconj 1000 / 2000 / 4000 1.16 / 1.40 / 1.89 G,
+// Ordered twin 1.42 at 2000, unchanged; census 2949 files vs base-r19: 0
+// verdict, 0 message changes; GUI --check 40.58 G (base 40.53).
 /// A chain of bounds through function types checks in time linear in its
 /// length: a walk meets each link's conjunct once however many function
 /// types name its variable, whether it aliases names, counts occurrences,

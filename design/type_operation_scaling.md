@@ -84,8 +84,12 @@ structure is returned SHARED, never copied.
   judgment of its binding found nothing (`TCell::judged`, one slot each
   for `Discernible` and `Ordered`), read and written only where no
   application or abstract representation is in progress on the walk's
-  path, so the verdict rests on nothing the walk assumed. A key
-  judgment (`map_key_failure`) keeps none.
+  path, so the verdict rests on nothing the walk assumed. A walk that
+  read the environment's word on a type (an abstract's `Eq`/`Ord`
+  implementation or representation, a head it could not resolve) keeps
+  none from then on: environments are not ordered (a REPL input that
+  fails takes its impls with it), so such a verdict is not the
+  binding's alone. A key judgment (`map_key_failure`) keeps none.
 
 **`flatten_set` worklist.** The accumulator is merge-saturated by
 invariant, so only the incoming (or just-merged) element can enable a

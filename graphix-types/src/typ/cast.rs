@@ -2331,6 +2331,10 @@ struct Expanded<
     built: LPooled<Vec<Type>>,
     /// How many applications the walk is inside.
     depth: usize,
+    /// Whether the walk read what the environment says of a type (an
+    /// abstract's implementations or representation, a head it could not
+    /// resolve): a verdict it reached holds in this environment only.
+    env_read: bool,
 }
 
 impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Default
@@ -2342,6 +2346,7 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Defau
             clear: LPooled::take(),
             built: LPooled::take(),
             depth: 0,
+            env_read: false,
         }
     }
 }
@@ -2469,6 +2474,7 @@ fn rep_collision(
                         .flatten()
                 };
             let (ha, hb) = (rep_head(env, a), rep_head(env, b));
+            seen.env_read |= ha.is_none() || hb.is_none();
             let node = ha
                 .as_deref()
                 .and_then(super::node_addr)
@@ -2532,6 +2538,7 @@ fn rep_collision(
                         a @ Type::Abstract { id: x, params: px },
                         b @ Type::Abstract { id: y, params: py },
                     ) if x == y => {
+                        seen.env_read = true;
                         let rust_backed = env.abstract_reps.get(x).is_none();
                         let same = px.len() == py.len()
                             && px
@@ -2668,13 +2675,17 @@ fn rep_ambiguity(
             && seen.depth == 0
             && let Type::TVar(tv) = t
             && let Some(r) = tv.ground_verdict(refs as usize, |b| {
-                rep_ambiguity(env, seen, open, keys_only, refs, b)
+                let r = rep_ambiguity(env, seen, open, keys_only, refs, b);
+                (r, !seen.env_read)
             })
         {
             return r;
         }
         walk(seen, ref_at(t), None, |seen| {
-            let head = rep_head(env, t)?;
+            let Some(head) = rep_head(env, t) else {
+                seen.env_read = true;
+                return None;
+            };
             let r = seen.once(super::node_addr(&head), |seen| {
             let t = &*head;
             let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
@@ -2688,12 +2699,14 @@ fn rep_ambiguity(
                     Some(Indiscernible::Numbers(t.clone()))
                 }
                 Type::Set(ts) => {
+                    let mut pairs_read = false;
                     if !keys_only {
                         for (i, a) in ts.iter().enumerate() {
                             for b in &ts[i + 1..] {
+                                let mut pair_seen = RepSeen::default();
                                 let c = rep_collision(
                                     env,
-                                    &mut RepSeen::default(),
+                                    &mut pair_seen,
                                     false,
                                     open,
                                     ordered,
@@ -2703,10 +2716,13 @@ fn rep_ambiguity(
                                 if c.is_some() {
                                     return c;
                                 }
+                                pairs_read |= pair_seen.env_read;
                             }
                         }
                     }
-                    parts(&mut ts.iter())
+                    let r = parts(&mut ts.iter());
+                    seen.env_read |= pairs_read;
+                    r
                 }
                 Type::Map(m) => {
                     let keys = match keys_only {
@@ -2731,6 +2747,7 @@ fn rep_ambiguity(
                     Some(Indiscernible::Unordered(t.clone()))
                 }
                 Type::Abstract { id, params } => {
+                    seen.env_read = true;
                     let kind = if ordered { CoreTrait::Ord } else { CoreTrait::Eq };
                     let rep = compared_rep(env, *id, params, kind)?;
                     let inside = walk(

@@ -1802,13 +1802,14 @@ impl TVar {
 
     /// `judge` of the cell's binding when it reaches no open cell
     /// ([`Self::ground_now`]), else `None`. A judgment that found nothing
-    /// at the current [`GROUND_EPOCH`] finds nothing again while the epoch
-    /// stands, so the cell keeps it, one slot per judgment, and is not
-    /// judged again.
+    /// at the current [`GROUND_EPOCH`], and says it rests on the binding
+    /// alone (`judge`'s flag), finds nothing again while the epoch stands,
+    /// so the cell keeps it, one slot per judgment, and is not judged
+    /// again.
     pub(super) fn ground_verdict<R>(
         &self,
         slot: usize,
-        judge: impl FnOnce(&Type) -> Option<R>,
+        judge: impl FnOnce(&Type) -> (Option<R>, bool),
     ) -> Option<Option<R>> {
         let epoch = ground_epoch();
         let (cell, binding) = {
@@ -1822,8 +1823,8 @@ impl TVar {
                 _ => return None,
             }
         };
-        let r = judge(&binding);
-        if r.is_none() && ground_epoch() == epoch {
+        let (r, keep) = judge(&binding);
+        if r.is_none() && keep && ground_epoch() == epoch {
             let mut c = cell.0.write();
             if c.ground == epoch {
                 c.judged[slot] = epoch

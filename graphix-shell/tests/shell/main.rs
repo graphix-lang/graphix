@@ -37,6 +37,7 @@ mod no_subst;
 mod profile_instances;
 mod program_args;
 mod repl_interrupt;
+mod rolled_back_impl;
 mod sandbox_whitelist;
 mod script_exit;
 mod script_interface;
