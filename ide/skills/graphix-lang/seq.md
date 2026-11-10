@@ -100,6 +100,9 @@ no trigger it runs at every entry of its statement and the outer step
 waits for it (two cycles over inline). With a trigger, it runs at its
 step's entry if the trigger fired since a step of the seq last read it,
 before this run included: a step is owed the fires it missed, once, as a
-woken arm is. So is a builtin under `live`: `until live(ready);
-live(count(ev))` counts an `ev` that fired while the `until` waited. `graphix --expand` shows the machine.
+woken arm is. Do not rely on it waiting in a later run: once it has run
+it starts again at each entry of its step, on its trigger's last value.
+A builtin under `live` is owed missed fires too: `until live(ready);
+live(count(ev))` counts an `ev` that fired while the `until` waited.
+`graphix --expand` shows the machine.
 `range(i, j)` is the integer sequence builtin (throws `` `RangeError ``).

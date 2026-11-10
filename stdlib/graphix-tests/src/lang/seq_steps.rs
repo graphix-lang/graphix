@@ -383,9 +383,104 @@ async fn a_callee_bound_at_a_step_entry_is_caught_up(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A fire stays owed until a step reads it: one made before the first run
+// and one made between two runs each reach the next entry of the step that
+// reads the input.
+async fn a_fire_no_step_read_is_owed_to_the_next_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 14 => n + 1, _ => never() };
+        let go = select step { 3 | 10 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 1 | 7 => step, _ => never() };
+        seq go { live(count(ev)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1, 1]);
+    Ok(())
+}
+
+// The step awake when an input fires reads it then, and spends it: the
+// next run is owed nothing and waits.
+async fn a_fire_an_awake_step_read_is_not_owed_again(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 14 => n + 1, _ => never() };
+        let go = select step { 1 | 8 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 3 => step, _ => never() };
+        seq go { live(count(ev)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1]);
+    Ok(())
+}
+
+// So does a step that read the input only through a reference whose
+// target it learned as it ran: the first step counts `x`'s 3 live, and the
+// last, which names `x`, waits for the 9.
+async fn a_fire_read_through_a_reference_is_spent(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 14 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let x = never();
+        x <- select step { 3 | 9 => step, _ => never() };
+        let p = &x;
+        seq go { let a = live(count(*p)); until live(step) >= 6; live(uniq(x)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [9]);
+    Ok(())
+}
+
+// A callee a step bound in an earlier run is the step's from then on: a
+// fire of what it captures between two runs is owed to the next entry.
+async fn a_callee_bound_in_an_earlier_run_is_caught_up(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 20 => n + 1, _ => never() };
+        let go = select step { 1 | 10 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 2 | 7 => step, _ => never() };
+        let k = 1;
+        let f = select k { 1 => |u: i64| count(ev), _ => |u: i64| 0 };
+        let ready = select step {
+            n if (n >= 4 && n < 8) || n >= 12 => true,
+            _ => false
+        };
+        seq go { until live(ready); live(f(0)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1, 1]);
+    Ok(())
+}
+
+// A step that stood awake when its machine fell asleep saw every write
+// until then, walked or not: a callee it binds in the next run is owed
+// nothing of the 5 `ev` took meanwhile, and answers the 22.
+async fn a_step_asleep_with_its_machine_saw_what_came_before(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 30 => n + 1, _ => never() };
+        let go = select step { 1 | 14 => step, _ => never() };
+        let on = true;
+        on <- select step { 9 => false, 11 => true, _ => never() };
+        let ev = never();
+        ev <- select step { 5 | 22 => step, _ => never() };
+        let k = 1;
+        k <- select step { 12 => 2, _ => never() };
+        let f = select k { 1 => |u: i64| -> i64 never(), _ => |u: i64| uniq(ev) };
+        select on { true => seq go { live(f(0)) }, false => never() }
+    }"#;
+    assert_eq!(run(code, mode).await?, [22]);
+    Ok(())
+}
+
 modes!(
     a_fire_while_a_step_waits_reaches_live,
     a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
     a_target_written_while_a_step_waited_is_caught_up,
     a_callee_bound_at_a_step_entry_is_caught_up,
+    a_fire_no_step_read_is_owed_to_the_next_run,
+    a_fire_an_awake_step_read_is_not_owed_again,
+    a_fire_read_through_a_reference_is_spent,
+    a_callee_bound_in_an_earlier_run_is_caught_up,
+    a_step_asleep_with_its_machine_saw_what_came_before,
 );

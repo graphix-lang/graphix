@@ -164,6 +164,19 @@ impl<R: Rt> SeqMachine<R> {
             }
             _ => None,
         };
+        // CR claude for claude: [test-gap/low] Two of the machine's tracker calls are unpinned
+        // (the rest are, in lang::seq_steps). `fell_asleep` in `deselect`: with it removed
+        // every graphix-tests lib test passes, and no probe showed it (an abort while the
+        // step stood unwalked, a1.gx and a3.gx): a deselect seems always to follow a cycle
+        // in which the step ran, where `Awake(ran)` already answers `ran + 1`. This `observe`:
+        // `observe_except` records the same fires after the steps ran, and every test
+        // passes without it. The one program found that it changes is w1.gx: a step's bound
+        // callee reads `ev` live, and a later step that names `ev` is still caught up on
+        // that fire (prints 3; 9 without this call, which is what
+        // lang::seq_steps::a_fire_read_through_a_reference_is_spent pins when the first
+        // step reads `ev` through a reference). Pin each call or delete it, and for w1 say
+        // which answer is meant. Probes and the stub switches:
+        // ~/ptmp/cr29/scratch/r20/20a/review/ (seq-catchup-02)
         tracked.observe(ctx);
         let mut entered = false;
         match target {

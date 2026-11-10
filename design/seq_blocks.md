@@ -535,13 +535,24 @@ the step learns as it runs: a reference's target, a callee bound at its
 dispatch (`wake::owed`). A fire stays owed to the next step that reads
 its input until one does, so one made before the run, or in the last
 run after its readers passed, is caught up too, as an arm's first entry
-catches up what fired before it. A step's own `let` fire is carried to
-the first step entered in a later cycle that reads it, though a step of
-its own cycle read it live (`TrackedFires::enter`). Pins:
-`lang::seq_steps::{a_fire_while_a_step_waits_reaches_live,
+catches up what fired before it. The step awake when an input fires
+spends the fire, also where it reads the input only through a reference
+whose target it learned as it ran (`TrackedFires::evaluated`); a callee
+it bound joins its inputs when it is deselected (`refresh`), so a fire
+of what the callee captures between two runs is owed to the step's next
+entry. A step selected when its machine falls asleep saw every write
+until then, walked or not (`all_fell_asleep`). A step's own `let` fire
+is carried to the first step entered in a later cycle that reads it,
+though a step of its own cycle read it live (`TrackedFires::enter`).
+Pins: `lang::seq_steps::{a_fire_while_a_step_waits_reaches_live,
 a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
 a_target_written_while_a_step_waited_is_caught_up,
 a_callee_bound_at_a_step_entry_is_caught_up,
+a_fire_no_step_read_is_owed_to_the_next_run,
+a_fire_an_awake_step_read_is_not_owed_again,
+a_fire_read_through_a_reference_is_spent,
+a_callee_bound_in_an_earlier_run_is_caught_up,
+a_step_asleep_with_its_machine_saw_what_came_before,
 let_fire_reaches_a_later_cycle}`.
 
 ### 6.5 What sleep does for free
