@@ -1133,6 +1133,13 @@ fn bound_dags_elaborate_in_linear_time() {
 // A search over a shared type walks each shared node once: the definition
 // called at two types, whose kernels' types are DAGs, builds in time
 // linear in the DAG.
+// 2026-11-09 claude: Stale on main 3cfcd2407 (base-r19) and on lane 19b's tip
+// e8d5d2855: --no-cache --expand, instructions:u, an empty program 0.92G; u-mk
+// 0.99/1.00/1.02/1.04/1.09/1.22G at 12/16/18/20/40/80 links, u-mk0 1.15G at 40, w-mk
+// 1.17G at 40 (w-mk-18 from review-r16 1.04G); a run of u-mk-40 to sys::exit 1.06G.
+// Linear now; likely closed by the D12 merge after 187fd838d (ec6d5fa05, cbda209ab,
+// 7dbf474f3), not bisected. No pin added: the CR's asked pin (--expand of u-mk at 40
+// links under a budget) is still worth adding. probes: ~/ptmp/cr29/scratch/r19/19b/cdc/
 #[test]
 #[cfg(target_os = "linux")]
 fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
