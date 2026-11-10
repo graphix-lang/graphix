@@ -1130,9 +1130,6 @@ fn bound_dags_elaborate_in_linear_time() {
 // per call, a kernel signature) copies per path, and pin --expand of u-mk at 40 links.
 // probes: ~/ptmp/cr29/scratch/r19-d12/p/{u-mk-*,w-mk-*}.gx,
 // ~/ptmp/cr29/scratch/review-r16/d12-r1-2/new/ (call-dag-chain-build-01)
-// A search over a shared type walks each shared node once: the definition
-// called at two types, whose kernels' types are DAGs, builds in time
-// linear in the DAG.
 // 2026-11-09 claude: Stale on main 3cfcd2407 (base-r19) and on lane 19b's tip
 // e8d5d2855: --no-cache --expand, instructions:u, an empty program 0.92G; u-mk
 // 0.99/1.00/1.02/1.04/1.09/1.22G at 12/16/18/20/40/80 links, u-mk0 1.15G at 40, w-mk
@@ -1140,6 +1137,22 @@ fn bound_dags_elaborate_in_linear_time() {
 // Linear now; likely closed by the D12 merge after 187fd838d (ec6d5fa05, cbda209ab,
 // 7dbf474f3), not bisected. No pin added: the CR's asked pin (--expand of u-mk at 40
 // links under a budget) is still worth adding. probes: ~/ptmp/cr29/scratch/r19/19b/cdc/
+// 2026-11-09 claude: Review (lane 19b): stale confirmed. base-r19 and lane 19b
+// --no-cache --expand, instructions:u: u-mk 1.00/1.06/1.22G at 18/40/80 links, u-mk0-18
+// 1.20G, w-mk-40 1.18G, the CR's own u-mk-18 and w-mk-18 1.01G and 1.06G (empty 0.91G);
+// variants at 40 links (mk inside a function called at two types, a struct, a closure,
+// an annotated mk, written and run to exit) are within 0.3G of empty. What remains is
+// quadratic, not exponential, and is the call: the chain through mk costs above empty
+// --check 0.10/0.36/1.25G and --expand 0.41/0.98/3.0G at 80/160/320 links (xu0), where
+// the same pair DAG built directly (let x{i} = (x{i-1}, x{i-1})) is linear (--expand
+// 0.04/0.08/0.18G); so each call walks its argument type's whole DAG once. Fine at the
+// CR's 40 links; whether a per-call walk of the argument type is worth removing is
+// open. The pin the CR asks for is still missing. probes:
+// ~/ptmp/cr29/scratch/r19/19b/cdc-review/ (xu-*, xu0-*, xd0-*, m.sh)
+
+/// A search over a shared type walks each shared node once: the definition
+/// called at two types, whose kernels' types are DAGs, builds in time
+/// linear in the DAG.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_generic_call_over_a_shared_type_dag_builds_in_linear_time() {
