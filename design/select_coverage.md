@@ -8,8 +8,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
 - **Sets and coverage**: one walk (`select.rs::Reach`) decides what
   reaches each arm: its binds narrow to it (over a union, each to the
   union of its parts over every member the arm can match, never to the
-  first member's; a bind whose part, or union of parts, is `Any` is
-  `Any`, never left for the arm body to decide, `Type::open_over_any`),
+  first member's; a bind whose part, or union of parts, is `Any`, written
+  or named by typedefs, is `Any`, never left for the arm body to decide,
+  `Type::open_over_any`; a part is looked through every name of a chain
+  of typedefs, `Type::head`),
   an arm that can match none of
   it, or that tests what an earlier unguarded arm tests, is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern

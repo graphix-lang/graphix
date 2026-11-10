@@ -5380,6 +5380,113 @@ run!(
 );
 
 run!(
+    bind_over_named_any_refused,
+    r#"{
+    type A = Any;
+    let f = |v: (`B(A), i64, i64)| select v {
+        (`B(x), _, _) => { let q: i64 = x; q + 1 }
+    };
+    f((`B(1), 1, 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
+    bind_over_named_any_members_refused,
+    r#"{
+    type A = Any;
+    let f = |v: [(`B(A), i64, i64), (`B(Any), string, string)]| select v {
+        (`B(x), _, _) => { let q: i64 = x; q + 1 },
+        _ => 0
+    };
+    f((`B(1), 1, 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
+    bind_over_any_under_a_name_of_a_name_refused,
+    r#"{
+    type T0 = (`B(Any), i64);
+    type T1 = T0;
+    let f = |v: (T1, i64)| select v {
+        ((`B(x), _), _) => { let q: i64 = x; q + 1 }
+    };
+    f(((`B(1), 1), 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
+    bind_over_any_members_under_a_name_of_a_name_refused,
+    r#"{
+    type T0 = (`B(Any), i64);
+    type T1 = T0;
+    let f = |v: [(T1, i64, i64), (T1, string, string)]| select v {
+        ((`B(x), _), _, _) => { let q: i64 = x; q + 1 },
+        _ => 0
+    };
+    f(((`B(1), 1), 1, 1))
+}"#,
+    refused("i64 does not contain Any")
+);
+
+run!(
+    bind_over_named_any_is_any,
+    r#"{
+    type A = Any;
+    type T0 = (`B(A), i64);
+    type T1 = T0;
+    let f = |v: (T1, i64)| select v {
+        ((`B(x), _), _) => select x { i64 as n => n + 1, _ => 0 }
+    };
+    let w: A = "hello";
+    [f(((`B(w), 1), 1)), f(((`B(41), 1), 1))]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(0), Value::I64(42)]),
+        _ => false,
+    }
+);
+
+run!(
+    bind_over_a_union_under_a_name_of_a_name_refused,
+    r#"{
+    type U = [(`B(i64), i64), (`B(string), string)];
+    type U1 = U;
+    let f = |v: (U1, i64)| select v {
+        ((`B(x), _), _) => { let q: i64 = x; q + 1 },
+        _ => 0
+    };
+    f(((`B(1), 1), 1))
+}"#,
+    refused("i64 does not contain [i64, string]")
+);
+
+run!(
+    bind_over_a_union_under_a_name_of_a_name_is_the_union,
+    r#"{
+    type U = [(`B(i64), i64), (`B(string), string)];
+    type U1 = U;
+    let f = |v: (U1, i64)| select v {
+        ((`B(x), _), _) => select x { i64 as n => n + 1, string as s => str::len(s) }
+    };
+    let g = |v: Array<U1>| select v {
+        [(`B(x), _), ..] => select x { i64 as n => n + 1, string as s => str::len(s) },
+        _ => 0
+    };
+    [f(((`B("hello"), "s"), 1)), f(((`B(41), 1), 1)), g([(`B("hi"), "s")]), g([(`B(1), 1)])]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => matches!(
+            &a[..],
+            [Value::I64(5), Value::I64(42), Value::I64(2), Value::I64(2)]
+        ),
+        _ => false,
+    }
+);
+
+run!(
     nested_union_slice_bind_is_the_union,
     r#"{
     let g = |v: Array<[{a: i64, b: string}, {a: string, b: i64}]>|

@@ -3781,9 +3781,10 @@ impl Type {
         Ok(narrowed)
     }
 
-    /// Bind each cell of `pred` still open where `self`'s part is `Any`
-    /// to `Any`: `Any ⊇ 'a` binds nothing, but a pattern bind receives
-    /// the scrutinee's value, whatever the arm body does with it.
+    /// Bind each cell of `pred` still open where `self`'s part is `Any`,
+    /// written or named, to `Any`: `Any ⊇ 'a` binds nothing, but a pattern
+    /// bind receives the scrutinee's value, whatever the arm body does
+    /// with it.
     fn open_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
         self.open_over_any_int(env, pred, &mut AnyWalk::default())
     }
@@ -3822,7 +3823,7 @@ impl Type {
         if let Type::TVar(tv) = pred {
             return match tv.binding() {
                 Some(b) => self.open_over_any_int(env, &b, walk),
-                None if self.with_deref(|t| matches!(t, Some(Type::Any))) => {
+                None if matches!(self.head(env)?, Some(Type::Any)) => {
                     pred.contains(env, &Type::Any)?;
                     walk.binds += 1;
                     walk.walked.clear();
@@ -3935,11 +3936,7 @@ impl Type {
             // each of a slice's elements stands over the whole of a union
             // element type, where containment would pair it with a member
             (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
-                let union = match e.deref_cloned() {
-                    Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(env)?, Type::Set(_)),
-                    Some(t) => matches!(t, Type::Set(_)),
-                    None => false,
-                };
+                let union = matches!(e.head(env)?, Some(Type::Set(_)));
                 match pe.deref_cloned() {
                     Some(Type::Set(_)) if union => Ok(true),
                     _ => e.needs_split_int(env, pe, apart),
@@ -3949,15 +3946,22 @@ impl Type {
         }
     }
 
-    /// `self` looked through (bindings, a typedef) where `pred` is the
-    /// same constructor with the same parts (arity, tag, field names), or a
+    /// `self` looked through its bindings and typedef names to what they
+    /// stand for; `None` for an open cell. A chain of names ends: a
+    /// typedef naming itself through names alone is refused.
+    fn head(&self, env: &Env) -> Result<Option<Type>> {
+        let mut t = self.deref_cloned();
+        while let Some(named @ Type::Ref(_)) = &t {
+            t = named.lookup_ref(env)?.deref_cloned()
+        }
+        Ok(t)
+    }
+
+    /// `self` looked through ([`Self::head`]) where `pred` is the same
+    /// constructor with the same parts (arity, tag, field names), or a
     /// union where `pred` is a constructor; `None` anywhere else.
     fn shape_under(&self, env: &Env, p: &Type) -> Result<Option<Type>> {
-        let t = match self.deref_cloned() {
-            Some(t @ Type::Ref(_)) => t.lookup_ref(env)?,
-            Some(t) => t,
-            None => return Ok(None),
-        };
+        let Some(t) = self.head(env)? else { return Ok(None) };
         let same = match (&t, p) {
             (Type::Set(_), p) => matches!(
                 p,
