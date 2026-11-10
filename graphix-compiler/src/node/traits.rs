@@ -322,64 +322,6 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
-// XCR claude for claude: [bug/low] A `self` an impl's method lambda writes is
-// a type variable of that lambda, not the impl's target: annotate_lambda keeps
-// written annotations and method_sig_at substitutes `self` only in the trait's
-// declared signature. So `impl T for i64 { let m = |s: self, x| { let k = s +
-// 1; x } }` is refused ("cannot compute 'self: unbound + i64"), and `|s, x:
-// self| x` over `fn(self, x: string) -> string` is refused ("string does not
-// contain 'self"), where a reader expects `self` to be i64 there.
-// written_method_unions counts it as the lambda's own to match. Substituting
-// `self := target` into the written annotations too (as a trait default's
-// `self` aliases the trait's) would accept both; it changes what `self` means
-// in an impl, so it may need Eric. probes:
-// ~/ptmp/cr29/scratch/review-r16/d7-r3-1/n_iself.gx, n_iself4.gx
-// (impl-self-written-01)
-// 2026-11-09 claude: Review (lane 19g): in an impl method's let annotation,
-// self is neither the target nor rigid (bind.rs leaves it out of own_written):
-// impl T for i64 { let m: fn(s: i64, x: self) -> self = |s, x| x } over
-// fn(self, x: string) -> string runs with x a string, and fn(s: self, x:
-// string) -> string = |s, x| { let k = s + 1; x } runs (s + 1 is refused when
-// the lambda writes s: self). Two meanings of a written self in one impl;
-// whatever is ruled here should fix both. probes
-// ~/ptmp/cr29/scratch/r19/19g/review/la1.gx, la2.gx, la4.gx
-// 2026-11-09 claude: Coordinator (round 19): a language rule (what a written
-// self means in an impl), so it goes to Eric as D28 in ~/ptmp/cr-discuss.md
-// (Open); formal-union-order-01's case (1) defers to the ruling here.
-// 2026-11-10 claude: Eric ruled (2026-11-10, D28): (a). In an impl, self means
-// the impl's target everywhere in the impl, written annotations included (a
-// method lambda's parameters and result, its let annotation, a lambda in its
-// body), as a trait default's self aliases the trait's. On main 3d73e2e1c:
-// n_iself4.gx and la4.gx (s + 1 over a written self) are refused today and run
-// under (a); la2.gx (let m: fn(s: i64, x: self) -> self in impl T for i64
-// against the trait's x: string) runs today with self read as string and is
-// refused under (a), the impl not matching its trait; [self, 'c] is [target,
-// 'c], one variable beside a written type. Probes
-// ~/ptmp/cr29/scratch/review-r16/d7-r3-1/n_iself*.gx,
-// ~/ptmp/cr29/scratch/r19/19g/review/la*.gx.
-// 2026-11-10 claude: Fixed (lane 20d, round 20) per D28 (a):
-// traits::self_as_target substitutes self := the impl's target into every type
-// an impl's method writes (its let annotation, its lambda's parameters, result,
-// throws and bounds, and every lambda, let, cast, never<T>, type test, catch or
-// with binder, seq trigger let and type definition inside its value; a nested
-// trait or impl keeps its own self) before written_method_unions and
-// annotate_lambda see it, through the new Expr::map_written_types
-// (graphix-types: one node's own written types). n_iself2, n_iself4, n_iself6,
-// la1, la4 now run; la2 and n_iself are refused as not implementing the trait.
-// Inverted pins: lang::traits::impl_method_self_beside_a_variable (was
-// _refused), impl_method_let_annotation_self_beside_a_variable (was _refused),
-// self_in_a_lambda_a_call_builds_the_method_from. Pins that fail without it (x4
-// modes): those three, impl_method_written_self_parameter_is_the_target,
-// impl_method_written_self_beside_the_filled_one,
-// impl_method_let_annotation_self_is_the_target,
-// impl_method_let_annotation_self_against_the_trait_refused,
-// impl_method_written_self_against_the_trait_refused,
-// impl_self_in_a_body_lambda_is_the_target,
-// impl_self_in_a_block_lambda_is_the_target,
-// impl_self_in_a_cast_a_never_and_a_type_test, impl_self_in_a_type_definition,
-// generic_impl_self_is_the_target, constructor_impl_self_applied_is_the_target;
-// unit expr::test::map_written_types_reaches_each_kind. Census of both repos:
-// no verdict or message change. Needs a soak.
 /// An impl's method `e` with `self` read as the impl's `target` in every
 /// type it writes, at every depth: in an impl `self` is its target, as in a
 /// trait's default it is the trait's. A trait or impl nested inside has a
