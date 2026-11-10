@@ -259,14 +259,19 @@ default, is held the same way (`traits.rs::implements`). A method that
 is a lambda has the cells its definition owns copied by each call, but
 an impl's `let` is annotated with the method's signature, which claims
 them at the top level; so its cell is one type only where a binding it
-captures reaches it. A method whose value is no lambda takes no
-annotation from the declaration (`traits::signature_of`): its `let` is
-typed as any `let` of that value, and its cells are judged by level, as
-a val's implementation's are. So one that reads a generalized binding,
-or a field or tuple of one (`let put = s.g`, a default `= s.g`),
-forwards the scheme (`bind::forwards`), which each call copies; any
-other (`(f, 1).0`, a select, a call's result, a read under a written
-annotation) keeps its value's types, which no call copies.
+captures reaches it. A method whose value is no lambda has its cells
+judged by level, as a val's implementation's are. One whose value reads
+a binding (a name, or a field or tuple of one) takes no annotation from
+the declaration (`traits::signature_of`): its `let` is typed as any
+`let` of that read, so a read of a generalized binding (`let put = s.g`,
+a default `= s.g`) forwards the scheme (`bind::forwards`), which each
+call copies, and the declaration must be the binding's type and no
+wider, as a val's must (`let m = f` over `f: fn(s: i64) -> i64` under
+`fn(self) -> [i64, null]` is refused; `|s| f(s)`, or the annotation
+written on the `let`, takes the declared type). Any other (`(f, 1).0`, a
+select, a call's result, a read under a written annotation) is
+annotated, so the declaration may be wider than it, and keeps its
+value's types, which no call copies.
 
 What is written through a val lands on the implementation, the pair
 being one variable, and every use takes the implementation's generic

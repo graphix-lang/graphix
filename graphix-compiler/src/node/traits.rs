@@ -83,20 +83,29 @@ pub(crate) fn method_sig(
 /// interface `val`'s is ([`module::hold_paired`]). `id` is the body's
 /// binding. A body that is a lambda has its cells copied by each call but
 /// those a binding it captures holds; any other body's are judged by their
-/// level, as a `val`'s implementation's are.
+/// level, as a `val`'s implementation's are. `reads` says whether the
+/// body took its value's type ([`reads_binding`]).
 fn implements<R: Rt>(
     ctx: &CompileCtx<R>,
     declared: &FnType,
     implemented: &Type,
     id: BindId,
+    reads: impl Fn() -> bool,
 ) -> Result<()> {
+    let told = |e: anyhow::Error| match reads() {
+        true => e.context(
+            "its value reads a binding, so the method has exactly that binding's \
+             type; written as a lambda it takes the declared one",
+        ),
+        false => e,
+    };
     let Some(ft) = implemented.with_deref(|t| match t {
         Some(Type::Fn(ft)) => Some(ft.clone()),
         _ => None,
     }) else {
-        bail!("{implemented} is not a function")
+        return Err(told(anyhow!("{implemented} is not a function")));
     };
-    let pairs = declared.sig_matches(&ctx.env, &ft)?;
+    let pairs = declared.sig_matches(&ctx.env, &ft).map_err(told)?;
     let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
     let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
     // XCR claude for claude: [bug/low] A method whose value is no lambda is judged by level,
@@ -407,21 +416,34 @@ fn self_as_target(e: &Expr, target: &Type, generic: bool, env: &Env) -> Result<E
     res.map(|()| e)
 }
 
-/// The annotation a method's `let` takes from the declared signature
-/// where the method wrote none: `sig` where its `value`, past grouping
-/// parentheses and a block's final expression, is a lambda. Any other
-/// value is typed as a `let` of it is, so one that forwards a generic
-/// binding carries its scheme, and [`implements`] holds it to `sig`.
-fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
+/// Whether a method's `value` reads a binding: past grouping parentheses
+/// and a block's final expression, a name, or a field or tuple of what
+/// reads one (the shapes `bind::reads_generic` forwards a scheme from).
+fn reads_binding(value: &Expr) -> bool {
     let mut e = value;
     loop {
         match &e.kind {
-            ExprKind::Lambda(_) => break Some(Type::Fn(Arc::new(sig.clone()))),
+            ExprKind::Ref { .. } => break true,
             ExprKind::ExplicitParens(inner) => e = inner,
-            ExprKind::Block { exprs } => e = exprs.last()?,
-            _ => break None,
+            ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
+                e = source
+            }
+            ExprKind::Block { exprs } => match exprs.last() {
+                Some(last) => e = last,
+                None => break false,
+            },
+            _ => break false,
         }
     }
+}
+
+/// The annotation a method's `let` takes from the declared signature
+/// where the method wrote none: `sig`, but for a `value` that reads a
+/// binding ([`reads_binding`]). That one is typed as a `let` of the read
+/// is, so it carries a generic binding's scheme, and [`implements`] holds
+/// it to `sig`.
+fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
+    (!reads_binding(value)).then(|| Type::Fn(Arc::new(sig.clone())))
 }
 
 /// Fill a method lambda's missing parameter and return annotations
@@ -591,6 +613,15 @@ impl<R: Rt> Trait<R> {
 }
 
 impl<R: Rt> Trait<R> {
+    /// Whether the default of method `name` took its value's type
+    /// ([`signature_of`]).
+    fn default_reads_binding(&self, name: &str) -> bool {
+        matches!(&self.spec.kind, ExprKind::Trait(t)
+        if t.methods.iter().any(|m| {
+            &*m.name.name == name && m.default.as_ref().is_some_and(reads_binding)
+        }))
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -674,7 +705,8 @@ impl<R: Rt> Update<R> for Trait<R> {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
             let declared = m.typ.reset_tvars();
-            implements(ctx, &declared, &bind.typ, id).with_context(|| {
+            let reads = || self.default_reads_binding(&m.name);
+            implements(ctx, &declared, &bind.typ, id, reads).with_context(|| {
                 format!(
                     "the default {} of trait {} does not implement the declared {declared}",
                     m.name, self.def.name
@@ -1128,6 +1160,16 @@ fn narrow_to_implementation<R: Rt>(
 }
 
 impl<R: Rt> Impl<R> {
+    /// Whether method `name` took its value's type: it writes no
+    /// annotation and [`signature_of`] gave it none.
+    fn method_reads_binding(&self, name: &str) -> bool {
+        matches!(&self.spec.kind, ExprKind::Impl(im)
+            if im.methods.iter().any(|m| matches!(&m.kind, ExprKind::Bind(b)
+                if b.typ.is_none()
+                    && b.pattern.single_bind().is_some_and(|n| &**n == name)
+                    && reads_binding(&b.value))))
+    }
+
     /// Give back to the registry what this implementation registered:
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a
@@ -1214,7 +1256,8 @@ impl<R: Rt> Update<R> for Impl<R> {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
-            implements(ctx, &declared, &bind.typ, *id).with_context(|| {
+            let reads = || self.method_reads_binding(&d.name);
+            implements(ctx, &declared, &bind.typ, *id, reads).with_context(|| {
                 format!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,

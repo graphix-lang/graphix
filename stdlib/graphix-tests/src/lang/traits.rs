@@ -3241,6 +3241,129 @@ run!(
     prints("[i64:2, i64:2, i64:7, i64:6, \"a\"]")
 );
 
+// A method whose value is neither a lambda nor a read of a binding takes
+// the declared signature as its `let`'s annotation, as a lambda's does: the
+// declaration may be wider than the value, and types one that never fires.
+run!(
+    method_value_made_by_a_call_under_a_wider_declaration,
+    r#"{
+    let mk = |z| |s: i64| -> i64 s + z;
+    trait T {
+      val m: fn(self) -> [i64, null];
+      val n: fn(self, x: i64) -> [i64, null];
+      val o: fn(self) -> i64
+    };
+    impl T for i64 {
+      let m = mk(1);
+      let n = select true { true => |s: i64, x: i64| s + x, false => |s: i64, x: i64| x };
+      let o = never()
+    };
+    (T::m(1), T::n(1, 2))
+}"#,
+    prints("[i64:2, i64:3]");
+    FuseExpect::None
+);
+
+// A method whose value reads a binding has exactly that binding's type, as
+// a `val` implemented by the read has: the declaration may not be wider.
+// Written as a lambda, or under an annotation on its `let`, it takes the
+// declared type.
+run!(
+    method_value_read_with_a_narrower_result_is_refused,
+    r#"{
+    let f = |s: i64| -> i64 s + 1;
+    trait T { val m: fn(self) -> [i64, null] };
+    impl T for i64 { let m = f };
+    T::m(1)
+}"#,
+    refused(
+        "its value reads a binding, so the method has exactly that binding's type; written as a lambda it takes the declared one"
+    )
+);
+
+run!(
+    method_value_read_over_a_wider_self_is_refused,
+    r#"{
+    let g = |s: [i64, string]| -> string "<[s]>";
+    trait T { val show: fn(self) -> string };
+    impl T for i64 { let show = g };
+    T::show(1)
+}"#,
+    refused("its value reads a binding, so the method has exactly that binding's type")
+);
+
+run!(
+    method_value_read_with_a_narrower_generic_result_is_refused,
+    r#"{
+    let s = {g: |s, x| x};
+    trait T { val k: fn(self, x: 'a) -> ['a, null] };
+    impl T for i64 { let k = s.g };
+    (T::k(1, 2), T::k(1, "s"))
+}"#,
+    refused("its value reads a binding, so the method has exactly that binding's type")
+);
+
+run!(
+    default_method_value_read_with_a_narrower_result_is_refused,
+    r#"{
+    let c = |s| -> i64 7;
+    trait D { val d: fn(self) -> [i64, null] = c };
+    impl D for i64 {};
+    D::d(1)
+}"#,
+    refused("its value reads a binding, so the method has exactly that binding's type")
+);
+
+run!(
+    method_value_read_of_an_undecided_binding_is_refused,
+    r#"{
+    let h = never();
+    trait T { val m: fn(self) -> i64 };
+    impl T for i64 { let m = h };
+    h <- once(|s: i64| s + 1);
+    T::m(1)
+}"#,
+    refused("its value reads a binding, so the method has exactly that binding's type")
+);
+
+run!(
+    method_value_read_under_a_wider_declaration_as_a_lambda_or_annotated,
+    r#"{
+    let f = |s: i64| -> i64 s + 1;
+    let g = |s: [i64, string]| -> string "<[s]>";
+    let h = |s: string| -> i64 0;
+    let c = |s| -> i64 7;
+    let u = never();
+    let id = |s, x| x;
+    trait T {
+      val m: fn(self) -> [i64, null];
+      val show: fn(self) -> string;
+      val k: fn(self, x: 'a) -> ['a, null];
+      val o: fn(self) -> i64
+    };
+    trait D { val d: fn(self) -> [i64, null] = |s| c(s) };
+    impl T for i64 {
+      let m = |s| f(s);
+      let show = |s| g(s);
+      let k = |s, x| id(s, x);
+      let o: fn(self) -> i64 = u
+    };
+    impl T for string {
+      let m: fn(self) -> [i64, null] = h;
+      let show: fn(self) -> string = g;
+      let k: fn(self, x: 'a) -> ['a, null] = id;
+      let o = |s| 1
+    };
+    impl D for i64 {};
+    u <- once(|s: i64| s + 1);
+    (T::m(1), T::show(1), T::k(1, 2), T::k(1, "s"), T::m("a"), T::show("b"), T::k("c", 1.5),
+     T::k("c", "t"), D::d(1), T::o(4))
+}"#,
+    prints(
+        "[i64:2, \"<1>\", i64:2, \"s\", i64:0, \"<b>\", f64:1.5, \"t\", i64:7, i64:5]"
+    )
+);
+
 run!(
     method_over_an_outer_binding_of_every_type,
     r#"{

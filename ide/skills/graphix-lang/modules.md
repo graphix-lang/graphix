@@ -73,7 +73,9 @@ A method, an impl's or a default, is generic where a `let` of its value
 is: a lambda, or a read of a generic binding or of a field or tuple of
 one (`let put = s.g`), with no annotation on the method's `let`. Any
 other value (a call's result, a literal's projection) is one instance,
-refused under a variable each call picks.
+refused under a variable each call picks. A method that reads a binding
+has exactly that binding's type: under a wider declaration, write a
+lambda or annotate the method's `let`.
 
 ```graphix,cases
 ok type C = Abstract<i64>; let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for C { let put = s.g }; (Put::put(C(1), 1), Put::put(C(1), "s"))
@@ -81,6 +83,10 @@ ok let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a = s.g }; im
 no "so no call copies its types" let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put: fn(self, x: 'a) -> 'a = s.g }; (Put::put(1, 1), Put::put(1, "s"))
 no "so no call copies its types" let mk = |z| |s, x| x; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put = mk(0) }; (Put::put(1, 1), Put::put(1, "s"))
 ok let mk = |z| |s, x| x + z; trait Put { val put: fn(self, x: i64) -> i64 }; impl Put for i64 { let put = mk(1) }; Put::put(1, 2)
+no "has exactly that binding's type" let f = |s: i64| -> i64 s + 1; trait T { val m: fn(self) -> [i64, null] }; impl T for i64 { let m = f }; T::m(1)
+ok let f = |s: i64| -> i64 s + 1; trait T { val m: fn(self) -> [i64, null] }; impl T for i64 { let m = |s| f(s) }; T::m(1)
+ok let f = |s: i64| -> i64 s + 1; trait T { val m: fn(self) -> [i64, null] }; impl T for i64 { let m: fn(self) -> [i64, null] = f }; T::m(1)
+ok let mk = |z| |s: i64| -> i64 s + z; trait T { val m: fn(self) -> [i64, null] }; impl T for i64 { let m = mk(1) }; T::m(1)
 ```
 
 A trait method's `#[pure]` or `#[sync]` holds for every implementation, even

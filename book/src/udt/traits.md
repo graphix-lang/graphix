@@ -96,12 +96,15 @@ x; x } }`, would have one type for every call, and is refused: give `y`
 a type that holds every `'a` (`let y: Any = never()`). A method whose
 value reads a generic binding, or a field or tuple of one (`let put =
 id`, `let put = s.g` over `let s = {g: |s, x| x}`), is as generic as
-that binding, as a `let` of it is. Any other value that is not a lambda
-(`(f, 1).0`, a call's result, a read under an annotation on the
-method's `let`) keeps the types its value has, and no call copies one
-its value fixed (a type an outer binding shares, the type a call made):
-under such a variable it is refused, and the way out is to write the
-method as a lambda.
+that binding, as a `let` of it is. Such a method has exactly the type
+of the binding it reads: where the trait declares a wider one (`fn(self)
+-> [i64, null]` over `let m = f` with `f: fn(s: i64) -> i64`), write the
+method as a lambda, `let m = |s| f(s)`, or annotate its `let`. Any other
+value that is not a lambda (`(f, 1).0`, a call's result, a read under an
+annotation on the method's `let`) keeps the types its value has, and no
+call copies one its value fixed (a type an outer binding shares, the
+type a call made): under such a variable it is refused, and the way out
+is to write the method as a lambda.
 
 `impl Trait for Target;` (no body) implements a trait whose methods
 all have defaults, and is the form an interface file uses to declare

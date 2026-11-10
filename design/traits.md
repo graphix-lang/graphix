@@ -369,15 +369,19 @@ with the trait scope glob-imported (so siblings are callable bare);
 impl methods likewise under a per-impl scope. A method lambda takes the
 declared signature (at the target) as its own parameter annotations
 (`annotate_lambda`), which is what lets `|c| c.0` see `c: Counter`.
-Its `let` takes the signature as its annotation too, where it writes
-none. A method whose value, past parentheses and a block's final
-expression, is no lambda takes neither (`signature_of`): it is typed as
-a `let` of that value is, so a read of a generalized binding (`let put =
-s.g`, a default `= s.g`) forwards its scheme and each call copies it,
-as a `val` implemented so does, and `implements` holds whatever the
-value is to the declaration (`design/module_system.md`; pins
-`lang::traits::method_value_read_*`,
-`default_method_value_read_from_a_generic_struct_runs_at_two_types`).
+A method's `let` takes the signature as its annotation, where it writes
+none, whatever its value is but a read of a binding: past parentheses
+and a block's final expression, a name, or a field or tuple of one
+(`signature_of`, `reads_binding`). That one is typed as a `let` of the
+read is, so a read of a generalized binding (`let put = s.g`, a default
+`= s.g`) forwards its scheme and each call copies it, as a `val`
+implemented so does. `implements` then holds the binding's own type to
+the declaration, which may be less general but not wider (a wider
+result, a narrower `self`), as a `val`'s may not; the refusal says so
+and names the lambda, which takes the declared type
+(`design/module_system.md`; pins `lang::traits::method_value_read_*`,
+`default_method_value_read_*`,
+`method_value_made_by_a_call_under_a_wider_declaration`).
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,
