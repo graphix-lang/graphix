@@ -232,7 +232,10 @@ Pruning changes no output, so it has an exact oracle.
   `GRAPHIX_PRUNE` is set), so each engine and each fork mode holds a
   predicate both to pruned runs and to the walk of every boundary, and
   the plain gate hunts missing marks; a fixture that measures pruning
-  sets `Mode::prune` in its setup.
+  sets `Mode::prune` in its setup. A fixture that bounds what `Auto`
+  decides prunes for real too (`lang::par_attrs::run_auto`): an audited
+  skip walks its boundary on a branch of its own and merges it inside
+  the update `Auto` times, so the costs it decides on are the audit's.
 - **Pins.** A runtime counter of boundaries walked and skipped
   (`Control::boundaries()`) pins the CR probes: an idle
   `array::map` of 2000 slots beside a ticking counter walks a constant

@@ -19,6 +19,13 @@ async fn run_fused(code: &str, par: ParMode) -> Result<Delta> {
     run_with(code, par, Mode::Jit).await
 }
 
+/// [`run_par`] under `Auto`, pruning for real, for a fixture that bounds
+/// what `Auto` decides: `run_par` audits each skip by walking its boundary
+/// on a branch of its own and merging it, inside the update `Auto` times.
+async fn run_auto(code: &str) -> Result<Delta> {
+    run_with(code, ParMode::Auto, Mode::Par).await
+}
+
 /// Run `code` built as `mode` builds it, forking under `par`, until it is
 /// quiet for 300ms. Under `Auto` the run waits for the fork threshold's
 /// calibration first: nothing forks until it.
@@ -740,7 +747,7 @@ const WAITING_REQUESTS: &str = r#"{
     array::fold(rs, 0, |n, r| n + select r.status { u16:200 => 1, _ => 0 })
 }"#;
 
-// CR claude for claude: [risk/low] On lane19d's debug build (r19, on cb1914742) a
+// XCR claude for claude: [risk/low] On lane19d's debug build (r19, on cb1914742) a
 // debug_assert added at the end of branch::merge_in_order that never fired (this program
 // joins no module, so it compared two empty alias tables) made this test fail 3 of 3 runs
 // alone: Auto forked 263 to 291 times against the bound of 50. Without it the test passes.
@@ -752,6 +759,22 @@ const WAITING_REQUESTS: &str = r#"{
 // plan forks, nothing backed off and Auto forked every update. With that fixed on r19-d,
 // the lopsided pin losing_instance_forks_back_off forks 3-4 times; this test's bound was
 // not re-probed with the merge debug_assert.
+// 2026-11-10 claude: Found: the Auto run timed the pruning audit, not the program. run_par
+// fixtures (Mode::Interp) audit every skipped boundary (Prune::audit walks it on a
+// branch::alone and merges it): one Auto run of WAITING_REQUESTS made 127k merges, each
+// inside the instance update its SlotSite times, so a dearer merge raised every instance's
+// estimate (32768-65536 ticks a slot under audit, against T calibrated at 35k-135k).
+// Before a24b83dba (serve-instance-fork-cost-01) fork_instances never reported a fork, so
+// the first planned fork never backed off: the merge debug_assert put back with that
+// report removed forks 280-292 times (6 of 6). On main with the assert, 0-8 forks in 31
+// runs (alone, the module, the whole graphix-tests lib), but a build with debug prints
+// once forked 76 times, its forks beating the serial estimate by wall time. Both
+// server-instance pins now run Auto pruning for real (par_attrs::run_auto, Mode::Par): no
+// merges in the Auto run, instance totals near or under 2T. Waiting forks 0-2 over 34
+// runs, with the assert and no report too (6 of 6 at 0-1); losing_instance_forks_back_off
+// still catches the missing report (52 forks, 6 of 6, bound 20) and forks 1-6 with it.
+// Rule in design/walk_pruning.md and Mode::fixture_prune. Probes:
+// ~/ptmp/cr29/scratch/r20/20h/.
 #[tokio::test(flavor = "current_thread")]
 async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
     let ok = Some(Value::I64(8));
@@ -760,7 +783,7 @@ async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
     assert_eq!(serial.forks, 0);
     let forced = run_par(WAITING_REQUESTS, ParMode::Force).await?;
     assert_eq!(forced.values.last(), ok.as_ref());
-    let auto = run_par(WAITING_REQUESTS, ParMode::Auto).await?;
+    let auto = run_auto(WAITING_REQUESTS).await?;
     assert_eq!(auto.values.last(), ok.as_ref());
     assert!(forced.forks > 0, "Force ran the instances in order");
     assert!(auto.forks < 50, "Auto forked {} times", auto.forks);
@@ -799,7 +822,7 @@ const LOPSIDED_REQUESTS: &str = r#"{
 
 #[tokio::test(flavor = "current_thread")]
 async fn losing_instance_forks_back_off() -> Result<()> {
-    let auto = run_par(LOPSIDED_REQUESTS, ParMode::Auto).await?;
+    let auto = run_auto(LOPSIDED_REQUESTS).await?;
     assert_eq!(auto.values.last(), Some(&Value::I64(2)));
     assert!(auto.forks < 20, "Auto forked {} times", auto.forks);
     Ok(())

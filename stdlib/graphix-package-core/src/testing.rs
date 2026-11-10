@@ -282,7 +282,8 @@ impl Mode {
     /// skips in `Jit` and `Par`, every skip audited in `Interp` and
     /// `JitPar`, so each engine and each fork mode holds a predicate both
     /// to pruned runs and to the walk of every boundary. A fixture that
-    /// measures pruning sets [`Mode::prune`] in its setup.
+    /// measures pruning sets [`Mode::prune`] in its setup; one that bounds
+    /// what `Auto` decides prunes for real too.
     pub fn fixture_prune(self) -> PruneMode {
         match self {
             Mode::Unpruned => PruneMode::Off,
