@@ -87,42 +87,69 @@ impl Type {
         }
     }
 
+    /// What a rewrite keys the nodes it rebuilds by: [`Self::node_key`]
+    /// of a node with parts ([`node_addr`]), so `None` for a var, which
+    /// it takes by its cell, and for a tag or an abstract type with no
+    /// parameter.
+    pub(super) fn part_key(&self) -> Option<NodeKey> {
+        match self {
+            Type::Variant(_, ts, _) | Type::Abstract { params: ts, .. }
+                if ts.is_empty() =>
+            {
+                None
+            }
+            t => node_addr(t).map(|a| (a, t.name_word())),
+        }
+    }
+
+    /// What two nodes over one content allocation may differ by: a
+    /// variant's tag, an abstract type's id.
+    fn name_word(&self) -> usize {
+        match self {
+            Type::Variant(tag, _, _) => tag.as_ptr().addr(),
+            Type::Abstract { id, .. } => id.0 as usize,
+            _ => 0,
+        }
+    }
+
     /// What a walk that remembers answers about shared nodes keys one by:
     /// its [`Type::shared_identity`] and what that leaves out, which two
     /// nodes over one content allocation may differ by (a variant's tag,
     /// an abstract type's id).
     pub fn node_key(&self) -> Option<NodeKey> {
-        let named = match self {
-            Type::Variant(tag, _, _) => tag.as_ptr().addr(),
-            Type::Abstract { id, .. } => id.0 as usize,
-            _ => 0,
-        };
-        Some((self.shared_identity()?, named))
+        Some((self.shared_identity()?, self.name_word()))
     }
 
     /// What a walk that meets one application of a typedef many times
     /// keys each of its parameters by ([`ParamKey`]); the application must
     /// be held while the key is, so the identities stay its parameters'.
     pub fn param_key(&self) -> ParamKey {
+        self.param_key_with(&mut |_| None)
+    }
+
+    /// [`Self::param_key`], each named type applied to parameters under
+    /// this one that `app` knows by two words of its own (the same for
+    /// every application of one definition to the same parameters, and
+    /// for no other) keyed by them: the key of a parameter nested deep is
+    /// then short.
+    pub(super) fn param_key_with(&self, app: AppWords<'_>) -> ParamKey {
         let mut words = SmallVec::new();
-        self.key_words(&mut words, &mut LPooled::take());
+        self.key_words(&mut words, &mut KeyWalk { at: LPooled::take(), app });
         ParamKey(words)
     }
 
     /// The words of [`Type::param_key`]: a tag, then the part's content; a
     /// shared node met again in this key by the position its first words
-    /// start at (`at`, by its [`Type::node_key`]).
-    fn key_words(
-        &self,
-        out: &mut SmallVec<[usize; 8]>,
-        at: &mut AHashMap<NodeKey, usize>,
-    ) {
-        let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>, at: &mut _| {
+    /// start at (`walk.at`, by its [`Type::node_key`]).
+    fn key_words(&self, out: &mut SmallVec<[usize; 8]>, walk: &mut KeyWalk) {
+        #[cfg(test)]
+        KEY_STEPS.with(|n| n.set(n.get() + 1));
+        let each = |ts: &[Type], out: &mut SmallVec<[usize; 8]>, walk: &mut KeyWalk| {
             out.push(ts.len());
-            ts.iter().for_each(|t| t.key_words(out, at))
+            ts.iter().for_each(|t| t.key_words(out, walk))
         };
         if let Some(k) = self.node_key() {
-            match at.entry(k) {
+            match walk.at.entry(k) {
                 Entry::Occupied(e) => return out.extend([7, *e.get()]),
                 Entry::Vacant(e) => {
                     e.insert(out.len());
@@ -140,62 +167,71 @@ impl Type {
                 out.extend([6, Arc::as_ptr(f).addr()])
             }
             Type::Ref(r) => {
-                out.extend([10, Arc::as_ptr(&r.resolved).addr()]);
-                each(&r.params, out, at)
+                let known = match r.params.is_empty() {
+                    true => None,
+                    false => (walk.app)(self),
+                };
+                match known {
+                    Some([def, id]) => out.extend([8, def, id]),
+                    None => {
+                        out.extend([10, Arc::as_ptr(&r.resolved).addr()]);
+                        each(&r.params, out, walk)
+                    }
+                }
             }
             Type::Set(ts) => {
                 out.push(11);
-                each(ts, out, at)
+                each(ts, out, walk)
             }
             Type::Tuple(ts) => {
                 out.push(12);
-                each(ts, out, at)
+                each(ts, out, walk)
             }
             Type::Error(t) => {
                 out.push(13);
-                t.key_words(out, at)
+                t.key_words(out, walk)
             }
             Type::Array(t) => {
                 out.push(14);
-                t.key_words(out, at)
+                t.key_words(out, walk)
             }
             Type::List(t) => {
                 out.push(15);
-                t.key_words(out, at)
+                t.key_words(out, walk)
             }
             Type::ByRef(Mutability::Shared, t) => {
                 out.push(16);
-                t.key_words(out, at)
+                t.key_words(out, walk)
             }
             Type::ByRef(Mutability::Mut, t) => {
                 out.push(17);
-                t.key_words(out, at)
+                t.key_words(out, walk)
             }
             Type::Struct(fs) => {
                 out.extend([18, fs.len()]);
                 for (name, t, _) in fs.iter() {
                     text_words(name, out);
-                    t.key_words(out, at)
+                    t.key_words(out, walk)
                 }
             }
             Type::Variant(tag, ts, _) => {
                 out.push(19);
                 text_words(tag, out);
-                each(ts, out, at)
+                each(ts, out, walk)
             }
             Type::Map(m) => {
                 out.push(20);
-                m.key.key_words(out, at);
-                m.value.key_words(out, at)
+                m.key.key_words(out, walk);
+                m.value.key_words(out, walk)
             }
             Type::Abstract { id, params } => {
                 out.extend([21, id.0 as usize]);
-                each(params, out, at)
+                each(params, out, walk)
             }
             Type::App(c, a) => {
                 out.push(22);
-                c.key_words(out, at);
-                a.key_words(out, at)
+                c.key_words(out, walk);
+                a.key_words(out, walk)
             }
             Type::Fn(f) => {
                 let FnType {
@@ -221,17 +257,17 @@ impl Type {
                             text_words(name, out)
                         }
                     }
-                    a.typ.key_words(out, at)
+                    a.typ.key_words(out, walk)
                 }
                 match vargs {
                     None => out.push(0),
                     Some(t) => {
                         out.push(1);
-                        t.key_words(out, at)
+                        t.key_words(out, walk)
                     }
                 }
-                rtype.key_words(out, at);
-                throws.key_words(out, at);
+                rtype.key_words(out, walk);
+                throws.key_words(out, walk);
                 out.push(*explicit_throws as usize)
             }
         })
@@ -252,11 +288,22 @@ fn text_words(s: &str, out: &mut SmallVec<[usize; 8]>) {
 /// variant's tag or an abstract type's id.
 pub type NodeKey = (usize, usize);
 
+/// What a walk knows an application by, if it does
+/// ([`Type::param_key_with`]).
+pub(super) type AppWords<'a> = &'a mut dyn FnMut(&Type) -> Option<[usize; 2]>;
+
+/// One key's walk: where each shared node's first words start, and the
+/// applications its owner knows.
+struct KeyWalk<'a> {
+    at: LPooled<AHashMap<NodeKey, usize>>,
+    app: AppWords<'a>,
+}
+
 /// A typedef application's parameter as [`Type::param_key`] keys it: by
 /// its content, a variable by its cell, a name by its resolution and
-/// parameters, a function type with quantifiers of its own by its node
-/// and any other with the lambda it is, a shared node met again by where
-/// its first words start.
+/// parameters (or by what the walk knows it as), a function type with
+/// quantifiers of its own by its node and any other with the lambda it
+/// is, a shared node met again by where its first words start.
 /// Each tag fixes the words that follow it, so equal keys are one type,
 /// though not one set of linked lambdas: a function type's
 /// `lambda_ids` past its own id are left out, so a memo hit on a second,
@@ -271,26 +318,43 @@ pub type AppKey = (usize, SmallVec<[ParamKey; 2]>);
 impl TypeRef {
     /// The [`AppKey`] of this application of the definition `def`.
     pub fn app_key(&self, def: usize) -> AppKey {
-        (def, self.params.iter().map(Type::param_key).collect())
+        self.app_key_with(def, &mut |_| None)
     }
 
-    /// The cells [`Self::app_key`] keys by address, into `out`: held, each
-    /// address stays its cell's.
-    pub(crate) fn key_cells(&self, out: &mut Vec<Arc<tvar::CellLock>>) {
-        fn walk(t: &Type, out: &mut Vec<Arc<tvar::CellLock>>, seen: &mut AddrSet) {
+    /// [`Self::app_key`] over [`Type::param_key_with`].
+    pub(super) fn app_key_with(&self, def: usize, app: AppWords<'_>) -> AppKey {
+        (def, self.params.iter().map(|p| p.param_key_with(app)).collect())
+    }
+
+    /// The cells [`Self::app_key_with`] keys by address, into `out`: held,
+    /// each address stays its cell's. An application under this one that
+    /// the key holds by its id (`by_id`) is passed by: its own key's cells
+    /// are held already.
+    pub(crate) fn key_cells(
+        &self,
+        by_id: &dyn Fn(&Type) -> bool,
+        out: &mut Vec<Arc<tvar::CellLock>>,
+    ) {
+        struct Walk<'a> {
+            by_id: &'a dyn Fn(&Type) -> bool,
+            out: &'a mut Vec<Arc<tvar::CellLock>>,
+            seen: LPooled<AddrSet>,
+        }
+        fn walk(t: &Type, w: &mut Walk) {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
-                    if seen.insert(tv.cell_addr()) {
-                        out.push(tv.cell())
+                    if w.seen.insert(tv.cell_addr()) {
+                        w.out.push(tv.cell())
                     }
                 }
                 Type::Fn(f) if !f.quantifiers.is_empty() => (),
-                t if node_addr(t).is_some_and(|a| !seen.insert(a)) => (),
-                t => t.for_each_child(&mut |c| walk(c, out, seen)),
+                Type::Ref(r) if !r.params.is_empty() && (w.by_id)(t) => (),
+                t if node_addr(t).is_some_and(|a| !w.seen.insert(a)) => (),
+                t => t.for_each_child(&mut |c| walk(c, w)),
             })
         }
-        let mut seen: LPooled<AddrSet> = LPooled::take();
-        self.params.iter().for_each(|p| walk(p, out, &mut seen))
+        let mut w = Walk { by_id, out, seen: LPooled::take() };
+        self.params.iter().for_each(|p| walk(p, &mut w))
     }
 }
 
@@ -369,8 +433,9 @@ impl NodePairs {
 
 /// The address of a composite's content allocation, its low bits telling
 /// apart the kinds (and a reference's mutability) that can wrap one
-/// allocation, for walks that visit each shared node once; `None` for
-/// leaves and for `App`, whose content is two allocations.
+/// allocation, and of a named type applied to parameters, for walks that
+/// visit each shared node once; `None` for leaves, a name with no
+/// parameter among them, and for `App`, whose content is two allocations.
 pub(super) fn node_addr(t: &Type) -> Option<usize> {
     const _: () = assert!(align_of::<Type>() >= 8);
     let slice = |a: &Arc<[Type]>, kind: usize| (**a).as_ptr().addr() | kind;
@@ -388,13 +453,14 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         Type::ByRef(Mutability::Shared, a) => Some(boxed(a, 3)),
         Type::ByRef(Mutability::Mut, a) => Some(boxed(a, 4)),
         Type::Map(m) => Some((&**m as *const MapType).addr()),
-        Type::App(..)
+        Type::Ref(r) if !r.params.is_empty() => Some(Arc::as_ptr(r).addr()),
+        Type::Ref(_)
+        | Type::App(..)
         | Type::Hole
         | Type::Bound(_)
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
-        | Type::Ref(_)
         | Type::TVar(_) => None,
     }
 }
@@ -484,40 +550,79 @@ struct RefHist<H: IsoPoolable> {
     /// A hash bucket holds the types themselves, matched by
     /// `union_identical`.
     shape_ids: Lazy<IntMap<u64, SmallVec<[(Type, usize); 1]>>>,
+    /// The hashes `shape_ids` takes that read no cell, kept for every
+    /// later one.
+    fixed_hashes: Lazy<FixedHashes>,
     next_id: usize,
 }
+
+/// The shape hashes a [`RefHist`] keeps for all its walks: those of the
+/// shared nodes whose hash reads no cell, each node held.
+type FixedHashes = AddrMap<(Type, u64)>;
 
 /// A hash of `t`'s structure consistent with `union_identical`: a bound
 /// cell is its binding, an open cell its cell, a union's members in any
 /// order, a function only its shape (its equality is loose).
-fn shape_hash(t: &Type) -> u64 {
-    shape_hash_memo(t, &mut LPooled::take())
+fn shape_hash(t: &Type, fixed: &mut FixedHashes) -> u64 {
+    shape_hash_memo(t, &mut LPooled::take(), fixed).0
 }
 
-/// [`shape_hash`], each shared node hashed once (`memo`, by identity).
-fn shape_hash_memo(t: &Type, memo: &mut AddrMap<u64>) -> u64 {
+/// [`shape_hash`], and whether it read no cell: each shared node hashed
+/// once (`memo`, by identity), and one that read no cell once for all
+/// (`fixed`).
+fn shape_hash_memo(
+    t: &Type,
+    memo: &mut AddrMap<u64>,
+    fixed: &mut FixedHashes,
+) -> (u64, bool) {
     let key = t.shared_identity();
-    if let Some(h) = key.and_then(|k| memo.get(&k)) {
-        return *h;
-    }
-    let h = shape_hash_node(t, memo);
     if let Some(k) = key {
-        memo.insert(k, h);
+        if let Some((_, h)) = fixed.get(&k) {
+            return (*h, true);
+        }
+        if let Some(h) = memo.get(&k) {
+            return (*h, false);
+        }
     }
-    h
+    let (h, cell_free) = shape_hash_node(t, memo, fixed);
+    match key {
+        Some(k) if cell_free => {
+            fixed.insert(k, (t.clone(), h));
+        }
+        Some(k) => {
+            memo.insert(k, h);
+        }
+        None => (),
+    }
+    (h, cell_free)
 }
 
-fn shape_hash_node(t: &Type, memo: &mut AddrMap<u64>) -> u64 {
+fn shape_hash_node(
+    t: &Type,
+    memo: &mut AddrMap<u64>,
+    fixed: &mut FixedHashes,
+) -> (u64, bool) {
+    #[cfg(test)]
+    SHAPE_HASH_STEPS.with(|n| n.set(n.get() + 1));
     ensure_sufficient(|| {
         let mut h = ahash::AHasher::default();
+        let mut cell_free = true;
+        let mut part = |t: &Type, memo: &mut AddrMap<u64>, fixed: &mut FixedHashes| {
+            let (h, free) = shape_hash_memo(t, memo, fixed);
+            cell_free &= free;
+            h
+        };
         match t {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => return shape_hash_memo(&b, memo),
-                None => (0u8, tv.cell_addr()).hash(&mut h),
+                Some(b) => return (shape_hash_memo(&b, memo, fixed).0, false),
+                None => {
+                    (0u8, tv.cell_addr()).hash(&mut h);
+                    return (h.finish(), false);
+                }
             },
             Type::Set(ts) => {
                 let members =
-                    ts.iter().fold(0u64, |a, t| a.wrapping_add(shape_hash_memo(t, memo)));
+                    ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, memo, fixed)));
                 (1u8, members).hash(&mut h)
             }
             Type::Fn(f) => (2u8, f.args.len(), f.vargs.is_some()).hash(&mut h),
@@ -533,10 +638,20 @@ fn shape_hash_node(t: &Type, memo: &mut AddrMap<u64>) -> u64 {
             t => (9u8, mem::discriminant(t)).hash(&mut h),
         }
         if !matches!(t, Type::Set(_) | Type::Fn(_)) {
-            t.for_each_child(&mut |c| shape_hash_memo(c, memo).hash(&mut h));
+            t.for_each_child(&mut |c| part(c, memo, fixed).hash(&mut h));
         }
-        h.finish()
+        (h.finish(), cell_free)
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The nodes [`shape_hash`] has hashed on this thread.
+    pub(super) static SHAPE_HASH_STEPS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    /// The nodes [`Type::param_key`] has keyed on this thread.
+    pub(super) static KEY_STEPS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 impl<H: IsoPoolable> Deref for RefHist<H> {
@@ -562,6 +677,7 @@ impl<H: IsoPoolable> RefHist<H> {
             ref_apps: Lazy::new(),
             content_ids: Lazy::new(),
             shape_ids: Lazy::new(),
+            fixed_hashes: Lazy::new(),
             next_id: 0,
         }
     }
@@ -634,7 +750,7 @@ impl<H: IsoPoolable> RefHist<H> {
 
     /// The id of `t` by its structure, open cells by their cell.
     fn shape_id(&mut self, t: &Type) -> usize {
-        let h = shape_hash(t);
+        let h = shape_hash(t, self.fixed_hashes.get_mut());
         let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
             b.iter().find(|(s, _)| setops::union_identical(s, t)).map(|(_, id)| *id)
         });

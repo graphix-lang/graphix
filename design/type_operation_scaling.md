@@ -37,17 +37,33 @@ rebuild-only-if-changed helper. TVar-free (or substitution-irrelevant)
 structure is returned SHARED, never copied.
 
 **DAG traversal state per pass.**
-- `NormCx` (normalize): a visited-cell set plus a pointer-identity memo
-  keyed `(discriminant, content Arc address(es))` (`norm_key`): a
-  `Variant` by its payload's allocation and its tag's, since two tags may
-  wrap one payload. `Ref`, `Abstract` and `App` have no key (their
-  composite children still memo).
+- `NormCx` (normalize): a visited-cell set plus a memo of each shared
+  node's result, keyed by `Type::part_key`: the node's address
+  (`node_addr`) and what two nodes over one allocation may differ by (a
+  variant's tag, an abstract type's id). A tag, an abstract type and a
+  name with no parameter are leaves and take no key.
 - `ResolveTvarsCx` (resolve_tvars): bound cells snapshot ONCE per pass;
   unbound cells mint ONE fresh tvar per source cell — preserving the
   source's alias topology, the same discipline as `reset_tvars`'
   cell-keyed map (per-occurrence minting was an artifact of the tree
   walk, not a contract); an `in_progress` set is the cycle guard; plus
-  the `norm_key` composite memo.
+  the same `part_key` memo.
+- A named type applied to parameters is a shared node like any composite
+  (`node_addr`: its `Arc<TypeRef>`), so every walk that visits a node once
+  takes a chain `T<T<..>>` a level at a time. Two walks give it no key:
+  `ReadWalk`, which remembers no named type's copy, and
+  `Type::copied_in_two_places`, which counts an application wherever it
+  is met, since its count depends on the definitions being expanded.
+- `contains` over such a chain (`ContainsHist`) keeps three things for the
+  whole call, each by node. A committed pair's application is keyed by its
+  definition and an id of its parameters' keys, and an application under a
+  parameter by its own id (`app_id`), so a chain nested `n` deep is keyed
+  in a word a level. `RefHist::shape_id` keeps the shape hash of every
+  node whose hash read no cell (`fixed_hashes`); one that read a cell is
+  hashed again. `expand_ref` asks `closure` whether an application holds a
+  cell, and a committing walk copies a cached expansion only where a copy
+  differs from it: where it holds a cell or a function type
+  (`Closure::Plain` is neither).
 - `would_cycle_seen` (the occurs check) is a pure existence query: the
   visited set is permanent (explored-without-finding never needs
   re-exploring) and holds composite node addresses as well as cells.

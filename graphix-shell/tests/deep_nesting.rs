@@ -299,10 +299,11 @@ fn program(shape: &str, d: usize) -> String {
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
-        // The chain through a typedef's parameter, and through a union.
-        "chainboundstypedef" | "chainboundsunion" => {
+        // The chain through a typedef's parameter, a variant's and a union.
+        "chainboundstypedef" | "chainboundsvariant" | "chainboundsunion" => {
             let link = |i: usize| match shape {
                 "chainboundstypedef" => format!("'a{i}: T<'a{}>", i + 1),
+                "chainboundsvariant" => format!("'a{i}: `V('a{})", i + 1),
                 _ => format!("'a{i}: [Array<'a{}>, null]", i + 1),
             };
             let bounds = (0..d)
@@ -898,18 +899,23 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
     )
 }
 
-/// The chain through a typedef's parameter elaborates with each link's
-/// conjunct probed once and each application of the typedef keyed once a
-/// walk, by its parameters' keys.
+/// The chain through a typedef's parameter, or a variant's, elaborates in
+/// time linear in its length, at two depths: the instance's type holds
+/// each link's application once, a node every walk and rewrite of it
+/// visits once, and the call's check keys, hashes and expands each
+/// application once.
 #[test]
 #[cfg(target_os = "linux")]
-fn a_chain_of_bounds_through_a_typedef_elaborates() {
+fn a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time() {
     let expand = ["--expand", "--no-cache"];
-    completes_within(
-        &expand,
-        &program("chainboundstypedef", CHAIN_DEPTH / 10),
-        12 * BILLION,
-    )
+    for (shape, budget) in [("chainboundstypedef", 7), ("chainboundsvariant", 6)] {
+        completes_within(&expand, &program(shape, CHAIN_DEPTH), budget * BILLION);
+        completes_within(
+            &expand,
+            &program(shape, 2 * CHAIN_DEPTH),
+            (2 * budget - 1) * BILLION,
+        )
+    }
 }
 
 /// The chain through a union elaborates in time linear in its length, at

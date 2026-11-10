@@ -3,7 +3,7 @@ use crate::{
     expr::WrittenAt,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Mutability, TVar, Type,
+        AbstractId, Mutability, NodeKey, TVar, Type,
         setops::{Welds, union_collapses},
     },
 };
@@ -22,12 +22,12 @@ use triomphe::Arc;
 
 /// Per-pass [`Type::normalize`] state: `cells` are the visited TVar
 /// cells (the first visit normalizes the binding in place); `memo` is a
-/// pointer-identity cache of composite results, keyed by [`norm_key`].
-/// Each entry pins the keyed type: an in-place rebinding frees the old
-/// binding, and its address must not be reused under its key.
+/// cache of each shared node's result ([`Type::part_key`]). Each entry
+/// pins the keyed type: an in-place rebinding frees the old binding, and
+/// its address must not be reused under its key.
 pub(super) struct NormCx {
     pub(super) cells: LPooled<AddrSet>,
-    memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
+    memo: LPooled<AHashMap<NodeKey, (Type, Option<Type>)>>,
     /// The live cells the pass's collapses paired.
     welds: Welds,
     flat: FlatCx,
@@ -73,12 +73,13 @@ impl FlatCx {
 /// Per-pass [`Type::resolve_tvars`] state: `done` holds completed
 /// snapshots of bound cells, `fresh` the one fresh mint per unbound
 /// source cell (preserving alias topology), `in_progress` the cycle
-/// guard, `memo` a pointer-identity cache of composite results.
+/// guard, `memo` a cache of each shared node's result
+/// ([`Type::part_key`]).
 pub(super) struct ResolveTvarsCx {
     done: LPooled<AddrMap<Type>>,
     fresh: LPooled<AddrMap<TVar>>,
     in_progress: LPooled<AddrSet>,
-    memo: LPooled<AHashMap<NormKey, Option<Type>>>,
+    memo: LPooled<AHashMap<NodeKey, Option<Type>>>,
     /// An open cell's copy keeps its predicate conjuncts (`Concrete`,
     /// `Function`), which name no cell.
     predicates: bool,
@@ -368,7 +369,7 @@ impl Type {
     }
 
     fn resolve_tvars_seen(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
-        let key = norm_key(self);
+        let key = self.part_key();
         if let Some(k) = key
             && let Some(r) = cx.memo.get(&k)
         {
@@ -449,7 +450,7 @@ impl Type {
     }
 
     fn normalize_int_inner(&self, cx: &mut NormCx) -> Option<Self> {
-        let key = norm_key(self);
+        let key = self.part_key();
         if let Some(k) = key
             && let Some((_, r)) = cx.memo.get(&k)
         {

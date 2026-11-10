@@ -2955,11 +2955,30 @@ impl<'a> ReadWalk<'a> {
 }
 
 impl ReadWalk<'_> {
+    // CR claude for claude: [risk/low] A named type's copy is not its own copy to
+    // a later read, against ReadCopies' contract ("a type a read made is its own
+    // copy to a later read"): `node` gives a `Ref` no key, so neither the copy a
+    // read makes of one nor one it rebuilt is remembered, and a later read
+    // through the same ReadCopies that meets the copy copies it again wherever
+    // its cells are ones a read copies, where a function type's copy is left alone.
+    // No program is shown to tell the two apart: reads of one node map through
+    // `known` to the same cells either way. Keying an applied `Ref` here as
+    // node_addr does everywhere else (drop `node`'s `Ref` arm) would make the
+    // contract hold; it changes which cells a nested holder's reads share, so it
+    // wants a pin and a census. Found fixing chainbounds-elab-quadratic-01, which
+    // gave node_addr the key. (read-copies-ref-01)
+    fn node(t: &Type) -> Option<usize> {
+        match t {
+            Type::Ref(_) => None,
+            t => super::node_addr(t),
+        }
+    }
+
     fn go(&mut self, t: &Type) -> Option<Type> {
         crate::stack::ensure_sufficient(|| {
             let addr = match t {
                 Type::TVar(tv) => Some(tv.cell_addr()),
-                t => super::node_addr(t),
+                t => Self::node(t),
             };
             if let Some(a) = addr
                 && let Some((_, r)) = self.copies.memo.get(&a)
@@ -2997,7 +3016,7 @@ impl ReadWalk<'_> {
                 self.copies.memo.insert(a, (t.clone(), r.clone()));
             }
             if let Some(c) = &r
-                && let Some(a) = super::node_addr(c)
+                && let Some(a) = Self::node(c)
             {
                 self.copies.memo.insert(a, (c.clone(), None));
             }
@@ -3049,8 +3068,11 @@ impl Type {
         impl Walk<'_> {
             fn go(&mut self, t: &Type) -> bool {
                 crate::stack::ensure_sufficient(|| {
+                    // an application's sites depend on the definitions being
+                    // expanded, so it is counted wherever it is met
                     let addr = match t {
                         Type::TVar(tv) => Some(tv.cell_addr()),
+                        Type::Ref(_) => None,
                         t => super::node_addr(t),
                     };
                     if let Some(a) = addr

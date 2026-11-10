@@ -127,6 +127,9 @@ pub(super) struct ContainsHist {
     apps: Lazy<AHashMap<AppKey, usize>>,
     /// The cells those keys hold by address ([`TypeRef::key_cells`]).
     app_cells: Lazy<Vec<Arc<CellLock>>>,
+    /// The id of each application node [`Self::pair_key`] met: a node's
+    /// key never changes. Pinned with `probe_pins`.
+    app_nodes: Lazy<AddrMap<usize>>,
     /// The questions in progress on this path, answered by assumption
     /// when met again.
     in_progress: SmallVec<[Question; 4]>,
@@ -224,6 +227,8 @@ enum Closure {
     Closed,
     /// It holds no cell.
     NoCell,
+    /// It holds no cell and no function type: a copy of it is itself.
+    Plain,
 }
 
 impl Deref for ContainsHist {
@@ -252,6 +257,7 @@ impl ContainsHist {
             commit_pairs: Lazy::new(),
             apps: Lazy::new(),
             app_cells: Lazy::new(),
+            app_nodes: Lazy::new(),
             in_progress: SmallVec::new(),
             rests: Rests::NOTHING,
             cycled: false,
@@ -284,7 +290,7 @@ impl ContainsHist {
     /// Whether `t`, a node, holds no cell, so it reaches none: no occurs
     /// check finds a cycle through it.
     fn holds_no_cell(&mut self, t: &Type) -> bool {
-        t.shared_identity().is_some() && self.closure(t, false) == Closure::NoCell
+        t.shared_identity().is_some() && self.closure(t, false) >= Closure::NoCell
     }
 
     // CR claude for claude: [risk/low] Two walk memos key a var by its cell's address
@@ -302,7 +308,7 @@ impl ContainsHist {
             let writes = cell_writes();
             if let Some(k) = key {
                 match self.closed.get().and_then(|m| m.get(&k)).copied() {
-                    Some((c, at)) if !now || c == Closure::NoCell || at == writes => {
+                    Some((c, at)) if !now || c >= Closure::NoCell || at == writes => {
                         return c;
                     }
                     Some(_) => (),
@@ -317,12 +323,15 @@ impl ContainsHist {
                     None => Closure::Open,
                 },
                 t => {
-                    let mut c = Closure::NoCell;
+                    let mut c = match t {
+                        Type::Fn(_) => Closure::NoCell,
+                        _ => Closure::Plain,
+                    };
                     let _ = t.try_for_each_child(&mut |p| {
                         c = c.min(self.closure(p, now));
                         match c {
                             Closure::Open => ControlFlow::Break(()),
-                            Closure::Closed | Closure::NoCell => {
+                            Closure::Closed | Closure::NoCell | Closure::Plain => {
                                 ControlFlow::Continue(())
                             }
                         }
@@ -469,22 +478,43 @@ impl ContainsHist {
     }
 
     /// The key a committed pair is held under: a node's identity, or an
-    /// application's definition and its parameters' keys
-    /// ([`Type::param_key`]), since an expansion builds its applications
-    /// anew and two of one definition over the same parameters are one type.
+    /// application's definition and its id ([`Self::app_id`]), since an
+    /// expansion builds its applications anew and two of one definition
+    /// over the same parameters are one type.
     fn pair_key(&mut self, t: &Type) -> Option<NormKey> {
-        let Type::Ref(tr) = t else { return probe_key(t) };
+        let Type::Ref(_) = t else { return probe_key(t) };
+        let [def, id] = self.app_id(t)?;
+        Some((mem::discriminant(t), def, id))
+    }
+
+    /// The definition of `t`, a resolved application, and the id of its
+    /// parameters' keys ([`Type::param_key_with`]), an application under
+    /// them keyed by its own id: a chain of applications nested `n` deep
+    /// is keyed in `n` words, not `n` squared.
+    fn app_id(&mut self, t: &Type) -> Option<[usize; 2]> {
+        let Type::Ref(tr) = t else { return None };
         let def = tr.def_key()?;
+        let node = Arc::as_ptr(tr).addr();
+        if let Some(id) = self.app_nodes.get().and_then(|m| m.get(&node)) {
+            return Some([def, *id]);
+        }
+        let key = tr.app_key_with(def, &mut |p| self.app_id(p));
         let next = self.apps.get().map_or(0, |m| m.len());
-        let id = match self.apps.get_mut().entry(tr.app_key(def)) {
+        let id = match self.apps.get_mut().entry(key) {
             Entry::Occupied(e) => *e.get(),
             Entry::Vacant(e) => {
-                self.probe_pins.get_mut().push(t.clone());
-                tr.key_cells(self.app_cells.get_mut());
+                let nodes = self.app_nodes.get();
+                let by_id = |p: &Type| {
+                    let node = p.shared_identity();
+                    node.is_some_and(|a| nodes.is_some_and(|m| m.contains_key(&a)))
+                };
+                tr.key_cells(&by_id, self.app_cells.get_mut());
                 *e.insert(next)
             }
         };
-        Some((mem::discriminant(t), def, id))
+        self.probe_pins.get_mut().push(t.clone());
+        self.app_nodes.get_mut().insert(node, id);
+        Some([def, id])
     }
 
     /// Whether `t` is a name applied over a cell: its expansion holds the
@@ -626,20 +656,24 @@ impl ContainsHist {
         env: &Env,
         commit: bool,
     ) -> Result<Option<Type>> {
-        let (Type::Ref(tr), Some(id)) = (t, id) else {
+        let (Type::Ref(_), Some(id)) = (t, id) else {
             return t.lookup_ref_with(env, commit);
         };
-        if !tr.params.iter().all(|p| p.tvar_free()) {
+        if self.closure(t, false) < Closure::NoCell {
             return t.lookup_ref_with(env, commit);
         }
-        let fresh = |e: &Type| if commit { e.reset_tvars() } else { e.clone() };
-        if let Some(e) = self.expansions.get().and_then(|m| m.get(&id)) {
-            return Ok(Some(fresh(e)));
-        }
-        let Some(e) = t.lookup_ref_with(env, commit)? else { return Ok(None) };
-        let r = fresh(&e);
-        self.expansions.get_mut().insert(id, e);
-        Ok(Some(r))
+        let e = match self.expansions.get().and_then(|m| m.get(&id)) {
+            Some(e) => e.clone(),
+            None => {
+                let Some(e) = t.lookup_ref_with(env, commit)? else { return Ok(None) };
+                self.expansions.get_mut().insert(id, e.clone());
+                e
+            }
+        };
+        Ok(Some(match commit && self.closure(&e, false) < Closure::Plain {
+            true => e.reset_tvars(),
+            false => e,
+        }))
     }
 }
 
@@ -1617,7 +1651,7 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
-// CR claude for claude: [perf/medium] The typedef and union neighbours of the
+// XCR claude for claude: [perf/medium] The typedef and union neighbours of the
 // chain of bounds still elaborate in quadratic time, where the Array chain is
 // linear. `graphix --expand --no-cache`, debug, total G instructions (empty
 // 0.98): `'a{i}: T<'a{i+1}>` over `type T<'x> = Array<'x>` 2.41 / 6.49 / 23.2
@@ -1677,6 +1711,38 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
 // cell_writes check, or the link on Renamed each fails its unit pin. Census 2949
 // files no verdict or message change, regress 0, graphix-tests lib passes.
 // Typedef and variant chains remain as the note above says.
+// 2026-11-10 claude: Fixed: the typedef and variant chains elaborate in linear
+// time. --expand --no-cache, debug, total G instructions (empty 0.74): typedef
+// at 1000 / 2000 links 5.42 / 19.32 (base-r20) -> 1.16 / 1.58, and 4.94 / 9.19
+// at 10000 / 20000; variant 1.82 / 4.41 -> 1.07 / 1.40, and 4.05 / 7.41 at 10000
+// / 20000 (the Array chain 1.05 / 1.36). The instance's settled type is a DAG,
+// one node a link, that these walks took as a tree. Five changes, each needed:
+// (1) node_addr gives a named type applied to parameters its allocation (a bare
+// name stays a leaf), so every walk that visits a node once does; ReadWalk and
+// copied_in_two_places keep it unkeyed, their verdicts exactly as before
+// (read-copies-ref-01; an application's count depends on the path). (2)
+// normalize's and resolve_tvars' memos key by Type::part_key, which holds a
+// variant, an abstract type and an application too (norm_key held none of them).
+// (3) RefHist::shape_id keeps the shape hash of each node that read no cell
+// (fixed_hashes). (4) ContainsHist::expand_ref asks closure, memoized by node,
+// in place of tvar_free, and a commit copies a cached expansion only where it
+// holds a cell or a function type (Closure::Plain). (5) ContainsHist::app_id
+// keys an application under a parameter by its own id (Type::param_key_with) and
+// a node once, so an inner application is one type by its definition, as the
+// outer one always was. Pins: deep_nesting
+// a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time
+// (CHAIN_DEPTH and twice it, typedef 4.9 / 9.2G of 7 / 13G; it fails with any
+// one of the five undone);
+// typ::contains::tests::a_walk_visits_an_application_once (fails without 1),
+// a_rewrite_of_a_chain_keeps_its_levels_shared (1, 2),
+// the_expansions_of_a_chain_hash_each_level_once (3: 5150 steps at 100 levels),
+// a_chain_of_applications_is_keyed_once_a_level (5: 5050 steps), and two guards
+// of the memos' limits, a_shape_hash_that_read_a_cell_is_not_kept and
+// a_committed_expansion_is_copied_only_where_a_copy_differs. Census 2949 files
+// no verdict or message change against the lane's head, fuzz regress 0
+// mismatches, typemorph-scan 867 programs 0 flips, guicheck 40.550G -> 40.571G
+// (base-r20 40.563G). probes: ~/ptmp/cr29/scratch/r20/20g/ (gen.py SHAPE N OUT,
+// meas.sh BIN --expand FILES, without.sh)
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
     match hist.identical.identical(t0, t1) {
@@ -4210,6 +4276,181 @@ mod tests {
     }
 
     const CHAIN_DEPTH: usize = 12;
+
+    /// `type T<'x> = Array<'x>` and an application of it to copy.
+    fn applicable() -> (Env, Type) {
+        Env::typed_at_root(&[("T<'x>", "Array<'x>")], "T<i64>").unwrap()
+    }
+
+    /// `T<..T<leaf>..>`, `n` applications deep, outermost first: each
+    /// level's parameter is the next level's node.
+    fn applied(t: &Type, n: usize, leaf: Type) -> Vec<Type> {
+        let Type::Ref(tr) = t else { unreachable!() };
+        nested(n, leaf, |p| Type::Ref(Arc::new(tr.with_params(Arc::from_iter([p])))))
+    }
+
+    /// `leaf` wrapped `n` times, outermost first.
+    fn nested(n: usize, leaf: Type, wrap: impl Fn(Type) -> Type) -> Vec<Type> {
+        let mut levels: Vec<Type> = vec![];
+        for _ in 0..n {
+            let inner = levels.last().cloned().unwrap_or_else(|| leaf.clone());
+            levels.push(wrap(inner));
+        }
+        levels.reverse();
+        levels
+    }
+
+    fn tagged(n: usize, leaf: Type) -> Vec<Type> {
+        nested(n, leaf, |p| {
+            Type::Variant(literal!("V"), Arc::from_iter([p]), Default::default())
+        })
+    }
+
+    fn part(t: &Type) -> Type {
+        let mut part = None;
+        t.for_each_child(&mut |c| part = Some(c.clone()));
+        part.unwrap()
+    }
+
+    fn levels_of(tuple: &Type) -> Vec<Type> {
+        let mut levels = vec![];
+        tuple.for_each_child(&mut |c| levels.push(c.clone()));
+        levels
+    }
+
+    /// Whether each of `levels` holds the next one's node.
+    fn nests_shared(levels: &[Type]) -> bool {
+        levels.windows(2).all(|w| part(&w[0]).node_key() == w[1].node_key())
+    }
+
+    // A named type applied to parameters is a node a walk visits once; a
+    // bare name is a leaf.
+    #[test]
+    fn a_walk_visits_an_application_once() {
+        let (_env, t) = applicable();
+        let (_bare_env, bare) = Env::typed_at_root(&[("N", "i64")], "N").unwrap();
+        assert!(node_addr(&t).is_some() && node_addr(&bare).is_none());
+        let steps = |n: usize| {
+            let levels = applied(&t, n, Type::TVar(var("a")));
+            let all = Type::Tuple(Arc::from_iter(levels));
+            crate::typ::fntyp::TVAR_WALK_STEPS.with(|c| c.set(0));
+            let mut known = AHashMap::default();
+            all.collect_tvars(&mut known);
+            assert_eq!(known.len(), 1);
+            crate::typ::fntyp::TVAR_WALK_STEPS.with(|c| c.get())
+        };
+        for n in [100, 200] {
+            assert!(steps(n) <= 4 * n, "{n}: {} steps", steps(n));
+        }
+    }
+
+    // A copy and a normal form of a chain of applications, or of tags,
+    // each level a node the level above shares, rebuild each level once:
+    // the result shares its levels as the source does.
+    #[test]
+    fn a_rewrite_of_a_chain_keeps_its_levels_shared() {
+        let (_env, t) = applicable();
+        let prim = |t: Typ| Type::Primitive(t.into());
+        let unflat = || {
+            let inner = Type::Set(Arc::from_iter([prim(Typ::String), prim(Typ::I64)]));
+            Type::Set(Arc::from_iter([prim(Typ::I64), inner]))
+        };
+        for chain in [applied(&t, 50, unflat()), tagged(50, unflat())] {
+            let all = Type::Tuple(Arc::from_iter(chain));
+            let normal = levels_of(&all.normalize());
+            assert_ne!(part(&normal[49]), unflat());
+            assert!(nests_shared(&normal));
+        }
+        for chain in
+            [applied(&t, 50, Type::TVar(var("a"))), tagged(50, Type::TVar(var("a")))]
+        {
+            let all = Type::Tuple(Arc::from_iter(chain.iter().cloned()));
+            let copy = levels_of(&all.resolve_tvars());
+            assert_ne!(copy[0].node_key(), chain[0].node_key());
+            assert!(nests_shared(&copy));
+        }
+    }
+
+    // A chain of applications is keyed in one step a level: an
+    // application under a parameter by its own id, which a chain built
+    // anew over the same leaf shares and one over another leaf does not.
+    #[test]
+    fn a_chain_of_applications_is_keyed_once_a_level() {
+        use crate::typ::KEY_STEPS;
+        let (_env, t) = applicable();
+        let prim = |t: Typ| Type::Primitive(t.into());
+        for n in [100, 200] {
+            let mut hist = ContainsHist::new();
+            let mut keys = |leaf: Typ| {
+                let levels = applied(&t, n, prim(leaf));
+                KEY_STEPS.with(|c| c.set(0));
+                let keys: Vec<_> =
+                    levels.iter().map(|l| hist.pair_key(l).unwrap()).collect();
+                (keys, KEY_STEPS.with(|c| c.get()))
+            };
+            let (first, steps) = keys(Typ::I64);
+            assert!(steps <= 4 * n, "{n}: {steps} steps");
+            let distinct: AHashSet<_> = first.iter().collect();
+            assert_eq!(distinct.len(), n);
+            let (again, _) = keys(Typ::I64);
+            assert_eq!(first, again);
+            let (other, _) = keys(Typ::String);
+            assert!(first.iter().zip(other.iter()).all(|(a, b)| a != b));
+        }
+    }
+
+    // The expansions of a chain of applications, each built anew over a
+    // level the chain shares, are hashed in a step or two each: a node
+    // that holds no cell is hashed once a walk.
+    #[test]
+    fn the_expansions_of_a_chain_hash_each_level_once() {
+        use crate::typ::SHAPE_HASH_STEPS;
+        let (env, t) = applicable();
+        for n in [100, 200] {
+            let levels = applied(&t, n, Type::Primitive(Typ::I64.into()));
+            let mut hist = ContainsHist::new();
+            SHAPE_HASH_STEPS.with(|c| c.set(0));
+            let ids: AHashSet<_> = levels
+                .iter()
+                .map(|l| hist.ref_id(&l.lookup_ref(&env).unwrap(), &env).unwrap())
+                .collect();
+            let steps = SHAPE_HASH_STEPS.with(|c| c.get());
+            assert_eq!(ids.len(), n);
+            assert!(steps <= 4 * n, "{n}: {steps} steps");
+        }
+    }
+
+    // A hash that read a cell is taken again: once the cell is bound the
+    // type is its binding's.
+    #[test]
+    fn a_shape_hash_that_read_a_cell_is_not_kept() {
+        let env = Env::default();
+        let tv = var("a");
+        let open = Type::Array(Arc::new(Type::TVar(tv.clone())));
+        let closed = parsed("Array<i64>");
+        let mut hist = ContainsHist::new();
+        assert_ne!(hist.ref_id(&open, &env), hist.ref_id(&closed, &env));
+        tv.bind(Type::Primitive(Typ::I64.into()));
+        assert_eq!(hist.ref_id(&open, &env), hist.ref_id(&closed, &env));
+    }
+
+    // A committing walk takes the expansion of an application that holds
+    // no cell as it is where a copy would change nothing, and a copy of
+    // its own where it holds a function type, whose lambdas are a copy's.
+    #[test]
+    fn a_committed_expansion_is_copied_only_where_a_copy_differs() {
+        let (env, t) =
+            Env::typed_at_root(&[("T<'x>", "Array<'x>")], "T<fn(x: i64) -> i64>")
+                .unwrap();
+        let plain = applied(&t, 2, Type::Primitive(Typ::I64.into())).remove(0);
+        let mut hist = ContainsHist::new();
+        let mut expand = |t: &Type| {
+            let id = hist.ref_id(t, &env);
+            part(&hist.expand_ref(t, id, &env, true).unwrap().unwrap())
+        };
+        assert_eq!(expand(&plain).node_key(), expand(&plain).node_key());
+        assert_ne!(expand(&t).node_key(), expand(&t).node_key());
+    }
 
     fn expanded_chain_steps(params: &[&str], base: &str, leaf: &str) -> usize {
         chain_steps(params, base, &params.join(", "), leaf)
