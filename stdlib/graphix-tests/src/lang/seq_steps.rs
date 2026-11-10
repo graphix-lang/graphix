@@ -99,16 +99,17 @@ async fn until_true_at_entry(mode: Mode) -> Result<()> {
 }
 
 // A let's fire reaches the first step that reads it in a later cycle,
-// though a step of its own cycle read it too.
+// though a step of its own cycle read it too: `count` under `live` takes
+// `a`'s one fire at the last step's entry.
 async fn let_fire_reaches_a_later_cycle(mode: Mode) -> Result<()> {
     let code = r#"{
-        let note = 0;
-        let r = &mut note;
-        let f = |x| x + 1;
-        let go = 1;
-        seq go { let v = f(go); *r <- v; v ~ 5 }
+        let step = 0;
+        step <- select step { n if n < 8 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ready = select step { n if n >= 4 => true, _ => false };
+        seq go { let a = go; let b = live(a); until live(ready); live(count(a)) }
     }"#;
-    assert_eq!(run(code, mode).await?, [5]);
+    assert_eq!(run(code, mode).await?, [1]);
     Ok(())
 }
 
@@ -310,3 +311,81 @@ async fn local_let_is_sampled_at_each_later_step(mode: Mode) -> Result<()> {
 }
 
 modes!(local_let_is_sampled_at_each_later_step);
+
+// A step reads its inputs through its entry snapshot and issues each call
+// as a fresh frame, so a fire an input made while the step waited its turn
+// reaches only what reads the input raw, once, at the step's entry: here a
+// builtin under `live`, which counts `ev`'s one fire.
+async fn a_fire_while_a_step_waits_reaches_live(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 8 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 2 => step, _ => never() };
+        let ready = select step { n if n >= 4 => true, _ => false };
+        seq go { until live(ready); live(count(ev)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1]);
+    Ok(())
+}
+
+// So does a nested seq's trigger: `t` fired while the `until` waited, and
+// the inner seq runs at its step's entry.
+async fn a_trigger_fired_while_its_step_waited_starts_a_nested_seq(
+    mode: Mode,
+) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 8 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let t = never();
+        t <- select step { 2 => step, _ => never() };
+        let ready = select step { n if n >= 4 => true, _ => false };
+        seq go { until live(ready); seq let k = t { k * 10 } }
+    }"#;
+    assert_eq!(run(code, mode).await?, [20]);
+    Ok(())
+}
+
+// A reference's target is learned as its step first runs, and a write to it
+// while the step waited is caught up then. The first step takes the
+// reference's own fire, so the target's is the one left to owe.
+async fn a_target_written_while_a_step_waited_is_caught_up(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 8 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let x = never();
+        x <- select step { 2 => step, _ => never() };
+        let p = &x;
+        let ready = select step { n if n >= 4 => true, _ => false };
+        seq go { let q = p; until live(ready); live(count(*p)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1]);
+    Ok(())
+}
+
+// So is what a callee bound at its dispatch captures.
+async fn a_callee_bound_at_a_step_entry_is_caught_up(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 8 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 2 => step, _ => never() };
+        let k = 1;
+        let f = select k { 1 => |u: i64| count(ev), _ => |u: i64| 0 };
+        let ready = select step { n if n >= 4 => true, _ => false };
+        seq go { until live(ready); live(f(0)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [1]);
+    Ok(())
+}
+
+modes!(
+    a_fire_while_a_step_waits_reaches_live,
+    a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
+    a_target_written_while_a_step_waited_is_caught_up,
+    a_callee_bound_at_a_step_entry_is_caught_up,
+);

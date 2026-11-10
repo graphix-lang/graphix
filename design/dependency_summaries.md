@@ -115,15 +115,17 @@ own). `node/seq_machine.rs` runs it:
   boundary the machine publishes the new label within the cycle
   (overlay, store, `notify_set`, as a `Bind` publishes), so the atoms'
   entry event is `pc` in both cases. Entering wakes the step under the
-  wake view with `Select`'s catch-up (`node/wake.rs::TrackedFires`,
-  shared with `Select`): one fire bit per step-body
-  input per machine, consumed by whichever step reads it. After the
+  step view (`View::Step`) with `Select`'s catch-up
+  (`node/wake.rs::TrackedFires`, shared with `Select`): one fire bit per
+  step-body input per machine, consumed by whichever step reads it; what
+  it reaches is in `seq_blocks.md` §6.4. After the
   steps it ran, the machine records the fires they made for the steps
   that did not run (`observe_except`); a step's own `let` is recorded
   even where a step of its cycle read it, so its fire also reaches the
-  first step that reads it in a later cycle, as a carried cell's fire
-  reached the next arm (`seq_steps::let_fire_reaches_a_later_cycle`:
-  `let v = f(go); *r <- v; v ~ 5` would otherwise never complete).
+  first step that reads it in a later cycle
+  (`seq_steps::let_fire_reaches_a_later_cycle`: `let a = go; let b =
+  live(a); until live(ready); live(count(a))` would otherwise never
+  complete).
 - **Completion.** The value's `let` publishing a FIRED production (a
   fired `true` for an `until`); only then do the completion writes run.
   The completed step sleeps (`deselect`, as a select's arm), then the

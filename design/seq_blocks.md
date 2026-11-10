@@ -524,6 +524,26 @@ present once every statement has produced. `until` is refused where its value wo
 last statement of a seq, or of a try or with body whose value is used,
 must be an expression.
 
+**What the catch-up reaches.** A step reads its inputs through its
+entry snapshot, which fires at every entry, and each call it issues is a
+fresh frame owed everything that stands, so a missed fire changes
+nothing there. It reaches what reads an input raw: the interior of a
+`live(e)` (`until live(ready); live(count(ev))` counts a fire `ev` made
+while the `until` waited) and a nested seq's trigger (it runs at its
+step's entry); and, through the catch-up scope open at the entry, what
+the step learns as it runs: a reference's target, a callee bound at its
+dispatch (`wake::owed`). A fire stays owed to the next step that reads
+its input until one does, so one made before the run, or in the last
+run after its readers passed, is caught up too, as an arm's first entry
+catches up what fired before it. A step's own `let` fire is carried to
+the first step entered in a later cycle that reads it, though a step of
+its own cycle read it live (`TrackedFires::enter`). Pins:
+`lang::seq_steps::{a_fire_while_a_step_waits_reaches_live,
+a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
+a_target_written_while_a_step_waited_is_caught_up,
+a_callee_bound_at_a_step_entry_is_caught_up,
+let_fire_reaches_a_later_cycle}`.
+
 ### 6.5 What sleep does for free
 
 A passed step sleeps, and sleep is pause: a timer step's pending timer
