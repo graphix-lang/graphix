@@ -4877,6 +4877,21 @@ fn mem_limit() -> u64 {
         .unwrap_or(8 << 30)
 }
 
+/// What a thread prints when the address-space cap refuses its stack: a
+/// new thread's own (glibc) or its signal stack (std).
+const ADDRESS_SPACE_DEATHS: [&str; 2] =
+    ["mmap failed to allocate stack", "failed to allocate an alternative stack"];
+
+/// The sizes of the allocations a line reports failed. Threads failing
+/// at once share a line (`memory allocation of memory allocation of 80
+/// bytes failed`), so each size is the number just before its own
+/// ` bytes failed`.
+fn failed_requests(l: &str) -> impl Iterator<Item = u64> + '_ {
+    l.match_indices(" bytes failed").filter_map(|(at, _)| {
+        l[..at].rsplit_once("memory allocation of ")?.1.parse().ok()
+    })
+}
+
 /// Cap this process like the children, unless the environment says
 /// otherwise, so an in-process runaway recursion aborts to a containment
 /// instead of growing stack segments or activations.
@@ -5323,15 +5338,14 @@ async fn died(
     // runaway fails on a request below it).
     let cap = mem_limit();
     let mut over_cap = false;
-    let address_space = stderr.lines().any(|l| {
-        // another thread's output may share the line
-        let request = l
-            .split_once("memory allocation of ")
-            .and_then(|(_, r)| r.split_once(" bytes failed"))
-            .and_then(|(n, _)| n.parse::<u64>().ok());
-        over_cap |= cap > 0 && request.is_some_and(|n| n >= cap);
-        request.is_some() || l.contains("mmap failed to allocate stack")
-    });
+    let mut address_space = false;
+    for l in stderr.lines() {
+        for n in failed_requests(l) {
+            address_space = true;
+            over_cap |= cap > 0 && n >= cap;
+        }
+        address_space |= ADDRESS_SPACE_DEATHS.iter().any(|d| l.contains(d));
+    }
     if over_cap {
         return crash("allocation over the address-space cap: ");
     }
@@ -6458,6 +6472,23 @@ mod tests {
         // a minus not followed by a digit keys literally
         assert_ne!(crash_key("a - b"), crash_key("a b"));
         assert_eq!(crash_key("x -> y"), crash_key("x -> y"));
+    }
+
+    #[test]
+    fn failed_requests_read_interleaved_lines() {
+        let sizes = |l| failed_requests(l).collect::<Vec<_>>();
+        assert_eq!(sizes("memory allocation of 80 bytes failed"), [80]);
+        assert_eq!(
+            sizes("memory allocation of memory allocation of 80 bytes failed"),
+            [80]
+        );
+        assert_eq!(
+            sizes(
+                "memory allocation of 96memory allocation of 80 bytes failed bytes failed"
+            ),
+            [80]
+        );
+        assert!(sizes("skipping backtrace printing").is_empty());
     }
 
     /// How much fusion a probe demands under the JIT, beyond value
