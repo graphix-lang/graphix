@@ -3671,6 +3671,23 @@ run!(
     FuseExpect::None
 );
 
+// A `use` that completes a growing cycle through a typedef pending since
+// before a later typedef refuses it; passed on unwrapped, the cycle is
+// regular.
+run!(
+    growing_typedef_completed_by_use_refused,
+    refused("recursive type A grows its parameter 'a as it recurses"),
+    "/test.gx" => "type A<'a> = [`N, `C(X<Array<'a>>)]; type B<'b> = A<'b>; \
+        use self::B as X; let x: A<i64> = `N; let result = 0"
+; FuseExpect::None);
+
+run!(
+    regular_typedef_completed_by_use,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => "type A<'a> = [`N, `C(X<'a>)]; type B<'b> = A<'b>; \
+        use self::B as X; let x: A<i64> = `N; let result = select x { `N => 1, `C(_) => 2 }"
+; FuseExpect::Jit);
+
 /// A parameter that doubles at each level (a perfect tree) is refused
 /// at its definition, so no value of it reaches a select or a freeze.
 const DOUBLING_TYPEDEF_REFUSED: &str = r#"

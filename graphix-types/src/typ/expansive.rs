@@ -33,32 +33,80 @@ enum Key {
 }
 
 type Params = Arc<[(TVar, Option<Type>)]>;
+type DefRef = std::sync::Arc<ResolvedRef>;
+
+/// A definition a walk reached. Its nodes are its parameters, from
+/// `first`.
+struct Def {
+    first: usize,
+    params: Params,
+    body: Type,
+    /// Where its verdict is kept; an abstract type's representation has
+    /// none.
+    named: Option<DefRef>,
+}
 
 struct Flow<'a> {
     env: &'a Env,
     index: LPooled<AHashMap<Key, usize>>,
-    /// Per definition: its first node, its formals and its body. A node
-    /// is a parameter of a definition.
-    defs: LPooled<Vec<(usize, Params, Type)>>,
+    defs: LPooled<Vec<Def>>,
     /// Per node, `(to, under a constructor)`.
     flows: LPooled<Vec<LPooled<Vec<(usize, bool)>>>>,
     unknown: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Definitions scanned, for the tests' count of a check's work.
+    static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'a> Flow<'a> {
-    fn intern(&mut self, key: Key, params: &Params, body: &Type) -> usize {
+    /// The walk from `def`, whatever is known of it already.
+    fn from(env: &'a Env, def: &DefRef) -> Self {
+        let mut flow = Flow {
+            env,
+            index: LPooled::take(),
+            defs: LPooled::take(),
+            flows: LPooled::take(),
+            unknown: false,
+        };
+        flow.intern(Key::Def(def.def_key()), def.params(), def.typ(), Some(def));
+        let mut d = 0;
+        while d < flow.defs.len() {
+            flow.scan(d);
+            d += 1;
+        }
+        flow
+    }
+
+    fn intern(
+        &mut self,
+        key: Key,
+        params: &Params,
+        body: &Type,
+        named: Option<&DefRef>,
+    ) -> usize {
         if let Some(i) = self.index.get(&key) {
             return *i;
         }
         let i = self.defs.len();
-        self.defs.push((self.flows.len(), params.clone(), body.clone()));
+        self.defs.push(Def {
+            first: self.flows.len(),
+            params: params.clone(),
+            body: body.clone(),
+            named: named.cloned(),
+        });
         self.flows.extend(params.iter().map(|_| LPooled::take()));
         self.index.insert(key, i);
         i
     }
 
     fn scan(&mut self, d: usize) {
-        let (_, params, body) = self.defs[d].clone();
+        #[cfg(test)]
+        SCANS.with(|n| n.set(n.get() + 1));
+        let Def { params, body, .. } = &self.defs[d];
+        let (params, body) = (params.clone(), body.clone());
         let formals: LPooled<Vec<ArcStr>> =
             params.iter().map(|(f, _)| f.name.clone()).collect();
         self.walk(d, &formals, &body);
@@ -69,7 +117,7 @@ impl<'a> Flow<'a> {
     /// plainly: a union flattens, so `T<['a, string]>` applied to itself
     /// is `T<['a, string]>` again.
     fn apply(&mut self, d: usize, formals: &[ArcStr], c: usize, args: &[Type]) {
-        let first = self.defs[c].0;
+        let first = self.defs[c].first;
         for (j, arg) in args.iter().enumerate() {
             let members = match arg {
                 Type::Set(ms) => &ms[..],
@@ -83,7 +131,7 @@ impl<'a> Flow<'a> {
                         _ if holds_formal(m, f) => true,
                         _ => continue,
                     };
-                    let from = self.defs[d].0 + i;
+                    let from = self.defs[d].first + i;
                     self.flows[from].push((first + j, under));
                 }
             }
@@ -103,7 +151,7 @@ impl<'a> Flow<'a> {
                         Named::Def(c) if c.regular.get().is_some() => (),
                         Named::Def(c) => {
                             let key = Key::Def(c.def_key());
-                            let c = self.intern(key, c.params(), c.typ());
+                            let c = self.intern(key, c.params(), c.typ(), Some(&c));
                             self.apply(d, formals, c, &tr.params)
                         }
                         Named::Trait => (),
@@ -119,7 +167,7 @@ impl<'a> Flow<'a> {
                     && let Some(r) = self.env.abstract_reps.get(id)
                 {
                     let (rp, rep) = (r.params.clone(), r.rep.clone());
-                    let c = self.intern(Key::Abstract(*id), &rp, &rep);
+                    let c = self.intern(Key::Abstract(*id), &rp, &rep, None);
                     self.apply(d, formals, c, params)
                 }
                 for p in params.iter() {
@@ -191,7 +239,7 @@ impl<'a> Flow<'a> {
 }
 
 enum Named {
-    Def(std::sync::Arc<ResolvedRef>),
+    Def(DefRef),
     Trait,
     Unknown,
 }
@@ -243,33 +291,30 @@ fn holds_formal(t: &Type, f: &ArcStr) -> bool {
 
 /// Whether `def` is expansive: one of its parameters flows back into
 /// itself through a flow under a constructor, in its own body or through
-/// the definitions it reaches.
-pub(crate) fn expansive(env: &Env, def: &ResolvedRef) -> Expansive {
+/// the definitions it reaches. A walk that meets no undefined name
+/// settles every definition it reached whose parameters do not grow: each
+/// one's own walk is a part of this one.
+pub(crate) fn expansive(env: &Env, def: &DefRef) -> Expansive {
     if def.params().is_empty() || def.regular.get().is_some() {
         return Expansive::Regular;
     }
-    let mut flow = Flow {
-        env,
-        index: LPooled::take(),
-        defs: LPooled::take(),
-        flows: LPooled::take(),
-        unknown: false,
-    };
-    flow.intern(Key::Def(def.def_key()), def.params(), def.typ());
-    let mut d = 0;
-    while d < flow.defs.len() {
-        flow.scan(d);
-        d += 1;
-    }
+    let flow = Flow::from(env, def);
     let growing = flow.growing();
-    match def.params().iter().zip(growing.iter()).find(|(_, g)| **g) {
-        Some(((tv, _), _)) => Expansive::Grows(tv.clone()),
-        None if flow.unknown => Expansive::Unknown,
-        None => {
-            let _ = def.regular.set(());
-            Expansive::Regular
+    let grows = |d: &Def| growing[d.first..d.first + d.params.len()].iter().any(|g| *g);
+    if grows(&flow.defs[0]) {
+        let at = def.params().iter().zip(&growing[..]).find(|(_, g)| **g);
+        let ((tv, _), _) = at.expect("a growing parameter");
+        return Expansive::Grows(tv.clone());
+    }
+    if flow.unknown {
+        return Expansive::Unknown;
+    }
+    for d in flow.defs.iter().filter(|d| !grows(d)) {
+        if let Some(named) = &d.named {
+            let _ = named.regular.set(());
         }
     }
+    Expansive::Regular
 }
 
 #[cfg(test)]
@@ -279,6 +324,32 @@ mod test {
     /// The refusal of the typedefs `defs`, defined in order, if any.
     fn refusal(defs: &[(&str, &str)]) -> Option<String> {
         Env::typed_at_root(defs, "i64").err().map(|e| e.to_string())
+    }
+
+    /// A forward chain of parametric typedefs, each naming the next
+    /// before it is defined, or a cycle of them, checked again in order
+    /// as the end of a check does, scans each definition a bounded number
+    /// of times: the first walk settles every definition it reached.
+    #[test]
+    fn a_walk_settles_every_definition_it_finds_regular() {
+        use crate::{expr::ModPath, typ::Unguarded};
+        const TYPES: usize = 200;
+        for last in ["[`End, `C('a)]", "[`End, `C('a, A0<'a>)]"] {
+            let defs: Vec<(String, String)> = (0..TYPES)
+                .map(|i| (format!("A{i}<'a>"), format!("[`N, `C('a, A{}<'a>)]", i + 1)))
+                .chain([(format!("A{TYPES}<'a>"), last.to_string())])
+                .collect();
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(n, b)| (n.as_str(), b.as_str())).collect();
+            let (env, _) = Env::typed_at_root(&defs, "i64").expect("regular");
+            super::SCANS.with(|n| n.set(0));
+            for i in 0..=TYPES {
+                let u = env.check_typedef(&ModPath::root(), &format!("A{i}"));
+                assert_eq!(u.expect("regular"), Unguarded::Guarded, "{last}");
+            }
+            let scans = super::SCANS.with(|n| n.get());
+            assert!(scans <= TYPES + 1, "{last}: {scans} scans of {TYPES} definitions");
+        }
     }
 
     #[test]

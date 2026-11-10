@@ -1500,7 +1500,13 @@ written, so `A<I<'a>>` grows `A<I<I<'a>>>`. So
 every type unfolds to finitely many applications, and every walk over
 types ends at a pair it meets again, with no growth cut. A definition
 whose body names something not defined yet is checked again once it is
-(`Pending::Typedef`, `Env::check_typedef`), as contractiveness is. An inferred type is finite the same way: a relation that would
+(`Pending::Typedef`, `Env::check_typedef`), as contractiveness is: at a
+`use` and at the check's end whole, at a later parametric typedef only
+its self-references (`Completed::Typedef`: every flow that typedef makes
+visible runs through its own parameters, so its own check refuses a
+growing cycle it completes). A walk that meets no undefined name settles
+every definition it reached whose parameters do not grow, so the checks
+of N forward-referencing typedefs walk each about once. An inferred type is finite the same way: a relation that would
 put a cell under a constructor of itself is refused (`b <- B([t ~
 b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged

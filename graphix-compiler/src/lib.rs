@@ -3637,7 +3637,30 @@ pub(crate) enum Pending {
     Name(typ::TypeRef, Expr),
     /// A typedef whose body named something not defined yet: its shape
     /// is checked once everything is ([`Env::check_typedef`]).
-    Typedef(ModPath, ArcStr, Expr),
+    Typedef(ModPath, ArcStr, Expr, Undecided),
+}
+
+/// What of a pending typedef's shape is still open.
+#[derive(Clone, Copy)]
+pub(crate) enum Undecided {
+    /// Its self-references and whether it is expansive.
+    Shape,
+    /// Whether it is expansive.
+    Expansive,
+}
+
+/// What a recheck of the pending typedefs follows.
+#[derive(Clone, Copy)]
+pub(crate) enum Completed {
+    /// A `use`: a name it binds may complete a cycle through any of them.
+    Use,
+    /// A parametric typedef. Every flow it makes visible runs into or out
+    /// of its own parameters (or its representation's, which only they
+    /// reach), so a cycle it completes runs through them and its own check
+    /// refused one that grows: only a self-reference it completes through
+    /// an argument (`type T = G<[i64, T]>`) is left for a pending
+    /// typedef's recheck to find.
+    Typedef,
 }
 
 /// A written type name that did not resolve at its definition's check
@@ -3652,7 +3675,7 @@ pub(crate) fn check_pending_names<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> 
                 }
                 tr.check_application(&ctx.env).at(&spec)?;
             }
-            Pending::Typedef(scope, name, spec) => {
+            Pending::Typedef(scope, name, spec, _) => {
                 ctx.env.check_typedef(&scope, &name).at(&spec)?;
             }
         }
@@ -3682,18 +3705,41 @@ pub(crate) fn resite_pending_name<R: Rt>(
     }
 }
 
-/// Refuse now each deferred typedef a `use` naming a type just
-/// completed, before anything later in the run expands it, and forget
+/// Refuse now each deferred typedef what just `completed` makes
+/// unsound, before anything later in the run expands it, and forget
 /// those it settled.
-pub(crate) fn recheck_pending_typedefs<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> {
+pub(crate) fn recheck_pending_typedefs<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    completed: Completed,
+) -> Result<()> {
     use expr::At;
-    let mut res = Ok(());
+    use typ::Unguarded;
     let CompileCtx { pending_names, env, .. } = ctx;
-    pending_names.retain(|p| match p {
-        Pending::Typedef(_, _, _) if res.is_err() => true,
-        Pending::Typedef(scope, name, spec) => {
-            match env.check_typedef(scope, name).at(spec) {
-                Ok(u) => u == typ::Unguarded::Unknown,
+    let mut res = Ok(());
+    pending_names.retain_mut(|p| match p {
+        Pending::Typedef(..) if res.is_err() => true,
+        Pending::Typedef(scope, name, spec, undecided) => {
+            let still = match (completed, *undecided) {
+                (Completed::Use, undecided) => env
+                    .check_typedef(scope, name)
+                    .map(|u| (u == Unguarded::Unknown).then_some(undecided)),
+                (Completed::Typedef, Undecided::Expansive) => {
+                    Ok(Some(Undecided::Expansive))
+                }
+                (Completed::Typedef, Undecided::Shape) => {
+                    env.check_typedef_guard(scope, name).map(|u| match u {
+                        (Unguarded::Unknown, _) => Some(Undecided::Shape),
+                        (_, true) => None,
+                        (_, false) => Some(Undecided::Expansive),
+                    })
+                }
+            };
+            match still.at(spec) {
+                Ok(Some(u)) => {
+                    *undecided = u;
+                    true
+                }
+                Ok(None) => false,
                 Err(e) => {
                     res = Err(e);
                     true

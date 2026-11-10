@@ -721,13 +721,14 @@ impl TypeDef {
             // A cycle a definition completes runs through it: without
             // parameters through its body, which deftype walked; with them also
             // through an argument (`type T = G<[i64, T]>`), which only T's walk sees.
-            crate::recheck_pending_typedefs(ctx)?;
+            crate::recheck_pending_typedefs(ctx, crate::Completed::Typedef)?;
         }
         if verdict == crate::typ::Unguarded::Unknown {
             ctx.pending_names.push(crate::Pending::Typedef(
                 scope.lexical.clone(),
                 name.clone(),
                 (*spec).clone(),
+                crate::Undecided::Shape,
             ));
         }
         Ok(Self::with(spec, scope.lexical.clone(), name, unchanged_from, definition))

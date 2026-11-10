@@ -2303,16 +2303,27 @@ impl Env {
         &self,
         name: &str,
         typ: &Type,
-        def: &ResolvedRef,
+        def: &std::sync::Arc<ResolvedRef>,
     ) -> Result<Unguarded> {
-        let guarded = match typ.reaches_unguarded(self, def.def_key()) {
-            Unguarded::Reaches => bail!("{}", non_contractive(name)),
-            u => u,
-        };
+        let guarded = self.typedef_guard(name, typ, def)?;
         match crate::typ::expansive::expansive(self, def) {
             Expansive::Grows(param) => bail!("{}", expansive(name, &param)),
             Expansive::Unknown => Ok(guarded.or(Unguarded::Unknown)),
             Expansive::Regular => Ok(guarded),
+        }
+    }
+
+    /// [`Self::typedef_shape`]'s refusal of a self-reference outside every
+    /// constructor.
+    fn typedef_guard(
+        &self,
+        name: &str,
+        typ: &Type,
+        def: &ResolvedRef,
+    ) -> Result<Unguarded> {
+        match typ.reaches_unguarded(self, def.def_key()) {
+            Unguarded::Reaches => bail!("{}", non_contractive(name)),
+            u => Ok(u),
         }
     }
 
@@ -2395,6 +2406,21 @@ impl Env {
             return Ok(Unguarded::Guarded);
         };
         self.typedef_shape(name, td.typ(), &td.def)
+    }
+
+    /// [`Self::check_typedef`] of the self-references alone, and whether
+    /// the definition is known not to be expansive: a walk found it, or
+    /// another definition's walk that reached it, regular.
+    pub fn check_typedef_guard(
+        &self,
+        scope: &ModPath,
+        name: &str,
+    ) -> Result<(Unguarded, bool)> {
+        let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
+            return Ok((Unguarded::Guarded, true));
+        };
+        let regular = td.def.params().is_empty() || td.def.regular.get().is_some();
+        Ok((self.typedef_guard(name, td.typ(), &td.def)?, regular))
     }
 
     /// The representation of the Graphix-minted abstract type `id`, if

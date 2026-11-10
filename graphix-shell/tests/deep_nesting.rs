@@ -989,6 +989,27 @@ fn forward_typedef_chain_checks_in_time() {
     checks_within(&s, 15 * BILLION)
 }
 
+/// Parametric typedefs each naming the next before it is defined, or
+/// each the next around a cycle, check in time near linear in their
+/// number: a typedef rechecks only the self-references of those pending,
+/// and one walk that finds the definitions it reaches regular settles
+/// them all.
+#[test]
+#[cfg(target_os = "linux")]
+fn forward_parametric_typedefs_check_in_linear_time() {
+    const TYPES: usize = 1000;
+    let program = |last: &str| {
+        let mut s = String::new();
+        for i in 0..TYPES {
+            s.push_str(&format!("type A{i}<'a> = [`N{i}, `C{i}('a, A{}<'a>)];\n", i + 1));
+        }
+        s.push_str(&format!("type A{TYPES}<'a> = {last};\nlet x: A0<i64> = `N0;\nx"));
+        s
+    };
+    checks_within(&program("[`End, `C('a)]"), 4 * BILLION);
+    checks_within(&program("[`End, `C('a, A0<'a>)]"), 4 * BILLION);
+}
+
 /// A value whose type shares each level twice (`(x, x)`), written to a
 /// binding of an equal type and checked against a typedef built the same
 /// way, checks in time linear in its depth: a walk of it as a tree takes
