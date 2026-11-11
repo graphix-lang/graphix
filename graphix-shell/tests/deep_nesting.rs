@@ -1139,7 +1139,7 @@ fn bound_dags_elaborate_in_linear_time() {
     completes_within(&["--expand", "--no-cache"], &valued, 10 * BILLION)
 }
 
-// CR claude for claude: [perf/low] Only the check of a chain of calls whose
+// XCR claude for claude: [perf/low] Only the check of a chain of calls whose
 // argument types are DAGs is linear; its build is still exponential. `let mk = |f| (f,
 // f); let x0 = (|x| x, 1);` then `let x{i} = mk(x{i-1});` (nothing written): --check
 // 0.75G at 18 links, --expand (--no-cache, instructions:u) 0.94G/3.05G/9.81G at
@@ -1170,6 +1170,17 @@ fn bound_dags_elaborate_in_linear_time() {
 // CR's 40 links; whether a per-call walk of the argument type is worth removing is
 // open. The pin the CR asks for is still missing. probes:
 // ~/ptmp/cr29/scratch/r19/19b/cdc-review/ (xu-*, xu0-*, xd0-*, m.sh)
+// 2026-11-10 claude: Stale again on base-r20 82569fed3 (--no-cache, instructions:u,
+// empty 0.76G): --expand u-mk 0.82/0.88/1.04G at 18/40/80 links, u-mk0-40 0.96G,
+// w-mk-40 0.96G, a run of u-mk-40 to sys::exit 0.88G. Added the pin the CR asks for:
+// deep_nesting::generic_pair_call_chains_build_in_time holds --expand --no-cache of
+// u-mk, u-mk0 and w-mk at 40 links, and a run of u-mk to sys::exit, within 4G each
+// (lane 0.9-1.0G). No fix to undo and no pre-D12 binary at hand; the pin fails on
+// 187fd838d and lane d12 by this CR's own numbers (u-mk 9.81G, u-mk0 9.93G, w-mk
+// 18.87G at 18 links, about 3x per 2 links), and the test fails over budget when its
+// limit is set below what it retires (0.85G: 'retired 0.9G instructions, over 0.8G').
+// The quadratic per-call walk the review found is call-dag-arg-walk-01. probes:
+// ~/ptmp/cr29/scratch/r20/20d/cdc/
 
 /// A search over a shared type walks each shared node once: the definition
 /// called at two types, whose kernels' types are DAGs, builds in time
@@ -1237,26 +1248,74 @@ fn a_deep_typed_value_prints_in_linear_time() {
 #[cfg(target_os = "linux")]
 fn written_holder_chains_check_in_linear_time() {
     const LINKS: usize = 40;
-    let chain = |link: &dyn Fn(usize) -> String| {
-        let mut s = String::from("let x0 = (|x| x, 1);\n");
-        for i in 1..=LINKS {
-            s.push_str(&link(i));
-        }
-        s.push_str("0\n");
-        s
-    };
-    let connected = chain(&|i| {
-        format!("let x{i} = (x{p}, x{p}); x{i} <- (x{p}, x{p});\n", p = i - 1)
-    });
-    let apart = chain(&|i| {
-        format!(
-            "let (a{i}, w{i}) = (x{p}, x{p}); w{i} <- never(); let x{i} = (a{i}, a{i});\n",
-            p = i - 1
-        )
-    });
+    let head = "let x0 = (|x| x, 1);\n";
+    let connected = chain(
+        head,
+        LINKS,
+        &|i| format!("let x{i} = (x{p}, x{p}); x{i} <- (x{p}, x{p});\n", p = i - 1),
+        "0\n",
+    );
+    let apart = chain(
+        head,
+        LINKS,
+        &|i| {
+            format!(
+                "let (a{i}, w{i}) = (x{p}, x{p}); w{i} <- never(); let x{i} = (a{i}, a{i});\n",
+                p = i - 1
+            )
+        },
+        "0\n",
+    );
     for program in [connected, apart] {
         checks_within(&program, 4 * BILLION)
     }
+}
+
+// CR claude for claude: [perf/low] A chain of calls of a generic pair constructor
+// checks and builds in time quadratic in its length, where the same pair DAG built
+// without calls is linear: each call walks its argument type's whole DAG once a node.
+// base-r20 (82569fed3), --no-cache, instructions:u, an empty program 0.76G: `let mk =
+// |f| (f, f); let x0 = 1;` then `let x{i} = mk(x{i-1});` --check 0.85/1.10/2.03G and
+// --expand 1.13/1.69/3.79G at 80/160/320 links; `let x{i} = (x{i-1}, x{i-1})` --expand
+// 0.78/0.82/0.93G. perf of the 320-link --check, inclusive: CycleWalk::go 14%,
+// FnType::settle_terminal 12% (drain_pending_settles), Type::contains_int 7%,
+// Type::holds 6%. The test below holds 40 links within 4G (0.9G). Find what each call
+// walks again that an earlier call already walked, and pin --check and --expand of the
+// chain at 320 links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc/ (xu0-*, xd0-*)
+// (call-dag-arg-walk-01)
+
+/// A chain of calls of a generic pair constructor, each link the pair of
+/// the last, builds and runs within a few times an empty program's work,
+/// written or not and with or without a function in the pair: elaboration
+/// takes each shared node of an argument's type once, where once per path
+/// takes 2^links.
+#[test]
+#[cfg(target_os = "linux")]
+fn generic_pair_call_chains_build_in_time() {
+    const LINKS: usize = 40;
+    let head = |x0: &str| format!("let mk = |f| (f, f);\nlet x0 = {x0};\n");
+    let called = |i: usize| format!("let x{i} = mk(x{p});\n", p = i - 1);
+    let written =
+        |i: usize| format!("let x{i} = mk(x{p}); x{i} <- mk(x{p});\n", p = i - 1);
+    let links: [(&str, &dyn Fn(usize) -> String); 3] =
+        [("(|x| x, 1)", &called), ("1", &called), ("(|x| x, 1)", &written)];
+    for (x0, link) in links {
+        let program = chain(&head(x0), LINKS, link, "0\n");
+        completes_within(&["--expand", "--no-cache"], &program, 4 * BILLION)
+    }
+    let run = chain(&head("(|x| x, 1)"), LINKS, &called, "sys::exit(0)\n");
+    completes_within(&["--no-cache"], &run, 4 * BILLION)
+}
+
+/// `head`, then `link(i)` for each `i` from 1 to `links`, then `tail`.
+#[cfg(target_os = "linux")]
+fn chain(head: &str, links: usize, link: &dyn Fn(usize) -> String, tail: &str) -> String {
+    let mut s = String::from(head);
+    for i in 1..=links {
+        s.push_str(&link(i));
+    }
+    s.push_str(tail);
+    s
 }
 
 /// A chain of holders, each link reading the last beside a select over it,
