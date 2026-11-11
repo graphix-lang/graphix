@@ -77,10 +77,12 @@ never()`), or `x` and `y`. A typedef that unions its parameters (`type
 E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: an
 argument either variable could take is refused, unless an earlier
 parameter decided one of them, so write one variable (`E<'a, 'a>`). And
-an unannotated parameter a select takes apart with slice patterns: its
-element type is the union of each element's own, so write the parameter
-(`|x: Array<'e>|`). An impl's target may not union two of its head's
-variables either (`impl<'a, 'b> T for Array<['a, 'b]>`).
+an unannotated parameter a select takes apart with slice patterns, where
+an arm binds the rest (`[h, t..]`) or two arms bind elements: each such
+arm types the parameter as an array of its own, so write the parameter
+(`|x: Array<'e>|`). One arm that binds elements beside `[]` or `_` needs
+nothing. An impl's target may not union two of its head's variables
+either (`impl<'a, 'b> T for Array<['a, 'b]>`).
 
 ```graphix,cases
 no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
@@ -94,6 +96,8 @@ no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a
 no "write the type of the parameter" let f = |x| select x { [h, t..] => h, [] => 0 }; f([4, 5])
 ok let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5])
 ok let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])
+no "write the type of the parameter" let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
+ok let f = |x: Array<'e>| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
 ```
 
