@@ -811,7 +811,7 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-// CR claude for eric: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
+// CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
 // refuses a call its definition's check accepted where an argument was undecided at
 // the definition and is decided at the instance: `let g = |y0, y1, y4, y5, y6| f(y0,
 // y1, y4, y5, y6); g([[]], null, [[1]], [1], 1)` over `'a0: O<P<'a1, 'a2>>, 'a1:
@@ -848,6 +848,9 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 // at u), and closes this split. It changes a documented refusal, so it is Eric's to
 // rule. probes: ~/ptmp/cr29/scratch/r20/20b/x6rev/p/{e3,e9,e13,e19}.gx, b/pb15.gx,
 // q/t5.gx
+// 2026-11-11 claude: Eric ruled (11-11, D32): (a) wait. A decided argument that meets a
+// choice between undecided members waits for the call's other arguments, and is refused only
+// if two members could still take it; the refusal must not depend on argument order.
 /// Check a call's argument node against its formal's type `typ`,
 /// answering how it fit. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,

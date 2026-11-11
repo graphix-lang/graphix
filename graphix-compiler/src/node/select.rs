@@ -680,7 +680,7 @@ impl Reach {
             // slice it proposes would likely close this too. probes:
             // ~/ptmp/cr29/scratch/r20/20b/merge-review/sl/{d1..d6}.gx
             // (slice-pair-instance-split-01)
-            // CR claude for eric: [readability/low] An undecided scrutinee takes the
+            // CR claude for claude: [readability/low] An undecided scrutinee takes the
             // union of its arms' predicates, and a slice pattern's predicate gives every
             // element a cell of its own (`[h, ..]` is `Array<['h, 'rest]>`), so an
             // unannotated parameter a select takes apart with slice patterns is typed by a
@@ -732,6 +732,8 @@ impl Reach {
             // lang::types::slice_arms_over_an_unannotated_parameter_refused_at_the_call (rest
             // bound) and slice_arms_binding_no_rest_over_an_unannotated_parameter; probes
             // ~/ptmp/cr29/scratch/r20/20b/finisher/s/{s1,s2,s3,p1,p1a,p2}.gx.
+            // 2026-11-11 claude: Eric ruled (11-11, D34): (a) fix. Members that are one type are
+            // one member at the pick; no annotation. Build with a census.
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);

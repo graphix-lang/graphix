@@ -445,6 +445,11 @@ impl<X: GXExt> Rt for GXRt<X> {
     // `lang::modules::a_reload_in_a_forked_branch_retires_its_binding_in_the_event`
     // holds forked runs to today's serial answer, bottom. Pin main4.gx against
     // ctl4.gx. (escaped-closure-alias-bottom-01)
+    // 2026-11-11 claude: Eric ruled (11-11, D33): (a). A function saved from a
+    // dynamic module and called after a reload reads the last value of the retired
+    // body's binding, the rule of a deleted slot: the capture is kept alive, its
+    // initializer no longer runs. Code that wants the new module calls through the
+    // module again.
     fn set_var_aliases(&mut self, aliases: VarAliases) {
         let reads = &self.alias_reads;
         self.aliases =
