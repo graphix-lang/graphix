@@ -1,6 +1,6 @@
 # Wake catch-up
 
-Status: built 2026-09-01; no partial rebirth 2026-10-18; what a wake stands 2026-11-10 (both below)
+Status: built 2026-09-01; no partial rebirth 2026-10-18; what a wake stands (both below)
 Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_entry_and_wake_deliver_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_siblings_catch_up_apart`)
 Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
@@ -431,15 +431,15 @@ arm_entry_prints_every_time}`, `lang::dense_deltas::no_arm_window_pauses`,
 net_write_not_repeated_after_wake}`, and the LSP's
 `birth_only_arm_actions_are_warnings`.
 
-## What a wake stands (2026-11-10)
+## What a wake stands
 
-Eric's ruling (D20 follow-up 3, option A with a tag bit): no awake reader
-sees a value change without a fire. A woken arm recomputes from the world
-as it stands, and the bindings it stands again (a `let`, a callee's
-formal, a pattern bind, a reference's cell, a collection's element) may
-take values whose fires another arm consumed. Inside the arm that is the
-wake itself. A reader that never slept, holding a closure or a reference
-that left the arm, saw none of it, so to that reader the stand is a fire.
+No awake reader sees a value change without a fire. A woken arm
+recomputes from the world as it stands, and the bindings it stands again
+(a `let`, a callee's formal, a pattern bind, a reference's cell, a
+collection's element) may take values whose fires another arm consumed.
+Inside the arm that is the wake itself. A reader that never slept,
+holding a closure or a reference that left the arm, saw none of it, so
+to that reader the stand is a fire.
 
 - **The bit.** A quiet production carries `Tag::MOVED` when it was
   recomputed from an input that fired while its region slept. Whether a
@@ -529,8 +529,7 @@ an entry that stands, or one a wake stood again in the same cycle, which
 a `let` publishes through the event. Pins: `lang::wake_outside`,
 `lang::prune::standing_formal_refresh_marks_its_readers`,
 `graphix-shell/tests/shell/wake_outside_roots.rs` for readers in other
-roots, and `graphix-fuzz/findings/wake-outside-nov2026/`, whose first
-program the engines answered apart before the rule. The reactive
+roots, and `graphix-fuzz/findings/wake-outside-nov2026/`. The reactive
 generator escapes a closure or a reference from a sleeping arm
 (`generate::reactive::escaped_arm`).
 

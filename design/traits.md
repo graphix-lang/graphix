@@ -1,7 +1,7 @@
 # Traits
 
 Status: built 2026-08-24 (v1, the core traits `Eq`/`Ord`/`Display`, the io traits)
-Pins: `stdlib/graphix-tests/src/lang/traits.rs` (`annotation_bound_enforced`, `poly_value_two_types`, `trait_method_value_then_generic`, `trait_union_dispatch`, `trait_union_dispatch_in_lambda`, `trait_union_dispatch_over_a_dag_of_names`, `trait_dynamic_impl_*`, `trait_dynamic_core_impl`, `trait_interface_outer_default`, `dynamic_module_typecheck1`, `core_impl_interface_declared`, `core_impl_interface_rust_backed_refused`, `interface_type_after_impl`), `stdlib/graphix-tests/src/lib_tests/tls.rs` (`socket_union_dispatch`)
+Pins: `stdlib/graphix-tests/src/lang/traits.rs` (`poly_value_two_types`, `trait_method_value_then_generic`, `trait_union_dispatch`, `trait_union_dispatch_in_lambda`, `trait_union_dispatch_over_a_dag_of_names`, `trait_dynamic_impl_*`, `trait_dynamic_core_impl`, `trait_interface_outer_default`, `dynamic_module_typecheck1`, `core_impl_interface_declared`, `core_impl_interface_rust_backed_refused`, `interface_type_after_impl`), `stdlib/graphix-tests/src/lib_tests/tls.rs` (`socket_union_dispatch`)
 Supersedes: interfaces.md
 
 ## 1. Why a language feature
@@ -471,7 +471,7 @@ the trait (rigid in the def gate, printed back as the trait); a trait
 anywhere else is an error. Applied at `Lambda::compile`, `bind_sig` and
 `deftype`, after `scope_refs` — which re-mints type variables WITH
 their cell constraints, so a bound written in a `let` annotation or a
-`.gxi` `val` is enforced (`annotation_bound_enforced`).
+`.gxi` `val` is enforced.
 
 **Targets**: `check_target` (`node/traits.rs`) enforces §4 —
 `package_root` of the scopes decides the package; a whole program
