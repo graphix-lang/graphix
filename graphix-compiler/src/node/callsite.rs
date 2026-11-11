@@ -325,30 +325,6 @@ fn checked_default<R: Rt>(
     }
 }
 
-// XCR claude for claude: [bug/low] Which default is judged first, and so which refusal a
-// conflict names, follows the iteration order of LambdaIds::ids, a nohash IntSet keyed by
-// LambdaId, whose values come from one process-wide counter. Compiles running side by side
-// in one process (the skill fence harness checks 8 at once) shift the ids, and the order
-// flips: the gate run lane19d-gate-1109-162656.log (lane 19d finisher) failed
-// examples_compile::skill_fences_check on generics.md's `let fs = [|#d = 1, x: i64| x,
-// |#d = "q", x: i64| x]; array::len(fs)` case with `string does not contain i64` where
-// the case says `i64 does not contain string`; it passed on 3 reruns alone, and 60
-// standalone --check runs on base-r19 and the lane all print the latter. A fix: judge
-// `defs` in program order (each LambdaDef's source position), not id order.
-// (default-judge-order-01)
-// 2026-11-10 claude: Defaults are judged in the order the program writes them:
-// LambdaDef::written_order (origin, then position; a run-time def after source ones; id
-// only between two of one place) orders the defs at judge_hidden_defaults and at the
-// call's omitted defaults (callsite::written_defs, which replaced that site's id sort),
-// and module::held_lambdas, whose order picks the binding a val refusal names. Probes
-// ~/ptmp/cr29/scratch/r20/20d/djo/: dj40.gx printed 'string does not contain i64' on
-// base-r20, now 'i64 does not contain string' over a 0..180 prefix sweep. Pins (fail x4
-// with the fix undone: a struct literal compiles its fields sorted, so the id order is the
-// reverse of the written one; the call and val pins always, the formal one unless the
-// ids' hash order wraps): lang::functions::met_defaults_judged_as_written_at_a_formal,
-// met_defaults_judged_as_written_at_a_call,
-// lang::interfaces::val_struct_names_the_capture_written_first. The order also decides a
-// verdict, see (met-default-order-verdict-01).
 /// The labeled defaults of the lambdas `value` may hold that `formal`
 /// hides or makes optional, each judged at `formal`'s view.
 fn judge_hidden_defaults<R: Rt>(
