@@ -3982,6 +3982,71 @@ const BOUNDED_ALIAS_WRITTEN_OUT: &str = r#"
 
 run!(bounded_alias_written_out, BOUNDED_ALIAS_WRITTEN_OUT, is(Value::I64(1)));
 
+// An alias looked through keeps the meaning its own module gives the
+// names in its body: `Priv` in `Opt` is `inner`'s, never the one of the
+// module that applies `Opt`.
+run!(
+    alias_from_another_module_keeps_its_names,
+    is(Value::I64(111)),
+    "/test.gx" => r#"
+        mod inner;
+        type Priv = string;
+        type T<'a> = [`N, `C('a, T<inner::Opt<'a>>)];
+        type W<'a> = [`N, `C('a, W<['a, i64, `P]>)];
+        let x: T<bool> = `C(true, `C(`P, `C(3, `N)));
+        let w: W<bool> = x;
+        let tested = select w { T<bool> as _ => 1 };
+        let third = select x { `C(_, `C(_, `C(h, _))) => h, _ => never() };
+        let n = select third { i64 as i => i * 10 + 80, _ => 0 };
+        let result = tested + n
+    "#,
+    "/test/inner.gx" => r#"
+        type Priv = [i64, `P];
+        type Opt<'a> = ['a, Priv]
+    "#
+);
+
+run!(
+    alias_from_another_module_refuses_the_local_name,
+    refused("type mismatch T<bool> does not contain `C(bool, `C(string, `N))"),
+    "/test.gx" => r#"
+        mod inner;
+        type Priv = string;
+        type T<'a> = [`N, `C('a, T<inner::Opt<'a>>)];
+        let x: T<bool> = `C(true, `C("s", `N));
+        let result = 0
+    "#,
+    "/test/inner.gx" => r#"
+        type Priv = [i64, `P];
+        type Opt<'a> = ['a, Priv]
+    "#;
+    FuseExpect::None
+);
+
+// A module's typedef that shadows an imported type of its own name
+// applies itself, not the import: its alias argument is looked through.
+run!(
+    alias_in_a_typedef_that_shadows_an_import,
+    is(Value::I64(11)),
+    "/test.gx" => r#"
+        type T<'a> = [`Z, `L('a, T<'a>)];
+        type Opt<'a> = ['a, null];
+        let warm: T<i64> = `Z;
+        mod inner;
+        let result = inner::r
+    "#,
+    "/test/inner.gx" => r#"
+        use super::{Opt, T};
+        type T<'a> = [`N, `C('a, T<Opt<'a>>)];
+        type W<'a> = [`N, `C('a, W<['a, null]>)];
+        let x: T<i64> = `C(1, `C(null, `N));
+        let w: W<i64> = x;
+        let tested = select w { T<i64> as _ => 1 };
+        let second = select x { `C(_, `C(h, _)) => h, _ => never() };
+        let r = select second { null as _ => tested + 10, i64 as _ => 0 }
+    "#
+);
+
 /// A non-recursive typedef applied to ever larger arguments down a finite
 /// chain of typedefs compares and keys a map as its expansion does.
 const FINITE_CHAIN_OF_LARGER_ARGUMENTS: &str = r#"
