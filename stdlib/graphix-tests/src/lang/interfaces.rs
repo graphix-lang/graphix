@@ -1973,6 +1973,33 @@ run!(
     ; FuseExpect::None
 );
 
+// Of two captures that hold the cell in lambdas they hold as data, the one
+// written first is named, then the other, and with both annotated it runs.
+run!(
+    val_names_the_lambda_holder_written_first,
+    refused("that of st, a binding outside its let: declare the val at one type, or give st a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let st = {f: |x| x}; st <- {f: |x| x}; let st2 = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
+);
+
+run!(
+    val_names_the_second_lambda_holder_once_the_first_is_annotated,
+    refused("that of st2, a binding outside its let: declare the val at one type, or give st2 a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let st: {f: fn(x: Any) -> Any} = {f: |x| x}; st <- {f: |x| x}; let st2 = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
+);
+
+run!(
+    val_lambda_holders_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let st: {f: fn(x: Any) -> Any} = {f: |x| x}; st <- {f: |x| x}; let st2: {f: fn(x: Any) -> Any} = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
+    ; FuseExpect::None
+);
+
 // A capture whose own type is the cell is named before one that holds it
 // in data, whichever lambda is written first: only its annotation lifts
 // the refusal.
@@ -1990,6 +2017,25 @@ run!(
     "/test.gx" => "mod m; let result = (m::c.a(1), m::c.a(\"s\"))",
     "/test/m.gxi" => "val c: {a: fn(x: 'a) -> 'a, b: fn(x: 'b) -> i64}",
     "/test/m.gx" => "let p: Any = never(); let q = [p]; let c = {b: |x| array::len(q), a: |x| { p <- x; x }}"
+    ; FuseExpect::None
+);
+
+// So is one a lambda further in captures, past a nearer capture that only
+// holds the cell in data.
+run!(
+    val_names_the_capture_whose_type_is_the_cell_past_a_nearer_holder,
+    refused("that of p, a binding outside its let: declare the val at one type, or give p a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let p = never(); let q = [p]; let g = |y| { p <- y; y }; let f = |x| { let n = array::len(q); g(x) }"
+);
+
+run!(
+    val_capture_whose_type_is_the_cell_past_a_nearer_holder_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let p: Any = never(); let q = [p]; let g = |y| { p <- y; y }; let f = |x| { let n = array::len(q); g(x) }"
     ; FuseExpect::None
 );
 

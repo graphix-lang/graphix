@@ -574,27 +574,36 @@ impl Holder {
     // (some modes of each run, as the hash falls); each has an annotated twin that runs.
     // probes:
     // ~/ptmp/cr29/scratch/r20/20d/x2/{ord,ordq,ordsw,two,twoq,one,onep,tr.gx,trp.gx}
-    /// What holds `tv` for the implementation's binding `id`: the nearest
-    /// binding the lambdas it holds capture, or the lambdas those capture,
-    /// whose type reaches the cell and which holds no lambda, the binding an
-    /// annotation can widen. Among the captures of one level, one whose own
-    /// type is the cell comes before one that holds it in data, and of two
-    /// alike the one the program writes first: a binding built from another
-    /// is written after it. A binding that holds lambdas in data (a struct
-    /// of them) is followed to what they capture, and named only when they
-    /// capture nothing that holds the cell.
+    /// What holds `tv` for the implementation's binding `id`: a binding the
+    /// lambdas it holds capture, or the lambdas those capture, whose type
+    /// reaches the cell, the binding an annotation can widen. One whose own
+    /// type is the cell comes first, then one that holds it in data, then
+    /// one that holds it in lambdas it holds as data (a struct of them),
+    /// which are followed to what they capture; of two alike the nearer,
+    /// then the one the program writes first: a binding built from another
+    /// is written after it.
     pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
+        use crate::env::Bind as Held;
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Holds {
+            Itself,
+            InData,
+            InLambdas,
+        }
         let mut level: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
         held_lambdas(ctx, id, &mut level);
         if level.is_empty() {
             return Self::NoLambda;
         }
+        let written_before = |b: &Held, f: &Held| {
+            place_order((&b.ori, b.pos), (&f.ori, f.pos)).then(b.id.cmp(&f.id)).is_lt()
+        };
         let mut seen: LPooled<AHashSet<BindId>> = LPooled::take();
         let mut followed: LPooled<AHashSet<LambdaId>> = LPooled::take();
-        let mut data_holder = None;
+        let mut best: Option<((Holds, usize), &Held)> = None;
         let mut next: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
+        let mut depth = 0;
         while !level.is_empty() {
-            let mut found: Option<(bool, &crate::env::Bind)> = None;
             for def in level.drain(..).filter(|d| followed.insert(d.id)) {
                 def.captured_ids(&mut |id| {
                     let Some(b) = ctx.env.by_id.get(&id) else { return };
@@ -603,38 +612,36 @@ impl Holder {
                     }
                     let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     b.typ.reached_cells(&mut cells);
-                    if cells.contains_key(&tv.cell_addr()) {
-                        let before = next.len();
-                        held_lambdas(ctx, id, &mut next);
-                        if next.len() == before {
-                            let is_cell = matches!(
-                                &b.typ,
-                                Type::TVar(t) if t.stands_for() == tv.stands_for()
-                            );
-                            let first = found.is_none_or(|(c, f)| {
-                                c.cmp(&is_cell)
-                                    .then_with(|| {
-                                        place_order((&b.ori, b.pos), (&f.ori, f.pos))
-                                    })
-                                    .then(b.id.cmp(&f.id))
-                                    .is_lt()
-                            });
-                            if first {
-                                found = Some((is_cell, b))
-                            }
-                        } else if held_lambda(ctx, id).is_none() {
-                            data_holder.get_or_insert_with(|| b.name.clone());
+                    if !cells.contains_key(&tv.cell_addr()) {
+                        return;
+                    }
+                    let before = next.len();
+                    held_lambdas(ctx, id, &mut next);
+                    let holds_lambdas = next.len() > before;
+                    let how = match &b.typ {
+                        _ if holds_lambdas && held_lambda(ctx, id).is_some() => return,
+                        _ if holds_lambdas => Holds::InLambdas,
+                        Type::TVar(t) if t.stands_for() == tv.stands_for() => {
+                            Holds::Itself
                         }
+                        _ => Holds::InData,
+                    };
+                    let rank = (how, depth);
+                    if best.is_none_or(|(r, f)| {
+                        rank < r || (rank == r && written_before(b, f))
+                    }) {
+                        best = Some((rank, b))
                     }
                 });
             }
-            if let Some((_, b)) = found {
+            if let Some(((Holds::Itself, _), b)) = best {
                 return Self::Captured(b.name.clone());
             }
             mem::swap(&mut level, &mut next);
+            depth += 1;
         }
-        match (data_holder, held_lambda(ctx, id)) {
-            (Some(name), _) => Self::Captured(name),
+        match (best, held_lambda(ctx, id)) {
+            (Some((_, b)), _) => Self::Captured(b.name.clone()),
             (None, Some(_)) => Self::Lambda,
             (None, None) => Self::NoLambda,
         }

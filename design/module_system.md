@@ -274,11 +274,12 @@ type: paired with a type holding a variable a use picks it is refused,
 naming the way out (the outer binding's type, the val at one type, a
 quantified annotation on the `let`, or, for an implementation that is no
 lambda, a lambda, or a literal of lambdas for a val that is no function;
-the binding named is the nearest the implementation's lambda reaches
-through the lambdas it captures that holds no lambda, and of several
-equally near the one whose own type is the cell, then the one the
-program writes first, so its annotation lifts the refusal,
-`module::Holder::of`); paired with a type holding none, a
+the binding named is one the implementation's lambda reaches through
+the lambdas it captures: one whose own type is the cell, else one that
+holds it in data, else one that holds it in lambdas it holds as data;
+of several alike the nearest, then the one the program writes first,
+so its annotation lifts the refusal, `module::Holder::of`); paired with
+a type holding none, a
 concrete type or a whole quantified function type, the declaration
 decides it (`module.rs::hold_paired`), so `val e: B<i64>` over `let e =
 B(1)` builds `e` at `B<i64>`. A trait method's body, an impl's and a
