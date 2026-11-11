@@ -1112,27 +1112,43 @@ fn bound_dags_elaborate_in_linear_time() {
     completes_within(&["--expand", "--no-cache"], &valued, 10 * BILLION)
 }
 
-/// A DAG of bounds through a union typedef, each variable's bound naming
-/// the next two under one constructor, builds its instance in polynomial
-/// time: the guide probes of the commits that take lower bounds are kept
-/// as any probe is, a verdict over two types holding no cell stands
-/// through the binds, and a union's members are ordered by depth with
-/// each shared node measured once.
-#[test]
+/// `f` over a DAG of bounds through a union typedef, each variable's
+/// bound naming the next two under one constructor, and `calls` of it.
 #[cfg(target_os = "linux")]
-fn a_bound_dag_through_a_union_typedef_builds_in_polynomial_time() {
+fn union_typedef_bound_dag(calls: &str) -> String {
     const DEPTH: usize = 40;
     let bounds = (0..DEPTH - 1)
         .map(|i| format!("'a{i}: P<'a{}, 'a{}>", i + 1, i + 2))
         .collect::<Vec<_>>()
         .join(", ");
-    let program = format!(
+    format!(
         "type P<'x, 'y> = [Array<'x>, Array<'y>, null];\n\
          let f = {bounds}, 'a{}: [Array<'a{DEPTH}>, null], 'a{DEPTH}: Number \
-         |x: ('a0, 'a1)| 7;\nf(never())\n",
+         |x: ('a0, 'a1)| 7;\n{calls}\n",
         DEPTH - 1
-    );
+    )
+}
+
+/// A DAG of bounds through a union typedef builds its instance in
+/// polynomial time: the guide probes of the commits that take lower
+/// bounds are kept as any probe is, a verdict over two types holding no
+/// cell stands through the binds, and a union's members are ordered by
+/// depth with each shared node measured once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_bound_dag_through_a_union_typedef_builds_in_polynomial_time() {
+    let program = union_typedef_bound_dag("f(never())");
     completes_within(&["--expand", "--no-cache"], &program, 4 * BILLION)
+}
+
+/// The same instance called from a second function fuses in polynomial
+/// time: the search of a node's type for an abstract value walks each
+/// shared application once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_bound_dag_through_a_union_typedef_fuses_in_polynomial_time() {
+    let program = union_typedef_bound_dag("let g = |y| f(y);\ng(never())");
+    completes_within(&["--expand", "--no-cache"], &program, 8 * BILLION)
 }
 
 /// A search over a shared type walks each shared node once: the definition

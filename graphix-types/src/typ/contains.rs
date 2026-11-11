@@ -5177,6 +5177,39 @@ mod tests {
         }
     }
 
+    // A verdict under `Lower` over an open var and a type that holds no
+    // cell stands by the var's place as a plain one does: through a
+    // write to a cell the var does not reach, and no further than a
+    // write to one it reaches. `'c0: Array<'c1>` and on, links enough to
+    // be numbered, above as many arrays of `i64`.
+    #[test]
+    fn a_flagged_verdict_stands_while_no_cell_its_var_reaches_is_written() {
+        const LINKS: usize = 40;
+        let env = Env::default();
+        let array = |t: Type| Type::Array(Arc::new(t));
+        let cells: Vec<TVar> = (0..=LINKS).map(|_| var("c")).collect();
+        for link in cells.windows(2) {
+            link[0].add_cell_constraint(array(Type::TVar(link[1].clone())));
+        }
+        let top = Type::TVar(cells[0].clone());
+        let arrays = (0..LINKS).fold(prim(Typ::I64), |t, _| array(t));
+        let lower = ContainsFlags::Lower | ContainsFlags::RigidCheck;
+        let mut hist = ContainsHist::new();
+        let mut probe = || {
+            CONTAINS_STEPS.with(|n| n.set(0));
+            let held = top.contains_int(lower, &env, &mut hist, &arrays).unwrap();
+            (held, CONTAINS_STEPS.with(|n| n.get()))
+        };
+        for _ in 0..2 {
+            let (held, steps) = probe();
+            assert!(held && steps > 1, "{steps} steps");
+            var("other").bind(prim(Typ::String));
+        }
+        assert_eq!(probe(), (true, 1));
+        cells[LINKS].bind(prim(Typ::String));
+        assert!(!probe().0);
+    }
+
     fn parsed(s: &str) -> Type {
         let t = crate::expr::parser::parse_type(s).unwrap();
         t.alias_tvars(&mut LPooled::take());

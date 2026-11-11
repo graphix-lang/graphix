@@ -423,14 +423,10 @@ struct Verdicts<T> {
     /// The shallowest application being decided that the decision in
     /// progress read.
     read: usize,
-    /// The shared nodes a search walked and found nothing under, so a
-    /// type that shares them (a DAG) is searched once; only outside any
-    /// application being decided, whose provisional verdicts a node's may
-    /// rest on.
-    walked: LPooled<AHashSet<usize>>,
-    /// The types the walk built outside any application being decided,
-    /// alive until it ends: a node `walked` holds keeps its address.
-    built: LPooled<Vec<Type>>,
+    /// What a search found under the shared nodes it walked, so a type
+    /// that shares them (a DAG) is searched once: each node is held, so
+    /// its address stays its own while the walk lasts.
+    walked: LPooled<AHashMap<usize, (Type, bool)>>,
 }
 
 impl<T> Verdicts<T> {
@@ -441,17 +437,28 @@ impl<T> Verdicts<T> {
             depth: 0,
             read: usize::MAX,
             walked: LPooled::take(),
-            built: LPooled::take(),
         }
     }
 
-    /// `f` over `t`, a type built for this walk.
-    fn over_built<R>(&mut self, t: Type, f: impl FnOnce(&mut Self, &Type) -> R) -> R {
-        let r = f(self, &t);
-        if self.depth == 0 {
-            self.built.push(t)
+    /// `search` beneath `t`, once a walk where it is a shared node. What
+    /// it finds is found for good; that it finds nothing is kept only
+    /// where it read no application still being decided, whose verdict
+    /// it would rest on. Inside an application being decided only an
+    /// application is kept: its parameters are all searched at every
+    /// meeting, and the composites there are the definition's own.
+    fn search_once(&mut self, t: &Type, search: impl FnOnce(&mut Self) -> bool) -> bool {
+        let Some(node) = super::node_addr(t) else { return search(self) };
+        if let Some((_, found)) = self.walked.get(&node) {
+            return *found;
         }
-        r
+        let outer = mem::replace(&mut self.read, usize::MAX);
+        let found = search(self);
+        let kept = self.depth == 0 || matches!(t, Type::Ref(_));
+        if kept && (found || self.read >= self.depth) {
+            self.walked.insert(node, (t.clone(), found));
+        }
+        self.read = self.read.min(outer);
+        found
     }
 
     /// Settle the provisional verdicts that read the application decided
@@ -814,44 +821,39 @@ impl Type {
         leaf: &dyn Fn(&Type) -> Option<bool>,
     ) -> bool {
         ensure_sufficient(|| {
+            #[cfg(test)]
+            HOLDS_STEPS.with(|n| n.set(n.get() + 1));
             if let Some(v) = leaf(self) {
                 return v;
             }
             match self {
                 // an open cell will hold what bounds it from below
                 Type::TVar(_) => match self.deref_cloned() {
-                    Some(t) => seen.over_built(t, |seen, t| t.holds(env, seen, leaf)),
+                    Some(t) => t.holds(env, seen, leaf),
                     None => self.open_lower().iter().any(|l| l.holds(env, seen, leaf)),
                 },
                 // an open constructor is unknown like an open cell: its
                 // argument decides
                 Type::App(c, a) => match Type::app_filled(c, a) {
-                    Some(f) => seen.over_built(f, |seen, f| f.holds(env, seen, leaf)),
+                    Some(f) => f.holds(env, seen, leaf),
                     None => a.holds(env, seen, leaf),
                 },
-                Type::Ref(tr) => {
+                Type::Ref(tr) => seen.search_once(self, |seen| {
                     let Ok(t) = self.lookup_ref(env) else { return false };
                     let shape =
                         tr.params.iter().map(|p| p.holds(env, seen, leaf)).collect();
                     match tr.def_key() {
-                        None => seen.over_built(t, |seen, t| t.holds(env, seen, leaf)),
+                        None => t.holds(env, seen, leaf),
                         Some(k) => decide_once(seen, (k, shape), false, |seen| {
                             t.holds(env, seen, leaf)
                         }),
                     }
-                }
-                t => {
-                    let node = super::node_addr(t).filter(|_| seen.depth == 0);
-                    if node.is_some_and(|n| seen.walked.contains(&n)) {
-                        return false;
-                    }
+                }),
+                t => seen.search_once(t, |seen| {
                     let mut r = false;
                     t.for_each_child(&mut |c| r = r || c.holds(env, seen, leaf));
-                    if !r && let Some(n) = node {
-                        seen.walked.insert(n);
-                    }
                     r
-                }
+                }),
             }
         })
     }
@@ -3347,6 +3349,7 @@ thread_local! {
     static LITERALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static IS_A_NAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static SHAPE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HOLDS_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `s` read as a value literal.
@@ -3551,6 +3554,8 @@ pub(crate) mod tests {
         expr::{ModPath, parser::parse_type},
         typ::Type,
     };
+    use ahash::AHashMap;
+    use arcstr::literal;
     use netidx_value::Value;
     use std::{
         borrow::Cow,
@@ -3568,6 +3573,61 @@ pub(crate) mod tests {
         let t = parse_type(t).unwrap().scope_refs(&ModPath::root());
         t.seed_refs(env);
         t
+    }
+
+    /// `links` applications over a `leaf`, each of `P` to the two below
+    /// it but the top, of `top`: every link one node, shared by the two
+    /// above it.
+    fn application_dag(env: &Env, links: usize, top: &str, leaf: &str) -> Type {
+        let mut below = vec![parsed(env, leaf), parsed(env, "[Array<i64>, null]")];
+        for i in 0..links {
+            let name = if i + 1 == links { top } else { "P" };
+            let [q, p] = below.last_chunk().unwrap().clone();
+            let params = AHashMap::from_iter([(literal!("p"), p), (literal!("q"), q)]);
+            below.push(parsed(env, &format!("{name}<'p, 'q>")).replace_tvars(&params));
+        }
+        below.pop().unwrap()
+    }
+
+    // A search for a part (`Type::holds`) walks each shared application
+    // of a DAG once: where it finds nothing and where every link holds
+    // what it looks for, and inside a definition being decided, which the
+    // top link of `Q` is when the links below it are met again. As a
+    // tree, the links below one are Fibonacci many.
+    #[test]
+    fn a_search_walks_a_dag_of_applications_once() {
+        const LINKS: usize = 40;
+        let defs = [
+            ("P<'x, 'y>", "[Array<'x>, Array<'y>, null]"),
+            ("Q<'x, 'y>", "[List<'x>, List<'y>, null]"),
+        ];
+        let (env, _) = typed(&defs, "i64");
+        for (top, leaf, held) in
+            [("P", "i64", false), ("Q", "i64", false), ("Q", "Any", true)]
+        {
+            let dag = application_dag(&env, LINKS, top, leaf);
+            super::HOLDS_STEPS.with(|s| s.set(0));
+            assert_eq!(dag.holds_abstract(&env), held, "{top} over {leaf}");
+            let steps = super::HOLDS_STEPS.with(|s| s.get());
+            assert!(steps <= 32 * LINKS, "{top} over {leaf}: {steps} steps");
+        }
+    }
+
+    // A search that finds nothing under an application while a definition
+    // it names is being decided says nothing of the application: `B`'s
+    // `C<i64>` is first met inside `A`, before `A`'s own `_`, and `W`
+    // holds what its second parameter does alone.
+    #[test]
+    fn a_search_keeps_no_verdict_that_rests_on_a_definition_being_decided() {
+        let defs = [
+            ("A", "[`Go(B), `Yes(_)]"),
+            ("B", "(C<i64>, i64)"),
+            ("C<'p>", "[Array<A>, 'p]"),
+            ("W<'x, 'y>", "(fn(a: 'x) -> i64, 'y)"),
+        ];
+        let (env, both) = typed(&defs, "W<A, B>");
+        assert!(both.holds_bottom(&env));
+        assert!(!parsed(&env, "W<B, i64>").holds_bottom(&env));
     }
 
     // A select's shallow test over `type T0 = [null, (T1, T1)]`, .. walks

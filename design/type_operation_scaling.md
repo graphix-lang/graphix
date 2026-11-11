@@ -54,6 +54,20 @@ structure is returned SHARED, never copied.
   `ReadWalk`, which remembers no named type's copy, and
   `Type::copied_in_two_places`, which counts an application wherever it
   is met, since its count depends on the definitions being expanded.
+- A search for a part (`Type::holds`: `holds_abstract`, `holds_ref`,
+  `holds_bottom` and the rest) keeps what it found under each shared node
+  (`cast::Verdicts::search_once`). An application is one of them: its
+  parameters are all searched at every meeting, so a DAG of applications
+  walked as a tree is Fibonacci many searches, and the fusion gate asks
+  of every node's type whether it holds an abstract value
+  (`lowering::meets_abstract`). What a search finds is found for good;
+  that it finds nothing is kept only where it read no application still
+  being decided, and inside one only an application is kept. Each kept
+  node is held, so its address stays its own. Pins:
+  `typ::cast::tests::a_search_walks_a_dag_of_applications_once`,
+  `a_search_keeps_no_verdict_that_rests_on_a_definition_being_decided`,
+  `deep_nesting::
+  a_bound_dag_through_a_union_typedef_fuses_in_polynomial_time`.
 - `contains` over such a chain (`ContainsHist`) keeps three things for the
   whole call, each by node. A committed pair's application is keyed by its
   definition and an id of its parameters' keys, and an application under a
@@ -170,13 +184,13 @@ structure is returned SHARED, never copied.
   either polarity, and a probe under `Lower`, `IntoMember` or
   `LowerInArgs` (the guide of a commit that takes lower bounds) is its
   own question in its own polarity, kept as the others are. Walked at
-  every meeting, such a guide tripled the walk at each link of a DAG of
+  every meeting, such a guide triples the walk at each link of a DAG of
   bounds through a union typedef (`'a{i}: P<'a{i+1}, 'a{i+2}>` over
   `P<'x, 'y> = [Array<'x>, Array<'y>, null]`), which an instance's
   signature check walks though the definition's check does not. A
   verdict over two types that hold no cell read no cell, so it stands
   through every write. `place_in_order` measures each shared node's
-  depth once an ordering (`contains::nesting`). Pins:
+  depth once per ordering (`contains::nesting`). Pins:
   `typ::contains::tests::
   an_instance_over_a_dag_of_bounds_through_a_typedef_takes_polynomial_steps`,
   `a_members_depth_measures_each_shared_node_once`,
@@ -187,7 +201,10 @@ structure is returned SHARED, never copied.
   pair is probed a second time the memo keeps the var's cell and its
   number beside it (`probe_standing`, `tvar::Standing`, numbering what
   the var reaches where it must), and the verdict holds while that
-  number stands, whatever else is written. A walk that asked whether a
+  number stands, whatever else is written, under any flags (pin
+  `typ::contains::tests::
+  a_flagged_verdict_stands_while_no_cell_its_var_reaches_is_written`).
+  A walk that asked whether a
   type implements a trait keeps and reads no such verdict from then on
   (`ContainsHist::impls_read`): the answer read the heads of the
   environment's impls, whose cells no var reaches. A call's argument pre-unifies
