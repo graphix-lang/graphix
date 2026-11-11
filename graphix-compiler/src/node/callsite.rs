@@ -1415,6 +1415,20 @@ fn holds_invariantly(
 // holds. base-r20 alike; `let one: [i64, string] = 1` runs. probes:
 // ~/ptmp/cr29/scratch/r20/coord/conflicts-verify/{d1swap,c3swap}.gx
 // (bound-variable-arg-order-01)
+// 2026-11-11 claude: The same refusal with the variable one bound further in:
+// `type O<'t> = ['t, null]; let f = 'a0: (O<'a1>, O<'a2>), 'a1: O<'a2>, 'a2:
+// [i64, string] |x0: 'a0, x1: 'a1| x1; let v: (O<O<i64>>, O<[i64, string]>) =
+// (null, null); f(v, null)` is refused "'a1: unbound within O<'a2: unbound
+// within [i64, string] above [i64, string]> above [i64, null] does not contain
+// null" (base-r20 alike): Widening::settle_bounded settles 'a1 at the union of
+// its lower bounds only where its bound holds that union, and the probe of
+// O<'a2> against it asks 'a2, itself above a lower bound, to bind below it.
+// Settling the variables a bound holds first was tried: the check then passes
+// and the build refuses the instance (q1.gx; base-r20 and rev20 refuse the
+// instance of the annotated twin q2.gx the same way), so it was not landed. 4 of
+// 1200 generated programs (coord/rebase/mix.py, seeds 31 and 32) are refused
+// this way or by the order above and run on base-r20. Probes:
+// ~/ptmp/cr29/scratch/r20/coord/x1/{q1,q2,p00415,p00430}.gx.
 /// A fresh instance's type variables that settle to the widest argument
 /// rather than the first: open in the definition `def`, and met only as
 /// data in `inst`, so a value of a wider type is well typed wherever the

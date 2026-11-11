@@ -1288,6 +1288,9 @@ applications are walked as two definitions are, where it stands:
   holds, or to a name that is a trait or has another arity;
 - under a quantified function type or a constructor application
   (`Type::App`);
+- as the payload of core's `ErrChain`, whose application is not its
+  body over its argument: a chain of a chain is that chain
+  (`Type::lookup_ref`), so `ErrChain<`A>` holds `ErrChain<ErrChain<`A>>`;
 - past a scan of 65536 steps (`variance::BUDGET`), every parameter.
 
 A name its body reaches that is not defined yet gives no answer, kept
