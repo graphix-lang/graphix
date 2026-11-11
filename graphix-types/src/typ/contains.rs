@@ -1625,6 +1625,27 @@ fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     guide(flags) | ContainsFlags::Lower
 }
 
+// CR claude for claude: [bug/high] A check never returns, and takes memory until it is
+// killed, where a generic function passes a union over its own variable to a parameter
+// whose variable is bounded by a union over another of the callee's variables: `let g =
+// 'b: ['c, null] |s: 'c, x: 'b| -> i64 0; let f = |v: 'a, w: ['a, null]| g(v, w); f(1,
+// 2)` under `--check` passes 6 G in seconds (exit 137 under MemoryMax), and so does the
+// trait form, `'a: T |v: 'a, w: ['a, null]| T::m(v, w)` over `val m: fn<'b: [self,
+// null]>(self, x: 'b) -> i64`. The definitions alone check; the instance (`f(1, 2)`,
+// `f(1, null)`) does not come back. GRAPHIX_DBG_BIND=1 prints `SET-T [null, 'c] >= i64`
+// without end: the cell asked is `'c`, its own conjunct is `[null, 'c]`, and the stack
+// repeats contains_dispatch -> cell_constraints_ok -> conjuncts_admit -> contains_int ->
+// set_commit -> contains_dispatch (stack.txt), so a cell has come to stand in its own
+// bound (`'b` and `'c` made one, or `'c` given `'b`'s bound), which a written signature
+// is refused for ("a bound may not reach its own variable").
+// With `w: 'a`, `w: Array<'a>` under `'b: Array<'c>`, concrete parameters, or the
+// caller's own `'c: ['a, null] |v: 'a, w: 'c|` it checks and runs. base-r20, the round
+// at 8203ee95b and r20-staging alike. A fix finds where the two cells merge and refuses
+// the merge that puts a cell in its own bound, or answers a conjunct that is a union
+// over the cell asked by its other members. probes:
+// ~/ptmp/cr29/scratch/r20/coord/x2rev/recursion/{r1,r2,r3_trait}.gx (killed), ok_*.gx
+// (check); `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 timeout -s
+// KILL 60 graphix --no-cache --check r1.gx` (bound-holds-own-cell-01)
 /// True iff every conjunct of the cell's constraints contains `t`. A
 /// pure probe.
 fn conjuncts_admit(
