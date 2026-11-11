@@ -669,52 +669,6 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
     })
 }
 
-// XCR claude for claude: [bug/low] A written union of two function types whose
-// variables pair by renaming merges into one member as the parser flattens it
-// (Type::flatten_set -> union_identical, which pairs a function type's cells as its
-// own quantifiers), though in a signature they are the definition's: `|k: [fn(x:
-// 'c) -> i64, fn(x: 'd) -> i64], y: 'c, z: 'd| -> i64 0` keeps `fn(x: 'd) -> i64`
-// alone, so VariableUnion::of never sees the two members the source writes, and
-// `f(|x: i64| 0, 1, "s")` is refused naming nothing ("'d: i64 does not contain
-// string"); `Array<fn(x: 'c) -> i64>` beside `Array<fn(x: 'd) -> i64>` merges alike.
-// Main 3cfcd2407 alike. A fix keeps a written union's members apart where their
-// cells are a definition's (or judges the union before it flattens). Probe:
-// ~/ptmp/cr29/scratch/r19/19g/fnmerge.gx (formal-union-fn-merge-01)
-// 2026-11-10 claude: D8 follow-up 2 was ruled (c) on 2026-11-10
-// (formal-union-order-01): the order-dependent pick among a union's undecided
-// members is refused where contains makes it, which may make Type::variable_union
-// redundant. Re-check this CR against that build: whether the merged member still
-// hides two written members from the new refusal.
-// 2026-11-10 claude: Lane 20b (round 20) re-checked against the choice-point refusal
-// (formal-union-order-01, AmbiguousMember): unchanged. The two written function
-// types merge as the union is parsed, so contains sees one member and has nothing to
-// choose: fnmerge.gx is still refused 'type mismatch 'd: i64 does not contain
-// string' on base-r20 and on the lane build alike. Type::variable_union was kept.
-// 2026-11-10 claude: Lane 20b (round 20): a union's members are told apart as the
-// source writes them, a variable by its name and bounds (Type::flatten_written,
-// setops::written_identical, the parser's union_members), so the two written
-// function types stay two members and VariableUnion::of refuses them at the
-// definition (fnmerge.gx, the Array<fn> and struct-field forms); a typedef's body
-// keeps both, and a member written twice is one. Behind a typedef (E<fn(x: 'c) ->
-// i64, fn(x: 'd) -> i64>, T<'a, 'b> over such a body) the merge happened again at
-// the expansion, so the members never reached the choice-point refusal either: a
-// flattening that merges no cells now keeps function types apart unless identical
-// cell by cell (normalize::Members; only Type::union pairs cells as a renaming, and
-// welds them), and those forms get AmbiguousMember. Pins that fail without it:
-// lang::types::nested_variable_union_of_{function_types,swapped_function_types,arrays_of_function_types,function_fields}_refused,
-// nested_variable_union_of_function_types_refused_whatever_the_argument,
-// member_of_two_variables_written_twice_is_one_member,
-// typedef_union_of_function_types_{keeps_both_members,refused_at_its_use},
-// union_of_function_types_over_enclosing_variables_keeps_both_members,
-// function_types_as_typedef_arguments_refused_at_their_use,
-// data_union_of_function_types_in_an_annotation_refused,
-// lang::interfaces::val_nested_variable_union_of_function_types_refused, the unit
-// tests written_union_members_are_one_by_variable_name and
-// only_a_union_that_merges_cells_collapses_a_renaming, and must-reject family 15's
-// third shape (graphix-fuzz
-// tests::must_reject_families_are_refused_where_their_rules_say). Probes:
-// ~/ptmp/cr29/scratch/r20/20b/fm/.
-
 // CR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
 // repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and
 // setops.rs's same_shape repeats the tuple, struct, variant, array, list and map arms, differing in
