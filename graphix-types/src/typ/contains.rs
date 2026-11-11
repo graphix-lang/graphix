@@ -193,6 +193,9 @@ pub(super) struct ContainsHist {
     /// binds copies alone, a select's patterns), where any other walk
     /// refuses a choice between two ([`AmbiguousMember`]).
     ordered: bool,
+    /// The walk pre-unifies an argument that is not checked yet: a decided
+    /// member takes an undecided type only where no other member could.
+    early: bool,
     /// [`identical_linked`]'s pairs found identical.
     identical: IdenticalMemo,
 }
@@ -337,12 +340,18 @@ impl ContainsHist {
             deferred_as_of: None,
             trial: false,
             ordered: false,
+            early: false,
             identical: IdenticalMemo::default(),
         }
     }
 
     fn ordered() -> Self {
         ContainsHist { ordered: true, ..Self::new() }
+    }
+
+    /// The walk of a pre-unification ([`Type::pre_unify_arg`]).
+    pub(super) fn early() -> Self {
+        ContainsHist { early: true, ..Self::new() }
     }
 
     /// Hold `cells` open while a function's arguments are walked: a part
@@ -1362,6 +1371,10 @@ fn commit_cell_bounds(
 // 6650 generated that passes the check and fails the build here and not on r20-staging without
 // lane 20b (which refuses it at the check); the lane before the round split it too. probes:
 // ~/ptmp/cr29/scratch/r20/20b/x6/residual/{g3_p00623,g3_p00505}.gx
+// 2026-11-11 claude: One generated program that ran before the follow-up round is refused by it through this
+// hole: m11_m00620.gx passes [|v| [null]] at 'a2: P<'a3, 'a4> (two array members take the array), nothing
+// reaches 'a3, and its settle then fails, unsatisfiable constraints on 'a3: G<..>; the pre-unification's pick
+// by order had bound it. probe: ~/ptmp/cr29/scratch/r20/20b/x6/residual/m11_m00620.gx
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
@@ -3968,7 +3981,9 @@ impl Type {
     /// cell of the union or of `t`, takes it first; else the one member
     /// that holds it, in the first tier where one does. Two that could
     /// are a choice only the order of the check's relations would make
-    /// ([`AmbiguousMember`]); a walk on copies takes the first, and a
+    /// ([`AmbiguousMember`]), and so is a decided member beside another
+    /// for a type a pre-unification meets undecided; a walk on copies
+    /// takes the first, and a
     /// trial commits its members directly: a trial nested in each would
     /// double the walk at every level of a union typedef chain. Where none
     /// holds it, the last admitted answers.
@@ -4011,7 +4026,7 @@ impl Type {
                 if !holds {
                     continue;
                 }
-                if hist.ordered || !undecided(m) {
+                if hist.ordered || (!undecided(m) && !(hist.early && undecided(t))) {
                     return Ok(Some(m.contains_int(flags, env, hist, t)?));
                 }
                 if !open.iter().any(|o| one_member(o, m)) {

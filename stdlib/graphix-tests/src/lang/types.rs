@@ -7130,6 +7130,16 @@ run!(
     prints("[[null], null]")
 );
 run!(
+    wrapper_argument_into_a_bound_union_beside_a_decided_member,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a1, 'a2>, 'a1: P<'a2, 'a3>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x2: 'a2, x0: 'a0| x0;
+  let g = |y2, y0| f(y2, y0);
+  g(["s"], [[["s"]]])
+}"#,
+    prints(r#"[[["s"]]]"#)
+);
+run!(
     empty_array_into_a_typedef_union_of_two_undecided_arrays_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];

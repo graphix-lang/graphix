@@ -2931,7 +2931,7 @@ impl Type {
     /// check, which meets the argument decided.
     #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
-        let mut hist = contains::ContainsHist::new();
+        let mut hist = contains::ContainsHist::early();
         Self::pre_unify_seen(env, &mut hist, declared, actual, &mut LPooled::take())
     }
 
