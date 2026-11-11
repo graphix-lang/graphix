@@ -626,7 +626,7 @@ fn escaped_arm(
     stmts.push(format!(
         "{d} <- select ({input} % i64:2) {{ i64:1 => {input}, _ => never() }}"
     ));
-    let read = match rng.below(3) {
+    let read = match rng.below(4) {
         0 => {
             let (mk, x, y) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
             let body = match rng.below(3) {
@@ -650,6 +650,16 @@ fn escaped_arm(
             ));
             format!("*{h}")
         }
+        2 => {
+            let z = ctx.fresh();
+            let value = moved_in_a_kernel(ctx, rng, &d);
+            stmts.push(format!(
+                "let {g} = select ({input} % i64:2) {{ \
+                 i64:0 => {{ let {z} = {value}; &{z} }}, \
+                 _ => {{ let {z} = {d} + i64:100; &{z} }} }}"
+            ));
+            format!("*{h}")
+        }
         _ => {
             let z = ctx.fresh();
             stmts.push(format!(
@@ -668,6 +678,34 @@ fn escaped_arm(
     stmts.push(format!("let {c} = count({s})"));
     ctx.push(s, I64);
     ctx.push(c, I64);
+}
+
+/// A value the woken arm computes from `d` where a kernel's result follows
+/// more than the join of its operands: a guard over a select that stands
+/// still, the spine of a tail loop, a loop whose callback reads no
+/// element. Asserted native half the time.
+fn moved_in_a_kernel(ctx: &mut GenCtx, rng: &mut Rng, d: &str) -> String {
+    let value = match rng.below(5) {
+        0 => format!("select i64:0 {{ q if {d} > i64:2 => q + i64:10, _ => i64:20 }}"),
+        1 => {
+            let go = ctx.fresh();
+            format!(
+                "{{ let rec {go} = |i: i64, a: i64| -> i64 \
+                 select i {{ q if q <= i64:0 => a, _ => {go}(i - i64:1, a + i64:1) }}; \
+                 {go}({d} % i64:7, i64:0) }}"
+            )
+        }
+        2 => format!("array::len(array::map([{d}, i64:7], |e| i64:1))"),
+        3 => format!(
+            "array::fold([i64:1, i64:2, i64:3], i64:0, \
+             |a, e| a + select e {{ q if q > {d} => i64:1, _ => i64:0 }})"
+        ),
+        _ => format!("array::fold([{d}, i64:7], i64:0, |a, e| a + i64:1)"),
+    };
+    match chance(rng, 0.5) {
+        true => format!("#[native] {value}"),
+        false => value,
+    }
 }
 
 /// A clock `k` that `input` restarts at 0 and that then counts itself up
