@@ -169,10 +169,13 @@ activations would. A body that does not compile keeps an activation per
 call, which costs memory and time for every call: one per level for a
 linear recursion, one per call in the whole call tree for a branching
 one like a naive <code>fib</code>. The things that
-keep a body out of native code are reading a reference (<code>*r</code>), a <code>?</code>
-raising to a handler, a <code>&lt;-</code> to a variable outside the function, and a
-builtin without a fast call; move them out of the loop when the loop is
-deep.</p>
+keep a body out of native code are reading a reference (<code>*r</code>), a <code>&lt;-</code> to
+a variable outside the function, and a builtin without a fast call; move
+them out of the loop when the loop is deep. An effect such as <code>println</code>
+and a <code>?</code> raising to a handler compile and run in the loop, each pass
+performing or raising as its own call would: when what it reads fires
+(<code>println("n=[n]")</code>, <code>(acc +? n)?</code>), and never for a constant
+(<code>println("step")</code>) once the program has started.</p>
 <p><code>str::parse</code>, <code>hbs::render</code>, the json/toml/pack writers, <code>array::sort</code>,
 <code>list::sort</code>, <code>array::dedup</code> and every <code>re::*</code> builtin run in the node-walk.
 They keep their last result while their own arguments are stale; a fused

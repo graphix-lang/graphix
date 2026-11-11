@@ -347,11 +347,10 @@ work in any situation using <code>queue</code>.</p>
 }
 </code></pre>
 <p>The queue holds each new array until the previous one is counted. Every
-write samples the event that selected its arm (<code>x ~</code>, <code>e ~</code>): an arm
-that is left and later selected again resumes, so a constant such as
-<code>clock &lt;- null</code> would write only at the arm's first entry, and <code>sum + 1</code>
-read on its own would not fire when the arm comes back to a <code>sum</code> that
-has not changed.</p>
+write samples the event that selected its arm (<code>x ~</code>, <code>e ~</code>): entering
+an arm is not an event, so a constant such as <code>clock &lt;- null</code> would
+never write, and <code>sum + 1</code> read on its own would fire only when <code>sum</code>
+does, which entering the arm does not make it do.</p>
 <p>Now we can see our very verbose and inefficient <code>len</code> is now correct</p>
 <pre><code>$ graphix cycle_iter.gx
 5

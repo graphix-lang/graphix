@@ -184,26 +184,58 @@ evaluated by select, all other code is "asleep", it will not be evaluated
 until it is selected (and if it has netidx subscriptions or published values
 they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
-stood. Its counters, <code>once</code>s and queues keep their state, a call it made
-is not made again, and the only events it sees are the ones that fired
-while it slept and no consulted guard or selected arm already read, each
-once, at its current value. Guards and arm bodies share this catch-up:
-whichever arm reads a missed fire first spends it for the whole select,
-and an arm's guard and its body, one evaluation, both see it.
-The first time an arm
-is selected is its birth: its constants fire then, and only then. A select
-inside a seq step, or inside a function a step calls, starts a new entry
-history at each run, so its arms can be born again in the new run,
-including after an asynchronous wait.
-An arm first entered with a new function instance or collection slot reads
-standing values as fired, just like the rest of that new instance or slot.</p>
+stood. Its counters, <code>once</code>s and queues keep their state, and a call it
+made is not made again.</p>
+<p>Entering an arm is not an event, and neither is waking one. Two things
+fire in an arm: its pattern binds, when the argument fires, and the
+variables it reads from outside, when they fire while the arm is
+selected. Nothing that fired while the arm was not selected is delivered
+when it is entered: what it reads from outside has its current value,
+with no event. So an expression that computes from values (an operator,
+a structure, a string, a pure call, a <code>let</code> over those) has its value at
+once, while one that waits for an event (a <code>~</code>, a <code>&lt;-</code>, a <code>count</code>, a
+<code>uniq</code>, a <code>once</code>, a timer, an effect such as <code>println</code>) does nothing
+until one of its inputs fires. A constant in an arm never fires, unless
+the arm is taken in the program's first cycle, which an arm over an
+asynchronous value never is.</p>
+<p>The select itself stands outside its arms: it produces the selected
+arm's value each time its argument or a guard it consults fires, whether
+or not anything in the arm fired. So <code>screen &lt;- select key { `Esc =&gt; `Menu, _ =&gt; never() }</code>
+writes at every Esc, while <code>`Esc =&gt; screen &lt;- `Menu</code> inside the arm
+never writes. The ways to act when an arm is entered:</p>
+<div class="table-wrapper"><table><thead><tr><th>To get</th><th>Write</th></tr></thead><tbody>
+<tr><td>A write or an effect at every entry</td><td>sample the bind: <code>k@ `Esc =&gt; screen &lt;- k ~ `Menu</code></td></tr>
+<tr><td>A constant written when an arm is taken</td><td>connect outside: <code>screen &lt;- select key { `Esc =&gt; `Menu, _ =&gt; never() }</code></td></tr>
+<tr><td>A write or an effect once per arm</td><td><code>once(k) ~ v</code></td></tr>
+<tr><td>An outside variable's value at entry</td><td><code>k ~ target</code></td></tr>
+<tr><td>Its value at entry and at every later change</td><td><code>any(target, k ~ target)</code></td></tr>
+<tr><td>An event together with the state it should see</td><td><code>select (ev, ev ~ state) { (e, s) =&gt; .. }</code></td></tr>
+<tr><td>A <code>count</code> or <code>uniq</code> over a value that stands</td><td>feed it the bind: <code>count(k ~ 7)</code>, <code>uniq(k ~ arg)</code></td></tr>
+<tr><td>A timer or other event source over constants</td><td>start it on the bind: <code>sys::time::timer(once(k) ~ duration:1.s, true)</code></td></tr>
+<tr><td>A function called from the arm that must act</td><td>fire its argument: <code>open(k ~ path)</code></td></tr>
+</tbody></table>
+</div>
+<p>The same holds wherever code is entered after the program starts: the
+callback of a collection function such as <code>array::map</code>, whose bind is
+its element, and a function called from an arm or a callback, whose
+binds are its arguments. A function called with arguments that stand
+starts nothing: its timers, subscriptions and constant effects wait for
+an argument to fire.</p>
+<p>A select written in a <code>seq</code> step is the exception: each of its arms is
+born at its first selection in each run, so its constants fire then
+(see <a href="seq.html#sleeping">Sleeping</a>).</p>
+<p>A wake fires nothing outside the arm either. A closure or a reference
+that left the arm reads the arm's variables as they stood when it fell
+asleep; when the arm wakes it recomputes them, and the holder reads the
+new values with no event. A variable something writes (a <code>&lt;-</code> target, a
+<code>&amp;mut</code>'s referent) is state: at a wake it keeps the value it holds,
+whatever its initializer would now compute.</p>
 <p>An event source in the arm (a timer, a subscription, a line reader) keeps
-its place across the sleep, but not its last event: a re-entered arm
-would show it again as if it were new. So what the arm builds on the
-event shows nothing at the wake until the event fires again:
-<code>count(sys::time::timer(duration:1.s, true))</code> blanks for up to a second
-at each re-entry, then shows its kept count plus one. To keep showing
-the last value through a re-entry, hold it outside the arm.</p>
+its place across the sleep, but not its last event. So what the arm
+builds on the event shows nothing at the wake until the event fires
+again: <code>count(sys::time::timer(once(k) ~ duration:1.s, true))</code> blanks for
+up to a second at each re-entry, then shows its kept count plus one. To
+keep showing the last value through a re-entry, hold it outside the arm.</p>
 <p>A call still running when its arm falls asleep is never answered. It is
 cancelled where it can be; one that cannot be stopped part way (a
 database operation, a file open, a process spawn, a connect) still
@@ -216,9 +248,16 @@ update: a new value of the argument, a new value read by a guard it
 consults, or a new value produced by the selected arm's body all cause the
 select to produce its current value — even if the same arm stays selected and the value is
 unchanged. The select consults the guards of the arms it tries, top down,
-up to the one it takes; a guard below the taken arm is not run, so a new
-value it would read changes nothing. If you want updates only when the
+up to the one it takes; a new value read by a guard below the taken arm
+changes nothing. If you want updates only when the
 value actually changes, wrap the argument (or the whole select) in <code>uniq</code>.</p>
+<p>A guard runs on every run of the select where its arm's pattern matches
+the argument, whichever arm is taken: in <code>-1 =&gt; 0, n if check(n)? =&gt; n</code>,
+<code>check(-1)</code> is called. Where the pattern does not match, the guard
+sleeps as an arm does, and like an arm it is entered with no event. So
+keep raises, effects and stateful builtins out of guards: a <code>uniq(enabled)</code>
+in a guard has no value until <code>enabled</code> fires, and a guard with no value
+leaves the select with none. Bind it outside instead: <code>let en = uniq(enabled); select key { k if en =&gt; .. }</code>.</p>
 <h2 id="matching-types"><a class="header" href="#matching-types">Matching Types</a></h2>
 <p>A type test binds only the part of the argument's type that reaches the arm
 and passes the test. For an argument of type <code>[i64, string]</code>, <code>Number as n</code>
@@ -695,9 +734,9 @@ how we would do something with every element of an array (see <code>array::map</
 <p>A connect inside an arm is an ordinary node of that arm: it fires
 when its right-hand side fires. Sample the event when the write
 should run on every delivery into the arm. A constant right-hand side
-fires when the constant does, at the arm's first entry and never
-again, so the check warns of it; the same goes for a call with an
-effect whose arguments are all constants, and a <code>seq</code> with no trigger.</p>
+never fires, unless the arm is taken in the program's first cycle, so
+the check warns of it; the same goes for a call with an effect whose
+arguments are all constants, and a <code>seq</code> with no trigger.</p>
 <pre><code class="language-graphix fragment">select k.code {
   kk@ `Up =&gt; sel &lt;- kk ~ (sel - 1),
   kk@ `Down =&gt; sel &lt;- kk ~ (sel + 1),

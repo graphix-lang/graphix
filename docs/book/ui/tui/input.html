@@ -285,8 +285,8 @@ input_handler(#handle: &amp;handle, &amp;view)
 <p>A handler that wants mouse, paste, resize or a release selects on the
 <code>Event</code> itself. A modal one that lets nothing through wraps the call
 and answers every event, which means sampling the answer on the event
-(a bare <code>`Stop</code> is a constant: it answers the first event and no
-other):</p>
+(a bare <code>`Stop</code> is a constant: it never fires, so the handler would
+answer no event):</p>
 <pre><code class="language-graphix fragment">let modal = |e: Event| { on_press(e, keys); e ~ `Stop };
 </code></pre>
 <h3 id="key-modifiers"><a class="header" href="#key-modifiers">Key Modifiers</a></h3>
@@ -418,9 +418,11 @@ let handle = |e: Event| on_press(e, |k| select k.code {
 input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[count]"))
 </code></pre>
 <p>The <code>Up</code> and <code>Down</code> arms sample the key (<code>u ~ count + 1</code>). A write
-inside a select arm fires when its right-hand side fires: <code>count &lt;- count + 1</code> would fire again on its own update and loop, and a constant
-such as <code>mode &lt;- `Insert</code> fires only at the arm's first entry, since a
-later entry resumes the arm (the check warns of it). Sample the event
+inside a select arm fires when its right-hand side fires, and entering
+an arm is not an event. So <code>count &lt;- count + 1</code> writes nothing at the
+key press, and once <code>count</code> changes while its arm is still selected it
+fires again on its own update and loops; a constant such as
+<code>mode &lt;- `Insert</code> never fires (the check warns of it). Sample the event
 that selects the arm instead, <code>k@ `Char("i") =&gt; mode &lt;- k ~ `Insert</code>;
 the select chapter's "Writing From an Arm" spells out why.</p>
 <h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>

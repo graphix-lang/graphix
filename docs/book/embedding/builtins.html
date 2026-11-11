@@ -318,7 +318,12 @@ before any early return.</p>
 <p><code>sleep</code> is called when the node's select arm is unselected, and sleep
 is a pause: values and other semantic state are kept, so the node
 resumes from them when the arm wakes, and a wake starts nothing an
-argument did not ask for. A builtin aborts an operation in flight that
+argument did not ask for. A wake is not an event, and neither is the
+first update of a node in a select arm, a callback or a function entered
+after the program starts: the arguments' standing values arrive <code>Stale</code>,
+constants included, so <code>seam_value</code> has them and <code>seam_tick</code> is <code>None</code>
+until one fires. A builtin that advances on events does nothing there
+until an argument fires. A builtin aborts an operation in flight that
 it cannot pause and keeps its last result: the wake does not issue the
 call again (a call that is not cancel-safe, a stream read for one,
 finishes instead, and nothing answers it: a reply made after a sleep is
@@ -413,7 +418,9 @@ writes one for a later cycle with <code>ctx.rt.set_var</code>).</p>
 <p>When a call site is initialized for the first time, or a select arm
 wakes from sleep, it needs the current value of every variable it
 depends on, so the runtime keeps the current value of every variable
-in its store. A builtin that sets a variable itself never writes
+in its store. A value read from the store is <code>Stale</code>, a value and no
+event, except in the program's first cycle, where it reads <code>Fired</code>. A
+builtin that sets a variable itself never writes
 <code>ctx.event.variables</code> directly: <code>ExecCtx::deliver(id, tv)</code> delivers this
 cycle and updates the store (a bottom stands there as a stale one), and
 <code>ExecCtx::publish(id, tv)</code> delivers this cycle alone. Both mark the

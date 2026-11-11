@@ -196,6 +196,18 @@ let price: f64 = sys::net::callq("/local/price", {sku})$;
 <code>array::map</code> over requests, a server's handlers) can run in parallel.
 <code>call</code> cannot: any site may name a call's id, so the calls of a fan-out
 over <code>call</code> run in program order.</p>
+<p><code>sys::net::rpc</code> calls <code>#f</code> once for each call it serves, each an
+instance of its own, and the call is answered by the reply's first
+event. Calling <code>#f</code> is not an event, only its argument is: a reply that
+does not derive from the arguments never fires, and the caller waits
+until it times out. Write <code>|args| args ~ reply</code>, and raise a constant
+error as <code>error(args ~ `Bad)?</code>. A reply that reads a field of the
+arguments, or selects on them, fires with them.</p>
+<p><code>sys::net::list</code> and <code>list_table</code> list again every second by default,
+from the first time <code>path</code> fires. In a select arm or a callback entered
+after the program starts, pass the path sampled on the event that enters
+it, <code>list(k ~ path)</code>: over a path that stands, the default refresh
+never starts.</p>
 <pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
@@ -282,7 +294,11 @@ val rpc: fn&lt;'spec: Data, 'result: Data, 'args: Concrete + Data&gt;(
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
 /// list paths under the specified path, in order, again at each `#update`
-/// (every second by default); a listing equal to the last is not answered.
+/// (every second by default, from the first time `path` fires); a listing
+/// equal to the last is not answered. Called in a select arm or a callback
+/// entered after the program starts, pass a path sampled on the event that
+/// enters it (`list(k ~ path)`): over a path that stands, the default
+/// refresh never starts.
 val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
 /// list the table under the specified path, its rows and columns in order,

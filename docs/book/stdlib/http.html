@@ -272,6 +272,14 @@ val serve: fn(
 
 mod rest;
 </code></pre>
+<h2 id="handlers"><a class="header" href="#handlers">Handlers</a></h2>
+<p><code>serve</code> calls <code>#handler</code> once for each request, each call an instance of
+its own, and the request is answered by the reply's first event. Calling
+the handler is not an event, only its argument is: a reply that does not
+derive from the request never fires, and the client waits until it gives
+up. Write <code>|req| req ~ reply</code>, and raise a constant error as
+<code>error(req ~ `Bad)?</code>. A reply that reads a field of the request, or
+selects on it, fires with it.</p>
 <h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
 <p>Convenience functions for JSON REST APIs with optional bearer token authentication.</p>
 <pre><code class="language-graphix">use super::{Client, Method, Response, request};

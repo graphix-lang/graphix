@@ -193,8 +193,9 @@ widget([x, text(error_display)])
 </code></pre>
 <p>A catch handler is a reactive expression, so it must read its error binder
 to wait for errors. Write <code>catch(e) failed &lt;- e ~ true</code>, rather than
-<code>catch(e) failed &lt;- true</code>, which writes at birth even when no error has
-arrived. The checker warns when a handler never reads its binder.</p>
+<code>catch(e) failed &lt;- true</code>, which writes once when the program starts,
+before any error has arrived, and never when one does. The checker warns
+when a handler never reads its binder.</p>
 <p>The catch here covers <code>calc(in0)</code> — and only that block: a catch installed
 inside a block covers the rest of THAT block, nothing outside it. A second
 catch in the same block shadows the first for the statements below it; a
@@ -298,12 +299,15 @@ as described below. This is a concise way of writing,</p>
 <p>can instead be written as,</p>
 <pre><code class="language-graphix fragment">might_fail(1, 2, 3)$
 </code></pre>
-<p>A warning from <code>$</code> names the site and the error. In fused code, <code>$</code> and a
-<code>?</code> without a covering catch report when their error operand fires. These
-diagnostic messages can repeat or be absent: a guard can report even when
-an earlier arm selects the result, a constant error in an arm entered later
-can go unreported, and several depths of a native tail loop can share one
-report. Run with <code>--no-fusion</code> to inspect the interpreter's diagnostics.
+<p>A warning from <code>$</code> names the site and the error. <code>$</code> and a <code>?</code> without a
+covering catch report when their error operand fires. A guard runs
+wherever its arm's pattern matches the value, so it reports even when an
+earlier arm is selected, and a constant error in an arm entered after
+the program's first cycle never fires, so it is never reported. In fused
+code a guard can also report where its pattern does not match or the
+select's argument has no value, and several depths of a native tail loop
+can share one report. Run with <code>--no-fusion</code> to inspect the
+interpreter's diagnostics.
 The error still produces no value, and a <code>?</code> covered by a catch follows the
 normal error propagation rules.</p>
 <h2 id="-and--on-nullable-values"><a class="header" href="#-and--on-nullable-values">? and $ on Nullable Values</a></h2>

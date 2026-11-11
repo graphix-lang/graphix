@@ -303,6 +303,11 @@ builtin out of native code.</li>
 <p>Stateless matters twice: a tail recursion compiles to a native loop
 only when every builtin it reaches is stateless, and fusion into native
 code needs the fast call.</p>
+<p><code>EFFECT</code> also decides what a call does in a select arm, a callback or a
+function entered after the program starts, where the arguments stand and
+nothing has fired: a <code>Stateless</code> builtin, and an <code>Io</code> builtin's result,
+compute from the values that stand; a <code>Sync</code> or <code>Async</code> builtin, and an
+<code>Io</code> builtin's effect, wait for an argument to fire.</p>
 <h4 id="fast-calls"><a class="header" href="#fast-calls">Fast calls</a></h4>
 <p>A builtin fuses into a native kernel only through a <strong>fast call</strong>: a
 plain function the kernel calls directly on its argument values in
