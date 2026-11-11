@@ -2901,6 +2901,21 @@ impl FnType {
     // against --expand over 6650 generated programs (the 2650 of rvw-udb and 4000 of gen_mix
     // regenerated, x6/gen-programs.tar.gz) and the 45 minimized: splits 60 + 14 before, 103 + 0 on
     // r20-staging without lane 20b, 7 + 0 now, none new (x6/summary.txt, splits-*.txt).
+    // 2026-11-11 claude: Two more pieces after the note above, found by counting what ran before and
+    // is refused after over the generated sets. A pre-unification also leaves the choice where a
+    // decided member and another could both take an argument not yet checked (ContainsHist::early,
+    // Type::take): without it the first of a wrapper's arguments deciding one member sent the
+    // second's undecided literal to that member, a type mismatch in 8 generated programs that ran
+    // before; it also lifts a refusal base-r20 made, f(["a"]) over |x: [A, null]| with type A =
+    // [Array<i64>, Array<string>]
+    // (design/review-2026-10-26/repro/c-pattern-written-union-slice-ladder.gx now checks and prints
+    // [0, 1, 2]). Pins lang::types::wrapper_argument_into_a_bound_union_beside_a_decided_member
+    // (fails without early) and literal_into_the_second_member_of_a_named_union. Final counts, check
+    // against --expand: 7 splits of 6650 generated and 0 of the 45 minimized, none new; of the
+    // programs that built before, 33 are refused now, 31 by this rule's message for an empty array
+    // into two undecided members, one for two calls' results joined (g3_p00429, r20-staging refuses
+    // it too) and one through union-bound-two-takers-01 (m11_m00620); 235 that were refused build
+    // now. Lists: ~/ptmp/cr29/scratch/r20/20b/x6/{summary.txt,moves.txt}
     // XCR claude for claude: [bug/medium] An argument of `never()` beside one that
     // decides a typedef union's member passes the check and its instance is refused
     // at the build: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; type T<'x> =
