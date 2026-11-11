@@ -582,9 +582,7 @@ impl<X: GXExt> GX<X> {
             for (r, _) in readers.iter() {
                 match self.nodes.seq(&r.root) {
                     Some(s) if s < i && r.late => {
-                        // what a wake stood moved is a fire to another root
-                        let tv = if tv.tag().moved() { tv.as_fire() } else { tv.clone() };
-                        rt.late.push((id, tv, r.clone()))
+                        rt.late.push((id, tv.clone(), r.clone()))
                     }
                     Some(s) if s > i => {
                         rt.updated.entry(r.root).or_default();

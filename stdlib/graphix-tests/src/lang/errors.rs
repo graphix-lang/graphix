@@ -443,8 +443,8 @@ async fn catch_repl_cross_input() -> Result<()> {
 }
 
 /// A raise is stored, in its handler's root or another's: a reader
-/// the handler builds after the raise reads it.
-const CATCH_READER_BORN_AFTER_THE_RAISE: &str = r#"{
+/// the handler enters after the raise reads it.
+const CATCH_READER_ENTERED_AFTER_THE_RAISE: &str = r#"{
     let seen = false;
     let out = "";
     let r = {
@@ -458,14 +458,14 @@ const CATCH_READER_BORN_AFTER_THE_RAISE: &str = r#"{
 }"#;
 
 run!(
-    catch_reader_born_after_the_raise,
-    CATCH_READER_BORN_AFTER_THE_RAISE,
+    catch_reader_entered_after_the_raise,
+    CATCH_READER_ENTERED_AFTER_THE_RAISE,
     is(Value::String("`Boom".into()));
     FuseExpect::Jit
 );
 
 #[tokio::test(flavor = "current_thread")]
-async fn catch_repl_reader_born_after_the_raise() -> Result<()> {
+async fn catch_repl_reader_entered_after_the_raise() -> Result<()> {
     repl_inputs_produce(
         &[
             "let seen = false",
@@ -631,8 +631,8 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
 }
 
 // A bottom-typed arm's handler-ful `?` over an input delivers each
-// raise once. Every handler-ful `?` under a select arm node-walks
-// (`lowering::arm_raise_blocker`), which the #[native] twin pins.
+// raise once, in the node-walk and fused: the #[native] twin's select is
+// a kernel that raises on the fire of its operand.
 const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -644,7 +644,7 @@ const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 
 run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, is(Value::I64(1)); FuseExpect::None);
 
-const ARM_INPUT_RAISE_NODE_WALKS: &str = r#"
+const ARM_INPUT_RAISE_NATIVE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let n = 0;
@@ -653,12 +653,9 @@ const ARM_INPUT_RAISE_NODE_WALKS: &str = r#"
 }
 "#;
 
-run!(arm_input_raise_node_walks, ARM_INPUT_RAISE_NODE_WALKS,
-    refused("fire tracker — arm entry is the node-walk's"); FuseExpect::None; jit_only);
+run!(arm_input_raise_fuses, ARM_INPUT_RAISE_NATIVE, is(Value::I64(1)); FuseExpect::Jit);
 
-// In a function body the select is tried twice, at the definition's open
-// type and at the instance's i64: #[native] names every failure of the
-// source, the arm-raise blocker among them.
+// The same select in a function body fuses in the instance.
 const ARM_INPUT_RAISE_IN_A_BODY: &str = r#"
 {
   let n = 0;
@@ -669,8 +666,7 @@ const ARM_INPUT_RAISE_IN_A_BODY: &str = r#"
 }
 "#;
 
-run!(arm_input_raise_in_a_body, ARM_INPUT_RAISE_IN_A_BODY,
-    refused("fire tracker — arm entry is the node-walk's"); FuseExpect::None; jit_only);
+run!(arm_input_raise_in_a_body_fuses, ARM_INPUT_RAISE_IN_A_BODY, is(Value::I64(1)); FuseExpect::Jit);
 
 // `$` over a nullable waits out the null, and says nothing about it.
 const OR_NEVER_NULL: &str = r#"
@@ -756,12 +752,13 @@ run!(qop_in_postfix_chain, QOP_IN_POSTFIX_CHAIN, |v: Result<&Value>| {
 });
 
 // A builtin's callback raises to the caller's handler, as a Graphix
-// HOF's does.
+// HOF's does. The error samples the callback's argument, which fires in
+// the arm that raises.
 const BUILTIN_CALLBACK_RAISES_TO_CALLER: &str = r#"
 {
   let c = array::iter([1, 2, 3]);
   let r: [`Caught, null] = null;
-  { catch(e) r <- e ~ `Caught; filter(c, |v| select v { 2 => error(`Boom)?, _ => true }) };
+  { catch(e) r <- e ~ `Caught; filter(c, |v| select v { 2 => error(v ~ `Boom)?, _ => true }) };
   any(r$, sys::time::timer(duration:0.2s, false) ~ `Timeout)
 }
 "#;

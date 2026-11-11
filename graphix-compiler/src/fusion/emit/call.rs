@@ -382,17 +382,10 @@ impl<R: Rt> LambdaCallSlot<'_, R> {
     }
 }
 
-/// The callee's context word: born as we are, and on this site's
-/// first call ever (the node-walk primes an instance's first dispatch
-/// the same way). In a loop each slot is an instance with a first call
-/// of its own.
-fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
-    let word = match cx.env.loop_depth {
-        0 => Some(cx.claim_word()),
-        _ => cx.slot_word(site),
-    };
-    let born = cx.first_use(word);
-    CtxWord { born, wake: cx.ctx.wake_flag }.encode(cx.b)
+/// The callee's context word: born as we are. A first call is a body's
+/// entry, not a birth.
+fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
+    CtxWord { born: cx.born_flag(), wake: cx.ctx.wake_flag }.encode(cx.b)
 }
 
 /// Claim a contiguous run from this body's channel and rebase the callee's
@@ -863,13 +856,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt>(
     let (slot_cvs, drops) = marshal_args(cx, cs, &slots, fn_name)?;
     let mut clif_args: SmallVec<[ClifValue; 24]> =
         SmallVec::with_capacity(slot_cvs.len() * 2 + 3);
-    let context = emit_callee_context_word(cx, cs.spec().id);
-    let (site_block, fresh) = emit_site_block(cx, info, is_self, cs.spec().id)?;
-    // a self-call's activation made just now is born with the init view
-    let context = match fresh {
-        None => context,
-        Some(fresh) => cx.b.ins().bor(context, fresh),
-    };
+    let context = emit_callee_context_word(cx);
+    let (site_block, _) = emit_site_block(cx, info, is_self, cs.spec().id)?;
     clif_args.push(context);
     clif_args.push(cx.state_ptr());
     clif_args.push(site_block);

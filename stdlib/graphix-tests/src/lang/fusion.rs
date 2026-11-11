@@ -1324,8 +1324,8 @@ run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, is(Value::I64(5)), timeout: 5
 
 // A `never(args..)` arm is a standing bottom whatever its args do, but
 // the args are consumed: the handler-ful `?` inside one delivers its
-// raise (its select node-walks: the raise is an edge the arm may owe
-// to the select's fire tracker).
+// raise at the fire of `x` that takes the arm (its select node-walks: a
+// raise to a handler under an arm is refused a kernel).
 const NEVER_ARM_ARGS_RAISE: &str = r#"
 {
   let x = array::iter([1, 2, 3]);
@@ -1337,9 +1337,9 @@ const NEVER_ARM_ARGS_RAISE: &str = r#"
 
 run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, is(Value::I64(1)), timeout: 5; FuseExpect::None);
 
-// The error derives from `n`, a let whose init fire no selected arm
-// read: the tracker re-delivers it when the arm is entered and the
-// raise lands. A kernel reads `n` standing and would lose the raise.
+// The error derives from `n`, which stands when the arm is entered:
+// nothing fires in the arm, so nothing raises and `n` stays 0, in the
+// node-walk as in a kernel reading `n` standing.
 const ARM_RAISE_STANDING_INPUT: &str = r#"
 {
   let x = array::iter([1, 2, 3]);
@@ -1349,7 +1349,7 @@ const ARM_RAISE_STANDING_INPUT: &str = r#"
 }
 "#;
 
-run!(arm_raise_standing_input, ARM_RAISE_STANDING_INPUT, is(Value::I64(1)), timeout: 5; FuseExpect::None);
+run!(arm_raise_standing_input_does_not_raise, ARM_RAISE_STANDING_INPUT, is(Value::I64(0)), timeout: 5; FuseExpect::None);
 
 // The soak's shape: a call into a connecting body inside a never arm of
 // a collection callback. The call must reach `g` and land the write;
@@ -1481,8 +1481,9 @@ run!(string_arm_value_merge, STRING_ARM_VALUE_MERGE, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // A recursive body whose activations each own a nested loop's slot
-// chain, at alternating depth: shed activations free their chains.
-const SHED_ACTIVATIONS_FREE_CHAINS: &str = r#"
+// chain, at alternating depth: a shrink deletes the activations below it,
+// and they free their chains.
+const DELETED_ACTIVATIONS_FREE_CHAINS: &str = r#"
 {
   let rec f = |k: i64, a: Array<Array<i64>>| -> i64 select k {
     0 => 0,
@@ -1494,7 +1495,7 @@ const SHED_ACTIVATIONS_FREE_CHAINS: &str = r#"
 }
 "#;
 
-run!(shed_activations_free_chains, SHED_ACTIVATIONS_FREE_CHAINS, |v: Result<&Value>| {
+run!(deleted_activations_free_chains, DELETED_ACTIVATIONS_FREE_CHAINS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(6)))
 }; FuseExpect::Jit);
 
@@ -2088,10 +2089,13 @@ async fn tail_body_with_collection(
 
 modes!(tail_body_with_collection);
 
-// A recursion depth first reached after init is a fresh activation in
-// the JIT as in the node-walk: its constants fire and its constant-derived
-// error raises once per new depth.
-async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Result<()> {
+// A recursion depth first reached after init is a fresh activation
+// entered, not born, in the JIT as in the node-walk: its constants do not
+// fire, so its constant-derived error raises in the three depths born
+// with the root and in neither of the two reached later.
+async fn fresh_depth_is_entered_not_born(
+    mode: graphix_package_core::testing::Mode,
+) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta_fused(
         r#"{
             let errors = 0;
@@ -2108,15 +2112,15 @@ async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Resul
         graphix_package_core::testing::FuseExpect::Jit,
     )
     .await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values).last(), Some(&5));
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 1, 2, 3]);
     Ok(())
 }
 
-modes!(fresh_depth_is_born);
+modes!(fresh_depth_is_entered_not_born);
 
-// The same in a tail recursion: a constant-derived raise keeps the body
-// from running as one native loop, whose passes are never born.
-async fn fresh_tail_depth_is_born(
+// The same in a tail recursion: the three depths born with the root raise,
+// the two reached later do not.
+async fn fresh_tail_depth_is_entered_not_born(
     mode: graphix_package_core::testing::Mode,
 ) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta_fused(
@@ -2135,11 +2139,11 @@ async fn fresh_tail_depth_is_born(
         graphix_package_core::testing::FuseExpect::Jit,
     )
     .await?;
-    assert_eq!(graphix_package_core::testing::as_i64s(&values).last(), Some(&5));
+    assert_eq!(graphix_package_core::testing::as_i64s(&values), [0, 1, 2, 3]);
     Ok(())
 }
 
-modes!(fresh_tail_depth_is_born);
+modes!(fresh_tail_depth_is_entered_not_born);
 
 // A kernel-built abstract value carries its type's params resolved, as a
 // node-walked one does: one instantiation, so the user's Eq applies.

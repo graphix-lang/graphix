@@ -92,10 +92,12 @@ operation has a sound ownership rule.
 
 Firing is `SlotFlags`: per-slot discs fold into a slots word and a
 prev-length word gives exact resize detection
-(`kernel_instance_state.md`) — a loop fires iff resized ∨ a slot fired,
-or, for `filter` and `find`, whose result reads the source's elements,
-the source fired (`MapOp::reads_elements`; the JIT agrees); for the
-others a same-length refresh with a quiet body does not fire. In a fold each
+(`kernel_instance_state.md`) — a loop fires iff a slot fired, or the
+source fired and the loop resized or is empty, or, for `filter` and
+`find`, whose result reads the source's elements, the source fired
+(`MapOp::reads_elements`; the JIT agrees); for the others a same-length
+refresh with a quiet body does not fire, and a resize under a quiet
+source is a quiet result that moved (`bind_driven_bodies.md`). In a fold each
 body evaluation's STALE folds into the slots word and the accumulator
 carry is one more firing source (it alone covers the empty-source
 chain); taint rides the carry only, so an acc-ignoring callback

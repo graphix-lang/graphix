@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
-    StaticHold, Tag, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
+    StaticHold, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
@@ -2046,8 +2046,9 @@ pub struct CallSite<R: Rt> {
     defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Box<Absent>>,
-    /// What a shrink kept of this recursive edge's pure callee.
-    kept: Kept,
+    /// A seq step issued this call while its function was bottom and
+    /// unbound: its bind, when the function returns, is the step's birth.
+    step_due: bool,
     /// The imaged instance decoded at this update's dispatch: the sites
     /// its first update leaves imaged are held after it.
     decoded: bool,
@@ -2055,87 +2056,6 @@ pub struct CallSite<R: Rt> {
     /// The bindings this call bound statically, its function's and its
     /// fn-typed arguments', and, for an imaged callee, its whole tree's.
     static_holds: SmallVec<[StaticHold; 1]>,
-}
-
-/// A pure callee a shrink left asleep at a recursive edge (`CallSite::
-/// sleep`). Re-reaching the edge dispatches it as a fresh bind, which no
-/// program can tell from one, and restarts the count; each exit of the
-/// recursion past the edge sheds its deepest levels (`CallSite::shed`). An
-/// exit is an update of the select whose arm holds the edge in which the
-/// chain runs (the scrutinee or a consulted guard fired, or the select
-/// woke) and takes another arm, or the scrutinee is bottom
-/// (`select.rs::exit_kept`); the update that deselects the arm is the
-/// shrink, not an exit.
-#[derive(Debug, Clone, Copy, Default)]
-enum Kept {
-    #[default]
-    Nothing,
-    /// No exit has passed it since the shrink.
-    Asleep,
-    /// `levels` deep at the first exit past it; `exits` exits have shed
-    /// the deepest `shed_levels(levels, exits)` of them.
-    Shedding { levels: u32, exits: u8 },
-}
-
-/// Each recursive edge in `node`'s graph, not looking into callees.
-fn for_each_edge<R: Rt>(node: &mut Node<R>, f: &mut dyn FnMut(&mut CallSite<R>)) {
-    ensure_sufficient(|| {
-        if let Some(site) =
-            node.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
-            && site.is_recursive_edge()
-        {
-            f(site)
-        }
-        node.for_each_child_mut(&mut |c| for_each_edge(c, f))
-    })
-}
-
-/// The levels of recursion `f` holds: itself and its deepest chain of
-/// recursive edges.
-fn kept_levels<R: Rt>(f: &mut dyn Apply<R>) -> u32 {
-    let mut below = 0;
-    f.for_each_body_mut(&mut |body| {
-        for_each_edge(body, &mut |site| {
-            if let Some(callee) = site.callee.apply_mut() {
-                below = below.max(kept_levels(callee))
-            }
-        })
-    });
-    below + 1
-}
-
-/// How many of `levels` kept levels `exits` exits have shed, deepest
-/// first: a level an exit at least, 1% of them an exit where that is more,
-/// so all of them by the hundredth exit and `exits` never passes 100.
-fn shed_levels(levels: u32, exits: u8) -> u32 {
-    let paced = u64::from(levels) * u64::from(exits) / 100;
-    paced.max(u64::from(exits)).min(u64::from(levels)) as u32
-}
-
-/// Delete every callee more than `keep` levels below `f`, `f` itself the
-/// first.
-fn cut_below<R: Rt>(ctx: &mut ExecCtx<'_, R>, f: &mut dyn Apply<R>, keep: u32) {
-    f.for_each_body_mut(&mut |body| {
-        for_each_edge(body, &mut |site| {
-            if keep > 1 {
-                if let Some(callee) = site.callee.apply_mut() {
-                    cut_below(ctx, callee, keep - 1)
-                }
-            } else if let Some(mut callee) = site.callee.take_apply() {
-                site.kept = Kept::Nothing;
-                callee.delete(ctx)
-            }
-        })
-    });
-}
-
-/// An exit of a recursion through the select whose untaken arm `node` is:
-/// each callee a recursive edge in it kept sheds its deepest levels
-/// (`CallSite::shed`). Whether any still keeps something.
-pub(super) fn shed_kept<R: Rt>(ctx: &mut ExecCtx<'_, R>, node: &mut Node<R>) -> bool {
-    let mut kept = false;
-    for_each_edge(node, &mut |site| kept |= site.shed(ctx));
-    kept
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -2157,11 +2077,6 @@ pub(crate) fn static_builtin<'a, R: Rt>(
 }
 
 impl<R: Rt> CallSite<R> {
-    /// The walk-pruning boundary around the bound instance's body.
-    pub(crate) fn instance_boundary(&self) -> Option<&BoundaryRef> {
-        self.callee.apply().and_then(instance_boundary)
-    }
-
     /// An unbound site over compiled parts; `ftype` is `None` until
     /// `typecheck0` instantiates it.
     pub(crate) fn unbound(
@@ -2192,7 +2107,7 @@ impl<R: Rt> CallSite<R> {
             share: None,
             defaults_open: true,
             absent: None,
-            kept: Kept::Nothing,
+            step_due: false,
             decoded: false,
             fork: ForkSite::default(),
             static_holds: SmallVec::new(),
@@ -3136,6 +3051,12 @@ impl<R: Rt> CallSite<R> {
             // in both engines (lang::wake_outside,
             // lang::prune::standing_formal_refresh_marks_its_readers in every mode).
             // What (b) still waits on is wake-entry-split-01 (cr-discuss D30).
+            // 2026-11-11 claude: wake-entry-split-01 is closed: Eric ruled (11-11)
+            // that bodies are bind-driven and a wake fires nothing for anyone
+            // (design/bind_driven_bodies.md), so a select a wake re-routes gives the
+            // same answer in both engines and a formal a wake re-stood is read stale,
+            // moved, by a run-time bind's closure in both. (b) waits on nothing but
+            // its own measurement.
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
@@ -3249,14 +3170,8 @@ impl<R: Rt> CallSite<R> {
         defaults: &[BindId],
         set: &mut Published,
     ) {
-        for id in defaults {
-            if let Some(v) = ctx.rt.store_value(id)
-                && ctx.try_publish(*id, TagValue::fired(v)).is_ok()
-            {
-                set.push(*id);
-            }
-        }
-        ctx.under(View::Birth, |ctx| {
+        let _ = defaults;
+        ctx.enter_body(|ctx| {
             for arg in self.args.values_mut() {
                 if arg.stage == ArgStage::Compiled
                     && let Some(node) = &mut arg.node
@@ -3264,7 +3179,7 @@ impl<R: Rt> CallSite<R> {
                     arg.stage = ArgStage::Running;
                     let tv = node.update(ctx).clone();
                     let feeds = Feeds::Id(arg.id);
-                    if publish_production(ctx, feeds, &tv, true, QuietAtRoot::Deliver) {
+                    if publish_production(ctx, feeds, &tv, QuietAtRoot::Stand) {
                         set.push(arg.id);
                     }
                 }
@@ -3668,8 +3583,7 @@ impl<R: Rt> CallSite<R> {
 impl<R: Rt> CallSite<R> {
     fn update_call(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
-        let rebirth = !matches!(mem::take(&mut self.kept), Kept::Nothing);
-        let reborn = woke && (rebirth || ctx.event.born());
+        let reborn = woke && ctx.event.born();
         if reborn && let Some(f) = self.callee.apply_mut() {
             f.reborn(ctx)
         }
@@ -3685,7 +3599,6 @@ impl<R: Rt> CallSite<R> {
         // first bind stood them in, and compiles its defaults afresh; a
         // constant function never rebinds
         let keep = match &self.callee {
-            _ if rebirth => Keep::Every,
             Callee::Static { first_update: true, .. } => Keep::Every,
             Callee::Static { .. } => Keep::Nothing,
             Callee::DynamicBound { .. }
@@ -3709,34 +3622,33 @@ impl<R: Rt> CallSite<R> {
             (tag, (!static_callee && !tag.is_bottom()).then(|| tv.value_cloned()))
         };
         if fnode_tag.is_bottom() && !static_callee {
-            // a bound instance sleeps while its callee is bottom, so it wakes
-            // with catch-up when the same function returns, or is born then
-            // if it was due a birth meanwhile
+            // a bound instance sleeps while its callee is bottom and
+            // resumes when the same function returns, or is born then if a
+            // seq step's call was due a birth meanwhile
             if let Some(f) = self.callee.apply_mut() {
                 let absent = self.absent.get_or_insert_with(|| {
                     Box::new(Absent {
-                        missed: SmallVec::new(),
-                        captured: TrackedFires::new(
-                            &ctx.env,
-                            ctx.rt.cycle(),
-                            1,
-                            |_, r| f.refs(r),
-                        ),
+                        // a call a seq step issues is the step's: as built
+                        step: super::wake::in_fresh_frame(ctx).then(|| {
+                            let captured =
+                                TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
+                                    f.refs(r)
+                                });
+                            (SmallVec::new(), captured)
+                        }),
                         unborn: None,
                     })
                 });
                 if reborn {
-                    let view = if rebirth {
-                        ctx.event.view.join(View::Birth)
-                    } else {
-                        ctx.event.view
-                    };
+                    let view = ctx.event.view;
                     let frame = super::wake::in_fresh_frame(ctx);
                     absent.unborn = Some(Unborn { view, frame });
                 }
                 absent.observe(ctx, &set, instance_boundary(&*f));
                 f.sleep(ctx);
                 self.slept.set();
+            } else if super::wake::in_fresh_frame(ctx) {
+                self.step_due = true
             }
             for id in set.drain(..) {
                 ctx.event.variables.remove(&id);
@@ -3747,8 +3659,9 @@ impl<R: Rt> CallSite<R> {
             mem::replace(first_update, false)
         } else {
             fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set))
-        } || rebirth;
-        // a fresh bind reads its quiet arguments as new
+        };
+        // a fresh bind's quiet arguments stand: a formal fires when its
+        // argument does, and an omitted default is a constant
         if bound {
             for arg in self.args.values() {
                 if arg.node.is_none()
@@ -3768,11 +3681,7 @@ impl<R: Rt> CallSite<R> {
                 if tv.tag().is_bottom() {
                     continue;
                 }
-                let root = match arg.stage.is_default() {
-                    true => QuietAtRoot::Deliver,
-                    false => QuietAtRoot::Stand,
-                };
-                if publish_production(ctx, Feeds::Id(arg.id), &tv, true, root) {
+                if publish_production(ctx, Feeds::Id(arg.id), &tv, QuietAtRoot::Stand) {
                     set.push(arg.id);
                 }
             }
@@ -3804,11 +3713,15 @@ impl<R: Rt> CallSite<R> {
                 }
             }
             Some(f) => {
-                // A fresh bind dispatches under the init view, owed the
-                // fires its body's inputs had while the arm around it slept.
+                // A fresh bind is a body's entry: nothing in it is born,
+                // unless a seq step issued the call, which is owed what
+                // its body reads.
                 let owed = super::wake::deliver_owed(ctx, |r| f.refs(r));
                 let arg_refs = &mut self.arg_refs;
-                let tv = ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone());
+                let tv = match mem::take(&mut self.step_due) {
+                    true => ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone()),
+                    false => ctx.enter_body(|ctx| f.update(ctx, arg_refs).clone()),
+                };
                 TrackedFires::restore(ctx.event, owed);
                 Some(tv)
             }
@@ -4404,19 +4317,9 @@ impl<R: Rt> CallSite<R> {
     pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // A recursive edge deselected by a shrink deletes its callee, so
-        // re-reaching this depth binds a fresh activation, or keeps a pure
-        // one asleep (`Kept`).
+        // re-reaching this depth binds a fresh activation.
         if super::in_deselected_arm() && self.is_recursive_edge() {
-            if self.callee_is_pure(ctx) {
-                if let Kept::Nothing = self.kept {
-                    self.kept = Kept::Asleep
-                }
-                super::kept_in_arm();
-                if let Some(f) = self.callee.apply_mut() {
-                    f.sleep(ctx)
-                }
-            } else if let Some(mut f) = self.callee.take_apply() {
-                self.kept = Kept::Nothing;
+            if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
             }
         } else if let Some(f) = self.callee.apply_mut() {
@@ -4435,45 +4338,6 @@ impl<R: Rt> CallSite<R> {
 
     pub(crate) fn typ(&self) -> &Type {
         &self.rtype
-    }
-
-    /// An exit of the recursion past this edge's kept callee: the
-    /// deepest `shed_levels(levels, exits)` of the `levels` it held at the
-    /// first exit are deleted, the callee itself once that is all of them.
-    /// Whether anything stays kept.
-    fn shed(&mut self, ctx: &mut ExecCtx<'_, R>) -> bool {
-        let (levels, exits) = match (self.kept, self.callee.apply_mut()) {
-            (Kept::Nothing, _) => return false,
-            (_, None) => {
-                self.kept = Kept::Nothing;
-                return false;
-            }
-            (Kept::Asleep, Some(f)) => (kept_levels(f), 1),
-            (Kept::Shedding { levels, exits }, Some(_)) => (levels, exits + 1),
-        };
-        let keep = levels - shed_levels(levels, exits);
-        if keep == 0 {
-            if let Some(mut f) = self.callee.take_apply() {
-                f.delete(ctx)
-            }
-            self.kept = Kept::Nothing;
-            return false;
-        }
-        if let Some(f) = self.callee.apply_mut() {
-            cut_below(ctx, f, keep)
-        }
-        self.kept = Kept::Shedding { levels, exits };
-        true
-    }
-
-    /// Whether the bound callee is a lambda whose definition is pure
-    /// (sync, no per-activation state): nothing in it outlives a birth.
-    fn callee_is_pure(&self, ctx: &ExecCtx<'_, R>) -> bool {
-        match self.callee.apply().map(|a| a.view()) {
-            Some(ApplyView::Lambda(g)) => crate::analysis::lambda_def(ctx, g.id())
-                .is_some_and(|d| d.facts.lock().is_pure()),
-            _ => false,
-        }
     }
 
     pub(crate) fn spec(&self) -> &Expr {
@@ -4888,16 +4752,14 @@ fn instance_boundary<R: Rt>(f: &dyn Apply<R>) -> Option<&BoundaryRef> {
     }
 }
 
-/// A bound instance asleep while its function is bottom: what fired that
-/// it did not see, caught up when the same function returns, as a
-/// deselected arm is at its wake, or the birth it was due meanwhile,
-/// which it makes up then.
+/// A bound instance asleep while its function is bottom. It resumes when
+/// the same function returns, as a body does; a call a seq step issued is
+/// caught up then, or makes up the birth it was due meanwhile.
 #[derive(Debug)]
 struct Absent {
-    /// The arguments that fired meanwhile.
-    missed: SmallVec<[BindId; 2]>,
-    /// The inputs the instance captures.
-    captured: TrackedFires,
+    /// For a call a seq step issued: the arguments that fired meanwhile,
+    /// and the tracker of the inputs the instance captures.
+    step: Option<(SmallVec<[BindId; 2]>, TrackedFires)>,
     unborn: Option<Unborn>,
 }
 
@@ -4931,50 +4793,50 @@ impl Absent {
             }
             unborn => {
                 let view = unborn.map_or(View::Wake, |u| u.view);
-                let body = instance_boundary(&*f).cloned();
-                self.wake(ctx, view, body.as_ref(), |ctx| f.update(ctx, from).clone())
+                self.wake(ctx, view, |ctx| f.update(ctx, from).clone())
             }
         }
     }
 
-    /// Record this cycle's fires: the arguments published in `set`, and
-    /// the captured inputs, a late fire to a reader in the instance's
-    /// body, inside `body`, included.
+    /// Record this cycle's fires, for a call a seq step issued: the
+    /// arguments published in `set`, and the captured inputs.
     fn observe<R: Rt>(
         &mut self,
         ctx: &ExecCtx<'_, R>,
         set: &Published,
         body: Option<&BoundaryRef>,
     ) {
+        let Some((missed, captured)) = &mut self.step else { return };
         for id in set.iter() {
             let fired = ctx.event.variables.get(id).is_some_and(|tv| tv.tag().triggers());
-            if fired && !self.missed.contains(id) {
-                self.missed.push(*id);
+            if fired && !missed.contains(id) {
+                missed.push(*id);
             }
         }
-        self.captured.observe(ctx);
-        self.captured.observe_late(ctx, |_, b| BoundaryRef::held_by(body, b));
+        captured.observe(ctx);
+        captured.observe_late(ctx, |_, b| BoundaryRef::held_by(body, b));
     }
 
-    /// Run `update` under `view` with one catch-up fire for each argument
-    /// and captured input that fired unseen and is not delivered live
-    /// this cycle, at its current value. `body` is the boundary around
-    /// the instance's body.
+    /// Run `update` under `view`: a body's resume, or, for a call a seq
+    /// step issued, with one catch-up fire for each argument and captured
+    /// input that fired unseen and is not delivered live this cycle, at
+    /// its current value.
     fn wake<R: Rt, T>(
-        mut self,
+        self,
         ctx: &mut ExecCtx<'_, R>,
         view: View,
-        body: Option<&BoundaryRef>,
         update: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
     ) -> T {
+        let Some((missed, mut captured)) = self.step else {
+            return ctx.under(view, |ctx| super::wake::in_body(ctx, update));
+        };
         let mut injected = super::wake::Injected::new();
-        for id in self.missed.drain(..) {
+        for id in missed {
             super::wake::inject(ctx, id, &mut injected);
         }
-        let captured = &mut self.captured;
         let r = ctx.under(view, |ctx| {
             let caught_up = captured.deliver(ctx, 0);
-            let scope = captured.open(ctx, 0, body);
+            let scope = captured.open(ctx, 0);
             let r = update(ctx);
             captured.ran(ctx, 0, scope);
             TrackedFires::restore(ctx.event, caught_up);
@@ -5049,7 +4911,7 @@ fn update_args_in_order<R: Rt>(
         if kept && !fired {
             out.prods.push((arg.id, tv.clone()));
         }
-        if publish_production(ctx, Feeds::Id(arg.id), tv, false, root) {
+        if publish_production(ctx, Feeds::Id(arg.id), tv, root) {
             out.set.push(arg.id);
         }
     }
@@ -5063,20 +4925,16 @@ pub(crate) enum QuietAtRoot {
     Skip,
     /// Stand it in the store: a wake refresh, a fresh formal's seed.
     Stand,
-    /// Deliver it on the overlay.
-    Deliver,
 }
 
 /// Publish `tv`, a production feeding `feeds`, to the readers of this
 /// dispatch. A fire (a value or a fresh bottom) is delivered
-/// ([`ExecCtx::deliver`]); a quiet one per `root`. `born` delivers a quiet
-/// value FIRED: a fresh callee's first dispatch reads its arguments as
-/// new. Returns whether the overlay was written.
+/// ([`ExecCtx::deliver`]); a quiet one per `root`. Returns whether the
+/// overlay was written.
 pub(crate) fn publish_production<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     feeds: Feeds<'_>,
     tv: &TagValue,
-    born: bool,
     root: QuietAtRoot,
 ) -> bool {
     let tag = tv.tag();
@@ -5090,12 +4948,10 @@ pub(crate) fn publish_production<R: Rt>(
     if !fired && matches!(root, QuietAtRoot::Skip) {
         return false;
     }
-    let delivered = if born && !bottom { Tag::FIRED } else { tag };
     let mut put = |id: BindId, v: Value| match (fired, root) {
         (true, _) => ctx.deliver(id, TagValue::tagged(v, tag), Notify::Walk),
         (false, QuietAtRoot::Skip) => (),
         (false, QuietAtRoot::Stand) => ctx.stand(id, TagValue::tagged(v, tag)),
-        (false, QuietAtRoot::Deliver) => ctx.publish(id, TagValue::tagged(v, delivered)),
     };
     match (feeds, bottom) {
         (Feeds::Id(id), true) => put(id, Value::Null),
@@ -5106,7 +4962,7 @@ pub(crate) fn publish_production<R: Rt>(
             pat.bind(&v, &mut |id, v| put(id, v))
         }
     }
-    fired || matches!(root, QuietAtRoot::Deliver)
+    fired
 }
 
 /// The lambda literal an argument is: bare, or sampled (a seq step's

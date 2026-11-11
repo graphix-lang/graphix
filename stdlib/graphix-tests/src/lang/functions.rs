@@ -300,20 +300,29 @@ const TAIL_LOOP_DEEP: &str = r#"
 
 run!(tail_loop_deep, TAIL_LOOP_DEEP, is(Value::I64(500000)); FuseExpect::Jit; jit_only);
 
-// A depth kept from an earlier cycle catches up what it missed: `y`
-// fired while depth 1 took arm `0`, so its move to arm `1` writes `y`.
-const TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE: &str = r#"
-{
-    let t = array::iter([1, 2]);
-    let y = uniq(select t { _ => 10 });
-    let n = select t { 1 => 2, _ => 3 };
-    let x = 0;
-    let rec f = |n| select n { 0 => 0, 1 => { x <- y; 1 }, n => f(n - 2) };
-    select (f(n), x) { (_, 10) => true, _ => never() }
+// An arm a tail depth moves to is entered into a world that stands: `y`
+// fired while depth 1 took arm `0`, so at its move to arm `1` `y` stands
+// and the arm writes nothing. `x` stays 0.
+async fn tail_depth_arm_entered_later_writes_nothing(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta_fused(
+        r#"{
+            let t = array::iter([1, 2]);
+            let y = uniq(select t { _ => 10 });
+            let n = select t { 1 => 2, _ => 3 };
+            let x = 0;
+            let rec f = |n| select n { 0 => 0, 1 => { x <- y; 1 }, n => f(n - 2) };
+            (f(n), x)
+        }"#,
+        mode,
+        FuseExpect::Jit,
+    )
+    .await?;
+    let shown: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(shown, ["[i64:0, i64:0]", "[i64:1, i64:0]"]);
+    Ok(())
 }
-"#;
 
-run!(tail_depth_catches_up_an_outer_write, TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE, is(Value::Bool(true)), timeout: 5; FuseExpect::Jit);
+modes!(tail_depth_arm_entered_later_writes_nothing);
 
 // A self-call in operand position (`n * fact(n - 1)`) is not a tail
 // call and must not be looped.
@@ -780,17 +789,24 @@ run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; FuseExpect::Jit);
 
-/// `code`'s `raised` over a source of four slots: one raise per new
-/// slot, none from a slot already there.
-async fn raises_once_per_slot(code: &str, mode: Mode) -> Result<()> {
+/// Every update of `code`'s `raised`, a count of the errors its slots
+/// raise.
+async fn raised(code: &str, mode: Mode) -> Result<Vec<i64>> {
     let (values, _) = run_delta_fused(code, mode, FuseExpect::Jit).await?;
-    assert_eq!(as_i64s(&values), [0, 1, 2, 3, 4]);
-    Ok(())
+    Ok(as_i64s(&values))
 }
 
-// Each slot of a growing map calls `g` as an instance of its own, whose
-// first call is an init view: its constant error raises once per new
-// slot, four in all.
+/// `code` with its growing source, whose slots arrive after the root's
+/// first cycle, replaced by four slots born with the root.
+fn born_with_the_root(code: &str) -> String {
+    let grown = "array::init(n, |i| i)";
+    assert!(code.contains(grown));
+    code.replace(grown, "array::init(4, |i| i)")
+}
+
+// Each slot of a growing map calls `g` as an instance of its own, which
+// is entered, not born: its constant error never fires, so nothing
+// raises. Called from slots born with the root it raises once per slot.
 const HOF_SLOT_CALLEE_FIRST_CALL: &str = r#"
 {
   let n = array::iter([1, 2, 3, 4]);
@@ -807,15 +823,19 @@ const HOF_SLOT_CALLEE_FIRST_CALL: &str = r#"
 }
 "#;
 
-async fn hof_slot_callee_first_call(mode: Mode) -> Result<()> {
-    raises_once_per_slot(HOF_SLOT_CALLEE_FIRST_CALL, mode).await
+async fn hof_slot_callee_is_entered_not_born(mode: Mode) -> Result<()> {
+    assert_eq!(raised(HOF_SLOT_CALLEE_FIRST_CALL, mode).await?, [0]);
+    let born = born_with_the_root(HOF_SLOT_CALLEE_FIRST_CALL);
+    assert_eq!(raised(&born, mode).await?, [0, 1, 2, 3, 4]);
+    Ok(())
 }
 
-modes!(hof_slot_callee_first_call);
+modes!(hof_slot_callee_is_entered_not_born);
 
 // A nested map over a source outside the loop is an instance per outer
-// slot: a new slot's inner map fires on its first observation of `ys`,
-// and the error derived from it raises once per new slot.
+// slot: a new slot's inner map reads `ys` standing, and its first
+// observation of it is no fire, so the error derived from it never
+// raises. In slots born with the root it fires and raises once per slot.
 const HOF_SLOT_NESTED_PREV_LEN: &str = r#"
 {
   let n = array::iter([1, 2, 3, 4]);
@@ -833,15 +853,19 @@ const HOF_SLOT_NESTED_PREV_LEN: &str = r#"
 }
 "#;
 
-async fn hof_slot_nested_prev_len(mode: Mode) -> Result<()> {
-    raises_once_per_slot(HOF_SLOT_NESTED_PREV_LEN, mode).await
+async fn hof_slot_nested_map_is_quiet_over_a_standing_source(mode: Mode) -> Result<()> {
+    assert_eq!(raised(HOF_SLOT_NESTED_PREV_LEN, mode).await?, [0]);
+    let born = born_with_the_root(HOF_SLOT_NESTED_PREV_LEN);
+    assert_eq!(raised(&born, mode).await?, [0, 1, 2, 3, 4]);
+    Ok(())
 }
 
-modes!(hof_slot_nested_prev_len);
+modes!(hof_slot_nested_map_is_quiet_over_a_standing_source);
 
-// A new slot is a new instance, whose first update is an init view: a
-// constant in the callback body fires in each new slot, and its error
-// raises once per slot.
+// A slot that arrives after the root's first cycle is entered, not born:
+// a constant in the callback body does not fire in it, and its error
+// never raises. In slots born with the root it fires and raises once per
+// slot.
 const HOF_SLOT_CONSTANT_FIRES: &str = r#"
 {
   let n = array::iter([1, 2, 3, 4]);
@@ -857,11 +881,14 @@ const HOF_SLOT_CONSTANT_FIRES: &str = r#"
 }
 "#;
 
-async fn hof_slot_constant_fires(mode: Mode) -> Result<()> {
-    raises_once_per_slot(HOF_SLOT_CONSTANT_FIRES, mode).await
+async fn hof_slot_constant_fires_only_in_a_birth(mode: Mode) -> Result<()> {
+    assert_eq!(raised(HOF_SLOT_CONSTANT_FIRES, mode).await?, [0]);
+    let born = born_with_the_root(HOF_SLOT_CONSTANT_FIRES);
+    assert_eq!(raised(&born, mode).await?, [0, 1, 2, 3, 4]);
+    Ok(())
 }
 
-modes!(hof_slot_constant_fires);
+modes!(hof_slot_constant_fires_only_in_a_birth);
 
 // Non-tail recursion depth is bounded by memory, not a counter: depth
 // 1000 completes on both engines.
@@ -1146,9 +1173,9 @@ async fn rec_shrink_deletes_unreached_depths(mode: Mode) -> Result<()> {
 
 modes!(rec_shrink_deletes_unreached_depths);
 
-// A pure recursion's depth swinging 10, 5, 10, .. for 250 cycles: the
-// depths left asleep are reborn when reached again, and every cycle
-// answers its own sum.
+// A pure recursion's depth swinging 10, 5, 10, .. for 250 cycles: each
+// shrink deletes the depths below it, each deep cycle enters them afresh,
+// and every cycle answers its own sum.
 async fn rec_pure_depth_swing_answers_each_cycle(mode: Mode) -> Result<()> {
     let code = r#"{
         let t = array::iter(array::init(250, |i| 10 - i % 2 * 5));
@@ -1163,13 +1190,14 @@ async fn rec_pure_depth_swing_answers_each_cycle(mode: Mode) -> Result<()> {
 
 modes!(rec_pure_depth_swing_answers_each_cycle);
 
-// A depth reborn after a shrink reads its capture as it stands: the
-// capture moves while depths 2 and 3 sleep, and their rebirth sees it.
-async fn rec_reborn_depth_reads_its_capture(mode: Mode) -> Result<()> {
+// A depth entered again after a shrink reads its capture as it stands:
+// the capture is written once, while depths 2 and 3 do not exist, and the
+// depths regrown a cycle after the write read 200 with nothing firing it.
+async fn rec_regrown_depth_reads_its_capture_as_it_stands(mode: Mode) -> Result<()> {
     let code = r#"{
         let t = array::iter([3, 1, 1, 3]);
         let base = 100;
-        base <- select t {1 => 200, _ => never()};
+        base <- once(select t {1 => 200, _ => never()});
         let rec f = |n: i64| -> i64 select n { 0 => base, _ => n + f(n - 1) };
         f(t)
     }"#;
@@ -1178,7 +1206,7 @@ async fn rec_reborn_depth_reads_its_capture(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(rec_reborn_depth_reads_its_capture);
+modes!(rec_regrown_depth_reads_its_capture_as_it_stands);
 
 const LINEAR: &str = "let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) }";
 const FIB: &str =
@@ -1197,14 +1225,13 @@ const DIRECT: &str = "f(t)";
 
 /// What a node-walked run of the recursion `def`, called by `call` over
 /// the arguments `t`, one a cycle, a 0 a cycle in which the recursion does
-/// not run, left: its values, the activations live once it settled, and
-/// the run-time binds and rebuild batches its cycles made.
+/// not run, left: its values and the activations live once it settled.
 async fn run_rec(
     def: &str,
     call: &str,
     ts: &[i64],
     mode: Mode,
-) -> Result<(Vec<i64>, u64, u64)> {
+) -> Result<(Vec<i64>, u64)> {
     use graphix_package_core::testing::{
         Collect, HANG_GUARD, compile_result, fixture_runtime, result_source,
         updates_until,
@@ -1223,127 +1250,63 @@ async fn run_rec(
     )
     .await?;
     let control = ctx.rt.control();
-    let rebuilds = control.rebuilds();
     let res = compile_result(&ctx).await?;
     let deadline = tokio::time::Instant::now() + HANG_GUARD;
     let values =
         updates_until(&ctx.rt, &mut rx, res.exprs[0].id, Collect::Settled, deadline)
             .await?;
-    let counts = (control.live_activations(), control.rebuilds() - rebuilds);
+    let live = control.live_activations();
     ctx.shutdown().await;
-    Ok((as_i64s(&values), counts.0, counts.1))
+    Ok((as_i64s(&values), live))
 }
 
-/// A pure recursion swinging between two depths every cycle binds about
-/// what one held at the deeper depth does: the depths a shrink leaves are
-/// kept asleep and reborn when reached again, never bound afresh. Deleting
-/// them at each shrink binds the linear swing's five depths and fib's 72
-/// activations every other cycle.
-async fn rec_pure_depth_swing_binds_once(mode: Mode) -> Result<()> {
-    for (def, eval, deep, shallow) in
-        [(LINEAR, linear as fn(i64) -> i64, 10, 5), (FIB, fib, 10, 9)]
-    {
-        let swing: Vec<i64> = (0..250).map(|i| [deep, shallow][i % 2]).collect();
-        let (values, _, swing_binds) = run_rec(def, DIRECT, &swing, mode).await?;
-        assert_eq!(values, swing.iter().map(|n| eval(*n)).collect::<Vec<_>>());
-        let (_, _, fixed_binds) = run_rec(def, DIRECT, &[deep; 250], mode).await?;
-        assert!(
-            swing_binds <= fixed_binds + 5,
-            "{def}: {swing_binds} binds swinging against {fixed_binds} held deep"
-        );
-    }
-    Ok(())
-}
-
-/// The levels of `levels` a site kept that are left after `exits` exits:
-/// each exit sheds the deepest level at least, and 1% of them where that is
-/// more.
-fn kept_after(levels: u64, exits: u64) -> u64 {
-    levels - (levels * exits / 100).max(exits).min(levels)
-}
-
-/// The activations kept after `exits` exits under a site that kept a fib(m)
-/// tree, `levels(m)` deep, its levels shed as [`kept_after`] says.
-fn fib_kept(m: i64, exits: u64) -> u64 {
-    fn levels(m: i64) -> u64 {
-        if m < 2 { 1 } else { 1 + levels(m - 1) }
-    }
-    fn cells(m: i64, depth: u64) -> u64 {
-        match depth {
-            0 => 0,
-            _ if m < 2 => 1,
-            _ => 1 + cells(m - 1, depth - 1) + cells(m - 2, depth - 1),
-        }
-    }
-    cells(m, kept_after(levels(m), exits))
-}
-
-/// A transient deep recursion is shed after it: each exit through a
-/// shallow depth deletes the deepest level a site kept, or 1% of them where
-/// that is more, all of them after 100 exits; a cycle the recursion does
-/// not run is no exit. Linear 200 then 5 keeps 195 levels at one site, 50
-/// then 5 keeps 45, one shed an exit; fib(12) then fib(4) keeps two
-/// subtrees at each of fib(4)'s leaves, fib(8) and fib(7) under a leaf of
-/// 1, fib(7) and fib(6) under one of 0.
-async fn rec_transient_depth_is_shed(mode: Mode) -> Result<()> {
-    let long = |exits: u64| kept_after(195, exits);
-    let short = |exits: u64| kept_after(45, exits);
-    let fib_leaves = |exits: u64| {
-        3 * (fib_kept(8, exits) + fib_kept(7, exits))
-            + 2 * (fib_kept(7, exits) + fib_kept(6, exits))
-    };
-    const PAST_100: &[u64] = &[1, 50, 99, 100, 150];
-    let cases: [(&str, i64, i64, &[u64], &dyn Fn(u64) -> u64, fn(i64) -> i64); 3] = [
-        (LINEAR, 200, 5, PAST_100, &long, linear),
-        (LINEAR, 50, 5, &[1, 2, 20, 44, 45], &short, linear),
-        (FIB, 12, 4, PAST_100, &fib_leaves, fib),
-    ];
-    for (def, deep, shallow, all_exits, kept, eval) in cases {
-        for &exits in all_exits {
+/// A shrink deletes the callee: a transient deep recursion leaves nothing
+/// behind it. After its first run at a shallow depth, and after many, the
+/// live activations are those of a recursion that only ever ran shallow; a
+/// cycle the recursion does not run changes nothing.
+async fn rec_transient_depth_is_deleted(mode: Mode) -> Result<()> {
+    let cases: [(&str, i64, i64, fn(i64) -> i64); 3] =
+        [(LINEAR, 200, 5, linear), (LINEAR, 50, 5, linear), (FIB, 12, 4, fib)];
+    for (def, deep, shallow, eval) in cases {
+        for exits in [0, 1, 50] {
             let mut ts = vec![deep];
-            ts.extend(std::iter::repeat_n([shallow, 0], exits as usize + 1).flatten());
-            let (values, live, _) = run_rec(def, DIRECT, &ts, mode).await?;
+            ts.extend(std::iter::repeat_n([shallow, 0], exits + 1).flatten());
+            let (values, live) = run_rec(def, DIRECT, &ts, mode).await?;
             let runs = ts.iter().filter(|n| **n > 0);
             assert_eq!(values, runs.map(|n| eval(*n)).collect::<Vec<_>>());
-            let (_, base, _) =
-                run_rec(def, DIRECT, &vec![shallow; exits as usize + 2], mode).await?;
-            assert_eq!(live, base + kept(exits), "{def}: {exits} exits");
+            let (_, base) = run_rec(def, DIRECT, &vec![shallow; exits + 2], mode).await?;
+            assert_eq!(live, base, "{def}: {exits} shallow runs after the first");
         }
     }
     Ok(())
 }
 
-/// A depth partly shed is reached again: what is left is reborn, what was
-/// shed is bound afresh, and every cycle answers its own value. A deeper
-/// edge's own kept levels are shed with its caller's, once its caller
-/// keeps them.
-async fn rec_partly_shed_depth_reached_again(mode: Mode) -> Result<()> {
+/// A depth a shrink deleted is reached again: its activations are entered
+/// afresh and every cycle answers its own value, through a shrink, a
+/// regrow to the first depth, a shrink part of the way and one further.
+/// What the last, shallowest runs do not reach is deleted.
+async fn rec_deleted_depth_reached_again(mode: Mode) -> Result<()> {
     let cases: [(&str, [i64; 4], fn(i64) -> i64); 2] =
         [(LINEAR, [200, 5, 150, 3], linear), (FIB, [12, 4, 11, 3], fib)];
     for (def, [deep, shallow, again, last], eval) in cases {
-        let mut ts = vec![deep];
-        ts.extend(std::iter::repeat_n(shallow, 51));
-        ts.extend([deep, again]);
-        ts.extend(std::iter::repeat_n(last, 101));
-        let (values, live, _) = run_rec(def, DIRECT, &ts, mode).await?;
+        let ts = [deep, shallow, shallow, deep, again, last, last];
+        let (values, live) = run_rec(def, DIRECT, &ts, mode).await?;
         assert_eq!(values, ts.iter().map(|n| eval(*n)).collect::<Vec<_>>());
-        let (_, base, _) = run_rec(def, DIRECT, &vec![last; ts.len()], mode).await?;
+        let (_, base) = run_rec(def, DIRECT, &[last; 7], mode).await?;
         assert_eq!(live, base, "{def}");
     }
     Ok(())
 }
 
-/// A kept chain a later run reaches only part of the way is shed below
-/// what it reaches: the activation reborn short of the chain's end leaves
-/// the arm that holds the rest as a shrink does, and each exit after sheds
-/// it. Linear 200 then 5, 6, 5 and 6 from then on, 200 then 5 and 6
-/// swinging, and 200 then 5 called from a seq step, each of whose runs
-/// rebirths the recursion, keep 194, 194 and 195 levels at one site, shed
-/// 1% an exit; fib(12) then the same shapes over 4 and 5 is shed whole
-/// after 150 exits.
-async fn rec_partly_reached_chain_is_shed(mode: Mode) -> Result<()> {
+/// A chain a later run reaches only part of the way leaves nothing below
+/// what that run reaches, and every cycle answers its own value. Linear
+/// 200 then 5, 6, 5 and 6 from then on, 200 then 5 and 6 swinging, and
+/// 200 then 5 called from a seq step, each of whose runs rebirths the
+/// recursion, hold what a recursion that only ever ran at the last depth
+/// does; so does fib(12) then the same shapes over 4 and 5.
+async fn rec_partly_reached_chain_leaves_nothing_below(mode: Mode) -> Result<()> {
     const IN_SEQ: &str = "seqq let n = t { f(n) }";
-    let reborn_short = |d: i64, s: i64, exits: usize| {
+    let regrown_short = |d: i64, s: i64, exits: usize| {
         let mut ts = vec![d, s, s + 1, s];
         ts.extend(std::iter::repeat_n(s + 1, exits));
         ts
@@ -1359,21 +1322,19 @@ async fn rec_partly_reached_chain_is_shed(mode: Mode) -> Result<()> {
         ts
     };
     let shapes: [(&str, &dyn Fn(i64, i64, usize) -> Vec<i64>); 3] =
-        [(DIRECT, &reborn_short), (DIRECT, &swing), (IN_SEQ, &seq_runs)];
+        [(DIRECT, &regrown_short), (DIRECT, &swing), (IN_SEQ, &seq_runs)];
     for (call, shape) in shapes {
         for (def, eval, deep, shallow, all_exits) in [
             (LINEAR, linear as fn(i64) -> i64, 200, 5, &[1, 50, 150][..]),
             (FIB, fib, 12, 4, &[150]),
         ] {
             let last = *shape(deep, shallow, 1).last().unwrap();
-            let (_, base, _) = run_rec(def, call, &[last; 4], mode).await?;
-            let levels = (deep - last) as u64;
+            let (_, base) = run_rec(def, call, &[last; 4], mode).await?;
             for exits in all_exits {
                 let ts = shape(deep, shallow, *exits);
-                let (values, live, _) = run_rec(def, call, &ts, mode).await?;
+                let (values, live) = run_rec(def, call, &ts, mode).await?;
                 assert_eq!(values, ts.iter().map(|n| eval(*n)).collect::<Vec<_>>());
-                let kept = kept_after(levels, *exits as u64);
-                assert_eq!(live, base + kept, "{def} by {call}: {ts:?}");
+                assert_eq!(live, base, "{def} by {call}: {ts:?}");
             }
         }
     }
@@ -1381,49 +1342,38 @@ async fn rec_partly_reached_chain_is_shed(mode: Mode) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_pure_depth_swing_binds_once_interp() -> Result<()> {
-    rec_pure_depth_swing_binds_once(Mode::Interp).await
+async fn rec_transient_depth_is_deleted_interp() -> Result<()> {
+    rec_transient_depth_is_deleted(Mode::Interp).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_pure_depth_swing_binds_once_par() -> Result<()> {
-    rec_pure_depth_swing_binds_once(Mode::Par).await
+async fn rec_transient_depth_is_deleted_par() -> Result<()> {
+    rec_transient_depth_is_deleted(Mode::Par).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_transient_depth_is_shed_interp() -> Result<()> {
-    rec_transient_depth_is_shed(Mode::Interp).await
+async fn rec_transient_depth_is_deleted_unpruned() -> Result<()> {
+    rec_transient_depth_is_deleted(Mode::Unpruned).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_transient_depth_is_shed_par() -> Result<()> {
-    rec_transient_depth_is_shed(Mode::Par).await
-}
-
-/// An exit is the chain running, not a walk of its select.
-#[tokio::test(flavor = "current_thread")]
-async fn rec_transient_depth_is_shed_unpruned() -> Result<()> {
-    rec_transient_depth_is_shed(Mode::Unpruned).await
+async fn rec_deleted_depth_reached_again_interp() -> Result<()> {
+    rec_deleted_depth_reached_again(Mode::Interp).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_partly_shed_depth_reached_again_interp() -> Result<()> {
-    rec_partly_shed_depth_reached_again(Mode::Interp).await
+async fn rec_deleted_depth_reached_again_par() -> Result<()> {
+    rec_deleted_depth_reached_again(Mode::Par).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_partly_shed_depth_reached_again_par() -> Result<()> {
-    rec_partly_shed_depth_reached_again(Mode::Par).await
+async fn rec_partly_reached_chain_leaves_nothing_below_interp() -> Result<()> {
+    rec_partly_reached_chain_leaves_nothing_below(Mode::Interp).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rec_partly_reached_chain_is_shed_interp() -> Result<()> {
-    rec_partly_reached_chain_is_shed(Mode::Interp).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn rec_partly_reached_chain_is_shed_par() -> Result<()> {
-    rec_partly_reached_chain_is_shed(Mode::Par).await
+async fn rec_partly_reached_chain_leaves_nothing_below_par() -> Result<()> {
+    rec_partly_reached_chain_leaves_nothing_below(Mode::Par).await
 }
 
 /// A recursion a seq step calls is born again at each run, fused or not:
@@ -1431,10 +1381,10 @@ async fn rec_partly_reached_chain_is_shed_par() -> Result<()> {
 /// depth the live activations are those one run holds in the node-walk.
 async fn rec_seq_runs_hold_one_run(mode: Mode) -> Result<()> {
     for call in ["seqq let n = t { f(n) }", "seq let n = t { f(n) }"] {
-        let (_, one, _) = run_rec(LINEAR, call, &[5], Mode::Interp).await?;
+        let (_, one) = run_rec(LINEAR, call, &[5], Mode::Interp).await?;
         let mut live = vec![];
         for runs in [1, 5, 30] {
-            let (values, n, _) = run_rec(LINEAR, call, &vec![5; runs], mode).await?;
+            let (values, n) = run_rec(LINEAR, call, &vec![5; runs], mode).await?;
             assert_eq!(values.last(), Some(&15), "{call}: {runs} runs");
             live.push(n);
         }
@@ -2965,18 +2915,18 @@ const LAMBDA_ALIAS_WRITTEN: &str = r#"
 
 run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, is(Value::I64(20)); FuseExpect::None);
 
-// A labeled default is born with the binding and delivers FIRED at a
-// fresh callee's first dispatch: an arm's first selection and a rebind
-// each sample it. A stale default would give [0] and [10] on both
-// engines alike.
-async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
+// A labeled default is its expression, read in the callee: at a callee's
+// first dispatch after its root's first cycle it stands, so a sample on
+// it has nothing to take, at an arm's first selection as at a rebind. The
+// callee dispatched in the root's first cycle samples it.
+async fn default_stands_at_a_later_first_dispatch(mode: Mode) -> Result<()> {
     let code = r#"{
         let d = 5;
         let f = |#k = d, x: i64| k ~ x;
         select array::iter([0, 1]) { 0 => 0, _ => f(10) }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    assert_eq!(as_i64s(&values), [0, 10]);
+    assert_eq!(as_i64s(&values), [0]);
     let code = r#"{
         let t = array::iter([0, 1]);
         let d = 5;
@@ -2985,11 +2935,11 @@ async fn default_fires_at_first_dispatch(mode: Mode) -> Result<()> {
         g(10)
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    assert_eq!(as_i64s(&values), [10, 11]);
+    assert_eq!(as_i64s(&values), [10]);
     Ok(())
 }
 
-modes!(default_fires_at_first_dispatch);
+modes!(default_stands_at_a_later_first_dispatch);
 
 // A fresh bind runs each omitted default once: a counting default in a
 // collection callback reads 1 in every slot, in every mode.

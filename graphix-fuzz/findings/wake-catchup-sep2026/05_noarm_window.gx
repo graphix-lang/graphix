@@ -1,4 +1,4 @@
-// Tracking runs even with NO arm selected (design/wake_catchup.md):
+// Tracking runs even with NO arm selected (design/bind_driven_bodies.md):
 // skip(#n:1) swallows the init fire so the scrutinee stands bottom —
 // the select bottoms (no ride) — and in1's fire during that window
 // lands in the tracked bits with no selected reader. The first

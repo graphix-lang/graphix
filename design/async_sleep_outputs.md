@@ -3,15 +3,18 @@
 Status: built 2026-09-05; rewritten for "no partial rebirth" 2026-10-18
 Pins: `stdlib/graphix-tests/src/lang/async_restart.rs`; `stdlib/graphix-tests/src/lib_tests/bottom.rs`
 
-A wake is a resume, never a rebirth (`design/wake_catchup.md`, "No
-partial rebirth"). What a builtin does across a sleep follows from what
-its output is.
+A wake is a resume, never a rebirth (`design/sleep_and_wake.md`). What
+a builtin does across a sleep follows from what its output is. A call
+or an event source starts on a fire of its arguments, at a wake as at an
+entry: over arguments that stand, in a body entered after its root's
+first cycle, it starts nothing until one fires
+(`design/bind_driven_bodies.md`).
 
 - **A call** (`CachedArgsAsync`: file, stream, process, http, db, sqlite
   operations): sleep aborts the call in flight (it cannot be
   paused) and the wake restarts nothing, since a restart would perform
-  an action no trigger asked for; only an argument's fire, a caught-up
-  one included, starts a call. The result is a level and survives the
+  an action no trigger asked for; only an argument's fire starts a
+  call. The result is a level and survives the
   sleep. A call whose eval is not `EvalCachedAsync::CANCEL_SAFE` is not
   aborted: stopping it mid-way would lose what it already did (the bytes
   a read consumed, a partial write, a cursor's advance, the stream a

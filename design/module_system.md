@@ -206,8 +206,8 @@ val, its readers read it, a `<-` or a write through `&mut` to either
 waits in the val's one queue, in the order the writes were made, each
 landing on the value the one before it left, and a level written
 through either replaces the one waiting before it. A wake's re-raise
-of the body's `let` is the val's, taken back by the block around the
-module as any `let`'s is. A `<-` marks the binding it names, and its
+of a seq machine's own name in the body (`design/sleep_and_wake.md`) is
+taken back by the block around the module, as a block's own is. A `<-` marks the binding it names, and its
 typing is that binding's; whether the variable is written reads every
 name, so a call through either binds statically only where neither is
 written (`CompileCtx::rebinds`) and a woken `let` keeps what was

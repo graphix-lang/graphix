@@ -1,5 +1,5 @@
 // What a wake stands moved is a fire for a reader outside the woken arm
-// (design/wake_catchup.md, What a wake stands). Arm 0 makes a closure
+// (design/bind_driven_bodies.md, the moved mark). Arm 0 makes a closure
 // over `mk`'s formal and sleeps through the writes of `v0` (1, then 3);
 // `once` holds the closure where no sleep reaches. At the wake (in0 = 4)
 // the formal is re-seeded 3, moved, and fires for the held closure's

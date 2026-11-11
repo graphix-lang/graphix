@@ -14,7 +14,8 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `representable_bottom.md` | bottom is a value with a taint channel; the bottom-scrutinee and consulted-guard rules |
 | `dense_delivery.md` | `TagValue` every cycle; the fired×bottom algebra; store and overlay |
 | `organic_firing.md` | a node fires iff a consumed input fires; the numbered deltas |
-| `wake_catchup.md` | sleep is pause; a reselected arm recomputes from the present and re-raises only unseen fires, once |
+| `bind_driven_bodies.md` | entering a body (an arm, a guard, a slot, an activation) is not an event, and neither is waking one: nothing fires in it but its binds and live captures; constants fire only in a birth |
+| `sleep_and_wake.md` | sleep is pause and a wake a resume: what state survives, the views, how a recomputed value reaches the store |
 | `activation_state.md` | held state never decides bottomness; state multiplicity = activation multiplicity |
 | `async_sleep_outputs.md` | across a sleep a call is aborted and its result survives; an event source pauses and its last event does not survive; state is kept |
 

@@ -2160,7 +2160,7 @@ impl StructPatternNode {
     /// it takes, so `{a: null}` over `{a: [i64, null]}` covers `{a: null}`
     /// and `` (`B, n) `` over `` ([`A, `B], i64) `` covers `` (`B, i64) ``.
     /// `None` for any other pattern, or where no member passes.
-    pub(super) fn matched_part(&self, env: &Env, typ: &Type) -> Option<Type> {
+    pub(crate) fn matched_part(&self, env: &Env, typ: &Type) -> Option<Type> {
         let parts = |binds: &[Self], ts: &[Type]| {
             (ts.len() == binds.len()).then_some(())?;
             let parts = binds

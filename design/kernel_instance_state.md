@@ -13,29 +13,22 @@ Pins: `lang/functions.rs` `hof_const_body_prev_len`,
 
 ## The problem
 
-A fused kernel is a pure function of its inputs — deliberately. But two
-node-walk FIRING rules are not functions of the current cycle's inputs;
-they compare against the previous invocation:
+A fused kernel is a pure function of its inputs — deliberately. But one
+node-walk FIRING rule is not a function of the current cycle's inputs;
+it compares against the previous invocation:
 
-1. **HOF resize detection.** `MapQ::update` emits iff `resized ∨ any
-   slot fired` (plus an unconditional emit when the source fires while
-   EMPTY), and `resized` compares the source length against the
-   previous cycle's. A stateless approximation — "source fired ∨ any
-   slot body fired" — over-fires on a same-length source event whose
-   slot bodies are all quiet (a map with a constant callback body
-   re-emits per source fire where the node-walk emits once).
-   Suppressing the source-fired term without length memory would
-   UNDER-fire instead: a shrink with an unchanged prefix emits in the
-   node-walk purely because of the resize — wrong values, worse than
-   duplicate fires.
-2. **A callee's first-call init view.** The node-walk primes an
-   instance's first dispatch with a forced init view (`first_update`),
-   so a late first call — a fold callback whose loop had zero elements
-   until its source grew — still fires its constants and cached reads
-   once. One compiled callee body has no "first call" unless something
-   remembers it.
+**HOF resize detection.** `MapQ::update` emits iff a slot fired, or the
+source fired and the collection resized or is EMPTY, and `resized`
+compares the source length against the previous cycle's. A stateless
+approximation — "source fired ∨ any slot body fired" — over-fires on a
+same-length source event whose slot bodies are all quiet (a map with a
+constant callback body re-emits per source fire where the node-walk
+emits once). Suppressing the source-fired term without length memory
+would UNDER-fire instead: a shrink with an unchanged prefix emits in the
+node-walk purely because the fired source resized — wrong values, worse
+than duplicate fires.
 
-Both need one word of memory that survives across kernel invocations
+It needs one word of memory that survives across kernel invocations
 and belongs to the kernel instance — never a value, never a selection.
 Under strict fusion (`strict_fusion.md`) this is the ONLY
 cross-invocation memory a kernel has: a select claims no word (a
@@ -52,21 +45,24 @@ observation" and init semantics fall out of the zeroing without
 touching the init flag:
 
 - *prev-length word*: stores `len + 1`; `resized := word != len + 1`
-  (the first arrival counts as resized, which is also what makes
-  "source fires while empty" emit). The exact rule is `fires :=
-  resized ∨ any_slot_fired`, folded into the loop's STALE bit by
-  `SlotFlags` (`emit/scaffold.rs`). A TAINTED source is never a
-  resize and forgets the length (the word takes the `FORGOT` bit, so the
-  source's return is one) but not the slots. The word is read before the
-  loop as the slots the instance had ENTERED: a slot at or past that
-  count is new, and its iteration runs under an init view (the node-walk
-  builds a new slot's instance fresh, its first update an init view), so
-  a constant in the loop body fires in each new slot.
-- *first-call word*: a cross-kernel call site forces the callee's init
-  flag when its word reads 0, records, and never again. In a loop the
-  word is the slot's (the call site is one of the loop's per-slot
-  sites, below), since each slot calls an instance of its own. With no
-  word available the callee sees the plain kernel init flag.
+  (the first arrival counts as resized). The exact rule is `fires :=
+  any_slot_fired ∨ (source_fired ∧ (resized ∨ empty))`, and for a loop
+  that gives back the source's elements (a filter, a find) the source's
+  fire alone; a resize under a quiet source is a quiet result that moved
+  (`Tag::MOVED`). `SlotFlags` (`emit/scaffold.rs`) folds it into the
+  loop's STALE and MOVED bits. A TAINTED source is never a resize and
+  forgets the length (the word takes the `FORGOT` bit, so the source's
+  return is one) but not the slots. The word is read before the loop as
+  the slots the instance had ENTERED: a slot at or past that count is
+  new. A new slot is entered, not born: its iteration runs under the
+  kernel's own born flag, so a constant in the loop body fires in a new
+  slot only in a birth (`bind_driven_bodies.md`); a fold's new slot
+  takes its accumulator as delivered
+  (`scaffold::deliver_acc_to_new_slot`).
+
+A cross-kernel call passes the callee the caller's context word
+(`emit::call::emit_callee_context_word`): a call site's first use is an
+entry, and no word records it.
 
 ## The three identity coordinates
 
@@ -96,8 +92,7 @@ and the caller must address the current slot's word.
 A nested collection loop inside a scaffold loop is one HOF instance PER
 OUTER SLOT in the node-walk, so its prev-length word needs one word per
 ordinal, whatever its source (a source bound outside the loop is still
-observed fresh by a new slot); so does a cross-kernel call site's
-first-call word. No word in a loop is shared across its iterations. The table lives behind an ordinary claimed word: the enclosing
+observed fresh by a new slot). No word in a loop is shared across its iterations. The table lives behind an ordinary claimed word: the enclosing
 loop's PREHEADER (which runs at `loop_depth == 0`, where a static claim
 is legal) claims one word per nested-loop site in its body and hands it
 to `graphix_slot_state_table(word, len, valid, own_levels, leaf)`. The

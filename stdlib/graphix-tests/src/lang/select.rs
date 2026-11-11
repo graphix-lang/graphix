@@ -1349,10 +1349,10 @@ run!(
     FuseExpect::Jit
 );
 
-// An arm that slept through a let's fire catches it up even when, in the
-// cycle it wakes, the enclosing arm's wake republished that let stale: its
-// `<-` target takes the value.
-async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
+// An arm that slept through a let's fire is owed nothing at its wake: the
+// `<-` target it initialises from that let keeps the value written to it,
+// though the enclosing arm's wake recomputes the let in the same cycle.
+async fn wake_over_a_let_that_fired_asleep_keeps_the_write(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
         r#"{
@@ -1376,15 +1376,15 @@ async fn wake_over_a_republished_let_catches_up(mode: Mode) -> Result<()> {
         mode,
     )
     .await?;
-    assert_eq!(values.last(), Some(&Value::I64(7)), "{values:?}");
+    assert_eq!(as_i64s(&values), vec![0, 99, -5, -1, 99]);
     Ok(())
 }
 
-modes!(wake_over_a_republished_let_catches_up);
+modes!(wake_over_a_let_that_fired_asleep_keeps_the_write);
 
-// A let republished quietly at its arm's wake did not fire: a callee bound
-// fresh at another arm's wake is owed none of it, so `count(x)` stays
-// silent and `b` keeps -7.
+// A let recomputed quietly at its arm's wake does not fire: a callee bound
+// fresh at another arm's wake counts nothing, so its `count(x)` is bottom
+// and the result produces nothing after `b`'s -7.
 async fn quiet_republish_is_owed_no_fire(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     use graphix_package_core::testing::data;
@@ -1691,9 +1691,9 @@ async fn wake_bottom_initializers_keep_the_written_value(mode: Mode) -> Result<(
 modes!(wake_bottom_initializers_keep_the_written_value);
 
 // A banked `~` paid when its argument first arrives is that arrival, a
-// real event: the sleeping arm catches `q` up to it at the wake, as it does
-// a plain fire of `v`.
-run!(banked_sample_payment_is_a_real_fire, r#"{
+// real event, and an arm asleep at it is owed nothing: at the wake
+// `any(p, w)` has no fire to pass and `q` keeps its write, 7.
+run!(banked_sample_payment_asleep_is_owed_nothing, r#"{
   let k = array::iter([0, 1, 2, 3, 4, 5, 6]);
   let v = never<i64>();
   v <- select k { 3 => 42, _ => never() };
@@ -1707,12 +1707,13 @@ run!(banked_sample_payment_is_a_real_fire, r#"{
     false => -1
   };
   select k { 6 => r, _ => never() }
-}"#, is(Value::I64(42)); FuseExpect::Jit);
+}"#, is(Value::I64(7)); FuseExpect::Jit);
 
-// A fire the taken arm reads, through a reference or directly, is spent:
-// the other arm's wake does not catch it up again. The reference's target
-// is an input of its arm from the arm's first evaluation.
-const WAKE_SPENT_THROUGH_A_REFERENCE: &str = r#"
+// `b` fires at n = 3 while the arm that counts its fires sleeps and the
+// other arm reads it, through a reference or directly: the wake counts
+// nothing. The counting arm is entered after its root's first cycle, so
+// `*r` stands at that entry too and `cnt` stays 0.
+const FIRE_ASLEEP_IS_NOT_COUNTED: &str = r#"
 {
   let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
   let b = 10;
@@ -1727,18 +1728,26 @@ const WAKE_SPENT_THROUGH_A_REFERENCE: &str = r#"
 }
 "#;
 
-run!(wake_spent_through_a_reference, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "*r"), |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 110, 120, 1, 1, 1])
+run!(fire_asleep_is_not_counted_through_a_reference, &FIRE_ASLEEP_IS_NOT_COUNTED.replace("READ", "*r"), |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 0, 110, 120, 0, 0, 0])
 }; FuseExpect::Jit);
 
-run!(wake_spent_directly, &WAKE_SPENT_THROUGH_A_REFERENCE.replace("READ", "b"), |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 110, 120, 1, 1, 1])
+run!(fire_asleep_is_not_counted_directly, &FIRE_ASLEEP_IS_NOT_COUNTED.replace("READ", "b"), |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 0, 110, 120, 0, 0, 0])
 }; FuseExpect::Jit);
 
-// A fire a never-entered arm missed reaches its first entry through the
-// callee it calls, whether the call resolves statically or through a
-// function value bound only at that entry (its body's inputs are learned
-// then, and owed what fired since the arm's last run).
+// A program whose result never fires: `values` is every update of it.
+async fn silent(code: &str, mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta_fused;
+    let (values, _) = run_delta_fused(code, mode, FuseExpect::Jit).await?;
+    assert!(values.is_empty(), "{values:?}");
+    Ok(())
+}
+
+// A fire a never-entered arm missed is not owed to its first entry: the
+// callee the arm calls, resolved statically or through a function value
+// bound only at that entry, samples `a` when `a` fires while the arm runs
+// and at no other time, so the select produces nothing.
 const FIRST_ENTRY_CALLEE: &str = r#"
 {
   let a = 0;
@@ -1752,12 +1761,21 @@ const FIRST_ENTRY_CALLEE: &str = r#"
 }
 "#;
 
-run!(first_entry_static_callee_catches_up, &FIRST_ENTRY_CALLEE.replace("CALL", "gs"), prints("i64:6"); FuseExpect::Jit);
+async fn first_entry_static_callee_is_owed_nothing(mode: Mode) -> Result<()> {
+    silent(&FIRST_ENTRY_CALLEE.replace("CALL", "gs"), mode).await
+}
 
-run!(first_entry_dynamic_callee_catches_up, &FIRST_ENTRY_CALLEE.replace("CALL", "gd"), prints("i64:6"); FuseExpect::Jit);
+async fn first_entry_dynamic_callee_is_owed_nothing(mode: Mode) -> Result<()> {
+    silent(&FIRST_ENTRY_CALLEE.replace("CALL", "gd"), mode).await
+}
 
-// The same with the fire in the cycle the select is born: the arm never
-// saw it, so its first entry is owed it through either callee.
+modes!(
+    first_entry_static_callee_is_owed_nothing,
+    first_entry_dynamic_callee_is_owed_nothing
+);
+
+// The same with the fire in the root's first cycle: the arm never saw it,
+// and its first entry is owed nothing of it through either callee.
 const FIRST_ENTRY_CALLEE_BUILD_CYCLE: &str = r#"
 {
   let a = 0;
@@ -1770,15 +1788,24 @@ const FIRST_ENTRY_CALLEE_BUILD_CYCLE: &str = r#"
 }
 "#;
 
-run!(build_cycle_static_callee_catches_up, &FIRST_ENTRY_CALLEE_BUILD_CYCLE.replace("CALL", "gs"), prints("i64:1"); FuseExpect::Jit);
+async fn build_cycle_static_callee_is_owed_nothing(mode: Mode) -> Result<()> {
+    silent(&FIRST_ENTRY_CALLEE_BUILD_CYCLE.replace("CALL", "gs"), mode).await
+}
 
-run!(build_cycle_dynamic_callee_catches_up, &FIRST_ENTRY_CALLEE_BUILD_CYCLE.replace("CALL", "gd"), prints("i64:1"); FuseExpect::Jit);
+async fn build_cycle_dynamic_callee_is_owed_nothing(mode: Mode) -> Result<()> {
+    silent(&FIRST_ENTRY_CALLEE_BUILD_CYCLE.replace("CALL", "gd"), mode).await
+}
 
-// x fires while no arm that reads it is selected. The arm that wakes
-// with a fresh callee reading x is owed that fire though another arm of
-// the select names x too, and takes it: the other arm, entered after,
-// is not caught up on it again.
-const CAUGHT_UP_ONCE_THROUGH_A_CALLEE: &str = r#"
+modes!(
+    build_cycle_static_callee_is_owed_nothing,
+    build_cycle_dynamic_callee_is_owed_nothing
+);
+
+// x fires while no arm that reads it is selected. Neither the arm that
+// wakes with a fresh callee counting x nor the arm first entered after it
+// is owed that fire: each `count(x)` is bottom until x fires again, so the
+// select produces nothing at n = 5 and at n = 7.
+const MISSED_FIRE_IS_COUNTED_BY_NO_LATER_BODY: &str = r#"
 {
   let n = 0;
   n <- select n { k if k < 8 => k + 1, _ => never() };
@@ -1791,12 +1818,13 @@ const CAUGHT_UP_ONCE_THROUGH_A_CALLEE: &str = r#"
 }
 "#;
 
-run!(caught_up_once_through_a_fresh_callee, CAUGHT_UP_ONCE_THROUGH_A_CALLEE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [105, -1, -2, -3, -4, 1, -6, -8])
+run!(missed_fire_is_counted_by_no_later_body, MISSED_FIRE_IS_COUNTED_BY_NO_LATER_BODY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [105, -1, -2, -3, -4, -6, -8])
 }; FuseExpect::Jit);
 
 // An arm-local `<-` target persists across the arm's sleep: a wake
-// resumes the arm, so the written 11 survives.
+// resumes the arm, so the written 11 survives. The arm is entered after
+// its root's first cycle, so the event that enters it feeds its `count`.
 // findings/arm-local-bind-aug2026/
 const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
@@ -1804,7 +1832,7 @@ const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
   let m = x % 2;
   let sel = select m {
     0 => (0, 0),
-    _ => { let s = 10; s <- (x ~ s) + 1; (s, count(s)) }
+    _ => { let s = 10; s <- (x ~ s) + 1; (s, count(x ~ s)) }
   };
   array::group(sel, |n, _| n == 4)
 }
@@ -1865,8 +1893,8 @@ run!(
     FuseExpect::Jit
 );
 
-// A guard flip wakes a catch-all arm whose fold callback reads only the
-// captured scrutinee bind: the becoming-selected fire emits 1.
+// A guard flip enters a catch-all arm whose fold callback reads only the
+// captured scrutinee bind: the select fires with its guard and emits 1.
 const ARM_WAKE_CAPTURE_ONLY_CALLBACK: &str = r#"
 {
   let k = true;
@@ -2477,10 +2505,11 @@ run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "up")
 }; FuseExpect::None);
 
-// An enclosing select's pattern bind is never delivered at a wake: the
-// flip to arm 1 does not re-raise `k`, which the key fire bound while
-// arm 0 was selected (design/wake_catchup.md, the tracker).
-const SELECT_SIBLING_BINDS_SPENT: &str = r#"
+// An arm entered by a flip of its own select reads the enclosing select's
+// pattern bind standing: `keys`, activated at the flip to arm 1 over the
+// `k` the key fire bound while arm 0 was selected, samples nothing, and
+// `fired` stays 0.
+const FLIP_ENTERS_AN_ARM_OVER_A_STANDING_OUTER_BIND: &str = r#"
 {
   type Ev = [`Key([`Enter, `Other]), `Mouse];
   let screen = 0;
@@ -2515,8 +2544,8 @@ const SELECT_SIBLING_BINDS_SPENT: &str = r#"
 "#;
 
 run!(
-    select_sibling_binds_spent,
-    SELECT_SIBLING_BINDS_SPENT,
+    flip_enters_an_arm_over_a_standing_outer_bind,
+    FLIP_ENTERS_AN_ARM_OVER_A_STANDING_OUTER_BIND,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) =>
             a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
@@ -2586,9 +2615,9 @@ const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
 
 run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, refused("unreachable arm"); FuseExpect::None);
 
-// A sibling of a destructuring `let` that a `<-` writes fires alone: a
-// woken arm catches up exactly what separate lets would give it, writing
-// either sibling.
+// A sibling of a destructuring `let` that a `<-` writes fires alone, as a
+// separate `let` does: an arm awake at the write, sampling `b`, counts a
+// write to `b` and none to `a`.
 async fn written_let_sibling_fires_alone(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let program = |lets: &str, written: &str| {
@@ -2597,7 +2626,7 @@ async fn written_let_sibling_fires_alone(mode: Mode) -> Result<()> {
   let n = 0;
   n <- select n {{ k if k < 7 => k + 1, _ => never() }};
   {lets}
-  {written} <- select n {{ 2 => 7, _ => never() }};
+  {written} <- select n {{ 5 => 7, _ => never() }};
   let c = ((n < 2) || (n >= 4)) && ({written} >= 0);
   select c {{
     true => {{ let cnt = 0; cnt <- b ~ cnt + 1; cnt }},
@@ -2606,12 +2635,17 @@ async fn written_let_sibling_fires_alone(mode: Mode) -> Result<()> {
 }}"
         )
     };
-    for written in ["a", "b"] {
+    for (written, counted) in [("a", 1), ("b", 2)] {
         let (pair, _) =
             run_delta(&program("let (a, b) = (0, 0);", written), mode).await?;
         let (apart, _) =
             run_delta(&program("let a = 0; let b = 0;", written), mode).await?;
         assert_eq!(pair, apart, "writing {written}");
+        assert_eq!(
+            as_i64s(&pair),
+            vec![0, 1, 2, 3, 1, 1, 1, counted],
+            "writing {written}"
+        );
     }
     Ok(())
 }
@@ -2619,8 +2653,9 @@ async fn written_let_sibling_fires_alone(mode: Mode) -> Result<()> {
 modes!(written_let_sibling_fires_alone);
 
 // A destructuring `let`'s siblings are inputs of their own, as separate
-// lets are: arm 0 reads `a`, and at the flip arm 1 catches `b` up.
-const LET_SIBLINGS_CATCH_UP_APART: &str = r#"
+// lets are: arm 0 samples `a` as it fires, and arm 1, entered after `b`
+// fired, is owed nothing.
+const LET_SIBLING_FIRED_BEFORE_ENTRY_IS_NOT_OWED: &str = r#"
 {
   let screen = 0;
   let seen = 0;
@@ -2640,11 +2675,11 @@ const LET_SIBLINGS_CATCH_UP_APART: &str = r#"
 "#;
 
 run!(
-    let_siblings_catch_up_apart,
-    LET_SIBLINGS_CATCH_UP_APART,
+    let_sibling_fired_before_entry_is_not_owed,
+    LET_SIBLING_FIRED_BEFORE_ENTRY_IS_NOT_OWED,
     |v: Result<&Value>| match v {
         Ok(Value::Array(a)) =>
-            a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(1),
+            a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
         _ => false,
     };
     FuseExpect::Jit
@@ -2706,8 +2741,9 @@ const ARM_SAMPLED_WRITE_KEEPS_TRIGGER: &str = r#"
 run!(arm_sampled_write_keeps_trigger, ARM_SAMPLED_WRITE_KEEPS_TRIGGER, is(Value::I64(30)); FuseExpect::Jit);
 
 // An ungated write is not sampled on the scrutinee: three `Go`
-// deliveries write the sampled counter three times, the constant once.
-const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
+// deliveries write the sampled counter three times, and the constant
+// never, its arm being entered after the root's first cycle.
+const ARM_UNGATED_CONST_NEVER_WRITES: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 6 => s + 1, _ => never() };
@@ -2725,12 +2761,13 @@ const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
 }
 "#;
 
-// `once` is written at init and at the one entry: two writes.
-run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, prints("[i64:3, i64:1, i64:2]"); FuseExpect::Jit);
+// `once` fires at init alone: one write.
+run!(arm_ungated_const_never_writes, ARM_UNGATED_CONST_NEVER_WRITES, prints("[i64:3, i64:0, i64:1]"); FuseExpect::Jit);
 
-// A constant write fires at the arm's birth, its first entry, and not at
-// a later one, which resumes the arm: init and the first entry.
-const ARM_CONST_WRITES_AT_ITS_BIRTH: &str = r#"
+// A constant write fires only in a birth: an arm first entered after its
+// root's first cycle never writes it, at that entry or at a later one.
+// `once` fires at init alone.
+const ARM_CONST_ENTERED_LATER_NEVER_WRITES: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 9 => s + 1, _ => never() };
@@ -2745,8 +2782,8 @@ const ARM_CONST_WRITES_AT_ITS_BIRTH: &str = r#"
 }
 "#;
 
-run!(arm_const_writes_at_its_birth, ARM_CONST_WRITES_AT_ITS_BIRTH, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(2)))
+run!(arm_const_entered_later_never_writes, ARM_CONST_ENTERED_LATER_NEVER_WRITES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
 }; FuseExpect::Jit);
 
 const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
@@ -2754,7 +2791,7 @@ const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
   let step = 0;
   step <- select step { s if s < 3 => s + 1, _ => never() };
   let err: [`None, `Bad] = `None;
-  let x = { catch(e) err <- e ~ `Bad; select step { 2 => error(`E)?, _ => 0 } };
+  let x = { catch(e) err <- e ~ `Bad; select step { 2 => error(step ~ `E)?, _ => 0 } };
   array::group((step, err), |n, _| n == 4)
 }
 "#;
@@ -2808,8 +2845,8 @@ run!(
     FuseExpect::Jit
 );
 
-// A write arm under a scrutinee that starts as `never()` wakes on the
-// first delivery and the nested write fires.
+// A write arm under a scrutinee that starts as `never()` is entered at
+// the first delivery, and the nested write, which reads its binds, fires.
 const ARM_WRITE_FROM_NEVER: &str = r#"
 {
   let step = 0;
@@ -2975,10 +3012,10 @@ run!(map_source_recovers_quietly, MAP_SOURCE_RECOVERS_QUIETLY, |v: Result<&Value
     }
 }; FuseExpect::Jit);
 
-// A connect target born `never()` keeps its written value across the
-// arm's sleep: the wake at the last x=1 reads 42.
+// A connect target whose initializer is `never()` keeps its written value
+// across the arm's sleep: the wake at the last x=1 reads 42.
 // findings/wake-connect-target-sep2026/
-const WAKE_KEEPS_NEVER_BORN_CONNECT_TARGET: &str = r#"
+const WAKE_KEEPS_A_CONNECT_TARGET_OVER_NEVER: &str = r#"
 {
   let x = array::iter([1, 3, 1, 2, 1]);
   let r = select x {
@@ -2994,8 +3031,8 @@ const WAKE_KEEPS_NEVER_BORN_CONNECT_TARGET: &str = r#"
 "#;
 
 run!(
-    wake_keeps_never_born_connect_target,
-    WAKE_KEEPS_NEVER_BORN_CONNECT_TARGET,
+    wake_keeps_a_connect_target_over_never,
+    WAKE_KEEPS_A_CONNECT_TARGET_OVER_NEVER,
     |v: Result<&Value>| {
         match v {
             Ok(Value::Array(a)) => {
@@ -3183,9 +3220,10 @@ run!(
     prints("[i64:7, i64:0, i64:0, i64:0]")
 );
 
-// At a wake a connect target's initializer republishes when one of its
-// inputs fired, as it would had the arm never slept; the arm's constants
-// stand, directly or through a `let`, and leave the last write standing.
+// At a wake a connect target's initializer writes it when one of its
+// inputs fires in the wake's cycle, over a write that landed asleep; the
+// arm's constants stand, directly or through a `let`, and leave the last
+// write standing.
 const WAKE_INPUT_FIRE_REACHES_TARGET: &str = r#"
 {
   let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
@@ -3258,12 +3296,15 @@ async fn wake_keeps_target_of_unpublished_let(mode: Mode) -> Result<()> {
 
 modes!(wake_keeps_target_of_unpublished_let);
 
-// At a wake a `let`'s initializer catch-up replaces a write that landed on
-// it during the sleep, whatever the order of the two in the sleep; with no
-// initializer input fired during the sleep the write stands, and a write
-// landing after the wake's cycle stands as any write does. `inp` fires at
-// INPUT, the write through `h` lands at WRITE + 1, the arm sleeps for
-// c = 3..5 and wakes at 6.
+// A written `let` is state, driven by its initializer's fires and its
+// writes, and an initializer input that fired while its arm slept is a
+// missed event: at the wake the `let` keeps the value it holds. A write
+// that landed on it during the sleep stands, whatever the order of the two
+// in the sleep; a write landing in the wake's cycle fires there; with no
+// write landed it keeps its value from before the sleep, whatever its
+// initializer now computes, until one lands. `inp` fires at INPUT, the
+// write through `h` lands at WRITE + 1, the arm sleeps for c = 3..5 and
+// wakes at 6.
 const WAKE_ORDER: &str = r#"
 {
   let c = 0;
@@ -3290,35 +3331,65 @@ fn wake_order(input: &str, write: &str) -> String {
 }
 
 run!(
-    wake_catchup_replaces_a_later_write,
+    wake_keeps_a_write_that_landed_after_the_input_fired_asleep,
     wake_order("3", "4"),
     prints(
         "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
             [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:555], \
-            [i64:6, i64:100, i64:100], [i64:7, i64:100, i64:100], \
-            [i64:8, i64:100, i64:100]]"
+            [i64:6, i64:555, i64:555], [i64:7, i64:555, i64:555], \
+            [i64:8, i64:555, i64:555]]"
     )
 );
 
 run!(
-    wake_catchup_replaces_a_write_landing_at_the_wake,
+    wake_takes_a_write_landing_at_the_wake,
     wake_order("3", "5"),
     prints(
         "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
             [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:0], \
-            [i64:6, i64:100, i64:100], [i64:7, i64:100, i64:100], \
-            [i64:8, i64:100, i64:100]]"
+            [i64:6, i64:555, i64:555], [i64:7, i64:555, i64:555], \
+            [i64:8, i64:555, i64:555]]"
     )
 );
 
 run!(
-    wake_write_after_the_wake_stands,
+    woken_target_keeps_its_value_until_a_write_lands,
     wake_order("3", "6"),
     prints(
         "[[i64:1, i64:0, i64:0], [i64:2, i64:0, i64:0], [i64:3, i64:-1, i64:0], \
             [i64:4, i64:-1, i64:0], [i64:5, i64:-1, i64:0], \
-            [i64:6, i64:100, i64:100], [i64:7, i64:555, i64:555], \
+            [i64:6, i64:0, i64:0], [i64:7, i64:555, i64:555], \
             [i64:8, i64:555, i64:555]]"
+    )
+);
+
+// Two lets of one initializer in a woken arm: `x`, which a `&mut` makes
+// writable, is state and keeps the value it held before the sleep; `y`,
+// which nothing writes, is a value and recomputes. `inp` fires at c = 4,
+// the arm sleeps for c = 3..5.
+const WOKEN_WRITTEN_LET_KEEPS_WHAT_AN_UNWRITTEN_ONE_RECOMPUTES: &str = r#"
+{
+  let c = 0;
+  c <- select c { k if k < 8 => k + 1, _ => never() };
+  let sel = select c { 3 => false, 4 => false, 5 => false, _ => true };
+  let inp = 0;
+  inp <- select c { 3 => c ~ 100, _ => never() };
+  let holder: [&mut i64, null] = null;
+  let inner = select sel {
+    true => { let x = inp; let y = inp; holder <- &mut x; (x, y) },
+    false => (-1, -1)
+  };
+  array::group(inner, |n, _| n == 9)
+}
+"#;
+
+run!(
+    woken_written_let_keeps_what_an_unwritten_one_recomputes,
+    WOKEN_WRITTEN_LET_KEEPS_WHAT_AN_UNWRITTEN_ONE_RECOMPUTES,
+    prints(
+        "[[i64:0, i64:0], [i64:0, i64:0], [i64:0, i64:0], [i64:-1, i64:-1], \
+            [i64:-1, i64:-1], [i64:-1, i64:-1], [i64:0, i64:100], \
+            [i64:0, i64:100], [i64:0, i64:100]]"
     )
 );
 
@@ -3333,9 +3404,10 @@ run!(
     )
 );
 
-// The initializer reads its input through a `let` of the arm: its catch-up
-// replaces the write as a direct read does.
-const WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE: &str = r#"
+// The initializer reads its input through a `let` of the arm: the alias
+// recomputes quietly at the wake and the write stands, as with a direct
+// read.
+const WAKE_KEEPS_A_WRITE_OVER_AN_ALIAS_THAT_FIRED_ASLEEP: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -3358,14 +3430,14 @@ const WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE: &str = r#"
 "#;
 
 run!(
-    wake_catchup_through_an_alias_replaces_a_write,
-    WAKE_CATCHUP_THROUGH_AN_ALIAS_REPLACES_A_WRITE,
-    prints("i64:100")
+    wake_keeps_a_write_over_an_alias_that_fired_asleep,
+    WAKE_KEEPS_A_WRITE_OVER_AN_ALIAS_THAT_FIRED_ASLEEP,
+    prints("i64:555")
 );
 
-// The sample's trigger fired during the sleep: its catch-up replaces the
-// write with the argument as it stands at the wake.
-const WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE: &str = r#"
+// The sample's trigger fired during the sleep: the sample is owed nothing
+// at the wake, and the write stands.
+const WAKE_KEEPS_A_WRITE_OVER_A_SAMPLE_TRIGGERED_ASLEEP: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 10 => s + 1, _ => never() };
@@ -3389,9 +3461,9 @@ const WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE: &str = r#"
 "#;
 
 run!(
-    wake_sample_catchup_replaces_a_write,
-    WAKE_SAMPLE_CATCHUP_REPLACES_A_WRITE,
-    prints("i64:200")
+    wake_keeps_a_write_over_a_sample_triggered_asleep,
+    WAKE_KEEPS_A_WRITE_OVER_A_SAMPLE_TRIGGERED_ASLEEP,
+    prints("i64:555")
 );
 
 // Only the sample's argument fired during the sleep, not its trigger: the
@@ -3426,9 +3498,9 @@ run!(
 );
 
 // Two writes queued in the arm's last awake cycle land during its sleep,
-// after the initializer's input fired: at the wake the catch-up replaces
-// them (an arm that never slept ends on the later write, 2).
-const WAKE_CATCHUP_REPLACES_QUEUED_WRITES: &str = r#"
+// after the initializer's input fired: the wake leaves the later write, 2,
+// standing, the value an arm that never slept ends on.
+const WAKE_KEEPS_QUEUED_WRITES_THAT_LANDED_ASLEEP: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 16 => s + 1, _ => never() };
@@ -3452,14 +3524,14 @@ const WAKE_CATCHUP_REPLACES_QUEUED_WRITES: &str = r#"
 "#;
 
 run!(
-    wake_catchup_replaces_queued_writes,
-    WAKE_CATCHUP_REPLACES_QUEUED_WRITES,
+    wake_keeps_queued_writes_that_landed_asleep,
+    WAKE_KEEPS_QUEUED_WRITES_THAT_LANDED_ASLEEP,
     prints(
         "[[i64:0, i64:100], [i64:1, i64:100], [i64:2, i64:100], \
             [i64:3, i64:100], [i64:4, i64:100], [i64:5, i64:100], [i64:6, i64:100], \
             [i64:7, i64:100], [i64:8, i64:100], [i64:9, i64:100], \
-            [i64:10, i64:100], [i64:-1, i64:-1], [i64:14, i64:200], \
-            [i64:15, i64:200]]"
+            [i64:10, i64:100], [i64:-1, i64:-1], [i64:14, i64:2], \
+            [i64:15, i64:2]]"
     )
 );
 
@@ -5704,7 +5776,7 @@ run!(alternative_taken_by_structure, "{ let f = |t: [(i64, i64), {x: i64, y: i64
 // select, formal or collection loop), so they never rewrite a `<-`
 // target: each column is a target written twice, then slept (n = 3) and
 // woken (n = 4).
-const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
+const WOKEN_CONSTANTS_KEEP_TARGETS: &str = r#"
 {
     let n = array::iter([0, 1, 2, 3, 4, 5]);
     let tab = uniq(select n { 3 => `B, _ => `A });
@@ -5743,15 +5815,16 @@ const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
 }
 "#;
 
-run!(wake_fire_keeps_targets, WAKE_FIRE_KEEPS_TARGETS, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => {
-        as_i64s(a) == [22; 14]
+run!(woken_constants_keep_targets, WOKEN_CONSTANTS_KEEP_TARGETS, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [22; 14],
+        _ => false,
     }
-    _ => false,
 });
 
-// The initializer's inputs that cannot reach its production this cycle
-// (an untaken arm's) do not make a wake's fire real.
+// An initializer input that fires in the wake's cycle where it cannot
+// reach the initializer's production (in an untaken arm) does not write
+// the target: the write that landed asleep stands.
 const WAKE_UNREACHED_INPUT_KEEPS_TARGET: &str = r#"
 {
     let n = array::iter([0, 1, 2, 3, 4, 5]);
@@ -5773,9 +5846,11 @@ run!(
     prints("[i64:50, i64:50, i64:50]")
 );
 
-// An inner arm that wakes a cycle after its enclosing arm still finds the
-// enclosing arm's constants standing.
-const WAKE_FIRE_CAUGHT_UP_LATE: &str = r#"
+// A write that landed on an inner arm's `let` while the arm slept stands
+// at the inner arm's wake, in the cycle its enclosing arm wakes or a cycle
+// after it: the enclosing arm's constant stands in both and does not write
+// the `let` again.
+const INNER_WAKE_KEEPS_A_WRITE_OVER_A_STANDING_CONSTANT: &str = r#"
 {
     let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
     let o = uniq(select n { 2 => false, 3 => false, _ => true });
@@ -5799,11 +5874,16 @@ const WAKE_FIRE_CAUGHT_UP_LATE: &str = r#"
 }
 "#;
 
-run!(wake_fire_caught_up_late, WAKE_FIRE_CAUGHT_UP_LATE, prints("[i64:55, i64:55]"));
+run!(
+    inner_wake_keeps_a_write_over_a_standing_constant,
+    INNER_WAKE_KEEPS_A_WRITE_OVER_A_STANDING_CONSTANT,
+    prints("[i64:55, i64:55]")
+);
 
-// A woken arm's inner select catches up a fire its new arm never saw even
-// when the input's `let` republished quietly at the wake.
-const WAKE_QUIET_REPUBLISH_CATCHES_UP: &str = r#"
+// A woken arm's inner select enters an arm that never ran: that arm is
+// owed nothing of a fire before its entry, whether it reads the input
+// through a `let` of the woken arm, a `let` outside it or a formal.
+const INNER_ARM_ENTERED_AT_A_WAKE_IS_OWED_NOTHING: &str = r#"
 {
     let n = 0;
     n <- select n { k if k < 12 => k + 1, _ => never() };
@@ -5832,12 +5912,11 @@ const WAKE_QUIET_REPUBLISH_CATCHES_UP: &str = r#"
 }
 "#;
 
-run!(wake_quiet_republish_catches_up, WAKE_QUIET_REPUBLISH_CATCHES_UP, |v: Result<
-    &Value,
->| format!(
-    "{}",
-    v.unwrap()
-) == "[i64:1, i64:1, i64:1]");
+run!(
+    inner_arm_entered_at_a_wake_is_owed_nothing,
+    INNER_ARM_ENTERED_AT_A_WAKE_IS_OWED_NOTHING,
+    prints("[i64:0, i64:0, i64:0]")
+);
 
 // Under a written type, a constructor pattern at a union narrows to its
 // member, and its own test decides it: it covers only a position whose
@@ -6162,11 +6241,13 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A guard runs only where the chain reaches its arm: an earlier arm that
-// claims the value keeps every guard below from running, so `check(-1)?`
-// never runs and never raises, whether the guard reads the arm's bind or
-// the scrutinee's variable.
-run!(guard_below_the_claim_never_sees_the_value, r#"{
+// A guard runs wherever its arm's pattern admits the value, whichever arm
+// takes it: an earlier arm that claims -1 does not keep the guard below
+// from running, so `check(-1)?` runs and raises at each -1, whether the
+// guard reads the arm's bind or the scrutinee's variable. Two raises land
+// before the result is read, and the bottom guard below the claim does not
+// block the claim.
+run!(guard_below_the_claim_sees_the_value, r#"{
   let step = 0;
   step <- select step { n if n < 6 => n + 1, _ => never() };
   let x = step % 3 - 1;
@@ -6178,11 +6259,11 @@ run!(guard_below_the_claim_never_sees_the_value, r#"{
   };
   select step { 6 => (r, caught), _ => never() }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == r#"["neg", i64:0]"#)
+    matches!(v, Ok(v) if v.to_string() == r#"["neg", i64:2]"#)
 }; FuseExpect::Jit);
 
-// The same for a guard whose arithmetic would fail on the claimed value.
-run!(guard_below_the_claim_never_divides_by_it, r#"{
+// The same for a guard whose arithmetic fails on the claimed value.
+run!(guard_below_the_claim_divides_by_it, r#"{
   let step = 0;
   step <- select step { n if n < 4 => n + 1, _ => never() };
   let x = step % 2;
@@ -6193,10 +6274,10 @@ run!(guard_below_the_claim_never_divides_by_it, r#"{
   };
   select step { 4 => (r, caught), _ => never() }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == r#"["zero", i64:0]"#)
+    matches!(v, Ok(v) if v.to_string() == r#"["zero", i64:2]"#)
 }; FuseExpect::Jit);
 
-run!(guard_below_the_claim_never_reads_the_variable, r#"{
+run!(guard_below_the_claim_reads_the_variable, r#"{
   let step = 0;
   step <- select step { n if n < 6 => n + 1, _ => never() };
   let x = step % 3 - 1;
@@ -6208,25 +6289,39 @@ run!(guard_below_the_claim_never_reads_the_variable, r#"{
   };
   select step { 6 => (r, caught), _ => never() }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(v) if v.to_string() == r#"["neg", i64:0]"#)
+    matches!(v, Ok(v) if v.to_string() == r#"["neg", i64:2]"#)
 }; FuseExpect::Jit);
 
-// A guard below the claim sleeps, as an unselected arm does: `count` sees
-// none of `t`'s fires while its arm is not reached, only the live one at
-// its first reach.
-run!(guard_below_the_claim_sleeps, r#"{
+// A guard whose pattern admits the value runs below the claim: `count`
+// sees every fire of `t`, five by the time its arm is reached, so the
+// guard fails.
+run!(guard_below_the_claim_runs, r#"{
   let t = 0;
   t <- select t { n if n < 4 => n + 1, _ => never() };
   let x = select t { 4 => 2, _ => 1 };
   let r = select x { 1 => "one", n if count(t) == 1 => "counted once [n]", _ => "other" };
   select t { 4 => r, _ => never() }
 }"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "counted once 2")
+    matches!(v, Ok(Value::String(s)) if &**s == "other")
 }; FuseExpect::Jit);
 
-// A guard asleep while its input fires catches the fire up at its next
-// reach: `b` fires only at t=3, while the guard is not reached.
-run!(guard_catches_up_a_direct_input, r#"{
+// A guard sleeps where its arm's pattern refuses the value, as an
+// unselected arm does: `count` sees none of `t`'s fires while the
+// scrutinee is 1, only the live one at the guard's first run.
+run!(guard_sleeps_where_its_pattern_refuses_the_value, r#"{
+  let t = 0;
+  t <- select t { n if n < 4 => n + 1, _ => never() };
+  let x = select t { 4 => 2, _ => 1 };
+  let r = select x { 1 => "one", 2 if count(t) == 1 => "counted once", _ => "other" };
+  select t { 4 => r, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "counted once")
+}; FuseExpect::Jit);
+
+// A guard whose pattern admits the value runs while an arm above takes
+// it: `b` fires at t=3 with the scrutinee at 1, and the guard's `count`
+// sees it.
+run!(guard_below_the_claim_counts_a_direct_input, r#"{
   let b = 0;
   let t = 0;
   t <- select t { n if n < 6 => n + 1, _ => never() };
@@ -6238,9 +6333,8 @@ run!(guard_catches_up_a_direct_input, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
 }; FuseExpect::Jit);
 
-// A guard asleep while its input fires through a reference catches the
-// fire up at its next reach.
-run!(guard_catches_up_through_a_reference, r#"{
+// The same with the guard reading its input through a reference.
+run!(guard_below_the_claim_counts_through_a_reference, r#"{
   let b = 0;
   let r = &b;
   let t = 0;
@@ -6254,7 +6348,7 @@ run!(guard_catches_up_through_a_reference, r#"{
 }; FuseExpect::Jit);
 
 // The same through a callee a function value binds.
-run!(guard_catches_up_through_a_dynamic_callee, r#"{
+run!(guard_below_the_claim_counts_through_a_dynamic_callee, r#"{
   let b = 0;
   let mode = 0;
   let gd = select mode { 0 => |x| count(b) > 1, _ => |x| x > 0 };
@@ -6268,9 +6362,9 @@ run!(guard_catches_up_through_a_dynamic_callee, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
 }; FuseExpect::Jit);
 
-// A guard learns a reference's target at its first run, so a fire of
-// the target in the cycle the guard falls asleep is caught up too.
-run!(guard_catches_up_a_target_fired_as_it_sleeps, r#"{
+// The same with the reference's target firing in the first cycle the arm
+// above takes the value.
+run!(guard_below_the_claim_counts_a_fire_in_the_claims_first_cycle, r#"{
   let b = 0;
   let r = &b;
   let t = 0;
@@ -6283,9 +6377,12 @@ run!(guard_catches_up_a_target_fired_as_it_sleeps, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
 }; FuseExpect::Jit);
 
-// A callee bound fresh at a guard's wake is owed the fires its inputs had
-// while the guard slept.
-run!(guard_wake_binds_a_callee_caught_up, r#"{
+// A callee bound fresh in a guard is entered, not born, and is owed none
+// of the fires its inputs had before: `count(b)` stays bottom, the guard
+// consulted at t = 5 is bottom, and the selection is undecidable.
+async fn guard_callee_bound_later_is_owed_nothing(mode: Mode) -> Result<()> {
+    silent(
+        r#"{
   let b = 0;
   let mode = 0;
   let t = 0;
@@ -6296,13 +6393,19 @@ run!(guard_wake_binds_a_callee_caught_up, r#"{
   let x = select t { 0 => 2, 5 => 2, _ => 1 };
   let g = select x { 1 => "one", n if gd(n) => "guard [n]", _ => "other" };
   select t { 5 => g, _ => never() }
-}"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
-}; FuseExpect::Jit);
+}"#,
+        mode,
+    )
+    .await
+}
 
-// A guard first reached after the select's birth is born there: its
-// constants fire, as an arm body's do at its first entry.
-run!(guard_first_reach_is_a_birth, r#"{
+modes!(guard_callee_bound_later_is_owed_nothing);
+
+// A guard whose pattern admits the value runs in its root's first cycle,
+// below the claim, and is born there: its constant fires then, `count(5)`
+// stands at 1, and the guard passes when its arm is first reached, at
+// t = 3.
+run!(guard_below_the_claim_is_born_with_its_root, r#"{
   let t = 0;
   t <- select t { n if n < 5 => n + 1, _ => never() };
   let x = select t { 3 => 2, _ => 1 };
@@ -6312,16 +6415,25 @@ run!(guard_first_reach_is_a_birth, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "guard 2")
 }; FuseExpect::Jit);
 
-// The same where the scrutinee is bottom at the select's birth.
-run!(guard_first_reach_after_a_bottom_birth, r#"{
+// A guard first reached after its root's first cycle, the scrutinee
+// bottom until then, is entered, not born: its constant does not fire,
+// `once(true)` produces nothing, and the consulted guard is bottom at
+// every value, so the select never decides.
+async fn guard_first_reach_after_a_bottom_birth_is_an_entry(mode: Mode) -> Result<()> {
+    silent(
+        r#"{
   let step = 0;
   step <- select step { s if s < 3 => s + 1, _ => never() };
   let data = select step { 0 => never(), s => s };
   let r = select data { s if once(true) => "once [s]", s => "other [s]" };
   select step { 3 => r, _ => never() }
-}"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::String(s)) if &**s == "once 3")
-}; FuseExpect::Jit);
+}"#,
+        mode,
+    )
+    .await
+}
+
+modes!(guard_first_reach_after_a_bottom_birth_is_an_entry);
 
 // The kernel's guard prologue reaches an impure guard past an unguarded
 // arm, an or-arm and a pure guard, each of which may claim the value.
@@ -6525,10 +6637,10 @@ run!(slice_pattern_under_written_union, r#"{
     matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:2, i64:0]")
 }; FuseExpect::Jit);
 
-// A guard the chain passed by when the scrutinee fired is given the
-// value fired when a guard flip above it lets the chain reach it: `x > 5`
-// recomputes over 0 rather than riding its answer for 10.
-run!(passed_guard_recomputes_over_the_value_it_missed, r#"{
+// A guard runs over the value the arm above it takes, so when that arm's
+// guard flips over a standing scrutinee the chain finds it holding its
+// answer for that value: `x > 5` is false for 0, not its answer for 10.
+run!(guard_below_the_claim_answers_for_the_claimed_value, r#"{
   let in0 = 10;
   let in1 = true;
   let step = 0;
@@ -6764,11 +6876,11 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hit") }
 );
 
-// The birth-only warning is for an act over constants that a later entry
-// does not repeat; a standing event source (a timer, a subscription)
-// resumes at every entry, and a builtin given no argument produces a value
-// that stands, so neither is warned of.
-async fn birth_only_warnings(mode: Mode) -> Result<()> {
+// The warning is for an act over constants in an arm, which fire only if
+// the arm is taken in the program's first cycle: a write, an effect, a
+// raise, a seq with no trigger, and an event source (a timer) alike. A
+// builtin given no argument has a value that stands and is not warned of.
+async fn constant_arm_action_warnings(mode: Mode) -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     let flags = mode.flags() | CFlag::WarningsAreErrors;
     let ctx = TestCtx::start(
@@ -6780,15 +6892,21 @@ async fn birth_only_warnings(mode: Mode) -> Result<()> {
     .await?;
     ctx.rt
         .compile(literal!(
-            "{ let x = 0; select x { 0 => sys::time::timer(duration:10.ms, true), _ => never() } }"
+            "{ let x = 0; select x { 0 => sys::dirs::home_dir(), _ => never() } }"
         ))
         .await?;
     ctx.rt
         .compile(literal!(
-            "{ let x = 0; select x { 0 => sys::dirs::home_dir(), _ => never() } }"
+            "{ let x = 0; select x { 0 => sys::time::timer(x ~ duration:10.ms, true), _ => never() } }"
         ))
         .await?;
     for (src, warning) in [
+        (
+            literal!(
+                "{ let x = 0; select x { 0 => sys::time::timer(duration:10.ms, true), _ => never() } }"
+            ),
+            "this call reads no variable",
+        ),
         (
             literal!("{ let x = 0; select x { 0 => println(\"a\"), _ => never() } }"),
             "this call reads no variable",
@@ -6817,7 +6935,7 @@ async fn birth_only_warnings(mode: Mode) -> Result<()> {
         let error = ctx.rt.compile(src).await.unwrap_err();
         let error = format!("{error:#}");
         assert!(
-            error.contains(warning) && error.contains("only at this arm's first entry"),
+            error.contains(warning) && error.contains("the program's first cycle"),
             "{error}"
         );
     }
@@ -6825,7 +6943,7 @@ async fn birth_only_warnings(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(birth_only_warnings);
+modes!(constant_arm_action_warnings);
 
 run!(select_discriminants_follow_instantiation, r#"{
     let f = |x| select x { v => v };
@@ -6906,7 +7024,10 @@ run!(sample_bottom_trigger_retains_value, r#"{
     }
 }"#, prints("[i64:5, i64:6, i64:1, i64:1]"); FuseExpect::Jit);
 
-run!(guard_and_arm_share_missed_fire, r#"{
+// A guard runs while another arm takes the value, so its `count` sees the
+// fire of `input` at step 3 and the guard passes at step 5; an arm body
+// asleep at that fire is owed nothing and resumes with its count at 1.
+run!(guard_below_the_claim_counts_what_a_sleeping_arm_misses, r#"{
     let input = 0;
     let step = 0;
     step <- select step { s if s < 7 => s + 1, _ => never() };
@@ -6927,9 +7048,12 @@ run!(guard_and_arm_share_missed_fire, r#"{
         _ => never()
     };
     select step { 7 => seen, _ => never() }
-}"#, prints(r#"[["one 1", "one 1"], ["other", "arm 1"]]"#); FuseExpect::Jit);
+}"#, prints(r#"[["one 1", "one 1"], ["guard 2", "arm 1"]]"#); FuseExpect::Jit);
 
-run!(arm_in_born_instance_reads_standing_values, r#"{
+// An instance bound after its root's first cycle is entered, not born:
+// `input` stands in its body and in the arm it enters, and neither write
+// lands.
+run!(arm_in_a_later_instance_reads_standing_values_stale, r#"{
     let step = 0;
     step <- select step { s if s < 6 => s + 1, _ => never() };
     let input = 5;
@@ -6943,9 +7067,11 @@ run!(arm_in_born_instance_reads_standing_values, r#"{
     function <- select step { 2 => f, _ => never() };
     let result = function(1);
     select step { 6 => (outside, inside), _ => never() }
-}"#, prints("[i64:5, i64:5]"); FuseExpect::Jit);
+}"#, prints("[i64:0, i64:0]"); FuseExpect::Jit);
 
-run!(arm_in_born_slot_reads_standing_values, r#"{
+// Slot 0 is born with its root and samples `input` there, in its body and
+// in its arm; the slots made later are entered and sample nothing.
+run!(arm_in_a_later_slot_reads_standing_values_stale, r#"{
     let step = 0;
     step <- select step { s if s < 6 => s + 1, _ => never() };
     let input = 7;
@@ -6961,12 +7087,12 @@ run!(arm_in_born_slot_reads_standing_values, r#"{
         select v { _ => { inside <- input ~ inside + 1; v } }
     });
     select step { 6 => (outside, inside), _ => never() }
-}"#, prints("[i64:3, i64:3]"); FuseExpect::Jit);
+}"#, prints("[i64:1, i64:1]"); FuseExpect::Jit);
 
-// A guard and the body of the arm it guards are one evaluation: both see
-// the fire the arm missed asleep, so a guard reading `input` leaves its
-// body's state as the unguarded twin's.
-run!(guard_and_own_body_both_see_missed_fire, r#"{
+// A guard and the body of the arm it guards are owed nothing of a fire the
+// arm missed asleep: the body's `count` stands at 1 at the wake, as the
+// unguarded twin's does.
+run!(guard_and_own_body_are_owed_no_missed_fire, r#"{
     let input = 1;
     let step = 0;
     step <- select step { s if s < 7 => s + 1, _ => never() };
@@ -6987,7 +7113,7 @@ run!(guard_and_own_body_both_see_missed_fire, r#"{
         _ => never()
     };
     select step { 7 => seen, _ => never() }
-}"#, prints(r#"[["guard 1", "arm 1"], ["guard 2", "arm 2"]]"#); FuseExpect::Jit);
+}"#, prints(r#"[["guard 1", "arm 1"], ["guard 1", "arm 1"]]"#); FuseExpect::Jit);
 
 // A written test of a declared variable's struct bound covers the
 // variable, whose values are the bound's.

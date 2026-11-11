@@ -253,6 +253,21 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
                 self.running.push((r, q));
             }
         }
+        // CR claude for claude: [bug/low] A request whose asker stopped waiting
+        // (an http client's timeout, a dropped rpc call) is polled here by
+        // `q.abandoned()` and its instance deleted the next time this node is
+        // walked, but nothing marks the handler's boundary when the asker gives
+        // up, so under walk pruning the instance of an abandoned request lives
+        // until something else marks the boundary, and `GRAPHIX_PRUNE=audit`
+        // panics ("a boundary nothing marked changed in a cycle", queued
+        // forget_writes and cancel_timer) when the audit's walk deletes it.
+        // The same on main fdd75a6b9, both engines. probe:
+        // ~/ptmp/cr29/scratch/bd/pins/4/p/http/abandoned.gx (a handler that
+        // never replies, a client `#timeout` of 200 ms, then one unrelated
+        // cycle); without the audit it prints `request: error` and the cycle.
+        // A fix marks the boundary when the asker's side is dropped (the
+        // sender's drop wakes the runtime with a mark for this reader), as a
+        // reply's arrival does. (abandoned-request-unmarked-01)
         // None: still running; Some(None): its asker stopped waiting
         let answers = branch::fork_instances(
             ctx,

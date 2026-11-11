@@ -1,4 +1,4 @@
-// AT MOST ONCE PER SELECT (design/wake_catchup.md): in1 fires while
+// AT MOST ONCE PER SELECT (design/bind_driven_bodies.md): in1 fires while
 // arm 0 (which does not read it) is selected — the bit is HELD. Arm 1
 // wakes first and consumes it (count = 1, the catch-up fire). Arm 2
 // wakes second: the bit is spent, its count receives present-but-

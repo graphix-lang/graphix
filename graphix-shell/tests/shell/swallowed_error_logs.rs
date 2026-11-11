@@ -118,7 +118,7 @@ fn a_handler_raise_is_logged_as_graphix_prints_it() {
     const RPC: &str = r#"
 let p = "/local/raise";
 sys::net::rpc(#path: p, #doc: "d", #spec: null, #f: |a: null| -> i64 {
-    let x: i64 = error(`Boom("bad"))?;
+    let x: i64 = error(a ~ `Boom("bad"))?;
     x
 });
 let r: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
@@ -127,8 +127,8 @@ sys::exit(r ~ 0)
 "#;
     const HTTP: &str = r#"
 let handler = |req: http::Request| {
-    let b: Result<string, `Boom(string)> = error(`Boom("bad"));
-    { body: req.path ~ b?, headers: [], status: u16:200 }
+    let b: Result<string, `Boom(string)> = error(req.path ~ `Boom("bad"));
+    { body: b?, headers: [], status: u16:200 }
 };
 let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
 let client = http::default_client(server)$;

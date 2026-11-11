@@ -243,8 +243,9 @@ async fn callee_back_arg_still_bottom(mode: Mode) -> Result<()> {
 modes!(callee_back_arg_still_bottom);
 
 // A callee the returning function's instance binds fresh, its function
-// value having changed while the function was bottom, is owed the fires
-// its body's inputs had meanwhile.
+// value having changed while the function was bottom, is owed nothing:
+// `a` fired meanwhile, so the new callee's sample on it has nothing to
+// take and the call stays bottom after the return.
 const CALLEE_BACK_FRESH_INNER_CALLEE: &str = r#"{
   let a = 0;
   let which = 0;
@@ -258,18 +259,19 @@ const CALLEE_BACK_FRESH_INNER_CALLEE: &str = r#"{
   f(1)
 }"#;
 
-async fn callee_back_fresh_inner_callee(mode: Mode) -> Result<()> {
+async fn callee_back_fresh_inner_callee_is_owed_nothing(mode: Mode) -> Result<()> {
     let (values, _) = run_delta(CALLEE_BACK_FRESH_INNER_CALLEE, mode).await?;
-    assert_eq!(values.last(), Some(&Value::I64(1)), "{values:?}");
+    assert_eq!(values, vec![Value::I64(-99); 3]);
     Ok(())
 }
 
-modes!(callee_back_fresh_inner_callee);
+modes!(callee_back_fresh_inner_callee_is_owed_nothing);
 
 // A stateful callee whose function value is bottom for a while, or a
 // collection slot whose source is, pauses as the select-arm twin's body
-// does: its `<-` state survives, and the input that fired meanwhile is
-// caught up once at the wake.
+// does: its `<-` state survives, and the input that fired meanwhile stands
+// at the return, read with no fire, so the callee answers 1002 and its
+// counter does not tick until the input fires again.
 fn callee_pauses_program(call: &str) -> String {
     format!(
         r#"{{
@@ -285,7 +287,7 @@ fn callee_pauses_program(call: &str) -> String {
     )
 }
 
-async fn callee_back_from_bottom_pauses(mode: Mode) -> Result<()> {
+async fn callee_back_from_bottom_resumes_quietly(mode: Mode) -> Result<()> {
     for call in [
         "let cb: [fn(x: i64) -> i64, null] = select in1 { 0 => f, _ => null };\n  cb$(in0)",
         "select in1 { 0 => f(in0), _ => never() }",
@@ -294,12 +296,12 @@ async fn callee_back_from_bottom_pauses(mode: Mode) -> Result<()> {
     ] {
         let (values, _) =
             run_delta_fused(&callee_pauses_program(call), mode, FuseExpect::Jit).await?;
-        assert_eq!(as_i64s(&values), vec![1, 1001, 1002, 2003, 3003], "{call}");
+        assert_eq!(as_i64s(&values), vec![1, 1001, 1002, 1003, 2003], "{call}");
     }
     Ok(())
 }
 
-modes!(callee_back_from_bottom_pauses);
+modes!(callee_back_from_bottom_resumes_quietly);
 
 // A write through a moving reference lands once, where the reference
 // points when its value fires: a retarget writes nothing already

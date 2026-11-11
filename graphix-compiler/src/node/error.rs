@@ -1670,6 +1670,13 @@ enum Receipt {
     // handler took (the delivery is dropped, not stood), or the audit
     // exempts a catch's binder and the rule names the exception.
     // (passed-raise-stands-01)
+    // 2026-11-11 claude: Eric ruled (11-11) that a wake fires nothing for
+    // anyone (design/bind_driven_bodies.md replaces design/wake_catchup.md): a
+    // reader may see a value change with no fire where the change carries
+    // Tag::MOVED, which makes consumers recompute. This stand is no wake's and
+    // carries no mark, so the audit still panics here and a cached consumer of
+    // `e` keeps a result computed from the old error. The options now: drop the
+    // delivery, or stand it moved.
     /// A delivery no raise left to take (its raise was given up), as the
     /// handler sees it: standing, not fired.
     Passed(TagValue),

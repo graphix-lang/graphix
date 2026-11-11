@@ -22,9 +22,9 @@ that, with the node-walk as the reference.
 A tail loop that ran every iteration of a stateless tail recursion
 through one activation assumed a stateless body cannot tell one
 activation from many. It can: an activation's select keeps its
-selection and its wake catch-up bits, and one select standing for
-every depth answers differently (sep25b: a fire bit an arm consumed
-only at one depth was delivered two cycles later). Activations cost
+selection (the arm that is awake, the guards that ran), and one select
+standing for every depth holds one selection for all of them.
+Activations cost
 memory and time instead: ~25 KB and ~50 µs each (fusion off,
 `sum(i - 1, acc + i)` at depth 100k: 2.5 GB / 5.1 s). Programs run with
 fusion on, and a fused tail loop is a native loop, so the cost falls

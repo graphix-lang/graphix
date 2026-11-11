@@ -191,6 +191,12 @@ Stateless matters twice: a tail recursion compiles to a native loop
 only when every builtin it reaches is stateless, and fusion into native
 code needs the fast call.
 
+`EFFECT` also decides what a call does in a select arm, a callback or a
+function entered after the program starts, where the arguments stand and
+nothing has fired: a `Stateless` builtin, and an `Io` builtin's result,
+compute from the values that stand; a `Sync` or `Async` builtin, and an
+`Io` builtin's effect, wait for an argument to fire.
+
 #### Fast calls
 
 A builtin fuses into a native kernel only through a **fast call**: a

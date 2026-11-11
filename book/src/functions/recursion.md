@@ -14,10 +14,13 @@ activations would. A body that does not compile keeps an activation per
 call, which costs memory and time for every call: one per level for a
 linear recursion, one per call in the whole call tree for a branching
 one like a naive `fib`. The things that
-keep a body out of native code are reading a reference (`*r`), a `?`
-raising to a handler, a `<-` to a variable outside the function, and a
-builtin without a fast call; move them out of the loop when the loop is
-deep.
+keep a body out of native code are reading a reference (`*r`), a `<-` to
+a variable outside the function, and a builtin without a fast call; move
+them out of the loop when the loop is deep. An effect such as `println`
+and a `?` raising to a handler compile and run in the loop, each pass
+performing or raising as its own call would: when what it reads fires
+(`println("n=[n]")`, `(acc +? n)?`), and never for a constant
+(`println("step")`) once the program has started.
 
 `str::parse`, `hbs::render`, the json/toml/pack writers, `array::sort`,
 `list::sort`, `array::dedup` and every `re::*` builtin run in the node-walk.

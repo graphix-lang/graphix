@@ -13,9 +13,17 @@ let rpc = 'spec: Data, 'result: Data, 'args: Concrete + Data |
     #max_inflight: i64 = 1024,
     #f: fn(args: 'args) -> 'result throws 'e
 | -> Result<_, `PublishRpcError(string)> throws 'e 'sys_net_publish_rpc;
-let list = |#update: Any = sys::time::timer(1, true), path: string|
+let list_at = |update: Any, path: string|
     -> Result<Array<string>, `ListError(string)> 'sys_net_list;
-let list_table = |#update: Any = sys::time::timer(1, true), path: string|
+let list_table_at = |update: Any, path: string|
     -> Result<Table, `ListError(string)> 'sys_net_list_table;
+let every_second = |update: Any, path: string| -> Any select update {
+    null as _ => sys::time::timer(once(path) ~ 1, true),
+    u => u
+};
+let list = |#update: Any = null, path: string| -> Result<Array<string>, `ListError(string)>
+    list_at(every_second(update, path), path);
+let list_table = |#update: Any = null, path: string| -> Result<Table, `ListError(string)>
+    list_table_at(every_second(update, path), path);
 let publish = 'v: Data, 'a: Concrete + Data |#on_write: [fn(v: 'a) -> _ throws 'e, null] = null, path: string, v: 'v|
     -> Result<_, `PublishError(string)> throws 'e 'sys_net_publish

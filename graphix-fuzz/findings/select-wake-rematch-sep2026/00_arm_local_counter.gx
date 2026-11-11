@@ -1,4 +1,4 @@
-// SELECT WAKE RE-MATCH (design/wake_catchup.md; sep01c ryouko 00): a
+// SELECT WAKE RE-MATCH (design/sleep_and_wake.md; sep01c ryouko 00): a
 // select's first update after its sleep re-matches against the
 // PRESENT scrutinee. Here the inner `select ep` sits in an arm that is
 // deselected every other cycle while `ep`, an arm-local `<-` target,

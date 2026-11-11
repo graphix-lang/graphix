@@ -1,6 +1,7 @@
-//! Wake catch-up (design/wake_catchup.md): a reselected arm recomputes
-//! from the world as it stands, reading standing values stale, and
-//! re-raises only the fires no selected reader saw. This pins the ruled
+//! Sleep and wake (design/sleep_and_wake.md, design/bind_driven_bodies.md):
+//! a reselected arm recomputes from the world as it stands, reading
+//! standing values stale, and nothing fires in it but its binds and the
+//! captures that fire while it runs. This pins the ruled
 //! values themselves (graphix-fuzz/findings/wake-catchup-sep2026/ pins
 //! engine agreement).
 

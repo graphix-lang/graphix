@@ -132,11 +132,13 @@ A boundary must run in cycle `c` when:
    goes through one `ExecCtx::publish` (overlay and/or stamped store
    write) that marks the readers. The store's `store_insert` marks when
    it stamps the current cycle. `notify_set` folds into `publish`.
-2. **It is new**: the view is `Birth` (a fresh instance, slot, root or
-   restored image). A `Prune` never skips outside `Cycle`.
-3. **It is waking**: the view is `Wake` (a reselected arm, a slot back
-   from a bottom source, an instance after its function returns from
-   bottom). Same rule.
+2. **It is born**: the view is `Birth` or `Step` (a root's first cycle,
+   a restored image, a seq step's run). A `Prune` never skips outside
+   `Cycle`.
+3. **It is entered or waking**: the view is `Wake` (a body's entry: an
+   arm first taken, a new slot or activation; a reselected arm, a slot
+   back from a bottom source, an instance after its function returns
+   from bottom). Same rule.
 4. **Shared state it polls changed.** Some nodes read state another
    node mutates without a variable:
    - error handlers: `raise`/`handled`/`abort` mutate the handler's
@@ -153,19 +155,21 @@ A boundary must run in cycle `c` when:
 
 Nothing else drives a node: `once`, `count`, `uniq`, `hold`, `take` and
 `skip` fire only on an argument's tick; wall-clock reads (`now`,
-`throttle`) run on a trigger; constants fire at `Birth`/`Wake`.
+`throttle`) run on a trigger; constants fire under a born view
+(`Birth`, `Step`).
 
 ## Sleep and wake
 
-A sleeping arm's subtree is not updated today, and registration covers
-every node a statement holds, selected or not, which wake catch-up
-relies on: a write only a sleeping arm reads still schedules the
-statement, and the select's `TrackedFires::observe` records the fire.
+A sleeping arm's subtree is not updated, and registration covers every
+node a statement holds, selected or not: a write only a sleeping arm
+reads still schedules the statement. A body's select records nothing
+for the arm (`bind_driven_bodies.md`); a select of the seq machine's
+world records the fire (`TrackedFires::observe`, `seq_blocks.md`).
 With boundaries the same holds one level down: the sleeping arm's reads
 are registered against the arm's boundary, whose ancestors include the
 select's boundary, so a fire marks the select's boundary and the select
-runs and observes it. The arm boundary itself is stamped and not run;
-when it wakes it runs under `Wake` regardless.
+runs. The arm boundary itself is stamped and not run; when it wakes it
+runs under `Wake` regardless.
 
 ## Order within a cycle
 
@@ -308,8 +312,11 @@ call site's formals, a module's prime). The root's
 readers it registered this cycle, which the runtime learns only at the
 join, and marks them too (a core-trait hook site built in a branch and
 called again in the same cycle; no other branch runs that site before
-the merge, `design/parallel_eval.md`). A wake's catch-up injections need no
-mark: they run under `Wake`.
+the merge, `design/parallel_eval.md`). A quiet production a resume or
+an entry recomputed (`Tag::moved`) is stored as a fire is
+(`ExecCtx::stand_moved`), so it marks its readers too. The seq
+tracker's catch-up injections need no mark: they run under `Step` or
+`Wake`.
 
 **Shared state.** An error handler keeps the boundaries of the nodes that
 poll it (`Catch`, `SeqGuard`: `ErrorHandler::polled_by`, released at

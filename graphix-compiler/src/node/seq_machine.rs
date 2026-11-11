@@ -370,7 +370,7 @@ fn evaluate<R: Rt>(
             tracked.enter(k)
         }
         let injected = tracked.deliver(ctx, k);
-        let scope = tracked.open(ctx, k, None);
+        let scope = tracked.open(ctx, k);
         let mut done = false;
         for i in evaluation_order(step.nodes.len(), &step.catches) {
             if i > step.value && !done {

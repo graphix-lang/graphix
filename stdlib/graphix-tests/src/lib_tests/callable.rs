@@ -179,9 +179,9 @@ let land = {
     `Mouse => `Continue
   }
 };
-select req {
+screen <- select req {
   null as _ => never(),
-  _ => screen <- 1
+  _ => 1
 };
 let connect_keys = |k: Key| -> [`Stop, `Continue] select k.code {
   kk@ `Enter => { fired <- (kk ~ fired) + 1; `Stop },
@@ -300,10 +300,10 @@ async fn alias_read_consumes_the_formals_fire(mode: Mode) -> Result<()> {
     woken_callee_counts_once(ALIAS, mode, &["enter".into()], "enter".into()).await
 }
 
-/// A bind delivered by a sampled scrutinee aliases the trigger only:
-/// the levels under the sample's right side were banked, not fired, so
-/// an arm reading such a bind does not consume their fires, and a
-/// sibling arm that reads the level itself still catches up at wake.
+/// No fire is kept for an arm that does not run: the toast fires while
+/// the false arm is selected, the mode flips, and the true arm is
+/// entered reading the toast as it stands, so its sample stays quiet. A
+/// toast that fires while the arm runs ticks it.
 const BANKED: &str = r#"
 let toast: string = "";
 let mode = false;
@@ -322,16 +322,17 @@ let handle = |k: string| -> i64 select k {
 let result = ticks
 "#;
 
-async fn banked_bind_does_not_consume_the_level(mode: Mode) -> Result<()> {
+async fn arm_entered_by_a_flip_is_owed_no_fire_of_a_level(mode: Mode) -> Result<()> {
     let mut f = Fixture::new(BANKED, mode).await?;
-    // a key binds `one` from the banked tuple; then the toast fires
-    // while the false arm, which reads `one`, is selected; then the
-    // mode flips and the true arm must catch the toast up
+    // a key selects the false arm; the toast fires while it is selected;
+    // then the mode flips and the true arm reads the toast standing
     f.call("test::handle", ["x".into()]).await?;
     f.settle().await?;
     f.call("test::set_toast", ["hi".into()]).await?;
     f.settle().await?;
     f.call("test::set_mode", [Value::Bool(true)]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(0)));
+    f.call("test::set_toast", ["ho".into()]).await?;
     assert_eq!(f.settle().await?, Some(Value::I64(1)));
     Ok(())
 }
@@ -393,6 +394,6 @@ modes!(
     callable_body_flip_reads_standing_key_stale,
     arm_wake_does_not_redeliver_the_key_to_the_woken_callee,
     alias_read_consumes_the_formals_fire,
-    banked_bind_does_not_consume_the_level,
+    arm_entered_by_a_flip_is_owed_no_fire_of_a_level,
     arm_wake_switch_binds_the_standing_key_stale,
 );

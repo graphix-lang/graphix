@@ -54,10 +54,14 @@ macro_rules! born_builtin {
                 ctx: &mut ::graphix_compiler::ExecCtx<'_, R>,
                 _from: &mut [::graphix_compiler::Node<R>],
             ) -> &::graphix_compiler::TagValue {
-                if ctx.event.born() && self.once.take() {
+                if self.once.take() {
+                    let born = ctx.event.born();
                     let $ctx = &mut *ctx;
                     let v = $value;
-                    self.out.set(::graphix_compiler::TagValue::fired(v))
+                    self.out.set(match born {
+                        true => ::graphix_compiler::TagValue::fired(v),
+                        false => ::graphix_compiler::TagValue::stale(v),
+                    })
                 } else {
                     self.out.ride()
                 }

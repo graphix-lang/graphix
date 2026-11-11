@@ -56,8 +56,7 @@ pub struct FusedKernel<R: Rt> {
     /// in the JIT's `by_kernel` cache.
     kernel: Arc<KernelSig>,
     jit: WrappedKernel,
-    /// Per-instance state words (wire slot 1): prev-length and first-call
-    /// words. Zero means "no previous observation"; consumers store
+    /// Per-instance state words (wire slot 1): prev-length words. Zero means "no previous observation"; consumers store
     /// `value + 1`.
     state: Box<[u64]>,
     /// The last result; ridden when no feeder fired. Bottom feeders may

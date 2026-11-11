@@ -250,11 +250,10 @@ let len = |a: Array<'a>| {
 ```
 
 The queue holds each new array until the previous one is counted. Every
-write samples the event that selected its arm (`x ~`, `e ~`): an arm
-that is left and later selected again resumes, so a constant such as
-`clock <- null` would write only at the arm's first entry, and `sum + 1`
-read on its own would not fire when the arm comes back to a `sum` that
-has not changed.
+write samples the event that selected its arm (`x ~`, `e ~`): entering
+an arm is not an event, so a constant such as `clock <- null` would
+never write, and `sum + 1` read on its own would fire only when `sum`
+does, which entering the arm does not make it do.
 
 Now we can see our very verbose and inefficient `len` is now correct
 

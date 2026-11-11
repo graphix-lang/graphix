@@ -805,7 +805,6 @@ pub(crate) struct HttpServe<R: Rt> {
 
 impl<R: Rt> BuiltIn<R> for HttpServe<R> {
     const NAME: &str = "http_serve";
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,

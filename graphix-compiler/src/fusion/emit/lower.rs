@@ -367,8 +367,8 @@ impl CtxWord {
 }
 
 /// A claimed state word's address: an instance's or a call site's word,
-/// or a loop slot's (a prev-length word, a first-call word, an in-loop
-/// call site's block anchor). A site-channel claim traps on a null site
+/// or a loop slot's (a prev-length word, an in-loop call site's block
+/// anchor). A site-channel claim traps on a null site
 /// block base where it is claimed ([`BodyCx::claimed_word`]), so the
 /// address is never behind a guard.
 #[derive(Clone, Copy)]

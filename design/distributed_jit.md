@@ -163,13 +163,13 @@ each was obvious in hindsight and invisible in advance.
    site string); unchecked arith logs from the node-walk only
    (`--no-fusion` shows it).
 
-3. **First call is init.** A cross-kernel call site in a region's root
-   body forces the callee's init view on its first call ever (a
-   first-call word in the instance state, the slot's own in a loop;
-   `kernel_instance_state.md`); a callee body's own call
-   sites pass their init view on. The symptom of forgetting it is a
-   kernel that works when first fired at startup and pends forever when
-   first fired by an async input.
+3. **A call is an entry, never a birth.** A cross-kernel call site
+   passes the callee its own context word
+   (`emit::call::emit_callee_context_word`), so a callee is born only
+   where its caller is: a root's first cycle, a seq step's run. A call
+   site's first use, a loop slot's first iteration and a self-call's
+   fresh block get no init view (`bind_driven_bodies.md`), and no word
+   records a first call.
 
 4. **Runtime wake-ups key on `(BindId, top_id)`.** Feeders register
    `ref_var` under the REAL top expression id (`FusionCtx::top_id`),

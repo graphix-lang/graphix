@@ -1,5 +1,5 @@
 // Once-per-select consumption with a SHARED input
-// (design/wake_catchup.md): both arms read in1, so its fires are
+// (design/bind_driven_bodies.md): both arms read in1, so its fires are
 // always consumed by whichever arm is awake — the woken arm gets ZERO
 // catch-up fires and its value correctness comes entirely from the
 // forced recompute (the publish-shaped probe that proved tracking

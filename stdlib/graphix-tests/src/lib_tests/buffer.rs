@@ -386,9 +386,9 @@ run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
 }; FuseExpect::Jit);
 
-// A decode writes its targets at each fire of its arguments. Its arm (it
-// holds an Io call) sleeps while deselected, and a wake with the
-// arguments standing writes nothing again: one write in three entries.
+// A decode writes its targets at each fire of its arguments: the arm's
+// first entry fires the buffer once, and the two entries after it find
+// the arguments standing and write nothing. One write in three entries.
 const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -396,7 +396,7 @@ const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
   let b = buffer::encode([`U8(u8:7)]);
   let x: u8 = u8:0;
   let spec_x = [`U8(&mut x)];
-  let r1 = select c { true => buffer::decode(b, spec_x), false => b };
+  let r1 = select c { true => buffer::decode(once(c) ~ b, spec_x), false => b };
   let n = count(x);
   select step { 7 => (n, x), _ => never() }
 }"#;

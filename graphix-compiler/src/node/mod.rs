@@ -82,9 +82,8 @@ pub(crate) mod wake;
 /// A variable read's provenance under dense delivery — see [`read_var`].
 pub(crate) enum VarRead<'a> {
     /// Found in the overlay (this cycle's transient deliveries) or
-    /// store-stamped THIS cycle: the entry's own tag applies, but for a
-    /// wake's moved stand ([`delivered_view`]) and, to a resume or a step,
-    /// an entry stood again quietly ([`wake::stands_since`]).
+    /// store-stamped THIS cycle: the entry's own tag applies
+    /// ([`delivered_view`]).
     Delivered(&'a TagValue),
     /// Last cycle's delivery, made after the walk passed this reader and
     /// handed to it alone now: its own tag applies.
@@ -123,9 +122,9 @@ impl<'a> VarRead<'a> {
             VarRead::Late(tv) => tv.clone(),
             VarRead::Delivered(tv) | VarRead::Standing((tv, _)) => {
                 match self.standing(ctx, id) {
-                    Some((tv, stamp)) => {
+                    Some((tv, _)) => {
                         let mut tv = standing_view(ctx.event, tv);
-                        if wake::slept_through(ctx, stamp) {
+                        if wake::resumes(ctx) {
                             let tag = tv.tag().moved_if(true);
                             tv.retag(tag);
                         }
@@ -200,9 +199,9 @@ fn late_fire<'a, R: Rt>(
 }
 
 /// `GRAPHIX_QUIET=audit`: a reader in an ordinary cycle took the quiet
-/// production `standing` (an entry that stands, or one a wake stood again
-/// this cycle) over its last production `resident`. An awake reader saw
-/// every fire, so the two agree, or a value changed under it with no fire. A seq machine's own
+/// production `standing`, which no wake stood again ([`Tag::moved`]), over
+/// its last production `resident`. The two agree, or a value changed under
+/// the reader with nothing telling it to recompute. A seq machine's own
 /// names are read by steps it runs one at a time, which is no sleep.
 #[inline]
 pub(crate) fn audit_quiet<R: Rt>(
@@ -226,35 +225,34 @@ fn audit_standing<R: Rt>(
     spec: &Expr,
 ) {
     let lowered = || ctx.env.by_id.get(id).is_some_and(|b| crate::is_lowered(&b.name));
-    if ctx.event.view != View::Cycle || resident.tag().is_bottom() || lowered() {
+    if ctx.event.view != View::Cycle
+        || standing.tag().moved()
+        || resident.tag().is_bottom()
+        || lowered()
+    {
         return;
     }
     let same = !standing.tag().is_bottom()
         && resident.with_value(|a| standing.with_value(|b| a == b));
     if !same {
         panic!(
-            "GRAPHIX_QUIET=audit: a value changed under an awake reader with no fire: \
+            "GRAPHIX_QUIET=audit: a value changed under a reader nothing told to recompute: \
              {resident:?} -> {standing:?}, at {} `{spec}`",
             spec.pos
         )
     }
 }
 
-/// An entry delivered this cycle as a reader sees it: its own tag, but
-/// that what a wake stood moved ([`Tag::moved`]) is a fire to a reader
-/// that did not wake with it; a reader resuming in the same cycle reads
-/// it as it reads everything that stands, and one born into a standing
-/// world reads it stale.
+/// An entry delivered this cycle as a reader sees it: its own tag. What a
+/// wake stood moved ([`Tag::moved`]) is a fire to no reader; a step, born
+/// into a standing world, computes everything anew and reads it plain
+/// stale.
 #[inline(always)]
 pub(crate) fn delivered_view(event: &Event, tv: &TagValue) -> TagValue {
     let tag = tv.tag();
     let mut tv = tv.clone();
-    if tag.moved() {
-        tv.retag(match event.view {
-            View::Wake => tag,
-            View::Step => tag.quiet(),
-            View::Cycle | View::Birth => tag.fresh(),
-        });
+    if tag.moved() && event.view == View::Step {
+        tv.retag(tag.quiet());
     }
     tv
 }
@@ -390,7 +388,6 @@ impl WakeBit {
 
 thread_local! {
     static DESELECTING_ARM: Cell<bool> = const { Cell::new(false) };
-    static KEPT_IN_ARM: Cell<bool> = const { Cell::new(false) };
     static RUNTIME_BIND: Cell<bool> = const { Cell::new(false) };
     static INSTANCE_RECHECK: Cell<bool> = const { Cell::new(false) };
 }
@@ -412,23 +409,15 @@ pub(crate) fn instance_rechecked() -> bool {
 
 /// Run `f` inside (`true`) or outside (`false`) the sleep of an arm a
 /// select or a seq machine is deselecting: under it a recursive-edge
-/// `CallSite::sleep` deletes its callee (shrink = delete), or keeps a pure
-/// one asleep. A callee body is outside, so a whole-recursion pause
-/// retains. Whether a recursive edge kept its callee.
-pub(crate) fn deselecting_arm(inside: bool, f: impl FnOnce()) -> bool {
+/// `CallSite::sleep` deletes its callee (shrink = delete). A callee body
+/// is outside, so a whole-recursion pause retains.
+pub(crate) fn deselecting_arm(inside: bool, f: impl FnOnce()) {
     let _restore = Restore::replace(&DESELECTING_ARM, inside);
-    let _kept = Restore::replace(&KEPT_IN_ARM, false);
-    f();
-    KEPT_IN_ARM.get()
+    f()
 }
 
 pub(crate) fn in_deselected_arm() -> bool {
     DESELECTING_ARM.get()
-}
-
-/// A recursive edge in the arm being deselected kept its callee.
-pub(crate) fn kept_in_arm() {
-    KEPT_IN_ARM.set(true)
 }
 
 #[derive(Debug)]

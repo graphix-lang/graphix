@@ -8,7 +8,6 @@ use super::{
     list,
     pattern::StructPatternNode,
     prune::Prune,
-    wake::TrackedFires,
 };
 use crate::cost::{self, Parts, ProbeSite, SlotPlan, SlotSite};
 use crate::{
@@ -32,7 +31,6 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
         scope_decode, scope_encode,
     },
-    prune::BoundaryRef,
     typ::{FnType, Type},
     wrap,
 };
@@ -658,8 +656,8 @@ struct Sourced<C> {
     resized: bool,
     /// The source returned from bottom.
     back: bool,
-    /// The slots it paused, which wake with what they missed.
-    paused: Option<TrackedFires>,
+    /// It paused the slots, which resume.
+    paused: bool,
     /// Its elements moved: it fired, or the collection woke.
     moved: bool,
 }
@@ -671,9 +669,8 @@ enum SourceSeen {
     /// its return changes the result.
     #[default]
     Absent,
-    /// Bottom while slots stood: they are paused, and this tracks the
-    /// fires of what they read meanwhile.
-    Paused(TrackedFires),
+    /// Bottom while slots stood: they are paused.
+    Paused,
     Present,
 }
 
@@ -690,7 +687,7 @@ struct SlotKind<R: Rt, S> {
 /// deliver each slot its element: a fresh slot always, any slot when the
 /// elements moved. A bottom source forgets the length; the slots stay,
 /// paused when it turns bottom (`kind.call`'s sleep, as a deselected arm's)
-/// and woken, caught up, when it returns ([`SourceSeen::Paused`]).
+/// and resumed when it returns ([`SourceSeen::Paused`]).
 #[allow(clippy::too_many_arguments)]
 fn take_source<R: Rt, C: MapCollection, S: Send>(
     ctx: &mut ExecCtx<'_, R>,
@@ -713,18 +710,13 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
     let source = sval.and_then(|value| C::select(value, tag.triggers()));
     let Some(source) = source else {
         match seen {
-            SourceSeen::Paused(missed) => observe_paused(ctx, missed, slots, kind.call),
+            SourceSeen::Paused => (),
             _ if slots.is_empty() => *seen = SourceSeen::Absent,
             _ => {
                 for slot in slots.iter_mut() {
                     (kind.call)(slot).sleep(ctx);
                 }
-                let mut missed =
-                    TrackedFires::new(&ctx.env, ctx.rt.cycle(), 1, |_, r| {
-                        slots.iter_mut().for_each(|slot| (kind.call)(slot).refs(r))
-                    });
-                observe_paused(ctx, &mut missed, slots, kind.call);
-                *seen = SourceSeen::Paused(missed);
+                *seen = SourceSeen::Paused;
             }
         }
         return Sourced {
@@ -732,14 +724,14 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
             source: None,
             resized: false,
             back: false,
-            paused: None,
+            paused: false,
             moved,
         };
     };
     let (back, paused) = match std::mem::replace(seen, SourceSeen::Present) {
-        SourceSeen::Absent => (true, None),
-        SourceSeen::Paused(missed) => (true, Some(missed)),
-        SourceSeen::Present => (false, None),
+        SourceSeen::Absent => (true, false),
+        SourceSeen::Paused => (true, true),
+        SourceSeen::Present => (false, false),
     };
     // what a slot calls, decided once a slot is added
     let mut call_kind = None;
@@ -1097,45 +1089,23 @@ fn merge_tags(a: Option<Tag>, b: Option<Tag>) -> Option<Tag> {
     }
 }
 
-/// Record what the paused slots miss this cycle, a late fire to a reader
-/// in a slot's instance included.
-fn observe_paused<R: Rt, S>(
-    ctx: &ExecCtx<'_, R>,
-    missed: &mut TrackedFires,
-    slots: &mut [S],
-    call: fn(&mut S) -> &mut Node<R>,
-) {
-    missed.observe(ctx);
-    missed.observe_late(ctx, |_, b| {
-        slots.iter_mut().any(|slot| match call(slot).view() {
-            NodeView::CallSite(cs) => BoundaryRef::held_by(cs.instance_boundary(), b),
-            _ => false,
-        })
-    });
-}
-
 /// Run `update` over a collection's slots, `old_len` of them standing:
-/// when the source `paused` them, they wake with one catch-up fire for
-/// each input they read that fired meanwhile.
+/// when the source `paused` them, they resume.
 fn woken_slots<R: Rt, T>(
     ctx: &mut ExecCtx<'_, R>,
     old_len: usize,
-    paused: Option<TrackedFires>,
+    paused: bool,
     update: impl FnOnce(&mut ExecCtx<'_, R>, SlotViews) -> T,
 ) -> T {
-    let Some(mut missed) = paused else {
+    if !paused {
         return update(
             ctx,
             SlotViews { old_len, standing: View::Cycle, skip_idle: false },
         );
-    };
-    let caught_up = missed.deliver(ctx, 0);
-    // every slot runs under an init view: a standing one's wake, a fresh one's birth
-    let scope = ctx.under(View::Wake, |ctx| missed.open(ctx, 0, None));
-    let r = update(ctx, SlotViews { old_len, standing: View::Wake, skip_idle: false });
-    missed.ran(ctx, 0, scope);
-    TrackedFires::restore(ctx.event, caught_up);
-    r
+    }
+    // a standing slot resumes; a fresh one is entered as any body is
+    let views = SlotViews { old_len, standing: View::Wake, skip_idle: false };
+    ctx.under(View::Wake, |ctx| super::wake::in_body(ctx, |ctx| update(ctx, views)))
 }
 
 /// The view each slot updates under: a fresh slot's birth, a standing
@@ -1152,8 +1122,19 @@ impl SlotViews {
         i >= self.old_len
     }
 
-    fn of(self, i: usize) -> View {
-        if self.fresh(i) { View::Birth } else { self.standing }
+    /// Run slot `i`'s update `f`: a fresh slot is a body entered, a
+    /// standing one runs under the standing view.
+    fn run<R: Rt, T>(
+        self,
+        ctx: &mut ExecCtx<'_, R>,
+        i: usize,
+        f: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
+    ) -> T {
+        if self.fresh(i) { ctx.enter_body(f) } else { ctx.under(self.standing, f) }
+    }
+
+    fn idle(self, i: usize) -> bool {
+        !self.fresh(i) && self.standing == View::Cycle
     }
 }
 
@@ -1277,10 +1258,10 @@ fn update_slots_in_order<R: Rt>(
         if ctx.interrupted() {
             return None;
         }
-        if views.skip_idle && views.of(i) == View::Cycle && skip_idle_slot(ctx, slot) {
+        if views.skip_idle && views.idle(i) && skip_idle_slot(ctx, slot) {
             continue;
         }
-        let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx));
+        let tv = views.run(ctx, i, |ctx| slot.call.update(ctx));
         let tag = tv.tag();
         if gxdbg_slot() {
             eprintln!(
@@ -1353,9 +1334,9 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
         };
         self.current = source;
         {
-            // a resize or a return is a new result whatever the source's
-            // tag; so are moved elements under a result that reads them
-            let tag = if resized || back { tag.fresh() } else { tag };
+            // a resize or a return is a new result, fired as the source
+            // fired; so are moved elements under a result that reads them
+            let tag = tag.moved_if(resized || back);
             if resized || back || (self.base.op.reads_elements() && moved) {
                 production = merge_tag(production, tag);
             }
@@ -1394,7 +1375,7 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
             Some(tag) => tag,
             None if poisoned => return self.resident.set_bottom(false),
             // After a sleep the resident may lag the stale-refreshed
-            // slots; rebuild quietly (design/wake_catchup.md).
+            // slots; rebuild quietly (design/sleep_and_wake.md).
             None if woke => Tag::STALE,
             None => return self.resident.ride(),
         };
@@ -1782,15 +1763,6 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
         // recovers.
         let init = self.base.init.update(ctx).clone();
         if source.is_none() {
-            // slot 0 reads the init as its acc: a fire of it the paused
-            // slots miss is theirs to catch up
-            if let (SourceSeen::Paused(missed), Some(slot)) =
-                (&mut self.seen, self.slots.first())
-                && init.tag().triggers()
-            {
-                ctx.deliver(slot.acc_id, init, Notify::Walk);
-                missed.observe(ctx);
-            }
             return self.resident.set_bottom_as(tag);
         }
         // a quiet acc is news to no slot: it only stands, unless the
@@ -1807,8 +1779,8 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
             pass_acc(ctx, slot.acc_id, init.clone());
         }
         if self.slots.is_empty() {
-            // a resize or a return is a new result whatever the source's tag
-            let tag = if resized || back { tag.fresh() } else { tag };
+            // a resize or a return is a new result, fired as the source fired
+            let tag = tag.moved_if(resized || back);
             return match init.tag() {
                 t if t.is_bottom() => self.resident.set_bottom(tag.join(t).triggers()),
                 t => {
@@ -1822,7 +1794,7 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
         // counts, for the bottom arm.
         let mut prod: Option<Tag> = None;
         if resized || back {
-            prod = merge_tag(prod, tag.fresh());
+            prod = merge_tag(prod, tag.moved_if(true));
         }
         let slots = &mut self.slots;
         let prod = woken_slots(ctx, old_len, paused, |ctx, views| {
@@ -1830,8 +1802,8 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
                 if ctx.interrupted() {
                     return None;
                 }
-                // A fresh slot's first dispatch runs under the birth view, its
-                // acc seeded with the chain's state as it stands.
+                // A fresh slot is entered with its acc seeded by the chain's
+                // state as it stands.
                 if views.fresh(i) {
                     let seed = match i {
                         0 if init.tag().is_bottom() => {
@@ -1848,7 +1820,7 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
                     ctx.deliver(slots[i].acc_id, seed, Notify::Walk);
                 }
                 let slot = &mut slots[i];
-                let tv = ctx.under(views.of(i), |ctx| slot.call.update(ctx).clone());
+                let tv = views.run(ctx, i, |ctx| slot.call.update(ctx).clone());
                 prod = merge_tag(prod, tv.tag());
                 slot.state.set(&tv);
                 // The production, a bottom included, travels the acc chain.

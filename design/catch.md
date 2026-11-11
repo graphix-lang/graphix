@@ -113,8 +113,8 @@ flow — `design/seq_blocks.md` §7).
   as arrived: the given-up deliveries owed less the writes to the variable
   still on their way (`Rt::waiting_writes`, plus one delivered this cycle),
   less the raises made since, which queue behind them. The handler hears
-  exactly what `Receipts::take` takes: a delivery it passes over (a
-  wake's catch-up fire included) reaches the handler standing, not fired
+  exactly what `Receipts::take` takes: a delivery it passes over (the
+  seq tracker's catch-up fire included) reaches the handler standing, not fired
   (`Receipt::Passed`). Pins:
   `a_catch_asleep_with_raises_in_flight_lets_its_step_pass`,
   `a_handler_never_hears_a_raise_given_up`.

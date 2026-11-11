@@ -1,5 +1,5 @@
 // A LABELED DEFAULT IS BORN WITH THE BINDING (aug31f ryouko finding
-// 01, design/wake_catchup.md): str::escape's `#esc = default_escape`
+// 01, design/bind_driven_bodies.md): str::escape's `#esc = default_escape`
 // reaches a fresh callee only as a STANDING store read, and the
 // present-but-stale ruling (9b2e7231) stopped upgrading standing
 // reads under an arm's wake view — so an instance born at a select

@@ -326,10 +326,9 @@ impl LoopFrame {
 
 impl LoopFrame {
     /// Bind the iteration's names, poll the interrupt (its abort drops
-    /// them) and emit the body, all in the loop's scope, under the slot's
-    /// init view (its first iteration is one: the slot is a new
-    /// instance); the scope and the slot-table frame close before an
-    /// error propagates.
+    /// them) and emit the body, all in the loop's scope, under the run's
+    /// view (a new slot is an entry, not a birth); the scope and the
+    /// slot-table frame close before an error propagates.
     fn run<'a, 'f, 'c, B, T>(
         &self,
         cx: &mut BodyCx<'a, 'f, 'c>,
@@ -342,7 +341,6 @@ impl LoopFrame {
             cx.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, self.i, self.entered);
         let new = cx.b.ins().uextend(types::I64, new);
         let init = cx.born_flag();
-        let init = cx.b.ins().bor(init, new);
         let standing = {
             let born = cx.b.ins().icmp_imm_s(IntCC::NotEqual, init, 0);
             let no_wake = cx.b.ins().icmp_imm_s(IntCC::Equal, cx.ctx.wake_flag, 0);
@@ -560,10 +558,12 @@ impl SlotFlags {
         r
     }
 
-    /// The exact firing rule's STALE contribution: fires iff resized, a
-    /// slot fired, or the source fired empty (a pass-through loop, filter
-    /// or find: the source fired at all), against the prev-length word
-    /// (stored `len + 1`; 0 = no previous observation).
+    /// The exact firing rule's STALE and MOVED contribution: fires iff a
+    /// slot fired, or the source fired and resized or is empty (a
+    /// pass-through loop, filter or find: the source fired at all),
+    /// against the prev-length word (stored `len + 1`; 0 = no previous
+    /// observation). A resize under a quiet source is a quiet result that
+    /// moved.
     fn exact_stale(
         &self,
         cx: &mut BodyCx,
@@ -587,7 +587,8 @@ impl SlotFlags {
         let src_fired = cx.b.ins().icmp_imm_s(IntCC::Equal, src_word, 0);
         let empty = cx.b.ins().icmp_imm_s(IntCC::Equal, len, 0);
         let src_empty = cx.b.ins().band(src_fired, empty);
-        let src_counts = cx.b.ins().bor(resized, src_empty);
+        let src_resized = cx.b.ins().band(resized, src_fired);
+        let src_counts = cx.b.ins().bor(src_resized, src_empty);
         let src_counts = if self.kind == LoopKind::PassThrough {
             cx.b.ins().bor(src_counts, src_fired)
         } else {
@@ -595,6 +596,8 @@ impl SlotFlags {
         };
         let fires = cx.b.ins().bor(src_counts, slot_fired);
         let quiet = cx.b.ins().iconst(types::I64, STALE);
+        let moved = cx.b.ins().iconst(types::I64, STALE | MOVED);
+        let quiet = cx.b.ins().select(resized, moved, quiet);
         let zero = cx.b.ins().iconst(types::I64, 0);
         cx.b.ins().select(fires, zero, quiet)
     }
@@ -1484,8 +1487,15 @@ where
 
 /// What a scaffold-loop body needs of its loop: its per-slot state
 /// sites, the callsite `ExprId` of every nested collection HOF call (its
-/// prev-length word) and of every cross-kernel lambda call (its
-/// first-call word), each of which claims one per-slot state chain (see
+// CR claude for claude: [dead/low] A loop claims one word a slot for each
+// cross-kernel lambda call site in its body, which was the site's
+// first-call word: nothing reads or writes it now (a first call is an entry,
+// `call::emit_callee_context_word`). `loop_body` still lists the site so
+// that `BodyCx::open_slot_tables` sizes the callee's block table from the
+// same list; drop the plain word and keep the block table.
+// (first-call-word-storage-01)
+/// prev-length word) and of every cross-kernel lambda call, each of which
+/// claims one per-slot state chain (see
 /// [`BodyCx::open_slot_tables`]); and the bindings it reads from outside,
 /// the captures of every kernel it calls included, a nested loop's slots'
 /// too (a self-call's callee has no node to read them from), which an

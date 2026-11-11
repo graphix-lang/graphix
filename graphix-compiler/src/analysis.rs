@@ -729,17 +729,6 @@ fn no_loop_message(why: Option<&NoLoop>) -> CompactString {
     const HEAD: &str = "#[tail_recursive]: every recursive call is in tail position, but \
                         no loop is built";
     match why {
-        Some(NoLoop::Io(e)) => format_compact!(
-            "{HEAD}: {} performs Io that does not fire with the formals, so a \
-             fresh activation performs it at its birth where a loop pass would not",
-            site(e)
-        ),
-        Some(NoLoop::Raise(e)) => format_compact!(
-            "{HEAD}: {} raises to a handler on something that does not fire with \
-             the formals, which a fresh activation raises at its birth and a loop \
-             pass would not",
-            site(e)
-        ),
         Some(NoLoop::Formals) => format_compact!(
             "{HEAD}: a variadic or opaque formal, or one of a type a fused \
              kernel cannot carry, is one the loop cannot rebind"
@@ -1391,23 +1380,10 @@ fn mark_recursion<R: Rt>(
         let body = facts.get(instance).copied().unwrap_or_else(|| {
             lambda_def(ctx, g.id()).map_or(LambdaFacts::ASYNC, def_facts)
         });
-        // one native loop runs every pass under the kernel's init view: an
-        // Io call a depth reached afresh would fire at its birth does not,
-        // so a body whose Io does not follow its formals recurses natively,
-        // each depth a fresh block
-        let blocker = match body.is_pure() {
-            false => None,
-            true => match body.io {
-                true => {
-                    unfollowed_io(g.body(), &g.formal_ids(), ctx, &mut IntSet::default())
-                        .map(NoLoop::Io)
-                }
-                false => None,
-            }
-            .or_else(|| match self_bind {
-                Some(self_bind) => lowering::tail_loop_blocker(g, self_bind, ctx),
-                None => Some(NoLoop::Memory),
-            }),
+        let blocker = match (body.is_pure(), self_bind) {
+            (false, _) => None,
+            (true, Some(self_bind)) => lowering::tail_loop_blocker(g, self_bind, ctx),
+            (true, None) => Some(NoLoop::Memory),
         };
         let looped = body.is_pure() && blocker.is_none();
         g.set_self_call(self_bind.map(|bind| SelfCall { bind, tail_loop: looped }));
@@ -2121,29 +2097,17 @@ impl<'g, 'a, R: Rt> ForkCx<'g, 'a, R> {
 /// Whether every Io call `body` reaches fires whenever one of `formals`
 /// fires: an Io builtin's trigger fires with them, and a function called
 /// with arguments that each do performs only Io that follows its own
-/// formals. A native loop's pass, which runs under the kernel's one init
-/// view, then performs as the node-walk's fresh activation does.
+/// formals.
 pub(crate) fn io_follows<R: Rt>(
     body: &Node<R>,
     formals: &IntSet<BindId>,
     ctx: &CompileCtx<R>,
     seen: &mut IntSet<LambdaInstanceId>,
 ) -> bool {
-    unfollowed_io(body, formals, ctx, seen).is_none()
-}
-
-/// The first call in `body` that breaks [`io_follows`]: an Io call, or a
-/// call of a function performing Io that does not follow its formals.
-fn unfollowed_io<R: Rt>(
-    body: &Node<R>,
-    formals: &IntSet<BindId>,
-    ctx: &CompileCtx<R>,
-    seen: &mut IntSet<LambdaInstanceId>,
-) -> Option<Expr> {
-    let mut first = None;
+    let mut all = true;
     fusion::for_each_emitted_node(body, &mut |n| {
         let NodeView::CallSite(cs) = n.view() else { return };
-        if first.is_some() {
+        if !all {
             return;
         }
         let Some(triggers) = lowering::performing_args(cs, ctx) else { return };
@@ -2155,11 +2119,9 @@ fn unfollowed_io<R: Rt>(
                 }
                 _ => true,
             };
-        if !follows {
-            first = Some(n.spec().clone());
-        }
+        all = follows;
     });
-    first
+    all
 }
 
 /// Whether `n` fires whenever one of `ids` does: a read of one of them,

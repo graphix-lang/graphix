@@ -62,8 +62,8 @@ input_handler(#handle: &handle, &view)
 A handler that wants mouse, paste, resize or a release selects on the
 `Event` itself. A modal one that lets nothing through wraps the call
 and answers every event, which means sampling the answer on the event
-(a bare `` `Stop `` is a constant: it answers the first event and no
-other):
+(a bare `` `Stop `` is a constant: it never fires, so the handler would
+answer no event):
 
 ```graphix,fragment
 let modal = |e: Event| { on_press(e, keys); e ~ `Stop };
@@ -151,10 +151,11 @@ callback throws.
 ```
 
 The `Up` and `Down` arms sample the key (`u ~ count + 1`). A write
-inside a select arm fires when its right-hand side fires: `count <-
-count + 1` would fire again on its own update and loop, and a constant
-such as `` mode <- `Insert `` fires only at the arm's first entry, since a
-later entry resumes the arm (the check warns of it). Sample the event
+inside a select arm fires when its right-hand side fires, and entering
+an arm is not an event. So `count <- count + 1` writes nothing at the
+key press, and once `count` changes while its arm is still selected it
+fires again on its own update and loops; a constant such as
+`` mode <- `Insert `` never fires (the check warns of it). Sample the event
 that selects the arm instead, `` k@ `Char("i") => mode <- k ~ `Insert ``;
 the select chapter's "Writing From an Arm" spells out why.
 

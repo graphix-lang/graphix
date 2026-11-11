@@ -298,8 +298,8 @@ run!(
 
 /// A dynamic module `test` loaded under `sandbox`, its sig `foo` and `bar`
 /// with `sig` after them, its body the relay `foo` to `bar` with `body`
-/// after it: `test::bar` once the program writes `test::foo`, or the
-/// load's error.
+/// after it: `test::bar` once the program writes `test::foo`, at the
+/// fire of the load's status, or the load's error.
 fn sandboxed(sandbox: &str, sig: &str, body: &str) -> String {
     format!(
         r#"{{
@@ -320,7 +320,7 @@ fn sandboxed(sandbox: &str, sig: &str, body: &str) -> String {
     select status {{
         error as e => dbg(e),
         null as _ => {{
-            test::foo <- dbg("hello world");
+            test::foo <- dbg(status ~ "hello world");
             test::bar
         }}
     }}
@@ -3013,11 +3013,12 @@ run!(glob_in_forked_slots, GLOB_IN_FORKED_SLOTS, |v: Result<&Value>| matches!(
 
 /// A module in a select arm that sleeps for ep 5 to 8, while a binding of
 /// the module is written through the `&mut` the arm hands out (`REF`), at
-/// ep 6 and 7. At the wake (ep 9) the binding's `let` re-raises the write
-/// once to the readers that slept with it (the arm's `ARM` beside the
-/// module's own reader); the escaped reader outside, which saw both
-/// writes live, sees no third. The result is `ARM`'s value and the
-/// outside reader's count.
+/// ep 6 and 7. The writes stand and the wake (ep 9) fires nothing: the
+/// readers that slept with the binding (the arm's `ARM` beside the
+/// module's own reader) read the last value written and count its first
+/// value alone; the escaped reader outside counts that and both writes,
+/// which it saw live. The result is `ARM`'s value and the outside
+/// reader's count.
 const ARM_WAKE: &str = "{
   let ep = 0;
   ep <- select ep { n if n < 12 => n + 1, _ => never() };
@@ -3043,43 +3044,51 @@ async fn arm_wake(
     super::delivery::result_updates(&code, files, mode).await
 }
 
-// A module with no interface: the arm's `count(a::v)` sees the re-raise.
-async fn module_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
+// A module with no interface: the arm's `count(a::v)` and the module's
+// own see no fire at the wake, and the arm reads the value written.
+async fn module_let_written_asleep_stands_for_the_arm_around_it(
+    mode: Mode,
+) -> Result<()> {
     let files = [("/test/a.gx", "let v = 1; let c = count(v)")];
-    let got = arm_wake("&mut a::v", "(count(a::v), a::c)", &files, mode).await?;
-    assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
+    let got = arm_wake("&mut a::v", "(count(a::v), a::c, a::v)", &files, mode).await?;
+    assert_eq!(got, ["[[1, 1, 70], 3]"], "{mode:?}");
     Ok(())
 }
 
-modes!(module_let_reraises_to_the_arm_around_it);
+modes!(module_let_written_asleep_stands_for_the_arm_around_it);
 
 // A submodule with no interface that its parent's interface exposes: the
 // arm reads `a::b::v` after the `mod a` statement, as the parent's `r`
-// reads `b::v`, and both see the re-raise.
-async fn exposed_submodule_let_reraises_to_the_arm_around_it(mode: Mode) -> Result<()> {
+// reads `b::v`: neither sees a fire at the wake, and the arm reads the
+// value written.
+async fn exposed_submodule_let_written_asleep_stands_for_the_arm_around_it(
+    mode: Mode,
+) -> Result<()> {
     let files = [
         ("/test/a/mod.gx", "mod b; let r = count(b::v)"),
         ("/test/a/mod.gxi", "mod b; val r: i64"),
         ("/test/a/b.gx", "let v = 1"),
     ];
-    let got = arm_wake("&mut a::b::v", "(count(a::b::v), a::r)", &files, mode).await?;
-    assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
+    let arm = "(count(a::b::v), a::r, a::b::v)";
+    let got = arm_wake("&mut a::b::v", arm, &files, mode).await?;
+    assert_eq!(got, ["[[1, 1, 70], 3]"], "{mode:?}");
     Ok(())
 }
 
-modes!(exposed_submodule_let_reraises_to_the_arm_around_it);
+modes!(exposed_submodule_let_written_asleep_stands_for_the_arm_around_it);
 
 // A private `let` of a module with an interface, written through the
 // `&mut` its interface exports: the escaped reader outside sees each
-// write once, the re-raise taken back after the arm's last statement.
-async fn interface_module_private_let_reraises_once(mode: Mode) -> Result<()> {
+// write once, the readers in the arm see no fire at the wake, and the
+// arm reads the value written.
+async fn interface_module_private_let_written_asleep_stands(mode: Mode) -> Result<()> {
     let files = [
         ("/test/a.gx", "let w = 1; let c = count(w); let r = &mut w"),
         ("/test/a.gxi", "val c: i64; val r: &mut i64"),
     ];
-    let got = arm_wake("a::r", "(count(*a::r), a::c)", &files, mode).await?;
-    assert_eq!(got, ["[[2, 2], 3]"], "{mode:?}");
+    let got = arm_wake("a::r", "(count(*a::r), a::c, *a::r)", &files, mode).await?;
+    assert_eq!(got, ["[[1, 1, 70], 3]"], "{mode:?}");
     Ok(())
 }
 
-modes!(interface_module_private_let_reraises_once);
+modes!(interface_module_private_let_written_asleep_stands);

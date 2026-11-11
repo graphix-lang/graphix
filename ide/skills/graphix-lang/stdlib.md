@@ -58,6 +58,19 @@ calls'). Nothing aborts a `callq` call; an arm's sleep drops its calls in
 flight and the answers waiting behind them. A fan-out over `callq` can run
 in parallel; one over `call` runs in order.
 
+A request handler (`http::serve`'s `#handler`, `sys::net::rpc`'s `#f`) is
+called once a request, each call an activation of its own, and the
+request is answered by the reply's first fire. A reply that does not
+derive from the request never fires, and the request times out with no
+error: write `|req| req ~ reply`, and raise a constant error as
+``error(req ~ `Bad)?``. A reply that reads a field of the request, or
+selects on it, fires with it.
+
+`sys::net::list(path)` and `list_table(path)` list again every second by
+default, from the first time `path` fires: in a select arm or a callback
+entered after the program starts, pass the path sampled on the bind,
+`list(k ~ path)`.
+
 `sys::net::call(path, args)` is `(RpcId, result)`: take the pair, `let
 (_, r) = sys::net::call(..)`, or its `.1`. Each fire of an argument
 starts a call, and calls run side by side: each answers once, its reply,

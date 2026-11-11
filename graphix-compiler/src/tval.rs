@@ -3,8 +3,9 @@
 //! of the discriminant word carry a tag of two orthogonal bits, STALE
 //! (not an event this cycle) and TAINT (no usable value), giving the
 //! four states of [`TagView`], and a third that qualifies a quiet
-//! production, MOVED (recomputed at a wake from an input that fired while
-//! its region slept, `design/wake_catchup.md`). Over consumed inputs
+//! production, MOVED (recomputed where a body resumed or was entered: a
+//! consumer recomputes from it, and it is an event to no one). Over
+//! consumed inputs
 //! TAINT and MOVED join by OR and STALE by AND: a bottom anywhere
 //! bottoms, a fire anywhere fires, a moved input anywhere moved a quiet
 //! result ([`Tag::join`]). Consume through [`TagValue::view`]; the only
@@ -28,15 +29,15 @@ impl Tag {
     /// "no usable value" (kernel disc bit 62). The payload under this
     /// bit is a placeholder, never usable.
     pub const TAINT_BIT: u8 = 0x40;
-    /// "recomputed from an input whose fire its region slept through"
-    /// (kernel disc bit 60). It says something of a quiet production
-    /// alone ([`Tag::moved`]): a fire says as much to every reader.
+    /// "recomputed where a body resumed or was entered" (kernel disc bit
+    /// 60). It says something of a quiet production alone
+    /// ([`Tag::moved`]): a fire says as much to every reader.
     pub const MOVED_BIT: u8 = 0x10;
     /// Fired this cycle, not a bottom — the ordinary production.
     pub const FIRED: Tag = Tag(0);
     /// A value-channel refresh: present, valid, did not fire.
     pub const STALE: Tag = Tag(Self::STALE_BIT);
-    /// A quiet value a wake recomputed from a fire its region missed.
+    /// A quiet value a resume or an entry recomputed.
     pub const MOVED: Tag = Tag(Self::STALE_BIT | Self::MOVED_BIT);
     /// A bottom that is an event.
     pub const FRESH_BOTTOM: Tag = Tag(Self::TAINT_BIT);
@@ -71,9 +72,9 @@ impl Tag {
         self.0 & Self::STALE_BIT == 0
     }
 
-    /// A quiet production recomputed from an input that fired while its
-    /// region slept: a reader that did not sleep with it takes it as a
-    /// fire ([`Tag::fresh`]).
+    /// A quiet production a resume or an entry recomputed: its value may
+    /// differ from the last one, so a consumer recomputes; it fires
+    /// nothing.
     #[inline]
     pub fn moved(self) -> bool {
         const QUIET_MOVED: u8 = Tag::STALE_BIT | Tag::MOVED_BIT;
@@ -248,16 +249,6 @@ impl TagValue {
     #[inline]
     pub fn set_bottom_as(&mut self, tag: Tag) -> &TagValue {
         self.set(Self::tagged(Value::Null, Tag::from_raw(tag.bits() | Tag::TAINT_BIT)))
-    }
-
-    /// This production as a fire: what a reader awake through a wake
-    /// takes of a value the wake stood moved ([`Tag::moved`]).
-    #[inline]
-    pub fn as_fire(&self) -> TagValue {
-        let mut tv = self.clone();
-        let tag = tv.tag().fresh();
-        tv.retag(tag);
-        tv
     }
 
     /// The quiet-cycle production: set STALE in place, keep

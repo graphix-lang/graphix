@@ -84,7 +84,11 @@ val rpc: fn<'spec: Data, 'result: Data, 'args: Concrete + Data>(
 ) -> Result<_, `PublishRpcError(string)> throws 'e;
 
 /// list paths under the specified path, in order, again at each `#update`
-/// (every second by default); a listing equal to the last is not answered.
+/// (every second by default, from the first time `path` fires); a listing
+/// equal to the last is not answered. Called in a select arm or a callback
+/// entered after the program starts, pass a path sampled on the event that
+/// enters it (`list(k ~ path)`): over a path that stands, the default
+/// refresh never starts.
 val list: fn(?#update:Any, path: string) -> Result<Array<string>, `ListError(string)>;
 
 /// list the table under the specified path, its rows and columns in order,

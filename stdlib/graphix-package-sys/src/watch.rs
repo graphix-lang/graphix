@@ -353,7 +353,6 @@ impl WatchApply {
 impl<R: Rt> BuiltIn<R> for WatchApply {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_watch";
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut CompileCtx<R>,
@@ -524,7 +523,6 @@ pub(crate) struct WatchStream<K: WatchKind> {
 impl<R: Rt, K: WatchKind> BuiltIn<R> for WatchStream<K> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = K::NAME;
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,

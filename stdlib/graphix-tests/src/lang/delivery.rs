@@ -1,7 +1,7 @@
 // Deliveries to a binding (`ExecCtx::deliver`): a fire is stored as the
 // event holds it, stamped this cycle; a quiet production stands in the
-// store with the stamp of the last fire, so a wake owes no fire for it;
-// a binding's fire schedules the roots that read it.
+// store with the stamp of the last fire, and is a fire to no reader; a
+// binding's fire schedules the roots that read it.
 
 use anyhow::Result;
 use arcstr::ArcStr;
@@ -127,7 +127,7 @@ async fn seq_steps_enter_in_the_cycle_their_predecessor_completed(
 modes!(seq_steps_enter_in_the_cycle_their_predecessor_completed);
 
 // A guard's fire re-matches the arm over a stale scrutinee: `x` is bound
-// stale, so `count(x)` counts its birth alone.
+// stale, so `count(x)` counts the fire of its root's first cycle alone.
 async fn guard_rematch_binds_stale(mode: Mode) -> Result<()> {
     let got = result_updates(
         "{
@@ -148,10 +148,10 @@ async fn guard_rematch_binds_stale(mode: Mode) -> Result<()> {
 
 modes!(guard_rematch_binds_stale);
 
-/// `g` takes `|v| count(X)` while the arm of `in2` that calls it sleeps;
-/// the arm wakes (n = 5) and binds that callee fresh, owed only the fires
-/// of `X` that landed while it slept. `A` is the select making `X`.
-const OWED: &str = "{
+/// `g` takes `|v| count(X)` while the arm of `in2` that calls it sleeps
+/// (n = 2 to 5); the arm wakes at n = 6 and binds that callee fresh, into
+/// an `X` that stands. `A` is the select making `X`.
+const BOUND_AT_A_WAKE: &str = "{
   let n = 0;
   n <- select n { k if k < 7 => (k ~ n) + 1, _ => never() };
   let in0 = 0;
@@ -168,29 +168,11 @@ const OWED: &str = "{
   (a, b)
 }";
 
-// A guard's re-match over a stale scrutinee (n = 3) rebinds `x` stale,
-// which is no fire: the callee bound at the wake counts none.
-async fn stale_rebind_is_owed_no_fire(mode: Mode) -> Result<()> {
-    let a = "select s {
-    `A(x) if in1 >= 0 => {
-      g <- select in3 { 0 => never(), _ => |v| count(x) };
-      count(x) + in1
-    },
-    _ => -1
-  }";
-    let code = OWED
-        .replace("let a = A;", &format!("let s: [`A(i64), `B] = `A(0); let a = {a};"));
-    let got = result_updates(&code, &[], mode).await?;
-    assert_eq!(got, ["[1, 105]", "[1, -7]", "[2, -7]"], "{mode:?}");
-    Ok(())
-}
-
-modes!(stale_rebind_is_owed_no_fire);
-
 // The val of a module with an interface republishes quietly when its arm
-// wakes (n = 4), which is no fire: the callee bound at the other arm's
-// wake counts none, as over a module with no interface.
-async fn module_quiet_republish_is_owed_no_fire(mode: Mode) -> Result<()> {
+// wakes (n = 5), which is no fire: the arm's own count of it stays 1, and
+// the callee the other arm binds at its wake counts nothing, as over a
+// module with no interface.
+async fn module_quiet_republish_is_no_fire(mode: Mode) -> Result<()> {
     let a = "select in0 {
     0 => {
       mod a;
@@ -199,7 +181,7 @@ async fn module_quiet_republish_is_owed_no_fire(mode: Mode) -> Result<()> {
     },
     _ => -1
   }";
-    let code = OWED.replace("let a = A;", &format!("let a = {a};"));
+    let code = BOUND_AT_A_WAKE.replace("let a = A;", &format!("let a = {a};"));
     let expected = ["[1, 105]", "[1, -7]", "[-1, -7]", "[1, -7]"];
     let bare = result_updates(&code, &[("/test/a.gx", "let x = 0")], mode).await?;
     assert_eq!(bare, expected, "no interface, {mode:?}");
@@ -209,7 +191,7 @@ async fn module_quiet_republish_is_owed_no_fire(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(module_quiet_republish_is_owed_no_fire);
+modes!(module_quiet_republish_is_no_fire);
 
 /// `w` is made after `r`'s statement ran, and `r` reads it through the
 /// function `h` holds: BEFORE or AFTER places `r`.
@@ -241,6 +223,7 @@ modes!(a_fire_reaches_a_passed_reader_next_cycle);
 
 /// `r`'s second arm reads `w` through `h`, and `w` is made after `r`'s
 /// statement ran, once, at `n == FIRES`; at `n == ASLEEP` the arm sleeps.
+/// The result is the log and `r` as they stand at `n == 5`.
 const PASSED_ASLEEP: &str = "{
   let n = 0;
   n <- select n { k if k < 5 => k + 1, _ => never() };
@@ -252,17 +235,18 @@ const PASSED_ASLEEP: &str = "{
   };
   let w = uniq(select n { k if k < FIRES => 0, _ => 10 });
   h <- |x: i64| -> i64 x + w;
-  select n { 5 => n ~ log, _ => never() }
+  select n { 5 => n ~ (log, r), _ => never() }
 }";
 
-// `w`'s one fire reaches the passed reader next cycle: there if its arm is
-// awake, else at the arm's wake, once, as a fire made while it slept does,
-// whether the arm falls asleep as the fire arrives or slept already.
-async fn a_late_fire_reaches_a_sleeping_arm_at_its_wake(mode: Mode) -> Result<()> {
+// `w`'s one fire reaches the passed reader next cycle if its arm is awake
+// then. An arm asleep then is owed nothing, whether it falls asleep as the
+// fire arrives or slept already: at its wake it recomputes `r` to 11 and
+// logs nothing.
+async fn a_late_fire_to_a_sleeping_arm_is_not_kept(mode: Mode) -> Result<()> {
     for (asleep, fires, want) in [
-        ("100", "1", "[[1, 1], [2, 11]]"),
-        ("2", "1", "[[1, 1], [3, 11]]"),
-        ("2 | 3", "2", "[[1, 1], [4, 11]]"),
+        ("100", "1", "[[[1, 1], [2, 11]], 11]"),
+        ("2", "1", "[[[1, 1]], 11]"),
+        ("2 | 3", "2", "[[[1, 1]], 11]"),
     ] {
         let code = PASSED_ASLEEP.replace("ASLEEP", asleep).replace("FIRES", fires);
         let got = result_updates(&code, &[], mode).await?;
@@ -271,32 +255,34 @@ async fn a_late_fire_reaches_a_sleeping_arm_at_its_wake(mode: Mode) -> Result<()
     Ok(())
 }
 
-modes!(a_late_fire_reaches_a_sleeping_arm_at_its_wake);
+modes!(a_late_fire_to_a_sleeping_arm_is_not_kept);
 
 // The same in a module's body: a val the interface declares is the
-// binding's one variable, and the arm reading it owes the late fire the
-// same with the val declared or not.
-async fn a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake(
-    mode: Mode,
-) -> Result<()> {
+// binding's one variable, and the arm reading it is owed nothing for the
+// late fire and recomputes at its wake, with the val declared or not.
+async fn a_late_fire_to_a_val_is_not_kept_for_a_sleeping_arm(mode: Mode) -> Result<()> {
     let body = PASSED_ASLEEP
         .replace("ASLEEP", "2")
         .replace("FIRES", "1")
         .replace("select n { 5 =>", "let out = select n { 5 =>");
     let body = body.trim().trim_start_matches('{').trim_end_matches('}');
-    for gxi in ["val out: Array<(i64, i64)>", "val w: i64;\nval out: Array<(i64, i64)>"] {
+    for gxi in [
+        "val out: (Array<(i64, i64)>, i64)",
+        "val w: i64;\nval out: (Array<(i64, i64)>, i64)",
+    ] {
         let files = [("/test/m.gx", body), ("/test/m.gxi", gxi)];
         let got = result_updates("{ mod m; m::out }", &files, mode).await?;
-        assert_eq!(got, ["[[1, 1], [3, 11]]"], "{gxi}, {mode:?}");
+        assert_eq!(got, ["[[[1, 1]], 11]"], "{gxi}, {mode:?}");
     }
     Ok(())
 }
 
-modes!(a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake);
+modes!(a_late_fire_to_a_val_is_not_kept_for_a_sleeping_arm);
 
 /// `PASSED_ASLEEP` with `w`'s reader inside `h`'s instance, which counts
-/// `w`'s fires, and HOLDER logging what the instance makes, holding it
-/// asleep at `n == ASLEEP`.
+/// `w`'s fires, and HOLDER logging what the instance makes. The instance
+/// is entered when `h` arrives, at `n == 1`, into a `w` that stands: its
+/// `count` has no value, and the instance none, until `w` fires in it.
 const LATE_HELD: &str = "{
   let n = 0;
   n <- select n { k if k < 5 => k + 1, _ => never() };
@@ -309,8 +295,8 @@ const LATE_HELD: &str = "{
 }";
 
 /// `LATE_HELD` with `holder` for each `(asleep, fires, want)`: `w`'s one
-/// late fire is counted once, whether the holder falls asleep as the fire
-/// arrives or slept already.
+/// late fire is counted where the instance runs in the cycle it arrives,
+/// and nowhere else.
 async fn late_held(
     holder: &str,
     cases: [(&str, &str, &str); 3],
@@ -327,54 +313,59 @@ async fn late_held(
     Ok(())
 }
 
-// A guard the chain does not reach: it logs only when `h(1)` fires.
-async fn a_late_fire_reaches_a_sleeping_guard_at_its_wake(mode: Mode) -> Result<()> {
+// A guard the chain does not reach: it logs only when `h(1)` fires. Its
+// pattern admits every `n`, so it runs below the arm that takes
+// `n == ASLEEP` too, and the late fire reaches it in the cycle it arrives.
+async fn a_late_fire_reaches_a_guard_below_the_claim(mode: Mode) -> Result<()> {
     let guard = "select n {
       ASLEEP => -1,
       k if { let g = h(1); log <- g ~ array::push(log, (n, g)); g > 0 } => k,
       _ => -2
     }";
     let cases = [
-        ("100", "1", "[[1, 101], [2, 211]]"),
-        ("2", "1", "[[1, 101], [3, 211]]"),
-        ("2 | 3", "2", "[[1, 101], [4, 211]]"),
+        ("100", "1", "[[2, 111]]"),
+        ("2", "1", "[[2, 111]]"),
+        ("2 | 3", "2", "[[3, 111]]"),
     ];
     late_held(guard, cases, mode).await
 }
 
-modes!(a_late_fire_reaches_a_sleeping_guard_at_its_wake);
+modes!(a_late_fire_reaches_a_guard_below_the_claim);
 
-// A call whose function is bottom: it fires at each `n` while awake.
-async fn a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return(
+// A call whose function is bottom: it fires at each `n` while awake. A
+// late fire that arrives while the function is bottom is not kept: the
+// instance's `count` never starts, and nothing is logged.
+async fn a_late_fire_to_a_call_over_a_bottom_function_is_not_kept(
     mode: Mode,
 ) -> Result<()> {
     let call = "let r = { let f = select n { ASLEEP => never(), _ => h }; f(1) };
       log <- r ~ array::push(log, (n, r))";
     let cases = [
-        ("100", "1", "[[1, 101], [2, 211], [3, 211], [4, 211]]"),
-        ("2", "1", "[[1, 101], [3, 211], [4, 211]]"),
-        ("2 | 3", "2", "[[1, 101], [4, 211]]"),
+        ("100", "1", "[[2, 111], [3, 111], [4, 111]]"),
+        ("2", "1", "[]"),
+        ("2 | 3", "2", "[]"),
     ];
     late_held(call, cases, mode).await
 }
 
-modes!(a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return);
+modes!(a_late_fire_to_a_call_over_a_bottom_function_is_not_kept);
 
-// A collection whose source is bottom: it fires at each `n` while awake.
-async fn a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return(
+// A collection whose source is bottom: it fires at each `n` while awake. A
+// late fire that arrives while the source is bottom is not kept, as above.
+async fn a_late_fire_to_a_collection_over_a_bottom_source_is_not_kept(
     mode: Mode,
 ) -> Result<()> {
     let map = "let r = array::map(select n { ASLEEP => never(), _ => [1] }, |x| h(x));
       log <- r ~ array::push(log, (n, r[0]$))";
     let cases = [
-        ("100", "1", "[[1, 101], [2, 211], [3, 211], [4, 211]]"),
-        ("2", "1", "[[1, 101], [3, 211], [4, 211]]"),
-        ("2 | 3", "2", "[[1, 101], [4, 211]]"),
+        ("100", "1", "[[2, 111], [3, 111], [4, 111]]"),
+        ("2", "1", "[]"),
+        ("2 | 3", "2", "[]"),
     ];
     late_held(map, cases, mode).await
 }
 
-modes!(a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return);
+modes!(a_late_fire_to_a_collection_over_a_bottom_source_is_not_kept);
 
 // A late value that feeds its producer back is a self-loop, as `x <- x + 1`
 // is: `r` reads `w` through `h` a cycle late, and each new `r` makes a new

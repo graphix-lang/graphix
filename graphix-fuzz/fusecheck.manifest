@@ -8,9 +8,9 @@
 0	arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
 1	arith-widened-cell-aug2026/00_filter_err_let.gx
 1	arith-widened-cell-aug2026/01_filter_err_let_i32.gx
-3	arm-entry-raise-sep2026/00_fold_init_constant_raise.gx
-5	arm-entry-raise-sep2026/01_constant_raise_typed_arm.gx
-3	arm-entry-raise-sep2026/02_bottom_arm_input_raise.gx
+4	arm-entry-raise-sep2026/00_fold_init_constant_raise.gx
+4	arm-entry-raise-sep2026/01_constant_raise_typed_arm.gx
+4	arm-entry-raise-sep2026/02_bottom_arm_input_raise.gx
 2	arm-local-bind-aug2026/01_frame_never_published.gx
 2	arm-local-bind-aug2026/02_wake_reseeds_connect.gx
 2	arm-local-bind-aug2026/03_wake_const_call.gx
@@ -267,8 +267,8 @@
 154	nested-seqq-credit-nov2026/01_in_a_step.gx
 148	nested-seqq-credit-nov2026/02_in_a_function_a_step_calls.gx
 1	nested-value-jul2026/01_selfref_connect_growth.gx
-0	never-args-elided-sep2026/00_dbg_in_never_arm.gx
-2	never-args-elided-sep2026/01_raise_in_never_arm.gx
+1	never-args-elided-sep2026/00_dbg_in_never_arm.gx
+3	never-args-elided-sep2026/01_raise_in_never_arm.gx
 0	never-type-names-sep2026/00_never_of_an_undefined_type.gx
 5	nov06a-nov2026/01_parametric_abstract_in_a_body.gx
 0	nov06a-nov2026/02_fresh_cell_in_a_visible_error.gx
@@ -298,7 +298,7 @@
 2	qop-deliver-dyncall-arity-aug2026/00_handler_ful_qop_defuses.gx
 2	qop-nested-union-jul2026/01_string_union_elem_index_qop.gx
 2	qop-scalar-error-leak-aug2026/00_handler_less_qop_leaks.gx
-1	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
+2	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
 0	quiesce-verdict-jul2026/01_ref_echo_const_result.gx
 1	quiet-frame-init-view-aug2026/00_dyncall_first_in_frame.gx
 1	quiet-frame-init-view-aug2026/01_dyncall_scrutinee_in_frame_group.gx
@@ -480,7 +480,7 @@
 3	tail-loop-internal-connect-aug2026/01_campaign_witness.gx
 1	tail-loop-internal-connect-aug2026/02_inlined_twin.gx
 1	tail-loop-internal-connect-aug2026/03_nontail_twin.gx
-4	tail-loop-io-oct2026/01_callee_constant_io.gx
+3	tail-loop-io-oct2026/01_callee_constant_io.gx
 1	tail-quiet-poll-rederivation-aug2026/00_iter_fed_const_loop.gx
 1	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 1	tail-scrut-fire-jul2026/01_const_base_arm_framed.gx
@@ -564,10 +564,10 @@
 5	wake-outside-nov2026/05_moved_source_no_callback_reads.gx
 10	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
 11	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
-2	wake-stale-bottom-sep2026/00_plain_select.gx
+1	wake-stale-bottom-sep2026/00_plain_select.gx
 23	wake-stale-bottom-sep2026/01_seq_step.gx
-2	wake-stale-bottom-sep2026/02_let.gx
-2	wake-stale-bottom-sep2026/03_call.gx
-3	wake-stale-bottom-sep2026/04_map_source.gx
-2	wake-stale-bottom-sep2026/05_fold_init.gx
+1	wake-stale-bottom-sep2026/02_let.gx
+1	wake-stale-bottom-sep2026/03_call.gx
+1	wake-stale-bottom-sep2026/04_map_source.gx
+1	wake-stale-bottom-sep2026/05_fold_init.gx
 1	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

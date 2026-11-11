@@ -80,8 +80,9 @@ const TAIL_RECURSIVE_STATEFUL: &str = r#"
 
 run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None; build_only);
 
-// An Io call that does not fire with the formals keeps every depth its
-// own activation, and the refusal names it.
+// An Io call that does not fire with the formals runs in the loop: each
+// pass performs it as each activation would, at the program's first cycle
+// here.
 const TAIL_RECURSIVE_IO: &str = r#"
 {
   #[tail_recursive]
@@ -93,9 +94,10 @@ const TAIL_RECURSIVE_IO: &str = r#"
 }
 "#;
 
-run!(tail_recursive_io, TAIL_RECURSIVE_IO, refused("no loop is built: `println(\"step\")` (line 5, column 5) performs Io that does not fire with the formals"); FuseExpect::None; build_only);
+run!(tail_recursive_io, TAIL_RECURSIVE_IO, is(Value::I64(6)); FuseExpect::Jit);
 
-// So does a raise to a handler that does not fire with the formals.
+// So does a raise to a handler that does not fire with the formals: one
+// raise a pass, as one an activation.
 const TAIL_RECURSIVE_RAISE: &str = r#"
 {
   let e: Result<i64, `E> = error(`E);
@@ -106,11 +108,12 @@ const TAIL_RECURSIVE_RAISE: &str = r#"
     let k = e?;
     select n { 0 => acc + k, _ => f(n - 1, acc + n) }
   };
-  f(3, 0)
+  let r = f(3, 0);
+  select count(caught) { 4 => 4, _ => never() }
 }
 "#;
 
-run!(tail_recursive_raise, TAIL_RECURSIVE_RAISE, refused("no loop is built: `e?` (line 8, column 13) raises to a handler"); FuseExpect::None; build_only);
+run!(tail_recursive_raise, TAIL_RECURSIVE_RAISE, is(Value::I64(4)); FuseExpect::Jit);
 
 // A pure body that does not fuse builds no loop: only a fused kernel runs
 // a tail recursion as one, so the assertion is the JIT's.
@@ -557,9 +560,10 @@ const INNER_REC_UNASSERTED: &str = r#"
 
 run!(inner_rec_unasserted, INNER_REC_UNASSERTED, prints("[i64:6, i64:12]"));
 
-// Instances blocked for different reasons: the refusal names a site
-// before per-call memory, and of two sites the one written first.
-const TAIL_RECURSIVE_TWO_REASONS: &str = r#"
+// Of two instances one loops, its callee's Io performed in each pass, and
+// the one whose callee recurses outside tail position is refused for the
+// memory it holds.
+const TAIL_RECURSIVE_ONE_INSTANCE_HOLDS_MEMORY: &str = r#"
 {
   #[tail_recursive]
   let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
@@ -569,9 +573,11 @@ const TAIL_RECURSIVE_TWO_REASONS: &str = r#"
 }
 "#;
 
-run!(tail_recursive_two_reasons, TAIL_RECURSIVE_TWO_REASONS, refused("no loop is built: `f(n)` (line 5, column 52) performs Io"); FuseExpect::None; build_only);
+run!(tail_recursive_one_instance_holds_memory, TAIL_RECURSIVE_ONE_INSTANCE_HOLDS_MEMORY, refused("no loop is built: the body holds per-call memory"); FuseExpect::None; build_only);
 
-const TAIL_RECURSIVE_TWO_SITES: &str = r#"
+// Callees that perform Io on what does not fire with the loop's formals
+// run in the loop, at either call site.
+const TAIL_RECURSIVE_IO_CALLEES: &str = r#"
 {
   #[tail_recursive]
   let rec loop = |f: fn(x: i64) -> i64, g: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
@@ -581,7 +587,7 @@ const TAIL_RECURSIVE_TWO_SITES: &str = r#"
 }
 "#;
 
-run!(tail_recursive_two_sites, TAIL_RECURSIVE_TWO_SITES, refused("no loop is built: `f(n)` (line 5, column 55) performs Io"); FuseExpect::None; build_only);
+run!(tail_recursive_io_callees, TAIL_RECURSIVE_IO_CALLEES, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:12, i64:12]"); FuseExpect::Jit);
 
 // A callee whose recursion runs through another function holds per-call
 // memory too.

@@ -1,4 +1,4 @@
-// Nesting composes with no extra machinery (design/wake_catchup.md):
+// Nesting composes with no extra machinery (design/bind_driven_bodies.md):
 // in1 fires while the OUTER arm 0 is selected — the inner select
 // (asleep inside outer arm 1) observes nothing, but the OUTER
 // tracker's per-arm set covers it (an arm's refs include everything

@@ -1,5 +1,5 @@
 // A kernel in the woken arm carries what a wake moved as the node-walk
-// does (design/wake_catchup.md, What a wake stands, Kernels). Arm 0's
+// does (design/bind_driven_bodies.md, the moved mark). Arm 0's
 // select stands still but for its guard, which reads `v0`, written 1 and
 // 3 while the arm sleeps: at the wake (in0 = 4) the guard moved, so did
 // the select, and the formal it stands in fires 10 for the closure `once`

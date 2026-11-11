@@ -19,8 +19,7 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, InstBuilder, MemFlagsData, TrapCode, Value as ClifValue, condcodes::IntCC,
-    types,
+    Block, InstBuilder, TrapCode, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::DataId;
@@ -348,20 +347,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             Some(s) if index < s.mark => self.b.ins().band(disc, s.standing),
             _ => disc,
         }
-    }
-
-    /// Whether an instance whose first use `word` records is born: the
-    /// born flag, or set while the word reads 0, which this use records.
-    /// No word is the plain born flag.
-    pub(crate) fn first_use(&mut self, word: Option<StateWord>) -> ClifValue {
-        let init = self.born_flag();
-        let Some(StateWord(addr)) = word else { return init };
-        let stored = self.b.ins().load(types::I64, MemFlagsData::trusted(), addr, 0);
-        let first = self.b.ins().icmp_imm_s(IntCC::Equal, stored, 0);
-        let one = self.b.ins().iconst(types::I64, 1);
-        self.b.ins().store(MemFlagsData::trusted(), one, addr, 0);
-        let first = self.b.ins().uextend(types::I64, first);
-        self.b.ins().bor(init, first)
     }
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire

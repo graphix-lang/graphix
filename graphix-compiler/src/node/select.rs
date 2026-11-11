@@ -80,7 +80,9 @@ pub struct Select<R: Rt> {
 /// analysis facts, so they are built on the first update.
 #[derive(Debug)]
 struct LazyArmFacts {
-    tracked: TrackedFires,
+    /// The seq machine's tracker, for a select of its world
+    /// ([`seq_world`]); a body's select holds none.
+    tracked: Option<TrackedFires>,
     /// Per arm: sleep on deselect? False only for a pure non-recursive
     /// body, which is neither slept nor updated while untaken.
     sleep_on_deselect: ArmMask,
@@ -92,16 +94,10 @@ struct LazyArmFacts {
     logged_no_match: bool,
     /// The arms with a guard, in order.
     guarded: SmallVec<[usize; 4]>,
-    /// Per arm: a scrutinee fire the chain passed its guard by; the guard
-    /// is given the value fired when the chain next reaches it.
-    missed: ArmMask,
-    /// A select with guards: the ones the chain does not reach sleep.
-    guards: Option<Vec<GuardRun>>,
-    /// The arms whose deselect kept a recursive callee asleep.
-    kept: ArmMask,
-    /// The last cycle the scrutinee fired, or moved at a wake: an arm
-    /// asleep since binds what it slept through.
-    scrutinee_moved: Option<u64>,
+    /// Per arm: its guard ran at the select's last run. One whose shape
+    /// did not admit the value is paused and recomputes from what stands
+    /// when it next runs.
+    guard_ran: ArmMask,
 }
 
 #[derive(Debug)]
@@ -119,39 +115,12 @@ impl ArmDiscriminants {
     }
 }
 
-/// A guard's run so far, as the chain reached it.
-#[derive(Debug, Clone, Copy)]
-enum GuardRun {
-    /// Neither run nor slept: the select's first update has not come.
-    Unborn,
-    /// Slept before its first run: its first reach is its birth.
-    Unreached,
-    /// Ran when the chain last came by.
-    Awake,
-    /// Ran, then went unreached: its next reach is a resume.
-    Asleep,
-}
-
-impl GuardRun {
-    /// The chain passes the guard by: whether it falls asleep now.
-    fn unreached(&mut self) -> bool {
-        let (next, falls) = match *self {
-            GuardRun::Unborn => (GuardRun::Unreached, true),
-            GuardRun::Awake => (GuardRun::Asleep, true),
-            run => (run, false),
-        };
-        *self = next;
-        falls
-    }
-
-    /// The chain reaches the guard: the view it runs under.
-    fn reached(&mut self) -> View {
-        match mem::replace(self, GuardRun::Awake) {
-            GuardRun::Unborn | GuardRun::Awake => View::Cycle,
-            GuardRun::Unreached => View::Step,
-            GuardRun::Asleep => View::Wake,
-        }
-    }
+/// Whether a select is the seq machine's world, which stays as built: a
+/// run event's select, and one written in a seq step (not in a lambda
+/// there), whose arms are born at their first entry in each run and
+/// wake caught up.
+fn seq_world(flags: BitFlags<CFlag>) -> bool {
+    flags.intersects(CFlag::RunEvent | CFlag::SeqStep)
 }
 
 fn guard_refs<R: Rt>(pat: &PatternNode<R>, r: &mut Refs) {
@@ -165,16 +134,20 @@ impl LazyArmFacts {
         ctx: &ExecCtx<'_, R>,
         arms: &[(PatternNode<R>, Node<R>)],
         discriminants: Arc<ArmDiscriminants>,
+        run_event: bool,
     ) -> Self {
         let has_guards = arms.iter().any(|(pat, _)| pat.guard.is_some());
         let consumers = arms.len() * (1 + usize::from(has_guards));
-        LazyArmFacts {
-            tracked: TrackedFires::new(&ctx.env, ctx.rt.cycle(), consumers, |i, r| {
+        let tracked = run_event.then(|| {
+            TrackedFires::new(&ctx.env, ctx.rt.cycle(), consumers, |i, r| {
                 match arms.get(i) {
                     Some(arm) => arm_refs(arm, r),
                     None => guard_refs(&arms[i - arms.len()].0, r),
                 }
-            }),
+            })
+        });
+        LazyArmFacts {
+            tracked,
             sleep_on_deselect: ArmMask::of(
                 arms.iter().map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n)),
             ),
@@ -187,10 +160,7 @@ impl LazyArmFacts {
                 .filter(|(_, (pat, _))| pat.guard.is_some())
                 .map(|(i, _)| i)
                 .collect(),
-            missed: ArmMask::new(arms.len()),
-            guards: has_guards.then(|| vec![GuardRun::Unborn; arms.len()]),
-            kept: ArmMask::new(arms.len()),
-            scrutinee_moved: None,
+            guard_ran: ArmMask::new(arms.len()),
         }
     }
 }
@@ -250,29 +220,29 @@ impl EmissionPlanes {
     }
 }
 
-/// Evaluate the taken arm, consuming its tracked fire bits with the
-/// catch-up deliveries scoped to it, and the ones its own guard took.
+/// Evaluate the taken arm. Only a select of the seq machine's world
+/// delivers anything to it.
 fn evaluate_arm<R: Rt>(
-    tracked: &mut TrackedFires,
+    tracked: &mut Option<TrackedFires>,
     arm: &mut (PatternNode<R>, Node<R>),
     i: usize,
-    guard_took: &[(usize, SmallVec<[BindId; 4]>)],
     ctx: &mut ExecCtx<'_, R>,
 ) -> (Tag, Option<Value>) {
-    let mut injected = tracked.deliver(ctx, i);
-    for (_, ids) in guard_took.iter().filter(|(j, _)| *j == i) {
-        for id in ids {
-            wake::inject(ctx, *id, &mut injected);
-        }
-    }
-    let scope = tracked.open(ctx, i, arm_boundary(arm));
-    let tv = arm.1.update(ctx);
-    let t = tv.tag();
-    let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
+    let produce = |ctx: &mut ExecCtx<'_, R>, body: &mut Node<R>| {
+        let tv = body.update(ctx);
+        let t = tv.tag();
+        (t, if t.is_bottom() { None } else { Some(tv.value_cloned()) })
+    };
+    let Some(tracked) = tracked else {
+        return wake::in_body(ctx, |ctx| produce(ctx, &mut arm.1));
+    };
+    let injected = tracked.deliver(ctx, i);
+    let scope = tracked.open(ctx, i);
+    let r = produce(ctx, &mut arm.1);
     tracked.ran(ctx, i, scope);
     TrackedFires::restore(ctx.event, injected);
     tracked.evaluated(&ctx.env, i, |r| arm_refs(arm, r));
-    (t, v)
+    r
 }
 
 impl<R: Rt> Select<R> {
@@ -312,10 +282,13 @@ impl<R: Rt> Select<R> {
         }
         let typ = Type::decode(buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
-        let flags = match bool::decode(buf)? {
-            true => CFlag::RunEvent.into(),
-            false => BitFlags::empty(),
-        };
+        let mut flags = BitFlags::empty();
+        if bool::decode(buf)? {
+            flags |= CFlag::RunEvent
+        }
+        if bool::decode(buf)? {
+            flags |= CFlag::SeqStep
+        }
         Ok(Self::new(arg, arms, typ, spec, flags))
     }
 
@@ -362,10 +335,11 @@ impl<R: Rt> Select<R> {
 /// Warn where an arm acts on constants alone: a `<-` whose right side
 /// reads no variable, a raise to a handler whose operand reads none, or an
 /// effectful call whose arguments read none (a function's name is no
-/// variable read). Constants fire at an arm's birth, its first entry, and
-/// stand at every later entry, which resumes the arm, so these act once.
-/// Nested lambdas, selects and seq machines are left to their own checks.
-fn warn_birth_only<R: Rt>(
+/// variable read). Constants fire only in a birth, so these act only where
+/// the arm is taken in its root's first cycle
+/// (`design/bind_driven_bodies.md`). Nested lambdas, selects and seq
+/// machines are left to their own checks.
+fn warn_constant_action<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
     n: &Node<R>,
@@ -384,16 +358,17 @@ fn warn_birth_only<R: Rt>(
             spec.pos,
             spec.end.0,
             format_args!(
-                "{what} reads no variable, so it acts only at this arm's first entry: \
-                 a later entry resumes the arm and its constants do not fire again. \
-                 Sample the event that selects the arm (`k ~ v`), or use a seq"
+                "{what} reads no variable, so it acts only if this arm is taken in the \
+                 program's first cycle, which an arm over an async value never is: \
+                 constants in an arm do not fire. Sample the event that selects the \
+                 arm (`k ~ v`)"
             ),
         )
     };
     crate::stack::ensure_sufficient(|| match n.view() {
         NodeView::Lambda(_) | NodeView::Select(_) | NodeView::SeqMachine(_) => Ok(()),
         // a handler's action runs on its errors, not at an entry
-        NodeView::Catch(c) => warn_birth_only(ctx, flags, &c.handler),
+        NodeView::Catch(c) => warn_constant_action(ctx, flags, &c.handler),
         NodeView::Qop(q) if q.handler().is_some() && reads_nothing(&q.n) => {
             warn(n.spec(), "this raise")
         }
@@ -407,7 +382,7 @@ fn warn_birth_only<R: Rt>(
             let mut r = Ok(());
             n.for_each_child(&mut |c| {
                 if r.is_ok() {
-                    r = warn_birth_only(ctx, flags, c)
+                    r = warn_constant_action(ctx, flags, c)
                 }
             });
             r
@@ -416,8 +391,8 @@ fn warn_birth_only<R: Rt>(
 }
 
 /// Whether the call acts: an async or Io builtin given an argument (one
-/// given none produces at its birth and stands), or a function whose body
-/// performs Io, raises or writes a binding it does not own.
+/// given none has a value that stands), or a function whose body performs
+/// Io, raises or writes a binding it does not own.
 fn acts_on_the_world<R: Rt>(
     ctx: &CompileCtx<R>,
     cs: &super::callsite::CallSite<R>,
@@ -427,8 +402,7 @@ fn acts_on_the_world<R: Rt>(
             && matches!(
                 ctx.builtin_effect(b),
                 crate::Effect::Async | crate::Effect::Io(_)
-            )
-            && !ctx.builtin_resumes(b);
+            );
     }
     let NodeView::Ref(r) = cs.fnode().view() else { return false };
     ctx.bind_to_lambda
@@ -441,8 +415,8 @@ fn acts_on_the_world<R: Rt>(
 }
 
 /// Warn where an arm holds a `seq` or `seqq` with no trigger, or one that
-/// names no variable: it runs at its birth, the arm's first entry, and not
-/// at a later one.
+/// names no variable: it runs only where the arm is taken in its root's
+/// first cycle.
 fn warn_triggerless_seq<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -464,8 +438,9 @@ fn warn_triggerless_seq<R: Rt>(
                 e.pos,
                 e.end.0,
                 format_args!(
-                    "{what}, so it runs only at this arm's first entry: a later entry \
-                     resumes the arm. Trigger it on the event that selects the arm"
+                    "{what}, so it runs only if this arm is taken in the program's \
+                     first cycle: constants in an arm do not fire. Trigger it on the \
+                     event that selects the arm"
                 ),
             )
         }
@@ -1262,90 +1237,29 @@ impl Ladder {
     }
 }
 
-/// Deselect arm `j`: sleep it unless it is pure, then refresh its
-/// tracked refs. Under [`super::deselecting_arm`] a recursive-edge callee
-/// inside the arm is deleted, or kept asleep when pure (`CallSite::sleep`),
-/// which marks the arm `kept`.
+/// Deselect arm `j`: sleep it unless it is pure. Under
+/// [`super::deselecting_arm`] a recursive-edge callee inside the arm is
+/// deleted (`CallSite::sleep`).
 fn deselect<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
-    tracked: &mut TrackedFires,
-    kept: &mut ArmMask,
+    tracked: &mut Option<TrackedFires>,
     j: usize,
     arm: &mut (PatternNode<R>, Node<R>),
     sleep: bool,
 ) {
-    if sleep && super::deselecting_arm(true, || arm.1.sleep(ctx)) {
-        kept.set(j)
+    if sleep {
+        super::deselecting_arm(true, || arm.1.sleep(ctx))
     }
+    let Some(tracked) = tracked else { return };
     tracked.fell_asleep(j, ctx.rt.cycle());
     tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
     tracked
         .observe_late(ctx, |i, b| i == j && BoundaryRef::held_by(arm_boundary(arm), b));
 }
 
-// CR claude for claude: [bug/low] A reader inside a woken arm that the walk
-// passed takes a moved stand a cycle late as it stands, and the arm runs
-// that cycle as a resume again so what the reader recomputes stands moved
-// for the readers outside (`standing_arm_view`). When the arm is deselected
-// in that very cycle the delivery is dropped: `TrackedFires::observe_late`
-// keeps only late fires for an arm that does not run, and at the arm's next
-// wake the stand's stamp is older than the arm's sleep, so the reader
-// recomputes quiet and unmoved, and a `let` over it that left the arm
-// changes under an awake reader with no fire, as before the rule. Probe
-// ~/ptmp/cr29/scratch/r20/20a/rev-events/back_desel.gx: arm 0 wakes at clk 6
-// and sleeps at clk 7; at its wake at clk 10 `o` is `(7, 1)` inside while
-// the reader outside, `od = *hd` over `&d`, stays 0 with `count(od)` 1,
-// in both engines, and `GRAPHIX_QUIET=audit` panics there at `*hd` (the
-// twin whose arm stays awake, back_escape.gx, gives
-// `od` 7 and count 2 at clk 7, pinned as
-// lang::wake_outside::a_let_over_a_passed_reader_fires_outside_a_cycle_late).
-// A fix parks such a delivery on the tracker when its arm does not run and
-// hands it to the same reader at the arm's next wake (`RtView::late_var`
-// then, so the arm resumes once more the cycle after), never as a pending
-// fire: inside the arm nothing fires. (late-stand-asleep-01)
-/// The view the selected `arm` runs under in a cycle that neither enters
-/// nor wakes it: a resume again where its resume last cycle stood a value
-/// moved under a reader inside it the walk had passed, which takes it now
-/// as it stands ([`crate::Late`]), and so does everything inside that
-/// reads what it recomputes.
-fn standing_arm_view<R: Rt>(
-    ctx: &ExecCtx<'_, R>,
-    arm: &(PatternNode<R>, Node<R>),
-) -> View {
-    let (Some(late), Some(b)) = (&ctx.event.late, arm_boundary(arm)) else {
-        return View::Cycle;
-    };
-    let refreshed = b.resumed_at(ctx.rt.cycle().wrapping_sub(1))
-        && late
-            .values()
-            .flatten()
-            .any(|(tv, r)| !tv.tag().triggers() && b.holds(r.boundary.as_ref()));
-    if refreshed { View::Wake } else { View::Cycle }
-}
-
 /// The walk-pruning boundary around an arm's body.
 fn arm_boundary<R: Rt>(arm: &(PatternNode<R>, Node<R>)) -> Option<&BoundaryRef> {
     arm.1.as_prune().map(|p| p.boundary_ref())
-}
-
-/// The chain ran and took `taken` (`None`: no arm, or a bottom scrutinee),
-/// an exit of a recursion through this select: each other kept arm sheds
-/// part of what it keeps (`callsite::shed_kept`), and the arm taken
-/// rebirths what it kept.
-fn exit_kept<R: Rt>(
-    ctx: &mut ExecCtx<'_, R>,
-    kept: &mut ArmMask,
-    arms: &mut [(PatternNode<R>, Node<R>)],
-    taken: Option<usize>,
-) {
-    if kept.is_empty() {
-        return;
-    }
-    for (j, (_, body)) in arms.iter_mut().enumerate() {
-        if kept.get(j) && (taken == Some(j) || !super::callsite::shed_kept(ctx, body)) {
-            kept.unset(j)
-        }
-    }
 }
 
 /// An arm's free reads: its body's refs less its pattern's binds.
@@ -2360,7 +2274,8 @@ impl<R: Rt> Update<R> for Select<R> {
         }
         self.typ.encode(buf)?;
         self.spec.encode(buf)?;
-        self.flags.contains(CFlag::RunEvent).encode(buf)
+        self.flags.contains(CFlag::RunEvent).encode(buf)?;
+        self.flags.contains(CFlag::SeqStep).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
@@ -2371,7 +2286,12 @@ impl<R: Rt> Update<R> for Select<R> {
                     self.arms.len(),
                 ))
             });
-            self.arm_facts = Some(LazyArmFacts::build(ctx, &self.arms, discriminants));
+            self.arm_facts = Some(LazyArmFacts::build(
+                ctx,
+                &self.arms,
+                discriminants,
+                seq_world(self.flags),
+            ));
         }
         let Self {
             selected,
@@ -2393,10 +2313,7 @@ impl<R: Rt> Update<R> for Select<R> {
             discriminants,
             logged_no_match,
             guarded,
-            missed,
-            guards,
-            kept,
-            scrutinee_moved,
+            guard_ran,
         } = arm_facts.as_mut().expect("arm facts built above");
         let ArmDiscriminants { shallow, scrutinee } = &**discriminants;
         let woke = slept.take();
@@ -2406,99 +2323,77 @@ impl<R: Rt> Update<R> for Select<R> {
             false => None,
             true => {
                 entered.clear(arms.len());
-                missed.clear(arms.len());
-                if let Some(runs) = guards.as_mut() {
-                    runs.fill(GuardRun::Unborn);
-                }
+                guard_ran.clear(arms.len());
                 selected.take()
             }
         };
         // The guarded arms' production tags. Only guards the chain
         // consults contribute fires or bottomness.
         let mut guard_tags: SmallVec<[(usize, Tag); 4]> = SmallVec::new();
-        // the missed fires each guard took: its own arm's body, one
-        // evaluation with it, sees them too
-        let mut guard_took: SmallVec<[(usize, SmallVec<[BindId; 4]>); 2]> =
-            SmallVec::new();
         let arg_prod = arg.update(ctx);
-        if arg_prod.triggers() || arg_prod.moved() {
-            *scrutinee_moved = Some(ctx.rt.cycle())
+        if let Some(tracked) = tracked {
+            tracked.observe(ctx);
+            let awake = *selected;
+            tracked.observe_late(ctx, |i, b| {
+                i < arms.len()
+                    && Some(i) != awake
+                    && BoundaryRef::held_by(arm_boundary(&arms[i]), b)
+            });
         }
-        let scrutinee_moved = *scrutinee_moved;
-        tracked.observe(ctx);
-        let awake = *selected;
-        tracked.observe_late(ctx, |i, b| match i.checked_sub(arms.len()) {
-            None => Some(i) != awake && BoundaryRef::held_by(arm_boundary(&arms[i]), b),
-            Some(g) => {
-                guards.as_ref().is_some_and(|runs| !matches!(runs[g], GuardRun::Awake))
-                    && BoundaryRef::held_by(arms[g].0.guard_boundary(), b)
-            }
-        });
-        // A guard runs where the chain reaches it, an arm whose shape
-        // admits the value with no earlier arm claiming it (`open` is the
-        // chain still running at arm `i`): the checker narrowed the binds
-        // by that shape. Any other guard sleeps, as an unselected arm
-        // does, and wakes caught up when the chain next reaches it.
+        // Every guard whose arm's shape admits the value runs, on every
+        // run of the select, wherever the chain stops: a guard keeps no
+        // memory and is given nothing but its binds. One whose shape does
+        // not admit the value has no binds to run on: it is paused, and
+        // recomputes from what stands when it next runs.
         // An arm's shape test, which the chain below reuses.
         let guards_end = guarded.last().map_or(0, |l| l + 1);
         let mut shaped: SmallVec<[Option<bool>; 16]> = smallvec![None; guards_end];
         let live = arg.value.as_ref().filter(|_| !arg.tag.is_bottom());
-        let mut open = live.is_some();
         for i in 0..guards_end {
             let consumer = arms.len() + i;
             let pat = &mut arms[i].0;
-            let reach = live.filter(|_| open).filter(|v| {
+            if pat.guard.is_none() {
+                continue;
+            }
+            let reach = live.filter(|v| {
                 let shallow = shallow[i]
                     .get_or_init(|| pat.shallow_discriminant(&ctx.env, scrutinee));
                 let s = pat.shape_matches(&ctx.env, shallow.as_ref(), v);
                 shaped[i] = Some(s);
                 s
             });
-            if pat.guard.is_none() {
-                open &= reach.is_none();
-                continue;
-            }
-            let tag = if missed.get(i) { arg_prod.fresh() } else { arg_prod };
-            match reach {
-                Some(_) => missed.unset(i),
-                None if arg_prod.triggers() => missed.set(i),
-                None => (),
-            }
-            let runs = guards.as_mut().expect("a guarded arm builds the guard sleep");
+            let ran = guard_ran.get(i);
             let Some(v) = reach else {
-                if runs[i].unreached() {
+                if ran {
+                    guard_ran.unset(i);
                     pat.sleep_guard(ctx);
-                    tracked.fell_asleep(consumer, ctx.rt.cycle());
-                    tracked.refresh(&ctx.env, consumer, |r| guard_refs(pat, r));
-                    tracked.observe_late(ctx, |k, b| {
-                        k == consumer && BoundaryRef::held_by(pat.guard_boundary(), b)
-                    });
+                    if let Some(tracked) = tracked {
+                        tracked.fell_asleep(consumer, ctx.rt.cycle())
+                    }
                 }
                 continue;
             };
-            let saved = pat.bind_tentative(ctx, v, tag);
-            let view = runs[i].reached();
-            let caught_up = tracked.deliver(ctx, consumer);
-            if !caught_up.is_empty() {
-                guard_took.push((i, caught_up.iter().map(|(id, _)| *id).collect()));
-            }
-            let t = ctx.under(view, |ctx| {
-                let scope = tracked.open(ctx, consumer, pat.guard_boundary());
-                let t = pat.update(ctx);
-                tracked.ran(ctx, consumer, scope);
-                t
-            });
-            TrackedFires::restore(ctx.event, caught_up);
-            tracked.evaluated(&ctx.env, consumer, |r| guard_refs(pat, r));
+            guard_ran.set(i);
+            let saved = pat.bind_tentative(ctx, v, arg_prod);
+            let mut run = |ctx: &mut ExecCtx<'_, R>| match tracked {
+                None => wake::in_body(ctx, |ctx| pat.update(ctx)),
+                Some(tracked) => {
+                    let scope = tracked.open(ctx, consumer);
+                    let t = pat.update(ctx);
+                    tracked.ran(ctx, consumer, scope);
+                    t
+                }
+            };
+            let t = if ran { run(ctx) } else { ctx.enter_body(run) };
             if let Some(t) = t {
                 guard_tags.push((i, t));
             }
             pat.retract(ctx, saved);
-            open &= matches!(pat.arm_match(true), ArmMatch::GuardFalse);
         }
-        // Any guard fire drives a re-match; whether it affects the
-        // emission is decided by the consulted set below.
-        let pat_up = guard_tags.iter().any(|(_, t)| t.triggers());
+        // Any guard fire, and any guard a wake recomputed, drives a
+        // re-match; whether it affects the emission is decided by the
+        // consulted set below.
+        let pat_up = guard_tags.iter().any(|(_, t)| t.triggers() || t.moved());
         // A bottom scrutinee bottoms the select; it consults no guards.
         // A window with no arm (a bottom scrutinee, an undecidable guard)
         // pauses the selected arm as a deselect does, so it resumes with
@@ -2507,11 +2402,8 @@ impl<R: Rt> Update<R> for Select<R> {
             if woke {
                 slept.set();
             }
-            if arg_prod.triggers() || woke {
-                exit_kept(ctx, kept, arms, None)
-            }
             if let Some(j) = selected.take().or(held) {
-                deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect.get(j));
+                deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect.get(j));
             }
             return resident.set_bottom_as(arg_prod);
         }
@@ -2530,7 +2422,9 @@ impl<R: Rt> Update<R> for Select<R> {
             Undet,
         }
         let chain = match *selected {
-            Some(i) if !(arg_prod.triggers() || pat_up || woke) => ChainOut::Quiet(i),
+            Some(i) if !(arg_prod.triggers() || arg_prod.moved() || pat_up || woke) => {
+                ChainOut::Quiet(i)
+            }
             _ => {
                 consulted_guard_mask.clear(arms.len());
                 let mut out = ChainOut::Taken(None);
@@ -2563,11 +2457,6 @@ impl<R: Rt> Update<R> for Select<R> {
                 out
             }
         };
-        match chain {
-            ChainOut::Quiet(_) => (),
-            ChainOut::Taken(i) => exit_kept(ctx, kept, arms, i),
-            ChainOut::Undet => exit_kept(ctx, kept, arms, None),
-        }
         let planes = EmissionPlanes::new(&guard_tags, arg_prod, consulted_guard_mask);
         // A selection stays undecidable while a consulted guard stands
         // bottom: no arm is evaluated.
@@ -2581,14 +2470,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     slept.set();
                 }
                 if let Some(j) = selected.take().or(held) {
-                    deselect(
-                        ctx,
-                        tracked,
-                        kept,
-                        j,
-                        &mut arms[j],
-                        sleep_on_deselect.get(j),
-                    );
+                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect.get(j));
                 }
                 let tag = match planes.anyfire {
                     true => Tag::FRESH_BOTTOM,
@@ -2597,10 +2479,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 return resident.set_bottom_as(tag);
             }
             ChainOut::Quiet(i) => {
-                let view = standing_arm_view(ctx, &arms[i]);
-                let (t, v) = ctx.under(view, |ctx| {
-                    evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx)
-                });
+                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) if *selected == Some(i) => {
@@ -2608,10 +2487,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     eprintln!("SELECT[{}] same-arm i={i} arg={v:?}", spec.pos);
                 }
                 arms[i].0.bind_event(ctx, v, arg_prod);
-                let view = standing_arm_view(ctx, &arms[i]);
-                let (t, v) = ctx.under(view, |ctx| {
-                    evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx)
-                });
+                let (t, v) = evaluate_arm(tracked, &mut arms[i], i, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) => {
@@ -2623,118 +2499,46 @@ impl<R: Rt> Update<R> for Select<R> {
                     );
                 }
                 if let Some(j) = selected.replace(i).or(held.filter(|j| *j != i)) {
-                    deselect(
-                        ctx,
-                        tracked,
-                        kept,
-                        j,
-                        &mut arms[j],
-                        sleep_on_deselect.get(j),
-                    );
+                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect.get(j));
                 }
                 // A bind is a facet of its scrutinee's delivery: a stale
                 // scrutinee binds stale, at a first consult, a wake or a
                 // guard's flip alike.
                 let bind_tag = match arg_prod.triggers() {
                     true => arg_prod,
-                    // a resumed arm binds what the scrutinee's last fire
-                    // or move left it, which it slept through
-                    false => Tag::STALE.moved_if(
-                        entered.get(i)
-                            && scrutinee_moved.is_some_and(|at| at >= tracked.unseen(i)),
-                    ),
+                    false => Tag::MOVED,
                 };
                 arms[i].0.bind_event(ctx, v, bind_tag);
-                // An arm is born at its first entry, into a world it reads
-                // stale, and resumes at every later one, a pure arm too: its
-                // constants stand, as a kernel's do. A pure arm, not slept
-                // when deselected since nothing in it runs, is slept now so
-                // its nodes recompute from what stands, as a slept arm's do.
-                // CR claude for claude: [bug/high] A select inside a woken arm that
-                // re-routes by a stale scrutinee answers differently in the two
-                // engines. The node-walk enters the new arm as below: a first entry is
-                // a Step (its constants fire) and a re-entry catches up the fires no
-                // selected reader saw. A fused kernel does neither. On main 3d73e2e1c,
-                // node-walk vs fused: w_newarm count 2 vs 1, w_pend2 3 vs 2, w_default
-                // 2 vs 1, reent_w `w` 1007 vs stuck at 4, io_ir_x prints "IO 3" vs
-                // nothing. The node-walk follows the first-entry and catch-up rules
-                // (design/wake_catchup.md), so the kernel is wrong; fusion must lose
-                // fusion here, never answer otherwise. D20 (b) (bound-bind-policy-01)
-                // fuses every run-time bind and spreads this, so this lands first. The
-                // fuzz corpus has no wake that re-routes a select inside the woken arm.
-                // probes: ~/ptmp/cr29/d20x/probes/design-B/{w_newarm,w_pend2}.gx,
-                // verify-B-engines/w_default.gx, verify-D-events/reent_w.gx,
-                // engines-impl/io_ir_x.gx (wake-entry-split-01)
-                // 2026-11-10 claude: D30 data, lane 20a on 2a800d11a (long form
-                // ~/ptmp/cr29/r20/d30-data.md; patches, probes and scripts
-                // ~/ptmp/cr29/scratch/r20/20a/d30/). Ruling (A)'s bit changed none of
-                // the five probes: 2/1, 3/2, 2/1, 1007/4, IO/nothing, as on base-r20.
-                // Option (a) built as a throwaway (171 lines): a region that runs a
-                // select, its own or a callee's, does not fuse inside a pause site (an
-                // arm or guard of a node-walked select, a collection callback, a
-                // run-time bind, and what they call) whose body holds an event
-                // consumer; a pure pause site at the top level needs no blocker, since
-                // its own result fires at every resume in both engines (probes
-                // pure_arm2, slot_pause, dyn_pause_nat). Of the 51 study probes (of
-                // 415) where the engines differ on the lane, 5 still differ under (a),
-                // all Io in a loop or guard window with no wake (a1_loop_pause_io,
-                // b2a_loop_window_io, b2c_loop_window_view, c1_guard_io, c1_guard_io2).
-                // Loss: fusecheck 10 of 573 pins change (9 lose 18 of 1215 regions),
-                // regress 0 outcome mismatches; graphix-tests lib 13 of 17068 runs in 8
-                // tests (10 #[native] refusals in lang::fusion's four
-                // *_fuse_in_slots/shared_region tests and two lang::wake_outside pins,
-                // 3 FuseExpect::Jit), graphix-shell 1 (#[tail_recursive]); book
-                // examples: no #[native] example refuses, 3 of 129 (tui/browser_*) lose
-                // 15 of 71 selects in kernels; bench none; netidx-admin's app compile:
-                // 86 of the 695 fused regions that hold or reach a select are lost (12
-                // percent; selects in kernels 370 to 340), 41 percent if every arm and
-                // callback is marked whatever it holds. Option (c) built at
-                // Select::update's arm entry (118 lines): the five probes agree but
-                // w_default; 15 probes still differ (5 guards, closed by also running a
-                // woken select's guards with no catch-up; 5 births inside the entered
-                // arm: w_default's labeled default, t_depth, rec_ir,
-                // e9_two_jump_leaves, e1_rec_unreached; the same 5 Io windows). It
-                // changes the node-walk's answer in 42 of the 415 probes and breaks no
-                // pin: 17637 tests, regress 573/0/0 and the 47 netidx-admin tests pass,
-                // so the behaviour it deletes is unpinned (a quiet entry happens 67
-                // times in graphix-tests, in 7 tests, and never in the admin tests).
-                // Besides the dropped fire, an arm first entered by a quiet re-route
-                // never runs its one-shot effects, then or later
-                // (c_first_entry_effect.gx). Recommendation: not (c); build (a) by
-                // position as the first half of the tracker under D30 question 2 (ii),
-                // whose reach test it is, with the five probes pinned in every mode and
-                // a fuzz family for a wake that re-routes a select inside the woken
-                // arm. Not measured: admin key latency (debug builds), a soak.
-                // 2026-11-11 claude: Eric ruled (2026-11-11, D30 follow-up and D31 in
-                // ~/ptmp/cr-discuss.md), replacing the 11-10 ruling for a kernel
-                // tracker: no catch-up. Nothing fires in a body except its binds (an
-                // arm's pattern binds, a collection slot's element or accumulator, a
-                // call's arguments) and captures that fire while the body runs;
-                // everything captured is stale or bottom at an arm's wake, and a
-                // constant in a body never fires. An author who wants an event carried
-                // across a sleep samples it (bind ~ capture, select (ev, ev ~ state)).
-                // Guards never sleep; a rebirth is a birth; seq steps stay as built;
-                // D20 follow-up 3's ruling (A) stays. So neither engine is right here
-                // as built: the node-walk's tracker (TrackedFires at a select, a paused
-                // collection, an absent call; the first-entry Step) is deleted, and the
-                // kernel needs no selection memory. Built after round 20 lands.
-                let view = match entered.replace(i) {
-                    true => {
-                        if !sleep_on_deselect.get(i) {
-                            let since = tracked.unseen(i);
-                            wake::asleep_since(since, || arms[i].1.sleep(ctx));
-                        }
-                        match flags.contains(CFlag::RunEvent) {
-                            true => View::Step,
-                            false => View::Wake,
-                        }
-                    }
-                    false if ctx.event.view == View::Birth => View::Birth,
-                    false => View::Step,
+                // An arm is a body: nothing in it is born. Its first entry
+                // and every later one read what stands stale, its constants
+                // stand, and only its binds fire (`ExecCtx::enter_body`). A
+                // pure arm, not slept when deselected since nothing in it
+                // runs, is slept at a re-entry so its nodes recompute from
+                // what stands. A run event's select is the seq lowering's:
+                // its arm is born at every entry, as built.
+                let reentry = entered.replace(i);
+                if reentry && !sleep_on_deselect.get(i) {
+                    let since = match tracked {
+                        Some(tracked) => tracked.unseen(i),
+                        None => wake::stopped(ctx),
+                    };
+                    wake::asleep_since(since, || arms[i].1.sleep(ctx));
+                }
+                let view = match (reentry, seq_world(*flags)) {
+                    (true, _) if flags.contains(CFlag::RunEvent) => Some(View::Step),
+                    (true, _) => Some(View::Wake),
+                    (false, true) if ctx.event.view == View::Birth => Some(View::Birth),
+                    (false, true) => Some(View::Step),
+                    (false, false) => None,
                 };
-                let (t, v) = ctx.under(view, |ctx| {
-                    evaluate_arm(tracked, &mut arms[i], i, &guard_took, ctx)
-                });
+                let (t, v) = match view {
+                    Some(view) => {
+                        ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i], i, ctx))
+                    }
+                    None => {
+                        ctx.enter_body(|ctx| evaluate_arm(tracked, &mut arms[i], i, ctx))
+                    }
+                };
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.
@@ -2746,14 +2550,7 @@ impl<R: Rt> Update<R> for Select<R> {
                     ));
                 }
                 if let Some(j) = selected.take().or(held) {
-                    deselect(
-                        ctx,
-                        tracked,
-                        kept,
-                        j,
-                        &mut arms[j],
-                        sleep_on_deselect.get(j),
-                    );
+                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect.get(j));
                 }
                 return resident.set_bottom(false);
             }
@@ -2798,13 +2595,13 @@ impl<R: Rt> Update<R> for Select<R> {
         } = self;
         slept.set();
         let stopped = wake::stopped(ctx);
-        if let Some(facts) = arm_facts.as_mut() {
-            facts.tracked.all_fell_asleep(stopped);
+        let mut tracked = arm_facts.as_mut().and_then(|f| f.tracked.as_mut());
+        if let Some(tracked) = &mut tracked {
+            tracked.all_fell_asleep(stopped);
         }
         arg.sleep(ctx);
         for (i, (pat, body)) in arms.iter_mut().enumerate() {
-            let since =
-                arm_facts.as_ref().map_or(stopped, |f| f.tracked.unseen(i).min(stopped));
+            let since = tracked.as_ref().map_or(stopped, |t| t.unseen(i).min(stopped));
             wake::asleep_since(since, || body.sleep(ctx));
             if let Some(n) = &mut pat.guard {
                 n.sleep(ctx)
@@ -2842,7 +2639,7 @@ impl<R: Rt> Update<R> for Select<R> {
             return Ok(());
         }
         for (_, n) in &self.arms {
-            warn_birth_only(ctx, self.flags, n)?;
+            warn_constant_action(ctx, self.flags, n)?;
         }
         if let ExprKind::Select(se) = &self.spec.kind {
             for (_, body) in se.arms.iter() {

@@ -119,7 +119,7 @@ async fn select_restarts_timer(mode: Mode) -> Result<()> {
         let issued = never<i64>();
         tick <- select tick {
             1 => issued ~ 2,
-            2 => sys::time::after_idle(duration:30.ms, 3),
+            2 => sys::time::after_idle(duration:30.ms, tick ~ 3),
             3 => issued ~ 4,
             _ => never()
         };
@@ -155,8 +155,9 @@ async fn select_aborts_slept_call(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// A sleep pauses an idle wait and the wake resumes it: the arm wakes at
-// tick 4 with no fire of the wait's argument, and the wait tick 1 began
+// A sleep pauses an idle wait and the wake resumes it: the arm's first
+// entry, at tick 1, starts the wait on the scrutinee's fire; the arm wakes
+// at tick 4 with no fire of the wait's argument, and the wait tick 1 began
 // still answers.
 async fn wake_resumes_an_idle_wait(mode: Mode) -> Result<()> {
     let code = r#"{
@@ -165,7 +166,7 @@ async fn wake_resumes_an_idle_wait(mode: Mode) -> Result<()> {
         let on = select tick { 1 | 4 => true, _ => false };
         let issued = never<i64>();
         select on {
-            true => select sys::time::after_idle(duration:250.ms, v) {
+            true => select sys::time::after_idle(duration:250.ms, once(on) ~ v) {
                 reply => issued <- reply
             },
             false => never()
@@ -444,10 +445,10 @@ async fn wake_resumes_quietly(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// An arm holding a raise to a handler sleeps and wakes like an arm with a
-// write: re-entered over a standing error, it reads it stale and raises
-// nothing new.
-async fn reentry_raises_once(mode: Mode) -> Result<()> {
+// A raise to a handler acts on a fire: an arm entered after its root's
+// first cycle reads a standing error stale, and raises nothing at its
+// first entry or at any entry after it.
+async fn entry_over_a_standing_error_raises_nothing(mode: Mode) -> Result<()> {
     let code = r#"{
         let s = array::iter([1, 2, 1, 2]);
         let t = "x";
@@ -459,14 +460,14 @@ async fn reentry_raises_once(mode: Mode) -> Result<()> {
         raised
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    assert_eq!(values.last(), Some(&Value::I64(1)), "{values:?}");
+    assert_eq!(as_i64s(&values), [0]);
     Ok(())
 }
 
-// The same through a called helper: an arm whose raise or outer write
-// happens in a callee sleeps too, and its re-entries raise and write
-// nothing new.
-async fn reentry_through_a_callee_once(mode: Mode) -> Result<()> {
+// The same through a called helper: a callee activated in an arm entered
+// later reads its standing arguments stale, so its raise and its outer
+// write never act. The one count of `log` is its own first value.
+async fn entry_through_a_callee_raises_and_writes_nothing(mode: Mode) -> Result<()> {
     let code = r#"{
         let s = array::iter([1, 2, 1, 2]);
         let t = "x";
@@ -482,9 +483,8 @@ async fn reentry_through_a_callee_once(mode: Mode) -> Result<()> {
         (raised, count(log))
     }"#;
     let (values, _) = run_delta(code, mode).await?;
-    let last = matches!(values.last(), Some(Value::Array(a))
-        if a[..] == [Value::I64(1), Value::I64(2)]);
-    assert!(last, "{values:?}");
+    let shown: Vec<_> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(shown, ["[i64:0, i64:1]"]);
     Ok(())
 }
 
@@ -541,7 +541,7 @@ modes!(
     wake_resumes_quietly,
     wake_resumes_standing_timers,
     woken_event_state_blanks_until_the_next_event,
-    reentry_raises_once,
-    reentry_through_a_callee_once,
+    entry_over_a_standing_error_raises_nothing,
+    entry_through_a_callee_raises_and_writes_nothing,
     range_over_a_late_bound
 );

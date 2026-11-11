@@ -382,7 +382,7 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
     n <- sys::time::timer(duration:300.ms, false) ~ 1;
     n <- sys::time::timer(duration:600.ms, false) ~ 2;
     let addr = select n { 0 => "127.0.0.1:0", _ => never() };
-    let handler = |req: http::Request| {body: "hello", headers: [], status: u16:200};
+    let handler = |req: http::Request| req ~ {body: "hello", headers: [], status: u16:200};
     let v = select n % 2 == 0 {
         true => http::server_addr(http::serve(#addr: addr, #handler: handler)$),
         false => "asleep"
@@ -413,7 +413,7 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
 #[tokio::test]
 async fn http_silent_socket_releases_its_permit() -> Result<()> {
     const CODE: &str = r#"{
-    let handler = |req: http::Request| {body: "served", headers: [], status: u16:200};
+    let handler = |req: http::Request| req ~ {body: "served", headers: [], status: u16:200};
     let server = http::serve(
         #addr: "127.0.0.1:0",
         #max_connections: 1,
@@ -487,7 +487,7 @@ run!(http_500_body_is_generic, r#"{
 // A response body over the client's #max_body is an error, whether the
 // server declares its length or not.
 run!(http_client_max_body, r#"{
-    let handler = |req: http::Request| { body: "hello", headers: [], status: u16:200 };
+    let handler = |req: http::Request| req ~ { body: "hello", headers: [], status: u16:200 };
     let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
     let addr = http::server_addr(server);
     let client = http::default_client(server)$;

@@ -427,15 +427,17 @@ always in one order, and never define a function with a labeled
 parameter; about a dozen corpus pins have labeled lambdas, and no
 mutation knows about labels. The logic is soaked only by accident, in
 either direction, and it has runtime semantics as well as typing ones
-(a default is born with the binding and delivers FIRED at a fresh
-callee's first dispatch, `wake_catchup.md`), so the work serves
+(a default is its expression, evaluated in the callee, and stands at a
+new activation: a constant default fires only in a birth,
+`bind_driven_bodies.md`), so the work serves
 the regular soak, not only this lane.
 
 **Generation (every lane).** The generators define functions with
 labeled parameters, required and defaulted, and call them:
 - defaults are literals, expressions over earlier bindings, and
-  occasionally a value a stream supplies, so the born-with-the-binding
-  delivery is exercised under the schedules;
+  occasionally a value a stream supplies, so a default that stands at a
+  new activation and one that fires are both exercised under the
+  schedules;
 - some labeled parameters are polymorphic (`#x: 'a = ..`, with the
   default checked against the variable) and some are function-typed
   (a labeled callback);

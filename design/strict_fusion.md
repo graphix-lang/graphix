@@ -24,37 +24,41 @@ value fires when the trigger does, and when the trigger fires untainted
 `graphix_iocall` queues the site and the arguments beside the run's `?`
 raises (`emit_helpers::Deferred`); after the run the wrapper performs
 each through the builtin's `BuiltIn::perform`, in execution order, a
-forked loop's chunks in slot order. A kernel derives its selection
-fresh each run, so under a select arm a call that performs (an `Io`
-builtin's, or a function's that reaches one) fuses only when each
-trigger fires at every entry to the arm: an `Io` builtin's trigger fires
-with the scrutinee or one of the arm's binds (a read of one, or a part
-that reads one: a nested select through its scrutinee only, never a
-function's result), a performing function is called with arguments that
-each do and performs only on its own formals, recursively
-(`analysis::io_follows`), and no arm has a guard
-(`lowering::arm_io_blocker`). Elsewhere a fire the
-arm missed asleep, which the node-walk re-delivers at entry, or a
-constant, which fires at the arm's first entry only, would print on one
-engine only. A tail recursion that prints by its formals is one native loop.
+forked loop's chunks in slot order. A call that performs (an `Io`
+builtin's, or a function's that reaches one) fuses in a select arm's
+body as it does anywhere: both engines perform only on a live fire of
+its trigger in a cycle the arm runs, since nothing is delivered at an
+arm's entry or its wake and a constant never fires there
+(`bind_driven_bodies.md`). In a guard it fuses only when its trigger
+fires with the arm's binds (a read of one, or a part that reads one: a
+nested select through its scrutinee only, never a function's result; a
+performing function is called with arguments that each do and performs
+only on its own formals, recursively, `analysis::io_follows`), as a
+guard's raise does (`lowering::guard_blocker`, below). A tail recursion
+that performs is one native loop, each pass performing as each
+activation would: a new depth is entered, not born.
 
 Swallowed-failure diagnostics (`$` and `?` without a covering handler)
 follow a fired error operand inside a kernel. They carry neither a
 report-count nor an at-least-once guarantee across the two engines, and
-remain eligible for fusion. Prologue guards dominate the selection chain
-and may report even when an earlier arm claims the value; their bind masks
-still prevent unreached binds from becoming values. A constant error in
-an arm first entered after the kernel's birth may never fire there and
-never report. Native tail depths may share one report.
+remain eligible for fusion. A guard reports wherever its arm's pattern
+admits the value, whichever arm takes it, in both engines; a kernel's
+bind masks keep the binds of an arm whose pattern fails from becoming
+values. A kernel computes every guard, so a fused guard whose error
+operand does not read its arm's binds also reports where the pattern
+does not admit the value. A constant error in an arm entered after its root's first cycle
+never fires and never reports, in either engine, and one in a callee of
+a recursion reports in the activations the birth reaches, not in a depth
+grown later. Native tail depths may share one report.
 
 `stdlib/graphix-tests/tests/fusion_diagnostics.rs` checks values, report
 counts, and retained native calls in all four modes:
 
 | Swallowed failure | Node-walk reports | Fused reports |
 | --- | ---: | ---: |
-| Unreached guard over four firing inputs | 0 | 4 |
-| Constant error in a late arm | 1 | 0 |
-| Constant error over six tail depths | 6 | 1 |
+| Guard below the taken arm, over four firing inputs | 4 | 4 |
+| Constant error in a late arm | 0 | 0 |
+| Constant error over six tail depths | 1 | 1 |
 
 Eric's ruling: "Complexity needs to pay rent, and this whack of
 complexity can't afford to live in our compiler." The machinery that
@@ -165,29 +169,34 @@ error (not tainted, not stale), exactly `Qop::update`'s fired-only
 rule. The value side is untouched: the failing `?` is the tainted
 placeholder that continues.
 
-The delivery's TRIGGER must be computable by a memoryless kernel. A
-handler-ful `?` under a select arm raises on an edge the arm may owe
-to the select: a constant fires at the arm's first entry only (a wake
-is a resume), so a raise whose error derives from one (`error(`E)?`,
-`cast<i64>("x")?`) fires when the arm is first ENTERED, and an input
-fire no selected arm saw is
-re-delivered FIRED to the arm that reads it at its wake
-(design/wake_catchup.md). A kernel derives its selection fresh every
-run and keeps neither memory, so `lowering::arm_raise_blocker` refuses
-every region with a handler-ful `?` reachable under a select arm,
-whatever its error derives from, callee bodies and nested selects
-included. A bottom-typed arm that can raise runs its
-body for the delivery instead of the bare `never()` placeholder, and a
-`?` or `$` over an inner that is always what it strips has its own
-emission (`emit_qop_always_bad`: raise when fresh, yield a bottom). The
-alternative that would let these fuse — a per-select last-arm word,
-the same class as a first-call word — is selection memory, not taken.
+A handler-ful `?` in a select arm's body fuses: in both engines it
+raises only on a live fire of its operand in a cycle the arm runs, with
+the arm's binds or a capture that fires then. Entering the arm or waking
+it raises nothing, and a raise whose error derives from a constant
+(`error(`E)?`, `cast<i64>("x")?`) fires only where the arm is taken in
+a birth (`design/bind_driven_bodies.md`). The one blocker under a
+select is `lowering::guard_blocker`: it refuses a region holding a guard
+`lowering::unfollowed_guard` finds, one with a raise to a handler whose
+operand, or a performing call whose trigger, does not fire with its
+arm's binds ("a guard that may raise or perform on what its arm's binds
+do not carry — a kernel computes every guard, the node-walk only one
+whose arm's pattern admits the value"). A kernel computes every guard
+ahead of the arm chain, its arm's binds read as bottom where the
+scrutinee is bottom or the arm's pattern does not admit the value: the
+binds are masked by the arm's shape and, for an inferred predicate, by
+the type the arms above narrow the arm to
+(`emit::select::emit_narrowed_test`). The node-walk runs a guard only
+where the pattern admits the value, so an effect not gated on the binds
+would act in the kernel alone. A bottom-typed arm that can raise
+runs its body for the delivery instead of the bare `never()`
+placeholder, and a `?` or `$` over an inner that is always what it
+strips has its own emission (`emit_qop_always_bad`: raise when fresh,
+yield a bottom).
 
 ## What a kernel keeps
 
 Only what decides FIRING: per-param STALE and TAINT discs, prev-length
-words (exact HOF resize detection), first-call words (a callee's init
-view on its first call ever), and the per-call-site blocks /
+words (exact HOF resize detection), and the per-call-site blocks /
 per-slot anchor chains / per-activation block trees that give those
 words per-slot and per-activation multiplicity
 (`kernel_instance_state.md`), plus the shrink reclaim of unreached
@@ -199,8 +208,13 @@ invocation exactly these through scoped thread-locals:
 `KERNEL_PANIC`, `KERNEL_ENV`, the deferred queue, the self-block counters
 (`SELF_BLOCK_GEN` and its kin), the core-trait value hooks and the fork
 mode (`par_loop::PAR_LOAN`, the invoking context's `ParLoan`). Wire slot 0
-bit 1 is the wake view (the kernel's own `slept` bit or the arm's), so a wake delivers standing args
-STALE and a stateless re-eval's STALE result (`wake_catchup.md`).
+is the context word, a kernel's one source of birth: bit 0 is born (a
+Birth or a Step: constants fire), bit 1 the wake view (a Wake, a Step,
+or the kernel's own `slept` bit), under which standing args read STALE
+and a stateless re-eval's result is STALE (`sleep_and_wake.md`). A
+callee's word is its caller's: a call site's first use, a loop slot's
+first iteration and a self-call's fresh block are entries, not births
+(`emit::call::emit_callee_context_word`).
 
 ## What a kernel does not hold
 
@@ -213,8 +227,8 @@ machinery that held those, and the permissive hatch beside it, are in
 `git log`.
 
 What survives regardless is the interp semantics built alongside
-(wake catch-up, the birth rule, the sys::net level effects) — language
-semantics, engine-independent.
+(sleep as pause, the sys::net level effects) — language semantics,
+engine-independent.
 
 ## Alternatives ruled out
 
@@ -237,30 +251,28 @@ semantics, engine-independent.
 - **Strict fusion** (`design/strict_fusion.md`): fusion admits pure
   computation only, and the `Effect::Io` calls gated on their trigger's
   fire. A builtin fuses iff its `Effect::Stateless` carries a `FastCall`
-  or its `Effect::Io` an `IoCall`; one that performs under a select arm
-  fuses there only when its trigger fires at every entry (it fires with
-  the scrutinee or the arm's binds, through a nested select's scrutinee
-  only and never a function's result; a performing callee performs only
-  on its formals, `analysis::io_follows`; and no arm has a guard,
-  `lowering::arm_io_blocker`), and a tail recursion is one native loop
-  only when its Io and its handler-ful raises follow its formals
-  (`lowering::site_memory`: a constant-derived raise is an
-  activation's at its birth); `?` fuses with or without a covering catch (a handler-ful
+  or its `Effect::Io` an `IoCall`; one that performs in a select arm's
+  body fuses there (both engines perform only on a live fire of its
+  trigger), and a tail recursion that performs or raises to a handler is
+  one native loop like any other (a new depth is entered, not born, so a
+  pass performs and raises as an activation does); `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
-  `Qop` uses), except a handler-ful `?` reachable under a select arm,
-  callee bodies included: its raise may be owed to a fire the arm
-  missed asleep or to a constant at its first entry, and a kernel remembers
-  neither, so it node-walks (`lowering::arm_raise_blocker`), as does a
-  guard whose handler-ful raise or performing call does not fire with
-  its arm's binds (`lowering::unfollowed_guard`): a kernel runs its
-  prologue guards even where unreached, with those binds bottom; the
-  node-walk runs only guards the chain reaches; only a
+  `Qop` uses), in a select arm's body as anywhere; the one refusal under
+  a select is a guard whose handler-ful raise or performing call does
+  not fire with its arm's binds (through a nested select's scrutinee
+  only and never a function's result; a performing callee performs only
+  on its formals, `analysis::io_follows`; `lowering::guard_blocker`,
+  `unfollowed_guard`): a kernel computes every guard ahead of the arm
+  chain, with those binds bottom where the scrutinee is bottom or the
+  arm's pattern, or the type the arms above narrow it to, does not admit
+  the value; the node-walk runs a guard only where its arm's pattern
+  admits the value; only a
   `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other
   bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
   `~`, `Any`, `Catch` — node-walks, transitively. A kernel's only
   cross-invocation memory is the firing boundary (prev-length words,
-  first-call words, per-site/per-activation blocks; in a loop each is
+  per-site/per-activation blocks; in a loop each is
   the slot's, never shared by its iterations) and its loops' cost sites,
   which decide nothing a program sees; no replay caches, no selection
   memory. The runtime loans a kernel exactly `KERNEL_ABORT`,

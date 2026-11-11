@@ -87,30 +87,30 @@ bottom FreshBottom), stamped this cycle; a quiet production stands
 (`store_insert_standing`) with the stamp of the binding's last fire,
 since nothing fired (a `let` republished at its wake, a stale
 scrutinee's binds, a trait default relayed quietly, a collection's
-element or a fold's accumulator delivered stale). A wake owes no fire
-for one to any reader, one wake catch-up dates by write stamp (a callee
-bound at the wake) included, unless the production moved (`Tag::MOVED`:
-a wake recomputed it from an input that fired while its region slept),
-which is stored as a fire is and read as one by every reader outside
-the region (`design/wake_catchup.md`, What a wake stands). Its `Notify`
+element or a fold's accumulator delivered stale). No reader is owed a
+fire for one, a seq step's catch-up scope, which dates by write stamp,
+included (`wake::owed`). A quiet production that moved (`Tag::MOVED`: a
+resume or an entry recomputed it) is stored as a fire is, stamped this
+cycle with its readers' boundaries marked, and is a fire to no reader:
+each recomputes from it, quietly (`design/bind_driven_bodies.md`, the
+moved mark; a seq step's catch-up scope dates it as a write). Its `Notify`
 says whether a fire also
 schedules the roots that read the binding (`Roots`: a let, a reference
 cell, a module's val, `pc`, a runtime write) or only the walk's readers
 (`Walk`: binds read inside their own root).
 
-Four fires go into the event alone and are never stored: a `let`'s wake
-re-raise of a write the store already holds
-(`Bind::reraise_writes_while_asleep`), wake catch-up's inject of a
-standing value (`wake::inject`), a priming of a fresh body's reads from
-the store (a reloaded module's, a fresh bind's defaults), and a born
-callee's quiet arguments (`publish_production`'s
-`QuietAtRoot::Deliver`; a quiet formal's seed stands, `Stand`, as
-`ByRef`'s does). An error raised to a catch is stored as any write is
+Three fires go into the event alone and are never stored: the wake
+re-raise of a write to a seq machine's own name that the store already
+holds (`Bind::reraise_writes_while_asleep`), the seq tracker's inject of
+a standing value (`wake::inject`), and a priming of a reloaded module's
+fresh body from the store. A fresh callee's quiet arguments and
+defaults stand (`publish_production`'s `QuietAtRoot::Stand`), as
+`ByRef`'s seed does. An error raised to a catch is stored as any write is
 (`error::deliver_error`): delivered (`Walk`) the cycle it was raised
 where the handler is in the raise's root and nothing was delivered to it
 yet this cycle, else a runtime write, so a reader the handler builds
-after the raise reads it, and wake catch-up re-raises it to one that
-slept through it.
+after the raise reads it. Nothing raises it again for a body that slept
+through it: no fire is kept for a body that does not run.
 
 Four writes go to the store alone and put nothing in the event: a
 quiet formal's seed (`publish_production`'s `QuietAtRoot::Stand`), a
@@ -131,7 +131,7 @@ inputs' current values after every update; the tag plane is the join.
 A node may skip the recompute and Stale-downgrade in place when no
 consumed input triggered (Fired|FreshBottom), valid only where "Stale ⇒
 payload unchanged since the last recompute" holds: an awake node. The
-first update after a sleep recomputes (`design/wake_catchup.md`). The
+first update after a sleep recomputes (`design/sleep_and_wake.md`). The
 uniform gate is `dense_gate!` (`node/mod.rs`): bottom in ⇒ bottom out
 (FreshBottom iff a delivery triggered); otherwise ride unless `trig ∨
 bottom-resident ∨ woke`. `node::gather` is the per-child join
@@ -141,7 +141,9 @@ accumulator every composite uses.
 store read: a reader under a birth (`event.view`, `View::Birth`)
 interprets a standing entry as Fired; otherwise as Stale. A wake or a
 step (`View::wake`: `Wake`, `Step`) is NOT a birth: standing entries
-read Stale under it, though constants fire in a step (`View::born`).
+read Stale under it, though constants fire in a step (`View::born`). A
+body's entry (an arm, a slot, an activation) reads as a wake does
+(`ExecCtx::enter_body`).
 
 **R3 — bottom propagates.** Consuming a bottom bottoms the production,
 uniformly, including builtin argument seams: a bottomed argument makes
@@ -220,25 +222,25 @@ unchanged.
   it reaches makes a reference or a lambda or a call has no static
   target (`analysis::hands_out_callee_binds`): any other `let` is named
   by its scope alone.
-- A late fire to a reader that something holds asleep in the next cycle
-  sets that holder's catch-up bit (`TrackedFires::observe_late`, matching
-  the reader's root and a boundary of the holder's around it), so the
-  reader takes it at its wake as a fire made while it slept, the reader's
-  own binding compared as the variable the late fire names (a val's
-  included). The holders: a select arm (its body's boundary, as the select
-  updates and again as it deselects the arm), a guard the chain does not
-  reach (each guard sits in a boundary of its own, so a guard's reader is
-  told apart from its select's; the guard's arm's pattern binds pass no
-  reader inside it, which read them as the guard ran), a call whose function is
-  bottom (its instance's body) and a collection whose source is bottom
-  (its slots' instance bodies). A seq step that waits its turn needs no
-  bit for it: its entry samples what it reads and issues each call as a
-  fresh frame, so a fire it missed changes nothing there. Pins:
-  `lang::delivery::{a_late_fire_reaches_a_sleeping_arm_at_its_wake,
-  a_late_fire_to_a_val_reaches_a_sleeping_arm_at_its_wake,
-  a_late_fire_reaches_a_sleeping_guard_at_its_wake,
-  a_late_fire_reaches_a_call_over_a_bottom_function_at_its_return,
-  a_late_fire_reaches_a_collection_over_a_bottom_source_at_its_return}`.
+- A late fire to a reader in a body that does not run in the next cycle
+  (a deselected arm, a guard whose pattern does not admit the value, a
+  call whose function is bottom, a collection whose source is bottom) is
+  not kept: nothing is recorded for a body while it does not run, and at
+  its next run the reader recomputes from what stands
+  (`design/bind_driven_bodies.md`). A guard whose pattern admits the
+  value runs below the arm that takes it, and takes the late fire in the
+  cycle it arrives. Only the seq machine's world keeps one: a step's
+  select and a bound call a step issued whose function is bottom set
+  their tracker's bit (`TrackedFires::observe_late`, matching the
+  reader's root and a boundary the holder has around it). A seq step
+  that waits its turn needs no bit for it: its entry samples what it
+  reads and issues each call as a fresh frame, so a fire it missed
+  changes nothing there. Pins:
+  `lang::delivery::{a_late_fire_to_a_sleeping_arm_is_not_kept,
+  a_late_fire_to_a_val_is_not_kept_for_a_sleeping_arm,
+  a_late_fire_reaches_a_guard_below_the_claim,
+  a_late_fire_to_a_call_over_a_bottom_function_is_not_kept,
+  a_late_fire_to_a_collection_over_a_bottom_source_is_not_kept}`.
 - Inside the walk's own boundary the boundaries cannot order a reader
   against the fire: a `Deref` keeps a read stamp (`prune::ReadStamp`,
   in its `Reader`), set as it reads, and one that read this cycle is

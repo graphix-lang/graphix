@@ -115,8 +115,8 @@ own). `node/seq_machine.rs` runs it:
   boundary the machine publishes the new label within the cycle
   (overlay, store, `notify_set`, as a `Bind` publishes), so the atoms'
   entry event is `pc` in both cases. Entering wakes the step under the
-  step view (`View::Step`) with `Select`'s catch-up
-  (`node/wake.rs::TrackedFires`, shared with `Select`): one fire bit per
+  step view (`View::Step`) with the machine's fire tracker
+  (`node/wake.rs::TrackedFires`, which a step's select holds too): one fire bit per
   step-body input per machine, consumed by whichever step reads it; what
   it reaches is in `seq_blocks.md` §6.4. After the
   steps it ran, the machine records the fires they made for the steps

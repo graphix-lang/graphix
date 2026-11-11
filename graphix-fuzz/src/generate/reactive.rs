@@ -606,9 +606,10 @@ fn slept_arm(
 /// A toggling select whose arm 0 lets a value out to a reader that never
 /// sleeps: a closure over a callee's formal, or a reference to an arm
 /// `let`, held by `once`. The value follows a state written only on the
-/// epochs arm 0 sleeps through, so each wake re-stands it moved, a fire
-/// for the reader outside (`design/wake_catchup.md`, What a wake stands),
-/// read bare or under an operator and counted. Two shapes follow a count
+/// epochs arm 0 sleeps through, so each wake re-stands it moved, a new
+/// value and no fire for the reader outside
+/// (`design/bind_driven_bodies.md`, the moved mark), read bare or under
+/// an operator and counted. Two shapes follow a count
 /// of the input's fires instead: an arm slept late ([`late_slept_arm`])
 /// and a `let` stood again ([`stood_again`]).
 fn escaped_arm(

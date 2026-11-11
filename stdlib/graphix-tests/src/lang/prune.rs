@@ -127,10 +127,10 @@ async fn standing_reference_refresh_marks_its_readers() -> Result<()> {
 }
 
 // A callee's formal a wake re-seeds from a fire its arm slept through
-// fires for the closure's reader outside the arm, which marks it: `count`
-// ticks at clk 6, in every mode.
+// marks the closure's reader outside the arm, which recomputes with no
+// fire: `v` reads 3 at clk 6 and `count` does not tick, in every mode.
 #[tokio::test(flavor = "multi_thread")]
-async fn standing_formal_refresh_marks_its_readers() -> Result<()> {
+async fn standing_formal_refresh_marks_its_readers_quietly() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -151,10 +151,10 @@ async fn standing_formal_refresh_marks_its_readers() -> Result<()> {
         "[3, 2, 1, 1, 2]",
         "[4, 2, 1, 1, 2]",
         "[5, 3, 1, 1, 2]",
-        "[6, 3, 0, 3, 3]",
-        "[7, 4, 0, 4, 4]",
-        "[8, 4, 0, 4, 4]",
-        "[9, 5, 0, 5, 5]",
+        "[6, 3, 0, 3, 2]",
+        "[7, 4, 0, 4, 3]",
+        "[8, 4, 0, 4, 3]",
+        "[9, 5, 0, 5, 4]",
     ];
     agrees(code, &expected).await?;
     for mode in [Mode::Par, Mode::JitPar] {
@@ -165,10 +165,10 @@ async fn standing_formal_refresh_marks_its_readers() -> Result<()> {
     Ok(())
 }
 
-// A write that lands in the cycle its let's arm is deselected is a fire
-// no reader saw: the let re-raises it at the wake, and `count` sees 30.
+// A write that lands in the cycle its let's arm is deselected stands: the
+// woken arm reads 30 with no fire, and `count` does not tick for it.
 #[tokio::test(flavor = "multi_thread")]
-async fn write_landing_at_the_deselect_is_reraised() -> Result<()> {
+async fn write_landing_at_the_deselect_stands() -> Result<()> {
     let code = "{
   let n = 0;
   n <- select n { x if x < 6 => (x ~ n) + 1, _ => never() };
@@ -183,17 +183,17 @@ async fn write_landing_at_the_deselect_is_reraised() -> Result<()> {
     agrees(
         code,
         &[
-            "[0, 1]", "[10, 2]", "[20, 3]", "[-1, -1]", "[-1, -1]", "[30, 4]", "[40, 5]",
-            "[50, 6]",
+            "[0, 1]", "[10, 2]", "[20, 3]", "[-1, -1]", "[-1, -1]", "[30, 3]", "[40, 4]",
+            "[50, 5]",
         ],
     )
     .await
 }
 
 // An enclosing deselect sleeps an arm already asleep: a write that
-// landed between the two sleeps is still re-raised at the wake.
+// landed between the two sleeps stands at the wake, read with no fire.
 #[tokio::test(flavor = "multi_thread")]
-async fn second_sleep_keeps_the_first_sleeps_cycle() -> Result<()> {
+async fn write_between_two_sleeps_stands() -> Result<()> {
     let code = "{
   let n = 0;
   n <- select n { x if x < 8 => (x ~ n) + 1, _ => never() };
@@ -213,18 +213,19 @@ async fn second_sleep_keeps_the_first_sleeps_cycle() -> Result<()> {
 }";
     let (values, _) = walks(code, Mode::Interp).await?;
     let last = values.into_iter().map(|v| show(v)).last();
-    assert_eq!(last.as_deref(), Some("[100, 2]"));
-    agrees_last(code, "[100, 2]").await
+    assert_eq!(last.as_deref(), Some("[100, 1]"));
+    agrees_last(code, "[100, 1]").await
 }
 
-// A wake owes a callee bound fresh the fires that landed after its arm
-// fell asleep, not after the arm's last walk: `v` is written while arm 1
-// stands selected and unwalked, so `g`, bound at the wake, counts nothing.
-const SINCE_THE_ARM_FELL_ASLEEP: &str = "{
+/// `f` becomes `g`, which counts `v`'s fires, while the arm of `sc` that
+/// calls it sleeps (n = 13 to 20). `v` fires once while that arm stands
+/// selected and its walk is skipped (n = 11), and once while it sleeps
+/// (n = 17).
+const FRESH_CALLEE_AT_A_WAKE: &str = "{
   let n = 0;
   n <- select n < 30 { true => n + 1, false => never() };
   let v = 0;
-  v <- select n == 10 { true => 7, false => never() };
+  v <- select n { 10 => 7, 16 => 8, _ => never() };
   let g = |x: i64| count(v) * 100 + x;
   let k = |x: i64| x;
   let f = select uniq(n >= 15) { true => g, false => k };
@@ -233,47 +234,50 @@ const SINCE_THE_ARM_FELL_ASLEEP: &str = "{
   select sc { 1 => CALL, _ => 0 }
 }";
 
+// A callee bound fresh at its arm's wake is entered into a `v` that
+// stands: it counts neither fire, so its count has no value and the woken
+// arm is bottom, pruned or not.
 #[tokio::test(flavor = "multi_thread")]
-async fn catch_up_counts_from_the_deselect() -> Result<()> {
-    agrees(&SINCE_THE_ARM_FELL_ASLEEP.replace("CALL", "f(1)"), &["0", "1", "0"]).await
+async fn fresh_callee_at_a_wake_counts_nothing() -> Result<()> {
+    agrees(&FRESH_CALLEE_AT_A_WAKE.replace("CALL", "f(1)"), &["0", "1", "0"]).await
 }
 
-// The same arm falls asleep with the select around it while still
-// selected.
+// The same where the arm falls asleep with the select around it while
+// still selected.
 #[tokio::test(flavor = "multi_thread")]
-async fn catch_up_counts_from_the_enclosing_sleep() -> Result<()> {
-    let code =
-        SINCE_THE_ARM_FELL_ASLEEP.replace("CALL", "select 0 { 0 => f(1), _ => 0 }");
+async fn fresh_callee_at_an_enclosing_wake_counts_nothing() -> Result<()> {
+    let code = FRESH_CALLEE_AT_A_WAKE.replace("CALL", "select 0 { 0 => f(1), _ => 0 }");
     agrees(&code, &["0", "1", "0"]).await
 }
 
-// A guard's callee is owed the same, from the cycle the chain passed the
-// guard by.
+// The same in a guard, which sleeps where its pattern does not admit the
+// value: at its resume the guard is bottom and so is the select.
 #[tokio::test(flavor = "multi_thread")]
-async fn guard_catch_up_counts_from_the_pass() -> Result<()> {
-    let code = SINCE_THE_ARM_FELL_ASLEEP
+async fn fresh_callee_in_a_resumed_guard_counts_nothing() -> Result<()> {
+    let code = FRESH_CALLEE_AT_A_WAKE
         .replace("1 => CALL, _ => 0", "1 if f(1) > 50 => 1, 1 => 2, _ => 0");
     agrees(&code, &["0", "2", "0"]).await
 }
 
-// Or from the cycle the select around it slept.
+// Or in a guard that sleeps with the select around it.
 #[tokio::test(flavor = "multi_thread")]
-async fn guard_catch_up_counts_from_the_enclosing_sleep() -> Result<()> {
-    let code = SINCE_THE_ARM_FELL_ASLEEP
+async fn fresh_callee_in_a_guard_at_an_enclosing_wake_counts_nothing() -> Result<()> {
+    let code = FRESH_CALLEE_AT_A_WAKE
         .replace("CALL", "select 0 { 0 if f(1) > 50 => 1, _ => 2 }");
     agrees(&code, &["0", "2", "0"]).await
 }
 
 // `x` fires while arm 1 of the `in2` select stands selected and its
-// statement is skipped: at the arm's wake the callee bound there counts
-// none of it.
+// statement is skipped (n = 2), and again while the arm sleeps (n = 4):
+// the callee the arm binds at its wake, a closure over `x`, counts
+// neither, and `b` is bottom from the wake on.
 #[tokio::test(flavor = "multi_thread")]
-async fn skipped_statement_owes_its_awake_fires_nothing() -> Result<()> {
+async fn fresh_closure_at_a_wake_counts_nothing() -> Result<()> {
     let code = "{
   let n = 0;
   n <- select n { k if k < 7 => (k ~ n) + 1, _ => never() };
   let in1 = 0;
-  in1 <- select n { 1 => 5, _ => never() };
+  in1 <- select n { 1 => 5, 3 => 6, _ => never() };
   let in2 = 1;
   in2 <- select n { 2 => 0, 4 => 0, 5 => 1, _ => never() };
   let in3 = 0;
@@ -287,7 +291,7 @@ async fn skipped_statement_owes_its_awake_fires_nothing() -> Result<()> {
   let b = select in2 { 0 => -7, _ => g(5) };
   (a, b)
 }";
-    agrees(code, &["[1, 105]", "[2, 105]", "[2, -7]", "[2, -7]"]).await
+    agrees(code, &["[1, 105]", "[2, 105]", "[2, -7]", "[3, -7]", "[3, -7]"]).await
 }
 
 async fn agrees_last(code: &str, expected: &str) -> Result<()> {

@@ -691,9 +691,9 @@ that safe: they are independent.
 
   - `build_bound`, on a `CompileCtx`: instantiate, check, elaborate,
     analyze, take the slot's shared kernels;
-  - `prime_bound`, at the first dispatch: prime the outer variables
-    the compiled defaults read, and run the defaults under the init
-    view.
+  - `prime_bound`, at the first dispatch: run the compiled defaults
+    for the first time, as a body's entry (`ExecCtx::enter_body`): a
+    default stands unless what it reads fires.
 
   A growth whose builds are estimated to pay prebinds its fresh slots
   in compile tasks (`branch::compile_each`: a `CompileCtx::fork` per
@@ -898,8 +898,8 @@ kernel's record (`RecordKind::Chunk`, with its own constants;
 **Shared memory.** Everything a chunk writes outside its own frame is
 indexed by its slot: no state word in a loop is shared across its
 iterations (`kernel_instance_state.md`; a nested loop's prev-length
-word and a call's first-call word are per slot whatever their source,
-which is also the node-walk's multiplicity). What iterations share is
+word and an in-loop call site's block are per slot whatever their
+source, which is also the node-walk's multiplicity). What iterations share is
 the chain levels at the loop's own depth, the directories its nested
 loops and in-loop call sites anchor. The kernel resizes those in the
 preheader, so an in-body ensure finds its level sized and only reads it

@@ -1,6 +1,7 @@
-//! Wake catch-up fire tracking (`design/wake_catchup.md`), shared by
-//! the nodes that pause bodies and wake them: `Select`, the seq machine,
-//! a collection whose source went bottom and a call whose function did.
+//! The seq machine's fire tracking (`design/seq_blocks.md`): what a step,
+//! a step's select and a call a step issues are owed of the fires they
+//! did not see. A body owes and is owed nothing
+//! (`design/bind_driven_bodies.md`, [`in_body`]).
 
 use super::{VarRead, read_var};
 use crate::{
@@ -54,20 +55,24 @@ pub(crate) struct CatchUp {
     /// A call issued as a fresh frame ([`FreshFrame`]): every input that
     /// stands is owed, unless a select inside it tracks the input.
     fresh: bool,
-    /// The outermost region around the evaluation that resumed this cycle.
-    region: Option<BoundaryRef>,
+    /// The scope of a body (a select's arm or guard, a paused
+    /// collection's slots, an absent call's instance): it owes nothing.
+    body: bool,
 }
 
 impl CatchUp {
-    pub(crate) fn region(&self) -> Option<&BoundaryRef> {
-        self.region.as_ref()
-    }
-
     /// Whether a fire of `id` no reader saw is this evaluation's: by the
     /// bit of the innermost select that tracks `id`, which it takes.
     fn owes(&self, id: &BindId) -> bool {
+        if self.body {
+            return false;
+        }
         let mut scope = Some(self);
         while let Some(s) = scope {
+            if s.body {
+                scope = s.outer.as_deref();
+                continue;
+            }
             if s.tracked.contains(id) {
                 let owed = s.pending.contains(id);
                 if owed {
@@ -82,6 +87,31 @@ impl CatchUp {
         }
         true
     }
+}
+
+/// Run `f`, the evaluation of a body: a body is driven by its binds, so
+/// the catch-up scope around it owes what it learns as it runs nothing.
+pub(crate) fn in_body<R: Rt, T>(
+    ctx: &mut ExecCtx<'_, R>,
+    f: impl FnOnce(&mut ExecCtx<'_, R>) -> T,
+) -> T {
+    let outer = match &ctx.catch_up {
+        Some(outer) if ctx.event.init() => outer.clone(),
+        _ => return f(ctx),
+    };
+    let scope = CatchUp {
+        unseen: outer.unseen,
+        tracked: Arc::default(),
+        pending: Arc::default(),
+        taken: Mutex::default(),
+        outer: Some(outer.clone()),
+        fresh: false,
+        body: true,
+    };
+    ctx.catch_up = Some(Arc::new(scope));
+    let r = f(ctx);
+    ctx.catch_up = Some(outer);
+    r
 }
 
 /// A call a seq step issues, run as a fresh frame: everything it reads
@@ -106,7 +136,7 @@ impl FreshFrame {
             taken: Mutex::default(),
             outer: ctx.catch_up.clone(),
             fresh: true,
-            region: ctx.catch_up.as_ref().and_then(|s| s.region.clone()),
+            body: false,
         };
         let outer = mem::replace(&mut ctx.catch_up, Some(Arc::new(scope)));
         let injected = deliver_owed(ctx, fill);
@@ -133,23 +163,20 @@ pub(crate) fn in_fresh_frame<R: Rt>(ctx: &ExecCtx<'_, R>) -> bool {
 }
 
 /// Whether the catch-up scope owes `id` a fire: it was written while the
-/// arm slept, is not delivered this cycle, and no reader saw its fire.
-/// What a wake stood moved is such a write to a reader outside the region
-/// that woke, and none to one inside it, which slept through the fire the
-/// stand stands for.
+/// step slept, is not delivered this cycle, and no reader saw its fire.
+/// What a wake stood again ([`crate::Tag::moved`]) is stamped as a write
+/// is, and is one to a step: the stand replaced the entry of whatever
+/// fire the step missed.
 pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
-    ctx.event.variables.get(id).is_none_or(|tv| stands_since(ctx, id, tv).is_some())
-        && ctx.rt.store_get(id).is_some_and(|(tv, stamp)| {
-            let tag = tv.tag();
-            *stamp >= scope.unseen
-                && !tag.is_bottom()
-                && !(tag.moved()
-                    && ctx.boundary.as_ref().is_some_and(|b| {
-                        b.resumed_in(*stamp)
-                            || b.stood_in(ctx.rt.var_of(*id).id(), *stamp)
-                    }))
-        })
+    ctx.event
+        .variables
+        .get(id)
+        .is_none_or(|tv| tv.tag().moved() || stands_since(ctx, id, tv).is_some())
+        && ctx
+            .rt
+            .store_get(id)
+            .is_some_and(|(tv, stamp)| *stamp >= scope.unseen && !tv.tag().is_bottom())
         && scope.owes(id)
 }
 
@@ -174,13 +201,17 @@ pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
 // region on the stand, not a cycle stamp on the boundary
 // (`Boundary::resumed_in`). Decide (3) with Eric if a program shows it.
 // (wake-outside-regions-01)
-/// Whether the evaluation resumes a region that slept through a write
-/// stamped `stamp`: what it recomputes from the written value moved
-/// ([`crate::Tag::moved`]).
+// 2026-11-11 claude: Eric ruled (11-11): a wake fires nothing for anyone. What
+// a wake stands moved is now read stale by every reader and only tells a
+// consumer to recompute, so (1) and (3) no longer arise: no reader judges where
+// it stands. (2) stands: a custom Apply that drops the bit leaves a reader
+// outside holding a result computed from the old value.
+/// Whether the evaluation resumes or enters a body: what it reads that
+/// stands may have changed since the body last ran, so what it computes
+/// from it moved ([`crate::Tag::moved`]).
 #[inline]
-pub(crate) fn slept_through<R: Rt>(ctx: &ExecCtx<'_, R>, stamp: u64) -> bool {
+pub(crate) fn resumes<R: Rt>(ctx: &ExecCtx<'_, R>) -> bool {
     ctx.event.view == View::Wake
-        && ctx.catch_up.as_ref().is_some_and(|s| !s.fresh && stamp >= s.unseen)
 }
 
 /// The stamp `id`'s store entry keeps beside `delivered`, its quiet
@@ -242,13 +273,13 @@ pub(crate) fn inject<R: Rt>(
     injected.push((id, ctx.event.variables.put(id, TagValue::fired(v))));
 }
 
-/// Wake-catch-up fire tracking (design/wake_catchup.md): one fire bit
-/// per arm-body input, set when the input fires and consumed by the
-/// arm evaluation that reads it, so a woken arm receives exactly the
-/// fires no selected reader saw, once, at the current standing value.
-/// A select gives each guard a consumer slot in the same tracker. The
-/// scrutinee and pattern binds (of any enclosing select) are not delivered
-/// by it. Survives sleep.
+/// The seq machine's fire tracking (`design/seq_blocks.md`): one fire
+/// bit per input of an arm (a step, or an arm of a step's select), set
+/// when the input fires and consumed by the arm evaluation that reads it,
+/// so an entered arm receives exactly the fires no reader saw, once, at
+/// the current standing value. A select gives each guard a consumer slot
+/// in the same tracker. The scrutinee and pattern binds (of any enclosing
+/// select) are not delivered by it. Survives sleep.
 #[derive(Debug, Default)]
 pub(crate) struct TrackedFires {
     /// Per arm: the body's free refs. Refreshed at each deselect, when
@@ -313,10 +344,6 @@ impl ArmMask {
 
     pub(super) fn unset(&mut self, i: usize) {
         self.0[i / 64] &= !(1 << (i % 64));
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.0.iter().all(|w| *w == 0)
     }
 
     pub(super) fn get(&self, i: usize) -> bool {
@@ -563,25 +590,14 @@ impl TrackedFires {
 
     /// Arm `i` runs: under a wake or step view, open the catch-up scope
     /// for what it learns as it runs; what to put back, for [`Self::ran`].
-    /// A resume is recorded on `region`, the boundary around the arm.
     pub(crate) fn open<R: Rt>(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
         i: usize,
-        region: Option<&BoundaryRef>,
     ) -> Option<Option<Arc<CatchUp>>> {
         if !ctx.event.init() {
             return None;
         }
-        let resumed = region.filter(|_| ctx.event.view == View::Wake);
-        if let Some(b) = resumed {
-            b.resume(ctx.rt.cycle())
-        }
-        let region = match ctx.catch_up.as_ref().and_then(|s| s.region.as_ref()) {
-            Some(outermost) => Some(outermost.clone()),
-            None => resumed.cloned(),
-        };
-
         // an arm sleeps whenever the arm around it does
         let unseen = match &ctx.catch_up {
             Some(outer) => self.clock[i].unseen().min(outer.unseen),
@@ -594,7 +610,7 @@ impl TrackedFires {
             taken: Mutex::default(),
             outer: ctx.catch_up.clone(),
             fresh: false,
-            region,
+            body: false,
         };
         Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
     }

@@ -48,8 +48,9 @@ widget([x, text(error_display)])
 
 A catch handler is a reactive expression, so it must read its error binder
 to wait for errors. Write `catch(e) failed <- e ~ true`, rather than
-`catch(e) failed <- true`, which writes at birth even when no error has
-arrived. The checker warns when a handler never reads its binder.
+`catch(e) failed <- true`, which writes once when the program starts,
+before any error has arrived, and never when one does. The checker warns
+when a handler never reads its binder.
 
 The catch here covers `calc(in0)` — and only that block: a catch installed
 inside a block covers the rest of THAT block, nothing outside it. A second
@@ -181,12 +182,15 @@ can instead be written as,
 might_fail(1, 2, 3)$
 ```
 
-A warning from `$` names the site and the error. In fused code, `$` and a
-`?` without a covering catch report when their error operand fires. These
-diagnostic messages can repeat or be absent: a guard can report even when
-an earlier arm selects the result, a constant error in an arm entered later
-can go unreported, and several depths of a native tail loop can share one
-report. Run with `--no-fusion` to inspect the interpreter's diagnostics.
+A warning from `$` names the site and the error. `$` and a `?` without a
+covering catch report when their error operand fires. A guard runs
+wherever its arm's pattern matches the value, so it reports even when an
+earlier arm is selected, and a constant error in an arm entered after
+the program's first cycle never fires, so it is never reported. In fused
+code a guard can also report where its pattern does not match or the
+select's argument has no value, and several depths of a native tail loop
+can share one report. Run with `--no-fusion` to inspect the
+interpreter's diagnostics.
 The error still produces no value, and a `?` covered by a catch follows the
 normal error propagation rules.
 

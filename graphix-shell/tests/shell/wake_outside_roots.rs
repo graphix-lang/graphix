@@ -1,7 +1,7 @@
-//! What a wake stands moved is a fire to a reader in another root
-//! (`design/wake_catchup.md`, What a wake stands): one in a root after
-//! the woken arm's takes it in the wake's cycle, one in a root before it
-//! the cycle after.
+//! What a wake recomputes is a fire to no reader, in its own root or
+//! another (`design/bind_driven_bodies.md`): a reader in a root after the
+//! woken arm's takes the new value in the wake's cycle, one in a root
+//! before it the cycle after, and neither counts an event.
 
 use super::common;
 use common::repl;
@@ -33,7 +33,7 @@ sys::exit(sys::time::after_idle(duration:300.ms, 0))
 ";
 
 #[test]
-fn a_moved_stand_fires_in_the_roots_around_it() {
+fn a_wake_fires_nothing_in_the_roots_around_it() {
     for args in [&["--no-cache"][..], &["--no-cache", "--no-fusion"]] {
         let dir = tempfile::tempdir().expect("tempdir");
         let ran = repl(dir.path(), args, INPUT);
@@ -47,10 +47,10 @@ fn a_moved_stand_fires_in_the_roots_around_it() {
                 "(3, 2, 1, 1, 2, 1, 2)",
                 "(4, 2, 1, 1, 2, 1, 2)",
                 "(5, 3, 1, 1, 2, 1, 2)",
-                "(6, 3, 0, 1, 2, 3, 3)",
-                "(7, 4, 0, 3, 3, 4, 4)",
-                "(8, 4, 0, 4, 4, 4, 4)",
-                "(9, 5, 0, 4, 4, 5, 5)",
+                "(6, 3, 0, 1, 2, 3, 2)",
+                "(7, 4, 0, 3, 2, 4, 3)",
+                "(8, 4, 0, 4, 3, 4, 3)",
+                "(9, 5, 0, 4, 3, 5, 4)",
             ],
             "{args:?}: {}{}",
             ran.stdout,

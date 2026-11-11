@@ -25,7 +25,9 @@ concurrently, each firing whenever its own inputs fire. Inside a `seq` only
 one statement is running at a time. Each statement runs until it produces a
 value; then it stops and the next one starts. The run is started by the trigger;
 without one, the block runs once at initialization (or once per outer run for a
-nested block).
+nested block). Inside a `select` arm or a callback entered after the
+program starts, a block needs a trigger to run at all (see
+[Sleeping](#sleeping)).
 
 A `seq` is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
@@ -281,7 +283,11 @@ the function. An event it captures is read as it stands too: a call to
 `let wait = |u| ev` answers `ev`'s last event at once at every run, never
 waiting for the next one. A call
 through a function value that is bottom when the step issues it is made
-when the function arrives, and is a fresh call all the same.
+when the function arrives, and is a fresh call all the same. All of this
+is what the function runs as the step calls it; what it enters later (a
+select arm taken when a reply arrives, a callback over a collection that
+arrives) is entered as anywhere else, with no event (see
+[Sleeping](#sleeping)).
 
 This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as
@@ -464,19 +470,26 @@ per-run timer.
 A sequence inside a `select` arm, or inside a function called from one,
 sleeps with the arm. A run in progress does not survive that: the
 sequence is idle when the arm wakes, since a wake resumes the arm and
-starts nothing. A `seq` without a trigger in an arm runs only at the
-arm's first entry, and the check warns of it: to run at every entry,
-trigger it on the event that selects the arm. A `seq` nested in a step
-of an outer run that was aborted is idle too; a triggerless one starts
-again when a later run enters its step.
+starts nothing. Entering an arm is not an event, so a `seq` without a
+trigger, or with a constant one, runs in an arm only if the arm is taken
+in the program's first cycle, and the check warns of it: trigger it on
+the event that selects the arm (``k@ `Esc => seq k { .. }``). The same
+holds in a callback or a function entered after the program starts: the
+trigger is the callback's element or the function's argument. A `seq`
+nested in a step of an outer run that was aborted is idle too; a
+triggerless one starts again when a later run enters its step.
 
 A sample (`~`) inside a step starts each run with no banked trigger. An
 unpaid trigger from an aborted run cannot complete a later run when the
 sampled value arrives. An ordinary arm's sleep and wake preserves its bank;
-entering a step for a new run is a birth. A select inside the step also
-starts a new entry history: each arm's first selection in that run is
-its birth, even if an asynchronous scrutinee arrives after step entry.
-Constant writes in such an arm can therefore fire again in every run.
+entering a step for a new run is a birth. A select written in the step
+is born with it: each arm's first selection in that run is its birth,
+even if an asynchronous scrutinee arrives after step entry, so a
+constant write in such an arm fires in every run. A select inside a
+function the step calls is not the step's: an arm of it taken after the
+call is issued (when a reply arrives) is an arm like any other, and its
+constants do not fire. It writes `toast <- r ~ "fetched"`, not
+`toast <- "fetched"`.
 
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.

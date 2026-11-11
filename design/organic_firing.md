@@ -6,8 +6,10 @@ Pins: `stdlib/graphix-tests/src/lang/organic_deltas.rs` (one fixture per ruled d
 ## The rule
 
 **A node fires iff a consumed input fires.** Sources fire when they
-produce. Constants fire once, where they are born (a resume is no
-birth, `design/wake_catchup.md`). Cadence is shaped explicitly —
+produce. Constants fire only in a birth: a root's first cycle, a seq
+step's run. Entering a body (a select arm, a guard, a collection slot, a
+function activation) is no birth and neither is waking one
+(`design/bind_driven_bodies.md`). Cadence is shaped explicitly —
 `uniq`, `filter`, `~`, `once`/`take`/`skip` — and the compiler never
 stores a previous value or a previous selection to decide a tag.
 
@@ -19,20 +21,24 @@ Consequences:
   folds the scrutinee and prologue-guard bits at every merge). The
   emission is the taken arm's current production: Fired if it holds a
   value, FreshBottom if it is bottom. Same-arm re-matches emit.
-  Becoming-selected is not a separate event: a selection change implies
-  a fired input, so the wake emission is the ordinary emission.
-  Selection memory survives only for sleep/wake routing.
+  Becoming-selected is not an event: a select entered or re-routed
+  while nothing it consumes fires (an outer arm's wake, a scrutinee that
+  changed quietly) gives a quiet result. The selection is kept only to
+  route sleep and wake.
 - **Calls**, recursive or not, fire organically: the body's selects
   fire per delivery, so the body produces per delivery, so the call
   fires per delivery. Recursion fires exactly like the hand-inlined
   chain, with no extra machinery; the tail and non-tail forms of one
   function have the same cadence.
-- **Collection HOFs** fire by `scaffold::SlotFlags` — iff resized, or a
-  slot fired, or the source fired empty — which is already
-  delivery-based. A bottom source forgets the length, so the source's
-  return is a resize: a callback that ignores its element fires no slot,
-  and every reader above set its resident bottom and rebuilds only on a
-  fire. Pins: `findings/map-source-recovers-sep2026/`.
+- **Collection HOFs** fire by `scaffold::SlotFlags`: iff a slot fired,
+  or the source fired and the collection resized or is empty, or, for a
+  loop that gives back the source's elements (a filter, a find), the
+  source fired at all. A resize is no fire of its own: under a quiet
+  source it is a quiet result that moved. A bottom source forgets the
+  length, so the source's return is a resize, and fires the collection
+  when the source fires: a callback that ignores its element fires no
+  slot, and every reader above set its resident bottom and rebuilds
+  only on a fire. Pins: `findings/map-source-recovers-sep2026/`.
 
 ## Why
 
@@ -97,16 +103,19 @@ what `organic_deltas.rs` cites.
   arm's own production; same-arm re-matches emit the arm's current
   value. A delivery to a function-valued callee fires its current result
   even for the same definition, keeping that call's instance and state.
-  A constant fires where it is born (`View::born`) and stands
-  stale everywhere else; every argument-less literal (`` `Tag ``, `[]`,
+  A constant fires in a birth (`View::born`: a root's first cycle, a
+  seq step's run) and stands stale everywhere else, a body entered or
+  woken later included (`design/bind_driven_bodies.md`); every
+  argument-less literal (`` `Tag ``, `[]`,
   `{}`) is a constant (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
-  resize, a fired slot, a fired empty source, a fired fold carry, a
-  source back from bottom, or, for filter and find, which read the
-  elements, a fired source of the same length. A bottom source forgets the length and runs
-  no slot: its slots pause as a deselected arm does and wake, caught up,
-  when it returns; a kernel loop runs no iteration over a tainted source
-  (`scaffold::slots_run`).
+  a fired slot, a fired fold carry, a fired source that resized the
+  collection or is empty, or, for filter and find, which read the
+  elements, a fired source of the same length. A resize under a quiet
+  source is quiet, and moved. A bottom source forgets the length and runs
+  no slot: its slots pause as a deselected arm does and resume, with
+  nothing delivered, when it returns; a kernel loop runs no iteration
+  over a tainted source (`scaffold::slots_run`).
 
 - **Sampling**: `e ~ v` is `v` at each fire of `e`, banking one trigger
   however many find `v` absent, paid once when `v` arrives (the `seqq`
@@ -114,9 +123,11 @@ what `organic_deltas.rs` cites.
   (bottom, no bank). Neither sample treats a bottom trigger as a fire: both
   keep their last output until another trigger or a banked payment. A sample
   keeps its bank through an arm's sleep, but a seq step's rebirth clears it. A connect
-  writes when its RHS fires; a constant RHS in an arm fires only at the
-  arm's first entry, and the definition's check warns of it (and of an
-  effect call reading no variable, or a `seq` with no trigger, there:
-  `select.rs::warn_birth_only`; not in a seq step, born at every run,
-  `CFlag::SeqStep`); an action at every entry samples the
-  event that selects the arm (`k@ .. => x <- k ~ v`), or is a seq.
+  writes when its RHS fires; a constant RHS in an arm fires only where
+  the arm is taken in its root's first cycle, and the definition's check
+  warns of it (and of a raise or an effect call reading no variable, or
+  a `seq` with no trigger, there: `select.rs::warn_constant_action`,
+  `warn_triggerless_seq`; not in a seq step, born at every run,
+  `CFlag::SeqStep`); an action at every entry samples the event that
+  selects the arm (`k@ .. => x <- k ~ v`), or the connect is written
+  outside the select.

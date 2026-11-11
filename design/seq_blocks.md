@@ -135,7 +135,11 @@ that comes first takes no `;`: `seq abort(e) { .. }`.
 `abort` is a reserved word; `flush` is not (it is an io method), so a
 trigger that calls a function named `flush` is parenthesized. The
 clauses come in that order, and `flush` on a `seq` is refused: it has no
-queue. `seq { .. }` without a trigger runs once at init. `let rec` is not a
+queue. `seq { .. }` without a trigger runs once, in the birth that reaches
+it: a root's first cycle, or an enclosing step's run. Written in a body
+entered later (a select arm, a callback's slot, a callee activated
+there) it never runs, and neither does one whose trigger is a constant
+(`design/bind_driven_bodies.md`, §4). `let rec` is not a
 step. `catch` is refused anywhere in a seq body — as a statement,
 inside a block, or nested in a step's expression; a lambda literal's
 body and its defaults are exempt, because a function is its own dynamic
@@ -254,7 +258,11 @@ unseen. A let whose initializer never fires, and a catch's binder, which
 has no initializer, keep their last value. What the callee captures keeps
 its value across runs: a count that must outlive the run lives outside
 the callee. A captured event stands like any value, so `|u| ev` answers
-`ev`'s last event at each run; it does not wait for the next one.
+`ev`'s last event at each run; it does not wait for the next one. The
+birth covers what the callee runs at the issue. A body inside the callee
+entered afterwards (a select arm taken when a reply arrives) is a body
+like any other: nothing fires in it but its binds, and its constants
+stand (`design/bind_driven_bodies.md`).
 
 **A `let` binds the step's production for the rest of the run.**
 Later steps read the binding itself; shadowing is sequential as in a
@@ -419,11 +427,11 @@ itself — fires at every entry: from the start event or a jump, which
 write it, and from a same-cycle boundary, where the machine publishes
 the new label within the cycle. It is the one event every atom below
 samples on, and it is a free read because a nested watch (the issue
-atom's select) relies on wake catch-up re-raising it when its arm is
-taken later. The lowering never writes a constant RHS: a constant
-connect fires once per SELECTION and not on a same-arm re-match, so
-every generated write is sampled on the entry event or runs with the
-step's completion.
+atom's select) relies on the machine's fire tracker (§6.4) re-raising it
+when its arm is taken later. The lowering never writes a constant RHS: a
+constant connect in a step's select fires once, at its arm's first
+selection in a run, and not on a same-arm re-match, so every generated
+write is sampled on the entry event or runs with the step's completion.
 
 ### 6.3 The issue atom
 
@@ -502,8 +510,8 @@ The machine keeps one step awake. A step enters when `pc` fires its
 label (the start event, a `try` jump, a next-cycle boundary), and is
 updated under `View::Step`, a birth for the run (constants fire, the
 builtins in it are reborn, each call it issues is a fresh frame:
-§6.3), with `Select`'s catch-up (`node/wake.rs::TrackedFires`: one
-fire bit per step-body input per machine, consumed by whichever step
+§6.3), with the machine's fire tracker (`node/wake.rs::TrackedFires`:
+one fire bit per step-body input per machine, consumed by whichever step
 reads it, so a fire while a step waits its turn is re-raised at its
 entry). It completes when its
 value's `let` publishes a FIRED production (a fired `true` for an
@@ -534,8 +542,8 @@ step's entry); and, through the catch-up scope open at the entry, what
 the step learns as it runs: a reference's target, a callee bound at its
 dispatch (`wake::owed`). A fire stays owed to the next step that reads
 its input until one does, so one made before the run, or in the last
-run after its readers passed, is caught up too, as an arm's first entry
-catches up what fired before it. The step awake when an input fires
+run after its readers passed, is caught up too. The step awake when an
+input fires
 spends the fire, also where it reads the input only through a reference
 whose target it learned as it ran (`TrackedFires::evaluated`); a callee
 it bound joins its inputs when it is deselected (`refresh`), so a fire
@@ -554,6 +562,64 @@ a_fire_read_through_a_reference_is_spent,
 a_callee_bound_in_an_earlier_run_is_caught_up,
 a_step_asleep_with_its_machine_saw_what_came_before,
 let_fire_reaches_a_later_cycle}`.
+
+#### The fire tracker (`node/wake.rs`)
+
+`TrackedFires` serves the seq machine's world alone. Three nodes hold
+one: the machine, a consumer per step; a select of that world
+(`select.rs::seq_world`: one compiled in a step's own text,
+`CFlag::SeqStep`, which a lambda drops, and a run event's,
+`CFlag::RunEvent`), a consumer per arm body and, where any arm has a
+guard, one per guard; and a bound call a step issued whose function went
+bottom (`callsite::Absent`), one consumer over what the instance
+captures. A body's select holds no tracker, and a body's evaluation owes
+what it reads nothing (`wake::in_body`, `design/bind_driven_bodies.md`).
+
+- `per_arm`: each consumer's free refs, what it references minus what is
+  bound within it and minus pattern binds. Collected when the tracker is
+  built (a machine's and a select's on their first update) and again at
+  each deselect (`refresh`): compile-time refs cannot see through a
+  lambda literal into an instantiated body, deselect-time refs can. After a consumer's
+  first evaluation its own nodes add what they name only once they ran
+  (a `Deref`'s target, `evaluated`).
+- `consumes`: per consumer, the inputs the pattern binds it reads are
+  facets of (`Env::pattern_inputs`). Reading a pattern bind consumes
+  those inputs' bits; the bind itself is never delivered.
+- `pending`: the fires no evaluation has consumed, one bit per input, so
+  N fires conflate to one catch-up at the standing value. `observe`
+  records a cycle's fires of the tracked inputs before any routing;
+  `observe_late` records a late fire (`Event::late`) to a reader inside
+  a consumer that does not run this cycle. `deliver` injects, for the
+  step or arm body about to run, each pending input it reads as a FIRED
+  entry at the standing value, scoped to that evaluation (`restore`),
+  and clears the bits; an input that is bottom spends its bit and
+  injects nothing. The bits survive sleep.
+- `carried`: the fires of a step's own `let`s, which belong to the entry
+  of the first later step that reads them (`enter`).
+- `clock` (`ArmClock`): per consumer, the first cycle whose writes it
+  did not see: the cycle after its last run while it is awake, the cycle
+  it fell asleep in otherwise, the tracker's build cycle if it never
+  ran. A body with nothing to pause is slept late and fell asleep in the
+  cycle it stopped running (`wake::asleep_since`, `wake::stopped`).
+
+**Inputs learned as a consumer runs.** The bits cover the inputs a
+consumer names before it runs. A callee bound at its dispatch and a
+reference's new target go by stamps instead. A write stamps its variable
+with the cycle it landed in; a quiet delivery is no write and keeps the
+stamp it had (`branch::standing_stamp`). A consumer evaluated under any
+view but an ordinary cycle's opens a catch-up scope (`wake::CatchUp`,
+`TrackedFires::open`): the consumer's clock, no later than the enclosing
+scope's, the tracker's inputs and bits, and the scopes around it. Inside
+it `wake::owed` answers whether a learned input is owed a fire: it was
+written from that cycle on, is not delivered live this cycle and is not
+bottom, and the innermost enclosing tracker that tracks it still holds
+its bit, which the evaluation consumes when it ends (`TrackedFires::ran`).
+An input no tracker tracks is owed. A call a step issues is a fresh
+frame (`wake::FreshFrame`): a scope that owes everything that stands,
+but for an input a select inside it tracks, opened around the issue with
+each owed input of the call delivered FIRED (`wake::deliver_owed`). A body opens a scope that owes nothing
+(`wake::in_body`), so a callee bound inside an arm in a step's callee is
+delivered nothing.
 
 ### 6.5 What sleep does for free
 
@@ -793,7 +859,8 @@ the machine's abort.
 
 A new birth pays one credit, the activation's. The credit a previous run
 wrote as its step completed lands while the step sleeps and never reaches
-it (`design/wake_catchup.md`, a birth owes no such fire): a second credit
+it (`design/sleep_and_wake.md`, Seq machines: a `let` entered under a
+born view does not raise such a write again): a second credit
 would hand the next request to a busy machine, which drops it.
 
 A nested `seq` inside `seqq` drops queued external-value redirects when
@@ -817,7 +884,7 @@ lowering asks for with an attribute no source can spell), so a timer
 in it times every run: `abort(sys::time::timer(duration:10.s, false))`
 is a ten second budget per run. Only its fires AFTER the entry cycle count. A
 value standing at entry, and a fire that happened between runs (which
-wake catch-up re-raises at entry), belong to no run and are dropped;
+the fire tracker re-raises at entry), belong to no run and are dropped;
 there is nothing to bank. The expression reads everything live except
 the trigger's name, which is this run's trigger: the snapshot cell
 under `seq` (so a busy-dropped trigger does not restart an
@@ -923,8 +990,10 @@ keyword earns its keep as the surface in §2.
   read or write through a reference or a call with no static target
   counts as every variable; `until` and `try` follow the same rule.
   Entering a step is its birth for the run (`View::Step`: constants fire,
-  the builtins in it are reborn) with `Select`'s catch-up
-  (`node/wake.rs`). A call a step issues is a fresh frame at each run
+  the builtins in it are reborn) with the machine's fire tracker
+  (`node/wake.rs`, which serves the seq machine's world alone: a body
+  outside it is bind-driven, `design/bind_driven_bodies.md`). A call a
+  step issues is a fresh frame at each run
   (`SeqGuard`, `wake::FreshFrame`): at its issue everything it reads that
   stands, its callee's captures and a callee it binds included, is
   delivered fired, and its callee's body, slept since the last run, is

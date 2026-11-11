@@ -104,15 +104,19 @@ fn sorted_lines(out: &str) -> Vec<&str> {
     lines
 }
 
-/// A printer acts at each fire of its message, never again when its arm
-/// is re-entered with the message standing.
+/// A printer acts at each fire of its message and at no entry of its arm
+/// with the message standing: the messages fire once, at step 3, while the
+/// arm runs; its first entry (step 1) and its re-entry (step 5) print
+/// nothing.
 async fn printers_act_once_per_fire(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { s if s < 8 => s + 1, _ => never() };
         let c = select step { 1 | 3 | 5 => true, _ => false };
         let x = 5;
+        x <- select step { 2 => 5, _ => never() };
         let y = "P5";
+        y <- select step { 2 => "P5", _ => never() };
         let a = select c { true => dbg(#dest: `Stdout, x), false => 0 };
         let b = select c { true => { log(#dest: `Stdout, x); 1 }, false => 0 };
         let d = select c { true => { println(y); 2 }, false => 0 };
@@ -133,14 +137,17 @@ async fn printers_act_once_per_fire(mode: Mode) -> Result<()> {
 
 modes!(printers_act_once_per_fire);
 
-/// `now` reads the clock at each fire of its trigger, never at an arm's
-/// re-entry with the trigger standing.
+/// `now` reads the clock at each fire of its trigger and at no entry of its
+/// arm with the trigger standing: the trigger fires once, at step 3, while
+/// the arm runs. The arm's first entry (step 1) has no sample and the select
+/// is bottom; its re-entry (step 5) answers the sample of step 3.
 async fn now_samples_once_per_trigger(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { s if s < 8 => s + 1, _ => never() };
         let c = select step { 1 | 3 | 5 => true, _ => false };
         let x = 5;
+        x <- select step { 2 => 5, _ => never() };
         select c {
             true => sys::time::now(x),
             false => datetime:"2000-01-01T00:00:00Z"
@@ -148,9 +155,10 @@ async fn now_samples_once_per_trigger(mode: Mode) -> Result<()> {
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     let unset = values[0].clone();
-    let sampled: Vec<&Value> = values.iter().filter(|v| **v != unset).collect();
-    assert_eq!(sampled.len(), 3, "{values:?}");
-    assert!(sampled.iter().all(|v| *v == sampled[0]), "{values:?}");
+    let sampled: Vec<usize> = (0..values.len()).filter(|i| values[*i] != unset).collect();
+    assert_eq!(values.len(), 8, "{values:?}");
+    assert_eq!(sampled, [2, 4], "{values:?}");
+    assert_eq!(values[2], values[4], "{values:?}");
     Ok(())
 }
 
@@ -263,10 +271,11 @@ async fn dest_alone_neither_prints_nor_fires(mode: Mode) -> Result<()> {
 
 modes!(dest_alone_neither_prints_nor_fires);
 
-/// A constant message prints at its arm's birth only, fused or not; one
-/// sampled on the scrutinee's delivery prints at every entry.
-async fn arm_entry_prints_a_constant(mode: Mode) -> Result<()> {
-    for (message, expect) in [(r#""E""#, "E\n"), (r#"c ~ "E""#, "E\nE\nE\n")] {
+/// A constant message in an arm entered after its root's first cycle never
+/// prints, fused or not; one sampled on the scrutinee's delivery prints at
+/// every entry.
+async fn arm_entered_later_prints_no_constant(mode: Mode) -> Result<()> {
+    for (message, expect) in [(r#""E""#, ""), (r#"c ~ "E""#, "E\nE\nE\n")] {
         let code = format!(
             r#"{{
             let step = 0;
@@ -282,13 +291,14 @@ async fn arm_entry_prints_a_constant(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(arm_entry_prints_a_constant);
+modes!(arm_entered_later_prints_no_constant);
 
-// A print under a select arm whose message is a constant prints at the
-// arm's birth only, fused or not: a later entry fires its trigger only
-// through the scrutinee or the arm's binds, never through an untaken
-// nested arm, an argument a function ignores, or a callee's own constant.
-async fn arm_entry_prints_a_constant_at_birth_only(mode: Mode) -> Result<()> {
+// A print under a select arm whose message is a constant prints where the
+// arm is taken in its root's first cycle, and nowhere else, fused or not:
+// a later entry fires its trigger only through the scrutinee or the arm's
+// binds, never through an untaken nested arm, an argument a function
+// ignores, or a callee's own constant.
+async fn arm_prints_a_constant_in_the_first_cycle_only(mode: Mode) -> Result<()> {
     for (code, prints) in [
         (
             r#"{
@@ -320,7 +330,7 @@ async fn arm_entry_prints_a_constant_at_birth_only(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(arm_entry_prints_a_constant_at_birth_only);
+modes!(arm_prints_a_constant_in_the_first_cycle_only);
 
 // A whole float prints with its point, so what a plain print writes reads
 // back as the float it printed: interpolation, `cast<string>` (a duration's

@@ -53,11 +53,10 @@ fn costly_builtins_keep_cached_arguments() -> Result<()> {
     Ok(())
 }
 
-// A callee first dispatched late, under an arm, prints its constant at
-// that dispatch, once. The arm node-walks: its callee's print does not
-// follow the arm's entry, which a kernel could not re-fire at a re-entry.
+// A callee first dispatched late, under an arm, is entered, not born: its
+// constant print never acts, in any mode.
 #[tokio::test]
-async fn late_callee_dispatch_primes_constants() -> Result<()> {
+async fn late_callee_dispatch_prints_no_constant() -> Result<()> {
     use arcstr::literal;
     use graphix_package_core::{
         PrintSink,
@@ -93,7 +92,7 @@ async fn late_callee_dispatch_primes_constants() -> Result<()> {
         )
         .await?;
         assert_eq!(values, [0, 0, 0, 3, 4, 5, 6].map(Value::I64), "{mode:?}");
-        assert_eq!(sink.take(), "first\n", "{mode:?}");
+        assert_eq!(sink.take(), "", "{mode:?}");
         ctx.shutdown().await;
     }
     Ok(())

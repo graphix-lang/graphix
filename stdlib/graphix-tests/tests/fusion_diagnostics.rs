@@ -95,7 +95,7 @@ async fn swallowed_failure_diagnostics() -> Result<()> {
             #[native] f(0, step - step)
         }"#,
             &[0],
-            (0, 0),
+            (0, 4),
             (0, 4),
         ),
         (
@@ -109,7 +109,7 @@ async fn swallowed_failure_diagnostics() -> Result<()> {
             #[native] h(k)
         }"#,
             &[1, 5, 2, 2],
-            (1, 0),
+            (0, 0),
             (0, 0),
         ),
         (
@@ -124,7 +124,7 @@ async fn swallowed_failure_diagnostics() -> Result<()> {
             #[native] f(k, 0)
         }"#,
             &[0, 1, 3, 6, 10, 15],
-            (6, 0),
+            (1, 0),
             (1, 0),
         ),
     ];

@@ -93,7 +93,7 @@ consulted guard whose CURRENT channel is bottom makes the selection
 UNDECIDABLE — the chain stops (no flip, no wake, no arm body; selection
 state holds) and the select bottoms, whatever else fired. Guards of
 structure-failed arms and of arms below the stop or take point are
-irrelevant: they neither fire nor bottom the select.**
+not consulted: they neither fire nor bottom the select.**
 
 `select a { [x, y] => x + y, [x, y, tail..] if x / y == 0 => f(tail), _
 => 42 }` with `y = 0` bottoms unless the array is a pair; a programmer
@@ -101,18 +101,24 @@ expects arm 1's match to make arm 2's guard irrelevant. "If the
 programmer has guards, and they bottom, it makes the select undecidable
 when it happens — we have to bottom."
 
-- A guard runs only where the chain reaches its arm: below the take or
-  stop point, and on a structure-failed arm, it sleeps in the node-walk,
-  as an unselected arm does, and wakes caught up (`LazyArmFacts::
-  guard_fires`) when the chain next reaches it; the kernel prologue reads
-  its binds as bottom (the `open` mask), so a guard whose raise to a
-  handler or performing call does not fire with those binds node-walks
-  (`lowering::unfollowed_guard`). So
-  `n if check(n)?` and `_ if check(x)?` under a `-1 =>` arm never run
-  `check(-1)`. Pins: `lang::select::guard_below_the_claim_*`,
+- A guard runs on every run of its select where the scrutinee is
+  present and its arm's pattern admits the value, whichever arm takes
+  the value, wherever the chain stops. Where the pattern does not admit
+  the value, or the scrutinee is bottom, it sleeps as an unselected arm
+  does, and its next run is an entry: it keeps no memory and is
+  delivered nothing but its binds (`LazyArmFacts::guard_ran`,
+  `bind_driven_bodies.md`). So `n if check(n)?` and `_ if check(x)?`
+  under a `-1 =>` arm both run `check(-1)`. A kernel computes every
+  guard ahead of the arm chain, its binds read as bottom where the
+  scrutinee is bottom or its arm's pattern does not admit the value, so
+  a guard whose raise to a handler or performing call does not fire with
+  those binds node-walks (`lowering::guard_blocker`,
+  `unfollowed_guard`). Pins:
+  `lang::select::guard_below_the_claim_*`,
+  `guard_sleeps_where_its_pattern_refuses_the_value`,
   `native_guard_prologue_follows_the_chain`.
-- "Consumed" is chain-scoped. Guards the chain reaches run, but
-  only CONSULTED productions are consumed on both planes. The
+- "Consumed" is chain-scoped. Every guard whose pattern admits the value
+  runs, but only CONSULTED productions are consumed on both planes. The
   interpreter's `arm_match` returns `ArmMatch::{NoStruct, GuardFalse,
   GuardBottom, Matched}`; `Select::consulted` stores the consulted mask
   from the last re-match so quiet cycles honour it, and a standing
@@ -181,11 +187,8 @@ multiplicity question does not arise in kernels.
   as one native loop held to the activations' answers
   (`design/tail_calls_are_calls.md`); instances are retained
   unconditionally; shrink = delete (a depth not reached this cycle is
-  deleted; re-reaching it is fresh), except that a pure callee is kept
-  asleep and reborn as a fresh bind when re-reached; each exit of the
-  recursion past the kept edge (its select's chain runs and takes another
-  arm) deletes its deepest kept level, or 1% of the levels it kept where
-  that is more, all of them by the hundredth (`callsite::Kept`); a
+  deleted, a pure callee's too; re-reaching it is a new activation,
+  entered and not born: `design/bind_driven_bodies.md`); a
   reborn select leaves the arm it held as
   a deselect does unless its chain takes it again. No depth limit;
   evaluation is atomic within a cycle; containment stops the runtime for good, busy or
@@ -204,8 +207,9 @@ multiplicity question does not arise in kernels.
   them as keys. Ctrl-D exits. Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
-  state that decides firing; only a site's first-ever dispatch, and a
-  loop slot's first iteration, is an init view.
+  state that decides firing; a site's first dispatch and a loop slot's
+  first iteration are entries, never an init view: a kernel is born
+  only by the context word its wrapper passes.
 
 - **Closure lifetimes**: a function value keeps the bindings it captures alive
   after their owning slot or activation is deleted, including captures used by

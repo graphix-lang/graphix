@@ -269,6 +269,15 @@ impl<R: Rt> Bind<R> {
         }
     }
 
+    /// Whether the binding is a lowering's (a seq machine's state).
+    fn binds_lowered(&self, ctx: &ExecCtx<'_, R>) -> bool {
+        let mut lowered = false;
+        self.pattern.ids(&mut |id| {
+            lowered |= ctx.env.by_id.get(&id).is_some_and(|b| crate::is_lowered(&b.name))
+        });
+        lowered
+    }
+
     pub(crate) fn holds_reraised(&self) -> bool {
         !self.reraised.is_empty()
     }
@@ -738,10 +747,23 @@ impl<R: Rt> Update<R> for Bind<R> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let woke = self.slept.take();
-        if woke && !ctx.event.born() {
+        // a body catches nothing up: only a seq machine's own names (its
+        // `pc`, reset while its arm slept) are re-raised, as built
+        if woke && !ctx.event.born() && self.binds_lowered(ctx) {
             self.reraise_writes_while_asleep(ctx);
         }
+        // a seq machine's own state (its `pc`, a `seqq`'s first credit)
+        // is born with the machine, in whatever body it is first run
+        let machine_birth = !self.ever_published
+            && !ctx.event.born()
+            && matches!(self.node.view(), NodeView::Constant(_))
+            && self.binds_lowered(ctx);
+        let view = ctx.event.view;
+        if machine_birth {
+            ctx.event.view = view.join(crate::View::Step)
+        }
         let tv = self.node.update(ctx);
+        ctx.event.view = view;
         let tag = tv.tag();
         // At a wake a `<-` target holding a value keeps it unless the
         // initializer fired; otherwise a production publishes when it
@@ -2184,7 +2206,11 @@ impl<R: Rt> Update<R> for ByRef<R> {
                 !same
             }
         };
-        if ctx.event.born() || retargeted {
+        // a reference is a constant: fired where it is born or moves,
+        // standing where a body first makes it
+        let first = self.resident.tag().is_bottom() && self.keep.is_none();
+        if ctx.event.born() || retargeted || first {
+            let fires = ctx.event.born() || retargeted;
             let target = ctx.env.byref_chain.get(&self.id).copied();
             let target = target.or_else(|| match &self.registered {
                 Some(RefPath::At(r, _)) => Some(*r),
@@ -2204,7 +2230,10 @@ impl<R: Rt> Update<R> for ByRef<R> {
                 )),
             };
             let r = crate::reference::reference(self.id, Some(keep.clone()));
-            self.resident.set(TagValue::fired(r))
+            self.resident.set(match fires {
+                true => TagValue::fired(r),
+                false => TagValue::stale(r),
+            })
         } else {
             self.resident.ride()
         }
@@ -2456,9 +2485,11 @@ impl<R: Rt> Update<R> for Deref<R> {
         let owed = super::wake::owed(ctx, &id);
         self.read.read(ctx.rt.cycle());
         let res = read_var_by(ctx, &id, self.top_id, Some(&self.read)).map(|read| {
-            match read.standing(ctx, &id) {
-                Some((tv, _)) if owed => TagValue::fired(tv.value_cloned()),
-                _ => read.production(ctx, &id),
+            let tv = read.production(ctx, &id);
+            let tag = tv.tag();
+            match owed && !tag.triggers() && !tag.is_bottom() {
+                true => TagValue::fired(tv.value_cloned()),
+                false => tv,
             }
         });
         let res = match (res, &self.addr) {

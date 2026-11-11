@@ -1,4 +1,4 @@
-// A genuinely-missed edge ticks at wake (design/wake_catchup.md): in1
+// A genuinely-missed edge ticks at wake (design/bind_driven_bodies.md): in1
 // fired while the sampling arm slept, unread by the selected arm —
 // held — so the wake delivers it FIRED and `~` ticks (9). This is the
 // case that killed uniform-stale-at-wake: an edge consumer must catch

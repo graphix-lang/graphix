@@ -75,10 +75,11 @@ every emitted loop head), not a bottom the kernel fails to represent.
   still routes the taken arm's own fires. **Consulted-guard rule**: arms
   are consulted top-down, structure then guard; a consulted guard whose
   channel is bottom makes the selection undecidable; a never-produced
-  guard is unknown, not false; a guard runs only where the chain reaches
-  its arm (never on a value an earlier arm claimed, or one its arm's
-  structure refuses): any other sleeps, as an unselected arm does, and
-  wakes caught up when the chain next reaches it. `&&`/`||` are strict (`false && ⊥ = ⊥`).
+  guard is unknown, not false; a guard runs on every run of its select
+  where the scrutinee is present and its arm's pattern admits the value,
+  whichever arm takes the value; where the pattern refuses the value it
+  sleeps, as an unselected arm does, and its next run is an entry: it
+  keeps no memory (`design/bind_driven_bodies.md`). `&&`/`||` are strict (`false && ⊥ = ⊥`).
 
 - **`never<T>()` is syntax** (`ExprKind::Never`): typed bottom or `T`;
   args stay live and are consumed. An unannotated `let` over a ⊥

@@ -67,12 +67,26 @@ constant argument to `exit` runs at init — always gate it).
   every cycle (the accidental counter, 100% CPU). Write
   `known <- ev ~ upsert(known, x)`. The legitimate counter is
   `x <- clock ~ x + 1`.
-- **A constant right-hand side in a select arm fires once, at the arm's
-  first entry**, and never again: a later entry resumes the arm, and its
-  constants do not fire. `` `Esc => screen <- `Menu `` writes on the first
-  Esc only (the check warns of it, as of a constant-only effect call or a
-  `seq` with no trigger in an arm). Sample the event that selects the
-  arm: `` k@ `Esc => screen <- k ~ `Menu ``, or use a seq.
+- **Entering a select arm is not an event, and neither is waking one.**
+  Nothing fires in an arm but its pattern binds, when the scrutinee fires,
+  and the captures that fire while the arm runs. Its constants never fire,
+  unless the arm is taken in the program's first cycle (which an arm over
+  an async value never is): `` `Esc => screen <- `Menu `` never writes, a
+  constant-only effect call never acts, a `seq` with no trigger never
+  runs, a timer over constants never starts (the check warns of each).
+  Nothing that fired while the arm was not running is delivered when it
+  is entered: what it captured reads stale. Sample on the bind:
+  `` k@ `Esc => screen <- k ~ `Menu ``, `k ~ target` for a capture's value
+  at entry, `any(target, k ~ target)` for entry and every live change.
+  The same holds for a collection callback's slot (its bind is the
+  element) and for a function called there (its binds are its arguments).
+- **A component or an event source built in an arm takes the event that
+  opens it.** A function called from an arm with arguments that stand
+  starts nothing: its timers, subscriptions and constant effects wait for
+  an argument to fire. Pass the bind: `browser(k ~ path)`,
+  `sys::time::timer(once(k) ~ duration:100.ms, true)`. An app that waits
+  for an async value is called at the top level, `app(cfg$)`, where it is
+  born with the program, not `select cfg { c => app(c) }`.
 - **An effect with several inputs samples the WHOLE input on the
   trigger**: `spawn(go ~ options(#args: a, prog))`, never
   `spawn(options(#args: a, go ~ prog))` — a call fires when ANY argument
@@ -97,7 +111,11 @@ constant argument to `exit` runs at init — always gate it).
   `catch`'s binder, which has none, keep their last value); what it
   captures from outside keeps its value. A captured event is read as it
   stands too: a step's call to `|u| ev` answers `ev`'s last event at
-  once, never waiting for the next.
+  once, never waiting for the next. That holds for what the callee runs
+  when the step calls it. A select arm inside the callee that is taken
+  later (when a reply arrives) is an arm like any other: its constants
+  do not fire, so it writes `toast <- r ~ "fetched"`, not
+  `toast <- "fetched"`.
 - **A `never()` arm adds nothing to a select's type**: `let r = select b
   { true => never(), false => error(`E) }` makes `r` the error type alone,
   and a downstream `select r { error as e => .., v => .. }` is refused for
@@ -270,10 +288,13 @@ ok {"a" => 1}
 Unchecked `+ - *` wrap; integer `/` by zero and `MIN / -1` bottom, and
 `x % -1` is 0 (only the node-walk logs those diagnostics); checked
 (`+?` …) returns `[T, Error<`ArithError(string)>]`. `$` and a
-handler-less `?` report fired error operands. Inside fused code the reports
-can repeat or be absent: an unreached guard may report, a constant error in
-an arm first entered later may never report, and native tail depths may share
-one report. Use `--no-fusion` to inspect the node-walk's diagnostics.
+handler-less `?` report fired error operands. A guard reports wherever its
+arm's pattern admits the value, whichever arm takes it; a constant error in
+an arm entered after the program's first cycle never reports. Inside fused
+code a guard whose operand does not read its arm's binds also reports
+where its pattern does not admit the value, and native tail depths may
+share one report. Use `--no-fusion` to inspect
+the node-walk's diagnostics.
 `&&`/`||` are strict
 (`false && ⊥ = ⊥`). Both operands of an operator are ONE type (cast one
 side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
@@ -361,14 +382,17 @@ initializer does not keep running.
 
 A closure or reference that left a select arm, held where the arm's sleep
 does not reach (`let h = once(g)`, a `<-` to an outer variable), reads the
-arm's bindings as they stood when the arm fell asleep. When the arm wakes,
-each binding it recomputes from an input that fired meanwhile fires for
-the holder, once, whether or not the value differs: `h(1)` fires, a
-`count` over it ticks, a select over it re-routes. A handler that escaped
-a modal's arm this way acts once at the wake on the event that opened the
-modal; keep handlers inside the arm, or sample the event that should
-trigger them. A reader placed above the binding in the arm's own text
-gets the new value a cycle late, with no fire.
+arm's bindings as they stood when the arm fell asleep. When the arm wakes
+it recomputes them, and the holder reads the new values with no event:
+`h(1)` has the new value, a `count` over it does not tick, a `<-` from it
+does not write, a select over it re-routes quietly. A wake fires nothing
+for anyone. State an arm shares outside is hoisted out of the arm, or the
+arm samples its capture on its bind so the change is an event
+(`let y = any(c, t ~ c) + 1`); a sample at the reader alone can read the
+value the arm last stood. A reader placed above the binding in the
+program's text gets the new value a cycle late. A binding something
+writes (a `<-` target, a `&mut`'s referent) is state: at a wake it keeps
+the value it holds, whatever its initializer would now compute.
 
 A labeled default returning an enclosing function's open type requires a
 closed defaulted parameter type. Annotate the factory's parameter
@@ -453,8 +477,6 @@ first, guard second; must be exhaustive with no dead arms; a bottom
 scrutinee yields a bottom select (put `hold` on the scrutinee to persist
 across a bottom cycle).
 
-- An arm first entered with a new function instance or collection slot
-  reads standing values as fired, like the rest of that born subtree.
 - An unselected arm with state, an effect or a raise sleeps. Sleep is a
   pause and a wake a resume: `count`, `once`, `take`, `skip`, `uniq`,
   `hold` and queues keep their state; an async call in flight is
@@ -465,11 +487,22 @@ across a bottom cycle).
   unless an argument fires (its last result stays); a timer's run
   resumes; a net subscription or publication is torn down and
   re-attached at the wake; a seq's run is aborted (a `seqq`'s queued
-  requests stay and run). Only the inputs that fired
-  while the arm slept are delivered at the wake, once each. A consulted
-  guard and an arm body share those missed fires: the first arm to read
-  one spends it for the whole select, and an arm's guard and its own body
-  both see it.
+  requests stay and run). Nothing that fired while the arm slept is
+  delivered at the wake: to see an event with the state it should see,
+  join them in the scrutinee, `select (ev, ev ~ state) { (e, s) => .. }`
+  (a plain `(ev, state)` fires its binds when `state` moves too).
+- A guard runs on every run of the select where its arm's pattern admits
+  the value, whichever arm takes the value: `-1 => 0, n if check(n)? => n`
+  calls `check(-1)`. Where the pattern does not admit the value the guard
+  sleeps as an arm does. Keep raises, effects and stateful builtins out
+  of guards: `uniq(enabled)` in a guard is bottom until `enabled` fires,
+  and a bottom guard makes the selection undecidable, so every value is
+  dropped. Hoist it: `let en = uniq(enabled); select key { k if en => .. }`.
+- A stateful builtin (`count`, `uniq`, `once`, `filter`, `hold`, `take`,
+  a timer, a read) in an arm entered after the program starts gives
+  nothing until an input of it fires; feed it the bind: `count(k ~ 7)`,
+  `uniq(k ~ arg)`. An operator, a structure, a pure call or a `let` over
+  values that stand has its value, stale.
 - A written type test narrows its binds to the values reaching it:
   `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
   over `Array<[i64, string]>` gives `ns: Array<i64>`.
@@ -569,8 +602,8 @@ ok { catch(e) select e.0.error { `NotFound(s) => 1 }; error(`NotFound("m"))? }
 
 `catch` is not control flow: the handler is a reactive expression.
 Read its binder to drive it on errors: `catch(e) failed <- e ~ true`.
-A handler that never reads its binder can act at birth, before any error,
-and the checker warns. Connect the handler to state you read. A second
+A handler that never reads its binder acts only when the program starts,
+before any error, and the checker warns. Connect the handler to state you read. A second
 catch shadows the first below it; a handler's own `?` rethrows outward.
 Inside `seq`, use `try … with`.
 
@@ -703,7 +736,10 @@ let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
 
 State loaded once is a triggerless `seq` whose value is the state, and
 the state's absence is the sequencing: every reader (an edit's
-`upsert(known, ..)` in a seq step) waits for the load, with no flag.
+`upsert(known, ..)` in a seq step) waits for the load, with no flag. It
+runs where it is born with the program (the top level, a function called
+there); inside a select arm or a callback entered later a triggerless seq
+never runs, and takes the bind as its trigger.
 
 ```graphix,ignore
 let known: Book = seq {

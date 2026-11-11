@@ -1477,9 +1477,10 @@ run_with_tempdir!(
     }
 );
 
-// The insert finishes while its arm sleeps and nothing answers it; the
-// wake catches up a value whose Cast writes a function, and the call
-// answers its not-data error, the first reply its site sees.
+// The insert finishes while its arm sleeps and nothing answers it, at
+// the wake or after. The cycle after the wake the value fires, one whose
+// Cast writes a function, and the call answers its not-data error, the
+// first reply its site sees.
 run_with_tempdir!(
     name: db_not_data_answers_after_a_sleep,
     code: r#"{{
@@ -1494,9 +1495,9 @@ run_with_tempdir!(
         let r = select on {{ true => db::insert(t, "k", v), false => never() }};
         let off = t ~ false;
         on <- off;
-        v <- off ~ V(0);
         let landed = db::get(t, sys::time::timer(duration: 10.ms, true) ~ "k")?;
         on <- once(select landed {{ null as _ => never(), _ => true }});
+        v <- skip(#n: 2, on) ~ V(0);
         let log: Array<string> = [];
         log <- r ~ array::push(log, "[r]");
         select r {{ error as e => e ~ log, _ => never() }}

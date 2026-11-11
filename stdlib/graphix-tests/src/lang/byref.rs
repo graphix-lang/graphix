@@ -235,9 +235,11 @@ const DEREF_FIRES_ON_ADDRESS: &str = r#"
 
 run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, prints("[i64:10, i64:20]"); FuseExpect::None);
 
-// A key move a selected reader saw is read stale by an arm woken after it:
-// the woken arm's counter does not tick.
-async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
+// A dereference of a moving place fires in an arm only when the place
+// does while the arm runs: the arm is entered at n = 2 into a place that
+// stands, and woken at n = 6 after the key moved, where it reads the new
+// element (20) with no fire. Its counter never ticks.
+async fn woken_deref_reads_a_move_with_no_fire(mode: Mode) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(
         r#"{
     let n = 0;
@@ -248,24 +250,27 @@ async fn woken_deref_reads_a_seen_move_stale(mode: Mode) -> Result<()> {
     let r = &a[i];
     let c = ((n >= 2) && (n < 4)) || (n >= 6);
     select c {
-      true => { let cnt = 0; cnt <- (*r) ~ cnt + 1; cnt },
-      false => *r + 100
+      true => { let cnt = 0; cnt <- (*r) ~ cnt + 1; (cnt, *r) },
+      false => (-1, -1)
     }
 }"#,
         mode,
     )
     .await?;
-    assert_eq!(values.last(), Some(&Value::I64(0)), "{values:?}");
+    let pair = |a, b| Value::Array([Value::I64(a), Value::I64(b)].into());
+    let (asleep, before, after) = (pair(-1, -1), pair(0, 10), pair(0, 20));
+    let expected =
+        [&asleep, &asleep, &before, &before, &asleep, &asleep, &after, &after, &after];
+    assert_eq!(values.iter().collect::<Vec<_>>(), expected);
     Ok(())
 }
 
-modes!(woken_deref_reads_a_seen_move_stale);
+modes!(woken_deref_reads_a_move_with_no_fire);
 
-// A woken arm's dereference catches up a target that moved and was written
-// while it slept, which no selected arm tracked (the other arm reads `r`
-// without dereferencing it): the woken count ticks for the write, and does
-// not when the target was never written.
-async fn woken_deref_catches_up_a_target_written_asleep(mode: Mode) -> Result<()> {
+// A woken arm's dereference reads its target as it stands, with no fire: the
+// target moved while the arm slept, and was written or not, and the woken
+// count ticks for neither. The -1 is the other arm's sample of the move.
+async fn woken_deref_of_a_target_written_asleep_does_not_fire(mode: Mode) -> Result<()> {
     const PROG: &str = r#"{
     let n = 0;
     n <- select n { k if k < 8 => k + 1, _ => never() };
@@ -281,19 +286,19 @@ async fn woken_deref_catches_up_a_target_written_asleep(mode: Mode) -> Result<()
       false => r ~ -1
     }
 }"#;
-    for (write, ticks) in [("3", 2), ("300", 1)] {
+    for write in ["3", "300"] {
         let (values, _) =
             super::dense_deltas::run_delta(&PROG.replace("WRITE", write), mode).await?;
         assert_eq!(
-            values.last(),
-            Some(&Value::I64(ticks)),
+            values,
+            [1, 1, -1, 1, 1, 1].map(Value::I64),
             "write at {write}: {values:?}"
         );
     }
     Ok(())
 }
 
-modes!(woken_deref_catches_up_a_target_written_asleep);
+modes!(woken_deref_of_a_target_written_asleep_does_not_fire);
 
 // A place's address is evaluated once: a key with an effect runs it
 // once per fire (`n` fires at its binding and once more, not twice
@@ -928,26 +933,27 @@ run!(reference_never_equals_an_array, r#"{
   }))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
 
-// A write that lands while a `let` sleeps is re-raised at its wake to the
-// readers that slept with it, not to one outside that read it live
-// through an escaped `&mut`: the count outside sees the write once.
+// A write through an escaped `&mut` that lands while its `let` sleeps
+// reaches the reader outside in the cycle it lands, once, and stands at
+// the wake: the woken arm reads 100 with no fire, so its own count stays
+// 1 and the count outside 2.
 run!(
-    reraise_skips_a_reader_outside,
+    write_landing_asleep_reaches_the_reader_outside_once,
     r#"{
   let n = 0;
   n <- select n { k if k < 6 => k + 1, _ => never() };
   let sel = select n { 2 => false, 3 => false, 4 => false, _ => true };
   let holder: [&mut i64, null] = null;
   let inner = select sel {
-    true => { let x = 0; holder <- &mut x; x },
-    false => -1
+    true => { let x = 0; holder <- &mut x; (x, count(x)) },
+    false => (-1, -1)
   };
   let h = holder$;
   *h <- select n { 3 => n ~ 100, _ => never() };
   let c = count(*h);
   select n { 6 => (inner, c), _ => never() }
 }"#,
-    prints("[i64:100, i64:2]");
+    prints("[[i64:100, i64:1], i64:2]");
     FuseExpect::Jit
 );
 
@@ -994,7 +1000,8 @@ run!(
 );
 
 // `&mut` of a local an operator or a literal initializes, in a body bound
-// at run time: a call through a function value and a collection slot.
+// at run time: a call through a function value, its argument sampled on the
+// function's arrival so the callee's write acts, and a collection slot.
 run!(
     mut_reference_to_an_inferred_local_at_a_run_time_bind,
     r#"{
@@ -1012,7 +1019,7 @@ run!(
     *r <- i ~ [100 + i];
     y
   });
-  array::group((rs, g(5)), |n, _| n == 2)
+  array::group((rs, g(g ~ 5)), |n, _| n == 2)
 }"#,
     prints("[[[[i64:100], [i64:101]], i64:6], [[[i64:100], [i64:101]], i64:105]]");
     FuseExpect::Jit

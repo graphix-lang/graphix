@@ -92,7 +92,8 @@ core-trait hook site's build (`drop_deferred` on a failed compile);
 every cycle asserts (debug) that nothing is left. `ExecCtx::unref_var`
 cancels a reference not applied yet. Registration covers every node a
 statement holds, selected or not: a write to a variable only a sleeping
-arm reads still schedules the statement, which wake catch-up relies on.
+arm reads still schedules the statement, which the seq machine's fire
+tracker relies on.
 The runtime side (`sleep`, `update`, `Deref`'s addressing) registers
 directly; a builtin needing runtime state `init` cannot reach takes it
 in `EvalCachedAsync::attach`. Static resolution reads only the index
@@ -127,8 +128,9 @@ delivered in one cycle; several writes to one variable in a cycle queue
 for the next, except a level's (`Rt::set_level`), which replaces its
 pending write. A node's production to a binding is delivered through
 `ExecCtx::deliver`: into the event; a fire stored as delivered, stamped
-this cycle, a quiet production standing with its old stamp, so a wake
-owes no fire for one, whether or not it changed the value; `Notify`
+this cycle, a quiet production standing with its old stamp, so the seq
+machine's catch-up, which dates by stamp, owes no fire for one, whether
+or not it changed the value; `Notify`
 picks whether a fire schedules the roots that read it. A fire, `Roots`
 or `Walk`, reaches the readers the walk has not passed in its cycle, and
 each one it has (in an earlier root, or in a boundary of its own root
@@ -140,9 +142,10 @@ that cycle supersedes it): a reader before its producer runs a cycle
 behind, and none runs twice in a cycle; one feeding its producer back
 is a self-loop, a step a cycle, as `x <- x + 1` is. Order is judged by
 boundary, and inside the walk's own boundary by a `Deref`'s read stamp
-(`prune::ReadStamp`): one that read this cycle is passed. A wake's
-re-raise, catch-up's inject, a priming from the store and a born
-callee's quiet arguments are fires in the event alone, never stored; an
+(`prune::ReadStamp`): one that read this cycle is passed. A seq
+machine name's wake re-raise, the seq tracker's inject and a reloaded
+module's priming from the store are fires in the event alone, never
+stored; a fresh callee's quiet arguments stand; an
 error raised to a catch is stored as any write is, delivered the cycle
 it was raised in its handler's root, else a runtime write; a quiet formal's seed, a
 reference cell's quiet seed or its bottom where its place has no

@@ -231,7 +231,9 @@ registration kinds plus parentheses, string interpolation, connect
 and connect-through-reference, casts, `any`, sampling, array and map
 references and slices, struct update and field and tuple references,
 abstract construction, place references and dereferences, catch,
-`?`, seq guards, `or_never`, select with its pattern nodes, the call
+`?`, seq guards, `or_never`, select with its pattern nodes (and its
+`CFlag::RunEvent` and `CFlag::SeqStep`, so a cached start runs a seq
+step's select as a cold start does), the call
 site, and the collection intrinsics (`NodeTag::Collection` plus the
 intrinsic, one decoder per `MapQ`/`FoldQ` instantiation). A call
 site's callee travels three ways: unbound (a dynamic site before its

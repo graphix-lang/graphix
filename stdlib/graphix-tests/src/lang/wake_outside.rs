@@ -1,10 +1,10 @@
-// A wake's change is a fire for the readers that did not sleep
-// (design/wake_catchup.md, "What a wake stands"). A woken arm recomputes
-// from the world as it stands; a value it recomputes from an input that
-// fired while it slept is tagged moved, and the binding that stands it (a
-// `let`, a formal, a pattern bind, a reference's cell) fires, once, for
-// every reader outside the arm: a closure or a reference that left it.
-// Inside the arm nothing fires. Each program runs in every mode.
+// A wake fires nothing for anyone. A woken arm recomputes from the world
+// as it stands; a value it recomputes from an input that changed while it
+// slept is tagged moved, and the binding that stands it (a `let`, a
+// formal, a pattern bind, a reference's cell) gives every reader the new
+// value with no fire: inside the arm, and outside it through a closure or
+// a reference that left it. No `count`, `<-` or other event consumer acts
+// on it. Each program runs in every mode.
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
@@ -58,7 +58,7 @@ const CLOCK: &str = "let clk = array::iter(array::init(10, |i| i));
 
 /// The closure `mk(n)` returns in the arm that sleeps, held by a reader
 /// that never does: its body `body` reads `mk`'s formal `x`, which the
-/// wake re-seeds from 1 to 3 at clk 6; `defs` are statements before it.
+/// wake takes from 1 to 3 at clk 6; `defs` are statements before it.
 /// Each tick gives `(clk, n, sel, v, count(v))`.
 fn closure(defs: &str, body: &str) -> String {
     format!(
@@ -75,21 +75,26 @@ fn closure(defs: &str, body: &str) -> String {
     )
 }
 
-/// [`closure`]'s ticks for a body computing `f` of the formal: the formal
-/// fires at clk 6 as it does at clk 1, 7 and 9, so `count` reads 3 there.
+/// [`CLOCK`]'s `n` and `sel` at each tick, the value `X` an arm-0 formal
+/// over `n` holds, and `FIRES`, the fires of that formal a reader outside
+/// has counted: one at the root's birth, then clk 1, 7 and 9. The wake at
+/// clk 6 is none.
+const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
+const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
+const X: [i64; 10] = [0, 1, 1, 1, 1, 1, 3, 4, 4, 5];
+const FIRES: [i64; 10] = [1, 2, 2, 2, 2, 2, 2, 3, 3, 4];
+
+/// [`closure`]'s ticks for a body computing `f` of the formal: the reader
+/// has `f(3)` at clk 6, and `count` still reads 2 there.
 fn formal(f: impl Fn(i64) -> i64) -> Vec<String> {
-    const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
-    const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
-    const X: [i64; 10] = [0, 1, 1, 1, 1, 1, 3, 4, 4, 5];
-    const FIRES: [i64; 10] = [1, 2, 2, 2, 2, 2, 3, 4, 4, 5];
     (0..10)
         .map(|i| format!("[{i}, {}, {}, {}, {}]", N[i], SEL[i], f(X[i]), FIRES[i]))
         .collect()
 }
 
 /// A reference to an arm's value, which the wake moves from 2 to 4 at
-/// clk 6, read as `read` by a reader that never sleeps: `(clk, v,
-/// count(v))`.
+/// clk 6 with no fire, read as `read` by a reader that never sleeps:
+/// `(clk, v, count(v))`.
 fn reference(read: &str) -> String {
     format!(
         "{{
@@ -104,47 +109,47 @@ fn reference(read: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bare_read_of_a_moved_formal_fires() -> Result<()> {
+async fn a_bare_read_of_a_moved_formal_stands() -> Result<()> {
     agrees(closure("", "x"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_operator_over_a_moved_formal_fires() -> Result<()> {
+async fn an_operator_over_a_moved_formal_stands() -> Result<()> {
     agrees(closure("", "x + 0"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_kernel_over_a_moved_formal_fires() -> Result<()> {
+async fn a_kernel_over_a_moved_formal_stands() -> Result<()> {
     agrees(closure("", "#[native] (x + 0)"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_select_over_a_moved_formal_fires() -> Result<()> {
+async fn a_select_over_a_moved_formal_stands() -> Result<()> {
     agrees(closure("", "select x { v => v }"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lambda_argument_moved_fires() -> Result<()> {
+async fn a_lambda_argument_moved_stands() -> Result<()> {
     agrees(closure("let id = |v: i64| v;", "id(x)"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_builtin_argument_moved_fires() -> Result<()> {
+async fn a_builtin_argument_moved_stands() -> Result<()> {
     agrees(closure("", "max(x, 0)"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_tuple_over_a_moved_formal_fires() -> Result<()> {
+async fn a_tuple_over_a_moved_formal_stands() -> Result<()> {
     agrees(closure("", "(x, 0).0"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_let_over_a_moved_operator_fires() -> Result<()> {
+async fn a_let_over_a_moved_operator_stands() -> Result<()> {
     agrees(closure("", "let w = x + 0; w"), &formal(|x| x)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_collection_over_a_moved_source_fires() -> Result<()> {
+async fn a_collection_over_a_moved_source_stands() -> Result<()> {
     agrees(
         closure("", "array::fold(array::map([x], |e| e + 0), 0, |a, e| a + e)"),
         &formal(|x| x),
@@ -154,29 +159,30 @@ async fn a_collection_over_a_moved_source_fires() -> Result<()> {
 
 // A fold's init reaches its accumulator chain: 3 + 1 + 2.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_fold_over_a_moved_init_fires() -> Result<()> {
+async fn a_fold_over_a_moved_init_stands() -> Result<()> {
     agrees(closure("", "array::fold([1, 2], x, |a, e| a + e)"), &formal(|x| x + 3)).await
 }
 
-// A fire is the event, never a compare of values: `x * 0` fires at 0, as it
-// would have had the arm been awake.
+// A fire is the event, never a compare of values: `x * 0` stays 0 and
+// `count` ticks at clk 7 and 9, where `x` fires, and not at the wake.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_product_of_a_moved_formal_fires_unchanged() -> Result<()> {
+async fn a_product_of_a_moved_formal_fires_only_with_the_formal() -> Result<()> {
     agrees(closure("", "x * 0"), &formal(|_| 0)).await
 }
 
-// The fire re-routes a select over the formal, in the node-walk and in a
-// kernel alike: structure follows fires, and this is one.
+// The new value re-routes a select over the formal, in the node-walk and
+// in a kernel alike: the arm it enters gives its value with no fire.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_moved_scrutinee_routes_its_select() -> Result<()> {
+async fn a_moved_scrutinee_routes_its_select_quietly() -> Result<()> {
     let expected = formal(|x| if x == 1 { 10 } else { 20 });
     agrees(closure("", "select x { 1 => 10, _ => 20 }"), &expected).await?;
     agrees(closure("", "#[native] select x { 1 => 10, _ => 20 }"), &expected).await
 }
 
-// And it resizes a collection whose length is the formal.
+// And it resizes a collection whose length is the formal: a resize is no
+// fire of its own.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_moved_length_resizes_its_collection() -> Result<()> {
+async fn a_moved_length_resizes_its_collection_quietly() -> Result<()> {
     let expected = formal(|x| x);
     agrees(closure("", "array::len(array::init(x, |i| i))"), &expected).await?;
     agrees(closure("", "#[native] array::len(array::init(x, |i| i))"), &expected).await
@@ -189,26 +195,26 @@ const REFERENCE: [&str; 10] = [
     "[3, 2, 2]",
     "[4, 2, 2]",
     "[5, 2, 2]",
-    "[6, 4, 3]",
-    "[7, 5, 4]",
-    "[8, 5, 4]",
-    "[9, 6, 5]",
+    "[6, 4, 2]",
+    "[7, 5, 3]",
+    "[8, 5, 3]",
+    "[9, 6, 4]",
 ];
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bare_read_of_a_moved_reference_fires() -> Result<()> {
+async fn a_bare_read_of_a_moved_reference_stands() -> Result<()> {
     agrees(reference("*holder"), &REFERENCE).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_operator_over_a_moved_reference_fires() -> Result<()> {
+async fn an_operator_over_a_moved_reference_stands() -> Result<()> {
     agrees(reference("*holder + 0"), &REFERENCE).await
 }
 
-// The kernel's select follows the capture's fire at clk 6 (30) and its
-// argument's at clk 8 (38): no engine routes by a value that did not fire.
+// The kernel's select takes the capture's new value at clk 6 (30) with no
+// fire, and fires with its argument at clk 9 (38).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_moved_capture_routes_a_kernel_once() -> Result<()> {
+async fn a_moved_capture_routes_a_kernel_quietly() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -234,19 +240,20 @@ async fn a_moved_capture_routes_a_kernel_once() -> Result<()> {
             "[3, 1000, 2]",
             "[4, 1000, 2]",
             "[5, 1000, 2]",
-            "[6, 30, 3]",
-            "[7, 30, 3]",
-            "[8, 30, 3]",
-            "[9, 38, 4]",
+            "[6, 30, 2]",
+            "[7, 30, 2]",
+            "[8, 30, 2]",
+            "[9, 38, 3]",
         ],
     )
     .await
 }
 
-// `n` stops at 3 while the arm sleeps; the wake fires the capture once: the
-// select takes `3 => 30`, `count` ticks and the write lands.
+// `n` stops at 3 while the arm sleeps; the wake gives the reader the
+// capture's 3 with no fire: the select takes `3 => 30`, `count` does not
+// tick and `w <- v` writes nothing, so `w` keeps 1.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_moved_capture_fires_a_select_and_its_writes() -> Result<()> {
+async fn a_moved_capture_routes_a_select_and_writes_nothing() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -272,17 +279,17 @@ async fn a_moved_capture_fires_a_select_and_its_writes() -> Result<()> {
             "[3, 1, 2, 1]",
             "[4, 1, 2, 1]",
             "[5, 1, 2, 1]",
-            "[6, 30, 3, 1]",
-            "[7, 30, 3, 30]",
-            "[8, 30, 3, 30]",
-            "[9, 30, 3, 30]",
+            "[6, 30, 2, 1]",
+            "[7, 30, 2, 1]",
+            "[8, 30, 2, 1]",
+            "[9, 30, 2, 1]",
         ],
     )
     .await
 }
 
-// A bare `*h`, an operator over it, a `let` and a `count` all take the
-// fire at clk 6.
+// A bare `*h`, an operator over it and a `let` all read 3 at clk 6, and a
+// `count` over it does not tick.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_reader_of_a_moved_reference_agrees() -> Result<()> {
     let code = "{
@@ -310,20 +317,21 @@ async fn every_reader_of_a_moved_reference_agrees() -> Result<()> {
             "[3, 2, 1, 1, 1, 1, 2]",
             "[4, 2, 1, 1, 1, 1, 2]",
             "[5, 3, 1, 1, 1, 1, 2]",
-            "[6, 3, 0, 3, 3, 3, 3]",
-            "[7, 4, 0, 4, 4, 4, 4]",
-            "[8, 4, 0, 4, 4, 4, 4]",
-            "[9, 5, 0, 5, 5, 5, 5]",
-            "[9, 5, 1, 5, 5, 5, 5]",
+            "[6, 3, 0, 3, 3, 3, 2]",
+            "[7, 4, 0, 4, 4, 4, 3]",
+            "[8, 4, 0, 4, 4, 4, 3]",
+            "[9, 5, 0, 5, 5, 5, 4]",
+            "[9, 5, 1, 5, 5, 5, 4]",
         ],
     )
     .await
 }
 
 // A collection in the arm rebuilt from a moved input, read through a
-// reference: the map and the fold outside fire once.
+// reference: the map and the fold outside take the new elements and
+// neither fires.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_moved_array_fires_through_a_reference() -> Result<()> {
+async fn a_moved_array_stands_through_a_reference() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -349,18 +357,19 @@ async fn a_moved_array_fires_through_a_reference() -> Result<()> {
             "[3, 2, 1, [2, 4], 2, 6, 2]",
             "[4, 2, 1, [2, 4], 2, 6, 2]",
             "[5, 3, 1, [2, 4], 2, 6, 2]",
-            "[6, 3, 0, [6, 8], 3, 14, 3]",
-            "[7, 4, 0, [8, 10], 4, 18, 4]",
-            "[8, 4, 0, [8, 10], 4, 18, 4]",
-            "[9, 5, 0, [10, 12], 5, 22, 5]",
+            "[6, 3, 0, [6, 8], 2, 14, 2]",
+            "[7, 4, 0, [8, 10], 3, 18, 3]",
+            "[8, 4, 0, [8, 10], 3, 18, 3]",
+            "[9, 5, 0, [10, 12], 4, 22, 4]",
         ],
     )
     .await
 }
 
-// Readers above the select take the fire at clk 7, all of them alike.
+// Readers above the select read 3 at clk 7, all of them alike, and their
+// `count` does not tick for it.
 #[tokio::test(flavor = "multi_thread")]
-async fn readers_the_walk_passed_take_the_fire_a_cycle_late() -> Result<()> {
+async fn readers_the_walk_passed_take_the_value_a_cycle_late() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -387,10 +396,10 @@ async fn readers_the_walk_passed_take_the_fire_a_cycle_late() -> Result<()> {
             "[4, 2, 1, 1, 1, 2]",
             "[5, 3, 1, 1, 1, 2]",
             "[6, 3, 0, 1, 1, 2]",
-            "[7, 4, 0, 3, 3, 3]",
-            "[8, 4, 0, 4, 4, 4]",
-            "[9, 5, 0, 4, 4, 4]",
-            "[9, 5, 1, 4, 4, 4]",
+            "[7, 4, 0, 3, 3, 2]",
+            "[8, 4, 0, 4, 4, 3]",
+            "[9, 5, 0, 4, 4, 3]",
+            "[9, 5, 1, 4, 4, 3]",
         ],
     )
     .await
@@ -432,10 +441,11 @@ async fn a_count_that_missed_its_events_stands_silent() -> Result<()> {
     .await
 }
 
-// `n` is written 1 over 1 while the arm sleeps: a fire the arm missed, so
-// the capture fires at the wake with the value it had.
+// `n` is written 1 over 1 while the arm sleeps: nothing is kept for an arm
+// that does not run, so the capture stands at the wake and `count` does
+// not tick.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_write_of_an_equal_value_asleep_fires() -> Result<()> {
+async fn a_write_of_an_equal_value_asleep_is_no_fire_at_the_wake() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -459,11 +469,11 @@ async fn a_write_of_an_equal_value_asleep_fires() -> Result<()> {
             "[3, 1, 1, 1, 2]",
             "[4, 1, 1, 1, 2]",
             "[5, 1, 1, 1, 2]",
-            "[6, 1, 0, 1, 3]",
-            "[7, 2, 0, 2, 4]",
-            "[8, 2, 0, 2, 4]",
-            "[9, 3, 0, 3, 5]",
-            "[9, 3, 1, 3, 5]",
+            "[6, 1, 0, 1, 2]",
+            "[7, 2, 0, 2, 3]",
+            "[8, 2, 0, 2, 3]",
+            "[9, 3, 0, 3, 4]",
+            "[9, 3, 1, 3, 4]",
         ],
     )
     .await
@@ -501,9 +511,10 @@ async fn a_reader_inside_the_woken_arm_is_owed_nothing() -> Result<()> {
 }
 
 // The same callee bound at the wake of an arm outside the one that moved
-// `x` is owed the fire: `count(x)` ticks.
+// `x` is owed nothing either: its `count(x)` is new and `x` stands, so the
+// call has no value and the pair no fifth update.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reader_asleep_outside_is_owed_the_fire() -> Result<()> {
+async fn a_reader_asleep_outside_is_owed_nothing() -> Result<()> {
     let code = "{
   let n = 0;
   n <- select n { k if k < 9 => (k ~ n) + 1, _ => never() };
@@ -527,14 +538,15 @@ async fn a_reader_asleep_outside_is_owed_the_fire() -> Result<()> {
   let b = select in2 { 0 => -7, _ => g(5) };
   (a, b)
 }";
-    agrees(code, &["[1, 105]", "[1, -7]", "[-1, -7]", "[1, -7]", "[1, 1]"]).await
+    agrees(code, &["[1, 105]", "[1, -7]", "[-1, -7]", "[1, -7]"]).await
 }
 
-// `v` fired at ep 3 with no reader in the inner arm awake; the outer wake
-// stands `v` moved at ep 5 and the inner arm still catches the ep 3 fire
-// up: its initializer replaces the write of 99 with 8.
+// `v` fired at ep 3 with no reader in the inner arm awake, and the outer
+// wake stands `v` moved at ep 5. Nothing is kept for the inner arm: its
+// `t`, written 99, keeps the write over an initializer that stands at 8,
+// and a `t` nothing writes takes the 8.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missed_fire_is_still_caught_up_over_a_moved_let() -> Result<()> {
+async fn a_written_let_keeps_its_write_over_a_moved_initializer() -> Result<()> {
     let code = "{
   let ep = 0;
   ep <- select ep { n if n < 7 => n + 1, _ => never() };
@@ -547,18 +559,21 @@ async fn a_missed_fire_is_still_caught_up_over_a_moved_let() -> Result<()> {
   let f = |c, a, d, e| select c {
     0 => {
       let v = a * 1;
-      select d { 0 => -5, _ => { let t = v + 0; t <- e ~ 99; t } }
+      select d { 0 => -5, _ => { let t = v + 0; WRITE t } }
     },
     _ => a * 0 - 1
   };
   f(in0, in1, in3, 0)
 }";
-    agrees(code, &["0", "99", "-5", "-1", "8"]).await
+    let written = code.replace("WRITE", "t <- e ~ 99;");
+    agrees(written, &["0", "99", "-5", "-1", "99"]).await?;
+    agrees(code.replace("WRITE", ""), &["0", "-5", "-1", "8"]).await
 }
 
 // `*r` sits above `z` in the woken arm: it takes 7 a cycle late as a
-// standing value, so neither `count(*r)` nor `count(d)` ticks, while `o`
-// fires for the reader outside.
+// standing value, so neither `count(*r)` nor `count(d)` ticks, and `o`
+// holds the 7 with no fire: nothing updates past clk 6, and a sample of
+// `o` on the clock reads 7 from clk 7 with `count(o)` still 4.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_passed_reader_inside_the_woken_arm_takes_it_standing() -> Result<()> {
     let code = "{
@@ -579,25 +594,26 @@ async fn a_passed_reader_inside_the_woken_arm_takes_it_standing() -> Result<()> 
     },
     _ => (n * 0 - 5, 0, 0)
   };
-  (o, count(o))
+  OUT
 }";
-    agrees(
-        code,
-        &[
-            "[[0, 1, 1], 1]",
-            "[[-5, 0, 0], 2]",
-            "[[-5, 0, 0], 3]",
-            "[[0, 1, 1], 4]",
-            "[[7, 1, 1], 5]",
-        ],
-    )
-    .await
+    let updates =
+        ["[[0, 1, 1], 1]", "[[-5, 0, 0], 2]", "[[-5, 0, 0], 3]", "[[0, 1, 1], 4]"];
+    agrees(code.replace("OUT", "(o, count(o))"), &updates).await?;
+    let sampled = ticks(12, |c| match c {
+        0 | 1 => "[[0, 1, 1], 1]",
+        2 | 3 => "[[-5, 0, 0], 2]",
+        4 | 5 => "[[-5, 0, 0], 3]",
+        6 => "[[0, 1, 1], 4]",
+        _ => "[[7, 1, 1], 4]",
+    });
+    agrees(code.replace("OUT", "clk ~ (clk, (o, count(o)))"), &sampled).await
 }
 
 // A function variable written while its call is awake binds its new
-// callee under a birth: the standing argument is delivered to it.
+// callee as an entry: the argument stands, so the callee's `count(x)` has
+// no value and neither has the call.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_rebound_callee_is_born_with_its_argument() -> Result<()> {
+async fn a_rebound_callee_is_entered_over_its_standing_argument() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(6, |i| i));
   let x = 5;
@@ -607,24 +623,14 @@ async fn a_rebound_callee_is_born_with_its_argument() -> Result<()> {
   let c = count(r);
   (clk, r, c)
 }";
-    agrees(
-        code,
-        &[
-            "[0, 1, 1]",
-            "[1, 1, 1]",
-            "[2, 1, 1]",
-            "[3, 1005, 2]",
-            "[4, 1005, 2]",
-            "[5, 1005, 2]",
-        ],
-    )
-    .await
+    agrees(code, &["[0, 1, 1]", "[1, 1, 1]", "[2, 1, 1]"]).await
 }
 
-// A handler that left the modal's arm acts once at the wake on the key
-// that opened the modal (n_acted 3 at clk 5), and once on the next key.
+// A handler that left the modal's arm reads the key that opened the modal
+// at the wake (acted 2 at clk 5) and does not act on it: n_acted ticks at
+// the next key, clk 7.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_escaped_handler_acts_once_at_the_wake() -> Result<()> {
+async fn an_escaped_handler_does_not_act_at_the_wake() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let key = 0;
@@ -646,11 +652,11 @@ async fn an_escaped_handler_acts_once_at_the_wake() -> Result<()> {
             "[1, 0, 1, 0, 1, 1]",
             "[2, 1, 1, 1, 2, 2]",
             "[4, 2, 0, 1, 2, -1]",
-            "[5, 2, 1, 2, 3, 2]",
-            "[6, 2, 1, 2, 3, 2]",
-            "[7, 2, 1, 2, 4, 3]",
-            "[8, 2, 1, 2, 4, 3]",
-            "[9, 2, 1, 2, 4, 3]",
+            "[5, 2, 1, 2, 2, 2]",
+            "[6, 2, 1, 2, 2, 2]",
+            "[7, 2, 1, 2, 3, 3]",
+            "[8, 2, 1, 2, 3, 3]",
+            "[9, 2, 1, 2, 3, 3]",
         ],
     )
     .await
@@ -688,11 +694,11 @@ async fn a_pattern_bind_of_a_woken_arm_fires_outside() -> Result<()> {
     .await
 }
 
-// A reader whose own arm wakes in the cycle of the stand is outside the
-// arm that stood it: its select tracks the capture, no arm consumed the
-// fire, and the `count` inside it ticks.
+// A reader whose own arm wakes in the cycle of the stand reads the new
+// value as a reader awake does, with no fire: the `count` inside it does
+// not tick.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reader_waking_in_the_same_cycle_takes_the_fire() -> Result<()> {
+async fn a_reader_waking_in_the_same_cycle_reads_it_standing() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(10, |i| i));
   let n = 0;
@@ -714,17 +720,18 @@ async fn a_reader_waking_in_the_same_cycle_takes_the_fire() -> Result<()> {
             "[3, 2, 1, [-1, -1]]",
             "[4, 2, 1, [-1, -1]]",
             "[5, 3, 1, [-1, -1]]",
-            "[6, 3, 0, [3, 3]]",
-            "[7, 4, 0, [4, 4]]",
-            "[8, 4, 0, [4, 4]]",
-            "[9, 5, 0, [5, 5]]",
+            "[6, 3, 0, [3, 2]]",
+            "[7, 4, 0, [4, 3]]",
+            "[8, 4, 0, [4, 3]]",
+            "[9, 5, 0, [5, 4]]",
         ],
     )
     .await
 }
 
 // A kernel inside the woken arm ORs the bit into its result as it does
-// bottomness, so the formal it feeds fires outside.
+// bottomness, so the formal it feeds gives the reader outside the new
+// value, with no fire.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_kernel_in_the_woken_arm_carries_the_move() -> Result<()> {
     let code = "{
@@ -749,10 +756,10 @@ async fn a_kernel_in_the_woken_arm_carries_the_move() -> Result<()> {
             "[3, 2, 1, 3, 2]",
             "[4, 2, 1, 3, 2]",
             "[5, 3, 1, 3, 2]",
-            "[6, 3, 0, 7, 3]",
-            "[7, 4, 0, 9, 4]",
-            "[8, 4, 0, 9, 4]",
-            "[9, 5, 0, 11, 5]",
+            "[6, 3, 0, 7, 2]",
+            "[7, 4, 0, 9, 3]",
+            "[8, 4, 0, 9, 3]",
+            "[9, 5, 0, 11, 4]",
         ],
     )
     .await
@@ -782,10 +789,10 @@ async fn a_kernel_select_in_the_woken_arm_carries_the_move() -> Result<()> {
             "[3, 2, 1, 2, 2]",
             "[4, 2, 1, 2, 2]",
             "[5, 3, 1, 2, 2]",
-            "[6, 3, 0, 30, 3]",
-            "[7, 4, 0, 8, 4]",
-            "[8, 4, 0, 8, 4]",
-            "[9, 5, 0, 10, 5]",
+            "[6, 3, 0, 30, 2]",
+            "[7, 4, 0, 8, 3]",
+            "[8, 4, 0, 8, 3]",
+            "[9, 5, 0, 10, 4]",
         ],
     )
     .await
@@ -815,10 +822,10 @@ async fn a_kernel_loop_in_the_woken_arm_carries_the_move() -> Result<()> {
             "[3, 2, 1, 4, 2]",
             "[4, 2, 1, 4, 2]",
             "[5, 3, 1, 4, 2]",
-            "[6, 3, 0, 8, 3]",
-            "[7, 4, 0, 10, 4]",
-            "[8, 4, 0, 10, 4]",
-            "[9, 5, 0, 12, 5]",
+            "[6, 3, 0, 8, 2]",
+            "[7, 4, 0, 10, 3]",
+            "[8, 4, 0, 10, 3]",
+            "[9, 5, 0, 12, 4]",
         ],
     )
     .await
@@ -848,10 +855,10 @@ async fn a_kernel_call_in_the_woken_arm_carries_the_move() -> Result<()> {
             "[3, 2, 1, 3, 2]",
             "[4, 2, 1, 3, 2]",
             "[5, 3, 1, 3, 2]",
-            "[6, 3, 0, 9, 3]",
-            "[7, 4, 0, 12, 4]",
-            "[8, 4, 0, 12, 4]",
-            "[9, 5, 0, 15, 5]",
+            "[6, 3, 0, 9, 2]",
+            "[7, 4, 0, 12, 3]",
+            "[8, 4, 0, 12, 3]",
+            "[9, 5, 0, 15, 4]",
         ],
     )
     .await
@@ -881,10 +888,10 @@ async fn a_collection_in_the_woken_arm_carries_the_move() -> Result<()> {
             "[3, 2, 1, 4, 2]",
             "[4, 2, 1, 4, 2]",
             "[5, 3, 1, 4, 2]",
-            "[6, 3, 0, 8, 3]",
-            "[7, 4, 0, 10, 4]",
-            "[8, 4, 0, 10, 4]",
-            "[9, 5, 0, 12, 5]",
+            "[6, 3, 0, 8, 2]",
+            "[7, 4, 0, 10, 3]",
+            "[8, 4, 0, 10, 3]",
+            "[9, 5, 0, 12, 4]",
         ],
     )
     .await
@@ -914,10 +921,10 @@ async fn a_stateless_builtin_in_the_woken_arm_carries_the_move() -> Result<()> {
             "[3, 2, 1, 2, 2]",
             "[4, 2, 1, 2, 2]",
             "[5, 3, 1, 2, 2]",
-            "[6, 3, 0, 3, 3]",
-            "[7, 4, 0, 4, 4]",
-            "[8, 4, 0, 4, 4]",
-            "[9, 5, 0, 5, 5]",
+            "[6, 3, 0, 3, 2]",
+            "[7, 4, 0, 4, 3]",
+            "[8, 4, 0, 4, 3]",
+            "[9, 5, 0, 5, 4]",
         ],
     )
     .await
@@ -929,11 +936,11 @@ const ESCAPED: [&str; 10] = [
     "[3, 2, 1, 1, 1, 1]",
     "[4, 2, 1, 1, 1, 1]",
     "[5, 3, 1, 1, 1, 1]",
-    "[6, 3, 0, 3, 3, 2]",
-    "[7, 4, 0, 4, 4, 3]",
-    "[8, 4, 0, 4, 4, 3]",
-    "[9, 5, 0, 5, 5, 4]",
-    "[9, 5, 1, 5, 5, 4]",
+    "[6, 3, 0, 3, 3, 1]",
+    "[7, 4, 0, 4, 4, 2]",
+    "[8, 4, 0, 4, 4, 2]",
+    "[9, 5, 0, 5, 5, 3]",
+    "[9, 5, 1, 5, 5, 3]",
 ];
 
 /// A value the arm publishes by `publish` (statements ending in the
@@ -955,7 +962,7 @@ fn escaped(publish: &str, read: &str) -> String {
 
 // A closure the arm writes to a variable outside it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_closure_connected_out_of_the_arm_fires() -> Result<()> {
+async fn a_closure_connected_out_of_the_arm_stands() -> Result<()> {
     let publish = "let out: fn(y: i64) -> i64 = never();
   let s = select sel {
     0 => { let x = n * 1; out <- filter(clk, |c| c == 0) ~ |y: i64| x; 0 },
@@ -966,7 +973,7 @@ async fn a_closure_connected_out_of_the_arm_fires() -> Result<()> {
 
 // A reference the arm writes to a variable outside it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reference_connected_out_of_the_arm_fires() -> Result<()> {
+async fn a_reference_connected_out_of_the_arm_stands() -> Result<()> {
     let publish = "let out: &i64 = never();
   let s = select sel {
     0 => { let x = n * 1; out <- filter(clk, |c| c == 0) ~ &x; 0 },
@@ -977,7 +984,7 @@ async fn a_reference_connected_out_of_the_arm_fires() -> Result<()> {
 
 // A closure a helper the arm calls writes out.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_closure_a_helper_connects_out_fires() -> Result<()> {
+async fn a_closure_a_helper_connects_out_stands() -> Result<()> {
     let publish = "let out: fn(y: i64) -> i64 = never();
   let publish = |t: i64, f: fn(y: i64) -> i64| { out <- t ~ f; t };
   let s = select sel {
@@ -987,7 +994,8 @@ async fn a_closure_a_helper_connects_out_fires() -> Result<()> {
     agrees(escaped(publish, "out(1)"), &ESCAPED).await
 }
 
-// A generic function's select arms make the closure: the same fire.
+// A generic function's select arms make the closure: the same value, and
+// no fire.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_generic_callee_passes_the_move() -> Result<()> {
     let code = "{
@@ -1014,11 +1022,11 @@ async fn a_generic_callee_passes_the_move() -> Result<()> {
             "[3, 2, 1, 1, 1, 2]",
             "[4, 2, 1, 1, 1, 2]",
             "[5, 3, 1, 1, 1, 2]",
-            "[6, 3, 0, 3, 3, 3]",
-            "[7, 4, 0, 4, 4, 4]",
-            "[8, 4, 0, 4, 4, 4]",
-            "[9, 5, 0, 5, 5, 5]",
-            "[9, 5, 1, 5, 5, 5]",
+            "[6, 3, 0, 3, 3, 2]",
+            "[7, 4, 0, 4, 4, 3]",
+            "[8, 4, 0, 4, 4, 3]",
+            "[9, 5, 0, 5, 5, 4]",
+            "[9, 5, 1, 5, 5, 4]",
         ],
     )
     .await
@@ -1088,9 +1096,8 @@ fn two_selects(other: &str) -> String {
     )
 }
 
-// `z` fires at clk 6 for the reader's awake arm, which reads it: the fire
-// is spent for the reader's select, and its sleeping arm's `count(z)`
-// does not tick at clk 8.
+// `z` moves to 7 at clk 6 for the reader's awake arm, which reads it with
+// no fire, and its sleeping arm's `count(z)` does not tick at clk 8.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stand_another_arm_took_is_not_raised_again() -> Result<()> {
     let ticks = late_ticks(|c| match c {
@@ -1102,13 +1109,13 @@ async fn a_stand_another_arm_took_is_not_raised_again() -> Result<()> {
 }
 
 // No arm of the reader's select read `z` at clk 6: the arm that slept
-// through the stand is owed it, once, when it wakes at clk 8.
+// through the stand is owed nothing for it, and its `count(z)` does not
+// tick when it wakes at clk 8.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stand_no_arm_took_is_owed_once() -> Result<()> {
+async fn a_stand_no_arm_read_is_owed_to_none() -> Result<()> {
     let ticks = late_ticks(|c| match c {
-        0..4 => "1".into(),
-        4..8 => "1001".into(),
-        _ => "2".into(),
+        0..4 | 8.. => "1".into(),
+        _ => "1001".into(),
     });
     agrees(two_selects("q + 1000"), &ticks).await
 }
@@ -1132,34 +1139,35 @@ fn two_wakes(writes: &str) -> String {
     )
 }
 
-// The second wake slept through no fire of `n`: nothing moved, nothing
-// fires outside.
+// The first wake stands 7 with no fire. The second slept through no fire
+// of `n`: nothing moved.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wake_that_slept_through_no_fire_stands_silent() -> Result<()> {
     let ticks = late_ticks(|c| match c {
         0..6 => "[0, 1, 1]".into(),
-        _ => "[7, 2, 2]".into(),
+        _ => "[7, 1, 1]".into(),
     });
     agrees(two_wakes("3 => 7"), &ticks).await
 }
 
 // `n` fires again while the arm sleeps the second time: the second wake
-// fires once more.
+// stands 9, and `count` ticks at neither.
 #[tokio::test(flavor = "multi_thread")]
-async fn each_wake_fires_for_the_fires_it_slept_through() -> Result<()> {
+async fn each_wake_stands_what_it_slept_through() -> Result<()> {
     let ticks = late_ticks(|c| match c {
         0..6 => "[0, 1, 1]".into(),
-        6..10 => "[7, 2, 2]".into(),
-        _ => "[9, 3, 3]".into(),
+        6..10 => "[7, 1, 1]".into(),
+        _ => "[9, 1, 1]".into(),
     });
     agrees(two_wakes("3 => 7, 8 => 9"), &ticks).await
 }
 
 // The scrutinee fires at clk 4 while the guarded arm sleeps, and the
-// guard's flip wakes the arm at clk 6: its pattern bind took a value the
-// arm slept through, so the closure over it fires outside.
+// guard's flip wakes the arm at clk 6: its pattern bind stands at a value
+// the arm slept through, and the closure over it gives 7 outside with no
+// fire.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pattern_bind_of_a_guard_woken_arm_fires() -> Result<()> {
+async fn a_pattern_bind_of_a_guard_woken_arm_stands() -> Result<()> {
     let code = "{
   let clk = array::iter(array::init(14, |i| i));
   let n = 0;
@@ -1173,16 +1181,16 @@ async fn a_pattern_bind_of_a_guard_woken_arm_fires() -> Result<()> {
 }";
     let ticks = late_ticks(|c| match c {
         0..6 => "[0, 1]".into(),
-        _ => "[7, 2]".into(),
+        _ => "[7, 1]".into(),
     });
     agrees(code, &ticks).await
 }
 
 // `d` reads `z` from above it in the woken arm and takes 7 a cycle late,
 // standing: `count(*r)` inside does not tick, and `d`, which left the arm
-// by reference, fires for the reader outside at clk 7.
+// by reference, gives the reader outside 7 at clk 7 with no fire.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_let_over_a_passed_reader_fires_outside_a_cycle_late() -> Result<()> {
+async fn a_let_over_a_passed_reader_stands_outside_a_cycle_late() -> Result<()> {
     let code = format!(
         "{{
   {LATE_CLOCK}
@@ -1206,7 +1214,7 @@ async fn a_let_over_a_passed_reader_fires_outside_a_cycle_late() -> Result<()> {
     let ticks = late_ticks(|c| match c {
         0 | 1 | 6 => "[[0, 1], 0, 1]".into(),
         2..6 => "[[-5, 0], 0, 1]".into(),
-        _ => "[[7, 1], 7, 2]".into(),
+        _ => "[[7, 1], 7, 1]".into(),
     });
     agrees(code, &ticks).await
 }
@@ -1240,8 +1248,6 @@ async fn in_arm_agrees(expr: &str, expected: &[String]) -> Result<()> {
 
 /// [`in_arm`]'s ticks for a value that stays `v` and never fires again.
 fn silent(v: &str) -> Vec<String> {
-    const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
-    const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
     (0..10).map(|i| format!("[{i}, {}, {}, {v}, 1]", N[i], SEL[i])).collect()
 }
 
@@ -1323,10 +1329,6 @@ async fn a_moved_source_moves_what_holds_its_elements() -> Result<()> {
 /// [`in_arm`]'s ticks for a value the wake leaves bottom at clk 6, where
 /// the tick is missing: `v` is the value at each `n` the arm sees.
 fn bottomed(v: impl Fn(i64) -> i64) -> Vec<String> {
-    const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
-    const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
-    const X: [i64; 10] = [0, 1, 1, 1, 1, 1, 3, 4, 4, 5];
-    const FIRES: [i64; 10] = [1, 2, 2, 2, 2, 2, 2, 3, 3, 4];
     (0..10)
         .filter(|i| *i != 6)
         .map(|i| format!("[{i}, {}, {}, {}, {}]", N[i], SEL[i], v(X[i]), FIRES[i]))
@@ -1377,13 +1379,14 @@ fn nested(writes: &str, arm: &str) -> String {
 // outer arm sleeps over clk 2 and 3 while `a` lands at clk 2, and is
 // entered again at clk 4, in the cycle the select inside leaves the arm
 // that holds `w`. That arm stopped running with the outer arm, at clk 2,
-// so its wake at clk 6 slept through `a` and `w` fires outside.
+// so its wake at clk 6 slept through `a` and `w` moves outside, to 1 with
+// no fire.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_arm_slept_at_its_entry_stopped_at_its_deselect() -> Result<()> {
     let writes = "a <- select clk { 1 => 1, _ => never() };
   s0 <- select clk { 1 => 1, 3 => 0, _ => never() };
   s2 <- select clk { 3 => 1, 5 => 0, _ => never() };";
-    let moved = ticks(13, |c| if c < 6 { "[0, 1]" } else { "[1, 2]" });
+    let moved = ticks(13, |c| if c < 6 { "[0, 1]" } else { "[1, 1]" });
     agrees(nested(writes, INNER), &moved).await?;
     // an arm holding a `count` sleeps at its deselect
     let held = format!("{{ let c = count(s2); {INNER} }}");
@@ -1397,7 +1400,7 @@ async fn a_late_sleep_reaches_a_select_through_a_call_and_a_slot() -> Result<()>
     let writes = "a <- select clk { 1 => 1, _ => never() };
   s0 <- select clk { 1 => 1, 3 => 0, _ => never() };
   s2 <- select clk { 3 => 1, 5 => 0, _ => never() };";
-    let moved = ticks(13, |c| if c < 6 { "[0, 1]" } else { "[1, 2]" });
+    let moved = ticks(13, |c| if c < 6 { "[0, 1]" } else { "[1, 1]" });
     let called = format!("{writes}\n  let f = |s2: i64| {INNER};");
     agrees(nested(&called, "f(s2)"), &moved).await?;
     let slot = "array::map([0], |i| select s2 {
@@ -1419,7 +1422,7 @@ async fn an_arm_slept_with_its_select_stopped_at_its_own_deselect() -> Result<()
   s1 <- select clk { 1 => 1, 7 => 0, _ => never() };
   s2 <- select clk { 7 => 1, 9 => 0, _ => never() };";
     let mid = format!("select s1 {{ 0 => {INNER}, _ => {{ let w = a + 300; &w }} }}");
-    let moved = ticks(13, |c| if c < 10 { "[0, 1]" } else { "[1, 2]" });
+    let moved = ticks(13, |c| if c < 10 { "[0, 1]" } else { "[1, 1]" });
     agrees(nested(writes, &mid), &moved).await?;
     let held = format!("{{ let c = count(s1); {mid} }}");
     agrees(nested(writes, &held), &moved).await
@@ -1462,10 +1465,10 @@ const BESIDE: &str = "let g = select s0 {
 // A `let` a wake stands again is delivered quietly, and keeps the stamp
 // of the wake that moved it. The arm nested beside it slept through that
 // one and wakes in the cycle of the second: it reads `w` moved, and `u`
-// fires outside, as where the region woke once.
+// moves outside, to 2 with no fire, as where the region woke once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_let_stood_again_moved_for_the_arm_that_slept_through_it() -> Result<()> {
-    let moved = ticks(9, |c| if c < 5 { "[1, 1]" } else { "[2, 2]" });
+    let moved = ticks(9, |c| if c < 5 { "[1, 1]" } else { "[2, 1]" });
     agrees(stood_again(true, 1, BESIDE), &moved).await?;
     agrees(stood_again(false, 1, BESIDE), &moved).await
 }
@@ -1473,8 +1476,8 @@ async fn a_let_stood_again_moved_for_the_arm_that_slept_through_it() -> Result<(
 // `w` fires at clk 1 with its region awake, in the cycle the nested arm
 // is left. The region sleeps over clk 2 and 3 and wakes at clk 4, where
 // `w` stands again with the stamp of that fire and the nested arm wakes
-// having slept through it: `u` fires outside, as where the region never
-// slept.
+// having slept through it: `u` moves outside, to 2 with no fire, as where
+// the region never slept.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_let_stood_again_keeps_the_stamp_of_its_fire() -> Result<()> {
     let program = |region: &str| {
@@ -1489,7 +1492,7 @@ async fn a_let_stood_again_keeps_the_stamp_of_its_fire() -> Result<()> {
 }}"
         )
     };
-    let moved = ticks(9, |c| if c < 4 { "[1, 1]" } else { "[2, 2]" });
+    let moved = ticks(9, |c| if c < 4 { "[1, 1]" } else { "[2, 1]" });
     agrees(program("1 => 1, 3 => 0,"), &moved).await?;
     agrees(program(""), &moved).await
 }
@@ -1512,17 +1515,17 @@ async fn a_let_stood_again_moved_for_another_selects_arm() -> Result<()> {
     let moved = ticks(9, |c| match c {
         0..3 => "[0, 1, 1]",
         3 | 4 => "[1, 1, 1]",
-        _ => "[1, 2, 2]",
+        _ => "[1, 2, 1]",
     });
     agrees(stood_again(true, 3, rest), &moved).await?;
     agrees(stood_again(false, 3, rest), &moved).await
 }
 
 // The waking arm's reference moved to `w` while it slept, a target it
-// learns as it runs: it is owed `w`'s fire, which `count` takes, whether
-// or not `w` stands again in that cycle.
+// learns as it runs: it is owed nothing for `w`, and its `count` keeps 1,
+// whether or not `w` stands again in that cycle.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_target_stood_again_is_owed_to_the_arm_that_learns_it() -> Result<()> {
+async fn a_target_learned_at_a_wake_is_no_fire() -> Result<()> {
     let rest = "let k = 0;
   k <- select clk { 2 => 1, _ => never() };
   let g0 = select s0 { 0 => { let w = a + 0; &w }, _ => { let w = a + 500; &w } };
@@ -1530,13 +1533,9 @@ async fn a_target_stood_again_is_owed_to_the_arm_that_learns_it() -> Result<()> 
   let refs = [&x, once(g0)];
   let g1 = select s1 { 0 => { let r = refs[k]$; count(*r) }, _ => k - 100 };
   clk ~ (clk, g1)";
-    let owed = ticks(9, |c| match c {
-        0..3 => "1",
-        3 | 4 => "-99",
-        _ => "2",
-    });
-    agrees(stood_again(true, 3, rest), &owed).await?;
-    agrees(stood_again(false, 3, rest), &owed).await
+    let quiet = ticks(9, |c| if c == 3 || c == 4 { "-99" } else { "1" });
+    agrees(stood_again(true, 3, rest), &quiet).await?;
+    agrees(stood_again(false, 3, rest), &quiet).await
 }
 
 // A seq step's call is a fresh call, owed each capture that stands. It

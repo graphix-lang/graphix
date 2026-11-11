@@ -4,8 +4,7 @@
 //! emitters consume.
 
 use crate::{
-    AddrSet, ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag,
-    Refs, Rt,
+    ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, Rt,
     effects::NoLoop,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
@@ -202,128 +201,37 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt>(
         let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
-    match failure
-        .or_else(|| arm_raise_blocker(node, &selects, ctx))
-        .or_else(|| arm_io_blocker(&selects, ctx))
-    {
+    match failure.or_else(|| guard_blocker(&selects, ctx)) {
         Some(failure) => Err(failure),
         None => Ok(()),
     }
 }
 
-/// A handler-ful `?` under a select arm raises on an edge its arm may
-/// owe to the select's fire tracker: an input whose fire no selected
-/// arm saw is re-delivered FIRED when this arm reads it
-/// (design/wake_catchup.md), and a constant fires at the arm's first
-/// entry only, a wake being a resume. A kernel derives its selection
-/// fresh every run and remembers neither,
-/// so the raise node-walks, as does a guard [`unfollowed_guard`] finds.
-/// `selects` are the region's selects in pre-order; one nested in
-/// another's arm is covered by the outer walk.
-fn arm_raise_blocker<R: Rt>(
-    root: &Node<R>,
+/// The guard among the region's `selects` that [`unfollowed_guard`] finds.
+fn guard_blocker<R: Rt>(
     selects: &[&Node<R>],
     ctx: &CompileCtx<R>,
 ) -> Option<FusionBlocker> {
-    for s in selects {
-        if let NodeView::Select(sel) = s.view()
-            && let Some(g) =
-                sel.arms.iter().find_map(|(pat, _)| unfollowed_guard(pat, ctx))
-        {
-            return Some(FusionBlocker {
-                spec: g.spec().clone(),
-                reason: "a guard that may raise or perform on what its arm's binds do \
-                         not carry — a kernel runs every guard, the node-walk only those \
-                         the chain reaches"
-                    .into(),
-            });
-        }
-    }
-    let mut any = false;
-    if !selects.is_empty() {
-        fusion::for_each_reachable_node(root, &mut |n| {
-            any |= fusion::raises_to_handler(n)
-        });
-    }
-    if !any {
-        return None;
-    }
-    let mut nested: LPooled<AddrSet> = LPooled::take();
-    let mut found: Option<&Node<R>> = None;
-    for s in selects {
-        let NodeView::Select(sel) = s.view() else { continue };
-        if found.is_some() {
-            break;
-        }
-        if nested.contains(&(*s as *const Node<R> as usize)) {
-            continue;
-        }
-        for (_, body) in sel.arms.iter() {
-            fusion::for_each_reachable_node(body, &mut |n| match n.view() {
-                NodeView::Select(_) => {
-                    nested.insert(n as *const Node<R> as usize);
-                }
-                _ if found.is_none() && fusion::raises_to_handler(n) => found = Some(n),
-                _ => (),
-            });
-        }
-    }
-    found.map(|n| FusionBlocker {
-        spec: n.spec().clone(),
-        reason: "a `?` under a handler raises an edge its arm may owe to the select's \
-                 fire tracker — arm entry is the node-walk's"
-            .into(),
+    selects.iter().find_map(|s| {
+        let NodeView::Select(sel) = s.view() else { return None };
+        let g = sel.arms.iter().find_map(|(pat, _)| unfollowed_guard(pat, ctx))?;
+        Some(FusionBlocker {
+            spec: g.spec().clone(),
+            reason: "a guard that may raise or perform on what its arm's binds do not \
+                     carry — a kernel computes every guard, the node-walk only one \
+                     whose arm's pattern admits the value"
+                .into(),
+        })
     })
 }
 
-/// A call that performs (an `Effect::Io` builtin's, or a function's
-/// that reaches one) under a select arm performs on a fire of its
-/// arguments, and a kernel derives its selection fresh every run: a fire
-/// the arm missed asleep, which the node-walk re-delivers at entry
-/// (design/wake_catchup.md), and a constant, which fires at the arm's
-/// wake, never reach it. So it fuses there only when each argument that
-/// can trigger it fires at every entry: no arm of the select has a guard
-/// (a guard re-enters an arm under a standing scrutinee) and the
-/// argument reads the scrutinee or one of the arm's binds, at every
-/// select it sits under. `selects` are the region's selects.
-fn arm_io_blocker<R: Rt>(
-    selects: &[&Node<R>],
-    ctx: &CompileCtx<R>,
-) -> Option<FusionBlocker> {
-    let mut found: Option<&Node<R>> = None;
-    for s in selects {
-        let NodeView::Select(sel) = s.view() else { continue };
-        let guarded = sel.arms.iter().any(|(p, _)| p.guard.is_some());
-        let scrutinee = match sel.arg.node.view() {
-            NodeView::Ref(r) => Some(r.id),
-            _ => None,
-        };
-        for (pat, body) in sel.arms.iter() {
-            // every performing call fires whenever the arm is entered: its
-            // trigger fires with the scrutinee or the arm's binds
-            let mut entry: LPooled<IntSet<BindId>> = LPooled::take();
-            entry.extend(scrutinee);
-            pat.structure_predicate.ids(&mut |id| {
-                entry.insert(id);
-            });
-            let follows =
-                || crate::analysis::io_follows(body, &entry, ctx, &mut IntSet::default());
-            if guarded && performs(body, ctx) || !guarded && !follows() {
-                found = Some(body);
-            }
-            if found.is_some() {
-                return found.map(io_blocker);
-            }
-        }
-    }
-    None
-}
-
-/// A guard whose run a program could see where its arm is not reached: a
-/// kernel runs every guard, its arm's binds read as bottom there, where
-/// the node-walk runs only those the chain reaches. So a raise to a handler
-/// whose operand, or a performing call whose trigger, does not fire with
-/// those binds (and is not bottom with them) makes the guard node-walk.
+/// A guard whose run a program could see where the node-walk does not run
+/// it: a kernel computes every guard, its arm's binds read as bottom where
+/// the scrutinee is bottom or the arm's pattern does not admit the value,
+/// and the node-walk runs a guard only where the pattern admits it. So a
+/// raise to a handler whose operand, or a performing call whose trigger,
+/// does not fire with those binds (and is not bottom with them) makes the
+/// guard node-walk.
 fn unfollowed_guard<'a, R: Rt>(
     pat: &'a crate::node::pattern::PatternNode<R>,
     ctx: &CompileCtx<R>,
@@ -340,25 +248,6 @@ fn unfollowed_guard<'a, R: Rt>(
     });
     let performs = !crate::analysis::io_follows(g, &binds, ctx, &mut IntSet::default());
     (raises || performs).then_some(g)
-}
-
-/// Whether `n` makes a performing call.
-fn performs<R: Rt>(n: &Node<R>, ctx: &CompileCtx<R>) -> bool {
-    let mut performs = false;
-    fusion::for_each_emitted_node(n, &mut |x| {
-        performs = performs
-            || matches!(x.view(), NodeView::CallSite(cs) if performing_args(cs, ctx).is_some());
-    });
-    performs
-}
-
-fn io_blocker<R: Rt>(n: &Node<R>) -> FusionBlocker {
-    FusionBlocker {
-        spec: n.spec().clone(),
-        reason: "an effect under a select arm whose trigger may not fire when the arm \
-                 is entered — arm entry is the node-walk's"
-            .into(),
-    }
 }
 
 /// When `cs` performs, the arguments whose fire can make it perform:
@@ -1622,21 +1511,18 @@ pub(crate) fn tail_loop_blocker<R: Rt>(
     }
     let mut visiting: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
     visiting.push(g.instance_id());
-    site_memory(g.body(), Some(self_bind), &g.formal_ids(), &mut visiting)
+    site_memory(g.body(), Some(self_bind), &mut visiting)
 }
 
 /// The per-call-site memory a body holds that a native tail loop's
 /// passes would share where the node-walk's activations each hold their
 /// own: a collection loop's words, a non-tail self-call's block root, a
 /// call back into an instance on the `visiting` path (a cycle through
-/// another function), a handler-ful `?` that does not fire with the
-/// body's `formals` (an activation raises it at its birth, a pass never
-/// does), a callee whose body holds any; `None` when it holds none. Such
+/// another function), a callee whose body holds any; `None` when it holds none. Such
 /// a body recurses natively.
 fn site_memory<R: Rt>(
     body: &Node<R>,
     self_bind: Option<BindId>,
-    formals: &IntSet<BindId>,
     visiting: &mut LPooled<Vec<LambdaInstanceId>>,
 ) -> Option<NoLoop> {
     let is_self = |cs: &CallSite<R>| {
@@ -1658,12 +1544,6 @@ fn site_memory<R: Rt>(
         }
         held = match n.view() {
             NodeView::MapQ(_) | NodeView::FoldQ(_) => Some(NoLoop::Memory),
-            NodeView::Qop(q)
-                if q.handler().is_some()
-                    && !crate::analysis::fires_with(&q.n, formals) =>
-            {
-                Some(NoLoop::Raise(n.spec().clone()))
-            }
             NodeView::CallSite(cs) if is_self(cs) => {
                 (!tail_calls.contains(&n.spec().id)).then_some(NoLoop::Memory)
             }
@@ -1681,12 +1561,7 @@ fn site_memory<R: Rt>(
                     }
                     Some(g) => {
                         visiting.push(g.instance_id());
-                        let held = site_memory(
-                            g.body(),
-                            g.self_bind(),
-                            &g.formal_ids(),
-                            visiting,
-                        );
+                        let held = site_memory(g.body(), g.self_bind(), visiting);
                         visiting.pop();
                         held
                     }

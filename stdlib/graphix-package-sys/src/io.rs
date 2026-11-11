@@ -301,7 +301,6 @@ impl<const BATCHED: bool> IoLines<BATCHED> {
 impl<R: Rt, const BATCHED: bool> BuiltIn<R> for IoLines<BATCHED> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = if BATCHED { "sys_io_lines_batched" } else { "sys_io_lines" };
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,

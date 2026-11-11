@@ -491,20 +491,27 @@ node graph IS the IR — there is no parallel typed IR
 - **Organic firing** (`design/organic_firing.md`): a node fires iff a
   consumed input fires; nothing stores a previous value or selection to
   decide a tag; `uniq`/`filter`/`~` are the cadence tools. A constant fires
-  where it is born and stands stale everywhere else.
+  in a birth (a root's first cycle, a seq step's run) and stands stale
+  everywhere else.
+- **Bodies are bind-driven** (`design/bind_driven_bodies.md`): entering a
+  select arm, a guard, a collection slot or a function activation is not an
+  event, and neither is waking one. Nothing fires in a body but its binds
+  (a pattern bind, a slot's element, a formal) and the captures that fire
+  while it runs. Nothing is kept for a body that does not run: no catch-up,
+  no first-entry constants, in either engine. A guard runs wherever its
+  arm's pattern admits the value and sleeps otherwise.
 - **Bottom scrutinee ⇒ bottom select.** No stored-selection ride of any
   kind; `hold` on the scrutinee is the tool. Arms are consulted top-down,
   structure then guard; a consulted guard whose channel is bottom makes the
   selection undecidable. `&&`/`||` are strict (`false && ⊥ = ⊥`).
-- **Sleep is pause, not reset; a wake is a resume, never a rebirth**
-  (`design/wake_catchup.md`). State survives an arm's sleep; a reselected
-  arm recomputes from the world as it stands, reading standing values
-  STALE, and re-raises only the fires no selected reader saw, once. What
-  it recomputes from a fire it slept through carries `Tag::MOVED`, and a
-  binding stood moved is a fire for the readers outside the arm, never
-  inside it: no awake reader sees a change without a fire. Sleep
-  state is LOCAL: every skip-owning node owns a `slept` bit, no ExecCtx
-  globals. Sleep aborts an async call in flight (one not cancel-safe
+- **Sleep is pause, not reset; a wake is a resume, never a rebirth, and
+  fires nothing for anyone** (`design/sleep_and_wake.md`). State survives a
+  body's sleep; a resumed body recomputes from the world as it stands,
+  reading standing values STALE. What it recomputes carries `Tag::MOVED`,
+  which tells a consumer to recompute and is an event to no reader, inside
+  the body or outside it; a binding something writes keeps the value it
+  holds. Sleep state is LOCAL: every skip-owning node owns a `slept` bit,
+  no ExecCtx globals. Sleep aborts an async call in flight (one not cancel-safe
   finishes, unanswered); the wake restarts nothing
   (`design/async_sleep_outputs.md`). A seq machine's run is aborted by its
   arm's sleep.
@@ -572,8 +579,8 @@ are in the docs named here.
   `design/or_patterns.md`.
 - **Sampling**: `e ~ v` is `v` at each fire of `e`, banking one trigger;
   `e ~! v` is strict. A connect writes when its RHS fires; a constant RHS in
-  an arm fires only at the arm's first entry
-  (`design/organic_firing.md`). `never<T>()` is syntax: typed bottom.
+  an arm never fires unless the arm is taken in the program's first cycle:
+  sample the bind (`k ~ v`). `never<T>()` is syntax: typed bottom.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): a machine node
   (`node/seq_machine.rs`), every statement a step; a step sees the world as
   it stood at its entry (`seqq`: at enqueue); `live(e)` reads live. Every

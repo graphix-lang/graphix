@@ -478,10 +478,11 @@ run!(collection_returned_function_is_one_instance, r#"{
     (g(#start: 3, 4), g(#start: 1.5, 2.0))
 }"#, refused("does not contain f64"); FuseExpect::None);
 
-// A collection fires when it resizes or its source comes back from bottom,
-// whatever tag the source arrives with (an arm waking after another arm
-// consumed the source's fire), as the fused loop does.
-async fn collection_fires_on_a_stale_resize(mode: Mode) -> Result<()> {
+// A resize is not a fire of its own: a collection whose source resized
+// while its arm slept recomputes at the wake (its length reads 1) and fires
+// nothing, so the sample on it stands at its last value, in the fused loop
+// as in the node-walk.
+async fn collection_is_quiet_on_a_stale_resize(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     use graphix_package_core::testing::as_i64s;
     let (values, _) = run_delta(
@@ -493,13 +494,13 @@ async fn collection_fires_on_a_stale_resize(mode: Mode) -> Result<()> {
             let xs = select k { 0 => [1, 2, 3], _ => [1] };
             select s {
                 0 => array::len(xs) - 100,
-                _ => array::map(xs, |x| x) ~ n
+                _ => { let m = array::map(xs, |x| x); array::len(m) * 100 + (m ~ n) }
             }
         }"#,
         mode,
     )
     .await?;
-    assert_eq!(as_i64s(&values), vec![0, -97, -99, 4]);
+    assert_eq!(as_i64s(&values), vec![300, -97, -99, 100]);
     Ok(())
 }
 
@@ -527,10 +528,12 @@ async fn shrinking_slots_over_an_absent_callback(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// What a slot's run-time callback reads is the collection's: a fire it
-// missed while its arm slept is raised at the wake, and `a`'s birth, which
-// no reader saw, at the arm's first entry, as through a static callee.
-async fn collection_refs_reach_its_slots(mode: Mode) -> Result<()> {
+// What a slot's run-time callback reads fires in the slot only when it is
+// delivered in a cycle the slot runs: `a` stands at the arm's first entry
+// (n = 2, nothing sampled), fires at n = 3 and is sampled, and its fire at
+// n = 7, which the arm slept through, is not kept: at n = 9 the sample
+// stands.
+async fn slot_callback_capture_fires_only_when_delivered(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
         r#"{
@@ -540,20 +543,22 @@ async fn collection_refs_reach_its_slots(mode: Mode) -> Result<()> {
             let n = 0;
             let dummy = 0;
             n <- select n { k if k < 12 => k + 1, _ => never() };
-            a <- select n { 6 => 7, _ => never() };
+            a <- select n { 2 => 5, 6 => 7, _ => never() };
             select n { 2 | 3 | 9 => { dummy <- n; array::map([n], g) }, _ => never() }
         }"#,
         mode,
     )
     .await?;
     let arr = |n| Value::Array([Value::I64(n)].into());
-    assert_eq!(values, vec![arr(2), arr(2), arr(9)]);
+    assert_eq!(values, vec![arr(3), arr(3)]);
     Ok(())
 }
 
 // A bottom source runs no slot: its slots pause until it returns, so a
 // raise only a slot under the bottom source would make never happens, and
-// a kernel runs no phantom slot over the source's placeholder.
+// a kernel runs no phantom slot over the source's placeholder in the
+// root's first cycle, where a slot's constant error would raise. The real
+// slots are entered after it, so theirs never fires.
 async fn bottom_source_runs_no_slot(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
@@ -582,21 +587,22 @@ async fn bottom_source_runs_no_slot(mode: Mode) -> Result<()> {
     )
     .await?;
     let pair = |a, b| Value::Array([Value::I64(a), Value::I64(b)].into());
-    assert_eq!(values.last(), Some(&pair(2, 0)), "{values:?}");
+    assert_eq!(values, [pair(0, 0)]);
     Ok(())
 }
 
-// The slots a bottom source paused wake caught up when it returns: an
-// event a slot reads that fired meanwhile is raised again, so a standing
-// slot answers as a fresh one does.
-async fn bottom_source_slots_wake_caught_up(mode: Mode) -> Result<()> {
+// The slots a bottom source paused are owed nothing when it returns: `a`
+// fires as the source first arrives (n = 2) and both slots sample it; its
+// fire at n = 7, under the bottom source, is not kept, so at n = 9 the
+// standing slot's sample stands and the fresh slot has none.
+async fn bottom_source_slots_are_owed_nothing_at_the_return(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
         r#"{
             let a = 0;
             let n = 0;
             n <- select n { k if k < 12 => k + 1, _ => never() };
-            a <- select n { 6 => 7, _ => never() };
+            a <- select n { 1 => 5, 6 => 7, _ => never() };
             let xs = select n { 2 => [n], 9 => [n, n], _ => never() };
             (array::map(xs, |x| a ~ x), array::fold(xs, 0, |acc, x| acc + (a ~ x)))
         }"#,
@@ -607,14 +613,15 @@ async fn bottom_source_slots_wake_caught_up(mode: Mode) -> Result<()> {
         let m = Value::Array(m.iter().map(|i| Value::I64(*i)).collect());
         Value::Array([m, Value::I64(f)].into())
     };
-    assert_eq!(values, vec![pair(&[2], 2), pair(&[9, 9], 18)]);
+    assert_eq!(values, vec![pair(&[2], 2)]);
     Ok(())
 }
 
 // A callee a paused slot binds fresh at the source's return, its
-// function value having changed meanwhile, is owed the fires its body's
-// inputs had while the slot was paused, as in a woken select arm.
-async fn bottom_source_fresh_callee_catches_up(mode: Mode) -> Result<()> {
+// function value having changed meanwhile, is owed nothing: `a` fired
+// while the slot was paused, so the new callee's sample on it has nothing
+// to take and the map stays bottom after the return.
+async fn bottom_source_fresh_callee_is_owed_nothing(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
         r#"{
@@ -631,13 +638,14 @@ async fn bottom_source_fresh_callee_catches_up(mode: Mode) -> Result<()> {
         mode,
     )
     .await?;
-    assert_eq!(values.last(), Some(&Value::Array([Value::I64(1)].into())), "{values:?}");
+    assert_eq!(values, vec![Value::Array([Value::I64(-99)].into()); 3]);
     Ok(())
 }
 
-// A fold's init that fires while its source is bottom is caught up at the
-// return, as a capture of the slots is.
-async fn bottom_source_fold_init_caught_up(mode: Mode) -> Result<()> {
+// A fold's init that fires while its source is bottom is not kept: at the
+// return the accumulator stands, the slot's sample on it takes nothing, and
+// the fold fires what it stood at, once, for its source's return.
+async fn bottom_source_fold_init_is_not_kept(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
         r#"{
@@ -651,18 +659,18 @@ async fn bottom_source_fold_init_caught_up(mode: Mode) -> Result<()> {
         mode,
     )
     .await?;
-    assert_eq!(values.last(), Some(&Value::I64(101)), "{values:?}");
+    assert_eq!(values, [Value::I64(1), Value::I64(1)]);
     Ok(())
 }
 
 modes!(
     shrinking_slots_over_an_absent_callback,
-    collection_fires_on_a_stale_resize,
-    collection_refs_reach_its_slots,
+    collection_is_quiet_on_a_stale_resize,
+    slot_callback_capture_fires_only_when_delivered,
     bottom_source_runs_no_slot,
-    bottom_source_slots_wake_caught_up,
-    bottom_source_fresh_callee_catches_up,
-    bottom_source_fold_init_caught_up
+    bottom_source_slots_are_owed_nothing_at_the_return,
+    bottom_source_fresh_callee_is_owed_nothing,
+    bottom_source_fold_init_is_not_kept
 );
 
 // filter_map drops an element on null and keeps `Keep(v), null included,

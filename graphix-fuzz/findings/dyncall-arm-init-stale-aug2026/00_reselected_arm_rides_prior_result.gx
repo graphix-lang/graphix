@@ -20,7 +20,7 @@
 // semantics. The present-but-stale commits (9b2e7231, 2026-08-31)
 // moved the interp and this pin diverged with the engines SWAPPED
 // (interp rode, jit recomputed). RE-ADJUDICATED under WAKE CATCH-UP
-// (design/wake_catchup.md, Eric 2026-09-01): the trace is
+// (design/bind_driven_bodies.md, Eric 2026-09-01): the trace is
 // 1, 0, 1, 1 on BOTH engines, by the ruled mechanism — in1's fire is
 // HELD (the selected `[0,1]` arm doesn't read it), and the map arm's
 // wake consumes it as a genuine catch-up fire; the forced recompute

@@ -150,13 +150,13 @@ pub enum View {
     Cycle,
     /// A birth: standing values read as delivered and constants fire.
     Birth,
-    /// A select arm's resume: a pause ends, so standing values read
-    /// stale, constants stand, and a `<-` target keeps its value; only
-    /// the fires the arm missed are delivered.
+    /// A body's entry or its resume: standing values read stale, marked
+    /// moved, constants stand, and a `<-` target keeps its value. Nothing
+    /// is delivered for what fired while the body did not run.
     Wake,
     /// Nodes born into a world that stands: constants fire, standing
-    /// values read stale. An arm's first entry into an existing world,
-    /// a seq step entered for a run, a birth inside a resume.
+    /// values read stale. A seq step entered for a run, a birth inside a
+    /// resume.
     Step,
 }
 
@@ -964,10 +964,6 @@ pub trait BuiltIn<R: Rt> {
     const ORDERED: bool = false;
     /// Argument whose ordering needs a value walk when its type can hold references.
     const ORDER_ARG: Option<usize> = None;
-    /// An event source whose standing interest re-attaches or resumes
-    /// at its arm's wake (a subscription, a timer, a watch, a server):
-    /// over constant arguments it still acts at every entry.
-    const RESUMES: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,
@@ -1448,7 +1444,6 @@ struct BuiltinEntry<R: Rt> {
     effect: Effect,
     ordered: bool,
     order_arg: Option<usize>,
-    resumes: bool,
 }
 
 macro_rules! env_restore_methods {
@@ -2180,7 +2175,6 @@ impl<R: Rt> CompileCtx<R> {
                     effect: T::EFFECT,
                     ordered: T::ORDERED,
                     order_arg: T::ORDER_ARG,
-                    resumes: T::RESUMES,
                 });
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
@@ -2220,11 +2214,6 @@ impl<R: Rt> CompileCtx<R> {
     /// A registered builtin's [`Effect`]; `Async` for unknown names.
     pub fn builtin_effect(&self, name: &str) -> Effect {
         self.registry.builtins.get(name).map(|b| b.effect).unwrap_or_default()
-    }
-
-    /// Whether a registered builtin is [`BuiltIn::RESUMES`].
-    pub fn builtin_resumes(&self, name: &str) -> bool {
-        self.registry.builtins.get(name).is_some_and(|b| b.resumes)
     }
 
     /// A registered [`Effect::Io`] builtin's [`BuiltIn::perform`].
@@ -2354,6 +2343,22 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     pub fn under<T>(&mut self, view: View, f: impl FnOnce(&mut Self) -> T) -> T {
         let prev = self.event.view;
         self.event.view = prev.join(view);
+        let r = f(self);
+        self.event.view = prev;
+        r
+    }
+
+    /// Run `f`, the entry of a body (a select arm, a collection slot, a
+    /// callee): nothing in it is born. It reads what stands stale and its
+    /// constants stand; only its binds and the captures delivered this
+    /// cycle fire. A body entered inside a birth (the program's first
+    /// cycle, a seq step's entry) is part of that birth.
+    pub fn enter_body<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let prev = self.event.view;
+        self.event.view = match prev {
+            View::Birth | View::Step => prev,
+            View::Cycle | View::Wake => View::Wake,
+        };
         let r = f(self);
         self.event.view = prev;
         r
@@ -2554,8 +2559,8 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     }
 
     /// Stand the quiet production `tv` in `id`'s store entry: no delivery,
-    /// unless a wake recomputed it from a fire its region slept through
-    /// ([`Tag::moved`]), which is one to every reader outside the region.
+    /// unless a wake recomputed it ([`Tag::moved`]), which every reader
+    /// recomputes from.
     pub fn stand(&mut self, id: BindId, tv: TagValue) {
         let var = self.rt.var_of(id);
         match tv.tag().moved() {
@@ -2565,12 +2570,9 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     }
 
     /// Store what a wake stood moved as a fire is stored, stamped this
-    /// cycle under its own tag, which each reader reads by where it
-    /// stands (`node::delivered_view`): the readers the walk has passed
-    /// take it next cycle, a fire to one outside the regions that resumed
-    /// this cycle and a standing value to one inside. The outermost region
-    /// that resumed this cycle records the stand: no reader inside it is
-    /// owed it later (`node::wake::owed`).
+    /// cycle under its own tag, a fire to no reader: every reader's
+    /// boundary is marked, and the readers the walk has passed take it
+    /// next cycle, so each recomputes from the new value.
     #[cold]
     #[inline(never)]
     fn stand_moved(
@@ -2593,28 +2595,14 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
                     &mut passed,
                 );
                 if let Some(passed) = passed {
-                    let cycle = self.rt.cycle();
                     for r in passed {
-                        let inside =
-                            r.boundary.as_ref().is_some_and(|b| b.resumed_in(cycle));
-                        let late = match inside {
-                            true => tv.clone(),
-                            false => tv.as_fire(),
-                        };
-                        self.rt.late_var(var, late, r)
+                        self.rt.late_var(var, tv.clone(), r)
                     }
                 }
                 if elsewhere {
                     self.rt.produced_var(var)
                 }
             }
-        }
-        if let Some(region) = self.catch_up.as_ref().and_then(|s| s.region()) {
-            let rt = &self.rt;
-            region.stood(var.id(), rt.cycle(), |var, at| {
-                rt.store_get(&var)
-                    .is_some_and(|(tv, stamp)| tv.tag().moved() && *stamp == at)
-            })
         }
         if notify == Notify::Roots {
             self.rt.notify_marked_var(var)

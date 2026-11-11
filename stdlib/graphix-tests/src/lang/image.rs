@@ -1285,9 +1285,11 @@ async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
     Ok(())
 }
 
-/// A variable only an imaged instance body reads, in an arm still
-/// asleep, schedules its statement on a warm start as on a cold one: the
-/// arm wakes with its catch-up.
+/// A variable only an imaged instance body reads, in an arm entered
+/// after the image was taken, is read on a warm start as on a cold one:
+/// the body reads the value `g` took before the arm's entry, and `late`,
+/// written the cycle after the entry with nothing else firing, schedules
+/// its statement and reaches the body's `count`.
 #[tokio::test]
 async fn imaged_body_reads_are_registered() -> Result<()> {
     let program = r#"
@@ -1297,20 +1299,22 @@ async fn imaged_body_reads_are_registered() -> Result<()> {
         let gt = sys::time::timer(duration:150.ms, false);
         let g: i64 = never();
         g <- gt ~ 42;
-        let f = |x: i64| -> string "[x] [count(g)]";
+        let late: i64 = never();
+        late <- select sel { 1 => 7, _ => never() };
+        let f = |x: i64| -> string "[x] [g] [count(late)]";
         select sel { 0 => "A", _ => f(sel) }
     "#;
     let ((_, cold_values), (_, warm_values)) = cold_and_warm(program).await?;
     let shown = |vs: &[Value]| vs.iter().map(|v| format!("{v}")).collect::<Vec<_>>();
-    assert_eq!(shown(&cold_values), ["\"A\"", "\"1 1\""]);
+    assert_eq!(shown(&cold_values), ["\"A\"", "\"1 42 1\""]);
     assert_eq!(cold_values, warm_values);
     Ok(())
 }
 
-/// A variable only a nested imaged body reads, its site asleep in an arm
-/// of a callee that already decoded, schedules its statement as on a cold
-/// start: the site that decoded outside every heap instance holds the
-/// reads of its whole tree.
+/// A variable only a nested imaged body reads, its site in an arm of a
+/// callee that already decoded, entered after the image was taken, is
+/// read as on a cold start: the site that decoded outside every heap
+/// instance holds the reads of its whole tree.
 #[tokio::test]
 async fn nested_imaged_body_reads_are_registered() -> Result<()> {
     let program = r#"
@@ -1320,13 +1324,15 @@ async fn nested_imaged_body_reads_are_registered() -> Result<()> {
         let gt = sys::time::timer(duration:150.ms, false);
         let g: i64 = never();
         g <- gt ~ 42;
-        let f = |x: i64| -> string "[x] [count(g)]";
+        let late: i64 = never();
+        late <- select sel { 1 => 7, _ => never() };
+        let f = |x: i64| -> string "[x] [g] [count(late)]";
         let h = |s: i64| -> string select s { 0 => "A", _ => f(s) };
         h(sel)
     "#;
     let ((_, cold_values), (_, warm_values)) = cold_and_warm(program).await?;
     let shown = |vs: &[Value]| vs.iter().map(|v| format!("{v}")).collect::<Vec<_>>();
-    assert_eq!(shown(&cold_values), ["\"A\"", "\"1 1\""]);
+    assert_eq!(shown(&cold_values), ["\"A\"", "\"1 42 1\""]);
     assert_eq!(cold_values, warm_values);
     Ok(())
 }

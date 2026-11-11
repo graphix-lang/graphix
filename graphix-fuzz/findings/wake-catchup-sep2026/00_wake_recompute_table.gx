@@ -1,4 +1,4 @@
-// WAKE CATCH-UP (design/wake_catchup.md, ruled by Eric 2026-09-01):
+// WAKE CATCH-UP (design/bind_driven_bodies.md, ruled by Eric 2026-09-01):
 // a reselected arm always recomputes from the world as it stands; it
 // never re-raises events. Eric's probe table, verbatim: the false arm
 // is deselected while in1 moves 1 -> 20 (consumed by the true arm, so

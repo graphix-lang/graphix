@@ -10,7 +10,7 @@
 
 use super::genn::SynthCall;
 use crate::{
-    BindId, Event, ExecCtx, Notify, Rt, Scope, TagValue, View,
+    BindId, Event, ExecCtx, Notify, Rt, Scope, TagValue,
     abstract_value::{self, CastHook, GxAbstract, ValueHookDispatch},
     branch::RtView,
     env::{Env, ImplDef},
@@ -530,13 +530,15 @@ fn call_hook_over<R: Rt>(
     for (id, v) in s.call.args.iter().zip(args.iter()) {
         ctx.deliver(*id, TagValue::fired(v.clone()), Notify::Walk);
     }
-    let view =
-        if std::mem::replace(&mut s.first, false) { View::Birth } else { View::Cycle };
+    let first = std::mem::replace(&mut s.first, false);
     let site = &mut s.call.site;
-    let r = ctx.under(view, |ctx| {
+    let mut run = |ctx: &mut ExecCtx<'_, R>| {
         let tv = site.update(ctx);
         if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
-    });
+    };
+    // a hook's first call is a body's entry: its arguments fire, its
+    // constants stand
+    let r = if first { ctx.enter_body(run) } else { run(ctx) };
     return_site(ctx, loan);
     Hooked::Ran(r)
 }

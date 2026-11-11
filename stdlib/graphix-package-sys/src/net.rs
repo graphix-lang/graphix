@@ -244,7 +244,6 @@ impl Subscribe {
 impl<R: Rt> BuiltIn<R> for Subscribe {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_subscribe";
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,
@@ -871,7 +870,6 @@ macro_rules! list {
         impl<R: Rt> BuiltIn<R> for $name {
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
-            const RESUMES: bool = true;
 
             fn init<'a, 'b, 'c, 'd>(
                 ctx: &'a mut CompileCtx<R>,
@@ -1040,7 +1038,6 @@ impl<R: Rt> Publish<R> {
 impl<R: Rt> BuiltIn<R> for Publish<R> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish";
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R>,
@@ -1408,7 +1405,6 @@ impl<R: Rt> PublishRpc<R> {
 impl<R: Rt> BuiltIn<R> for PublishRpc<R> {
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish_rpc";
-    const RESUMES: bool = true;
 
     fn init<'a, 'b, 'c>(
         ctx: &'a mut CompileCtx<R>,

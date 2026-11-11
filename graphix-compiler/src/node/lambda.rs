@@ -1429,7 +1429,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         let root = if first || woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         for (arg, pat) in from.iter_mut().zip(&self.args) {
             let tv = arg.update(ctx);
-            publish_production(ctx, Feeds::Pattern(pat), tv, false, root);
+            publish_production(ctx, Feeds::Pattern(pat), tv, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
         if ctx.control.interrupted() {

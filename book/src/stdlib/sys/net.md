@@ -49,6 +49,20 @@ let price: f64 = sys::net::callq("/local/price", {sku})$;
 `call` cannot: any site may name a call's id, so the calls of a fan-out
 over `call` run in program order.
 
+`sys::net::rpc` calls `#f` once for each call it serves, each an
+instance of its own, and the call is answered by the reply's first
+event. Calling `#f` is not an event, only its argument is: a reply that
+does not derive from the arguments never fires, and the caller waits
+until it times out. Write `|args| args ~ reply`, and raise a constant
+error as ``error(args ~ `Bad)?``. A reply that reads a field of the
+arguments, or selects on them, fires with them.
+
+`sys::net::list` and `list_table` list again every second by default,
+from the first time `path` fires. In a select arm or a callback entered
+after the program starts, pass the path sampled on the event that enters
+it, `list(k ~ path)`: over a path that stands, the default refresh
+never starts.
+
 ```graphix
 {{#include ../../../../stdlib/graphix-package-sys/src/graphix/net.gxi}}
 ```

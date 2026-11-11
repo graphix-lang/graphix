@@ -9,9 +9,10 @@ use graphix_package_core::{
 };
 use netidx::publisher::Value;
 
-// A nested presence-watch samples a free read of `pc`: the catch-up
-// delivers the entry when the delayed value arrives.
-const SEQ_PC_FREE_READ_WAKES_NESTED: &str = r#"
+// A machine written by hand as selects: the nested arm is entered when
+// the delayed value arrives, three cycles after `pc` fired. No fire is
+// kept for an arm that did not run, so `pc ~ v` issues nothing.
+const BY_HAND_NESTED_ARM_IS_OWED_NO_PC_FIRE: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -31,7 +32,24 @@ const SEQ_PC_FREE_READ_WAKES_NESTED: &str = r#"
 }
 "#;
 
-run!(seq_pc_free_read_wakes_nested, SEQ_PC_FREE_READ_WAKES_NESTED, is(Value::I64(42)); FuseExpect::Jit);
+run!(by_hand_nested_arm_is_owed_no_pc_fire, BY_HAND_NESTED_ARM_IS_OWED_NO_PC_FIRE, is(Value::I64(0)); FuseExpect::Jit);
+
+// The seq that machine stands for: its step waits for the delayed value
+// and issues it.
+const SEQ_STEP_WAITS_FOR_AN_ABSENT_VALUE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => step, _ => never() };
+  let delayed = never<i64>();
+  delayed <- select step { 4 => 42, _ => never() };
+  let issued = 0;
+  seq go { let v = delayed; issued <- v };
+  select step { 8 => issued, _ => never() }
+}
+"#;
+
+run!(seq_step_waits_for_an_absent_value, SEQ_STEP_WAITS_FOR_AN_ABSENT_VALUE, is(Value::I64(42)); FuseExpect::Jit);
 
 // A pattern bind of the outer scrutinee is a facet of that match and
 // is not re-raised into the nested watch.
@@ -57,9 +75,10 @@ const SEQ_PC_PATTERN_BIND_NOT_RERAISED: &str = r#"
 
 run!(seq_pc_pattern_bind_not_reraised, SEQ_PC_PATTERN_BIND_NOT_RERAISED, is(Value::I64(0)); FuseExpect::Jit);
 
-// The presence select issues on both runs, including an entry that
-// finds `x` bottom after it had been a value.
-const SEQ_PRESENCE_SECOND_RUN: &str = r#"
+// The same machine by hand over two runs: `pc` fires at each run's start,
+// while `x` is bottom and the nested arm does not run, and stands at each
+// arrival of `x`. Neither run issues.
+const BY_HAND_NESTED_ARM_IS_OWED_NO_PC_FIRE_IN_EITHER_RUN: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 16 => s + 1, _ => never() };
@@ -86,7 +105,38 @@ const SEQ_PRESENCE_SECOND_RUN: &str = r#"
 }
 "#;
 
-run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, is(Value::I64(2)); FuseExpect::Jit);
+run!(
+    by_hand_nested_arm_is_owed_no_pc_fire_in_either_run,
+    BY_HAND_NESTED_ARM_IS_OWED_NO_PC_FIRE_IN_EITHER_RUN,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
+
+// The seq that machine stands for issues on both runs, including a run
+// that finds `x` bottom after it had been a value.
+const SEQ_STEP_WAITS_FOR_AN_ABSENT_VALUE_IN_EACH_RUN: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 16 => s + 1, _ => never() };
+  let go = select step { 1 | 8 => step, _ => never() };
+  let x = select step {
+    s if s < 4 => never(),
+    s if s < 6 => 1,
+    s if s < 12 => never(),
+    _ => 2
+  };
+  let n = 0;
+  seq go { let v = x; n <- n + 1 };
+  select step { 16 => n, _ => never() }
+}
+"#;
+
+run!(
+    seq_step_waits_for_an_absent_value_in_each_run,
+    SEQ_STEP_WAITS_FOR_AN_ABSENT_VALUE_IN_EACH_RUN,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
 
 // A bare `pc ~ x` at an entry that finds `x` bottom banks the fire. An `x`
 // that arrives and goes bottom again while the arm sleeps does not pay the
@@ -165,8 +215,10 @@ const SEQ_SAME_ARM_REENTRY: &str = r#"
 
 run!(seq_same_arm_reentry, SEQ_SAME_ARM_REENTRY, is(Value::I64(3)); FuseExpect::Jit);
 
-// until: enter while the level is false, then it flips.
-const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
+// An until written by hand: the level flips three cycles after `pc`
+// fired, the arm it selects is entered with `pc` standing, and
+// `pc ~ `Done` writes nothing: the machine stays in `Until`.
+const BY_HAND_UNTIL_ARM_IS_OWED_NO_PC_FIRE: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -187,7 +239,30 @@ const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
 }
 "#;
 
-run!(seq_until_level_flips, SEQ_UNTIL_LEVEL_FLIPS, prints(r#""Done""#); FuseExpect::Jit);
+run!(by_hand_until_arm_is_owed_no_pc_fire, BY_HAND_UNTIL_ARM_IS_OWED_NO_PC_FIRE, prints(r#""Until""#); FuseExpect::Jit);
+
+// until: enter while the level is false, then it flips.
+const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => step, _ => never() };
+  let released = false;
+  released <- select step { 4 => true, _ => never() };
+  let pc = "Idle";
+  seq go { pc <- "Until"; until live(released); pc <- "Done" };
+  select step { 3 => pc, 8 => pc, _ => never() }
+}
+"#;
+
+async fn seq_until_level_flips(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(SEQ_UNTIL_LEVEL_FLIPS, mode).await?;
+    let shown: Vec<_> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(shown, [r#""Until""#, r#""Done""#]);
+    Ok(())
+}
+
+modes!(seq_until_level_flips);
 
 const SEQ_VALUE: &str = r#"
 {

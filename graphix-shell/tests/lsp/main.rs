@@ -1106,12 +1106,12 @@ fn a_lone_module_is_checked_against_its_interface() {
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
 }
 
-/// An arm acts on constants only at its birth, its first entry, so a write
-/// or an effect that reads no variable, and a seq with no trigger, are
-/// warnings; what samples the arm's event, the seq machine's own writes,
-/// and a select in a seq step, which is born at every run, are not.
+/// Constants in an arm do not fire, so a write or an effect that reads no
+/// variable, and a seq with no trigger, are warnings; what samples the
+/// arm's event, the seq machine's own writes, and a select in a seq step,
+/// which is born at every run, are not.
 #[test]
-fn birth_only_arm_actions_are_warnings() {
+fn constant_arm_actions_are_warnings() {
     let src = "let k = 0;\nlet x = 0;\nselect k {\n    \
                0 => { x <- 1; println(\"entered\"); seq { 1 } },\n    \
                _ => { x <- k ~ 2; println(k ~ \"again\"); seq k { k } }\n};\n\
@@ -1124,7 +1124,7 @@ fn birth_only_arm_actions_are_warnings() {
     let texts: Vec<&str> = w.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(texts, ["println(\"entered\")", "seq { 1 }", "x <- 1"], "{w:?}");
     for (text, message) in &w {
-        assert!(message.contains("first entry"), "{text}: {message}");
+        assert!(message.contains("program's first cycle"), "{text}: {message}");
     }
 }
 
@@ -1143,10 +1143,10 @@ fn a_fixed_until_warns_once() {
     assert_eq!(texts, ["until flag"], "{w:?}");
 }
 
-/// A call to a function whose body performs Io, over constants, acts only
-/// at the arm's first entry as an Io builtin's call does.
+/// A call in an arm to a function whose body performs Io, over constants,
+/// is warned of as an Io builtin's call is.
 #[test]
-fn birth_only_io_through_a_function_is_a_warning() {
+fn constant_io_through_a_function_is_a_warning() {
     let src = "let k = 0;\nlet say = |m: string| println(\"note: [m]\");\nselect k {\n    \
                0 => say(\"saved\"),\n    _ => say(k ~ \"again\")\n};\n";
     let mut c = Client::start(&[("a.gx", src)]);

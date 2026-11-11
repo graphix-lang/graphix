@@ -1139,6 +1139,8 @@ pub(super) fn emit_select_arms<R: Rt>(
     let open = cx.b.declare_var(types::I8);
     let reaches_first = cx.b.ins().iconst(types::I8, 1);
     cx.b.def_var(open, reaches_first);
+    // an unguarded arm above narrows what the arms below it see
+    let mut narrowed_above = false;
     for (i, (pat, body)) in sel.arms.iter().enumerate().take(impure.map_or(0, |l| l + 1))
     {
         if !live[i] {
@@ -1167,16 +1169,28 @@ pub(super) fn emit_select_arms<R: Rt>(
                 None => cx.b.ins().iconst(types::I8, 0),
             };
             cx.b.def_var(open, still);
+            narrowed_above = true;
             continue;
         };
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+        // a guard runs wherever its arm's pattern admits the value,
+        // whichever arm takes it: its binds are masked by the pattern, and
+        // for an inferred predicate by the type the arms above leave it
+        let admits = match pat.explicit_type_predicate || !narrowed_above {
+            true => None,
+            false => emit_narrowed_test(cx, pat, scrut, scrut_typ)?,
+        };
+        let bind_reach = match admits {
+            Some(a) => a,
+            None => cx.b.ins().iconst(types::I8, 1),
+        };
         let pcond = emit_arm_condition(
             cx,
             pat,
             scrut,
             scrut_typ,
             None,
-            Some(reached),
+            Some(bind_reach),
             None,
             &mut binds,
         )?;
@@ -1184,11 +1198,15 @@ pub(super) fn emit_select_arms<R: Rt>(
             Some(c) => cx.b.ins().band(c, reached),
             None => reached,
         };
+        let bind_mask = match pcond {
+            Some(c) => cx.b.ins().band(c, bind_reach),
+            None => bind_reach,
+        };
         let mut reads = Refs::default();
         body.refs(&mut reads);
         g.node.refs(&mut reads);
         retain_read(&mut binds, &reads);
-        install_arm_binds(cx, &binds, scrut, Some(mask))?;
+        install_arm_binds(cx, &binds, scrut, Some(bind_mask))?;
         let gcv = g.node.emit_clif(cx)?;
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
@@ -1528,7 +1546,67 @@ fn emit_type_test<R: Rt>(
     scrut: SelectScrut,
     scrut_typ: &Type,
 ) -> Result<Option<ClifValue>> {
-    Ok(if !pat.explicit_type_predicate || type_test_is_trivial(cx, pat, scrut_typ) {
+    match pat.explicit_type_predicate {
+        true => emit_predicate_test(cx, pat, scrut, scrut_typ),
+        false => Ok(None),
+    }
+}
+
+// CR claude for claude: [perf/low] A guarded arm whose pattern is a
+// structure the arms above could have narrowed, and whose narrowing neither
+// `StructPatternNode::matched_part` nor the option and result markers
+// account for, falls to `emit_predicate_test`, which lowers only primitive
+// and union predicates, so the select does not fuse: `select v { (0, n) =>
+// n, (`A(x) | `B(x), n) if (10 / n) > 1 => x, (_, n) => n }` over `([`A(i64),
+// `B(i64), `C], i64)` (an or-pattern in a tuple below an unguarded arm). A
+// guard runs wherever its arm's pattern admits the value, so its binds
+// cannot be masked by the chain's reach. The whole test is the node-walk's
+// `PatternNode::shape_matches`; a kernel form of it over a composite
+// scrutinee (element by element, as the structure test reads them) would
+// fuse these. No fuzz pin, book example or netidx-admin select has the
+// shape. (narrowed-guard-structure-defuses-01)
+/// The test of `scrut` against an arm's inferred predicate, the type the
+/// arms above it leave: `None` where every value of the scrutinee's type
+/// passes, or every one the arm's structure admits. Over an option or a
+/// result the success type is "not null" or "not an error", whatever it
+/// is.
+fn emit_narrowed_test<R: Rt>(
+    cx: &mut BodyCx,
+    pat: &PatternNode<R>,
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+) -> Result<Option<ClifValue>> {
+    let env = cx.ctx.type_env;
+    let pred = resolve_node_typ(cx.ctx, &pat.type_predicate);
+    let holds =
+        |t: &Type| pred.contains_with_flags(BitFlags::empty(), env, t).unwrap_or(false);
+    let by_structure = || {
+        pat.structure_predicate.matched_part(env, scrut_typ).is_some_and(|t| holds(&t))
+    };
+    if holds(scrut_typ) || by_structure() {
+        return Ok(None);
+    }
+    if let SelectScrut::Value { kind: ValueKind::Nullable, disc, .. } = scrut
+        && let Some(marked) = kernel_abi::nullable_error_marked(scrut_typ)
+        && let Some(success) = kernel_abi::nullable_inner(scrut_typ)
+        && holds(&success)
+    {
+        let other = if marked { value_disc::ERROR } else { value_disc::NULL };
+        let disc = clean_disc(cx.b, disc);
+        return Ok(Some(cx.b.ins().icmp_imm_s(IntCC::NotEqual, disc, other)));
+    }
+    emit_predicate_test(cx, pat, scrut, scrut_typ)
+}
+
+/// The test of `scrut` against an arm's type predicate: `None` where
+/// every value of the scrutinee's type passes.
+fn emit_predicate_test<R: Rt>(
+    cx: &mut BodyCx,
+    pat: &PatternNode<R>,
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+) -> Result<Option<ClifValue>> {
+    Ok(if type_test_is_trivial(cx, pat, scrut_typ) {
         None
     } else {
         let pred = freeze_node_typ(cx.ctx, &pat.type_predicate).ok_or_else(|| {

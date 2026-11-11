@@ -374,11 +374,14 @@ run!(net_callq_answers_in_call_order, r#"{
 
 // An error keeps its call's place: a path that is no path fails at once
 // and a reply that does not cast fails on arrival, and both wait for the
-// slow call made before them, which answers once the last is seen.
+// slow call made before them, which answers once the last is seen. The
+// two procedures are reached over separate subscriptions, so the slow
+// handler samples the release on its request: it answers whichever of the
+// two comes first.
 run!(net_callq_errors_keep_their_place, r#"{
   let str_seen = never<null>();
   let release = never<null>();
-  sys::net::rpc(#path: "/local/q/slow", #doc: "slow", #spec: null, #f: |a: null| release ~ 1);
+  sys::net::rpc(#path: "/local/q/slow", #doc: "slow", #spec: null, #f: |a: null| (a ~ release) ~ 1);
   sys::net::rpc(#path: "/local/q/str", #doc: "str", #spec: null,
     #f: |a: null| { str_seen <- a; a ~ "x" });
   release <- str_seen;
@@ -752,7 +755,7 @@ run!(net_publisher_gone_and_back, r#"
 // it raised kept on the server.
 run!(net_rpc_handler_raises, r#"{
   sys::net::rpc(#path: "/local/pin/raise", #doc: "raise", #spec: null,
-    #f: |a: null| { let e: Result<i64, `Boom> = error(`Boom); a ~ e? });
+    #f: |a: null| { let e: Result<i64, `Boom> = error(`Boom); (a ~ e)? });
   let r: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> =
     sys::net::call("/local/pin/raise", null).1;
   r
@@ -1026,7 +1029,8 @@ async fn net_list_table_restarts_after_wake() -> Result<()> {
 }
 
 // A wake re-attaches a write to its path but writes nothing until the
-// value fires: the one write is the arm's first entry's.
+// value fires: the one write is the arm's first entry's, which samples
+// the value on the scrutinee's first fire.
 run!(net_write_not_repeated_after_wake, r#"{
     let path = "/local/standing_write";
     let value = 42;
@@ -1037,7 +1041,7 @@ run!(net_write_not_repeated_after_wake, r#"{
     on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
     on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
     select on {
-        true => sys::net::write(path, value),
+        true => sys::net::write(path, once(on) ~ value),
         false => never()
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes
