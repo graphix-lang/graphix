@@ -12,6 +12,8 @@ use crate::{
     },
     typ::{FnArgKind, TVar, Type},
 };
+use ahash::AHashSet;
+use arcstr::ArcStr;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -87,6 +89,13 @@ pub(super) fn trait_decl(i: &mut Input, sig: bool) -> R<TraitExpr> {
         decl_items(i, &|i| trait_method(i, sig), &|i| i.token('}').map(drop), sig)?;
     i.sptoken('}')?;
     let end = i.pos();
+    // CR claude for claude: [perf/low] The duplicate check of a trait's methods
+    // compares each with every one before it, quadratic in the methods of one trait,
+    // as impl_head's check of its type variables was (1.8 G instructions of a 10000
+    // variable head's 5.0). `trait T { val m0: fn(self) -> i64; .. }` checks in 1.6 /
+    // 3.4 / 8.0 G at 5000 / 10000 / 20000 methods (empty 0.76; not profiled apart). A
+    // set of the names, as impl_head keeps, makes this check one pass. probe:
+    // ~/ptmp/cr29/scratch/r20/20g/cnb/trm_5000.gx (trait-method-dup-01)
     let dup = |(n, m): (usize, &TraitMethod)| {
         methods[..n].iter().any(|p| p.name.name == m.name.name)
     };
@@ -110,7 +119,8 @@ fn impl_head(i: &mut Input) -> R<ImplHead> {
     let target = typ(i)?;
     let mut params = params.unwrap_or_else(LPooled::take);
     let tvs: Arc<[TVar]> = Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
-    if tvs.iter().enumerate().any(|(n, tv)| tvs[..n].iter().any(|p| p.name == tv.name)) {
+    let mut names: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    if !tvs.iter().all(|tv| names.insert(tv.name.clone())) {
         return Err(i.refuse(at_params, "duplicate impl type variable"));
     }
     let mut constraints =

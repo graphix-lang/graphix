@@ -11,8 +11,8 @@ use crate::{
         Unfolded, node_addr, probe_key,
         setops::{Identical, IdenticalMemo, strictly_identical, union_identical},
         tvar::{
-            CellFact, CellLock, Cycle, Fresh, RigidGate, Toward, bare_path, cell_writes,
-            cycle_toward, settled_cause_note, would_cycle_inner,
+            CellFact, CellLock, Cycle, Fresh, RigidGate, Standing, Toward, bare_path,
+            cell_writes, cycle_toward, settled_cause_note, would_cycle_inner,
         },
     },
 };
@@ -105,6 +105,29 @@ pub(super) struct ContainsHist {
     /// key, and carries the [`cell_writes`] count it was reached at: a
     /// write to a cell may change a verdict that read it.
     probe_pairs: Lazy<AHashMap<MemoKey, (u64, bool)>>,
+    /// Per verdict of `probe_pairs` over an open var and a type that
+    /// holds no cell, once the pair is probed again: the var's cell,
+    /// while nothing it reaches is written. Such a verdict read only the
+    /// cells the var reaches, so it stands through a write to any other,
+    /// and a chain of open cells is probed once however many of its
+    /// links a call binds.
+    probe_standing: Lazy<AHashMap<MemoKey, Standing>>,
+    // CR claude for claude: [perf/low] A call passing a value for every link of a
+    // chain of bounds whose links carry a trait conjunct ('a{i}: ['a{i+1}, null] + Tr,
+    // impl Tr for i64, f((1, 1, ..))) still checks in quadratic time: 3.2 / 10.0 / 37.0
+    // G instructions at 500 / 1000 / 2000 links (base-r20 3.1 / 9.7 / 35.6), where the
+    // same chain with Discernible or Ordered for Tr takes 1.2 / 1.7 G at 1000 / 2000.
+    // The first trait question sets ContainsHist::impls_read, and from then on no probe
+    // verdict stands by its var's place, so each link bound probes the links below
+    // again. Only an impl with parameters has a head that holds cells (find_impl_with
+    // copies it): setting the mark there alone, and at trait_contains's two calls of
+    // Env::find_impl, whose walks are their own, would keep the standing verdicts of a
+    // walk that met no such impl. probe: ~/ptmp/cr29/scratch/r20/20g/cnb/genvt.py tr N
+    // OUT, meas.sh (chainbounds-valued-trait-01)
+    /// The walk asked whether a type implements a trait: the answer reads
+    /// the heads of the environment's impls, whose cells are none a var
+    /// reaches, so from then on no verdict stands by `probe_standing`.
+    impls_read: bool,
     probe_pins: Lazy<Vec<Type>>,
     /// Verdicts that rest on assumptions still in progress, held while
     /// those stand: one is dropped when an assumption it may rest on is
@@ -251,6 +274,8 @@ impl ContainsHist {
             hist: RefHist::new(),
             expansions: Lazy::new(),
             probe_pairs: Lazy::new(),
+            probe_standing: Lazy::new(),
+            impls_read: false,
             probe_pins: Lazy::new(),
             provisional: Lazy::new(),
             provisional_order: Lazy::new(),
@@ -347,15 +372,26 @@ impl ContainsHist {
     }
 
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
-    /// or not, if current. A provisional one passes the assumptions it
-    /// rests on to the verdict reading it.
+    /// or not, if current: no cell was written since, or none its var
+    /// reaches (`probe_standing`). A provisional one passes the
+    /// assumptions it rests on to the verdict reading it.
     fn probe_get(&mut self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
         let k = (self.probe_side(t0)?, self.probe_side(t1)?, probe_flags(rigid));
         let writes = cell_writes();
         if let Some((epoch, r)) = self.probe_pairs.get().and_then(|m| m.get(&k).copied())
-            && epoch == writes
         {
-            return Some(r);
+            let stands = || {
+                let standing = self.probe_standing.get().and_then(|m| m.get(&k));
+                match (standing, t0, t1) {
+                    (Some(s), Type::TVar(tv), _) | (Some(s), _, Type::TVar(tv)) => {
+                        s.holds(tv)
+                    }
+                    _ => false,
+                }
+            };
+            if epoch == writes || (!self.impls_read && stands()) {
+                return Some(r);
+            }
         }
         let p = self.provisional.get()?.get(&k).copied()?;
         if p.epoch != writes {
@@ -381,7 +417,25 @@ impl ContainsHist {
         let k = (k0, k1, probe_flags(rigid));
         let epoch = cell_writes();
         let new = if rests.settled(r, height) {
-            self.probe_pairs.get_mut().insert(k, (epoch, r)).is_none()
+            let again = self.probe_pairs.get_mut().insert(k, (epoch, r)).is_some();
+            if again {
+                let standing = match (t0, t1) {
+                    (Type::TVar(tv), t) | (t, Type::TVar(tv))
+                        if !self.impls_read
+                            && !tv.is_bound()
+                            && self.closure(t, false) >= Closure::NoCell =>
+                    {
+                        Standing::of(tv)
+                    }
+                    _ => None,
+                };
+                match (standing, &mut self.probe_standing.0) {
+                    (Some(s), _) => drop(self.probe_standing.get_mut().insert(k, s)),
+                    (None, Some(held)) => drop(held.remove(&k)),
+                    (None, None) => (),
+                }
+            }
+            !again
         } else {
             let p = Provisional { verdict: r, epoch, rests };
             self.provisional_order.get_mut().push(k);
@@ -440,6 +494,9 @@ impl ContainsHist {
                 false if p.rests.settled(p.verdict, usize::MAX) => {
                     let p = map.remove(&k).unwrap();
                     self.probe_pairs.get_mut().insert(k, (p.epoch, p.verdict));
+                    if let Some(held) = &mut self.probe_standing.0 {
+                        held.remove(&k);
+                    }
                 }
                 _ => {
                     order[kept] = k;
@@ -2063,7 +2120,7 @@ impl Type {
                         Some(b) => go(&b, t, seen),
                         None => {
                             (!matches!(t, Type::TVar(u) if u.same_cell(tv))
-                                && cycle_toward(tv.cell_addr(), t, Toward::Any)
+                                && cycle_toward(&tv.cell(), t, Toward::Any)
                                     == Some(Cycle::Constructor))
                                 || tv.cell_lower().iter().any(|l| go(l, t, seen))
                         }
@@ -3103,7 +3160,8 @@ impl Type {
     ) -> Result<bool> {
         let commit = flags.contains(ContainsFlags::Commit);
         let rigid = flags.contains(ContainsFlags::RigidCheck);
-        let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
+        let (cell0, cell1) = (t0.cell(), t1.cell());
+        let (addr0, addr1) = (cell0.data_ptr().addr(), cell1.data_ptr().addr());
         // `t0` takes `t1` as a lower bound, rather than a merge or a bind
         let lower = |t1_rigid: bool| takes_lower(flags, t0, t1_rigid);
         // A cycle under a constructor has no finite solution; the cells on
@@ -3131,11 +3189,11 @@ impl Type {
                 b0.contains_int(flags, env, hist, &b1)
             }),
             (None, Some(b1)) => {
-                if would_cycle_inner(addr0, tt1) {
+                if would_cycle_inner(&cell0, tt1) {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
                 let up = if lower(false) { Toward::Above } else { Toward::Any };
-                if let Some(cycle) = cycle_toward(addr1, tt0, up) {
+                if let Some(cycle) = cycle_toward(&cell1, tt0, up) {
                     return refuse(cycle, &[(t1, tt0, up)], hist);
                 }
                 // A rigid receiver must not bind; re-verdict against
@@ -3173,10 +3231,10 @@ impl Type {
                 Ok(true)
             }
             (Some(b0), None) => {
-                if would_cycle_inner(addr1, tt0) {
+                if would_cycle_inner(&cell1, tt0) {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
-                if let Some(cycle) = cycle_toward(addr0, tt1, Toward::Any) {
+                if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any) {
                     return refuse(cycle, &[(t0, tt1, Toward::Any)], hist);
                 }
                 if (rigid || commit) && t1.is_rigid() {
@@ -3226,7 +3284,7 @@ impl Type {
                     false => (Toward::Any, Toward::Any),
                 };
                 if let Some(cycle) =
-                    cycle_toward(addr0, tt1, down).max(cycle_toward(addr1, tt0, up))
+                    cycle_toward(&cell0, tt1, down).max(cycle_toward(&cell1, tt0, up))
                 {
                     return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
                 }
@@ -3944,6 +4002,7 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
+        hist.impls_read = true;
         ensure_sufficient(|| Self::trait_contains_inner(tid, flags, env, hist, t))
     }
 

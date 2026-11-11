@@ -71,9 +71,9 @@ impl TVar {
             }
             (cell.constraints.clone(), cell.lower.clone())
         };
-        let addr = self.cell_addr();
+        let cell = self.cell();
         if !below.is_empty() {
-            if below.iter().any(|l| would_cycle_open(addr, l)) {
+            if below.iter().any(|l| would_cycle_open(&cell, l)) {
                 return Ok(Err(false));
             }
             let below: LPooled<Vec<&Type>> = below.iter().collect();
@@ -91,7 +91,7 @@ impl TVar {
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
-            if c.is_predicate() || c.is_trait_ref(env) || would_cycle_open(addr, c) {
+            if c.is_predicate() || c.is_trait_ref(env) || would_cycle_open(&cell, c) {
                 continue;
             }
             for o in cons.iter() {

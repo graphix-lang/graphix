@@ -353,6 +353,37 @@ fn program(shape: &str, d: usize) -> String {
             };
             format!("let f = {bounds} |x: {cells}| x;\nf(never())")
         }
+        // The chain through a union with each link the next one bare, the
+        // call passing a value for every link.
+        "chainboundsvalued" => {
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: ['a{}, null]", i + 1))
+                .chain([format!("'a{d}: Number")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+            let values = vec!["1"; d + 1].join(", ");
+            format!("let f = {bounds} |x: ({cells})| x;\nf(({values}))")
+        }
+        // The chain on an impl's head, the target's parts in the chain's
+        // order or against it.
+        "chainboundsimpl" | "chainboundsimplreversed" => {
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
+                .chain([format!("'a{d}: Number")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>();
+            if shape == "chainboundsimplreversed" {
+                cells.reverse()
+            }
+            let cells = cells.join(", ");
+            format!(
+                "trait Tr {{ val m: fn(self) -> i64 }};
+                 impl<{bounds}> Tr for ({cells}) {{ let m = |x| 1 }};
+0"
+            )
+        }
         // Open cells, each the lower bound of the next, the last below a
         // rigid cell: the merge takes every one into it.
         "rigidchain" => {
@@ -711,7 +742,7 @@ fn a_chain_of_bounds_checks_in_linear_time() {
     checks_within(&program("chainbounds", 3 * CHAIN_DEPTH), 14 * BILLION)
 }
 
-// CR claude for claude: [perf/medium] Bound chains of other shapes still
+// XCR claude for claude: [perf/medium] Bound chains of other shapes still
 // check in quadratic time, and these pins cover only the Array chain. Net
 // of the stdlib, at 1000 / 2000 / 4000 / 8000 links: through function types
 // ('a{i}: fn(x: 'a{i+1}) -> i64, or the next variable as the result) 14.4 /
@@ -820,6 +851,44 @@ fn a_chain_of_bounds_checks_in_linear_time() {
 // (both fail on 243d14dd0). twoconj 1000 / 2000 / 4000 1.16 / 1.40 / 1.89 G,
 // Ordered twin 1.42 at 2000, unchanged; census 2949 files vs base-r19: 0
 // verdict, 0 message changes; GUI --check 40.58 G (base 40.53).
+// 2026-11-10 claude: Fixed the two shapes left (r20 lane 20g). --check
+// --no-cache total G (empty 0.76), base-r20 -> lane: impl head 1000 / 2000 /
+// 4000 7.04 / 25.8 / 99.8 -> 0.99 / 1.3 / 1.74, 10000 links 3.24, the target's
+// parts reversed 3.22; valued call 5.50 / 19.0 / 72.5 -> 1.16 / 1.55 / 2.35,
+// 10000 links 4.71; valued with Discernible or Ordered on every link 8.1 -> 1.2
+// at 1000. What changed: (1) the occurs walk (tvar::CycleWalk, untracked)
+// numbers the cells of a walk that ends without finding its cell, each after
+// every cell it reaches (tvar::ReachOrder, TCell::place), where it met none on
+// its own path; every CellLock::write takes the written cell's number and
+// records the range of numbers that may have reached it, so a later walk passes
+// by a cell whose number stands unless the cell it looks for holds a lower
+// number of that numbering; a walk that passes standing cells of one numbering
+// extends it, and written ranges join by weight, so a chain merged last link
+// first renumbers each link a few times. (2) The probe memo keeps, for a
+// verdict over an open var and a type holding no cell probed a second time, the
+// var's cell and number (ContainsHist::probe_standing, tvar::Standing): the
+// verdict holds while that number stands, and no longer once the walk asks a
+// trait question (impls_read). (3) Type::pre_unify_seen unifies an argument's
+// parts under one ContainsHist, as the whole would. (4) impl_head's duplicate
+// check of its variables is one pass (5.04 -> 3.24 G at 10000). Pins:
+// deep_nesting an_impl_head_with_a_chain_of_bounds_checks_in_linear_time (fails
+// with (1) or (4) undone: killed at 9.1G / 9.0G of 9G) and
+// a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time (fails with
+// any of (1) (2) (3) undone: killed over 8G); typ::tvar::tests
+// numbered_cells_answer_as_a_fresh_walk_does (random binds, bounds, merges and
+// unbinds over two chains against a walk that trusts no number: fails with the
+// write hook, the on-path mark or the two-numberings mark undone),
+// merging_two_chains_of_bounds_walks_each_link_once,
+// written_ranges_hold_every_number_a_write_reached. Census 2949 files 0 verdict
+// 0 message; 3100 random chain programs (values off by a link, trait and
+// predicate conjuncts, impl heads) agree with base-r20 in verdict and message
+// (1500 of them also under --expand and with every fork forced, 1000 under
+// NO_SUBST and ELAB_AUDIT); typemorph-scan 967 programs 0 flips; regress 567 / 0. GUI --check: base 40.45-40.55 G, lane head
+// 40.52-40.72, lane 40.68-40.80 (the walk keeps its path and the cells it
+// walked: would_cycle_inner 4.92M -> 6.65M of 812M on button.gx). Left: the
+// valued call with a trait conjunct (chainbounds-valued-trait-01). probes:
+// ~/ptmp/cr29/scratch/r20/20g/cnb/ (genimpl.py, gen.py valued, meas.sh), sweep/
+// (gensweep*.py, runsweep.sh)
 /// A chain of bounds through function types checks in time linear in its
 /// length: a walk meets each link's conjunct once however many function
 /// types name its variable, whether it aliases names, counts occurrences,
@@ -843,6 +912,29 @@ fn a_chain_of_bounds_with_a_second_conjunct_checks_in_linear_time() {
     for shape in ["chainboundsdiscernible", "chainboundsordered"] {
         checks_within(&program(shape, CHAIN_DEPTH), 6 * BILLION)
     }
+}
+
+/// An impl whose head carries a chain of bounds checks its method in time
+/// linear in the chain's length, the target's parts in the chain's order
+/// or against it: each of the head's cells merges with the method's copy
+/// of it, and the merge's occurs checks pass by the links below, numbered
+/// by what they reach when the first walked them. The head's variables
+/// are checked for a duplicate in one pass.
+#[test]
+#[cfg(target_os = "linux")]
+fn an_impl_head_with_a_chain_of_bounds_checks_in_linear_time() {
+    checks_within(&program("chainboundsimpl", 2 * CHAIN_DEPTH), 9 * BILLION);
+    checks_within(&program("chainboundsimplreversed", CHAIN_DEPTH), 6 * BILLION)
+}
+
+/// A call passing a value for every link of a chain of bounds checks in
+/// time linear in the chain's length: binding a link asks whether the
+/// links below admit the value, and the answer for a link stands while
+/// nothing it reaches is written, whichever links above it bind.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time() {
+    checks_within(&program("chainboundsvalued", CHAIN_DEPTH), 8 * BILLION)
 }
 
 /// An interface `val` carrying a chain of bounds matches its

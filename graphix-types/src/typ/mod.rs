@@ -2891,14 +2891,17 @@ impl Type {
     /// unifies its parameter positions only; anything else whole.
     #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
-        Self::pre_unify_seen(env, declared, actual, &mut LPooled::take())
+        let mut hist = contains::ContainsHist::new();
+        Self::pre_unify_seen(env, &mut hist, declared, actual, &mut LPooled::take())
     }
 
     /// [`Self::pre_unify_arg`], each pair of shared nodes (`seen`)
     /// pre-unified once. `seen` holds each pair it keys, so an address
-    /// stays its node's for the whole walk.
+    /// stays its node's for the whole walk, and the parts unify under one
+    /// walk state: what one part's probes found, the next part reads.
     fn pre_unify_seen(
         env: &Env,
+        hist: &mut contains::ContainsHist,
         declared: &Type,
         actual: &Type,
         seen: &mut AHashMap<(usize, usize), (Type, Type)>,
@@ -2920,28 +2923,33 @@ impl Type {
             let each =
                 |ds: &[Type],
                  as_: &[Type],
+                 hist: &mut contains::ContainsHist,
                  seen: &mut AHashMap<(usize, usize), (Type, Type)>| {
-                    ds.iter()
-                        .zip(as_.iter())
-                        .try_for_each(|(d, a)| Self::pre_unify_seen(env, d, a, seen))
+                    ds.iter().zip(as_.iter()).try_for_each(|(d, a)| {
+                        Self::pre_unify_seen(env, hist, d, a, seen)
+                    })
                 };
+            let whole = |hist: &mut contains::ContainsHist| {
+                let flags = contains::ContainsFlags::Commit.into();
+                declared.contains_int(flags, env, hist, actual).map(|_| ())
+            };
             match (&d, &a) {
                 (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
                 // a part pre-unifies as the whole would
                 (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a)))
                 | (Some(Type::Array(d)), Some(Type::Array(a)))
                 | (Some(Type::List(d)), Some(Type::List(a))) => {
-                    Self::pre_unify_seen(env, d, a, seen)
+                    Self::pre_unify_seen(env, hist, d, a, seen)
                 }
                 (Some(Type::Tuple(ds)), Some(Type::Tuple(as_)))
                     if ds.len() == as_.len() =>
                 {
-                    each(ds, as_, seen)
+                    each(ds, as_, hist, seen)
                 }
                 (Some(Type::Variant(t0, ds, _)), Some(Type::Variant(t1, as_, _)))
                     if t0 == t1 && ds.len() == as_.len() =>
                 {
-                    each(ds, as_, seen)
+                    each(ds, as_, hist, seen)
                 }
                 (Some(Type::Struct(ds)), Some(Type::Struct(as_)))
                     if ds.len() == as_.len()
@@ -2951,7 +2959,7 @@ impl Type {
                             .all(|((n0, ..), (n1, ..))| n0 == n1) =>
                 {
                     ds.iter().zip(as_.iter()).try_for_each(|((_, d, _), (_, a, _))| {
-                        Self::pre_unify_seen(env, d, a, seen)
+                        Self::pre_unify_seen(env, hist, d, a, seen)
                     })
                 }
                 // a union two of whose members admit the argument leaves
@@ -2985,12 +2993,12 @@ impl Type {
                     };
                     match admit {
                         Some(m) if structural(m) && structural(actual) => {
-                            Self::pre_unify_seen(env, m, actual, seen)
+                            Self::pre_unify_seen(env, hist, m, actual, seen)
                         }
-                        _ => declared.contains(env, actual).map(|_| ()),
+                        _ => whole(hist),
                     }
                 }
-                _ => declared.contains(env, actual).map(|_| ()),
+                _ => whole(hist),
             }
         })
     }

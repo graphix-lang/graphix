@@ -108,6 +108,52 @@ structure is returned SHARED, never copied.
   fails takes its impls with it), so such a verdict is not the
   binding's alone. A key judgment (`map_key_failure`) keeps none.
 
+- A chain of OPEN cells (a signature's bounds, each naming the next
+  variable) has no ground mark to stop at, and every bind or merge of
+  one of its links writes a cell. The occurs check numbers what it
+  walks instead (`tvar::ReachOrder`). A walk that ends without finding
+  its cell has walked a set closed under the edges it takes; where it
+  met no cell twice on its own path (the cells form no cycle), it
+  numbers them, each after every cell it reaches (`CycleWalk::number`,
+  the number in `TCell::place`). The invariant: while a cell's number
+  stands, every cell it reaches holds a lower number of the same
+  numbering, standing too, and none of them has been written. So a
+  later walk passes by a standing cell unless the cell it looks for
+  holds a lower number of that numbering. Every write to a cell
+  (`CellLock::write`, whatever it changes) takes the cell's number and
+  records the range from that number to the next one to be given:
+  every cell that reached the written cell was numbered in that range,
+  and stands no more; the cells below it stand. A walk that passes
+  standing cells of one numbering gives the cells it walked numbers
+  above them in that numbering; one that met standing cells of two
+  numbers nothing. A numbering keeps few ranges: a range joins the one
+  before it, taking every number above it, once as many writes are
+  joined in it, so the links of a chain merged last link first are
+  renumbered a few times each. The var's link is no edge of its own: a
+  merge re-points a var only from a cell it writes, and a shortcut
+  along forwarding cells reaches a subset. With it an impl whose head
+  carries the chain merges each head cell with the method's copy
+  without walking the links below (pins `deep_nesting::
+  an_impl_head_with_a_chain_of_bounds_checks_in_linear_time`, and
+  `typ::tvar::tests::numbered_cells_answer_as_a_fresh_walk_does`,
+  which compares the check with a walk that trusts no number over
+  random writes).
+- The probe memo (`ContainsHist::probe_pairs`) holds a verdict while
+  the thread writes no cell. A verdict over an open var and a type that
+  holds no cell read only the cells the var reaches, so once such a
+  pair is probed a second time the memo keeps the var's cell and its
+  number beside it (`probe_standing`, `tvar::Standing`, numbering what
+  the var reaches where it must), and the verdict holds while that
+  number stands, whatever else is written. A walk that asked whether a
+  type implements a trait keeps and reads no such verdict from then on
+  (`ContainsHist::impls_read`): the answer read the heads of the
+  environment's impls, whose cells no var reaches. A call's argument pre-unifies
+  part by part under one `ContainsHist` (`Type::pre_unify_seen`), as the
+  whole would, so a call passing a value for every link of a chain of
+  bounds asks each link once whether it admits the value (pin
+  `deep_nesting::
+  a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time`).
+
 **`flatten_set` worklist.** The accumulator is merge-saturated by
 invariant, so only the incoming (or just-merged) element can enable a
 new merge — no restart. `merge` compares nested positions via
