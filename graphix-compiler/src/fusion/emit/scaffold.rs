@@ -535,8 +535,11 @@ impl SlotFlags {
         let src_word = cx.b.ins().band_imm_u(src, FIRE_TEST);
         let src_taint = cx.b.ins().band_imm_u(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
-        let src_moved = cx.b.ins().band_imm_u(src, MOVED);
-        r.disc = cx.b.ins().bor(r.disc, src_moved);
+        // only a result that reads the source's elements moved with them
+        if self.kind == LoopKind::PassThrough {
+            let src_moved = cx.b.ins().band_imm_u(src, MOVED);
+            r.disc = cx.b.ins().bor(r.disc, src_moved);
+        }
         let acc = if self.kind == LoopKind::Fold {
             let rs = cx.b.ins().band_imm_u(r.disc, STALE);
             cx.b.ins().band(rs, slots_acc)

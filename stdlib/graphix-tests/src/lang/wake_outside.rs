@@ -1210,3 +1210,112 @@ async fn a_let_over_a_passed_reader_fires_outside_a_cycle_late() -> Result<()> {
     });
     agrees(code, &ticks).await
 }
+
+/// A value `expr` computes in the arm that sleeps, from `n` and from `k`
+/// and `m`, which never fire: it stands in `mk`'s formal, which a closure
+/// held by a reader that never sleeps reads. Each tick gives `(clk, n,
+/// sel, v, count(v))`.
+fn in_arm(expr: &str) -> String {
+    format!(
+        "{{
+  {CLOCK}
+  let k = 0;
+  let m = 7;
+  let mk = |x| |y: i64| {{ let z = y; x }};
+  let g = select sel {{ 0 => mk({expr}), _ => mk({expr}) }};
+  let h = once(g);
+  let v = select k {{ 0 => h(1), _ => -1 }};
+  clk ~ (clk, n, sel, v, count(v))
+}}"
+    )
+}
+
+/// `expr` in the woken arm gives `expected` node-walked and as a kernel.
+async fn in_arm_agrees(expr: &str, expected: &[String]) -> Result<()> {
+    agrees(in_arm(expr), expected).await?;
+    let native = in_arm(&format!("#[native] {expr}"));
+    let expected: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+    fused_agrees(&native, &expected).await
+}
+
+/// [`in_arm`]'s ticks for a value that stays `v` and never fires again.
+fn silent(v: &str) -> Vec<String> {
+    const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
+    const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
+    (0..10).map(|i| format!("[{i}, {}, {}, {v}, 1]", N[i], SEL[i])).collect()
+}
+
+// The scrutinee and both arms stand still: the guard alone read what the
+// arm slept through, and a select moved when a guard it consulted did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guard_that_moved_moves_its_select() -> Result<()> {
+    let expr = "select k { x if n > 2 => 10, _ => 20 }";
+    in_arm_agrees(expr, &formal(|x| if x > 2 { 10 } else { 20 })).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guard_that_moved_moves_a_select_in_a_callback() -> Result<()> {
+    let expr =
+        "array::fold([1, 2, 3], 0, |a, e| a + select e { y if y > n => 1, _ => 0 })";
+    in_arm_agrees(expr, &formal(|x| (3 - x).max(0))).await
+}
+
+// A tail loop's selects sit on its spine, where a return carries what
+// they consumed: the depth `n` decides moved, and so did the answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tail_loop_over_a_moved_scrutinee_moves() -> Result<()> {
+    let expr = "{
+    let rec go = |i: i64, acc: i64| -> i64 select i { 0 => acc, _ => go(i - 1, acc + 1) };
+    go(n, 0)
+  }";
+    in_arm_agrees(expr, &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tail_loop_whose_guard_moved_moves() -> Result<()> {
+    let expr = "{
+    let rec go = |i: i64| -> i64 select i { j if j > n => 100, _ => go(i + 1) };
+    go(0)
+  }";
+    in_arm_agrees(expr, &formal(|_| 100)).await
+}
+
+// `dbg` gives its argument back: the value moved with it, and the event
+// the arm slept through is not printed.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_io_call_passes_its_moved_argument_on() -> Result<()> {
+    in_arm_agrees("dbg(n + 1)", &formal(|x| x + 1)).await
+}
+
+// A map's result holds what its callback made of each element, and a fold
+// what its callback made of the chain: a source that moved under a
+// callback that reads no element moved neither, as its fire fires neither.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_source_no_callback_reads_moves_nothing() -> Result<()> {
+    in_arm_agrees("array::map([n, m], |e| 1)", &silent("[1, 1]")).await?;
+    in_arm_agrees("array::fold([n, m], 0, |a, e| a + 1)", &silent("2")).await?;
+    in_arm_agrees("array::len(array::map([n, m], |e| k))", &silent("2")).await
+}
+
+// `clk + n` fires at the wake, so nothing over it moved: a fold whose
+// callback reads no element stays as it stood.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fire_over_a_moved_input_moves_nothing() -> Result<()> {
+    let expr = "{ let s = clk + n; array::fold([s, m], 0, |a, e| a + 1) }";
+    in_arm_agrees(expr, &silent("2")).await
+}
+
+// A filter's result holds its source's elements, so it moved with them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_source_moves_what_holds_its_elements() -> Result<()> {
+    let ticks: Vec<String> = formal(|x| x)
+        .into_iter()
+        .map(|t| {
+            let mut f: Vec<&str> = t.trim_matches(['[', ']']).split(", ").collect();
+            let v = format!("[{}, 7]", f[3]);
+            f[3] = &v;
+            format!("[{}]", f.join(", "))
+        })
+        .collect();
+    in_arm_agrees("array::filter([n, m], |e| true)", &ticks).await
+}

@@ -26,13 +26,13 @@ use smallvec::SmallVec;
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, STALE, ValueVar, bind_local, clean_disc, is_fresh,
-        is_tainted, propagate_flags, scalar_disc, taint_if, value_disc,
+        CompiledExpr, LocalKind, ValueVar, bind_local, clean_disc, is_fresh, is_tainted,
+        propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
         BodyCx, TailRebind, emit_into_slot, emit_kernel_return, emit_return_from_node,
         emit_tail_rebind_jump, ensure_owned_composite_src, ensure_owned_value_src,
-        node_composite_source,
+        fold_consumed, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local, emit_owned_drop, owned_drop_kind},
     nodes::{
@@ -250,9 +250,8 @@ fn emit_select_node_tail<R: Rt>(
     // A fired scrutinee is one of this select's own fires; on the tail
     // spine the accumulator is the only channel that carries it to the
     // return. band keeps a fired bit cleared across iterations.
-    let scrut_stale_bit = cx.b.ins().band_imm_u(scrut_disc, STALE);
     let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-    let n = cx.b.ins().band(cur, scrut_stale_bit);
+    let n = fold_consumed(cx.b, cur, scrut_disc);
     cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
     emit_select_arms(
         cx,
@@ -262,7 +261,7 @@ fn emit_select_node_tail<R: Rt>(
         &mut |cx, body, mark, _drops_from, guards_stale| {
             // A consulted guard's fire is an own fire too.
             let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-            let n = cx.b.ins().band(cur, guards_stale);
+            let n = fold_consumed(cx.b, cur, guards_stale);
             cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
             emit_body_tail(cx, body, ret)?;
             // The terminator already dropped the arm's owned binds; this

@@ -223,16 +223,17 @@ pub(crate) fn emit_builtin_call_node<R: Rt>(
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
     // a value the call computes moved when an argument it reads did; an
-    // `Io` call answers its trigger's fire alone
-    let moved = {
-        let mut moved = cx.b.ins().iconst(types::I64, 0);
-        if trigger.is_none() {
+    // `Io` call's result follows its trigger alone
+    let moved = match trigger {
+        Some(t) => cx.b.ins().band_imm_u(arg_discs[t], MOVED),
+        None => {
+            let mut moved = cx.b.ins().iconst(types::I64, 0);
             for d in arg_discs.iter() {
                 let m = cx.b.ins().band_imm_u(*d, MOVED);
                 moved = cx.b.ins().bor(moved, m);
             }
+            moved
         }
-        moved
     };
     // The returned disc's TAINT/STALE bits are the production's tag.
     let tagbits = cx.b.ins().band_imm_u(raw0, TAINT | STALE);

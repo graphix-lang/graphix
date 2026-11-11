@@ -461,12 +461,22 @@ that left the arm, saw none of it, so to that reader the stand is a fire.
   fast calls) carry it. A resident never keeps it: `Tag::quiet` clears it.
 - **Who drops it.** Everything that consumes events: a stateful builtin
   (`count`, `uniq`, `once`, ...) keeps its state, since it took no event; a
-  sample whose trigger did not fire rides; an `Io` call answers its
-  trigger alone. So `count(n)` in a woken arm stands silent.
+  sample whose trigger did not fire rides; an `Io` call acts on its
+  trigger's fire alone, and its result follows that argument (`dbg(x)`
+  moved when `x` did, and prints nothing). So `count(n)` in a woken arm
+  stands silent.
 - **Kernels** OR the bit into a disc wherever they OR `TAINT`
   (`emit::abi::propagate_taint`, the slot accumulators, the fold carry)
   and test it nowhere: codegen only, no per-select or per-instance state.
-  A kernel runs, never rides, when a feeder moved.
+  Where control flow decides `TAINT` and only `STALE` is folded, the bit
+  is folded beside it (`emit::body::fold_consumed`, `fold_stale`): a
+  consulted guard's, and a tail loop's selects', whose scrutinees and
+  guards reach the return through the spine's accumulator. A loop's
+  result takes its source's bit only where it holds the source's elements
+  (`LoopKind::PassThrough`), as it takes the source's fire; an `Io` call's
+  takes its trigger's. A fire may carry the bit out of a kernel, where it
+  says nothing (`Tag::moved`). A kernel runs, never rides, when a feeder
+  moved.
 - **The stand.** A quiet production that moved is published wherever it
   is computed (`Bind::update`, `publish_production`, `ByRef::publish`), and
   `ExecCtx::deliver`/`stand` store it as a fire is stored: stamped this

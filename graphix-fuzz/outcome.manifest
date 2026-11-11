@@ -559,6 +559,9 @@ trace	wake-connect-target-sep2026/02_arm_value.gx
 trace	wake-outside-nov2026/00_moved_capture_routes_a_kernel.gx
 trace	wake-outside-nov2026/01_moved_formal_under_an_operator.gx
 trace	wake-outside-nov2026/02_moved_array_through_a_reference.gx
+trace	wake-outside-nov2026/03_moved_guard_in_a_kernel.gx
+trace	wake-outside-nov2026/04_moved_depth_of_a_tail_loop.gx
+trace	wake-outside-nov2026/05_moved_source_no_callback_reads.gx
 trace	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
 trace	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 trace	wake-stale-bottom-sep2026/00_plain_select.gx

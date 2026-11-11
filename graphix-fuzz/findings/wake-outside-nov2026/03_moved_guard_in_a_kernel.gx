@@ -1,0 +1,10 @@
+// A kernel in the woken arm carries what a wake moved as the node-walk
+// does (design/wake_catchup.md, What a wake stands, Kernels). Arm 0's
+// select stands still but for its guard, which reads `v0`, written 1 and
+// 3 while the arm sleeps: at the wake (in0 = 4) the guard moved, so did
+// the select, and the formal it stands in fires 10 for the closure `once`
+// holds. A kernel that folded only the guard's fire left the formal
+// quiet, and the closure answered 20 until `in1` fired.
+// Expected trace (both engines): 20; 20; 10; 10.
+// schedule-v1: cap=96 events=768; in0=i64:2 in1=i64:0; in0=i64:1; in0=i64:3; in0=i64:4; in1=i64:8; in0=i64:6
+{ let v0 = i64:0; v0 <- select (in0 % i64:2) { i64:1 => in0, _ => never() }; let v1 = |v2: i64| |v3: i64| { let v8 = v3; v2 }; let v4 = select (in0 % i64:2) { i64:0 => v1(#[native] select in1 { v9 if v0 > i64:2 => i64:10, _ => i64:20 }), _ => v1(v0 + i64:100) }; let v5 = once(v4); let v6 = v5(in1); let v7 = count(v6); println("[v6]"); println("[v7]"); v6 }

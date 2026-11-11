@@ -30,7 +30,7 @@ use std::any::Any;
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
+        CompiledExpr, JitEnv, LocalKind, MOVED, STALE, ValueVar, emit_untainted_i64,
         propagate_flags, scalar_disc, value_disc,
     },
     call::{CompositeSource, emit_drop_local, emit_pending_abort, owned_drop_kind},
@@ -1104,9 +1104,9 @@ pub(super) fn emit_return_from_node<R: Rt>(
     }
 }
 
-/// AND `mask`'s STALE bit into `disc`'s — the firing fold (STALE
-/// survives only when BOTH sides are stale); every other bit is
-/// unchanged.
+/// AND `mask`'s STALE bit into `disc`'s and OR its MOVED bit: the fold
+/// of consumed inputs whose TAINT control flow decides (STALE survives
+/// only when BOTH sides are stale); every other bit is unchanged.
 pub(super) fn fold_stale(
     b: &mut FunctionBuilder,
     disc: ClifValue,
@@ -1115,7 +1115,22 @@ pub(super) fn fold_stale(
     let vs = b.ins().band_imm_u(disc, STALE);
     let folded = b.ins().band(vs, mask);
     let cleaned = b.ins().band_imm_u(disc, !STALE);
-    b.ins().bor(cleaned, folded)
+    let moved = b.ins().band_imm_u(mask, MOVED);
+    let d = b.ins().bor(cleaned, folded);
+    b.ins().bor(d, moved)
+}
+
+/// Fold a consumed input's `disc` into `acc`, the STALE and MOVED of the
+/// inputs consumed so far ([`fold_stale`]'s mask): STALE ANDs, MOVED ORs.
+pub(super) fn fold_consumed(
+    b: &mut FunctionBuilder,
+    acc: ClifValue,
+    disc: ClifValue,
+) -> ClifValue {
+    let keep = b.ins().bor_imm_u(disc, !STALE);
+    let stale = b.ins().band(acc, keep);
+    let moved = b.ins().band_imm_u(disc, MOVED);
+    b.ins().bor(stale, moved)
 }
 
 pub(super) fn emit_kernel_return(

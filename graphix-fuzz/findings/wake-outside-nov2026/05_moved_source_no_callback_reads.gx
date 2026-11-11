@@ -1,0 +1,10 @@
+// A loop's result takes its source's move only where it holds the
+// source's elements. Arm 0 maps `[v0, 7]` by a callback that reads no
+// element, and `v0` is written 1 and 3 while the arm sleeps: at the wake
+// (in0 = 4) the source moved and the result did not, so the formal it
+// stands in fires nothing and `count` stays 1, as it does at every fire
+// of `v0` the arm is awake for. A kernel that ORed the source's bit into
+// every loop result fired the formal there.
+// Expected trace (both engines): 1, once.
+// schedule-v1: cap=96 events=768; in0=i64:2 in1=i64:0; in0=i64:1; in0=i64:3; in0=i64:4; in1=i64:8; in0=i64:6
+{ let v0 = i64:0; v0 <- select (in0 % i64:2) { i64:1 => in0, _ => never() }; let v1 = |v2: i64| |v3: i64| { let v8 = v3; v2 }; let v4 = select (in0 % i64:2) { i64:0 => v1(array::len(array::map([v0, i64:7], |v9| i64:1))), _ => v1(v0 + i64:100) }; let v5 = once(v4); let v6 = v5(in1); let v7 = count(v6); println("[v6]"); println("[v7]"); v7 }

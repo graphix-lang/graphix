@@ -34,7 +34,7 @@ use super::{
         propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
     body::{
-        BodyCx, emit_into_slot, ensure_owned_composite_src, fold_stale,
+        BodyCx, emit_into_slot, ensure_owned_composite_src, fold_consumed, fold_stale,
         node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
@@ -1018,8 +1018,8 @@ struct GuardPlanes {
     eff: ClifValue,
     /// The channel is bottom.
     gbot: ClifValue,
-    /// The guard's STALE bit.
-    gs: ClifValue,
+    /// The guard's disc.
+    disc: ClifValue,
 }
 
 /// What the guard prologue emitted of an arm, for the chain to reuse.
@@ -1085,7 +1085,8 @@ fn emit_arm_condition<R: Rt>(
 /// and must leave it terminated; it gets the env mark to truncate to,
 /// the mark every local above which it drops (the guard prologue's binds
 /// live until the select ends, so every exit drops them), and the AND of
-/// the consulted guards' STALE bits at its point
+/// the consulted guards' STALE bits, with the OR of their MOVED, at its
+/// point
 /// (structure-failed arms and arms below the taken one contribute
 /// nothing). `emit_miss` handles a tainted scrutinee, which makes no
 /// selection and consults no guard; `emit_undet` the undecidable
@@ -1189,11 +1190,10 @@ pub(super) fn emit_select_arms<R: Rt>(
         retain_read(&mut binds, &reads);
         install_arm_binds(cx, &binds, scrut, Some(mask))?;
         let gcv = g.node.emit_clif(cx)?;
-        let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
-        guard_vals[i] = Some(GuardPlanes { eff, gbot, gs });
+        guard_vals[i] = Some(GuardPlanes { eff, gbot, disc: gcv.disc });
         // the chain stops at this arm when it takes it or its guard is bottom
         let stops = cx.b.ins().bor(eff, gbot);
         let claims = cx.b.ins().band(mask, stops);
@@ -1279,12 +1279,12 @@ pub(super) fn emit_select_arms<R: Rt>(
         install_arm_binds(cx, &binds, scrut, None)?;
         if let (Some(g), Some(fail)) = (&pat.guard, fail) {
             let eff = match guard_vals[i] {
-                // The consultation point: fold the guard's STALE into the
-                // accumulator; a bottom channel makes the selection
-                // undecidable and the chain stops here.
-                Some(GuardPlanes { eff, gbot, gs }) => {
+                // The consultation point: fold the guard's STALE and
+                // MOVED into the accumulator; a bottom channel makes the
+                // selection undecidable and the chain stops here.
+                Some(GuardPlanes { eff, gbot, disc }) => {
                     let cur = cx.b.use_var(acc);
-                    let n = cx.b.ins().band(cur, gs);
+                    let n = fold_consumed(cx.b, cur, disc);
                     cx.b.def_var(acc, n);
                     let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
                     let cont = cx.b.create_block();
@@ -1304,9 +1304,8 @@ pub(super) fn emit_select_arms<R: Rt>(
                 // accumulator (a constant in it fires at an init or a wake)
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
-                    let gs = cx.b.ins().band_imm_u(gcv.disc, STALE);
                     let cur = cx.b.use_var(acc);
-                    let n = cx.b.ins().band(cur, gs);
+                    let n = fold_consumed(cx.b, cur, gcv.disc);
                     cx.b.def_var(acc, n);
                     let valid = is_untainted(cx.b, gcv.disc);
                     cx.b.ins().band(gcv.payload, valid)
@@ -1917,7 +1916,7 @@ fn install_arm_binds(
 
 /// Value-position arm-body emission: widen the arm's result to the
 /// select's merge shape and jump to the merge block. `guards_stale` is
-/// the consulted guards' STALE fold at this arm.
+/// the consulted guards' STALE and MOVED fold at this arm.
 fn emit_select_value_arm<R: Rt>(
     cx: &mut BodyCx,
     body: &Node<R>,

@@ -130,9 +130,9 @@ pub(super) fn compile_into_function<'a>(
     // A tail-call rebind truncates the env back to this mark.
     let param_mark = env.mark();
 
-    // AND of every tail-position select scrutinee's STALE bit;
-    // `emit_kernel_return` folds it into the returned disc. Defined in
-    // the entry block so it dominates loop-carried uses.
+    // AND of every tail-position select scrutinee's STALE bit and OR of
+    // its MOVED; `emit_kernel_return` folds it into the returned disc.
+    // Defined in the entry block so it dominates loop-carried uses.
     let tail_scrut_stale_acc = {
         let v = b.declare_var(types::I64);
         let init = b.ins().iconst(types::I64, STALE);
@@ -500,9 +500,10 @@ pub(super) struct TailCtx<'a> {
     pub(super) call_slots: &'a [kernel_abi::KernelParam],
     /// The body's own ids for the params' ([`BodySpec::params`]).
     pub(super) params: &'a [(BindId, BindId)],
-    /// AND over every tail-position select scrutinee's STALE bit on
-    /// the executed path; `emit_kernel_return` folds it into the
-    /// returned disc.
+    /// AND over the STALE bit, and OR over the MOVED bit, of every
+    /// tail-position select scrutinee and consulted guard on the
+    /// executed path; `emit_kernel_return` folds it into the returned
+    /// disc.
     pub(super) tail_scrut_stale_acc: Variable,
 }
 

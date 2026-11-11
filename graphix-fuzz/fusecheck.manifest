@@ -559,6 +559,9 @@
 4	wake-outside-nov2026/00_moved_capture_routes_a_kernel.gx
 4	wake-outside-nov2026/01_moved_formal_under_an_operator.gx
 7	wake-outside-nov2026/02_moved_array_through_a_reference.gx
+5	wake-outside-nov2026/03_moved_guard_in_a_kernel.gx
+5	wake-outside-nov2026/04_moved_depth_of_a_tail_loop.gx
+5	wake-outside-nov2026/05_moved_source_no_callback_reads.gx
 10	wake-resume-seq-abort-oct2026/01_seqq_abort_across_a_sleep.gx
 11	wake-resume-seq-abort-oct2026/02_seq_abort_across_a_sleep.gx
 2	wake-stale-bottom-sep2026/00_plain_select.gx
