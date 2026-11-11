@@ -1920,6 +1920,42 @@ run!(
     refused("does not contain (i64, fn(x: string) -> string)");
     FuseExpect::None
 );
+// A return a call picks is not the body's type because the body's type fits
+// the variable's bound: the refusal names the return type to write.
+run!(
+    a_returned_declared_variable_names_the_body_type,
+    "{ let f = 'a: Number |x: 'a| -> 'a 1; f(2) }",
+    refused(
+        "a call picks 'a, and the body's value need not be of the type it picks; \
+         drop `-> 'a`, or write the body's type, `-> i64`"
+    );
+    FuseExpect::None
+);
+run!(
+    a_return_holding_a_declared_variable_names_the_body_type,
+    "{ let f = 'a: Number |x: 'a| -> {v: 'a} {v: 1}; f(2).v }",
+    refused("drop `-> { v: 'a }`, or write the body's type, `-> { v: i64 }`");
+    FuseExpect::None
+);
+run!(
+    a_return_of_one_declared_variable_names_the_other,
+    "{ let f = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a y; f(1, 2) }",
+    refused("a call picks 'a, and the body's value need not be of the type it picks; drop `-> 'a`, or write the body's type, `-> 'b`");
+    FuseExpect::None
+);
+run!(
+    a_return_naming_the_other_declared_variable_runs,
+    "{ let f = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'b y; f(1, 2) }",
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+run!(
+    a_return_no_bound_holds_names_no_picked_variable,
+    |v: Result<&Value>| matches!(v, Err(e)
+        if format!("{e:#}").contains("does not contain ('a: unbound within Number, i64)")
+            && !format!("{e:#}").contains("a call picks")),
+    "/test.gx" => "let result = { let f = 'a: Number |x: 'a| -> ('a, string) (x, 1); f(2) }"
+; FuseExpect::None);
 run!(
     body_annotation_names_the_definitions_variable,
     "{ let f = 'e: Number |x: 'e| -> 'e { let v: 'e = 1; x }; 0 }",

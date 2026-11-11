@@ -189,6 +189,39 @@ run!(
     FuseExpect::None
 );
 
+run!(
+    struct_update_of_a_bounded_variable_names_the_return_to_write,
+    r#"{
+  let f = 'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1};
+  f({n: 1}).n
+}"#,
+    refused(
+        "a call picks 'a, and the body's value need not be of the type it picks; \
+         drop `-> 'a`, or write the body's type, `-> { n: i64 }`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    struct_update_of_a_bounded_variable_without_a_return_type,
+    r#"{
+  let f = 'a: {n: i64} |s: 'a| {s with n: s.n + 1};
+  f({n: 1}).n
+}"#,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+run!(
+    struct_update_of_a_bounded_variable_returning_the_body_type,
+    r#"{
+  let f = 'a: {n: i64} |s: 'a| -> {n: i64} {s with n: s.n + 1};
+  f({n: 1}).n
+}"#,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
 const STRUCTWITH1: &str = r#"
 {
   let x = { foo: "bar", bar: 42.0, baz: 84.0 };

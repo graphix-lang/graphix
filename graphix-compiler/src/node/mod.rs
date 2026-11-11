@@ -182,6 +182,14 @@ macro_rules! bailat {
     };
 }
 
+// CR claude for claude: [bug/low] A declared variable bounded by a typedef
+// is not read through its bound: `type Point = {x: f64, y: f64}; let f = 'a:
+// Point |p: 'a| p.x` is refused, "reading a struct needs its type known here:
+// annotate the binding", though `p` is annotated, and so is `{p with x: 1.0}`;
+// the written bound `'a: {x: f64, y: f64}` runs both. deref_typ! takes a
+// cell's one bound only when it is a Struct, Tuple or Fn, never a Ref its loop
+// would expand. Base-r20 alike (found fixing bounded-with-refused-01). probes:
+// ~/ptmp/cr29/scratch/r20/20f/bwr/{q3,q5,q6,q7}.gx (bound-typedef-read-01)
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {{

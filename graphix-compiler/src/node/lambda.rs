@@ -30,7 +30,8 @@ use crate::{
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
-        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, check_bounds_acyclic,
+        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, TypeMismatch,
+        check_bounds_acyclic,
         settle::VariableUnion,
         tvar::{AtLevel, InTask, Level, RigidGate, TaskId, current_level},
     },
@@ -1421,9 +1422,11 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                         super::rechecking_instance(recheck, || body.typecheck0(ctx));
                     wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
-                    let contain = |t: &Type| t.check_contains_rigid(&ctx.env, &body);
                     let rtype = &self.typ.rtype;
-                    wrap!(self.body, contain(rtype))?;
+                    let contain = rtype
+                        .check_contains_rigid(&ctx.env, &body)
+                        .map_err(|e| picked_return(&ctx.env, rtype, &body, e));
+                    wrap!(self.body, contain)?;
                     // CR claude for claude: [bug/medium] A function read out of a declared
                     // return type that is a typedef application whose body holds it is called
                     // with no default judged: `type W<'z> = {cb: fn(?#d: 'z, x: i64) ->
@@ -2604,6 +2607,56 @@ impl<R: Rt> DefGate<R> {
         ctx.env.by_id.remove(&self.faux_id);
         self.rigid.clear();
     }
+}
+
+/// The refusal of a body whose type the declared return holds only by the
+/// bounds of the variables it writes: each call picks those, a type
+/// narrower than a bound included. Told as the annotation that fixes it.
+fn picked_return(
+    env: &Env,
+    rtype: &Type,
+    body: &Type,
+    e: anyhow::Error,
+) -> anyhow::Error {
+    if e.downcast_ref::<TypeMismatch>().is_none() {
+        return e;
+    }
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    rtype.collect_tvars(&mut named);
+    let mut picked: LPooled<Vec<TVar>> = named
+        .drain()
+        .map(|(_, tv)| tv)
+        .filter(|tv| !tv.generated() && tv.is_rigid() && tv.binding().is_none())
+        .collect();
+    if picked.is_empty()
+        || !rtype.contains_with_flags(BitFlags::empty(), env, body).unwrap_or(false)
+    {
+        return e;
+    }
+    picked.sort_by(|a, b| a.name.cmp(&b.name));
+    crate::format_with_flags(crate::PrintFlag::ReplacePrims, || {
+        use std::fmt::Write;
+        let mut vars = CompactString::new("");
+        for (i, tv) in picked.iter().enumerate() {
+            let sep = match i {
+                0 => "",
+                i if i + 1 == picked.len() => " and ",
+                _ => ", ",
+            };
+            let _ = write!(vars, "{sep}{tv}");
+        }
+        let s = if picked.len() == 1 { "" } else { "s" };
+        let fix = match body.written_form(&mut |_| None) {
+            Some(t) => {
+                format_compact!("drop `-> {rtype}`, or write the body's type, `-> {t}`")
+            }
+            None => format_compact!("drop `-> {rtype}`, or write the body's type"),
+        };
+        anyhow!(
+            "{e}: a call picks {vars}, and the body's value need not be of the type{s} \
+             it picks; {fix}"
+        )
+    })
 }
 
 /// Whether `t` holds an unbound cell `f` accepts.

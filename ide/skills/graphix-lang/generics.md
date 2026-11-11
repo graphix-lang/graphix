@@ -27,6 +27,20 @@ no "write its return type, `-> 'a`" let t = 'a: Number |x: 'a| x; let r = &mut t
 ok let t = 'a: Number |x: 'a| -> 'a x; let r = &mut t; t(1)
 ```
 
+A return type that writes a declared variable takes a value of that
+variable, and a value of its bound is not one, since a call may pick a
+narrower type: `'a: Number |x: 'a| -> 'a 1` is refused. So is `'a: {n:
+i64} |s: 'a| -> 'a {s with n: s.n + 1}`: an update's type is a struct,
+as a literal's is. Drop the return type, or write the body's (`-> {n:
+i64}`).
+
+```graphix,cases
+no "drop `-> 'a`, or write the body's type, `-> i64`" 'a: Number |x: 'a| -> 'a 1
+no "drop `-> 'a`, or write the body's type, `-> { n: i64 }`" 'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1}
+ok 'a: {n: i64} |s: 'a| {s with n: s.n + 1}
+ok 'a: {n: i64} |s: 'a| -> {n: i64} {s with n: s.n + 1}
+```
+
 A signature may not write a union of two of its type variables, `|x:
 ['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
 trait method's alike, nor a function type a `let` annotation writes: no
