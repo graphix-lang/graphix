@@ -3544,27 +3544,6 @@ impl Type {
                 distributing = Some(j);
             }
         }
-        // XCR claude for claude: [perf/low] Each distribution normalizes its pool (and
-        // place_members its residue) in a pass of its own, so a contains walk over a DAG
-        // of named error unions renormalizes the same shared parts once per question:
-        // cm4.gx (four `Un as u` arms over T0..T3 = [Error<Ti+1>, Error<Ti+2>, `Ai]) takes
-        // 26.7G instructions --no-cache --check on lane 19b after matching-type-merge-01,
-        // gdb samples at 2-4 s in matching_type -> contains -> set_commit ->
-        // set_covers_by_distribution_inner -> normalize. A pass memo shared by one walk's
-        // normalizations would take each shared part once. probe:
-        // ~/ptmp/cr29/scratch/r19/19b/mtm/cm4.gx (contains-normalize-repeat-01)
-        // 2026-11-10 claude: The walk keeps one normalize pass (ContainsHist::norm) for
-        // the unions it builds, the distribution's pool and place_members' residue
-        // (ContainsHist::normal_union), used where every member is Closure::Plain; a
-        // member holding a cell or a function type takes a pass of its own as before.
-        // cm4.gx --no-cache --check: 26.9G instructions on base-r20, 24.6G on the lane
-        // head, 5.83G now (an empty program 0.76G); the census is unchanged and the GUI
-        // examples' check is within noise (40.76-40.86G, 40.78-40.82G with the pass off).
-        // Pins: typ::contains::tests::a_walk_normalizes_the_nodes_its_pools_share_once
-        // fails with the walk's pass off (60573 nodes normalized in 7475 steps, 1630 with
-        // it); a_union_over_a_cell_is_normalized_at_each_question fails if the pass takes
-        // a member holding a cell. What is left of cm4 is matching_type's walks
-        // (matching-type-probe-walks-01).
         let pool = distributing.map(|j| hist.normal_union(cands.iter().map(|c| &c[j])));
         if let (Some(j), Some(pool)) = (distributing, &pool)
             && !pool.contains_int(probe, env, hist, &targs[j])?
