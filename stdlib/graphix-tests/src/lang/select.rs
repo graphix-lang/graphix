@@ -9223,3 +9223,65 @@ run!(
         if as_i64s(a) == [7, -7, 9, 3, 30, 400, 11, 10, -1]);
     FuseExpect::Jit
 );
+
+// A written test with an alias applied to its own variable is the test with
+// the alias's union written out: the variable is a part the arm binds and
+// does not test, under an array, a typedef's parameter and a recursive
+// typedef's, whatever else the alias's union holds; a closed argument is
+// tested. The arms a kernel takes whole assert it.
+run!(
+    written_test_alias_over_its_own_variable,
+    r#"{
+        type Opt<'b> = ['b, null];
+        type L<'a> = [`Nil, `C('a, L<'a>)];
+        type U<'a> = [`Nil, `C('a, U<Opt<'a>>)];
+        let one = |v: Array<i64>| #[native] select v { Array<Opt<'b>> as [x, ..] => x, _ => 0 };
+        let two = |v: [Array<i64>, Array<string>]| select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
+        let mixed = |v: [Array<i64>, string]| select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
+        let named = |v: [L<i64>, L<string>]| select v { L<Opt<'b>> as `C(x, t) => 1, _ => 0 };
+        let grown = |v: [U<i64>, U<string>]| select v { U<Opt<'b>> as `C(x, t) => 1, _ => 0 };
+        let nested = |v: [Array<i64>, Array<string>]| select v { Array<Opt<Opt<'b>>> as [x, ..] => 1, _ => 0 };
+        let closed = |v: [Array<i64>, Array<string>]| select v { Array<Opt<i64>> as [x, ..] => 1, _ => 0 };
+        let l: L<string> = `C("s", `Nil);
+        let u: U<i64> = `C(1, `Nil);
+        [
+            one([7]), one([]),
+            two([1]), two(["s"]), two([]),
+            mixed([1]), mixed("s"),
+            named(l), named(`Nil),
+            grown(u), grown(`Nil),
+            nested(["s"]), closed([1]), closed(["s"])
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_test_union_over_its_own_variable,
+    r#"{
+        type L<'a> = [`Nil, `C('a, L<'a>)];
+        type U<'a> = [`Nil, `C('a, U<['a, null]>)];
+        let one = |v: Array<i64>| #[native] select v { Array<['b, null]> as [x, ..] => x, _ => 0 };
+        let two = |v: [Array<i64>, Array<string>]| select v { Array<['b, null]> as [x, ..] => 1, _ => 0 };
+        let mixed = |v: [Array<i64>, string]| #[native] select v { Array<['b, null]> as [x, ..] => 1, _ => 0 };
+        let named = |v: [L<i64>, L<string>]| select v { L<['b, null]> as `C(x, t) => 1, _ => 0 };
+        let grown = |v: [U<i64>, U<string>]| select v { U<['b, null]> as `C(x, t) => 1, _ => 0 };
+        let nested = |v: [Array<i64>, Array<string>]| select v { Array<[['b, null], null]> as [x, ..] => 1, _ => 0 };
+        let closed = |v: [Array<i64>, Array<string>]| select v { Array<[i64, null]> as [x, ..] => 1, _ => 0 };
+        let l: L<string> = `C("s", `Nil);
+        let u: U<i64> = `C(1, `Nil);
+        [
+            one([7]), one([]),
+            two([1]), two(["s"]), two([]),
+            mixed([1]), mixed("s"),
+            named(l), named(`Nil),
+            grown(u), grown(`Nil),
+            nested(["s"]), closed([1]), closed(["s"])
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0]);
+    FuseExpect::Jit
+);

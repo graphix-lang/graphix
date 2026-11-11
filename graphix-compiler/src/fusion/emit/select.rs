@@ -1506,6 +1506,20 @@ fn emit_arm_cond<R: Rt>(
     Ok((tcond, scond))
 }
 
+// CR claude for claude: [perf/low] A written test with an alias applied to its own
+// variable de-fuses where its written-out twin fuses. Over `type Opt<'b> = ['b, null]`,
+// `|v: [Array<i64>, string]| #[native] select v { Array<Opt<'b>> as [x, ..] => 1, _ =>
+// 0 }` is refused, "select type predicate Array<Opt<Any>> doesn't freeze concrete": the
+// arm's predicate reads its own variable as Any under a named type's argument
+// (Type::blind_named_args, Select::typecheck1) and freeze_node_typ takes no Any, where
+// `Array<['b, null]> as [x, ..]` fuses, its variable a cell bound to bottom that
+// freezes. Both run right in every mode; the alias spelling runs in the node-walk.
+// emit_member_cond asks the frozen predicate only for the member's layout, and tests
+// by graphix_value_is_a over the unfrozen one, so a predicate whose unfrozen parts are
+// all Any under a named type's argument could take its layout from the scrutinee's
+// member. The pin to flip: lang::select::written_test_alias_over_its_own_variable's
+// `mixed`, the one fused select of its twin that carries no #[native].
+// (written-alias-test-defuses-01)
 /// An arm's written type test against `scrut`: `None` for an inferred
 /// predicate, or one every value of the scrutinee's type passes.
 fn emit_type_test<R: Rt>(

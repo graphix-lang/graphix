@@ -2855,6 +2855,11 @@ impl<R: Rt> Update<R> for Select<R> {
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.arg.node.typecheck1(ctx)?;
         for (pat, n) in self.arms.iter_mut() {
+            if pat.explicit_type_predicate
+                && let Some(t) = pat.type_predicate.blind_named_args()
+            {
+                pat.type_predicate = t
+            }
             if let Some(guard) = &mut pat.guard {
                 guard.node.typecheck1(ctx)?;
             }

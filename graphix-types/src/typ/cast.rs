@@ -1855,6 +1855,41 @@ impl Type {
         }
     }
 
+    /// `self`, a written test, with every ⊥ in a named type's arguments,
+    /// a cell bound to it included, as `Any`; `None` where no argument
+    /// holds one. A test passes every value at either, but the union a
+    /// name expands to keeps `Any` where it drops ⊥: `Opt<'b>` over `type
+    /// Opt<'x> = ['x, null]`, `'b` the test's own variable, would test
+    /// for null alone where `['b, null]` written out passes every value.
+    pub fn blind_named_args(&self) -> Option<Type> {
+        fn go(
+            t: &Type,
+            named: bool,
+            clean: &mut AHashSet<(usize, bool)>,
+        ) -> Option<Type> {
+            ensure_sufficient(|| match t {
+                Type::Bottom if named => Some(Type::Any),
+                Type::TVar(tv) => go(&tv.binding()?, named, clean),
+                Type::Fn(_) => None,
+                t => {
+                    let node = super::node_addr(t).map(|n| (n, named));
+                    if node.is_some_and(|n| clean.contains(&n)) {
+                        return None;
+                    }
+                    let named = named || matches!(t, Type::Ref(_));
+                    let blind = t.cow_children(&mut |c| go(c, named, clean));
+                    if blind.is_none()
+                        && let Some(n) = node
+                    {
+                        clean.insert(n);
+                    }
+                    blind
+                }
+            })
+        }
+        go(self, false, &mut LPooled::take())
+    }
+
     /// True if v is structurally compatible with the type.
     pub fn is_a(&self, env: &Env, v: &Value) -> bool {
         self.is_a_int(env, &mut IsAHist::default(), BitFlags::empty(), v)

@@ -165,6 +165,21 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`StructurePattern::collection_view`), so a name over the element is
   `'b`; a written test reads it so in `Type::matching_type`.
 
+- **A written test's own variable is a part the arm binds, not one it
+  tests.** Nothing declares it, and where the narrowing leaves it open it
+  settles to ⊥, which a run-time test passes every value at
+  (`Type::is_a`, `IsAFlags::Strict` apart). A named type applied to it
+  would lose that: `Opt<'b>` over `type Opt<'x> = ['x, null]` expands to
+  `null` once `'b` is ⊥, a union dropping its ⊥ member, where `['b,
+  null]` written out keeps the cell. So from `typecheck1` on an arm's
+  written predicate holds `Any` for every ⊥ in a named type's arguments
+  (`Type::blind_named_args`, `Select::typecheck1`), which both engines
+  read: `Array<Opt<'b>> as [x, ..]` matches what `Array<['b, null]> as
+  [x, ..]` matches, under an array, a typedef's parameter and a
+  recursive typedef's, and a closed argument (`Opt<i64>`) is tested
+  (pins `lang::select::written_test_alias_over_its_own_variable`,
+  `written_test_union_over_its_own_variable`).
+
 - **`name@ pattern` captures** are typed from the SCRUTINEE (a `let`'s
   from its value, `Bind::complete_partial`): under an
   inferred predicate a capture is a type variable that
