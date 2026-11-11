@@ -1079,6 +1079,62 @@ run!(destructuring_an_open_part_below_a_reference, r#"{
     [f((1, 2)), f((7, 2))]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 7]); FuseExpect::None);
 
+run!(literal_testing_an_open_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [1, _] => 1, _ => 3 } };
+    f(2)
+}"#, refused("[1, _] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(literal_over_an_annotated_open_part_below_a_reference, r#"{
+    let f = |x: i64| { let r = &mut [x, 0]; select *r { [1, _] => 1, _ => 3 } };
+    [f(2), f(1)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(or_alternative_testing_an_open_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [`J | `K, _] => 1, _ => 3 } };
+    f(`M)
+}"#, refused("[`J | `K, _] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(list_tag_testing_an_open_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut [<x, 0>]; select *r { [<`J, t..>] => 1, _ => 3 } };
+    f(`M)
+}"#, refused("[<`J, t..>] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(payload_tag_testing_an_open_part_below_a_reference_refused, r#"{
+    let f = |x| { let r = &mut `P(x); select *r { `P(`J) => 1, `P(_) => 3 } };
+    f(`M)
+}"#, refused("`P(`J) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(payload_tag_over_an_annotated_open_part_below_a_reference, r#"{
+    let f = |x: [`J, `M]| { let r = &mut `P(x); select *r { `P(`J) => 1, `P(_) => 3 } };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(tag_testing_an_open_part_below_a_captured_reference_refused, r#"{
+    let f = |x| {
+        let r = &mut [x, 0];
+        let g = || select *r { [`J, _] => 1, _ => 3 };
+        g()
+    };
+    f(`M)
+}"#, refused("[`J, _] tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(naming_an_open_part_below_a_reference, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { [a, _] => 1, _ => 3 } };
+    [f(`M), f("s")]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1]); FuseExpect::None);
+
+// A dead arm is refused as dead: nothing reaches it, and the bounds hold
+// what the arms before it took.
+run!(dead_arm_testing_an_open_part_below_a_reference_is_unreachable, r#"{
+    let f = |x| { let r = &mut [x, 0]; select *r { _ => 3, [`J, _] => 1 } };
+    f(`M)
+}"#, refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(dead_arm_deciding_a_part_below_a_reference_is_unreachable, r#"{
+    let f = |x| { let r = &mut (x, 0); select *r { _ => 3, (`J, _) => 1 } };
+    f(`M)
+}"#, refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
 // The referent of a reference to an expression no binding names is a cell
 // no source can write: a hint names a binding holding the reference.
 run!(tag_deciding_a_referent_names_the_reference_refused, r#"{

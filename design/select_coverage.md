@@ -101,7 +101,9 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   shape as an annotation would and tests nothing, except beside a member
   of that shape, where it chooses between them. An arm the coverage
   finds dead has the arms up to it judged so first, against the cells
-  still open and those decided (`still_open`); any other error in an
+  still open and those decided (`still_open`), the dead arm itself in
+  what reaches it alone, never in the bounds' reading, which holds what
+  the arms before it took; any other error in an
   arm's check is that error.
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers

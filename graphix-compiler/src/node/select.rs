@@ -3035,6 +3035,7 @@ impl<R: Rt> Select<R> {
                     &written,
                     &reached,
                     lower.as_ref(),
+                    true,
                 )?;
                 return Err(e);
             }
@@ -3054,6 +3055,7 @@ impl<R: Rt> Select<R> {
                     &written,
                     &reached,
                     lower.as_ref(),
+                    false,
                 )?;
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
@@ -3076,7 +3078,10 @@ impl<R: Rt> Select<R> {
     /// before the arms (`written`), its own variable, still open or decided
     /// since, as one of `decided` is met. A cell decided through the
     /// scrutinee's lower bounds is met in `lower`, the scrutinee as those
-    /// bounds held it ([`lower_view`]).
+    /// bounds held it ([`lower_view`]), except by the last arm where it is
+    /// `dead`: nothing reaches it, and `lower` holds what the arms before
+    /// it took.
+    #[allow(clippy::too_many_arguments)]
     fn check_undecided(
         &self,
         env: &Env,
@@ -3085,6 +3090,7 @@ impl<R: Rt> Select<R> {
         written: &Deciding,
         reached: &[Type],
         lower: Option<&Type>,
+        dead: bool,
     ) -> Result<()> {
         let ExprKind::Select(se) = &self.spec.kind else { return Ok(()) };
         let open = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
@@ -3095,9 +3101,10 @@ impl<R: Rt> Select<R> {
         written.decided(&mut own);
         let own_open = |tv: &TVar| own.cells.contains_key(&tv.stands_for());
         let own_was = Decided { cell: &own_open, held: &|_| None };
-        for (((pat, n), (spec_pat, _)), reaching) in
-            self.arms.iter().zip(se.arms.iter()).zip(reached.iter())
+        for (i, (((pat, n), (spec_pat, _)), reaching)) in
+            self.arms.iter().zip(se.arms.iter()).zip(reached.iter()).enumerate()
         {
+            let lower = lower.filter(|_| !dead || i + 1 < reached.len());
             let sp = &spec_pat.structure_predicate;
             let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
             let ids = |p: &StructurePattern| ids.get(p);
@@ -3336,6 +3343,17 @@ fn met_in(
     lower: Option<&Type>,
     meets: impl Fn(&Type) -> Result<Option<TVar>>,
 ) -> Result<Option<TVar>> {
+    // CR claude for claude: [bug/low] The lower view is the whole scrutinee as its
+    // bounds held it, never narrowed to what reaches the arm, so an arm is judged
+    // against a member an earlier arm took whole. `|x, b: bool| { let r = &mut (select
+    // b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _
+    // => 3 } }` is refused "(_, 0) tests a value of 'x", though only (`L, i64) reaches
+    // that arm; the plain twin `select (select b { .. }) { .. }` checks and runs ([1,
+    // 2]). Annotating x passes, and nothing unsound follows. Same on base-r20. A fix:
+    // narrow the lower view arm by arm as Reach narrows the scrutinee (a Reach over the
+    // lower view, or the view of what reaches each arm). probes:
+    // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/lv1.gx, twin lv1t.gx
+    // (lower-view-reach-01)
     match (meets(reaching)?, lower) {
         (Some(tv), _) => Ok(Some(tv)),
         (None, Some(l)) => meets(l),

@@ -1940,6 +1940,15 @@ impl ShallowScrutinee {
     // Any-payload scrutinees is acceptable); pin both engines. probes:
     // ~/ptmp/cr29/scratch/r20/20e/review/h10.gx, h4.gx, h8.gx, h9.gx, h11.gx, e7.gx, e5.gx; right:
     // h5.gx, h6.gx (shallow-any-part-01)
+    // 2026-11-10 claude: An array element reaches it too, and with no Any written (not traced to
+    // this function; the same panic). `|x: Array<Any>| select x { [(a, b), _] => a + 1, _ => 2 }`
+    // over `[("s", 2), 0]` checks, panics fused (kernel param `a`: runtime String("s") does not
+    // match the compiled Scalar(I64) slot) and logs an arith error under --no-fusion. The arms of
+    // a select over a reference decide its referent `Array<Any>` from `[(a, b), _]` beside `_`, so
+    // `|x| { let r = &mut [x, 0]; select *r { [(a, b), _] => a + 1, _ => 2 } }` with `f(("s", 2))`
+    // does the same, x annotated `(string, i64)` or not, as does `select W([x, 0]).0` over an
+    // abstract parameter. Same on base-r20. probes:
+    // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/any1.gx, u1.gx, u2.gx
     pub fn discriminant(&self, env: &Env, predicate: &Type) -> Option<Type> {
         let mut preds: LPooled<Vec<Type>> = LPooled::take();
         flatten_union_members(predicate, env, &mut preds)?;
