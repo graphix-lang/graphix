@@ -544,7 +544,8 @@ stood again: `a_let_stood_again_moved_for_the_arm_that_slept_through_it`,
 `lang::prune::standing_formal_refresh_marks_its_readers`,
 `graphix-shell/tests/shell/wake_outside_roots.rs` for readers in other
 roots, and `graphix-fuzz/findings/wake-outside-nov2026/`. The reactive
-generator escapes a closure or a reference from a sleeping arm
+generator escapes a closure or a reference from a sleeping arm, one
+slept late and one beside a `let` stood again among them
 (`generate::reactive::escaped_arm`).
 
 ## The rules in brief

@@ -608,7 +608,9 @@ fn slept_arm(
 /// `let`, held by `once`. The value follows a state written only on the
 /// epochs arm 0 sleeps through, so each wake re-stands it moved, a fire
 /// for the reader outside (`design/wake_catchup.md`, What a wake stands),
-/// read bare or under an operator and counted.
+/// read bare or under an operator and counted. Two shapes follow a count
+/// of the input's fires instead: an arm slept late ([`late_slept_arm`])
+/// and a `let` stood again ([`stood_again`]).
 fn escaped_arm(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -623,10 +625,13 @@ fn escaped_arm(
     let (d, g, h, s, c) =
         (ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh(), ctx.fresh());
     stmts.push(format!("let {d} = i64:0"));
-    stmts.push(format!(
-        "{d} <- select ({input} % i64:2) {{ i64:1 => {input}, _ => never() }}"
-    ));
-    let read = match rng.below(4) {
+    let shape = rng.below(6);
+    if shape < 4 {
+        stmts.push(format!(
+            "{d} <- select ({input} % i64:2) {{ i64:1 => {input}, _ => never() }}"
+        ));
+    }
+    let read = match shape {
         0 => {
             let (mk, x, y) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
             let body = match rng.below(3) {
@@ -660,7 +665,7 @@ fn escaped_arm(
             ));
             format!("*{h}")
         }
-        _ => {
+        3 => {
             let z = ctx.fresh();
             stmts.push(format!(
                 "let {g} = select ({input} % i64:2) {{ \
@@ -668,6 +673,14 @@ fn escaped_arm(
                  _ => {{ let {z} = [{d}]; &{z} }} }}"
             ));
             format!("array::len(*{h}) + array::fold(*{h}, i64:0, |a, e| a + e)")
+        }
+        4 => {
+            late_slept_arm(ctx, input, &d, &g, stmts);
+            format!("*{h}")
+        }
+        _ => {
+            stood_again(ctx, input, &d, &g, stmts);
+            format!("*{h}")
         }
     };
     stmts.push(format!("let {h} = once({g})"));
@@ -678,6 +691,62 @@ fn escaped_arm(
     stmts.push(format!("let {c} = count({s})"));
     ctx.push(s, I64);
     ctx.push(c, I64);
+}
+
+/// `k`, the count of `input`'s fires, with `d` written when it is 1 of
+/// every 4.
+fn fires_counted(
+    ctx: &mut GenCtx,
+    input: &str,
+    d: &str,
+    stmts: &mut Vec<String>,
+) -> String {
+    let k = ctx.fresh();
+    stmts.push(format!("let {k} = i64:0"));
+    stmts.push(format!("{k} <- {input} ~ {k} + i64:1"));
+    stmts.push(format!("{d} <- select ({k} % i64:4) {{ i64:1 => {k}, _ => never() }}"));
+    k
+}
+
+/// `g`, a select whose arm with nothing to pause holds a select over the
+/// same count: the outer arm is deselected on the fire `d` is written,
+/// and entered again on the next, which is slept only then and in which
+/// the inner select leaves the arm whose `let` got out. That arm wakes a
+/// fire later, having slept since the outer arm stopped running.
+fn late_slept_arm(
+    ctx: &mut GenCtx,
+    input: &str,
+    d: &str,
+    g: &str,
+    stmts: &mut Vec<String>,
+) {
+    let k = fires_counted(ctx, input, d, stmts);
+    let z = ctx.fresh();
+    stmts.push(format!(
+        "let {g} = select ({k} % i64:4) {{ \
+         i64:1 => {{ let {z} = {d} + i64:100; &{z} }}, \
+         _ => select ({k} % i64:4) {{ \
+         i64:2 => {{ let {z} = {d} + i64:200; &{z} }}, \
+         _ => {{ let {z} = {d} * i64:3; &{z} }} }} }}"
+    ));
+}
+
+/// `g`, a select whose arm 0 holds a `let` and a select over the same
+/// count reading it: the arm wakes on the fire after `d` is written,
+/// standing the `let` moved while the inner arm whose `let` got out
+/// sleeps, and wakes again two fires later, standing it as it is in the
+/// cycle the inner arm wakes.
+fn stood_again(ctx: &mut GenCtx, input: &str, d: &str, g: &str, stmts: &mut Vec<String>) {
+    let k = fires_counted(ctx, input, d, stmts);
+    let (w, n, u) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
+    stmts.push(format!(
+        "let {g} = select ({k} % i64:2) {{ \
+         i64:0 => {{ let {w} = {d} * i64:3; let {n} = count({k}); \
+         select ({k} % i64:4) {{ \
+         i64:0 => {{ let {u} = {w} + i64:1; &{u} }}, \
+         _ => {{ let {u} = {w} + i64:100; &{u} }} }} }}, \
+         _ => {{ let {u} = {d} + i64:500; &{u} }} }}"
+    ));
 }
 
 /// A value the woken arm computes from `d` where a kernel's result follows
