@@ -3422,27 +3422,6 @@ impl Type {
                     None => Self::set_covers_by_distribution(flags, env, hist, s, t),
                 }
             }
-            // XCR claude for claude: [bug/low] A generic function checked against a written
-            // function type decides a cell at the first position that meets it and never
-            // widens it for a later one, so the order of the positions decides: `let f =
-            // |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f` is refused ("'y: i64"),
-            // while the same with k written first runs ('y := Any). A call widens such a
-            // variable whatever the order (callsite::Widening); this containment does not.
-            // Main 3cfcd2407 the same. probes:
-            // ~/ptmp/cr29/scratch/r19/19f/review-tpe/{ord1,ord1k,ord2,s7z,s7a,s7ak}.gx
-            // (fn-annotation-order-01)
-            // 2026-11-10 claude: A variable of the contained function that no function type
-            // of its signature holds, nor a union beside another undecided member, now takes
-            // the widest of the closed types the argument positions give it, whatever their
-            // order (FnType::order_free_cells, ContainsHist::defer / settle_deferred;
-            // FnType::pre_unify_params defers the same way, so a callback argument fits as a
-            // let does); a position holding it exactly (&mut, a nominal type) decides it
-            // wherever written. ord1 and the fo1..fo6 forms run in both orders; ord2 (no
-            // widest) is refused in both, as a call is; s7z/s7a (a function type holds the
-            // variable) keep the first position, as at a call (D7 follow-up 2 a). Pins
-            // lang::functions::written_fn_type_*: 8 of them (32 mode runs) fail with
-            // order_free_cells returning nothing; skill generics.md cases. Left open as
-            // widen-within-arg-order-01: a call's two parts of one argument.
             (Self::Fn(f0), Self::Fn(f1)) => {
                 let r = f0.contains_int(flags, env, hist, f1)?;
                 if r && commit {
