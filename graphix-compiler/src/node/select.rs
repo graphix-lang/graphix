@@ -1213,6 +1213,26 @@ fn deselect<R: Rt>(
         .observe_late(ctx, |i, b| i == j && BoundaryRef::held_by(arm_boundary(arm), b));
 }
 
+// CR claude for claude: [bug/low] A reader inside a woken arm that the walk
+// passed takes a moved stand a cycle late as it stands, and the arm runs
+// that cycle as a resume again so what the reader recomputes stands moved
+// for the readers outside (`standing_arm_view`). When the arm is deselected
+// in that very cycle the delivery is dropped: `TrackedFires::observe_late`
+// keeps only late fires for an arm that does not run, and at the arm's next
+// wake the stand's stamp is older than the arm's sleep, so the reader
+// recomputes quiet and unmoved, and a `let` over it that left the arm
+// changes under an awake reader with no fire, as before the rule. Probe
+// ~/ptmp/cr29/scratch/r20/20a/rev-events/back_desel.gx: arm 0 wakes at clk 6
+// and sleeps at clk 7; at its wake at clk 10 `o` is `(7, 1)` inside while
+// the reader outside, `od = *hd` over `&d`, stays 0 with `count(od)` 1,
+// in both engines, and `GRAPHIX_QUIET=audit` panics there at `*hd` (the
+// twin whose arm stays awake, back_escape.gx, gives
+// `od` 7 and count 2 at clk 7, pinned as
+// lang::wake_outside::a_let_over_a_passed_reader_fires_outside_a_cycle_late).
+// A fix parks such a delivery on the tracker when its arm does not run and
+// hands it to the same reader at the arm's next wake (`RtView::late_var`
+// then, so the arm resumes once more the cycle after), never as a pending
+// fire: inside the arm nothing fires. (late-stand-asleep-01)
 /// The view the selected `arm` runs under in a cycle that neither enters
 /// nor wakes it: a resume again where its resume last cycle stood a value
 /// moved under a reader inside it the walk had passed, which takes it now

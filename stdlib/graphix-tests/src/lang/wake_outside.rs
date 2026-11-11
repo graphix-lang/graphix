@@ -1023,3 +1023,190 @@ async fn a_generic_callee_passes_the_move() -> Result<()> {
     )
     .await
 }
+
+// The outer arm resumes twice (n 5 and n 7) while the arm inside it
+// sleeps: `x` moved at the first resume, and the inner arm, waking at n 9,
+// is owed nothing for it, as after one resume.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_inside_an_arm_that_resumed_twice_is_owed_nothing() -> Result<()> {
+    let code = "{
+  let n = 0;
+  n <- select n { k if k < 12 => (k ~ n) + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select n { 3 => 1, 4 => 0, 5 => 1, 6 => 0, _ => never() };
+  let in1 = 0;
+  in1 <- select n { 3 => 1, _ => never() };
+  let in2 = 1;
+  in2 <- select n { 1 => 0, 8 => 1, _ => never() };
+  let in3 = 0;
+  in3 <- select n { 2 => 1, _ => never() };
+  let g: fn(v: i64) -> i64 = |v| v + 100;
+  let a = select in0 {
+    0 => {
+      let x = in1 + 0;
+      g <- select in3 { 0 => never(), _ => |v| count(x) };
+      let b = select in2 { 0 => -7, _ => g(5) };
+      (count(x), b)
+    },
+    _ => (in1 * 0 - 1, -1)
+  };
+  a
+}";
+    agrees(code, &["[1, 105]", "[1, -7]", "[-1, -1]", "[1, -7]", "[-1, -1]", "[1, -7]"])
+        .await
+}
+
+/// A clock of fourteen ticks: `n` goes 0 to 7 at clk 4, and arm 0 of a
+/// select over `sel` sleeps from clk 2 and wakes at clk 6.
+const LATE_CLOCK: &str = "let clk = array::iter(array::init(14, |i| i));
+  let n = 0;
+  n <- select clk { 3 => 7, _ => never() };
+  let sel = 0;
+  sel <- select clk { 1 => 1, 5 => 0, _ => never() };";
+
+/// `[clk, v(clk)]` for each of [`LATE_CLOCK`]'s ticks.
+fn late_ticks(v: impl Fn(i64) -> String) -> Vec<String> {
+    (0..14).map(|c| format!("[{c}, {}]", v(c))).collect()
+}
+
+/// The closure arm 0 makes over its `let z = n + 0`, called by a reader
+/// outside it whose own select over `y` leaves arm 0 at clk 4 and returns
+/// at clk 8: `other` is that select's other arm.
+fn two_selects(other: &str) -> String {
+    format!(
+        "{{
+  {LATE_CLOCK}
+  let y = 0;
+  y <- select clk {{ 3 => 1, 7 => 0, _ => never() }};
+  let g = select sel {{
+    0 => {{ let z = n + 0; |q: i64| select q {{ 0 => count(z), _ => {other} }} }},
+    _ => {{ let u = n * 0; |q: i64| u + q }}
+  }};
+  let h = once(g);
+  clk ~ (clk, h(y))
+}}"
+    )
+}
+
+// `z` fires at clk 6 for the reader's awake arm, which reads it: the fire
+// is spent for the reader's select, and its sleeping arm's `count(z)`
+// does not tick at clk 8.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stand_another_arm_took_is_not_raised_again() -> Result<()> {
+    let ticks = late_ticks(|c| match c {
+        0..4 | 8.. => "1".into(),
+        4 | 5 => "1000".into(),
+        _ => "1007".into(),
+    });
+    agrees(two_selects("z + 1000"), &ticks).await
+}
+
+// No arm of the reader's select read `z` at clk 6: the arm that slept
+// through the stand is owed it, once, when it wakes at clk 8.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stand_no_arm_took_is_owed_once() -> Result<()> {
+    let ticks = late_ticks(|c| match c {
+        0..4 => "1".into(),
+        4..8 => "1001".into(),
+        _ => "2".into(),
+    });
+    agrees(two_selects("q + 1000"), &ticks).await
+}
+
+/// A reference to arm 0's `let z = n + 0`, read outside as `(v, count(v),
+/// count(v + 0))`; the arm sleeps again from clk 8 and wakes at clk 10,
+/// and `n` is written by `writes`.
+fn two_wakes(writes: &str) -> String {
+    format!(
+        "{{
+  let clk = array::iter(array::init(14, |i| i));
+  let n = 0;
+  n <- select clk {{ {writes}, _ => never() }};
+  let sel = 0;
+  sel <- select clk {{ 1 => 1, 5 => 0, 7 => 1, 9 => 0, _ => never() }};
+  let g = select sel {{ 0 => {{ let z = n + 0; &z }}, _ => {{ let z = n + 100; &z }} }};
+  let h = once(g);
+  let v = *h;
+  clk ~ (clk, (v, count(v), count(v + 0)))
+}}"
+    )
+}
+
+// The second wake slept through no fire of `n`: nothing moved, nothing
+// fires outside.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wake_that_slept_through_no_fire_stands_silent() -> Result<()> {
+    let ticks = late_ticks(|c| match c {
+        0..6 => "[0, 1, 1]".into(),
+        _ => "[7, 2, 2]".into(),
+    });
+    agrees(two_wakes("3 => 7"), &ticks).await
+}
+
+// `n` fires again while the arm sleeps the second time: the second wake
+// fires once more.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_wake_fires_for_the_fires_it_slept_through() -> Result<()> {
+    let ticks = late_ticks(|c| match c {
+        0..6 => "[0, 1, 1]".into(),
+        6..10 => "[7, 2, 2]".into(),
+        _ => "[9, 3, 3]".into(),
+    });
+    agrees(two_wakes("3 => 7, 8 => 9"), &ticks).await
+}
+
+// The scrutinee fires at clk 4 while the guarded arm sleeps, and the
+// guard's flip wakes the arm at clk 6: its pattern bind took a value the
+// arm slept through, so the closure over it fires outside.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pattern_bind_of_a_guard_woken_arm_fires() -> Result<()> {
+    let code = "{
+  let clk = array::iter(array::init(14, |i| i));
+  let n = 0;
+  n <- select clk { 3 => 7, _ => never() };
+  let flag = true;
+  flag <- select clk { 1 => false, 5 => true, _ => never() };
+  let g = select n { x if flag => |q: i64| x + q, w => { let u = w * 0; |q: i64| u + q - 1 } };
+  let h = once(g);
+  let v = h(0);
+  clk ~ (clk, (v, count(v)))
+}";
+    let ticks = late_ticks(|c| match c {
+        0..6 => "[0, 1]".into(),
+        _ => "[7, 2]".into(),
+    });
+    agrees(code, &ticks).await
+}
+
+// `d` reads `z` from above it in the woken arm and takes 7 a cycle late,
+// standing: `count(*r)` inside does not tick, and `d`, which left the arm
+// by reference, fires for the reader outside at clk 7.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_over_a_passed_reader_fires_outside_a_cycle_late() -> Result<()> {
+    let code = format!(
+        "{{
+  {LATE_CLOCK}
+  let hd: &i64 = never();
+  let o = select sel {{
+    0 => {{
+      let r: &i64 = never();
+      let cnt = count(*r);
+      let d = *r;
+      hd <- once(&d);
+      let z = n + 0;
+      r <- &z;
+      (d, cnt)
+    }},
+    _ => (n * 0 - 5, 0)
+  }};
+  let od = *hd;
+  clk ~ (clk, (o, od, count(od)))
+}}"
+    );
+    let ticks = late_ticks(|c| match c {
+        0 | 1 | 6 => "[[0, 1], 0, 1]".into(),
+        2..6 => "[[-5, 0], 0, 1]".into(),
+        _ => "[[7, 1], 7, 2]".into(),
+    });
+    agrees(code, &ticks).await
+}

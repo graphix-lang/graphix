@@ -1386,7 +1386,7 @@ impl<R: Rt> Update<R> for Ref {
         let r = match read_var_by(ctx, &self.id, self.top_id, None) {
             Some(read) => {
                 let tv = read.production(ctx);
-                if let VarRead::Standing(..) = read {
+                if !tv.tag().triggers() {
                     audit_quiet(ctx, &self.id, &self.resident, &tv, &self.spec)
                 }
                 if dbg {
@@ -2452,15 +2452,11 @@ impl<R: Rt> Update<R> for Deref<R> {
         // a target the arm around it learns only now may owe a fire
         let owed = super::wake::owed(ctx, &id);
         self.read.read(ctx.rt.cycle());
-        let mut standing = false;
         let res = match read_var_by(ctx, &id, self.top_id, Some(&self.read)) {
             Some(VarRead::Standing(tv, _)) if owed => {
                 Some(TagValue::fired(tv.value_cloned()))
             }
-            Some(read) => {
-                standing = matches!(read, VarRead::Standing(..));
-                Some(read.production(ctx))
-            }
+            Some(read) => Some(read.production(ctx)),
             None => None,
         };
         let res = match (res, &self.addr) {
@@ -2494,7 +2490,7 @@ impl<R: Rt> Update<R> for Deref<R> {
                     }
                 };
                 tv.retag(t);
-                if standing && moved == Moved::No && !addr.triggers() {
+                if moved == Moved::No && !t.triggers() {
                     audit_quiet(ctx, &id, &self.resident, &tv, &self.spec)
                 }
                 self.resident.set(tv)

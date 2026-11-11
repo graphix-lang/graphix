@@ -2554,7 +2554,9 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// cycle under its own tag, which each reader reads by where it
     /// stands (`node::delivered_view`): the readers the walk has passed
     /// take it next cycle, a fire to one outside the regions that resumed
-    /// this cycle and a standing value to one inside.
+    /// this cycle and a standing value to one inside. The outermost region
+    /// that resumed this cycle records the stand: no reader inside it is
+    /// owed it later (`node::wake::owed`).
     #[cold]
     #[inline(never)]
     fn stand_moved(&mut self, var: branch::Var, tv: &TagValue, notify: Notify) {
@@ -2585,6 +2587,13 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
                     self.rt.produced_var(var)
                 }
             }
+        }
+        if let Some(region) = self.catch_up.as_ref().and_then(|s| s.region()) {
+            let rt = &self.rt;
+            region.stood(var.id(), rt.cycle(), |var, at| {
+                rt.store_get(&var)
+                    .is_some_and(|(tv, stamp)| tv.tag().moved() && *stamp == at)
+            })
         }
         if notify == Notify::Roots {
             self.rt.notify_marked_var(var)

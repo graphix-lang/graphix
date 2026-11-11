@@ -173,10 +173,10 @@ fn late_fire<'a, R: Rt>(
     Some(tv)
 }
 
-/// `GRAPHIX_QUIET=audit`: a reader in an ordinary cycle took `standing`
-/// from a store entry no delivery of this cycle made, over its last
-/// production `resident`. An awake reader saw every fire, so the two
-/// agree, or a value changed under it with no fire. A seq machine's own
+/// `GRAPHIX_QUIET=audit`: a reader in an ordinary cycle took the quiet
+/// production `standing` (an entry that stands, or one a wake stood again
+/// this cycle) over its last production `resident`. An awake reader saw
+/// every fire, so the two agree, or a value changed under it with no fire. A seq machine's own
 /// names are read by steps it runs one at a time, which is no sleep.
 #[inline]
 pub(crate) fn audit_quiet<R: Rt>(

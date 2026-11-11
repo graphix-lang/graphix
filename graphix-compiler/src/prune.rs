@@ -1,6 +1,8 @@
 //! Walk pruning (`design/walk_pruning.md`): the boundaries a cycle can
 //! skip, and the readers a delivery marks.
-use crate::expr::ExprId;
+use crate::{BindId, expr::ExprId};
+use nohash::IntMap;
+use parking_lot::Mutex;
 use std::{
     fmt,
     hash::{Hash, Hasher},
@@ -29,6 +31,18 @@ pub struct Boundary {
     /// The last cycle the subtree resumed in: a paused region whose root
     /// this is woke.
     resumed: AtomicU64,
+    /// What the resumes of this region stood moved, when this is the
+    /// outermost region that resumed in the cycle of the stand.
+    stood: Mutex<Option<Box<Stood>>>,
+}
+
+/// The variables a region's resumes stood moved (`Tag::moved`), each with
+/// the cycle of its last such stand.
+#[derive(Default)]
+struct Stood {
+    vars: IntMap<BindId, u64>,
+    /// The last cycle the records no store entry answers were dropped in.
+    swept: u64,
 }
 
 /// A chain of parents is as long as a recursion is deep, so the last owner
@@ -79,6 +93,7 @@ impl BoundaryRef {
             stamp: AtomicU64::new(u64::MAX),
             visited: AtomicU64::new(u64::MAX),
             resumed: AtomicU64::new(u64::MAX),
+            stood: Mutex::new(None),
         }))
     }
 
@@ -141,6 +156,8 @@ impl BoundaryRef {
     // cannot cut the climb as they do in `innermost_visited`; a per-cycle
     // list of resumed regions on the runtime, tested with `holds`, would be
     // logarithmic. Not measured: no probe reaches it. (resumed-climb-01)
+    // 2026-11-10 claude: BoundaryRef::stood_in climbs a parent a step too, once
+    // for each `wake::owed` over a moved entry this climb did not answer.
     pub(crate) fn resumed_in(&self, cycle: u64) -> bool {
         let mut b = self;
         loop {
@@ -148,6 +165,46 @@ impl BoundaryRef {
             if b.0.resumed.load(Relaxed) == cycle {
                 return true;
             }
+            match &b.0.parent {
+                Some(p) => b = p,
+                None => return false,
+            }
+        }
+    }
+
+    /// Record that a resume of this region stood `var` moved in `cycle`.
+    /// The first record of a cycle drops those `live` no longer answers:
+    /// a variable that fired since, or is gone.
+    pub(crate) fn stood(
+        &self,
+        var: BindId,
+        cycle: u64,
+        live: impl Fn(BindId, u64) -> bool,
+    ) {
+        let mut stood = self.0.stood.lock();
+        let stood = stood.get_or_insert_default();
+        if stood.swept != cycle {
+            stood.swept = cycle;
+            stood.vars.retain(|var, at| live(*var, *at))
+        }
+        stood.vars.insert(var, cycle);
+    }
+
+    /// Whether a resume of this boundary's region or of one around it
+    /// stood `var` moved in `cycle`: what is inside slept through the
+    /// stand, however often the region has resumed since.
+    pub(crate) fn stood_in(&self, var: BindId, cycle: u64) -> bool {
+        let mut b = self;
+        loop {
+            step();
+            let stood = b.0.stood.lock();
+            if stood
+                .as_ref()
+                .is_some_and(|s| s.vars.get(&var).is_some_and(|at| *at >= cycle))
+            {
+                return true;
+            }
+            drop(stood);
             match &b.0.parent {
                 Some(p) => b = p,
                 None => return false,
@@ -317,6 +374,23 @@ mod tests {
             late: true,
             read: None,
         }
+    }
+
+    #[test]
+    fn a_region_answers_for_its_stands_after_it_resumes_again() {
+        let outer = BoundaryRef::new(None);
+        let arm = BoundaryRef::new(Some(outer.clone()));
+        let inner = BoundaryRef::new(Some(arm.clone()));
+        let sibling = BoundaryRef::new(Some(outer.clone()));
+        let (x, y) = (BindId::new(), BindId::new());
+        arm.resume(5);
+        arm.stood(x, 5, |_, _| true);
+        arm.resume(7);
+        assert!(inner.stood_in(x, 5) && arm.stood_in(x, 5));
+        assert!(!sibling.stood_in(x, 5) && !outer.stood_in(x, 5));
+        assert!(!inner.stood_in(y, 5) && !inner.stood_in(x, 6));
+        arm.stood(y, 7, |var, at| !(var == x && at == 5));
+        assert!(!inner.stood_in(x, 5) && inner.stood_in(y, 7));
     }
 
     /// Whether a walk inside `at` passed `r`, climbing one boundary a step.

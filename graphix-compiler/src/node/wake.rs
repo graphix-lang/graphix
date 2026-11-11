@@ -36,9 +36,15 @@ pub(crate) struct CatchUp {
     /// A call issued as a fresh frame ([`FreshFrame`]): every input that
     /// stands is owed, unless a select inside it tracks the input.
     fresh: bool,
+    /// The outermost region around the evaluation that resumed this cycle.
+    region: Option<BoundaryRef>,
 }
 
 impl CatchUp {
+    pub(crate) fn region(&self) -> Option<&BoundaryRef> {
+        self.region.as_ref()
+    }
+
     /// Whether a fire of `id` no reader saw is this evaluation's: by the
     /// bit of the innermost select that tracks `id`, which it takes.
     fn owes(&self, id: &BindId) -> bool {
@@ -82,6 +88,7 @@ impl FreshFrame {
             taken: Mutex::default(),
             outer: ctx.catch_up.clone(),
             fresh: true,
+            region: ctx.catch_up.as_ref().and_then(|s| s.region.clone()),
         };
         let outer = mem::replace(&mut ctx.catch_up, Some(Arc::new(scope)));
         let injected = deliver_owed(ctx, fill);
@@ -120,7 +127,10 @@ pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
             *stamp >= scope.unseen
                 && !tag.is_bottom()
                 && !(tag.moved()
-                    && ctx.boundary.as_ref().is_some_and(|b| b.resumed_in(*stamp)))
+                    && ctx.boundary.as_ref().is_some_and(|b| {
+                        b.resumed_in(*stamp)
+                            || b.stood_in(ctx.rt.var_of(*id).id(), *stamp)
+                    }))
         })
         && scope.owes(id)
 }
@@ -527,11 +537,14 @@ impl TrackedFires {
         if !ctx.event.init() {
             return None;
         }
-        if ctx.event.view == View::Wake
-            && let Some(b) = region
-        {
+        let resumed = region.filter(|_| ctx.event.view == View::Wake);
+        if let Some(b) = resumed {
             b.resume(ctx.rt.cycle())
         }
+        let region = match ctx.catch_up.as_ref().and_then(|s| s.region.as_ref()) {
+            Some(outermost) => Some(outermost.clone()),
+            None => resumed.cloned(),
+        };
 
         // an arm sleeps whenever the arm around it does
         let unseen = match &ctx.catch_up {
@@ -545,6 +558,7 @@ impl TrackedFires {
             taken: Mutex::default(),
             outer: ctx.catch_up.clone(),
             fresh: false,
+            region,
         };
         Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
     }

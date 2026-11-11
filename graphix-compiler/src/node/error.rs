@@ -1657,6 +1657,19 @@ enum Receipt {
     Nothing,
     /// The error of a raise not given up.
     Taken(Value),
+    // CR claude for claude: [risk/low] A passed-over delivery stands in the
+    // catch's binder, so the handler, awake, reads an error that changed
+    // with no fire: a bare read of `e` (a `"[e]"`, a `select e.0.error`
+    // outside a sample) shows the given-up error while everything sampled on
+    // `e` stays put. `GRAPHIX_QUIET=audit` panics on it in
+    // lang::errors::a_handler_never_hears_a_raise_given_up, every mode
+    // (`R(3)` to `R(4)`, both standing, at the handler's `e`), the one
+    // program of graphix-tests that trips the audit. By the rule of
+    // design/wake_catchup.md, What a wake stands, an awake reader sees no
+    // change without a fire: either the binder keeps the last error the
+    // handler took (the delivery is dropped, not stood), or the audit
+    // exempts a catch's binder and the rule names the exception.
+    // (passed-raise-stands-01)
     /// A delivery no raise left to take (its raise was given up), as the
     /// handler sees it: standing, not fired.
     Passed(TagValue),

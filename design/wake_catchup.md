@@ -487,9 +487,14 @@ that left the arm, saw none of it, so to that reader the stand is a fire.
   reader inside the woken arm gets the change a cycle late, STALE.
 - **A reader asleep elsewhere** is owed the stand as it is owed any fire
   (the tracker's bit, or `wake::owed` by the stamp), unless a region
-  around it resumed in the stand's cycle: it slept through the event with
-  that region (`wake::owed`). A standing entry over a moved stand keeps
-  the mark with the stamp (`RtView::store_insert_standing_var`).
+  around it stood it: it slept through the event with that region
+  (`wake::owed`). The outermost region that resumed in the stand's cycle
+  (`CatchUp::region`) records the variable with that cycle
+  (`BoundaryRef::stood`), so the
+  answer holds however often the region resumes before the reader wakes;
+  the records a store entry no longer answers go at the region's next
+  stand. A standing entry over a moved stand keeps the mark with the stamp
+  (`RtView::store_insert_standing_var`).
 - **A guard's tentative binds** never stand moved: they are retracted.
 
 The price, accepted: a handler that escaped a modal's arm acts once at
@@ -501,13 +506,14 @@ cycle of the stand reads it stale through a function value (it recomputes
 from what stands, as at any wake) and FIRED where its select tracks the
 binding and no other arm consumed it; a paused collection's slots and an
 absent call's instance record no region, so a reader inside one that the
-walk passed takes a stand FIRED; `Boundary::resumed_in` records one cycle
-a boundary, so a region that resumes twice while an arm inside it sleeps
-owes that arm the first resume's stands.
+walk passed takes a stand FIRED; a reader inside the woken arm that the
+walk passed loses its late standing delivery when the arm sleeps again in
+the very next cycle (CR `late-stand-asleep-01`).
 
 `GRAPHIX_QUIET=audit` panics where a reader in an ordinary cycle reads a
-standing value that differs from its last production
-(`node::audit_quiet`). Pins: `lang::wake_outside`,
+quiet value that differs from its last production (`node::audit_quiet`):
+an entry that stands, or one a wake stood again in the same cycle, which
+a `let` publishes through the event. Pins: `lang::wake_outside`,
 `lang::prune::standing_formal_refresh_marks_its_readers`,
 `graphix-shell/tests/shell/wake_outside_roots.rs` for readers in other
 roots, and `graphix-fuzz/findings/wake-outside-nov2026/`, whose first
