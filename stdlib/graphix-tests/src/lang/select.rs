@@ -9227,8 +9227,9 @@ run!(
 // A written test with an alias applied to its own variable is the test with
 // the alias's union written out: the variable is a part the arm binds and
 // does not test, under an array, a typedef's parameter and a recursive
-// typedef's, whatever else the alias's union holds; a closed argument is
-// tested. The arms a kernel takes whole assert it.
+// typedef's at any depth of its value, whatever else the alias's union
+// holds; a closed argument is tested. The arms a kernel takes whole assert
+// it.
 run!(
     written_test_alias_over_its_own_variable,
     r#"{
@@ -9244,17 +9245,18 @@ run!(
         let closed = |v: [Array<i64>, Array<string>]| select v { Array<Opt<i64>> as [x, ..] => 1, _ => 0 };
         let l: L<string> = `C("s", `Nil);
         let u: U<i64> = `C(1, `Nil);
+        let deep: U<i64> = `C(1, `C(null, `C(2, `Nil)));
         [
             one([7]), one([]),
             two([1]), two(["s"]), two([]),
             mixed([1]), mixed("s"),
             named(l), named(`Nil),
-            grown(u), grown(`Nil),
+            grown(u), grown(`Nil), grown(deep),
             nested(["s"]), closed([1]), closed(["s"])
         ]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
-        if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0]);
+        if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0]);
     FuseExpect::Jit
 );
 
@@ -9272,16 +9274,17 @@ run!(
         let closed = |v: [Array<i64>, Array<string>]| select v { Array<[i64, null]> as [x, ..] => 1, _ => 0 };
         let l: L<string> = `C("s", `Nil);
         let u: U<i64> = `C(1, `Nil);
+        let deep: U<i64> = `C(1, `C(null, `C(2, `Nil)));
         [
             one([7]), one([]),
             two([1]), two(["s"]), two([]),
             mixed([1]), mixed("s"),
             named(l), named(`Nil),
-            grown(u), grown(`Nil),
+            grown(u), grown(`Nil), grown(deep),
             nested(["s"]), closed([1]), closed(["s"])
         ]
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
-        if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0]);
+        if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0]);
     FuseExpect::Jit
 );
