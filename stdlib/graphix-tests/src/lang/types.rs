@@ -9459,8 +9459,9 @@ run!(
 );
 
 // A recursive typedef with a bare parameter: the union of its expansion
-// places its members on copies, where the definition's applications are
-// answered by their arguments rather than expanded on fresh cells again.
+// places its members on copies, where the definition's recursion is met
+// by assumption, as the walk on the cells themselves meets it, rather
+// than expanded on fresh cells again.
 run!(
     a_recursive_typedef_with_a_bare_parameter_over_an_open_cell_checks,
     r#"{
@@ -9510,6 +9511,19 @@ run!(
   sum(id(v))
 }"#,
     prints("i64:6");
+    FuseExpect::Jit
+);
+
+run!(
+    two_definitions_with_a_bare_parameter_check,
+    r#"{
+  type Tree<'a> = ['a, `Node(Array<Tree<'a>>)];
+  type Twin<'a> = ['a, `Node(Array<Twin<'a>>)];
+  let f = |x: Tree<'q>, y: 'q| y;
+  let v: Twin<i64> = `Node([1]);
+  f(v, 2)
+}"#,
+    prints("i64:2");
     FuseExpect::Jit
 );
 

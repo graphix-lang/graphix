@@ -277,14 +277,14 @@ can keep the original member slice.
   `lang::types::twelve_parameters_of_one_recursive_typedef_check`.
   Two definitions with one body, and a parameter in a union with a
   choice, are still walked (`open-app-commit-trials-01`).
-- A trial on copies never expands an application of a definition the
-  walk it was made in is expanding: it answers it by its arguments
-  (`ContainsHist::unfolded_above`). A recursive definition with a bare
-  parameter otherwise places its expansion's members on copies at every
-  level, each level on fresh cells, and does not end. Pin
+- The trial of a union with a bare open member starts with the pairs
+  its walk is expanding in progress, on its copies
+  (`ContainsHist::seed`), so it meets their recursion by assumption. A
+  recursive definition with a bare parameter otherwise places its
+  expansion's members on copies at every level, each level on fresh
+  cells, and does not end. Pin
   `typ::contains::tests::
-  an_application_met_in_a_trial_of_its_own_expansion_is_not_unfolded`
-  (200 steps).
+  a_trial_meets_the_recursion_it_is_inside_by_assumption` (200 steps).
 - No per-path expansion cut: an expansive typedef (`type T<'a> =
   [`Nil, `C(T<Array<'a>>)]`) is refused at its definition
   (`typ/expansive.rs`), so a path holds finitely many distinct

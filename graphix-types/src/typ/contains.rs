@@ -66,6 +66,18 @@ pub enum ContainsFlags {
     LowerInArgs,
 }
 
+/// What a trial on copies takes from the walk it is made in
+/// ([`ContainsHist::seed`]).
+#[derive(Clone, Copy)]
+enum Inherit {
+    /// The pairs that walk was itself seeded with.
+    Assumed,
+    /// Those, and the pairs it is expanding: for the trial of a union
+    /// with a bare open member, which any member of the other side may
+    /// go to, so a definition's own recursion is placed on the copies.
+    Expanding,
+}
+
 /// The infinite-type refusal: what a unification asked for holds
 /// itself, so no finite type does.
 #[derive(Debug)]
@@ -199,16 +211,12 @@ pub(super) struct ContainsHist {
     early: bool,
     /// [`identical_linked`]'s pairs found identical.
     identical: IdenticalMemo,
-    /// The definitions ([`ResolvedRef::def_key`]) whose two applications
-    /// this walk is expanding, innermost last.
-    ///
-    /// [`ResolvedRef::def_key`]: super::ResolvedRef::def_key
-    unfolding: SmallVec<[usize; 2]>,
-    /// Those the walk this one is a trial of was expanding when the trial
-    /// began ([`Type::place_in_order`]), and that walk's own: two
-    /// applications of one of them are its recursion met on fresh copies,
-    /// which no question in progress answers.
-    unfolded_above: SmallVec<[usize; 2]>,
+    /// The pairs holding an open cell that this walk is expanding a
+    /// name of ([`Self::assuming`]), innermost last.
+    unfolding: SmallVec<[(Type, Type); 2]>,
+    /// In a trial: the pairs the walk it was made in was expanding and
+    /// assuming, on the trial's copies ([`Self::seed`]).
+    assumed_above: SmallVec<[(Type, Type); 2]>,
 }
 
 /// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`],
@@ -354,7 +362,7 @@ impl ContainsHist {
             early: false,
             identical: IdenticalMemo::default(),
             unfolding: SmallVec::new(),
-            unfolded_above: SmallVec::new(),
+            assumed_above: SmallVec::new(),
         }
     }
 
@@ -365,6 +373,36 @@ impl ContainsHist {
     /// The walk of a pre-unification ([`Type::pre_unify_arg`]).
     pub(super) fn early() -> Self {
         ContainsHist { early: true, ..Self::new() }
+    }
+
+    /// Put the pairs this walk assumes of the walk it is a trial of, and
+    /// with [`Inherit::Expanding`] those it is expanding, in progress in
+    /// `trial`, a walk over copies made with `known`: the trial meets the
+    /// recursion of a name it is inside as this walk will, by assumption.
+    /// Expanded there, a pair over the copies' cells is a question no
+    /// walk has in progress, and a recursive definition with a bare
+    /// parameter would place its members on copies again at every level,
+    /// without end.
+    fn seed(
+        &self,
+        trial: &mut Self,
+        known: &mut AHashMap<usize, TVar>,
+        env: &Env,
+        inherit: Inherit,
+    ) {
+        let mut copy =
+            |t: &Type| t.reset_tvars_int(known, Fresh::Copy).unwrap_or_else(|| t.clone());
+        let expanding = match inherit {
+            Inherit::Assumed => &[][..],
+            Inherit::Expanding => &self.unfolding[..],
+        };
+        for (t0, t1) in self.assumed_above.iter().chain(expanding) {
+            let (c0, c1) = (copy(t0), copy(t1));
+            let key = (trial.ref_id(&c0, env), trial.ref_id(&c1, env));
+            let depth = trial.hist.len();
+            trial.hist.entry(key).or_insert(depth);
+            trial.assumed_above.push((c0, c1))
+        }
     }
 
     /// Hold `cells` open while a function's arguments are walked: a part
@@ -1630,7 +1668,7 @@ fn commit_lower(
     if !lower.is_empty() && !flags.contains(ContainsFlags::IntoMember) {
         let ls = Type::Tuple(Arc::from_iter(lower.iter().cloned()));
         let holds = |flags| {
-            on_copies([t, &ls], |[t, ls], trial| match &ls {
+            on_copies(Some((&*hist, env)), [t, &ls], |[t, ls], trial| match &ls {
                 Type::Tuple(ls) => holds_union(ls, flags, env, trial, &t),
                 _ => Ok(false),
             })
@@ -1767,9 +1805,11 @@ pub(super) fn hold_rigid(t: &Type, gates: &mut Vec<RigidGate>) {
 }
 
 /// A trial: `f` over copies of `ts` that share one cell map, each rigid
-/// cell's copy held rigid, and a walk state of its own; what `f` binds, it
-/// binds in the copies alone.
+/// cell's copy held rigid, and a walk state of its own, in which the
+/// pairs the walk `within` it is made in is expanding are in progress
+/// ([`ContainsHist::seed`]); what `f` binds, it binds in the copies alone.
 pub(super) fn on_copies<const N: usize, R>(
+    within: Option<(&ContainsHist, &Env)>,
     ts: [&Type; N],
     f: impl FnOnce([Type; N], &mut ContainsHist) -> Result<R>,
 ) -> Result<R> {
@@ -1787,7 +1827,11 @@ pub(super) fn on_copies<const N: usize, R>(
             false
         });
     }
-    f(copies, &mut ContainsHist::trial())
+    let mut trial = ContainsHist::trial();
+    if let Some((walk, env)) = within {
+        walk.seed(&mut trial, &mut known, env, Inherit::Assumed)
+    }
+    f(copies, &mut trial)
 }
 
 /// A cell, a type that may reach it and the edges the walk takes.
@@ -3210,21 +3254,19 @@ impl Type {
                 // cell, which the shortcut used to answer. probe:
                 // ~/ptmp/cr29/scratch/r20/20c/ag/u5min.gx (lane 19f's review/u5.gx)
                 // (open-instance-signature-01)
-                let mut one_definition = None;
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
+                    && let Some(held) =
+                        Self::applications_hold(flags, env, hist, (t0, tr0), (t1, tr1))?
                 {
-                    let apps: [(&Type, &TypeRef); 2] = [(t0, tr0), (t1, tr1)];
-                    if let Some(held) =
-                        Self::applications_hold(flags, env, hist, apps[0], apps[1])?
-                    {
-                        return Ok(held);
-                    }
-                    one_definition = tr0.def_key();
+                    return Ok(held);
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                hist.unfolding.extend(one_definition);
+                let open = commit && !(hist.closed_now(t0) && hist.closed_now(t1));
+                if open {
+                    hist.unfolding.push((t0.clone(), t1.clone()))
+                }
                 let held = hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
                         return Ok(false);
@@ -3234,7 +3276,7 @@ impl Type {
                     };
                     e0.contains_int(flags, env, hist, &e1)
                 });
-                if one_definition.is_some() {
+                if open {
                     hist.unfolding.pop();
                 }
                 held
@@ -3613,7 +3655,7 @@ impl Type {
                     env,
                     hist,
                     (t0, s0, s1),
-                    ContainsHist::ordered,
+                    (ContainsHist::ordered, Inherit::Expanding),
                     Self::place_members,
                 )
             }
@@ -3630,7 +3672,7 @@ impl Type {
                     env,
                     hist,
                     (t0, s0, s1),
-                    ContainsHist::trial,
+                    (ContainsHist::trial, Inherit::Assumed),
                     Self::place_each,
                 )
             }
@@ -3765,13 +3807,6 @@ impl Type {
     /// another). A name that means nothing here, and a definition a name
     /// it reaches is not yet defined for, are one type where their
     /// arguments are equal and hold no open cell.
-    ///
-    /// On the copies of a trial made while this definition's applications
-    /// were being expanded ([`ContainsHist::unfolded_above`]) the
-    /// arguments answer for a parameter in a union's choice too
-    /// ([`variance::Meets::asked`]): the walk of the expansions there is
-    /// the walk the trial was made in, on cells no question in progress
-    /// knows, and a trial in each would never end.
     fn applications_hold(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -3788,34 +3823,9 @@ impl Type {
         };
         let pairs = || tr0.params.iter().zip(tr1.params.iter());
         let meets = tr0.resolve_peek(env).and_then(|def| variance::meets(env, &def));
-        let differ =
-            |((a, b), m): ((&Type, &Type), &variance::Meets)| m.walk() && !same(a, b);
-        if let Some(meets) = &meets
-            && tr0.def_key().is_some_and(|d| hist.unfolded_above.contains(&d))
-            && pairs().zip(meets.iter()).any(differ)
-        {
-            // each pair's questions; none where only the walk tells of two
-            // arguments that are one type
-            let asked: Option<SmallVec<[variance::Meets; 4]>> = pairs()
-                .zip(meets.iter())
-                .map(|((a, b), m)| match m.walk() && same(a, b) {
-                    true => Some(variance::Meets::default()),
-                    false => m.asked(),
-                })
-                .collect();
-            if let Some(asked) = asked {
-                let (a0, a1) = (&tr0.params, &tr1.params);
-                let held = Self::arguments_hold(&asked, probe, env, hist, a0, a1)?
-                    && (!commit
-                        || Self::arguments_hold(&asked, flags, env, hist, a0, a1)?);
-                return match held {
-                    true => Ok(Some(tr0.hold_bounds_with(tr1, env, commit)?)),
-                    false => Ok(Some(false)),
-                };
-            }
-        }
-        let Some(meets) = meets.filter(|meets| !pairs().zip(meets.iter()).any(differ))
-        else {
+        let Some(meets) = meets.filter(|meets| {
+            pairs().zip(meets.iter()).all(|((a, b), m)| !m.walk() || same(a, b))
+        }) else {
             let open =
                 |p: &Type, hist: &mut ContainsHist| !hist.closed_now(p) && p.has_free();
             if tr0.resolve_peek(env).is_some()
@@ -3842,13 +3852,16 @@ impl Type {
             return Ok(Some(false));
         }
         if commit {
-            let trial = hist.trial
-                || on_copies([t0, t1], |copies, trial| match &copies {
-                    [Type::Ref(c0), Type::Ref(c1)] => Self::arguments_hold(
-                        &meets, flags, env, trial, &c0.params, &c1.params,
-                    ),
-                    _ => Ok(false),
-                })?;
+            let trial =
+                hist.trial
+                    || on_copies(Some((&*hist, env)), [t0, t1], |copies, trial| {
+                        match &copies {
+                            [Type::Ref(c0), Type::Ref(c1)] => Self::arguments_hold(
+                                &meets, flags, env, trial, &c0.params, &c1.params,
+                            ),
+                            _ => Ok(false),
+                        }
+                    })?;
             if !trial
                 || !Self::arguments_hold(
                     &meets,
@@ -4245,11 +4258,13 @@ impl Type {
         hold_rigid(m, &mut gates);
         hold_rigid(t, &mut gates);
         hist.gated += 1;
-        let r = on_copies([m, t], |[m, t], trial| m.contains_int(flags, env, trial, &t))
-            .and_then(|holds| match holds {
-                true => m.contains_int(flags, env, hist, t).map(Some),
-                false => Ok(None),
-            });
+        let r = on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
+            m.contains_int(flags, env, trial, &t)
+        })
+        .and_then(|holds| match holds {
+            true => m.contains_int(flags, env, hist, t).map(Some),
+            false => Ok(None),
+        });
         hist.gated -= 1;
         r
     }
@@ -4323,7 +4338,7 @@ impl Type {
                 if open.is_empty() && std::ptr::eq(m, *last) {
                     break;
                 }
-                let holds = on_copies([m, t], |[m, t], trial| {
+                let holds = on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
                     m.contains_int(flags, env, trial, &t)
                 })?;
                 if !holds {
@@ -4645,7 +4660,7 @@ impl Type {
         env: &Env,
         hist: &mut ContainsHist,
         (t0, s0, s1): (&Self, &[Type], &[Type]),
-        trial: fn() -> ContainsHist,
+        (trial, inherit): (fn() -> ContainsHist, Inherit),
         place: fn(
             BitFlags<ContainsFlags>,
             &Env,
@@ -4674,12 +4689,7 @@ impl Type {
                 .collect();
             let Self::Set(c0) = &copy0 else { unreachable!("a copy keeps its shape") };
             let mut on_copies = trial();
-            on_copies.unfolded_above = hist
-                .unfolded_above
-                .iter()
-                .chain(hist.unfolding.iter())
-                .copied()
-                .collect();
+            hist.seed(&mut on_copies, &mut known, env, inherit);
             if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
                 return place(flags, env, hist, t0, s0, order);
             }
@@ -5961,34 +5971,37 @@ mod tests {
     }
 
     // A recursive definition with a bare parameter places its expansion's
-    // members on copies, where its own applications come back over fresh
-    // cells no question in progress knows: they are answered by their
-    // arguments there, or each would be expanded in a trial of its own.
+    // members on copies, where its own recursion comes back over fresh
+    // cells: the trial starts with the pairs its walk is expanding in
+    // progress, so it meets them by assumption, where expanding each
+    // would place its members on copies again without end. One
+    // definition, or two with one body.
     #[test]
-    fn an_application_met_in_a_trial_of_its_own_expansion_is_not_unfolded() {
-        let trees = [
-            ("Tree<'a>", "['a, `Node(Array<Tree<'a>>)]", "Tree<'q>", "Tree<i64>"),
+    fn a_trial_meets_the_recursion_it_is_inside_by_assumption() {
+        let tree = "['a, `Node(Array<Tree<'a>>)]";
+        let twin = "['a, `Node(Array<Twin<'a>>)]";
+        let cases: [(&[(&str, &str)], &str, &str); 4] = [
+            (&[("Tree<'a>", tree)], "Tree<'q>", "Tree<i64>"),
+            (&[("Tree<'a>", tree), ("Twin<'a>", twin)], "Tree<'q>", "Twin<i64>"),
             (
-                "D<'a, 'b>",
-                "[`U(D<'b, 'a>), 'b, `V(Array<'a>)]",
+                &[("D<'a, 'b>", "[`U(D<'b, 'a>), 'b, `V(Array<'a>)]")],
                 "D<'q, 'r>",
                 "D<i64, string>",
             ),
             (
-                "D<'a>",
-                "[`U(Array<D<'a>>), `V(i64), 'a, null]",
+                &[("D<'a>", "[`U(Array<D<'a>>), `V(i64), 'a, null]")],
                 "D<['q, null]>",
                 "D<string>",
             ),
         ];
-        for (head, body, open, held) in trees {
-            let (env, _) = Env::typed_at_root(&[(head, body)], "i64").unwrap();
+        for (defs, open, held) in cases {
+            let (env, _) = Env::typed_at_root(defs, "i64").unwrap();
             let open = at_root(&env, &format!("fn(x: {open}) -> i64"));
             let held = at_root(&env, &format!("fn(x: {held}) -> i64"));
             CONTAINS_STEPS.with(|n| n.set(0));
             held.check_contains(&env, &open).unwrap();
             let steps = CONTAINS_STEPS.with(|n| n.get());
-            assert!(steps <= 200, "{head}: a commit took {steps} steps");
+            assert!(steps <= 200, "{open}: a commit took {steps} steps");
         }
     }
 

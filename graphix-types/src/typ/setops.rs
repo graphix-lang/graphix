@@ -1060,7 +1060,7 @@ impl Type {
                 let g = Type::Fn(g.clone());
                 if inst.contains_with_flags(probe, env, &g)?
                     && g.contains_with_flags(probe, env, &inst)?
-                    && on_copies([&inst, &g], |[i, g], trial| {
+                    && on_copies(None, [&inst, &g], |[i, g], trial| {
                         let commit = ContainsFlags::Commit.into();
                         Ok(i.contains_int(commit, env, trial, &g)?
                             && g.contains_int(commit, env, trial, &i)?)
