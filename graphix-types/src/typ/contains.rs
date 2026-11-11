@@ -406,6 +406,28 @@ impl ContainsHist {
     // stamp would answer both shapes, but it finds an entry of the class, not the first:
     // meet_deferred would have to judge a merged class's parts together. probes:
     // ~/ptmp/cr29/scratch/r20/20b/finisher2/
+    // 2026-11-11 claude: Looked at again in the follow-up round (r20-x6) and left as it
+    // is: no exact fix is clean. A hit stays right while its entry's var stands for the
+    // cell, so hits could be answered without the stamp (genmix2's lookups after a write
+    // are hits of the waiting 'a variables, and that alone would make both genmix shapes
+    // linear), but a miss cannot: a waiting var merged into another cell answers at the
+    // survivor's address, which the index has never seen, and only a merge tells. Merges
+    // reach the walk from four OpenPair::apply sites and from inside tvar.rs
+    // (merge_into's absorbed cells, narrow_cell), so the walk cannot keep the index
+    // current itself, and a count of merges moves at every position in these probes. An
+    // unstamped hit is also an entry of the class, not the first: where two waiting
+    // cells merge with the later one's cell the survivor, parts go to the later entry,
+    // and where that entry belongs to an inner function type's deferral they would meet
+    // the cell at the inner settle, not the outer one, so judging a class's parts
+    // together in meet_deferred does not make it exact by itself. What an exact fix
+    // needs: either a per-cell mark set while a cell waits (a CellFact a merge carries
+    // to the survivor, which costs a transient fact on shared cells and a rule for two
+    // walks marking one cell), read before the index so a clean cell is answered at once
+    // and the index is searched only for marked ones; or the hook the other way, tvar.rs
+    // counting only the re-pointings of a var some walk registered. Either wants the
+    // three-way differential over the nested and merged shapes
+    // (~/ptmp/cr29/scratch/r20/20b/merge-review/gen_mix.py) before it lands. Numbers
+    // unchanged by this round's fixes: they do not touch defers.
     /// The first of `deferring` that stands for `cell`.
     fn deferred_for(&mut self, cell: usize) -> Option<usize> {
         if self.deferring.len() <= DEFER_SCAN {
@@ -1327,6 +1349,19 @@ fn commit_cell_bounds(
 // that holds a cell to decide, naming the annotation, or narrows the cell to what the members
 // allow together, and pairs a read-only member with a writable value; it needs a census. probes:
 // ~/ptmp/cr29/scratch/r20/20b/ocd-review/{m7,m8,m1,m11,m13}.gx (union-bound-two-takers-01)
+// 2026-11-11 claude: The follow-up round (r20-x6) closed one case and left the rest: for a
+// function value, of several members that take its constructor the one a probe admits it into has
+// the parts (commit_parts), so a callback takes its parameter's type from the member its result
+// fits (pins
+// lang::types::callback_into_{the_second_member_of_a_union_bound,a_union_bound_takes_the_members_parameter}).
+// That was needed once no member is picked by order at a callback's pre-unification, which is what
+// had typed the parameter before (and refused the second member's callback). Data values are as
+// this CR describes: trying the same rule for every constructor fixed one generated program and
+// split another (g3_p00623 against g3_p00505: an instance refused over a nested T typedef once the
+// empty arrays' elements are narrowed), so it wants its own look. g3_p00623 is the one program of
+// 6650 generated that passes the check and fails the build here and not on r20-staging without
+// lane 20b (which refuses it at the check); the lane before the round split it too. probes:
+// ~/ptmp/cr29/scratch/r20/20b/x6/residual/{g3_p00623,g3_p00505}.gx
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
@@ -1697,6 +1732,19 @@ pub(super) fn on_copies<const N: usize, R>(
 /// A cell, a type that may reach it and the edges the walk takes.
 type Reach<'a> = (&'a TVar, &'a Type, Toward);
 
+// CR claude for claude: [risk/low] A check that meets an open var aliased
+// (TVar::alias) onto a cell that is already bound may not return: with
+// callsite::rejoin aliasing an open copy to its formal's cell where an earlier
+// argument had bound that cell (it binds the copy to it instead), --check of
+// hang_g4_p00166.gx was killed at 30 s, under GRAPHIX_DBG_BIND printing "BARE-CYCLE
+// 1 open, 1 bound" without end, the time in tvar::CycleWalk and this function
+// (perf). merge_one refuses an alias whose own cell is bound and takes one onto a
+// bound cell; which state the walk then cannot leave was not found. Nothing in the
+// tree makes that alias today, so it is not shown reachable. A pin that builds the
+// two cells by hand and walks them would say whether merge_one should refuse the
+// alias or this merge should answer for the pair in progress. Found building
+// never-arg-instance-split-01's fix. probe:
+// ~/ptmp/cr29/scratch/r20/20b/x6/residual/hang_g4_p00166.gx (alias-bound-cycle-01)
 /// The cells on a cycle through cells and unions alone, each type's bare
 /// paths to its cell and the cell, are one type: the open ones merge, each
 /// first dropping its bounds that are cells of the cycle, and each bound

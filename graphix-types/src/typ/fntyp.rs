@@ -2857,7 +2857,7 @@ impl FnType {
         self.throws.place_cells(env, &at.throws)
     }
 
-    // CR claude for claude: [bug/medium] A call through an inferred wrapper passes
+    // XCR claude for claude: [bug/medium] A call through an inferred wrapper passes
     // the check and its instance is refused at the build, where the direct call is
     // refused at the check: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; let f =
     // 'a0: P<'a1, 'a2>, 'a1: P<'a2, 'a3>, 'a2: P<'a3, 'a4>, 'a3: P<'a4, 'a4>, 'a4:
@@ -2877,7 +2877,31 @@ impl FnType {
     // never-arg-instance-split-01's. probes:
     // ~/ptmp/cr29/scratch/r20/20b/finisher2/split/{c4w,c4d,c3w,w296,w063,w647,g3_p00271,g3_p00841}.gx
     // (wrapper-union-instance-split-01)
-    // CR claude for claude: [bug/medium] An argument of `never()` beside one that
+    // 2026-11-11 claude: The choice was made at the pre-unification: takes_as_it_stands held the
+    // member's cells and gave the argument's own undecided cell to the first member that could alias
+    // it ([null, Array<'a2>, Array<'a3>] with Array<'_e> for [null], before the element was checked),
+    // so the check never met the decided Array<null>. It now holds both sides as they stand,
+    // Type::pre_unify_arg leaves a choice it meets to the argument's own check, and the probes behind
+    // a refusal's note (callsite::annotation_may_fit) are ordered walks, so the wrapper, the nested
+    // function and the direct call are refused alike at the check, by the direct call's message. A
+    // seq step's captured argument (a bare cell) is no longer pre-unified with its formal's open
+    // copy, so f([], null, ["s"]) as a step runs as the direct call does. New refusal under ruling
+    // (c): an empty array into two undecided array members (f([]) over |x: P<'a, 'b>|, base-r20 and
+    // the lane ran it). With no member picked before a callback's result is known, commit_parts
+    // passes a union bound's parts to a function value through the one member a probe admits, and a
+    // callback into the second member of a union of function types now runs (base-r20 and r20-staging
+    // refused it, i64 does not contain string). Pins
+    // lang::types::{wrapper,nested_function}_into_a_bound_union_of_two_undecided_refused and their
+    // one_member_takes twins,
+    // empty_array_into_a_typedef_union_of_two_{undecided_arrays_refused,decided_arrays},
+    // seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters,
+    // several_undecided_arguments_into_bound_unions_join,
+    // callback_into_{the_second_member_of_a_union_bound,a_union_bound_takes_the_members_parameter};
+    // each fails with its piece undone (~/ptmp/cr29/scratch/r20/20b/x6/{pins.sh,piece.py}). Check
+    // against --expand over 6650 generated programs (the 2650 of rvw-udb and 4000 of gen_mix
+    // regenerated, x6/gen-programs.tar.gz) and the 45 minimized: splits 60 + 14 before, 103 + 0 on
+    // r20-staging without lane 20b, 7 + 0 now, none new (x6/summary.txt, splits-*.txt).
+    // XCR claude for claude: [bug/medium] An argument of `never()` beside one that
     // decides a typedef union's member passes the check and its instance is refused
     // at the build: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; type T<'x> =
     // [`Leaf('x), `Node(Array<T<'x>>)]; let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1:
@@ -2891,6 +2915,24 @@ impl FnType {
     // staging checks and runs the program (g3_p00385: `f(1, [], never())`). probes:
     // ~/ptmp/cr29/scratch/r20/20b/finisher2/split/{n1,n1b,sq177,sq177d,g3_p00068,g3_p00385}.gx
     // (never-arg-instance-split-01)
+    // 2026-11-11 claude: The undecided argument pre-unified with its formal's open copy and
+    // kept the copy's cells in its type: the join then related the copy's variables to the
+    // formal's through the union's members, and one only a bound holds ('a3 in T<'a3>) was
+    // never related, so the instance's signature had 'a3 as _ at x3 and as i64 inside x0.
+    // callsite::rejoin now makes each undecided cell of the copy the formal's cell it copies
+    // before the waiting argument is checked (ArgFit::Open carries the pairs), so the call has
+    // one type for each variable. The instance side: Type::place_cells gives a cell at a place
+    // holding bottom bottom, and FnType::held_at, where it would still have to choose, first
+    // settles the cells no position holds to their bounds, the deepest first
+    // (TVar::settle_bounds_first). Pins
+    // lang::types::never_{argument,let_argument}_beside_one_deciding_a_bound_union,
+    // instance_cells_only_bounds_hold_settle_to_their_bounds,
+    // instance_cell_at_a_bottom_place_is_bottom; each fails with its piece undone (x6/pins.sh,
+    // piece.py: rejoin, place_bottom, settle_bounds). The seq-step form is pinned by
+    // seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters: a step whose
+    // call takes never() has no value for a run! to judge. Two of this CR's probes are refused
+    // at the check now, as ruling (c) has it: g3_p00068 and g3_p00385 pass [] to P<'a1, 'a2>
+    // with both members undecided.
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
     /// the instance's own and bound to the instance's type. Where the
