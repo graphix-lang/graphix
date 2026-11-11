@@ -141,13 +141,17 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
 /// since: a walk passes by such a cell unless the cell it looks for holds
 /// a lower number of that numbering. So a chain of open cells is walked
 /// once however many of its links ask, and a write to a link leaves the
-/// links below it standing.
+/// links below it standing. Walks on several threads may number the same
+/// cells: [`CycleWalk::number`], [`ReachOrder::take`] and
+/// [`Numbering::met`] keep the invariant then.
 #[derive(Debug, Default)]
 pub(crate) struct ReachOrder(Mutex<Numbers>);
 
 #[derive(Debug, Default)]
 struct Numbers {
     next: u64,
+    /// How many writes took a number.
+    writes: u64,
     /// The numbers that stand no more, ascending and apart: from a
     /// written cell's number to the next number at a write, which every
     /// cell that reached it then lies in. Each range counts the writes
@@ -172,22 +176,45 @@ pub(crate) struct Place {
     n: u64,
 }
 
+impl Numbers {
+    fn stands(&self, n: u64) -> bool {
+        !self.written.iter().rev().take_while(|w| n < w.to).any(|w| w.from <= n)
+    }
+}
+
+impl Place {
+    /// Whether a cell that held `was` holds it still.
+    fn same(was: &Option<Self>, now: &Option<Self>) -> bool {
+        match (was, now) {
+            (None, None) => true,
+            (Some(w), Some(n)) => Arc::ptr_eq(&w.by, &n.by) && w.n == n.n,
+            (None, Some(_)) | (Some(_), None) => false,
+        }
+    }
+}
+
 impl ReachOrder {
     /// The fewest cells a walk that met no numbering numbers.
     const MIN_NUMBERED: usize = 32;
 
-    /// The first of `len` fresh numbers, each above every number given.
-    fn take(&self, len: u64) -> u64 {
+    /// The first of `len` fresh numbers, each above every number given;
+    /// none once a write took a number since `met` writes had
+    /// ([`Self::standing`]): a cell the walk found standing may not be.
+    fn take(&self, len: u64, met: Option<u64>) -> Option<u64> {
         let mut numbers = self.0.lock();
+        if met.is_some_and(|writes| writes != numbers.writes) {
+            return None;
+        }
         let first = numbers.next;
         numbers.next += len;
-        first
+        Some(first)
     }
 
     /// The cell numbered `n` was written.
     fn wrote(&self, n: u64) {
         let mut numbers = self.0.lock();
-        let Numbers { next, written } = &mut *numbers;
+        let Numbers { next, writes, written } = &mut *numbers;
+        *writes += 1;
         while written.last().is_some_and(|w| w.from >= n) {
             written.pop();
         }
@@ -209,8 +236,13 @@ impl ReachOrder {
 
     /// Whether no cell numbered `n` reached has been written.
     fn stands(&self, n: u64) -> bool {
+        self.0.lock().stands(n)
+    }
+
+    /// How many writes have taken a number, where `n` stands.
+    fn standing(&self, n: u64) -> Option<u64> {
         let numbers = self.0.lock();
-        !numbers.written.iter().rev().take_while(|w| n < w.to).any(|w| w.from <= n)
+        numbers.stands(n).then_some(numbers.writes)
     }
 }
 
@@ -404,10 +436,10 @@ pub(super) fn cycle_toward(cell: &CellLock, t: &Type, toward: Toward) -> Option<
     }
 }
 
-enum Visits {
+enum Visits<'a> {
     /// Each node and cell once, by its place on the walk's path, numbering
     /// the cells the walk leaves.
-    Once(LPooled<AddrMap<u32>>, Numbering),
+    Once(LPooled<AddrMap<u32>>, Numbering<'a>),
     /// Each node and cell once per direction and per being under a
     /// constructor: a visit in one state may reach the cell only in
     /// another.
@@ -415,26 +447,28 @@ enum Visits {
 }
 
 /// What a walk that ends without finding its cell numbers ([`ReachOrder`]).
-struct Numbering {
-    /// The number of the cell the walk looks for.
-    target: Option<Place>,
+struct Numbering<'a> {
+    /// The cell the walk looks for, and the number it held when the walk
+    /// began.
+    target: Option<(&'a CellLock, Option<Place>)>,
     /// The nodes and cells the walk is inside, outermost first.
     path: SmallVec<[usize; 16]>,
     /// Each cell walked whose number did not stand, after every cell it
-    /// reaches.
-    walked: SmallVec<[CellRef; 8]>,
-    /// The numbering of the standing cells the walk met.
-    met: Option<Arc<ReachOrder>>,
+    /// reaches, with the number the walk read there.
+    walked: SmallVec<[(CellRef, Option<Place>); 8]>,
+    /// The numbering of the standing cells the walk met, and how many
+    /// writes had taken a number of it at the first.
+    met: Option<(Arc<ReachOrder>, u64)>,
     /// Whether the cells walked take numbers above those met: false once
     /// the walk meets a node or cell on its own path, or cells standing
     /// in two numberings.
     ordered: bool,
 }
 
-impl Numbering {
-    fn toward(target: Option<Place>) -> Self {
+impl<'a> Numbering<'a> {
+    fn toward(target: Option<&'a CellLock>) -> Self {
         Self {
-            target,
+            target: target.map(|cell| (cell, cell.read().place.clone())),
             path: SmallVec::new(),
             walked: SmallVec::new(),
             met: None,
@@ -442,15 +476,19 @@ impl Numbering {
         }
     }
 
-    /// The walk met a cell whose number `place` stands; whether it may
-    /// reach the target, which then holds a lower number of its numbering.
-    fn met(&mut self, place: &Place) -> bool {
+    /// The walk met a cell whose number `place` stands, at `writes` of
+    /// its numbering; whether it may reach the target: the target holds a
+    /// lower number of that numbering, or another thread's walk numbered
+    /// it since this walk began.
+    fn met(&mut self, place: &Place, writes: u64) -> bool {
         match &self.met {
-            None => self.met = Some(place.by.clone()),
-            Some(by) if Arc::ptr_eq(by, &place.by) => (),
+            None => self.met = Some((place.by.clone(), writes)),
+            Some((by, _)) if Arc::ptr_eq(by, &place.by) => (),
             Some(_) => self.ordered = false,
         }
-        matches!(&self.target, Some(t) if Arc::ptr_eq(&t.by, &place.by) && t.n < place.n)
+        let Some((cell, was)) = &self.target else { return false };
+        let below = |t: &Place| Arc::ptr_eq(&t.by, &place.by) && t.n < place.n;
+        was.as_ref().is_some_and(below) || !Place::same(was, &cell.read().place)
     }
 }
 
@@ -458,19 +496,16 @@ impl Numbering {
 /// bounds. Untracked, it breaks at the first path and passes by a cell
 /// whose number says it reaches no such path; tracking, it breaks at the
 /// first path under a constructor, and it records a bare one.
-struct CycleWalk {
+struct CycleWalk<'a> {
     addr: usize,
-    visits: Visits,
+    visits: Visits<'a>,
     bare: bool,
 }
 
-impl CycleWalk {
-    fn new(cell: &CellLock, track: bool) -> Self {
+impl<'a> CycleWalk<'a> {
+    fn new(cell: &'a CellLock, track: bool) -> Self {
         let visits = match track {
-            false => Visits::Once(
-                LPooled::take(),
-                Numbering::toward(cell.read().place.clone()),
-            ),
+            false => Visits::Once(LPooled::take(), Numbering::toward(Some(cell))),
             true => Visits::PerState(LPooled::take()),
         };
         Self { addr: cell.data_ptr().addr(), visits, bare: false }
@@ -581,9 +616,9 @@ impl CycleWalk {
             (toward.edges(&c), c.place.clone())
         };
         // whether the cell's number stands, and it may then reach the target
-        let stands = match (&mut self.visits, place) {
-            (Visits::Once(_, numbering), Some(place)) if place.by.stands(place.n) => {
-                Some(numbering.met(&place))
+        let stands = match (&mut self.visits, &place) {
+            (Visits::Once(_, numbering), Some(place)) => {
+                place.by.standing(place.n).map(|writes| numbering.met(place, writes))
             }
             _ => None,
         };
@@ -594,7 +629,7 @@ impl CycleWalk {
         if stands.is_none()
             && let Visits::Once(_, numbering) = &mut self.visits
         {
-            numbering.walked.push(cell)
+            numbering.walked.push((cell, place))
         }
         ControlFlow::Continue(())
     }
@@ -603,22 +638,28 @@ impl CycleWalk {
     /// numbering it met, or anew where it met none and walked enough
     /// cells to be worth one. The thread wrote no cell since it read
     /// them, and no other thread writes a cell this one reads
-    /// ([`cell_writes`]).
+    /// ([`cell_writes`]), but one may number it: a cell takes its number,
+    /// the cells it reaches first, only while it holds the place the walk
+    /// read there.
     fn number(&mut self) {
         let Visits::Once(_, numbering) = &mut self.visits else { return };
         if !numbering.ordered || numbering.walked.is_empty() {
             return;
         }
-        let by = match numbering.met.take() {
-            Some(by) => by,
+        let (by, met) = match numbering.met.take() {
+            Some((by, writes)) => (by, Some(writes)),
             None if numbering.walked.len() >= ReachOrder::MIN_NUMBERED => {
-                Arc::new(ReachOrder::default())
+                (Arc::new(ReachOrder::default()), None)
             }
             None => return,
         };
-        let mut n = by.take(numbering.walked.len() as u64);
-        for cell in numbering.walked.drain(..) {
-            cell.0.write().place = Some(Place { by: by.clone(), n });
+        let Some(mut n) = by.take(numbering.walked.len() as u64, met) else { return };
+        for (cell, was) in numbering.walked.drain(..) {
+            let mut cell = cell.0.write();
+            if !Place::same(&was, &cell.place) {
+                return;
+            }
+            cell.place = Some(Place { by: by.clone(), n });
             n += 1;
         }
     }
@@ -4861,7 +4902,7 @@ mod tests {
         };
         for _ in 0..2000 {
             let len = 1 + rand(4);
-            let first = order.take(len);
+            let first = order.take(len, None).unwrap();
             assert_eq!(first as usize, stands.len());
             stands.extend((0..len).map(|_| true));
             // a write near the top, as a chain bound link by link makes
@@ -4873,9 +4914,113 @@ mod tests {
             }
             assert!(order.0.lock().written.len() <= 16);
         }
-        let below = order.take(1);
+        let below = order.take(1, None).unwrap();
+        let met = order.standing(below).unwrap();
+        assert!(order.take(1, Some(met)).is_some());
         order.wrote(0);
-        assert!((0..=below).all(|n| !order.stands(n)));
+        assert!((0..=below + 1).all(|n| !order.stands(n)));
+        // a walk that met the numbering before a write numbers nothing
+        assert!(order.take(1, Some(met)).is_none());
+        let above = order.take(1, None).unwrap();
+        assert!(order.take(1, order.standing(above)).is_some());
+    }
+
+    /// Two threads that read one chain of open cells, as two compile tasks
+    /// read an earlier task's, each number what they walked: every link
+    /// still answers for the links it reaches.
+    #[test]
+    fn two_threads_walking_one_chain_keep_one_order() {
+        for round in 0..300 {
+            let chain = chain_of_bounds("s", 200);
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|s| {
+                for _ in 0..2 {
+                    let (chain, barrier) = (&chain, &barrier);
+                    s.spawn(move || {
+                        let own = TVar::empty_named(literal!("own"));
+                        barrier.wait();
+                        let from = Type::TVar(chain[0].clone());
+                        assert!(!would_cycle_inner(&own.cell(), &from));
+                    });
+                }
+            });
+            for w in chain.windows(2) {
+                let from = Type::TVar(w[0].clone());
+                assert!(would_cycle_inner(&w[1].cell(), &from), "round {round}");
+            }
+        }
+    }
+
+    /// A cell another thread's walk numbered after this walk read its
+    /// number may be reached by the numbered cells this walk meets: none
+    /// is passed by.
+    #[test]
+    fn a_target_numbered_since_the_walk_began_is_not_passed_by() {
+        let by = Arc::new(ReachOrder::default());
+        let first = by.take(2, None).unwrap();
+        let above = Place { by: by.clone(), n: first + 1 };
+        let target = TVar::empty_named(literal!("t")).cell();
+        let mut walk = Numbering::toward(Some(&target));
+        assert!(!walk.met(&above, 0));
+        target.0.write().place = Some(Place { by, n: first });
+        assert!(walk.met(&above, 0));
+        assert!(Numbering::toward(Some(&target)).met(&above, 0));
+    }
+
+    /// Threads that read one chain of open cells and write cells of their
+    /// own above it, as compile tasks do over an earlier task's cells,
+    /// each numbering what it walks: every occurs check answers as a walk
+    /// that trusts no number does.
+    #[test]
+    fn threads_numbering_shared_cells_answer_as_a_fresh_walk_does() {
+        let reaches = |from: &TVar, to: &TVar| {
+            let mut seen: LPooled<AddrSet> = LPooled::take();
+            reached_afresh(&Type::TVar(from.clone()), &mut seen);
+            seen.contains(&to.cell_addr())
+        };
+        for round in 0..24u64 {
+            let shared = chain_of_bounds("s", 64);
+            let barrier = std::sync::Barrier::new(4);
+            std::thread::scope(|s| {
+                for thread in 0..4u64 {
+                    let (shared, barrier) = (&shared, &barrier);
+                    s.spawn(move || {
+                        let mut seed = 0x9E3779B97F4A7C15u64 ^ (round * 4 + thread);
+                        let mut rand = |n: usize| {
+                            seed = seed
+                                .wrapping_mul(6364136223846793005)
+                                .wrapping_add(1442695040888963407);
+                            (seed >> 33) as usize % n
+                        };
+                        let own = chain_of_bounds("o", 40);
+                        let (o, n) = (own.len(), own.len() + shared.len());
+                        let any = |i: usize| if i < o { &own[i] } else { &shared[i - o] };
+                        barrier.wait();
+                        for _ in 0..300 {
+                            let (a, b) = (&own[rand(o)], any(rand(n)));
+                            match rand(10) {
+                                0 => a.add_cell_constraint(array_of(b)),
+                                1 if !reaches(b, a) => a.add_lower(Type::TVar(b.clone())),
+                                2 if !a.is_bound() && !reaches(b, a) => {
+                                    a.bind(array_of(b))
+                                }
+                                3 => a.alias_cells(&own[rand(o)]),
+                                4 => a.unbind(),
+                                _ => (),
+                            }
+                            for _ in 0..4 {
+                                let (from, to) = (any(rand(n)), any(rand(n)));
+                                let found = would_cycle_inner(
+                                    &to.cell(),
+                                    &Type::TVar(from.clone()),
+                                );
+                                assert_eq!(found, reaches(from, to), "round {round}");
+                            }
+                        }
+                    });
+                }
+            });
+        }
     }
 
     /// The cells `t` reaches by the edges an occurs check walks, each

@@ -131,7 +131,21 @@ structure is returned SHARED, never copied.
   joined in it, so the links of a chain merged last link first are
   renumbered a few times each. The var's link is no edge of its own: a
   merge re-points a var only from a cell it writes, and a shortcut
-  along forwarding cells reaches a subset. With it an impl whose head
+  along forwarding cells reaches a subset. Compile tasks on other
+  threads read an earlier task's cells at once, so two walks may number
+  the same cells, and a task's write to a cell of its own takes numbers
+  of a numbering another thread's walk is passing. Three rules keep the
+  invariant then, each a no-op on one thread: a cell takes its number
+  only while it holds the place the walk read there, the cells it
+  reaches first, and the first that another walk numbered ends this
+  walk's numbering (`CycleWalk::number`); a walk numbers nothing above
+  a numbering a write has taken a number of since the walk first met it
+  (`ReachOrder::take`); and a walk passes by a standing cell only while
+  the cell it looks for holds the place it held when the walk began
+  (`Numbering::met`). Pins: `typ::tvar::tests::
+  two_threads_walking_one_chain_keep_one_order`,
+  `threads_numbering_shared_cells_answer_as_a_fresh_walk_does`. With
+  the numbering an impl whose head
   carries the chain merges each head cell with the method's copy
   without walking the links below (pins `deep_nesting::
   an_impl_head_with_a_chain_of_bounds_checks_in_linear_time`, and
