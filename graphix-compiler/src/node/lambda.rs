@@ -612,7 +612,7 @@ fn instance_sig<R: Rt>(
     // no closed gate owns included, so the check binds nothing another
     // instance reads
     let def = def.instantiate_owned(known);
-    // CR claude for claude: [perf/medium] Building the instance of a union-bound
+    // XCR claude for claude: [perf/medium] Building the instance of a union-bound
     // DAG costs about 1.6x an added link, a Fibonacci growth, though its check is
     // flat: `'a{i}: [Array<'a{i+1}>, Array<'a{i+2}>, null]` for i < N, `'aN:
     // Number`, `|x: ('a0, 'a1)| 7`, called once with `never()`. A run takes 1.8 /
@@ -624,6 +624,33 @@ fn instance_sig<R: Rt>(
     // unfolded into a tree, so each walk likely walks the tree. probes:
     // ~/ptmp/cr29/scratch/r19/19c/bos-review/{d20,d24,d28,ch32}.gx
     // (union-dag-build-exp-01)
+    // 2026-11-10 claude: Stale as written, live through a typedef. The written
+    // form is refused at the check since f01d3332a (formal-union-nested-01), but
+    // 'a{i}: P<'a{i+1}, 'a{i+2}> over type P<'x, 'y> = [Array<'x>, Array<'y>,
+    // null] (gen2.py N td) is accepted, and its instance's signature check
+    // tripled a link: 1.07 / 3.29 / 25.4 / 246 G instructions at 10 / 12 / 14 /
+    // 16 on base-r20, killed at 20. Three causes, all in typ/contains.rs. (1) A
+    // probe guiding a commit under Lower (RigidCheck | Lower) was never memoized
+    // and walked at every meeting (598k of 892k steps at 12): the probe memo keys
+    // by the probe's flags (probe_flags), with the polarity for a flagged probe.
+    // (2) place_in_order's nesting walked the instance's DAG as a tree, the 1.6x
+    // a link of this CR's text: it keeps each node's depth. (3) A probe verdict
+    // over two types that hold no cell stands through cell writes. Also has_free
+    // is asked only where closed_now does not answer (2.4 -> 1.9 G at 40). Now
+    // 0.91 / 1.63 / 1.92 / 5.80 G at 16 / 32 / 40 / 64 (empty 0.79 G); tuple,
+    // struct, Array-of-tuple and Array + List links 0.80 G at 36, as before.
+    // Pins, each failing with its part undone:
+    // typ::contains::tests::an_instance_over_a_dag_of_bounds_through_a_typedef_takes_polynomial_steps
+    // ((1): 889057 steps at 12; (3): 572632 at 32),
+    // a_members_depth_measures_each_shared_node_once ((2): 21979507 nodes),
+    // a_probe_verdict_is_kept_under_its_flags (a key without the flags, or
+    // without the polarity), deep_nesting
+    // a_bound_dag_through_a_union_typedef_builds_in_polynomial_time (40 links,
+    // 1.9 G of 4 G; over with (1), (2) or (3) undone). No verdict moves: census
+    // 2949 files 0 / 0, 1500 generated programs identical to base-r20 under
+    // --check and run, regress 567 / 0, typemorph-scan 1567 / 0 flips, guicheck
+    // lane head 40.87-40.89 G, fix 40.77-40.89 G. What is left is
+    // identical-linked-chain-01. Probes ~/ptmp/cr29/scratch/r20/20g/udb/.
     instance.check_contains(&ctx.env, &def).ok()?;
     Some(Arc::new(def))
 }

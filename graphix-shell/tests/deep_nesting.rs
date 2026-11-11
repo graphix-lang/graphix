@@ -1112,6 +1112,29 @@ fn bound_dags_elaborate_in_linear_time() {
     completes_within(&["--expand", "--no-cache"], &valued, 10 * BILLION)
 }
 
+/// A DAG of bounds through a union typedef, each variable's bound naming
+/// the next two under one constructor, builds its instance in polynomial
+/// time: the guide probes of the commits that take lower bounds are kept
+/// as any probe is, a verdict over two types holding no cell stands
+/// through the binds, and a union's members are ordered by depth with
+/// each shared node measured once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_bound_dag_through_a_union_typedef_builds_in_polynomial_time() {
+    const DEPTH: usize = 40;
+    let bounds = (0..DEPTH - 1)
+        .map(|i| format!("'a{i}: P<'a{}, 'a{}>", i + 1, i + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let program = format!(
+        "type P<'x, 'y> = [Array<'x>, Array<'y>, null];\n\
+         let f = {bounds}, 'a{}: [Array<'a{DEPTH}>, null], 'a{DEPTH}: Number \
+         |x: ('a0, 'a1)| 7;\nf(never())\n",
+        DEPTH - 1
+    );
+    completes_within(&["--expand", "--no-cache"], &program, 4 * BILLION)
+}
+
 /// A search over a shared type walks each shared node once: the definition
 /// called at two types, whose kernels' types are DAGs, builds in time
 /// linear in the DAG.

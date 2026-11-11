@@ -165,7 +165,24 @@ structure is returned SHARED, never copied.
   which compares the check with a walk that trusts no number over
   random writes).
 - The probe memo (`ContainsHist::probe_pairs`) holds a verdict while
-  the thread writes no cell. A verdict over an open var and a type that
+  the thread writes no cell, under the flags the probe ran with
+  (`contains::probe_flags`): a plain and a rigid probe ask the same in
+  either polarity, and a probe under `Lower`, `IntoMember` or
+  `LowerInArgs` (the guide of a commit that takes lower bounds) is its
+  own question in its own polarity, kept as the others are. Walked at
+  every meeting, such a guide tripled the walk at each link of a DAG of
+  bounds through a union typedef (`'a{i}: P<'a{i+1}, 'a{i+2}>` over
+  `P<'x, 'y> = [Array<'x>, Array<'y>, null]`), which an instance's
+  signature check walks though the definition's check does not. A
+  verdict over two types that hold no cell read no cell, so it stands
+  through every write. `place_in_order` measures each shared node's
+  depth once an ordering (`contains::nesting`). Pins:
+  `typ::contains::tests::
+  an_instance_over_a_dag_of_bounds_through_a_typedef_takes_polynomial_steps`,
+  `a_members_depth_measures_each_shared_node_once`,
+  `a_probe_verdict_is_kept_under_its_flags`, `deep_nesting::
+  a_bound_dag_through_a_union_typedef_builds_in_polynomial_time`. A
+  verdict over an open var and a type that
   holds no cell read only the cells the var reaches, so once such a
   pair is probed a second time the memo keeps the var's cell and its
   number beside it (`probe_standing`, `tvar::Standing`, numbering what

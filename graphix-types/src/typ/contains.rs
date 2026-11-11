@@ -101,11 +101,12 @@ pub(super) struct ContainsHist {
     /// Committing consumers take `reset_tvars()` copies; the concrete
     /// mass stays Arc-shared so repeated pairs are pruned by identity.
     expansions: Lazy<IntMap<usize, Type>>,
-    /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
-    /// calls, keyed by both sides' identities ([`Self::probe_side`]). Each
-    /// entry pins both types so an address cannot be recycled under its
-    /// key, and carries the [`cell_writes`] count it was reached at: a
-    /// write to a cell may change a verdict that read it.
+    /// Probe pair memo: `contains_int` verdicts for calls that do not
+    /// commit, keyed by both sides' identities ([`Self::probe_side`]) and
+    /// the probe's flags ([`probe_flags`]). Each entry pins both types so
+    /// an address cannot be recycled under its key, and carries the
+    /// [`cell_writes`] count it was reached at: a write to a cell may
+    /// change a verdict that read it.
     probe_pairs: Lazy<AHashMap<MemoKey, (u64, bool)>>,
     /// Per verdict of `probe_pairs` over an open var and a type that
     /// holds no cell, once the pair is probed again: the var's cell,
@@ -183,10 +184,21 @@ pub(super) struct ContainsHist {
     identical: IdenticalMemo,
 }
 
-/// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`])
-/// and the flags the verdict was reached under, a probe's without its
-/// polarity.
+/// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`],
+/// a probe's [`ContainsHist::probe_side`]) and the flags the verdict was
+/// reached under, a probe's as [`probe_flags`] keeps them.
 type MemoKey = (NormKey, NormKey, BitFlags<ContainsFlags>);
+
+/// The flags a probe's verdict is kept under: a plain or a rigid probe
+/// asks the same in either polarity, any other reads its polarity
+/// ([`takes_lower`]).
+fn probe_flags(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
+    let plain = flags & !ContainsFlags::Contra;
+    match plain.is_empty() || plain == ContainsFlags::RigidCheck {
+        true => plain,
+        false => flags,
+    }
+}
 
 /// What a verdict assumed of the walk in progress: the depth of the
 /// shallowest pair in progress it took to hold, the shallowest entries of
@@ -392,17 +404,23 @@ impl ContainsHist {
         }
     }
 
-    /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
-    /// or not, if current: no cell was written since, or none its var
-    /// reaches (`probe_standing`). A provisional one passes the
-    /// assumptions it rests on to the verdict reading it.
-    fn probe_get(&mut self, rigid: bool, t0: &Type, t1: &Type) -> Option<bool> {
-        let k = (self.probe_side(t0)?, self.probe_side(t1)?, probe_flags(rigid));
+    /// Cached probe verdict for `(t0, t1)` under `flags`
+    /// ([`probe_flags`]), if current: no cell was written since, neither
+    /// side holds one, or none its var reaches was (`probe_standing`). A
+    /// provisional one passes the assumptions it rests on to the verdict
+    /// reading it.
+    fn probe_get(
+        &mut self,
+        flags: BitFlags<ContainsFlags>,
+        t0: &Type,
+        t1: &Type,
+    ) -> Option<bool> {
+        let k = (self.probe_side(t0)?, self.probe_side(t1)?, flags);
         let writes = cell_writes();
         if let Some((epoch, r)) = self.probe_pairs.get().and_then(|m| m.get(&k).copied())
         {
-            let stands = || {
-                let standing = self.probe_standing.get().and_then(|m| m.get(&k));
+            let stands = |hist: &Self| {
+                let standing = hist.probe_standing.get().and_then(|m| m.get(&k));
                 match (standing, t0, t1) {
                     (Some(s), Type::TVar(tv), _) | (Some(s), _, Type::TVar(tv)) => {
                         s.holds(tv)
@@ -410,7 +428,12 @@ impl ContainsHist {
                     _ => false,
                 }
             };
-            if epoch == writes || (!self.impls_read && stands()) {
+            let no_cell =
+                |hist: &mut Self, t: &Type| hist.closure(t, false) >= Closure::NoCell;
+            let current = epoch == writes
+                || (no_cell(self, t0) && no_cell(self, t1))
+                || (!self.impls_read && stands(self));
+            if current {
                 return Some(r);
             }
         }
@@ -427,7 +450,7 @@ impl ContainsHist {
     /// rests on stands.
     fn probe_put(
         &mut self,
-        (rigid, t0, t1): (bool, &Type, &Type),
+        (flags, t0, t1): (BitFlags<ContainsFlags>, &Type, &Type),
         r: bool,
         height: usize,
         rests: Rests,
@@ -435,7 +458,7 @@ impl ContainsHist {
         let (Some(k0), Some(k1)) = (self.probe_side(t0), self.probe_side(t1)) else {
             return;
         };
-        let k = (k0, k1, probe_flags(rigid));
+        let k = (k0, k1, flags);
         let epoch = cell_writes();
         let new = if rests.settled(r, height) {
             let again = self.probe_pairs.get_mut().insert(k, (epoch, r)).is_some();
@@ -755,14 +778,6 @@ impl ContainsHist {
     }
 }
 
-/// The flags a probe's verdict is held under.
-fn probe_flags(rigid: bool) -> BitFlags<ContainsFlags> {
-    match rigid {
-        true => ContainsFlags::RigidCheck.into(),
-        false => BitFlags::empty(),
-    }
-}
-
 /// The assumption at `depth` is answered: `at`, the shallowest one the
 /// verdict in progress took (`usize::MAX` for none), gives up those from
 /// `depth` on and joins `outer`'s. What the answer itself took.
@@ -870,11 +885,20 @@ fn flatten_members(
     })
 }
 
-/// How deep `t` nests constructors.
-fn nesting(t: &Type) -> usize {
+/// How deep `t` nests constructors, each node `depths` holds read from it.
+fn nesting(t: &Type, depths: &mut AddrMap<usize>) -> usize {
     ensure_sufficient(|| {
+        let node = node_addr(t);
+        if let Some(depth) = node.and_then(|n| depths.get(&n)) {
+            return *depth;
+        }
+        #[cfg(test)]
+        NESTING_STEPS.with(|n| n.set(n.get() + 1));
         let mut depth = 0;
-        t.for_each_child(&mut |c| depth = depth.max(nesting(c)));
+        t.for_each_child(&mut |c| depth = depth.max(nesting(c, depths)));
+        if let Some(n) = node {
+            depths.insert(n, depth + 1);
+        }
         depth + 1
     })
 }
@@ -1750,6 +1774,23 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
+// CR claude for claude: [perf/low] What is left of an instance's signature check over
+// a DAG of bounds through a union typedef is mostly this walk. Each call walks its pair
+// to the first difference, for two links' types a chain as long as the DAG is deep;
+// IdenticalMemo keeps agreements only, forgets them at every cell write, and keeps
+// nothing of a walk's first NodePairs::EAGER nodes. Over union-dag-build-exp-01's shape
+// (`'a{i}: P<'a{i+1}, 'a{i+2}>`, `type P<'x, 'y> = [Array<'x>, Array<'y>, null]`,
+// `|x: ('a0, 'a1)| 7` called with `never()`) Identity::same takes 0.76M / 2.97M / 8.59M
+// steps at 32 / 48 / 64 links against 0.20M / 0.47M / 1.02M containment steps, 41% of
+// the run at 64 (perf), and the run costs 1.63 / 2.77 / 5.80 G instructions (an empty
+// program 0.79 G): six times a doubling, where the other accepted link shapes are
+// flat. A verdict over two nodes that hold no cell cannot change, so one kept through
+// writes (RefHist::param_id is equal exactly for identical parameters; or a memo of
+// the pairs whose walk read no cell) would walk each pair once. A difference found at
+// a name whose resolution cell is empty may not be kept
+// (TypeRef::same_filled_definition). The other factor is place_in_order's trial on
+// copies at every link, each a walk with a memo of its own. probe:
+// ~/ptmp/cr29/scratch/r20/20g/udb/gen2.py N td (identical-linked-chain-01)
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
     match hist.identical.identical(t0, t1) {
@@ -2493,25 +2534,19 @@ impl Type {
             }
             return Ok(r);
         }
-        // a probe binds nothing: its verdict, rigid or not and in either
-        // polarity, is memoized
-        let probe = flags & !ContainsFlags::Contra;
-        let rigid = probe == ContainsFlags::RigidCheck;
-        if !probe.is_empty() && !rigid {
-            return self.contains_dispatch(flags, env, hist, t);
-        }
+        // a probe binds nothing: its verdict under its flags is memoized
+        let probe = probe_flags(flags);
         if hist.gated == 0
-            && let Some(r) = hist.probe_get(rigid, self, t)
+            && let Some(r) = hist.probe_get(probe, self, t)
         {
             return Ok(r);
         }
-
         let (height, outer) = hist.enter_verdict();
         let r = self.contains_dispatch(flags, env, hist, t);
         let rests = hist.leave_verdict(outer);
         let r = r?;
         if hist.gated == 0 {
-            hist.probe_put((rigid, self, t), r, height, rests);
+            hist.probe_put((probe, self, t), r, height, rests);
         }
         Ok(r)
     }
@@ -2631,7 +2666,11 @@ impl Type {
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
-                    && (!tr0.params.iter().chain(tr1.params.iter()).any(|p| p.has_free())
+                    && (!tr0
+                        .params
+                        .iter()
+                        .chain(tr1.params.iter())
+                        .any(|p| !hist.closed_now(p) && p.has_free())
                         || tr0.resolve_peek(env).is_none())
                 {
                     let pairs = || tr0.params.iter().zip(tr1.params.iter());
@@ -3458,7 +3497,7 @@ impl Type {
         }
         // a rigid cell never binds: a constant to the law
         let t = head(env, hist, t)?;
-        if t.has_free() {
+        if !hist.closed_now(&t) && t.has_free() {
             return Ok(false);
         }
         let mut targs: LPooled<Vec<Type>> = LPooled::take();
@@ -3700,7 +3739,8 @@ impl Type {
         ) -> Result<bool>,
     ) -> Result<bool> {
         let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
-        deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m)));
+        let mut depths: LPooled<AddrMap<usize>> = LPooled::take();
+        deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m, &mut depths)));
         if deepest[..] == s1[..] {
             return place(flags, env, hist, t0, s0, s1);
         }
@@ -5054,6 +5094,89 @@ mod tests {
         assert!(matches!(&bound, Type::Error(_)), "{bound}");
     }
 
+    /// `fn<'a0: P<'a1, 'a2>, ..>(x: ('a0, 'a1)) -> i64` over `P<'x, 'y> =
+    /// [Array<'x>, Array<'y>, null]`, `n` links to `'an: Number`: an
+    /// instance's own copy of the definition, and the instance its bounds
+    /// decide, each link's type one node.
+    fn bound_dag(n: usize) -> (Env, FnType, FnType) {
+        let bound = |i: usize, var: &str| match n - i {
+            0 => String::from("Number"),
+            1 => format!("[Array<'{var}{n}>, null]"),
+            _ => format!("P<'{var}{}, '{var}{}>", i + 1, i + 2),
+        };
+        let quantifiers: Vec<String> =
+            (0..=n).map(|i| format!("'a{i}: {}", bound(i, "a"))).collect();
+        let def = format!("fn<{}>(x: ('a0, 'a1)) -> i64", quantifiers.join(", "));
+        let defs =
+            [("Number", "[i64, f64]"), ("P<'x, 'y>", "[Array<'x>, Array<'y>, null]")];
+        let (env, def) = Env::typed_at_root(&defs, &def).unwrap();
+        def.alias_tvars(&mut LPooled::take());
+        let Type::Fn(def) = &def else { unreachable!() };
+        let def = def.instantiate_owned(&mut AHashMap::default());
+        let mut decided: AHashMap<ArcStr, Type> = AHashMap::default();
+        for i in (0..=n).rev() {
+            let w = at_root(&env, &bound(i, "w")).replace_tvars(&decided);
+            decided.insert(ArcStr::from(format!("w{i}")), w);
+        }
+        let Type::Fn(instance) = &at_root(&env, "fn(x: ('w0, 'w1)) -> i64") else {
+            unreachable!()
+        };
+        (env, def, instance.replace_tvars(&decided))
+    }
+
+    // An instance's signature holds its definition's over a DAG of bounds
+    // through a union typedef in polynomial steps: a probe guiding a
+    // commit under `Lower` is kept as any other is (walked at every
+    // meeting, the steps triple a link), and a verdict over two types
+    // that hold no cell stands through the binds between.
+    #[test]
+    fn an_instance_over_a_dag_of_bounds_through_a_typedef_takes_polynomial_steps() {
+        for n in [4, 12, 32] {
+            let (env, def, instance) = bound_dag(n);
+            CONTAINS_STEPS.with(|n| n.set(0));
+            instance.check_contains(&env, &def).unwrap();
+            let steps = CONTAINS_STEPS.with(|n| n.get());
+            assert!(steps <= 320 * n * n, "n={n}: {steps} steps");
+        }
+    }
+
+    // The depth a union's members are ordered by measures each shared
+    // node of a member once: as a tree, the links below one are Fibonacci
+    // many.
+    #[test]
+    fn a_members_depth_measures_each_shared_node_once() {
+        let n = 32;
+        let (_, _, instance) = bound_dag(n);
+        NESTING_STEPS.with(|n| n.set(0));
+        let depth = nesting(&instance.args[0].typ, &mut LPooled::take());
+        let measured = NESTING_STEPS.with(|n| n.get());
+        assert!(depth > n, "depth {depth}");
+        assert!(measured <= 8 * n, "{measured} nodes measured");
+    }
+
+    // A verdict under `Lower` is the pair's under `Lower` alone, in the
+    // polarity it was reached in: an open cell above a type its lower
+    // bound refuses takes it as a bound (`Lower`), and refuses the bind.
+    #[test]
+    fn a_probe_verdict_is_kept_under_its_flags() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let a = Type::TVar(var("a"));
+        let Type::TVar(tv) = &a else { unreachable!() };
+        tv.add_lower(prim(Typ::String));
+        let int = Type::Array(Arc::new(prim(Typ::I64)));
+        let mut hist = ContainsHist::new();
+        let lower = ContainsFlags::Lower | ContainsFlags::RigidCheck;
+        let plain = BitFlags::from(ContainsFlags::RigidCheck);
+        for _ in 0..2 {
+            assert!(a.contains_int(lower, &env, &mut hist, &int).unwrap());
+            assert!(!a.contains_int(plain, &env, &mut hist, &int).unwrap());
+            assert!(
+                !a.contains_int(lower | ContainsFlags::Contra, &env, &mut hist, &int)
+                    .unwrap()
+            );
+        }
+    }
+
     fn parsed(s: &str) -> Type {
         let t = crate::expr::parser::parse_type(s).unwrap();
         t.alias_tvars(&mut LPooled::take());
@@ -5301,5 +5424,6 @@ pub(crate) fn find_impl(
 #[cfg(test)]
 thread_local! {
     static CONTAINS_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static NESTING_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HEAD_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
