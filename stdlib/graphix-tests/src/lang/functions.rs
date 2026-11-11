@@ -3289,7 +3289,7 @@ run!(concrete_lambda_beside_a_generic_optional_callback, r#"{
         select h { null as _ => 0, f => f(2) }
     };
     g(|s: string| "[s]!", "k", true)
-}"#, refused("expected fn not"); FuseExpect::None);
+}"#, refused("this callee is one of fn(x: i64) -> i64 and fn(x: 'a: unbound) -> 'a: unbound; write one variable in both"); FuseExpect::None);
 
 run!(optional_defaults_annotated, r#"{
     let j = 0;

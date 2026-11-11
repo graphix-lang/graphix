@@ -35,7 +35,7 @@ use crate::{
     prune::BoundaryRef,
     stack::ensure_sufficient,
     typ::{
-        ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
+        Brief, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
         tvar::{AtLevel, BoundAt, Level, RigidGate},
     },
     wrap,
@@ -703,6 +703,43 @@ fn walk_step() {
 /// a function may be called with one, an unknown part may be one.
 fn carries(env: &Env, t: &Type) -> bool {
     t.holds_fn(env) || t.holds_unknown(env)
+}
+
+/// A callee that is one of two or more function types: no one call takes
+/// them all.
+struct FnUnion<'a>(&'a [Type]);
+
+impl FnUnion<'_> {
+    /// The refusal of a call through `union`, where every member is a
+    /// function type, written or named.
+    fn refusal(env: &Env, union: &Type) -> Option<anyhow::Error> {
+        let is_fn = |m: &Type| matches!(opened(env, m, &mut 0), Some(Type::Fn(_)));
+        match union {
+            Type::Set(ms) if ms.len() > 1 && ms.iter().all(is_fn) => {
+                Some(anyhow!("{}", FnUnion(ms)))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for FnUnion<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "a call takes one function type, and this callee is one of ")?;
+        for (i, m) in self.0.iter().enumerate() {
+            let sep = match i {
+                0 => "",
+                i if i + 1 == self.0.len() => " and ",
+                _ => ", ",
+            };
+            write!(f, "{sep}{}", Brief(m))?
+        }
+        let all = match self.0.len() {
+            2 => "both",
+            _ => "each",
+        };
+        write!(f, "; write one variable in {all}, or one written type in {all}")
+    }
 }
 
 /// Fit a site's arguments to its signature: a placeholder for each
@@ -4307,7 +4344,7 @@ impl<R: Rt> CallSite<R> {
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
             None => {
-                let ftype = deref_typ!("fn", ctx, self.fnode.typ(),
+                let ftype = deref_typ!("fn", ctx, self.fnode.typ(); FnUnion::refusal;
                     Some(Type::Fn(ftype)) => Ok(ftype.clone())
                 )?;
                 // A self-call inside the def-time body check unifies against

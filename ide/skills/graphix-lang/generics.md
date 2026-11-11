@@ -121,7 +121,8 @@ module's parent, a later REPL input) must be as general as the binding,
 and a `&mut` of it is refused: to write it at one type, write that type
 on its `let` (`let j: fn(x: i64) -> i64 = s.g`). Arms holding lambdas
 over two declared variables (`|p: 'a| p` beside `|q: 'b| q`) stay two
-members, and a call through them is refused: give both one variable.
+members, and a call through them is refused, naming both: give both one
+variable, or one written type.
 
 ```graphix,cases
 no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
@@ -134,8 +135,9 @@ no "needs its type known here" let s = {f: |x| x}; let j = never(); let t = {s w
 ok let s = {f: |x| x}; let j: fn(x: i64) -> i64 = never(); let t = {s with f: j}; let r = t.f(2); j <- |x: i64| x + 1; r
 ok let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => r.f(v) } }; (k(2), k(-2))
 no "i64 does not contain string" let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => (r.f(v), r.f("s")) } }; k(2)
-no "expected fn not" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)
+no "one of fn(p: 'a: i64) -> 'a: i64 and fn(q: 'b: string) -> 'b: string; write one variable in both, or one written type in both" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)
 ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} }; f(false, 1, "s").g(2)
+ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: i64| p}, false => {g: |q: i64| q} }; f(false, 1, "s").g(2)
 ```
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or

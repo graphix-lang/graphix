@@ -4114,6 +4114,13 @@ impl Type {
                 // base-r20 alike. probes:
                 // ~/ptmp/cr29/scratch/r20/20f/rev-ans/{m1,m2,m3,m4}.gx
                 // (or-bind-fn-meet-01)
+                // 2026-11-10 claude: Since d25-refusal-names-fix-01 the refusal of
+                // m3.gx reads "a call takes one function type, and this callee is one
+                // of fn(x: '_N: unbound) -> '_M: unbound and fn(y: i64) -> i64; write
+                // one variable in both, or one written type in both": it names the
+                // members and an annotation that passes (m2.gx), so what stands here
+                // is whether the or-arm should meet its function members as the field
+                // read does.
                 let joined = Type::union_exact(env, &p)?;
                 let cell = Type::TVar(c.clone());
                 if joined.contains(env, &cell)? && c.binding().is_none() {

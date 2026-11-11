@@ -2882,7 +2882,7 @@ mod unsound_acceptances {
         DEFAULTED_LABEL => "does not contain",
         PRODUCT_UNION => "does not contain",
         PRODUCT_UNION_VARIANT => "does not contain",
-        REF_UNION_PARAMS => "expected fn",
+        REF_UNION_PARAMS => "this callee is one of F<i64> and F<string>",
         DECLARED_CONSTRAINS_OUTER => "'a escapes the definition",
         RIGID_BELOW_UNANNOTATED => "does not contain i64",
         NEVER_OF_AN_UNBOUNDED_APPLICATION => "Number does not contain string",
@@ -8422,20 +8422,80 @@ run!(
     FuseExpect::None
 );
 
-// CR claude for claude: [bug/low] The D25 refusal of arms over two declared variables names no
+// XCR claude for claude: [bug/low] The D25 refusal of arms over two declared variables names no
 // fix: "expected fn not [fn(p: 'a: i64) -> 'a: i64, fn(q: 'b: string) -> 'b: string]", while the
 // skill (generics.md) says the fix is to give both one variable. This pin and the generics.md case
 // match only "expected fn not". A closing refusal names the annotation that makes the program pass:
 // name the two members and "write one variable in both", as VariableUnion's message does, and pin
 // that text here and in the skill. probe: ~/ptmp/cr29/scratch/r19/coord/rules/sk3.gx
 // (d25-refusal-names-fix-01)
+// 2026-11-10 claude: A call whose callee normalizes to a union of two or more function types
+// (written, or named by a typedef) is refused by callsite::FnUnion: "a call takes one function
+// type, and this callee is one of A and B; write one variable in both, or one written type in both"
+// ("each" for three or more), each member printed by itself; deref_typ! takes the refusal as an
+// optional argument, and a union with a non-function member keeps "expected fn not ..". Pins that
+// fail without it: lang::types::{a_select_of_lambdas_over_two_declared_variables_stays_two_members,
+// a_call_through_lambdas_over_two_declared_variables_refused_in_the_definition,
+// a_select_of_lambdas_over_three_declared_variables_names_each},
+// lang::functions::concrete_lambda_beside_a_generic_optional_callback,
+// lang::types::unsound_acceptances::REF_UNION_PARAMS, and the generics.md cases line; the
+// written-type twin is a_select_of_lambdas_over_one_written_type_is_one_member.
 run!(
     a_select_of_lambdas_over_two_declared_variables_stays_two_members,
     r#"{
   let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} };
   f(false, 1, "s").g(2)
 }"#,
-    refused("expected fn not");
+    refused(
+        "a call takes one function type, and this callee is one of fn(p: 'a: i64) -> 'a: i64 \
+         and fn(q: 'b: string) -> 'b: string; write one variable in both, or one written type \
+         in both"
+    );
+    FuseExpect::None
+);
+
+run!(
+    a_call_through_lambdas_over_two_declared_variables_refused_in_the_definition,
+    r#"{
+  let f = |c: bool, x: 'a, y: 'b| {
+    let s = select c { true => |p: 'a| p, false => |q: 'b| q };
+    s(x)
+  };
+  f(false, 1, "s")
+}"#,
+    |v: Result<&Value>| matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        e.contains("this callee is one of fn(p: 'a: unbound) -> '")
+            && e.contains(" and fn(q: 'b: unbound) -> '")
+            && e.contains("; write one variable in both, or one written type in both")
+    });
+    FuseExpect::None
+);
+
+run!(
+    a_select_of_lambdas_over_three_declared_variables_names_each,
+    r#"{
+  let f = |c: i64, x: 'a, y: 'b, z: 'c| select c {
+    0 => {g: |p: 'a| p},
+    1 => {g: |q: 'b| q},
+    _ => {g: |r: 'c| r}
+  };
+  f(2, 1, "s", 2.0).g(2)
+}"#,
+    refused(
+        "one of fn(p: 'a: i64) -> 'a: i64, fn(r: 'c: f64) -> 'c: f64 and fn(q: 'b: string) -> \
+         'b: string; write one variable in each, or one written type in each"
+    );
+    FuseExpect::None
+);
+
+run!(
+    a_select_of_lambdas_over_one_written_type_is_one_member,
+    r#"{
+  let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: i64| p}, false => {g: |q: i64| q} };
+  (f(false, 1, "s").g(2), f(true, "t", 0).g(3))
+}"#,
+    prints("[i64:2, i64:3]");
     FuseExpect::None
 );
 

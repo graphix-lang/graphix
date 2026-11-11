@@ -487,7 +487,8 @@ the definition gates:
   check; generic pairs stay a renaming. Two declared variables of the
   definition under check never pair, since they cannot merge: `{g: |p:
   'a| p}` beside `{g: |q: 'b| q}` stays two members, and a call through
-  them is refused. And
+  them is refused, naming the members and the fix: one variable, or one
+  written type, in both (`callsite::FnUnion`). And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`): a member's generic cells meet

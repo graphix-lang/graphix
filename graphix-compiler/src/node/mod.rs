@@ -182,6 +182,9 @@ macro_rules! bailat {
     };
 }
 
+/// Read `$typ` through the first of the patterns that matches. A union no
+/// pattern reads is refused with the error `$union(env, union)` (optional,
+/// after `;`) gives for it, or else as "expected `$name` not" the union.
 // CR claude for claude: [bug/low] A declared variable bounded by a typedef
 // is not read through its bound: `type Point = {x: f64, y: f64}; let f = 'a:
 // Point |p: 'a| p.x` is refused, "reading a struct needs its type known here:
@@ -192,7 +195,14 @@ macro_rules! bailat {
 // ~/ptmp/cr29/scratch/r20/20f/bwr/{q3,q5,q6,q7}.gx (bound-typedef-read-01)
 #[macro_export]
 macro_rules! deref_typ {
-    ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {{
+    ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
+        $crate::deref_typ!(
+            $name, $ctx, $typ;
+            |_: &$crate::env::Env, _: &$crate::typ::Type| -> Option<anyhow::Error> { None };
+            $($pat => $body),+
+        )
+    };
+    ($name:literal, $ctx:expr, $typ:expr; $union:expr; $($pat:pat => $body:expr),+) => {{
         // an unbound cell is read through its one structural bound, which
         // every type it admits has
         let mut bound = match &$typ {
@@ -228,7 +238,10 @@ macro_rules! deref_typ {
                         let nt = t.normalize();
                         if matches!(nt, $crate::typ::Type::Set(_)) {
                             $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
-                                anyhow::bail!("expected {} not {nt}", $name)
+                                match ($union)(&$ctx.env, &nt) {
+                                    Some(e) => Err(e),
+                                    None => anyhow::bail!("expected {} not {nt}", $name),
+                                }
                             })?
                         }
                         typ = Some(nt);

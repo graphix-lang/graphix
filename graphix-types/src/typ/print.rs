@@ -330,6 +330,14 @@ impl Type {
 /// earlier one (two names of one cell), or printing as it does where
 /// either holds a cell (two cells bound to one type), prints once, and a
 /// lone member prints bare.
+// CR claude for claude: [bug/low] A union the checker keeps as two members prints as one: in a
+// definition's body check, `[fn(p: 'a) -> .., fn(q: 'b) -> ..]` over two declared variables
+// prints its first member alone, since `union_identical` pairs their unbound cells as a renaming
+// where normalize (`union_collapses`) keeps them two. `let f = |c: bool, x: 'a, y: 'b| { let s =
+// select c { true => |p: 'a| p, false => |q: 'b| q }; let n: i64 = s; n }; f(false, 1, "s")` is
+// refused "i64 does not contain fn(p: 'a: unbound) -> '_N: unbound", naming one of the two. A call
+// through it names both since `callsite::FnUnion` prints each member itself. base-r20 alike.
+// probe: ~/ptmp/cr29/scratch/r20/20f/d25/p11.gx (print-set-renaming-01)
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     let mut text: LPooled<String> = LPooled::take();
     let mut kept: SmallVec<[(&Type, usize, usize); 16]> = SmallVec::new();
