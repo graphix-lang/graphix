@@ -1417,3 +1417,12 @@ run!(
     "/test/m.gxi" => "val mk: fn(z: i64) -> i64;",
     "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x"
 );
+
+// A refused write names the generic binding by its scheme, header and all.
+run!(
+    a_refused_write_to_a_generic_binding_prints_its_header,
+    refused("m::f is fn<'a: Number>(x: 'a: unbound within Number) -> 'a: unbound within Number, a generic binding"),
+    "/test.gx" => "mod m; m::f <- |x: i64| -> i64 x; let result = 0",
+    "/test/m.gxi" => "val f: fn<'a: Number>(x: 'a) -> 'a",
+    "/test/m.gx" => "let f = 'a: Number |x: 'a| -> 'a x"
+);

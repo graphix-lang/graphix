@@ -3999,9 +3999,11 @@ impl<R: Rt> Connect<R> {
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
                             let (name, hint) = generic_target(&ctx.env, bind);
+                            let scheme = bind.typ.scheme_read(&ctx.rec_defs, &|_| false);
                             anyhow!(
-                                "{name} is {held}, a generic binding, so what is written \
-                                 to it must be as general, and {written} is not{hint}"
+                                "{name} is {}, a generic binding, so what is written to \
+                                 it must be as general, and {written} is not{hint}",
+                                scheme.as_ref().unwrap_or(&bind.typ)
                             )
                         },
                     ),

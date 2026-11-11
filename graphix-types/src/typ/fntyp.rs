@@ -2233,6 +2233,17 @@ fn is_self_param(a: &FnArgType) -> bool {
         }
 }
 
+// CR claude for claude: [readability/low] A `let rec`'s read of itself inside its
+// own body still prints the header, though the recursion is one instance: `let rec
+// f = 'a: Number |x: 'a| -> 'a { let g: string = f; x }` says "string does not
+// contain fn<'a: Number>(x: 'a: unbound within Number) -> 'a: unbound within
+// Number", and `f(1)` there is refused ("'a: unbound within Number does not contain
+// i64"). The declared cell is still at a generic level while its body is checked,
+// and holds no rigid gate then (`TVar::is_rigid` is false), so neither tells this
+// read from the scheme; what marks a definition's variables as its body's own is
+// what the filter below would have to ask. probe:
+// ~/ptmp/cr29/scratch/r20/20h/instance-quantifier-print-01/d2.gx
+// (rec-self-read-header-01)
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those

@@ -1476,8 +1476,13 @@ former consumer derives from the cells:
   (`fntyp::printed_quantifiers`), and one a call picked or one instance
   holds (an unnamed lambda's, a read no binding names, a call's result)
   prints where it occurs, like an inferred variable; canonical printing
-  lists every declared one. Pins: `lang::quantified::*_prints_no_header`,
-  `a_returned_functions_variable_keeps_its_header_in_the_scheme`. A self-referential constraint
+  lists every declared one. A message about a generic binding itself
+  prints its scheme (`Type::scheme_read`), never the one instance a
+  comparison held rigid: the refused write to a generic binding
+  (`Connect::typecheck0_with`) names it header and all.
+  Pins: `lang::quantified::*_prints_no_header`,
+  `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
+  `a_refused_write_to_a_generic_binding_prints_its_header`. A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and
   conjunct; each listing walk holds a per-signature reentrancy guard, so
