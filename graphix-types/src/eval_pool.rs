@@ -96,27 +96,6 @@ impl Sleep {
         }
     }
 
-    // XCR claude for claude: [perf/low] Every fork wakes as many parked workers as it pushed jobs,
-    // and in a 2-part join the owner usually pops the one job itself first, so the woken worker
-    // searches once, finds nothing and parks again: a futex wake, a context switch and a park per
-    // join. Under GRAPHIX_PAR=force with many tiny forks (fh300.gx, --no-fusion) wall time is about
-    // 1.5x rayon's at 16 and 32 workers (3.3 s vs 2.2 s at 32), equal at 2-8 and under Auto; announce
-    // also locks each bed in turn. A fix: wake one sleeper per announce and let a worker that finds a
-    // job wake the next while more remain, or keep an atomic mask of asleep beds; then re-measure and
-    // correct parallel_eval.md section 9's fork-cost sentence. probe:
-    // ~/ptmp/cr29/scratch/r19/coord/runtime/fh300.gx (eval-pool-wake-batch-01)
-    // 2026-11-10 claude: An announcement now calls sleepers only for the jobs beyond the workers
-    // already called whose search has not ended (Sleep::searching, Rest::Called); a called worker
-    // that finds a job, or returns to its own work, calls another unless one still searches
-    // (Sleep::searched), so tiny joins call one worker at a time. fh300.gx force --no-fusion against
-    // the lane before the fix: 32 workers 3.7-3.9M context switches, 30.5-31.3 s task-clock, 65-67G
-    // instr -> 0.37-0.41M, 14.0-14.9 s, 50G; 16 workers 2.0-2.5M -> 0.40-0.50M; 2 workers equal
-    // within noise. The bed scan was left: Sleep::wake is 0.33% of samples after (3.97% before).
-    // Pins: eval_pool::test::a_searching_worker_answers_for_one_job and
-    // tiny_joins_call_one_searcher_at_a_time fail with an announcement calling one per job (4000
-    // joins: 4001 calls, 4484 parks; fixed 164-460 calls, 302-801 parks over 16 runs);
-    // joins_announced_while_others_search_run_side_by_side hangs with the hand-off in Sleep::searched
-    // removed. parallel_eval.md sections 5 and 9 restated.
     /// `jobs` new jobs are visible.
     fn announce(&self, jobs: usize) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
