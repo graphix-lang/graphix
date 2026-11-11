@@ -177,7 +177,11 @@ cycle runs because the publication marks it before the walk reaches it.
 `Reader::passed_by`, read from the boundaries' `visited` stamps) takes
 it next cycle: its root is scheduled and its boundary marked as that
 cycle starts (`GX::deliver_late`), so pruning walks it and it reads the
-fire (`read_var_by`, `design/dense_delivery.md`).
+fire (`read_var_by`, `design/dense_delivery.md`). A select arm's binds,
+delivered when the chain takes the arm after its guard ran, pass no
+reader inside the guard's boundary: the guard read them through its own
+consult this cycle (`PatternNode::bind_event`, `RtView::store_fire`'s
+`took`).
 
 ## Parallel evaluation
 

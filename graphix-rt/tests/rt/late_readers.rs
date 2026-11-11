@@ -30,8 +30,42 @@ fn only_a_late_reader_is_passed_a_fire() {
         TagValue::fired(Value::Null),
         root,
         Some(&walk),
+        None,
         &mut passed,
     );
     assert!(!elsewhere);
     assert_eq!(passed.expect("a passed reader").as_slice(), [late]);
+}
+
+#[test]
+fn a_reader_inside_the_boundary_that_took_a_fire_is_not_passed_it() {
+    let mut rt = GXRt::<NoExt>::new();
+    let (root, id, cycle) = (ExprId::new(), BindId::new(), rt.cycle());
+    let outer = BoundaryRef::new(None);
+    let took = BoundaryRef::new(Some(outer.clone()));
+    let inside = BoundaryRef::new(Some(took.clone()));
+    let beside = BoundaryRef::new(Some(outer.clone()));
+    for b in [&outer, &took, &inside, &beside] {
+        b.visit(cycle);
+    }
+    let reader = |b: &BoundaryRef| Reader {
+        root,
+        boundary: Some(b.clone()),
+        late: true,
+        read: None,
+    };
+    rt.ref_var(id, reader(&inside));
+    rt.ref_var(id, reader(&beside));
+    let mut passed = None;
+    let mut view = RtView::Root(&mut rt);
+    let var = view.var_of(id);
+    view.store_fire(
+        var,
+        TagValue::fired(Value::Null),
+        root,
+        Some(&outer),
+        Some(&took),
+        &mut passed,
+    );
+    assert_eq!(passed.expect("a passed reader").as_slice(), [reader(&beside)]);
 }

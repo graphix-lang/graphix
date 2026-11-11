@@ -507,6 +507,8 @@ that left the arm, saw none of it, so to that reader the stand is a fire.
   stand. A standing entry over a moved stand keeps the mark with the stamp
   (`RtView::store_insert_standing_var`).
 - **A guard's tentative binds** never stand moved: they are retracted.
+  The taken arm's binds, moved or fired, pass no reader inside its guard,
+  which read them through its own consult (`PatternNode::bind_event`).
 
 The price, accepted: a handler that escaped a modal's arm acts once at
 the wake on the event that opened the modal, as a handler reached through

@@ -581,13 +581,15 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// [`Self::store_insert`] of a fire made in the root `root` by a walk
     /// now inside `at`: each reader of `var` in `root` the walk has passed
-    /// goes into `passed`; whether a reader is in another root.
+    /// goes into `passed`, unless it is inside `took`, whose readers read
+    /// the fire already; whether a reader is in another root.
     pub fn store_fire(
         &mut self,
         var: Var,
         tv: TagValue,
         root: ExprId,
         at: Option<&BoundaryRef>,
+        took: Option<&BoundaryRef>,
         passed: &mut Option<SmallVec<[Reader; 2]>>,
     ) -> bool {
         self.store_insert_unmarked(var, tv);
@@ -597,7 +599,10 @@ impl<'a, R: Rt> RtView<'a, R> {
             r.mark(cycle);
             if r.root != root {
                 elsewhere = true
-            } else if r.late && r.passed_by(at, cycle) {
+            } else if r.late
+                && r.passed_by(at, cycle)
+                && !BoundaryRef::held_by(took, r.boundary.as_ref())
+            {
                 passed.get_or_insert_default().push(r.clone())
             }
         });

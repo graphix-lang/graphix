@@ -315,10 +315,10 @@ async fn idle_map_in_a_walked_instance() -> Result<()> {
     ticks_skip_the_idle_map(idle_map_in_an_instance).await
 }
 
-// A guard sits in a boundary of its own, which its arm's pattern binds are
-// delivered inside when the arm is taken: the guard read them as it ran,
-// so the walk did not pass it by, and no late copy schedules a cycle more
-// than a guard reading the scrutinee itself makes.
+// A guard sits in a boundary of its own, and its arm's pattern binds,
+// delivered again when the arm is taken, pass no reader inside it: the guard
+// read them as it ran, so no late copy schedules a cycle more than a guard
+// reading the scrutinee itself makes.
 #[tokio::test(flavor = "current_thread")]
 async fn a_guard_reading_its_bind_is_not_passed_by_its_arm() -> Result<()> {
     let bind = "{ let t = once(1); select t { x if x > 0 => x, _ => 0 } }";
@@ -329,4 +329,33 @@ async fn a_guard_reading_its_bind_is_not_passed_by_its_arm() -> Result<()> {
     assert_eq!(sv, [Value::I64(1)]);
     assert_eq!((b_walks, b_skips), (s_walks, s_skips));
     Ok(())
+}
+
+// The same for a reader in a block statement of the guard, which sits in a
+// boundary of its own inside the guard's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_guard_statement_reading_its_bind_is_not_passed_by_its_arm() -> Result<()> {
+    let bind = "{ let t = once(1); select t { x if { let y = x; y > 0 } => x, _ => 0 } }";
+    let scrutinee =
+        "{ let t = once(1); select t { x if { let y = t; y > 0 } => x, _ => 0 } }";
+    for mode in [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar] {
+        let (bv, (b_walks, b_skips)) = walks(bind, mode).await?;
+        let (sv, (s_walks, s_skips)) = walks(scrutinee, mode).await?;
+        assert_eq!(bv, [Value::I64(1)]);
+        assert_eq!(sv, [Value::I64(1)]);
+        assert_eq!((b_walks, b_skips), (s_walks, s_skips), "{mode:?}");
+    }
+    Ok(())
+}
+
+// A guard's statement counts each fire of its arm's bind once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guard_statement_counts_each_fire_of_its_bind_once() -> Result<()> {
+    let code = "{
+  let t = array::iter([1, 2, 3, 4]);
+  let seen = 0;
+  let r = select t { x if { seen <- count(x); x > 0 } => x, _ => 0 };
+  (r, seen)
+}";
+    agrees(code, &["[1, 0]", "[2, 1]", "[3, 2]", "[4, 3]", "[4, 4]"]).await
 }
