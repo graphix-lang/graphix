@@ -1758,6 +1758,15 @@ type Reach<'a> = (&'a TVar, &'a Type, Toward);
 // alias or this merge should answer for the pair in progress. Found building
 // never-arg-instance-split-01's fix. probe:
 // ~/ptmp/cr29/scratch/r20/20b/x6/residual/hang_g4_p00166.gx (alias-bound-cycle-01)
+// 2026-11-11 claude: Review of r20-x6: the bind that replaced that alias had no
+// occurs check either, and where the formal's cell had been bound to a type holding
+// the copy's cell it closed a cycle (`let f = |y| h([y, 1], (y, 2))` over `|a:
+// Array<'a>, b: ('a, i64)|`: --check ran until its memory cap). TVar::rejoin now
+// makes the choice (alias onto an open cell, bind to a decided one) behind
+// closes_cycle, and leaves a copy the cell reaches apart; pin
+// lang::types::undecided_argument_inside_what_its_formals_variable_settled_to.
+// Nothing aliases onto a bound cell, so this CR's hang stays unreached;
+// hang_g4_p00166.gx checks and builds.
 /// The cells on a cycle through cells and unions alone, each type's bare
 /// paths to its cell and the cell, are one type: the open ones merge, each
 /// first dropping its bounds that are cells of the cycle, and each bound

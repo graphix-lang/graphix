@@ -811,7 +811,7 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-// CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
+// CR claude for eric: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
 // refuses a call its definition's check accepted where an argument was undecided at
 // the definition and is decided at the instance: `let g = |y0, y1, y4, y5, y6| f(y0,
 // y1, y4, y5, y6); g([[]], null, [[1]], [1], 1)` over `'a0: O<P<'a1, 'a2>>, 'a1:
@@ -827,6 +827,27 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 // substitutes and agrees. probes:
 // ~/ptmp/cr29/scratch/r20/20b/x6/residual/{nosubst_g3_p00561,nosubst_g1_p00424}.gx
 // (decided-arg-waits-01)
+// 2026-11-11 claude: Review of r20-x6: the divergence is not only the two generated
+// programs, and not new with the round. The plain wrapper has it: `let f = |x: P<'a,
+// 'b>, y: 'a, z: 'b| x; let g = |u, v, w| f(u, v, w); g([], 1, "s")` over `type P<'p,
+// 'q> = [Array<'p>, Array<'q>]` checks, builds and prints [] in every shipped mode,
+// and under GRAPHIX_NO_SUBST=1 the instance of g is refused, "Array<i64> could go to
+// Array<'a> or Array<'b>": r20-staging 557beb5ed (before the round) the same,
+// base-r20 runs it under NO_SUBST too. The round's first tip refused that program at
+// the check in every mode (the wrapper's parameter was never opened, so [] did not
+// wait); the review made it wait as the direct call does (Widening::standing, pin
+// lang::types::wrapper_empty_array_into_a_typedef_union_is_decided_by_the_other_parameters),
+// which puts it back where staging had it: right in the shipped modes, split under
+// NO_SUBST. Also `g([], 2, never())` over `'a: P<'b, 'c> |x: 'a, y: 'b, z: 'c|`.
+// Recommendation: let a decided argument that meets the choice at a formal the call
+// opened wait for the join, as an undecided one does, and refuse it there if two
+// members still could take it. That makes ruling (c)'s refusal independent of
+// argument order (the skill's `f(1, 2)` over `|x: E<'a, 'b>, y: 'a|` would run, as
+// `|y: 'a, x: E<'a, 'b>|` does), lets a wrapper of such a function be written with
+// annotated parameters (`|u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w)` is refused today,
+// at u), and closes this split. It changes a documented refusal, so it is Eric's to
+// rule. probes: ~/ptmp/cr29/scratch/r20/20b/x6rev/p/{e3,e9,e13,e19}.gx, b/pb15.gx,
+// q/t5.gx
 /// Check a call's argument node against its formal's type `typ`,
 /// answering how it fit. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
