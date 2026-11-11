@@ -228,8 +228,8 @@ unchanged.
   included). The holders: a select arm (its body's boundary, as the select
   updates and again as it deselects the arm), a guard the chain does not
   reach (each guard sits in a boundary of its own, so a guard's reader is
-  told apart from its select's; the guard's arm delivers its pattern binds
-  inside it, which the guard read as it ran), a call whose function is
+  told apart from its select's; the guard's arm's pattern binds pass no
+  reader inside it, which read them as the guard ran), a call whose function is
   bottom (its instance's body) and a collection whose source is bottom
   (its slots' instance bodies). A seq step that waits its turn needs no
   bit for it: its entry samples what it reads and issues each call as a

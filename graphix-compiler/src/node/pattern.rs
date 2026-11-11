@@ -2832,6 +2832,20 @@ impl<R: Rt> PatternNode<R> {
         v: &Value,
         tag: crate::Tag,
     ) -> SmallVec<[(BindId, Option<(TagValue, u64)>); 4]> {
+        // CR claude for claude: [perf/low] A guard consulted while its scrutinee stands (another
+        // input of the guard fired, or the select was walked for any other reason) binds
+        // quietly, and the standing insert marks every reader of the bind
+        // (RtView::store_insert_standing_var), so each block statement of the guard that
+        // reads a bind is walked where the same statement reading the scrutinee is skipped.
+        // lang::prune's `walks`, Interp, `{ let t = once(3); let lim = array::iter([5, 1, 5,
+        // 1]); select t { x if { let y = x; y > lim } => x, _ => 0 } }`: 667 walks and 4
+        // skips, against 663 and 8 with `let y = t`; equal with the mark left out of
+        // store_insert_standing_var (which breaks other readers: not the fix). No extra
+        // cycle, and values are right. The retract puts the store back, so the store cannot
+        // say whether the readers hold this value: a guard that ran at its last consult
+        // under an unmoved stale scrutinee read the same leaves then, and needs no mark.
+        // lang::prune::a_guard_reading_its_moved_bind_is_not_passed_by_its_arm asserts only
+        // the statement's reaches for this reason. (guard-bind-stand-mark-01)
         let mut saved = SmallVec::new();
         self.structure_predicate
             .ids(&mut |id| saved.push((id, ctx.rt.store_get(&id).cloned())));

@@ -4,6 +4,7 @@
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
+use graphix_compiler::PruneMode;
 use graphix_package_core::testing::{Collect, Mode, TestState, data};
 use netidx::publisher::Value;
 use std::time::Duration;
@@ -358,4 +359,43 @@ async fn a_guard_statement_counts_each_fire_of_its_bind_once() -> Result<()> {
   (r, seen)
 }";
     agrees(code, &["[1, 0]", "[2, 1]", "[3, 2]", "[4, 3]", "[4, 4]"]).await
+}
+
+// A bind its arm stands moved, at a flip of the guard after a fire of the
+// scrutinee the arm was not taken for, passes no reader inside the guard
+// either: a guard reading it runs in the cycles a guard reading the
+// scrutinee does. A block statement of the guard is reached as often as
+// its twin; the quiet consult marks it, so it is walked where the twin's
+// is skipped.
+#[tokio::test(flavor = "current_thread")]
+async fn a_guard_reading_its_moved_bind_is_not_passed_by_its_arm() -> Result<()> {
+    let program = |guard: &str| {
+        format!(
+            "{{
+  let clk = array::iter([0, 1, 2, 3, 4, 5, 6, 7]);
+  let t = filter(clk, |c| c < 3);
+  let flag = uniq(clk >= 1 && clk < 5);
+  select t {{ x if !flag && {guard} => x * 10, x => -x }}
+}}"
+        )
+    };
+    let expected = [0, -1, -2, 20].map(Value::I64);
+    for mode in [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar] {
+        let (bv, bind) = walks(&program("x >= 0"), mode).await?;
+        let (sv, scrutinee) = walks(&program("t >= 0"), mode).await?;
+        let (bbv, (b_walks, b_skips)) =
+            walks(&program("{ let y = x; y >= 0 }"), mode).await?;
+        let (sbv, (s_walks, s_skips)) =
+            walks(&program("{ let y = t; y >= 0 }"), mode).await?;
+        for v in [bv, sv, bbv, sbv] {
+            assert_eq!(v, expected, "{mode:?}");
+        }
+        // an audited skip of the select consults the guard, and the walk
+        // the quiet bind's mark makes of it is counted where no skip is
+        if matches!(mode.prune(), PruneMode::On) {
+            assert_eq!(bind, scrutinee, "{mode:?}");
+            assert_eq!(b_walks + b_skips, s_walks + s_skips, "{mode:?}");
+        }
+    }
+    Ok(())
 }
