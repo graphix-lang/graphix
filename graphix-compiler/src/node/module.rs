@@ -340,10 +340,7 @@ fn bind_sig_item(
             let bscope = scope.append_block("impl", item as u64);
             let mut methods: Map<CompactString, BindId> = Map::new();
             for d in trait_def.methods.iter() {
-                let typ = Type::Fn(Arc::new(traits::method_sig_at(
-                    &d.typ.reset_tvars(),
-                    &target,
-                )));
+                let typ = Type::Fn(Arc::new(traits::method_sig_at(&d.typ, &target)));
                 let bind = env.bind_variable(
                     &bscope.lexical,
                     &d.name,

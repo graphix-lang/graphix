@@ -391,6 +391,17 @@ generic impl's target keeps the head's variables). So `|s: self, x|` in
 `impl T for i64` is `|s: i64, x|`, `[self, 'c]` is `[i64, 'c]`, and a
 written `self` that disagrees with the trait (`x: self` where the trait
 declares `x: string`) is an impl that does not implement it.
+The signature a method is held to is the trait's at the target
+(`traits::method_sig_at`): `self` is the target in its parameters, its
+result and its variables' bounds alike, and a variable of the trait
+named like one the target holds is renamed apart, in the bounds that
+name it too. So under `val m: fn<'b: [self, null]>(self, x: 'b) -> 'b`
+both `'q: [self, null] |s, x: 'q| -> 'q x` and `'q: [i64, null] ..`
+implement it in `impl T for i64`, `'q: self` does not (`implements`
+refuses a bound the declared one does not imply), and a body that writes
+no bound reads `x` under `[i64, null]` (pins
+`lang::traits::impl_method_written_bound_*`, `generic_impl_*bound*`,
+`default_reads_a_bound_holding_self`).
 The target's names mean what the head reads: they are resolved before
 the substitution, so a block in the method that declares a `type` of
 one of those names does not take `self` (nor is the reader warned of

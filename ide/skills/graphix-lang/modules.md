@@ -59,12 +59,18 @@ for i64` is `|s: i64, x|`, and `[self, 'c]` there is `[i64, 'c]`. A
 written `self` the trait does not declare there is refused, and so is
 a `self` in a `type` definition inside a generic impl's method (the
 target holds the impl's variables, which a definition cannot name: give
-it a parameter).
+it a parameter). A bound the trait declares over `self` is over the
+target in an impl too: the method writes it with `self` or with the
+target, or leaves it out.
 
 ```graphix,cases
 ok trait T { val m: fn(self, x: i64) -> i64 }; impl T for i64 { let m = |s: self, x| s + x }; T::m(1, 2)
 ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
 no "string does not contain i64" trait T { val m: fn(self, x: string) -> string }; impl T for i64 { let m = |s, x: self| x }; T::m(1, "q")
+ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'q: [self, null] |s, x: 'q| -> 'q x }; (T::m(1, 2), T::m(1, null))
+ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl<'a> T for Array<'a> { let m = 'q: [Array<'a>, null] |s, x: 'q| -> 'q x }; (T::m([1], [2]), T::m([1], null))
+ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 }; impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } }; T::m(1, 2)
+no "requires 'b: i64, which the signature does not declare" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x }; T::m(1, 2)
 no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P = self; let p: P = s; array::len(p) } }; T::m([1])
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
 ```

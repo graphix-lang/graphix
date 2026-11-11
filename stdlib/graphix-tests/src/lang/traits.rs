@@ -3597,6 +3597,248 @@ run!(
     "#
 ; FuseExpect::None);
 
+// The declared signature at an impl holds the target in its variables'
+// bounds too: a method that writes the trait's bound, with `self` or with
+// the target spelled out, implements it.
+run!(
+    impl_method_written_bound_holding_self,
+    prints("[i64:2, null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
+        let result = [T::m(1, 2), T::m(1, null)]
+    "#
+);
+
+run!(
+    impl_method_written_bound_under_the_trait_s_name,
+    prints("[i64:2, null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'b: [self, null] |s, x: 'b| -> 'b x };
+        let result = [T::m(1, 2), T::m(1, null)]
+    "#
+);
+
+run!(
+    impl_method_written_bound_spells_the_target,
+    prints("[i64:2, null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: [i64, null] |s, x: 'q| -> 'q x };
+        let result = [T::m(1, 2), T::m(1, null)]
+    "#
+);
+
+run!(
+    impl_method_written_bound_is_self_alone_or_holds_it_in_data,
+    prints("[i64:2, [i64:3]]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: self>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x };
+        trait U { val u: fn<'b: Array<self>>(self, x: 'b) -> 'b };
+        impl U for i64 { let u = 'q: Array<self> |s, x: 'q| -> 'q x };
+        let result = (T::m(1, 2), U::u(1, [3]))
+    "#
+);
+
+// A bound the declared one does not imply is one the trait does not declare.
+run!(
+    impl_method_written_bound_narrower_than_the_trait_s_refused,
+    refused("the implementation requires 'b: i64, which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x };
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_method_written_bound_of_another_type_refused,
+    refused("the implementation requires 'b: [null, string], which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: [string, null] |s, x: 'q| -> 'q x };
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
+// One the declared bound implies is admitted, as an interface `val`'s is.
+run!(
+    impl_method_written_bound_wider_than_the_trait_s,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: [self, string, null] |s, x: 'q| -> 'q x };
+        let result = T::m(1, 2)
+    "#
+);
+
+// A parameter written at the bound takes every type the variable can be.
+run!(
+    impl_method_parameter_written_at_the_declared_bound,
+    prints("[i64:3, i64:0]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 };
+        impl T for i64 {
+            let m = |s, x: [i64, null]| select x { null as _ => 0, v => v + s }
+        };
+        let result = [T::m(1, 2), T::m(1, null)]
+    "#
+);
+
+run!(
+    impl_method_result_written_at_the_declared_bound_refused,
+    refused("does not contain fn(s: i64, x: [i64, null]) -> [i64, null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = |s, x: [i64, null]| -> [i64, null] x };
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
+// The body reads the bound at the target: a written type under it, and a
+// select over the parameter it bounds.
+run!(
+    impl_method_body_reads_the_declared_bound_at_the_target,
+    prints("[i64:4, i64:3, i64:1]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: Array<self>>(self, xs: 'b) -> i64 };
+        impl T for i64 { let m = |s, xs| { let q: Array<self> = xs; q[0]$ + s } };
+        trait U { val u: fn<'b: [self, null]>(self, x: 'b) -> i64 };
+        impl U for i64 { let u = |s, x| select x { null as _ => s, i64 as v => v + s } };
+        let result = [T::m(3, [1, 2]), U::u(1, 2), U::u(1, null)]
+    "#
+);
+
+// The call is held to the bound at its own target.
+run!(
+    impl_method_bound_holding_self_holds_the_call,
+    refused("does not contain string"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl T for i64 { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
+        let result = T::m(1, "s")
+    "#
+; FuseExpect::None);
+
+// A generic impl's target holds the impl's variables, and a variable of
+// the trait named like one of them is renamed apart in the bounds too.
+run!(
+    generic_impl_method_written_bound_holding_self,
+    prints("[[i64:2], null, [i64:3], null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl<'a> T for Array<'a> { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
+        trait U { val u: fn<'a: [self, null]>(self, x: 'a) -> 'a };
+        impl<'a> U for Array<'a> { let u = 'q: [Array<'a>, null] |s, x: 'q| -> 'q x };
+        let result = [T::m([1], [2]), T::m([1], null), U::u([1], [3]), U::u([1], null)]
+    "#
+);
+
+run!(
+    generic_impl_method_written_bound_at_one_instance_refused,
+    refused("the implementation requires 'b: [null, Array<i64>], which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
+        impl<'a> T for Array<'a> { let m = 'q: [Array<i64>, null] |s, x: 'q| -> 'q x };
+        let result = T::m([1], [2])
+    "#
+; FuseExpect::None);
+
+run!(
+    generic_impl_renamed_bounds_name_each_other,
+    prints(r#"[[[i64:2, "t"]], [null], [[i64:4, "u"]]]"#),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn<'a: [self, null], 'b: Array<'a>>(self, x: 'a, y: 'b) -> 'b
+        };
+        impl<'a, 'b> T for ('a, 'b) { let m = |s, x, y| y };
+        trait U {
+            val u: fn<'a: [self, null], 'b: Array<'a>>(self, x: 'a, y: 'b) -> 'b
+        };
+        impl<'a, 'b> U for ('a, 'b) {
+            let u = 'p: [self, null], 'q: Array<'p> |s, x: 'p, y: 'q| -> 'q y
+        };
+        let result: Array<Array<[(i64, string), null]>> = [
+            T::m((1, "s"), (2, "t"), [(2, "t")]),
+            T::m((1, "s"), null, [null]),
+            U::u((3, "s"), (4, "u"), [(4, "u")])
+        ]
+    "#
+);
+
+run!(
+    generic_impl_renamed_bound_over_self_refused,
+    refused("the implementation requires 'b1: Array<('a, 'b)>, which the signature does not declare"),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn<'a: [self, null], 'b: Array<'a>>(self, x: 'a, y: 'b) -> 'b
+        };
+        impl<'a, 'b> T for ('a, 'b) {
+            let m = 'p: [self, null], 'q: Array<self> |s, x: 'p, y: 'q| -> 'q y
+        };
+        let result = T::m((1, "s"), (2, "t"), [(2, "t")])
+    "#
+; FuseExpect::None);
+
+run!(
+    generic_impl_method_body_reads_the_renamed_bound,
+    prints("[i64:3, i64:1]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [self, null]>(self, x: 'a) -> i64 };
+        impl<'a> T for Array<'a> {
+            let m = |s, x| select x {
+                null as _ => array::len(s),
+                Array<'a> as v => array::len(v) + array::len(s)
+            }
+        };
+        let result = [T::m([1], [2, 3]), T::m([1], null)]
+    "#
+);
+
+// A default reads the bound over the trait's `self`, each impl's method
+// over its target, and one calls the other.
+run!(
+    default_reads_a_bound_holding_self,
+    prints("[i64:4, i64:2, i64:3, i64:2]"),
+    "/test.gx" => r#"
+        trait T {
+            val k: fn<'b: [self, null]>(self, x: 'b) -> i64;
+            val m: fn<'b: [self, null]>(self, x: 'b) -> i64 = |s, x| T::k(s, x) + 1
+        };
+        impl T for i64 {
+            let k = 'q: [self, null] |s, x: 'q| -> i64 select x {
+                null as _ => s,
+                i64 as v => v + s
+            }
+        };
+        impl<'a> T for Array<'a> {
+            let k = |s, x| select x {
+                null as _ => array::len(s),
+                Array<'a> as v => array::len(v)
+            }
+        };
+        let result = [T::m(1, 2), T::m(1, null), T::m([1], [2, 3]), T::m([1], null)]
+    "#
+);
+
+run!(
+    interface_impl_written_bound_holding_self,
+    prints("[[i64:2], null]"),
+    "/test.gx" => r#"
+mod m;
+let result = [m::T::m([1], [2]), m::T::m([1], null)]
+"#,
+    "/test/m.gxi" => r#"
+trait T { val m: fn<'a: [self, null]>(self, x: 'a) -> 'a };
+impl<'a> T for Array<'a>;
+"#,
+    "/test/m.gx" => r#"
+impl<'a> T for Array<'a> { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
+"#
+);
+
 // Inside the method too: a lambda in its body, a lambda beside it, a cast,
 // `never<T>`, a type test and a `type`.
 run!(

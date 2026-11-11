@@ -187,36 +187,33 @@ fn required_attrs(requires: &[ArcStr]) -> impl Iterator<Item = Attr> + '_ {
 }
 
 /// The method signature, a fresh copy, instantiated at an
-/// implementation target: `self := target`, and a variable named like
-/// one of the target's renamed apart, so the two never read as one.
+/// implementation target: `self := target`, in its positions and in its
+/// variables' bounds alike, and a variable named like one the target
+/// holds renamed apart, so the two never read as one. Every variable of
+/// a declared signature is its own, so the substitution runs under all of
+/// them as quantifiers ([`Type::replace_tvars`]).
 pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
-    let mut theirs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    target.collect_tvars(&mut theirs);
     let mut ours: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    sig.collect_tvars(&mut ours);
+    sig.collect_tvars_through_bounds(&mut ours);
+    let mut names: LPooled<Vec<ArcStr>> =
+        ours.keys().filter(|n| n.as_str() != "self").cloned().collect();
+    names.sort_unstable();
+    let own =
+        FnType { quantifiers: Arc::from_iter(names.iter().cloned()), ..sig.clone() };
     let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-    let mut renames: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
-    for (name, tv) in ours.iter() {
-        let t = match theirs.contains_key(name) {
-            false => Type::TVar(tv.clone()),
-            true => {
-                let fresh = (1u64..)
-                    .map(|i| ArcStr::from(format_compact!("{name}{i}").as_str()))
-                    .find(|n| !theirs.contains_key(n) && !ours.contains_key(n))
-                    .unwrap();
-                renames.insert(name.clone(), fresh.clone());
-                Type::TVar(tv.renamed(fresh))
-            }
-        };
-        known.insert(name.clone(), t);
-    }
     known.insert(literal!("self"), target.clone());
-    let mut sig = sig.replace_tvars(&known);
-    if !renames.is_empty() {
-        sig.quantifiers =
-            sig.quantifiers.iter().map(|q| renames.get(q).unwrap_or(q).clone()).collect();
+    let at = Type::Fn(Arc::new(own)).replace_tvars(&known);
+    let Type::Fn(at) = &at else {
+        unreachable!("a substituted function type is a function type")
+    };
+    let renamed = |q: &ArcStr| match names.iter().position(|n| n == q) {
+        Some(i) => at.quantifiers[i].clone(),
+        None => q.clone(),
+    };
+    FnType {
+        quantifiers: sig.quantifiers.iter().map(renamed).collect(),
+        ..(**at).clone()
     }
-    sig
 }
 
 /// An impl is a global fact: one a function body declares, in a module
@@ -968,7 +965,7 @@ impl<R: Rt> Impl<R> {
             }
             let own = |tv: &TVar| !params.iter().any(|h| h.name == tv.name);
             written_method_unions(b.typ.as_ref(), &b.value, &own).at(m)?;
-            let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
+            let sig = method_sig_at(&decl.typ, &target);
             let b = BindExpr {
                 rec: b.rec,
                 pattern: b.pattern.clone(),
@@ -1210,7 +1207,7 @@ impl<R: Rt> Update<R> for Impl<R> {
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
-            let declared = method_sig_at(&d.typ.reset_tvars(), &self.def.target);
+            let declared = method_sig_at(&d.typ, &self.def.target);
             let reads = || self.method_reads_binding(&d.name);
             implements(ctx, &declared, &bind.typ, *id, reads).with_context(|| {
                 format!(
@@ -1221,8 +1218,7 @@ impl<R: Rt> Update<R> for Impl<R> {
                     declared.resolve_tvars()
                 )
             })?;
-            let expected =
-                Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
+            let expected = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
             expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
                 format!(
                     "method {} of impl {} for {} has type {}, the trait declares {}",
