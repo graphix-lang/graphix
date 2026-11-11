@@ -6914,6 +6914,31 @@ run!(
     prints("[[], []]")
 );
 
+// A declared variable going into a union is judged over the union's
+// members as a value's type is: a member a name stands for is its members
+// there too, so the check refuses what the instance at a type would.
+run!(
+    declared_variable_into_a_union_with_a_named_member_refused,
+    r#"{
+  type Id<'x> = 'x;
+  let f = |x: ['a, Id<'b>]| -> i64 0;
+  let g = |v: 'r| f(v);
+  g(1)
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    declared_variable_into_a_union_with_a_named_member_of_one_variable,
+    r#"{
+  type Id<'x> = 'x;
+  let f = |x: ['a, Id<'a>]| -> i64 0;
+  let g = |v: 'r| f(v);
+  g(1)
+}"#,
+    prints("i64:0")
+);
+
 // Every position is held, whichever round checks it: a result whose
 // variable the parameter's binding closes is checked all the same.
 run!(

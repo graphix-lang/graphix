@@ -3104,7 +3104,7 @@ impl Type {
                 // takes this verdict too.
                 if (rigid || commit) && t1.is_rigid() {
                     if let Self::Set(s) = t0
-                        && Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false)
+                        && Self::set_commit_flat(s, flags, env, hist, t)?.unwrap_or(false)
                     {
                         return Ok(true);
                     }
@@ -3143,7 +3143,7 @@ impl Type {
                     // primitives in one of its bits
                     match t0 {
                         Self::Set(s) => {
-                            return Ok(Self::set_commit(s, flags, env, hist, t)?
+                            return Ok(Self::set_commit_flat(s, flags, env, hist, t)?
                                 .unwrap_or(false));
                         }
                         Self::Primitive(p) if p.len() > 1 => {
@@ -3638,6 +3638,26 @@ impl Type {
         }
         let (structural, bare) = admit.split_at(structural);
         Self::take(s, [structural, bare], flags, env, hist, t)
+    }
+
+    /// [`Self::set_commit`] over `s` flat ([`Self::unfolded`]): for a union
+    /// met whole, a cell going into it, where no arm has unfolded it.
+    fn set_commit_flat(
+        s: &[Type],
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Type,
+    ) -> Result<Option<bool>> {
+        let named = flags.contains(ContainsFlags::Commit)
+            && s.iter().any(|m| names_members(env, m));
+        match named {
+            false => Self::set_commit(s, flags, env, hist, t),
+            true => match &Self::unfolded(env, s)? {
+                Self::Set(s) => Self::set_commit(s, flags, env, hist, t),
+                _ => Ok(None),
+            },
+        }
     }
 
     /// Commit `t` into `m`, an undecided member of a union, where it holds

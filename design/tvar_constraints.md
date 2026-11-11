@@ -430,7 +430,11 @@ A member that is a name or a bound cell standing for an open variable or
 for a union holding one is its members first (`names_members`,
 `Type::unfolded`): `['a, Id<'b>]` over `type Id<'x> = 'x` is `['a, 'b]`,
 `['a, M<'b>]` over `type M<'x> = ['x, null]` is `['a, 'b, null]`, a cell
-bound to `['x, 'y]` is `'x` and `'y`. An undecided rhs member takes a
+bound to `['x, 'y]` is `'x` and `'y`; a declared variable going into the
+union meets it flat too (`set_commit_flat`), so `let g = |v: 'r| f(v)`
+over `f = |x: ['a, Id<'b>]| ..` is refused where it is checked, not where
+`g` is built at a type (pin
+`lang::types::declared_variable_into_a_union_with_a_named_member_refused`). An undecided rhs member takes a
 union of undecided members whole, as it does alone (`['a, 'b] ⊇ 'c` binds
 `'c`), and an equality relates such a union as the contained side first
 (`equal_int`, `op::operand_type`: `u + 1` over `u: ['a, 'b]` decides
