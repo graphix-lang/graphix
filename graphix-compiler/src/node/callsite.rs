@@ -811,6 +811,22 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
+// CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
+// refuses a call its definition's check accepted where an argument was undecided at
+// the definition and is decided at the instance: `let g = |y0, y1, y4, y5, y6| f(y0,
+// y1, y4, y5, y6); g([[]], null, [[1]], [1], 1)` over `'a0: O<P<'a1, 'a2>>, 'a1:
+// O<P<'a2, 'a3>>, .. |x0: 'a0, x1: 'a1, ..|` checks and runs 7 in every other mode
+// (--no-fusion, GRAPHIX_PAR=force), and with NO_SUBST the instance of g is refused,
+// "Array<Array<_>> could go to Array<'a1 ..> or Array<'a2 ..>". In the definition y0
+// is an undecided cell, so it waits for the other arguments, which decide 'a1; in the
+// instance it is Array<Array<_>>, checked where it is written, before y1. The same
+// order decides a direct call's decided argument (f([[1]], null, ..) is refused, the
+// skill's generics.md says so), so the question is whether a decided argument at a
+// union two undecided members could take should wait for the join as an undecided
+// one does. 2 of the 191 generated programs r20-x6 newly accepts; the shipped mode
+// substitutes and agrees. probes:
+// ~/ptmp/cr29/scratch/r20/20b/x6/residual/{nosubst_g3_p00561,nosubst_g1_p00424}.gx
+// (decided-arg-waits-01)
 /// Check a call's argument node against its formal's type `typ`,
 /// answering how it fit. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
