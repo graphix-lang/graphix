@@ -218,6 +218,21 @@ structure is returned SHARED, never copied.
   `deep_nesting::
   a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time`).
 
+**A select's walks over two recursive unions.** The runtime-form check
+(`cast::rep_collision`) keys the pair it is at, a side of it a named
+type, by the two sides' `RefHist::param_id`s: an id hashes each shared
+node of a side once, where the types themselves as the key hashed a
+residual's DAG as a tree at every pair. A narrowing
+(`Type::narrow_pattern`) holds the pairs it is narrowing whose sides
+reach no open cell (`tvar::Narrowing::open`, by the same ids): one met
+again inside itself holds, as a containment's does, and a pair held on
+the word of one still open is not remembered, so a test for `U0 =
+[Array<[U0, U1]>, ..]` over a value of `T0 = [Array<[T0, `A1]>, ..]`
+ends. Pins: `typ::cast::tests::
+a_form_walk_keys_a_shared_side_by_its_nodes`, `typ::setops::tests::
+narrowing_over_two_recursive_unions_ends`, `deep_nesting::
+a_type_test_over_two_recursive_unions_checks_in_time`.
+
 **`flatten_set` worklist.** The accumulator is merge-saturated by
 invariant, so only the incoming (or just-merged) element can enable a
 new merge — no restart. `merge` compares nested positions via

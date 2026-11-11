@@ -7,7 +7,8 @@ use crate::{
     format_with_flags, list, rep,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, CoreTrait, MapType, RefKey, TVar, Type, TypeRef, Unfolded,
+        AbstractId, Bound, CoreTrait, MapType, RefHist, RefKey, TVar, Type, TypeRef,
+        Unfolded,
         setops::union_identical,
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
     },
@@ -660,7 +661,8 @@ impl Type {
                 let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
                     return false;
                 };
-                walk(seen, pair_at(&p, &r), false, |seen| {
+                let at = seen.pair_at(env, &p, &r);
+                walk(seen, at, false, |seen| {
                     let expand = |t: &Type| match t {
                         Type::Ref(_) => t.lookup_ref(env).ok(),
                         t => Some(t.clone()),
@@ -2350,7 +2352,7 @@ struct Expanded<
     K: std::hash::Hash + Eq + 'static,
     N: std::hash::Hash + Eq + 'static = usize,
 > {
-    seen: LPooled<AHashSet<K>>,
+    seen: RefHist<AHashSet<K>>,
     /// The shared nodes (or pairs of them) the walk found nothing under,
     /// so a type that shares them (a DAG) is walked once.
     clear: LPooled<AHashSet<N>>,
@@ -2370,7 +2372,7 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Defau
 {
     fn default() -> Self {
         Self {
-            seen: LPooled::take(),
+            seen: RefHist::new(),
             clear: LPooled::take(),
             built: LPooled::take(),
             depth: 0,
@@ -2431,12 +2433,19 @@ fn walk<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static, R>
     r
 }
 
-/// Pairs already on the walk; a finite witness never revisits one.
-type RepSeen = Expanded<(Type, Type), (usize, usize)>;
+/// Pairs already on the walk, each side by the id of its structure
+/// ([`RefHist::param_id`]); a finite witness never revisits one.
+type RepSeen = Expanded<(usize, usize), (usize, usize)>;
 
-fn pair_at(a: &Type, b: &Type) -> Option<(Type, Type)> {
-    (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
-        .then(|| (a.clone(), b.clone()))
+impl RepSeen {
+    /// The pair a walk is at where a side names a type. An id reads each
+    /// shared node of its side once, so a side that shares its parts (a
+    /// difference of two recursive unions) costs its nodes, not its
+    /// unfolding.
+    fn pair_at(&mut self, env: &Env, a: &Type, b: &Type) -> Option<(usize, usize)> {
+        (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
+            .then(|| (self.seen.param_id(a, env), self.seen.param_id(b, env)))
+    }
 }
 
 fn ref_at(t: &Type) -> Option<Type> {
@@ -2494,7 +2503,8 @@ fn rep_collision(
         return None;
     }
     ensure_sufficient(|| {
-        walk(seen, pair_at(a, b), None, |seen| {
+        let at = seen.pair_at(env, a, b);
+        walk(seen, at, None, |seen| {
             let pairs =
                 |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
                     xs.map(|(x, y)| rep_collision(env, seen, tested, open, ordered, x, y))
@@ -3727,6 +3737,20 @@ pub(crate) mod tests {
         assert!(t.shallow_discriminant(&Env::default(), &scrutinee).is_some());
         let steps = super::SHAPE_STEPS.with(|s| s.get());
         assert!(steps <= 4 * n, "{steps} steps over a DAG of depth {n}");
+    }
+
+    /// A runtime-form walk keys the pair it is at by its sides' nodes: a
+    /// named type against a DAG of tuples 64 deep, 2^64 leaves read as a
+    /// tree, ends.
+    #[test]
+    fn a_form_walk_keys_a_shared_side_by_its_nodes() {
+        let (env, r) = typed(&[("R", "[(R, R), `Z]")], "R");
+        let mut t = parsed(&env, "`Y");
+        for _ in 0..64 {
+            t = Type::Tuple(Arc::from_iter([t.clone(), t]));
+        }
+        assert!(r.rep_collision(&env, &t).is_none());
+        assert!(t.rep_collision(&env, &r).is_none());
     }
 
     /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =

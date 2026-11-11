@@ -1192,7 +1192,12 @@ impl Type {
                 if let Some(defs) = defs {
                     hist.reach(Reach::Defs(defs));
                 }
-                let r = t0.diff_int(env, hist, &t1);
+                // a residual keeps the names it took nothing from: a later
+                // pair is keyed by them, and met again
+                let r = t0.diff_int(env, hist, &t1).map(|d| match self {
+                    Type::Ref(_) if union_identical(&d, &t0) => self.clone(),
+                    _ => d,
+                });
                 hist.unfoldings.leave(defs);
                 hist.hist.remove(&key);
                 let cut = mem::replace(&mut hist.cut, outer_cut);
@@ -1241,7 +1246,7 @@ impl Type {
                         s[i] = s[i].diff_int(env, hist, &s1[j])?
                     }
                 }
-                Ok(Self::flatten_set(s.drain(..)))
+                Ok(Self::flatten_set(s.drain(..).filter(|d| !is_empty_ty(d))))
             }
             (Type::Set(s), t) => {
                 let mut diffs: LPooled<Vec<Type>> = LPooled::take();
@@ -1254,7 +1259,7 @@ impl Type {
                     diffs.push(d);
                 }
                 if partial {
-                    Ok(Self::flatten_set(diffs.drain(..)))
+                    Ok(Self::flatten_set(diffs.drain(..).filter(|d| !is_empty_ty(d))))
                 } else {
                     diffs.retain(|d| !is_empty_ty(d));
                     Ok(match diffs.len() {
@@ -2151,6 +2156,25 @@ pub(crate) mod tests {
         assert_eq!(NARROW_STEPS.with(|n| n.get()), 310);
     }
 
+    // Narrowing T0 to what a test of U0 takes of it, each a union that
+    // returns to itself through an array, meets the pair it started from
+    // inside itself and ends there.
+    #[test]
+    fn narrowing_over_two_recursive_unions_ends() {
+        use crate::typ::tvar::NARROW_STEPS;
+        let defs = [
+            ("T0", "[Array<[T0, `A1]>, Array<T0>, `A0]"),
+            ("U0", "[Array<[U0, U1]>, Array<U1>, `B0]"),
+            ("U1", "[Array<U1>, `B1]"),
+        ];
+        let (env, t) = typed(&defs, "U0");
+        let s = parsed(&env, "T0");
+        let m = t.matching_type(&env, &s).unwrap();
+        NARROW_STEPS.with(|n| n.set(0));
+        assert!(s.narrow_pattern(&env, &m).unwrap());
+        assert_eq!(NARROW_STEPS.with(|n| n.get()), 61);
+    }
+
     /// Error cycles `C<l>_j = [Error<C<l>_j+1 mod l>, tag]` of the lengths
     /// `ls`, position 0 tagged `` `Mm `` where `shared`, `S` the union of
     /// their heads, and `M0 = [Error<M0>, `Mm]`.
@@ -2193,7 +2217,32 @@ pub(crate) mod tests {
             [&[2, 3], &[2, 3, 5], &[2, 3, 5, 7], &[2, 3, 5, 7, 11, 13]];
         let apart: Vec<usize> = sets.iter().map(|ls| pairs(ls, false)).collect();
         let shared: Vec<usize> = sets.iter().map(|ls| pairs(ls, true)).collect();
-        assert_eq!((apart, shared), (vec![12, 24, 43, 178], vec![12, 24, 43, 178]));
+        assert_eq!((apart, shared), (vec![10, 17, 26, 54], vec![12, 22, 36, 127]));
+    }
+
+    // A name a subtrahend takes nothing from stays the name, at every
+    // depth, and a member it takes whole leaves nothing beside it: the
+    // residual of two recursive unions is built of their names, so a pair
+    // the walk left is the pair it comes back to.
+    #[test]
+    fn diff_keeps_a_name_it_takes_nothing_from() {
+        let defs = [
+            ("T0", "[Error<[T0, `A1]>, Error<T0>, `A0]"),
+            ("T3", "[Error<T3>, null, `A3]"),
+            ("U0", "[Error<[U0, U1]>, Error<U1>, `B0]"),
+            ("U1", "[Error<U1>, `B1]"),
+        ];
+        let (env, t) = typed(&defs, "T0");
+        let less = |t: &Type, less: &str| t.diff(&env, &parsed(&env, less)).unwrap();
+        super::DIFF_PAIRS.with(|n| n.set(0));
+        assert_eq!(less(&t, "U0").to_string(), "T0");
+        assert_eq!(super::DIFF_PAIRS.with(|n| n.get()), 17);
+        assert_eq!(less(&t, "i64").to_string(), "T0");
+        assert_eq!(less(&parsed(&env, "[T0, T3]"), "T3").to_string(), "T0");
+        assert_eq!(
+            less(&parsed(&env, "Error<[T0, T3]>"), "Error<T3>").to_string(),
+            "Error<T0>"
+        );
     }
 
     // Names recurring through Error payloads end within the walk's pair
@@ -2379,9 +2428,9 @@ pub(crate) mod tests {
         assert_eq!(
             costs,
             vec![
-                (18, rest.clone(), 155, true),
-                (26, rest.clone(), 202, true),
-                (34, rest, 253, true)
+                (17, rest.clone(), 148, true),
+                (25, rest.clone(), 198, true),
+                (33, rest, 245, true)
             ]
         );
     }

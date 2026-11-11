@@ -1145,6 +1145,17 @@ after the deep test is dead at any depth (pins
 `lang::select::dead_arm_after_a_deep_test_is_refused`;
 diff-residual-depth-01).
 
+A residual is built of the names it came from. A named minuend whose
+difference is its own definition, nothing taken, is answered as the name,
+at any depth, and a union member taken whole leaves no empty member
+beside the rest. Unfolded instead, a name is a new type at every level
+it recurs through (`Error<[T0, `A1]> - Error<U1>` over `T0 = [Error<[T0,
+`A1]>, Error<T0>, `A0]`), no pair is met again and the walk spends its
+whole budget on a residual 1000 levels deep, which every later walk then
+reads (pins `typ::setops::tests::diff_keeps_a_name_it_takes_nothing_from`,
+17 pairs for 1000; `deep_nesting::
+a_type_test_over_two_recursive_unions_checks_in_time`).
+
 A wider residual is sound: fewer dead arms are found, a missing case may
 be refused that a `_` arm fixes, a later arm's bind is wider. It is not
 sound for a caller that reads what a difference left out: `?` and `$`

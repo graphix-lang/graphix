@@ -4151,9 +4151,26 @@ impl Type {
                     return Ok(false);
                 }
             }
-            let r = self.narrow_pattern_inner(env, pred, walk)?;
+            let Some(pair) = walk.pair(env, self, pred) else {
+                return self.narrow_pattern_inner(env, pred, walk);
+            };
+            let depth = walk.open.len();
+            if let Some(&at) = walk.open.get(&pair) {
+                walk.assumed = walk.assumed.min(at);
+                return Ok(true);
+            }
+            walk.open.insert(pair, depth);
+            let outer = mem::replace(&mut walk.assumed, usize::MAX);
+            let r = self.narrow_pattern_inner(env, pred, walk);
+            walk.open.remove(&pair);
+            let assumed = mem::replace(&mut walk.assumed, outer);
+            if assumed < depth {
+                walk.assumed = walk.assumed.min(assumed)
+            }
+            let r = r?;
             if let Some(k) = key {
                 match r {
+                    true if assumed < depth => (),
                     true => walk.held.insert(k, self, pred),
                     false => walk.failed.insert(k, self, pred),
                 }
@@ -5006,6 +5023,13 @@ struct Narrowing {
     closure: ContainsHist,
     held: NodePairs,
     failed: NodePairs,
+    /// The pairs being narrowed that [`Self::pair`] keys, each with how
+    /// many were open when it was: one met again inside itself holds, as
+    /// a containment's does, so a narrowing over two recursive types ends.
+    open: LPooled<AHashMap<(usize, usize), usize>>,
+    /// The outermost open pair the narrowing at hand took to hold: a
+    /// pair held on the word of one still open is not remembered.
+    assumed: usize,
 }
 
 impl Narrowing {
@@ -5014,12 +5038,24 @@ impl Narrowing {
             closure: ContainsHist::new(),
             held: NodePairs::default(),
             failed: NodePairs::default(),
+            open: LPooled::take(),
+            assumed: usize::MAX,
         }
     }
 
     fn key(&mut self, t: &Type, pred: &Type) -> Option<(NodeKey, NodeKey)> {
         let k = self.held.key(t, pred)?;
         (self.closure.closed(t) && self.closure.closed(pred)).then_some(k)
+    }
+
+    /// A pair a narrowing may come back to, by its sides' structure
+    /// ([`super::RefHist::param_id`]): the predicate has parts or names a
+    /// type, and neither side reaches an open cell, so the pair binds
+    /// nothing however often it is narrowed.
+    fn pair(&mut self, env: &Env, t: &Type, pred: &Type) -> Option<(usize, usize)> {
+        let parts = matches!(pred, Type::Ref(_)) || node_addr(pred).is_some();
+        (parts && self.closure.closed(pred) && self.closure.closed(t))
+            .then(|| (self.closure.param_id(t, env), self.closure.param_id(pred, env)))
     }
 }
 
