@@ -536,47 +536,6 @@ fn holds_formal(t: &Type, f: &ArcStr) -> bool {
 /// the definitions it reaches. A walk that meets no undefined name
 /// settles every definition it reached whose parameters do not grow: each
 /// one's own walk is a part of this one.
-// XCR claude for claude: [bug/medium] An alias applied to a recursive type's parameter
-// is judged a growth though it grows nothing. `type Opt<'a> = ['a, null]; type T<'a> =
-// [`N, `C('a, T<Opt<'a>>)]` is refused ("grows its parameter 'a .. wrapped in a
-// constructor") while `T<['a, null]>` written out is accepted, and `T<I<'a>>` over
-// `type I<'b> = 'b` is refused too. The flow test counts any application as a
-// constructor, and the checker's walks compare applications as written: expanding
-// aliases here alone let `A<I<'a>>` through, and the check then hung (lane 19f, D24).
-// Eric ruled (2026-11-10, D29) (b): a typedef names a common or a large union, and
-// writing a 50-member union out to pass this is ugly and error prone, so the checker
-// takes the cost. The flow test looks through an alias application to its body (the
-// bare parameter, or a union adding members to it, is a plain flow; a constructor in
-// the body still grows), and the walks that unfold a recursive type compare alias
-// applications expanded, so `T<Opt<Opt<i64>>>` is `T<Opt<i64>>` and the unfolding
-// ends. The refusal stays for real growth (`N<Array<'a>>`). Flip the skill's
-// `U<I<'a>>` case in ide/skills/graphix-lang/generics.md and its prose, and the book
-// (udt/recursive.md). probes: ~/ptmp/cr29/d29/{alias,written,ident}.gx
-// (alias-growth-01)
-// 2026-11-10 claude: Built Eric's (b) at the definition, so no walk changed:
-// Env::deftype stores an argument that applies an alias to a parameter as the alias's
-// expansion (expansive::through_aliases) in every application that may unfold back to
-// the definition, where the expansion leaves each parameter bare in a union or absent;
-// T<Opt<'a>> is stored as T<['a, null]>, which every walk already ends on. An alias
-// with a constructor around the parameter stays as written and grows. One defined
-// below the type that applies it, or one that bounds a parameter, is not looked
-// through, counts as a constructor, and a cycle through it is refused naming the alias
-// (Expansive::Through) and the fix. An application of a closed (regular) definition
-// keeps its arguments as written, so no unfolding accepted before prints differently.
-// Pins that fail without it:
-// typ::expansive::test::{an_alias_applied_to_a_parameter_is_its_expansion,
-// parameters_passed_on_are_regular, an_alias_met_again_is_looked_through_once (8191
-// looks at depth 12 without the memo)},
-// lang::types::{alias_over_a_recursive_parameter, aliases_over_a_recursive_parameter
-// (a 50-member alias, an alias of an alias, the identity alias, a second definition on
-// the way back), alias_over_an_abstract_parameter}; refusals
-// lang::types::{alias_below_its_recursive_application_refused,
-// bounded_alias_over_a_recursive_parameter_refused} (twin bounded_alias_written_out)
-// and alias_over_a_constructor_grows; generics.md cases; the book's udt/recursive.md
-// fences. Judged here: the order rule (define the alias first) in place of a recheck
-// when the alias arrives, since a use between the two definitions would walk a nesting
-// unfolding. Found and not fixed: typedef-import-shadow-01. probes:
-// ~/ptmp/cr29/scratch/r20/20c/ag/
 pub(crate) fn expansive(env: &Env, def: &DefRef) -> Expansive {
     if def.params().is_empty() || def.regular.get().is_some() {
         return Expansive::Regular;
