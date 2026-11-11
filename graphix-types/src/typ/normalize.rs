@@ -101,6 +101,12 @@ impl ResolveTvarsCx {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The nodes a normalize pass walked: those its memo did not hold.
+    pub(super) static NORMALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A composite's identity: its kind and its content allocation's address,
 /// and a variant's tag's too, since two tags may wrap one payload
 /// allocation. `None` for every other kind.
@@ -456,29 +462,16 @@ impl Type {
         {
             return r.clone();
         }
+        #[cfg(test)]
+        NORMALIZED.with(|n| n.set(n.get() + 1));
         let r = match self {
             Type::TVar(tv) => {
                 tv.normalize_int(cx);
                 None
             }
             Type::Set(s) => {
-                let mut members_changed = false;
-                let mut members: LPooled<Vec<Self>> = LPooled::take();
-                for t in s.iter() {
-                    match t.normalize_int(cx) {
-                        Some(n) => {
-                            members_changed = true;
-                            members.push(n)
-                        }
-                        None => members.push(t.clone()),
-                    }
-                }
-                let (flat, flat_changed) = Self::flatten_set_tracked(
-                    members.drain(..),
-                    &mut cx.flat,
-                    &mut cx.welds,
-                );
-                (members_changed || flat_changed).then_some(flat)
+                let (flat, changed) = Self::normalize_members(s.iter(), cx);
+                changed.then_some(flat)
             }
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
             t => t.cow_children(&mut |c| c.normalize_int(cx)),
@@ -487,6 +480,42 @@ impl Type {
             cx.memo.insert(k, (self.clone(), r.clone()));
         }
         r
+    }
+
+    /// The normal form of the union of `members`, and whether it differs
+    /// from a `Type::Set` of them in their order.
+    fn normalize_members<'a>(
+        members: impl Iterator<Item = &'a Self>,
+        cx: &mut NormCx,
+    ) -> (Self, bool) {
+        let mut members_changed = false;
+        let mut normal: LPooled<Vec<Self>> = LPooled::take();
+        for t in members {
+            match t.normalize_int(cx) {
+                Some(n) => {
+                    members_changed = true;
+                    normal.push(n)
+                }
+                None => normal.push(t.clone()),
+            }
+        }
+        let (flat, flat_changed) =
+            Self::flatten_set_tracked(normal.drain(..), &mut cx.flat, &mut cx.welds);
+        (flat, members_changed || flat_changed)
+    }
+
+    /// The normal form of the union of `members`, of one its own, in the
+    /// pass `cx`, whose memo takes the members' nodes and not the union
+    /// asked for.
+    pub(super) fn normal_union<'a>(
+        members: impl Iterator<Item = &'a Self> + Clone,
+        cx: &mut NormCx,
+    ) -> Self {
+        let mut first_two = members.clone();
+        match (first_two.next(), first_two.next()) {
+            (Some(m), None) => m.normalize_int(cx).unwrap_or_else(|| m.clone()),
+            _ => Self::normalize_members(members, cx).0,
+        }
     }
 
     /// The one member `self` and `t` merge into; the live cells a

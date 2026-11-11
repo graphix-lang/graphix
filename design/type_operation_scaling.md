@@ -64,6 +64,18 @@ structure is returned SHARED, never copied.
   cell, and a committing walk copies a cached expansion only where a copy
   differs from it: where it holds a cell or a function type
   (`Closure::Plain` is neither).
+- The unions a `contains` walk builds to ask about (a distribution's pool
+  of its candidates' parts, a placement's residue) are normalized in one
+  pass kept for the call (`ContainsHist::normal_union`), so a node many
+  pools share is normalized and flattened once, not once a question. The
+  pass takes only members that are `Closure::Plain`: normalize rewrites a
+  bound cell's binding and a merge reads it, so a member holding a cell is
+  normalized in a pass of its own, as the cells stand. What the pass
+  keeps of a name is its form as the name's resolution stood (two
+  references to one definition merge once both are filled): the same
+  type either way. Pins: `typ::contains::tests::
+  a_walk_normalizes_the_nodes_its_pools_share_once`,
+  `a_union_over_a_cell_is_normalized_at_each_question`.
 - `would_cycle_seen` (the occurs check) is a pure existence query: the
   visited set is permanent (explored-without-finding never needs
   re-exploring) and holds composite node addresses as well as cells.

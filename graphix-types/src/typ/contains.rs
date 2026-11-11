@@ -8,7 +8,9 @@ use crate::{
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        Unfolded, node_addr, probe_key,
+        Unfolded, node_addr,
+        normalize::NormCx,
+        probe_key,
         setops::{Identical, IdenticalMemo, strictly_identical, union_identical},
         tvar::{
             CellFact, CellLock, Cycle, Fresh, RigidGate, Standing, Toward, bare_path,
@@ -166,6 +168,10 @@ pub(super) struct ContainsHist {
     /// address is not recycled under its key.
     closed: Lazy<AddrMap<(Closure, u64)>>,
     closed_pins: Lazy<Vec<Type>>,
+    /// The one normalize pass of the unions this walk builds from members
+    /// holding no cell and no function type ([`Self::normal_union`]):
+    /// what it keeps of a node read nothing a walk can write.
+    norm: Option<NormCx>,
     /// How many function types hold quantifier cells rigid on this path
     /// (`FnType::contains_int`): a verdict reached under one depends on
     /// the gate, so the probe memo is neither read nor filled.
@@ -288,6 +294,7 @@ impl ContainsHist {
             cycled: false,
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
+            norm: None,
             gated: 0,
             trial: false,
             identical: IdenticalMemo::default(),
@@ -369,6 +376,20 @@ impl ContainsHist {
             }
             c
         })
+    }
+
+    /// The union of `members` in normal form, each node they share
+    /// normalized once a walk where none holds a cell or a function type.
+    fn normal_union<'a>(
+        &mut self,
+        members: impl Iterator<Item = &'a Type> + Clone,
+    ) -> Type {
+        let plain = |hist: &mut Self, m: &Type| hist.closure(m, false) == Closure::Plain;
+        if members.clone().all(|m| plain(self, m)) {
+            Type::normal_union(members, self.norm.get_or_insert_with(NormCx::take))
+        } else {
+            Type::normal_union(members, &mut NormCx::take())
+        }
     }
 
     /// Cached pure-probe verdict for `(t0, t1)`, rigid cells held rigid
@@ -3523,7 +3544,7 @@ impl Type {
                 distributing = Some(j);
             }
         }
-        // CR claude for claude: [perf/low] Each distribution normalizes its pool (and
+        // XCR claude for claude: [perf/low] Each distribution normalizes its pool (and
         // place_members its residue) in a pass of its own, so a contains walk over a DAG
         // of named error unions renormalizes the same shared parts once per question:
         // cm4.gx (four `Un as u` arms over T0..T3 = [Error<Ti+1>, Error<Ti+2>, `Ai]) takes
@@ -3532,9 +3553,19 @@ impl Type {
         // set_covers_by_distribution_inner -> normalize. A pass memo shared by one walk's
         // normalizations would take each shared part once. probe:
         // ~/ptmp/cr29/scratch/r19/19b/mtm/cm4.gx (contains-normalize-repeat-01)
-        let pool = distributing.map(|j| {
-            Type::Set(Arc::from_iter(cands.iter().map(|c| c[j].clone()))).normalize()
-        });
+        // 2026-11-10 claude: The walk keeps one normalize pass (ContainsHist::norm) for
+        // the unions it builds, the distribution's pool and place_members' residue
+        // (ContainsHist::normal_union), used where every member is Closure::Plain; a
+        // member holding a cell or a function type takes a pass of its own as before.
+        // cm4.gx --no-cache --check: 26.9G instructions on base-r20, 24.6G on the lane
+        // head, 5.83G now (an empty program 0.76G); the census is unchanged and the GUI
+        // examples' check is within noise (40.76-40.86G, 40.78-40.82G with the pass off).
+        // Pins: typ::contains::tests::a_walk_normalizes_the_nodes_its_pools_share_once
+        // fails with the walk's pass off (60573 nodes normalized in 7475 steps, 1630 with
+        // it); a_union_over_a_cell_is_normalized_at_each_question fails if the pass takes
+        // a member holding a cell. What is left of cm4 is matching_type's walks
+        // (matching-type-probe-walks-01).
+        let pool = distributing.map(|j| hist.normal_union(cands.iter().map(|c| &c[j])));
         if let (Some(j), Some(pool)) = (distributing, &pool)
             && !pool.contains_int(probe, env, hist, &targs[j])?
         {
@@ -3852,12 +3883,7 @@ impl Type {
         if residue.is_empty() {
             return Ok(true);
         }
-        let target = if residue.len() == 1 {
-            residue[0].clone()
-        } else {
-            Type::Set(Arc::from_iter(residue.drain(..)))
-        };
-        let target = target.normalize();
+        let target = hist.normal_union(residue.iter());
         let free = s0.iter().zip(&free).filter_map(|(m, free)| free.then_some(m));
         match Self::residue_member(free, flags, env, hist, &target)? {
             Some(m) => m.contains_int(flags, env, hist, &target),
@@ -4151,7 +4177,7 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typ::setops::tests::past_eager;
+    use crate::typ::{normalize::NORMALIZED, setops::tests::past_eager};
     use arcstr::literal;
 
     // A type expanded through a chain of parametric typedefs, a DAG that
@@ -4993,6 +5019,60 @@ mod tests {
         let merged = c.cell();
         let absorbed = before.iter().find(|b| !Arc::ptr_eq(b, &merged)).unwrap();
         assert_eq!(Arc::count(absorbed), 2, "held here and by the walk");
+    }
+
+    /// `T0..T3` and `U0..U3`, each `[Error<next>, Error<next but one>, tag]`
+    /// over its own four names: a DAG of named error unions.
+    fn error_rings() -> (Env, Vec<Type>, Vec<Type>) {
+        let mut defs = vec![];
+        for (name, tag) in [("T", "A"), ("U", "B")] {
+            for i in 0..4 {
+                let (next, after) = ((i + 1) % 4, (i + 2) % 4);
+                defs.push((
+                    format!("{name}{i}"),
+                    format!("[Error<{name}{next}>, Error<{name}{after}>, `{tag}{i}]"),
+                ));
+            }
+        }
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, _) = Env::typed_at_root(&defs, "null").unwrap();
+        let named = |name: &str| -> Vec<Type> {
+            let root = ModPath::root();
+            (0..4).map(|i| parsed(&format!("{name}{i}")).scope_refs(&root)).collect()
+        };
+        (env, named("T"), named("U"))
+    }
+
+    // What `T0` leaves after a test of `U0` is a DAG of unions over the
+    // names, and whether it holds `U1` asks a distribution at each of its
+    // error members: the walk normalizes each node the pools share once,
+    // not once a question.
+    #[test]
+    fn a_walk_normalizes_the_nodes_its_pools_share_once() {
+        let (env, ts, us) = error_rings();
+        let left = ts[0].diff(&env, &us[0]).unwrap();
+        NORMALIZED.with(|n| n.set(0));
+        CONTAINS_STEPS.with(|n| n.set(0));
+        assert!(!left.contains_with_flags(BitFlags::empty(), &env, &us[1]).unwrap());
+        let (normalized, steps) =
+            (NORMALIZED.with(|n| n.get()), CONTAINS_STEPS.with(|n| n.get()));
+        assert!(normalized <= steps, "{normalized} nodes normalized in {steps} steps");
+    }
+
+    // A member that holds a cell is normalized as the cell stands at each
+    // question: the walk's pass keeps nothing of it.
+    #[test]
+    fn a_union_over_a_cell_is_normalized_at_each_question() {
+        let a = TVar::empty_named(literal!("a"));
+        let over_cell =
+            Type::Set(Arc::from_iter([Type::TVar(a.clone()), parsed("string")]));
+        let members = [Type::Error(Arc::new(over_cell)), parsed("Error<[i64, string]>")];
+        let mut hist = ContainsHist::new();
+        let open = hist.normal_union(members.iter());
+        assert!(matches!(&open, Type::Set(s) if s.len() == 2), "{open}");
+        a.bind(Type::Primitive(Typ::I64.into()));
+        let bound = hist.normal_union(members.iter());
+        assert!(matches!(&bound, Type::Error(_)), "{bound}");
     }
 
     fn parsed(s: &str) -> Type {
