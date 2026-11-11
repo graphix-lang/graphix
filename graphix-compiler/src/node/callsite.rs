@@ -37,6 +37,7 @@ use crate::{
     typ::{
         AmbiguousMember, Brief, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability,
         TVar, Type,
+        settle::{DataPositions, Held},
         tvar::{AtLevel, BoundAt, Level, RigidGate},
     },
     wrap,
@@ -1259,67 +1260,6 @@ pub(crate) fn carried_out(
     })
 }
 
-/// The shared nodes a [`data_positions`] walk has walked, by identity and
-/// position kind, each held so an expansion's node keeps its address.
-type DataSeen = AHashMap<(usize, bool), Type>;
-
-// CR claude for claude: [perf/medium] The walk takes every path through typedefs
-// that name each other when they are applied over open cells: `expanding` stops a
-// definition only inside its own expansion, and DataSeen keys shared nodes, which
-// an expansion over an open cell is not (lookup_ref_probe builds it anew each
-// time), so a definition reached by many paths is walked once per path. One
-// generic call, `let lit = |x: 'a| -> T0<'a, 'm> `L0(x); let e0 = lit(0)`, over K
-// definitions T0..<'a, 'm> of 15 variants that name each other takes, for
-// --no-cache --check on base-r20's debug build, 0.82G / 1.16G / 3.35G / 12.1G /
-// 87.0G instructions for K = 3 / 4 / 5 / 6 / 7 (an empty program 0.74G), 87% of
-// it under Widening::cells, widenable, data_positions and expansion (perf, K = 6).
-// A verdict kept per definition, parameter keys and position kind, as
-// holds_invariantly keeps `clean` for the parameterless ones, would walk each
-// application once. Found reviewing typedef-param-equality-01 on lane 20c, whose
-// build takes the same. probes: ~/ptmp/cr29/scratch/r20/20c/review-tpe/dp{3..7}.gx
-// (data-positions-paths-01)
-/// Every type variable under `t` by name, with whether each occurrence
-/// is data: never under a function, a writable reference, a typedef application,
-/// a nominal type or a constructor application. Bindings are walked.
-fn data_positions(
-    env: &Env,
-    t: &Type,
-    data: bool,
-    expanding: &mut SmallVec<[usize; 4]>,
-    seen: &mut DataSeen,
-    out: &mut AHashMap<ArcStr, (TVar, bool)>,
-) {
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            out.entry(tv.name.clone()).or_insert_with(|| (tv.clone(), true)).1 &= data;
-            if seen.insert((tv.cell_addr(), data), t.clone()).is_none()
-                && let Some(b) = tv.binding()
-            {
-                data_positions(env, &b, data, expanding, seen, out)
-            }
-        }
-        // a shared node is walked once in each kind of position
-        t if t
-            .shared_identity()
-            .is_some_and(|n| seen.insert((n, data), t.clone()).is_some()) => {}
-        Type::Ref(_) if let Some((key, whole)) = expansion(env, t, expanding) => {
-            expanding.push(key);
-            data_positions(env, &whole, data, expanding, seen, out);
-            expanding.pop();
-        }
-        Type::Fn(_)
-        | Type::ByRef(Mutability::Mut, _)
-        | Type::Ref(_)
-        | Type::Abstract { .. }
-        | Type::App(..) => {
-            t.for_each_child(&mut |c| data_positions(env, c, false, expanding, seen, out))
-        }
-        t => {
-            t.for_each_child(&mut |c| data_positions(env, c, data, expanding, seen, out))
-        }
-    })
-}
-
 // CR claude for claude: [perf/medium] A call whose signature holds a DAG of
 // parametrized named unions checks in time exponential in the DAG's depth: `type
 // L0<'t> = ['t, null, `A]; type M0<'t> = [Array<'t>, `B]; type L<i><'t> =
@@ -1396,11 +1336,13 @@ fn holds_invariantly(
 fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
-    let mut seen: LPooled<DataSeen> = LPooled::take();
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
-    let mut expanding = SmallVec::new();
+    let mut positions = DataPositions::new(env);
     inst.for_each_type(&mut |t| {
-        data_positions(env, t, true, &mut expanding, &mut seen, &mut found)
+        positions.walk(t, Held::default(), &mut |tv, held| {
+            found.entry(tv.name.clone()).or_insert_with(|| (tv.clone(), true)).1 &=
+                held.data()
+        })
     });
     found
         .drain()
@@ -1591,6 +1533,15 @@ impl Widening {
         Ok(())
     }
 
+    // CR claude for claude: [bug/low] Two parts of one argument that hold one
+    // widenable variable still decide it by their order: over `let f = |k: ('y,
+    // 'y)| 0` and `n: [i64, null]`, `f((1, n))` is refused ("('y: i64, 'y: i64)
+    // does not contain (i64, [i64, null])") and `f((n, 1))` runs, where two
+    // arguments widen in either order and so do two parts of one position of a
+    // written function type (FnType::order_free_cells). Base-r20 the same.
+    // Widening::widen probes the argument whole against the open formal, and
+    // that probe binds the variable at the first part. probes:
+    // ~/ptmp/cr29/scratch/r20/20b/fao/{c3,c5}.gx (widen-within-arg-order-01)
     /// An argument of type `typ` did not fit `formal`: widen the variables
     /// it holds wider and check it, or the mismatch error. False when it
     /// is neither wider nor narrower than a variable, to be checked once

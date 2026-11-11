@@ -177,6 +177,9 @@ pub(super) struct ContainsHist {
     /// (`FnType::contains_int`): a verdict reached under one depends on
     /// the gate, so the probe memo is neither read nor filled.
     pub(super) gated: u32,
+    /// The cells whose closed parts wait for the end of a function's
+    /// arguments ([`Self::defer`]), the innermost function's last.
+    deferring: SmallVec<[Deferred; 2]>,
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
@@ -202,6 +205,13 @@ fn probe_flags(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
         true => plain,
         false => flags,
     }
+}
+
+/// An open cell and the closed parts it must hold that wait for the end
+/// of a function's arguments, each with the flags it met the cell under.
+struct Deferred {
+    tv: TVar,
+    parts: SmallVec<[(Type, BitFlags<ContainsFlags>); 2]>,
 }
 
 /// What a verdict assumed of the walk in progress: the depth of the
@@ -312,6 +322,7 @@ impl ContainsHist {
             closed_pins: Lazy::new(),
             norm: None,
             gated: 0,
+            deferring: SmallVec::new(),
             trial: false,
             ordered: false,
             identical: IdenticalMemo::default(),
@@ -320,6 +331,95 @@ impl ContainsHist {
 
     fn ordered() -> Self {
         ContainsHist { ordered: true, ..Self::new() }
+    }
+
+    /// Hold `cells` open while a function's arguments are walked: a part
+    /// holding no undecided cell that one of them must hold waits
+    /// ([`Self::defers`]) for [`Self::settle_deferred`], which takes the
+    /// mark. With several positions holding a cell, none decides it by
+    /// coming first.
+    pub(super) fn defer(&mut self, cells: SmallVec<[TVar; 2]>) -> Option<usize> {
+        if cells.is_empty() {
+            return None;
+        }
+        let mark = self.deferring.len();
+        self.deferring
+            .extend(cells.into_iter().map(|tv| Deferred { tv, parts: SmallVec::new() }));
+        Some(mark)
+    }
+
+    /// Whether `tv ⊇ t` waits for the end of the arguments in progress.
+    fn defers(&mut self, flags: BitFlags<ContainsFlags>, tv: &TVar, t: &Type) -> bool {
+        if self.deferring.is_empty() || tv.is_bound() || undecided(t) {
+            return false;
+        }
+        let cell = tv.cell_addr();
+        match self.deferring.iter_mut().find(|d| d.tv.stands_for() == cell) {
+            Some(d) => {
+                d.parts.push((t.clone(), flags));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// End the deferral [`Self::defer`] marked, the arguments having held
+    /// or not: each cell meets every part that waited for it, first the
+    /// one that holds every other, so it takes the widest; with none such
+    /// they meet it in order, and the first decides it. A pair proven
+    /// while a part of it waited holds only if the part does: where one
+    /// does not, no proven pair is kept.
+    pub(super) fn settle_deferred(
+        &mut self,
+        mark: Option<usize>,
+        env: &Env,
+        held: Result<bool>,
+    ) -> Result<bool> {
+        let Some(mark) = mark else { return held };
+        let deferred: SmallVec<[Deferred; 2]> = self.deferring.drain(mark..).collect();
+        let holds = match held {
+            Ok(true) => self.meet_deferred(env, deferred),
+            held => held,
+        };
+        if !matches!(holds, Ok(true)) {
+            self.commit_pairs = Lazy::new()
+        }
+        holds
+    }
+
+    /// Each cell of `deferred` against the parts that waited for it.
+    fn meet_deferred(
+        &mut self,
+        env: &Env,
+        deferred: SmallVec<[Deferred; 2]>,
+    ) -> Result<bool> {
+        let probe = BitFlags::from(ContainsFlags::RigidCheck);
+        let mut holds = true;
+        for Deferred { tv, mut parts } in deferred {
+            if parts.is_empty() {
+                continue;
+            }
+            // a part that holds every other is the last that the widest
+            // before it does not hold
+            let mut widest = 0;
+            for (i, (p, _)) in parts.iter().enumerate().skip(1) {
+                if !parts[widest].0.contains_int(probe, env, self, p)? {
+                    widest = i
+                }
+            }
+            let mut holds_every = true;
+            for (p, _) in parts.iter().take(widest) {
+                holds_every &= parts[widest].0.contains_int(probe, env, self, p)?
+            }
+            if holds_every {
+                parts.swap(0, widest)
+            }
+            let tv = Type::TVar(tv);
+            for (p, flags) in parts.iter() {
+                holds &= tv.contains_int(*flags, env, self, p)?
+            }
+        }
+        Ok(holds)
     }
 
     fn trial() -> Self {
@@ -2688,6 +2788,11 @@ impl Type {
             _ => flags,
         };
         if flags.contains(ContainsFlags::Commit) {
+            if let Self::TVar(tv) = self
+                && hist.defers(flags, tv, t)
+            {
+                return Ok(true);
+            }
             if hist.gated == 0 && hist.commit_held(flags, self, t) {
                 return Ok(true);
             }
@@ -3317,7 +3422,7 @@ impl Type {
                     None => Self::set_covers_by_distribution(flags, env, hist, s, t),
                 }
             }
-            // CR claude for claude: [bug/low] A generic function checked against a written
+            // XCR claude for claude: [bug/low] A generic function checked against a written
             // function type decides a cell at the first position that meets it and never
             // widens it for a later one, so the order of the positions decides: `let f =
             // |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f` is refused ("'y: i64"),
@@ -3326,6 +3431,18 @@ impl Type {
             // Main 3cfcd2407 the same. probes:
             // ~/ptmp/cr29/scratch/r19/19f/review-tpe/{ord1,ord1k,ord2,s7z,s7a,s7ak}.gx
             // (fn-annotation-order-01)
+            // 2026-11-10 claude: A variable of the contained function that no function type
+            // of its signature holds, nor a union beside another undecided member, now takes
+            // the widest of the closed types the argument positions give it, whatever their
+            // order (FnType::order_free_cells, ContainsHist::defer / settle_deferred;
+            // FnType::pre_unify_params defers the same way, so a callback argument fits as a
+            // let does); a position holding it exactly (&mut, a nominal type) decides it
+            // wherever written. ord1 and the fo1..fo6 forms run in both orders; ord2 (no
+            // widest) is refused in both, as a call is; s7z/s7a (a function type holds the
+            // variable) keep the first position, as at a call (D7 follow-up 2 a). Pins
+            // lang::functions::written_fn_type_*: 8 of them (32 mode runs) fail with
+            // order_free_cells returning nothing; skill generics.md cases. Left open as
+            // widen-within-arg-order-01: a call's two parts of one argument.
             (Self::Fn(f0), Self::Fn(f1)) => {
                 let r = f0.contains_int(flags, env, hist, f1)?;
                 if r && commit {

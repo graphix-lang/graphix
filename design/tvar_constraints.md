@@ -338,6 +338,51 @@ refusal there: `f({n: 1, k}, {n: w, k})` over `|x: 'a, y: 'a|` with `w:
 [i64, null]` is refused, naming nothing, and `f({n: w, k}, {n: 1, k})`
 runs; an omitted default is met after every written argument.
 
+### A function held at a function type
+
+A function type that must hold a function (an annotated `let`, a
+callback's formal, a field, a write) holds it position by position
+(`FnType::contains_gated`), and a variable of the function still open
+there is decided by what the positions give it. A variable that no
+function type of the function's signature holds, nor a union beside
+another undecided member (`FnType::order_free_cells`, over
+`settle::DataPositions`), takes the widest of the types the argument
+positions give it, whatever their order, as a call's arguments decide
+it. Each part holding no undecided cell that the variable must hold
+waits for the end of the arguments (`ContainsHist::defer`, `defers`);
+there the variable meets the part that holds every other one first, then
+the rest (`ContainsHist::settle_deferred`), and only then are the result
+and the throws related. So `let g: fn(b: i64, k: Any) -> i64 = f` over
+`let f = |b: 'y, k: 'y| 0` takes `'y` as `Any`, as it does with `k`
+written first, and a narrower written result (`-> 'y` held at `-> i64`
+beside `k: [i64, null]`) is refused in either order. Two parts of one
+position (`('y, 'y)` held at `(i64, Any)`) are two parts.
+
+- With no part that holds the others (`fn(b: i64, k: string)`) the parts
+  meet the variable in the order written and the second is refused, in
+  either order, as a call's arguments are.
+- A part holding an undecided cell does not wait: it meets the variable
+  where it is written, and the parts that waited then meet what it left.
+- A position that holds the variable exactly (a writable reference, a
+  nominal type's or a constructor application's parameter) binds it when
+  it is met, and the parts that waited must fit that: `fn(k: i64, p:
+  &mut [i64, null])` holds `|k: 'y, p: &mut 'y|` in either order.
+- A variable a function type holds, a callback's parameter or result, is
+  decided by the first position that meets it, as at a call (above): the
+  held type writes its earlier position as wide as the later ones need.
+  A typedef application met inside its own expansion (`S<'b, 'a>` in
+  `S<'a, 'b>`) counts as holding its parameters so, its expansion being
+  unwalked. A variable in a union beside another undecided member
+  (`['b, Array<'b>]`) is decided in order too: which member takes a type
+  depends on what the cells are.
+
+The pre-unification of a callback argument with its formal
+(`FnType::pre_unify_params`) defers the same way, so `app(f)` over `h:
+fn(b: i64, k: Any) -> i64` fits as the `let` does. A pair proven while
+a part of it waited holds only if the part does: where a part is refused
+at the end, the walk keeps none of the pairs it proved
+(`ContainsHist::settle_deferred`).
+
 ### A union of variables in a signature
 
 A written function type may not hold a union written with two or more
@@ -1926,7 +1971,10 @@ references name the target is told the recursive type alone
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
   transparent typedef is its expansion)
-  (`callsite.rs::Widening`, `holds_invariantly`); a function type with
+  (`callsite.rs::Widening`, `holds_invariantly`); a function held at a
+  function type decides such a variable the same way, by the widest of
+  the positions that hold it, whatever their order
+  (`FnType::order_free_cells`, `ContainsHist::settle_deferred`); a function type with
   type variables of its own (a written `fn<'b: C>(..)`, a trait as a
   parameter's type, `fn(c: Collection)`, a constructor-trait quantifier)
   stands only as a declared signature's top (an interface `val`'s, a

@@ -259,6 +259,23 @@ no "annotate that argument as wide as this one" let f = |x: 'a, y: 'a, k: fn(v: 
 ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`ParseError(string)>] = 1; f(one, str::parse("5"), |v| 0)
 ```
 
+A generic function held at a written function type (an annotated `let`,
+a callback parameter, a field, a write) decides its variables the same
+way: one that only data holds takes the widest of the written positions,
+in either order, and with none that holds the others it is refused, as a
+call is. One a callback also holds takes the first position's type: write
+the function type's earlier position as wide as the later ones need.
+
+```graphix,cases
+ok let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f; g(1, 2)
+ok let f = |k: 'y, b: 'y| 0; let g: fn(k: Any, b: i64) -> i64 = f; g(2, 1)
+ok let f = |b: 'y, k: 'y| 0; let app = |h: fn(b: i64, k: Any) -> i64| h(1, 2); app(f)
+no "does not contain fn(b: 'y: i64, k: 'y: i64)" let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: string) -> i64 = f; g(1, "s")
+no "-> i64 does not contain" let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null)
+no "does not contain fn(b: 'y: i64" let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: i64, k: Any, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
+ok let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: Any, k: i64, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
+```
+
 ## Abstract comparisons
 
 An abstract's `Eq` implementation bypasses representation checks for equality

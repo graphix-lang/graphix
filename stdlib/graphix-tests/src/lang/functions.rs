@@ -4343,6 +4343,188 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1], [null], [null]]")
 );
 
+// A generic function held at a written function type: a variable only
+// data holds takes the widest of the types the written arguments give it,
+// whatever their order, as a call's arguments decide it.
+run!(
+    written_fn_type_widest_position_either_order,
+    r#"{
+  let f = |b: 'y, k: 'y| -> 'y k;
+  let g: fn(b: i64, k: [i64, null]) -> [i64, null] = f;
+  let h: fn(b: [i64, null], k: i64) -> [i64, null] = f;
+  (g(1, null), h(null, 2))
+}"#,
+    prints("[null, i64:2]")
+);
+
+// Two positions neither of which holds the other wait for one that holds
+// both, and two parts of one position are two positions.
+run!(
+    written_fn_type_widest_position_last,
+    r#"{
+  let f = |b: 'y, k: 'y, j: 'y| -> 'y k;
+  let p = |t: ('y, 'y)| -> 'y t.0;
+  let g: fn(b: i64, k: null, j: [i64, null]) -> [i64, null] = f;
+  let q: fn(t: (i64, [i64, null])) -> [i64, null] = p;
+  (g(1, null, 2), q((3, null)))
+}"#,
+    prints("[null, i64:3]")
+);
+
+// The same wherever the function meets the written type: a callback
+// argument, a struct's field, a write.
+run!(
+    written_fn_type_widest_position_everywhere,
+    r#"{
+  let f = |b: 'y, k: 'y| -> 'y k;
+  let app = |h: fn(b: i64, k: [i64, null]) -> [i64, null]| h(1, null);
+  let s: {h: fn(b: i64, k: [i64, null]) -> [i64, null]} = {h: f};
+  let w: fn(b: i64, k: [i64, null]) -> [i64, null] = never();
+  w <- f;
+  (app(f), (s.h)(1, 2), w(1, 3))
+}"#,
+    prints("[null, i64:2, i64:3]")
+);
+
+// A declared variable of the enclosing definition is a closed type there.
+run!(
+    written_fn_type_widest_position_declared,
+    r#"{
+  let outer = |a: 'a, n: ['a, null]| {
+    let f = |b: 'y, k: 'y| -> 'y k;
+    let g: fn(b: 'a, k: ['a, null]) -> ['a, null] = f;
+    g(a, n)
+  };
+  outer(1, null)
+}"#,
+    prints("null")
+);
+
+// The widest position types the result too: a narrower written result is
+// refused, in either order.
+run!(
+    written_fn_type_widest_position_types_the_result,
+    r#"{ let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null) }"#,
+    refused("fn(b: i64, k: [i64, null]) -> i64 does not contain fn(b: 'y: [i64, null]");
+    FuseExpect::None
+);
+
+run!(
+    written_fn_type_widest_position_types_the_result_reversed,
+    r#"{ let f = |k: 'y, b: 'y| -> 'y k; let g: fn(k: [i64, null], b: i64) -> i64 = f; g(null, 1) }"#,
+    refused("fn(k: [i64, null], b: i64) -> i64 does not contain fn(k: 'y: [i64, null]");
+    FuseExpect::None
+);
+
+// No position holds the others: refused, in either order, as a call is.
+run!(
+    written_fn_type_no_widest_position_refused,
+    r#"{ let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: string) -> i64 = f; g(1, "s") }"#,
+    refused("fn(b: i64, k: string) -> i64 does not contain fn(b: 'y: i64, k: 'y: i64) -> i64");
+    FuseExpect::None
+);
+
+run!(
+    written_fn_type_no_widest_position_refused_reversed,
+    r#"{ let f = |k: 'y, b: 'y| 0; let g: fn(k: string, b: i64) -> i64 = f; g("s", 1) }"#,
+    refused("fn(k: string, b: i64) -> i64 does not contain fn(k: 'y: string, b: 'y: string) -> i64");
+    FuseExpect::None
+);
+
+// A union's member beside closed members holds the variable as data.
+run!(
+    written_fn_type_widest_position_in_a_union,
+    r#"{
+  let f = |b: ['y, null], k: 'y| -> 'y k;
+  let f2 = |k: 'y, b: ['y, null]| -> 'y k;
+  let g: fn(b: [i64, null], k: [i64, string]) -> [i64, string] = f;
+  let h: fn(k: i64, b: [i64, null, string]) -> [i64, string] = f2;
+  (g(1, "s"), h(2, "t"))
+}"#,
+    prints(r#"["s", i64:2]"#)
+);
+
+// A position that holds the variable exactly (a writable reference, a
+// nominal type) decides it wherever it is written, and the others fit it
+// or the type is refused, in either order.
+run!(
+    written_fn_type_exact_position_decides,
+    r#"{
+  type B<'a> = Abstract<'a>;
+  let f = |k: 'y, p: &mut 'y| -> 'y k;
+  let f2 = |k: 'y, b: B<'y>| -> 'y k;
+  let x: [i64, null] = null;
+  let b: B<[i64, null]> = B(null);
+  let g: fn(k: i64, p: &mut [i64, null]) -> [i64, null] = f;
+  let h: fn(k: i64, b: B<[i64, null]>) -> [i64, null] = f2;
+  (g(1, &mut x), h(2, b))
+}"#,
+    prints("[i64:1, i64:2]")
+);
+
+run!(
+    written_fn_type_exact_position_narrower_refused,
+    r#"{
+  let f = |k: 'y, p: &mut 'y| -> 'y k;
+  let x = 1;
+  let g: fn(k: [i64, null], p: &mut i64) -> [i64, null] = f;
+  g(null, &mut x)
+}"#,
+    refused("does not contain fn(k: 'y: i64, p: &mut 'y: i64) -> 'y: i64");
+    FuseExpect::None
+);
+
+run!(
+    written_fn_type_exact_position_narrower_refused_reversed,
+    r#"{
+  let f = |p: &mut 'y, k: 'y| -> 'y k;
+  let x = 1;
+  let g: fn(p: &mut i64, k: [i64, null]) -> [i64, null] = f;
+  g(&mut x, null)
+}"#,
+    refused("does not contain fn(p: &mut 'y: i64, k: 'y: i64) -> 'y: i64");
+    FuseExpect::None
+);
+
+// A variable a function type also holds takes the first position's type,
+// as at a call: the written type's first position is written as wide as
+// the later ones need.
+run!(
+    written_fn_type_callback_variable_first_position,
+    r#"{
+  let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k);
+  let g: fn(b: Any, k: i64, c: fn(v: Any) -> i64) -> i64 = f;
+  g(1, 2, |v| 7)
+}"#,
+    prints("i64:7");
+    FuseExpect::None
+);
+
+run!(
+    written_fn_type_callback_variable_first_position_refused,
+    r#"{
+  let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k);
+  let g: fn(b: i64, k: Any, c: fn(v: Any) -> i64) -> i64 = f;
+  g(1, 2, |v| 7)
+}"#,
+    refused("does not contain fn(b: 'y: i64, k: 'y: i64, c: fn(v: 'y: i64) -> i64) -> i64");
+    FuseExpect::None
+);
+
+// So does one a recursive typedef holds under a function type where it
+// applies itself to other parameters.
+run!(
+    written_fn_type_typedef_callback_variable_first_position_refused,
+    r#"{
+  type S<'a, 'b> = [`N, `C('a, fn(x: 'b) -> i64, S<'b, 'a>)];
+  let f = |a: 'x, b: 'y, k: S<'x, 'y>| a;
+  let g: fn(a: i64, b: i64, k: S<i64, Any>) -> i64 = f;
+  g(1, 2, `N)
+}"#,
+    refused("does not contain fn(a: 'x: i64, b: 'y: i64, k: S<'x: i64, 'y: i64>) -> 'x: i64");
+    FuseExpect::None
+);
+
 // A builtin binding declares every argument's type, its variadic's too.
 run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;

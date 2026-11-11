@@ -774,6 +774,120 @@ impl OutsideFunctions<'_> {
     }
 }
 
+/// How a type holds one occurrence of a variable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[doc(hidden)]
+pub struct Held {
+    /// Under a function type, or a typedef application the walk does not
+    /// expand, whose expansion may hold it under one.
+    pub function: bool,
+    /// Under a writable reference, a nominal type or a constructor
+    /// application, which hold it exactly.
+    pub exact: bool,
+    /// In a union beside another member holding an open cell, told only
+    /// by a walk that [`DataPositions::telling_members`]: which member
+    /// takes a type depends on what the cells are.
+    pub member: bool,
+}
+
+impl Held {
+    /// As data: a value of a wider type is well typed there.
+    pub fn data(&self) -> bool {
+        !self.function && !self.exact
+    }
+}
+
+// CR claude for claude: [perf/medium] The walk takes every path through typedefs
+// that name each other when they are applied over open cells: `expanding` stops a
+// definition only inside its own expansion, and DataSeen keys shared nodes, which
+// an expansion over an open cell is not (lookup_ref_probe builds it anew each
+// time), so a definition reached by many paths is walked once per path. One
+// generic call, `let lit = |x: 'a| -> T0<'a, 'm> `L0(x); let e0 = lit(0)`, over K
+// definitions T0..<'a, 'm> of 15 variants that name each other takes, for
+// --no-cache --check on base-r20's debug build, 0.82G / 1.16G / 3.35G / 12.1G /
+// 87.0G instructions for K = 3 / 4 / 5 / 6 / 7 (an empty program 0.74G), 87% of
+// it under Widening::cells, widenable, data_positions and expansion (perf, K = 6).
+// A verdict kept per definition, parameter keys and position kind, as
+// holds_invariantly keeps `clean` for the parameterless ones, would walk each
+// application once. Found reviewing typedef-param-equality-01 on lane 20c, whose
+// build takes the same. probes: ~/ptmp/cr29/scratch/r20/20c/review-tpe/dp{3..7}.gx
+// (data-positions-paths-01)
+// 2026-11-10 claude: Lane 20b's fn-annotation-order-01 moved callsite's
+// data_positions walk here as settle::DataPositions (DataSeen is its seen map,
+// expansion its lookup_ref_probe arm), shared with FnType::order_free_cells; the
+// walk and its keys are unchanged, so the cost stands; a written function type
+// holding a function now runs the walk too (not measured there).
+/// A walk of every type variable under a type, through bindings, with how
+/// each occurrence is held. A shared node is walked once for each way it
+/// is held, and kept so an expansion's node keeps its address.
+#[doc(hidden)]
+pub struct DataPositions<'a> {
+    env: &'a Env,
+    members: bool,
+    expanding: SmallVec<[usize; 4]>,
+    seen: LPooled<AHashMap<(usize, Held), Type>>,
+}
+
+impl<'a> DataPositions<'a> {
+    pub fn new(env: &'a Env) -> Self {
+        DataPositions {
+            env,
+            members: false,
+            expanding: SmallVec::new(),
+            seen: LPooled::take(),
+        }
+    }
+
+    /// Tell [`Held::member`] too.
+    pub fn telling_members(self) -> Self {
+        DataPositions { members: true, ..self }
+    }
+
+    pub fn walk(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                f(tv, held);
+                if self.seen.insert((tv.cell_addr(), held), t.clone()).is_none()
+                    && let Some(b) = tv.binding()
+                {
+                    self.walk(&b, held, f)
+                }
+            }
+            t if t
+                .shared_identity()
+                .is_some_and(|n| self.seen.insert((n, held), t.clone()).is_some()) => {}
+            Type::Ref(_)
+                if let Some((key, whole)) = t
+                    .lookup_ref_probe(self.env)
+                    .filter(|(key, _)| !self.expanding.contains(key)) =>
+            {
+                self.expanding.push(key);
+                self.walk(&whole, held, f);
+                self.expanding.pop();
+            }
+            Type::Fn(_) | Type::Ref(_) => {
+                let held = Held { function: true, ..held };
+                t.for_each_child(&mut |c| self.walk(c, held, f))
+            }
+            Type::ByRef(super::Mutability::Mut, _)
+            | Type::Abstract { .. }
+            | Type::App(..) => {
+                let held = Held { exact: true, ..held };
+                t.for_each_child(&mut |c| self.walk(c, held, f))
+            }
+            Type::Set(ms)
+                if self.members
+                    && !held.member
+                    && ms.iter().filter(|m| m.has_unbound()).nth(1).is_some() =>
+            {
+                let held = Held { member: true, ..held };
+                ms.iter().for_each(|m| self.walk(m, held, f))
+            }
+            t => t.for_each_child(&mut |c| self.walk(c, held, f)),
+        })
+    }
+}
+
 fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     reached(t, out, &mut LPooled::take())
 }
