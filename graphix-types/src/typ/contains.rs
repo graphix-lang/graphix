@@ -2847,11 +2847,11 @@ impl Type {
             let Some(def) = env.trait_def(tid) else { continue };
             let members = Self::dispatch_members(env, t).ok()?;
             let seen = env.impls_of(tid).unwrap_or_default();
+            let name = &def.name;
             for m in members.iter() {
                 if Self::trait_contains(tid, BitFlags::empty(), env, &mut hist, m).ok()? {
                     continue;
                 }
-                let name = &def.name;
                 let hidden = env.impls.get(&tid).and_then(|l| {
                     l.iter()
                         .find(|im| {
@@ -2868,6 +2868,18 @@ impl Type {
                         crate::written_scope(&im.scope)
                     ),
                 });
+            }
+            if members.len() > 1
+                && let Some(m) = def.self_beyond_receiver()
+            {
+                return Some(anyhow::anyhow!(
+                    "a {name} call over {} narrows only its self argument, and \
+                     {name}::{} takes `self` beyond it, in another parameter or a \
+                     variable's bound: select on the value and make the call for each \
+                     member",
+                    Brief(t),
+                    m.name
+                ));
             }
             if let Some(why) = Self::dispatch_collision(env, &members) {
                 let open =
@@ -4757,7 +4769,8 @@ impl Type {
             Self::Primitive(p) => p.len() > 1,
             _ => false,
         };
-        if union && env.trait_def(tid).is_some_and(|d| d.takes_self_beyond_receiver()) {
+        if union && env.trait_def(tid).is_some_and(|d| d.self_beyond_receiver().is_some())
+        {
             return Ok(false);
         }
         // nor when its dispatch, which tests each member, can't tell two

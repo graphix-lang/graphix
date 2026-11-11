@@ -181,7 +181,10 @@ let v: [i64, Counter] = select flag { true => 1, false => Counter(2) };
 show(v)
 ```
 
-Every member needs an implementation.
+Every member needs an implementation. The call narrows only the `self`
+argument, so a trait with a method that takes `self` anywhere else (as
+another parameter's type, or in the bound of a type variable) cannot be
+called on a union: write the `select` yourself there.
 
 ## Traits as Bounds
 

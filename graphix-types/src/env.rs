@@ -442,16 +442,19 @@ pub struct TraitDef {
 }
 
 impl TraitDef {
-    /// Whether a method takes `self` beyond its receiver: a union cannot
-    /// implement such a trait, since a call narrows only the receiver.
-    pub fn takes_self_beyond_receiver(&self) -> bool {
-        self.methods.iter().any(|m| {
+    /// The first method that takes `self` beyond its receiver, in another
+    /// parameter's type or in the bound of a variable its signature holds:
+    /// a union cannot implement such a trait, since a call narrows only
+    /// the receiver.
+    pub fn self_beyond_receiver(&self) -> Option<&TraitMethodDef> {
+        self.methods.iter().find(|m| {
             m.typ
                 .args
                 .iter()
                 .enumerate()
                 .any(|(i, a)| Some(i) != m.self_index && a.typ.mentions_self())
                 || m.typ.vargs.as_ref().is_some_and(|t| t.mentions_self())
+                || m.typ.bound_mentions_self()
         })
     }
 }

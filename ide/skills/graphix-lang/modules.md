@@ -46,9 +46,12 @@ show = |c| .. }`, `impl<'a: Show> Show for Array<'a> { .. }`, bounds
 name: outside its default bodies and impls, call `Show::show(x)` (or
 `use Show::{show}`); a bare `show(x)` is "show not defined". Dispatch is
 static on the self
-argument's type; a union self compiles to a select. Core `Eq`/`Ord`/
-`Display` ride the value everywhere (map keys, sort, operators,
-printing); only abstract types may implement them outside core. The io
+argument's type; a union self compiles to a select, unless a method of
+the trait takes `self` beyond its receiver (another parameter, or the
+bound of a variable): then select on the value and call per member.
+Core `Eq`/`Ord`/`Display` ride the value everywhere (map keys, sort,
+operators, printing); only abstract types may implement them outside
+core. The io
 traits `Read`/`Lines`/`Write`/`Close`/`Seek`/`Socket` describe streams
 whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
 
@@ -71,6 +74,8 @@ ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { 
 ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl<'a> T for Array<'a> { let m = 'q: [Array<'a>, null] |s, x: 'q| -> 'q x }; (T::m([1], [2]), T::m([1], null))
 ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 }; impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } }; T::m(1, 2)
 no "requires 'b: i64, which the signature does not declare" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x }; T::m(1, 2)
+no "T::m takes `self` beyond it" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; T::m(v, null)
+ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; select v { i64 as i => T::m(i, null), string as s => T::m(s, null) }
 no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P = self; let p: P = s; array::len(p) } }; T::m([1])
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
 ```

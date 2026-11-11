@@ -401,7 +401,13 @@ implement it in `impl T for i64`, `'q: self` does not (`implements`
 refuses a bound the declared one does not imply), and a body that writes
 no bound reads `x` under `[i64, null]` (pins
 `lang::traits::impl_method_written_bound_*`, `generic_impl_*bound*`,
-`default_reads_a_bound_holding_self`).
+`default_reads_a_bound_holding_self`). Each impl reads such a bound at
+its own target, and a call narrows only the receiver, so a union self
+cannot be dispatched over a trait with one: the union does not
+implement the trait, as where another parameter is `self`, and the
+refusal names the method and the select to write (`trait_refusal`; pins
+`lang::traits::union_self_*`). `self` as the result alone stays: the
+call's type is the union of the members' results.
 The target's names mean what the head reads: they are resolved before
 the substitution, so a block in the method that declares a `type` of
 one of those names does not take `self` (nor is the reader warned of
@@ -411,7 +417,10 @@ in a generic impl, whose target holds the impl's variables, is refused
 
 **Constraint discharge** (`typ/contains.rs`): a trait `Ref` on the
 left of `contains` is the predicate `trait_contains`: ⊥ yes, `Any` no,
-a union iff every member its dispatch tests (below), an open cell yes
+a union iff every member its dispatch tests (below) and no method of
+the trait takes `self` beyond its receiver (`TraitDef::
+self_beyond_receiver`: in another parameter, or in the bound of a
+variable its signature holds, through bounds), an open cell yes
 (the tvar merge carries the conjunct) unless it is RIGID without the
 conjunct, a typedef by its expansion, anything else by
 `Env::find_impl` — abstract targets by id,

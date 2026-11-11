@@ -745,6 +745,14 @@ impl FnType {
         close_through_bounds(known, &mut seen)
     }
 
+    /// Whether a trait method's `self` occurs in a bound of a variable the
+    /// signature holds, through its bounds.
+    pub fn bound_mentions_self(&self) -> bool {
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars_through_bounds(&mut held);
+        held.values().any(|tv| tv.cell_constraints().iter().any(Type::mentions_self))
+    }
+
     /// `(tvar, conjunct)` for every conjunct of every declared quantifier,
     /// normalized (so equality and display agree on the canonical form),
     /// sorted by name then conjunct: the part of the constraints that is

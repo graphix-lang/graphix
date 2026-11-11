@@ -3865,6 +3865,105 @@ impl<'a> T for Array<'a> { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
 "#
 );
 
+// An impl's body reads a bound over `self` at its own target, so a union
+// self, which a call narrows in the receiver alone, is refused where a
+// variable's bound holds `self`, as where another parameter does; the
+// select the refusal names runs.
+run!(
+    union_self_under_a_bound_holding_self_refused,
+    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it, in another parameter or a variable's bound: select on the value and make the call for each member"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 };
+        impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } };
+        impl T for string {
+            let m = |s, x| select x { null as _ => 0, string as v => str::len(v) }
+        };
+        let v: [i64, string] = "abc";
+        let result = T::m(v, 5)
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_under_a_bound_holding_self_selected_by_hand,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 };
+        impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } };
+        impl T for string {
+            let m = |s, x| select x { null as _ => 0, string as v => str::len(v) }
+        };
+        let v: [i64, string] = "abc";
+        let result = select v { i64 as i => T::m(i, 5), string as s => T::m(s, "xyz") }
+    "#
+);
+
+// The bound of a bound, a variable only the result holds, and any method
+// of the trait, whichever the call names.
+run!(
+    union_self_under_a_bound_of_a_bound_holding_self_refused,
+    refused("T::m takes `self` beyond it"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'c: Array<'b>, 'b: [self, null]>(self, x: 'c) -> i64 };
+        impl T for i64 { let m = |s, x| array::len(x) };
+        impl T for string { let m = |s, x| array::len(x) };
+        let v: [i64, string] = "abc";
+        let result = T::m(v, [null])
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_under_a_result_s_bound_holding_self_refused,
+    refused("T::m takes `self` beyond it"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self) -> ['b, i64] };
+        impl T for i64 { let m = |s| s };
+        impl T for string { let m = |s| str::len(s) };
+        let v: [i64, string] = "abc";
+        let result: [i64, null] = T::m(v)
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_of_a_trait_with_a_bound_holding_self_refused,
+    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it"),
+    "/test.gx" => r#"
+        trait T {
+            val k: fn(self) -> i64;
+            val m: fn<'b: [self, null]>(self, x: 'b) -> 'b
+        };
+        impl T for i64 { let k = |s| s; let m = |s, x| x };
+        impl T for string { let k = |s| 0; let m = |s, x| x };
+        let f = 'a: T |v: 'a| T::k(v);
+        let v: [i64, string] = "abc";
+        let result = f(v)
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_in_another_parameter_refused,
+    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: self) -> i64 };
+        impl T for i64 { let m = |s, x| x + s };
+        impl T for string { let m = |s, x| str::len(x) };
+        let v: [i64, string] = "abc";
+        let result = T::m(v, v)
+    "#
+; FuseExpect::None);
+
+// `self` as the result is each member's own: the union of them.
+run!(
+    union_self_as_the_result,
+    prints(r#""abc!""#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> self };
+        impl T for i64 { let m = |s| s + 1 };
+        impl T for string { let m = |s| "[s]!" };
+        let v: [i64, string] = "abc";
+        let result = T::m(v)
+    "#
+);
+
 // Inside the method too: a lambda in its body, a lambda beside it, a cast,
 // `never<T>`, a type test and a `type`.
 run!(
