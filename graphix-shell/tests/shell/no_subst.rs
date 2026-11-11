@@ -42,3 +42,17 @@ fn generic_programs_run_alike_without_substitution() {
         assert_eq!(run(program, true), *expected, "under GRAPHIX_NO_SUBST: {program}");
     }
 }
+
+/// An instance that checks its body again meets its callee's variable
+/// standing above a lower bound, bound to nothing: the argument that
+/// bound holds fits it.
+#[test]
+fn an_instance_checked_again_fits_what_a_lower_bound_holds() {
+    let program = "type O<'t> = ['t, null];\n\
+         type L<'a> = [`Nil, `Cons('a, L<'a>)];\n\
+         type B<'a> = ('a, O<'a>);\n\
+         let f = 'a0: Array<L<B<'a1>>>, 'a1: O<O<'a2>>, 'a2: string |x0: 'a0, x1: 'a1, x2: 'a2| x0;\n\
+         let h = 'b0: Array<L<B<'b1>>>, 'b1: O<O<'b2>>, 'b2: string |y0: 'b0, y1: 'b1, y2: 'b2| f(y0, y1, y2);\n\
+         h([`Nil], \"s\", \"s\")\n";
+    assert_eq!(run(program, true), "[`Nil]");
+}

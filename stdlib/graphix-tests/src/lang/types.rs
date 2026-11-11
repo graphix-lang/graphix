@@ -9284,8 +9284,8 @@ run!(
     FuseExpect::Jit
 );
 
-// The orders of four cells are 24 applications of one definition, walked
-// as two definitions' are.
+// The orders of four cells are 24 applications of one definition, which
+// its arguments answer for.
 run!(
     open_instances_of_one_recursive_typedef_check,
     r#"{
@@ -9298,6 +9298,151 @@ run!(
 }"#,
     prints("i64:1");
     FuseExpect::Jit
+);
+
+// One definition over six and twelve cells reaches 720 and 479001600
+// applications of itself: two of them are compared by their arguments, a
+// step a parameter.
+run!(
+    six_parameters_of_one_recursive_typedef_check,
+    r#"{
+  type D<'a0, 'a1, 'a2, 'a3, 'a4, 'a5> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2, 'a3, 'a4, 'a5>), `Y(D<'a1, 'a2, 'a3, 'a4, 'a5, 'a0>)];
+  let outer = |k: D<'q0, 'q1, 'q2, 'q3, 'q4, 'q5>, z: 'q0| z;
+  let g: fn(k: D<Any, Any, Any, Any, Any, Any>, z: i64) -> i64 = outer;
+  g(`N, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+run!(
+    twelve_parameters_of_one_recursive_typedef_check,
+    r#"{
+  type D<'a0, 'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8, 'a9, 'a10, 'a11> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8, 'a9, 'a10, 'a11>), `Y(D<'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8, 'a9, 'a10, 'a11, 'a0>)];
+  let outer = |k: D<'q0, 'q1, 'q2, 'q3, 'q4, 'q5, 'q6, 'q7, 'q8, 'q9, 'q10, 'q11>, z: 'q0| z;
+  let g: fn(k: D<Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any, Any>, z: i64) -> i64 = outer;
+  g(`N, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+// A variable a bound's typedef applications hold stands above what the
+// first argument gave them, undecided: a later argument those hold fits
+// it, recursive typedef or not, as it fits the union written out.
+run!(
+    an_argument_a_bound_variables_lower_bound_holds_fits,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a0: (T<'a1>, T<'a1>), 'a1: [i64, string] |x0: 'a0, x1: 'a1| x1;
+  let v: (T<[i64, string]>, T<[i64, string]>) = (`Node([]), `Leaf(1));
+  f(v, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    an_argument_a_bound_variables_lower_bound_holds_fits_annotated,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a0: (T<'a1>, T<'a1>), 'a1: [i64, string] |x0: 'a0, x1: 'a1| x1;
+  let v: (T<[i64, string]>, T<[i64, string]>) = (`Node([]), `Leaf(1));
+  let one: [i64, string] = 1;
+  f(v, one)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    an_argument_a_bound_variables_lower_bound_holds_fits_no_recursion,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<'x>)];
+  let f = 'a0: (T<'a1>, T<'a1>), 'a1: [i64, string] |x0: 'a0, x1: 'a1| x1;
+  let v: (T<[i64, string]>, T<[i64, string]>) = (`Node([]), `Leaf(1));
+  f(v, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    an_argument_a_bound_variables_lower_bound_holds_fits_two_definitions,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  type U<'x> = [`Leaf('x), `Node(Array<U<'x>>)];
+  let f = 'a0: (T<'a1>, T<'a1>), 'a1: [i64, string] |x0: 'a0, x1: 'a1| x1;
+  let v: (U<[i64, string]>, U<[i64, string]>) = (`Node([]), `Leaf(1));
+  f(v, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    an_argument_a_bound_variables_lower_bound_holds_fits_no_bound,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a0: (T<'a1>, T<'a1>) |x0: 'a0, x1: 'a1| x1;
+  let v: (T<[i64, string]>, T<[i64, string]>) = (`Node([]), `Leaf(1));
+  f(v, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    a_member_of_a_bound_variables_lower_bound_fits,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  type L<'a> = [`Nil, `Cons('a, L<'a>)];
+  let f = 'a0: L<T<'a1>> |x0: 'a0, x1: 'a1| x1;
+  let v: L<T<L<T<string>>>> = `Nil;
+  f(v, `Nil)
+}"#,
+    prints("\"Nil\"");
+    FuseExpect::Jit
+);
+
+run!(
+    a_member_of_a_bound_variables_lower_bound_fits_annotated,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  type L<'a> = [`Nil, `Cons('a, L<'a>)];
+  let f = 'a0: L<T<'a1>> |x0: 'a0, x1: 'a1| x1;
+  let v: L<T<L<T<string>>>> = `Nil;
+  let nil: L<T<string>> = `Nil;
+  f(v, nil)
+}"#,
+    prints("\"Nil\"");
+    FuseExpect::Jit
+);
+
+run!(
+    a_value_of_a_bound_variables_lower_bound_fits,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  type L<'a> = [`Nil, `Cons('a, L<'a>)];
+  let f = 'a0: L<T<'a1>> |x0: 'a0, x1: 'a1| x1;
+  let v: L<T<T<string>>> = `Nil;
+  f(v, `Leaf("s"))
+}"#,
+    prints("[\"Leaf\", \"s\"]");
+    FuseExpect::Jit
+);
+
+// What the lower bounds do not hold is still refused.
+run!(
+    an_argument_a_bound_variables_lower_bound_does_not_hold_is_refused,
+    r#"{
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a0: (T<'a1>, T<'a1>) |x0: 'a0, x1: 'a1| x1;
+  let v: (T<[i64, string]>, T<[i64, string]>) = (`Node([]), `Leaf(1));
+  f(v, 2.5)
+}"#,
+    refused("does not contain f64");
+    FuseExpect::None
 );
 
 // Two recursive typedefs whose applications over cells that stay open

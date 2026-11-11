@@ -111,7 +111,7 @@ to the open cells of each lower bound, whichever came first
 in `|x| json::write_str([Box(x), `A])`, so each call judges it; a merge joins
 both cells' lists after each side's conjuncts admit the other's (a
 rigid cell admits none but itself, ⊥ and what one of its lower bounds
-holds, `contains::rigid_holds_by_lower`, and an open cell below a rigid
+holds, `contains::holds_by_lower`, and an open cell below a rigid
 survivor merges into it, since it can be no other type: `W<'c> ⊇ W(x)`
 under a rigid `'c` makes `x` `'c`; one whose merge is refused, the
 occurs check's case, stays below it, a lower bound); a copy, an image
@@ -1923,7 +1923,7 @@ b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged
 (`tvar::cycle_toward`, `contains::merge_bare_cycle`,
 `design/tvar_constraints.md`). A rigid cell holds only itself, ⊥ and
-what one of its lower bounds holds (`contains::rigid_holds_by_lower`): an open
+what one of its lower bounds holds (`contains::holds_by_lower`): an open
 cell a merge would put below it merges into it, or, where the occurs
 check refuses that merge, stays a lower bound (`TVar::merge_into`).
 A cast to an integer type, a type-directed read's included, is an

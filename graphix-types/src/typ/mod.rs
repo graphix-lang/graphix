@@ -56,6 +56,7 @@ pub(crate) use setops::strictly_identical;
 #[doc(hidden)]
 pub mod settle;
 pub(crate) mod tval;
+pub(crate) mod variance;
 pub use tval::member_of;
 #[doc(hidden)]
 pub mod tvar;
@@ -1008,6 +1009,9 @@ pub struct ResolvedRef {
     /// reached defined, so no flow through it comes back to a definition
     /// made later.
     pub(crate) regular: OnceLock<()>,
+    /// How the body meets each parameter ([`variance::meets`]), once
+    /// every name it reaches is defined.
+    pub(crate) meets: OnceLock<Arc<[variance::Meets]>>,
 }
 
 impl ResolvedRef {
@@ -1090,7 +1094,15 @@ impl ResolvedRef {
         params: Arc<[(TVar, Option<Type>)]>,
         typ: Type,
     ) -> Self {
-        Self { canonical_scope, pos, ori, params, typ, regular: OnceLock::new() }
+        Self {
+            canonical_scope,
+            pos,
+            ori,
+            params,
+            typ,
+            regular: OnceLock::new(),
+            meets: OnceLock::new(),
+        }
     }
 
     pub(crate) fn pos(&self) -> SourcePosition {
@@ -1182,7 +1194,7 @@ pub(crate) fn resolved_encode(
     r: &ResolvedRef,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
-    let ResolvedRef { canonical_scope, pos, ori, params, typ, regular: _ } = r;
+    let ResolvedRef { canonical_scope, pos, ori, params, typ, regular: _, meets: _ } = r;
     canonical_scope.encode(buf)?;
     image::pos_encode(pos, buf)?;
     image::origin_encode(ori, buf)?;
@@ -1198,6 +1210,7 @@ pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackErr
         params: PackTrait::decode(buf)?,
         typ: PackTrait::decode(buf)?,
         regular: OnceLock::new(),
+        meets: OnceLock::new(),
     })
 }
 
@@ -3479,6 +3492,7 @@ impl Type {
                     params: _,
                     typ: def_typ,
                     regular: _,
+                    meets: _,
                 } = &*resolved;
                 resolved.check_arity(name, params)?;
                 if env.ide.is_lsp() {

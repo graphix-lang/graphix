@@ -8,7 +8,7 @@ use crate::{
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
         Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        Unfolded, node_addr,
+        TypeRef, Unfolded, node_addr,
         normalize::NormCx,
         probe_key,
         setops::{Identical, IdenticalMemo, strictly_identical, union_identical},
@@ -16,6 +16,7 @@ use crate::{
             CellFact, CellLock, Cycle, Fresh, RigidGate, Standing, Toward, bare_path,
             cell_writes, cycle_toward, settled_cause_note, would_cycle_inner,
         },
+        variance,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1678,10 +1679,11 @@ fn conjuncts_admit(
     Ok(true)
 }
 
-/// Whether the rigid open cell `tv` holds `t`: a rigid cell holds only
-/// itself, ⊥ and what one of its lower bounds holds (`t ⊆ L ⊆ tv`), since
-/// whatever it stands for holds each. The bound that holds commits.
-fn rigid_holds_by_lower(
+/// Whether the open cell `tv` holds `t` through one of its lower bounds
+/// (`t ⊆ L ⊆ tv`), since whatever it stands for holds each: all a rigid
+/// cell holds besides itself and ⊥, and what a cell that cannot bind to
+/// `t` holds of it, bound to nothing. The bound that holds commits.
+fn holds_by_lower(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
     env: &Env,
@@ -3200,28 +3202,10 @@ impl Type {
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
-                    && (!tr0
-                        .params
-                        .iter()
-                        .chain(tr1.params.iter())
-                        .any(|p| !hist.closed_now(p) && p.has_free())
-                        || tr0.resolve_peek(env).is_none())
+                    && let Some(held) =
+                        Self::applications_hold(flags, env, hist, (t0, tr0), (t1, tr1))?
                 {
-                    let pairs = || tr0.params.iter().zip(tr1.params.iter());
-                    let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {
-                        for (a, b) in pairs() {
-                            if !a.contains_int(f, env, hist, b)?
-                                || !b.contains_int(f, env, hist, a)?
-                            {
-                                return Ok::<_, anyhow::Error>(false);
-                            }
-                        }
-                        Ok(true)
-                    };
-                    let probe = flags & !BitFlags::from(ContainsFlags::Commit);
-                    if equal(probe, hist)? && (!commit || equal(flags, hist)?) {
-                        return tr0.hold_bounds_with(tr1, env, commit);
-                    }
+                    return Ok(held);
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 hist.assuming(key, |hist| {
@@ -3285,7 +3269,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t);
                 }
                 if (rigid || commit) && t0.is_rigid() {
-                    return rigid_holds_by_lower(t0, flags, env, hist, t);
+                    return holds_by_lower(t0, flags, env, hist, t);
                 }
                 if !cell_constraints_ok(t0, flags, env, hist, &Self::Any)? {
                     return Ok(false);
@@ -3433,7 +3417,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t1);
                 }
                 if (rigid || commit) && t0.is_rigid() {
-                    return rigid_holds_by_lower(t0, flags, env, hist, t1);
+                    return holds_by_lower(t0, flags, env, hist, t1);
                 }
                 if takes_lower(flags, t0, false) {
                     if !conjuncts_admit(t0, flags, env, hist, t1)? {
@@ -3451,10 +3435,8 @@ impl Type {
                     }
                     return Ok(true);
                 }
-                // A constraint violation fails here, at the site that
-                // tried it.
                 if !cell_constraints_ok(t0, flags, env, hist, t1)? {
-                    return Ok(false);
+                    return holds_by_lower(t0, flags, env, hist, t1);
                 }
                 if commit && !t0.is_rigid() {
                     if graphix_dbg_bind() {
@@ -3750,6 +3732,121 @@ impl Type {
         }
     }
 
+    /// Whether `t0` holds `t1`, two applications of one definition, by
+    /// their arguments: each pair as the definition's body meets its
+    /// parameter ([`variance::meets`]), which is what their expansions
+    /// ask, in a step a parameter. `None` where only the expansions tell:
+    /// a parameter the walk must judge whose arguments differ, or a commit
+    /// that does not hold in parameter order (a cell two arguments share
+    /// is bound by the first position the walk meets, which may be
+    /// another). A name that means nothing here, and a definition a name
+    /// it reaches is not yet defined for, are one type where their
+    /// arguments are equal and hold no open cell.
+    fn applications_hold(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        (t0, tr0): (&Type, &TypeRef),
+        (t1, tr1): (&Type, &TypeRef),
+    ) -> Result<Option<bool>> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        let probe = flags & !BitFlags::from(ContainsFlags::Commit);
+        let same = |a: &Type, b: &Type| {
+            std::ptr::eq(a, b)
+                || same_content(a, b)
+                || matches!((a, b), (Type::TVar(a), Type::TVar(b)) if one_variable(a, b))
+        };
+        let pairs = || tr0.params.iter().zip(tr1.params.iter());
+        let meets = tr0.resolve_peek(env).and_then(|def| variance::meets(env, &def));
+        let Some(meets) = meets.filter(|meets| {
+            pairs().zip(meets.iter()).all(|((a, b), m)| !m.walk() || same(a, b))
+        }) else {
+            let open =
+                |p: &Type, hist: &mut ContainsHist| !hist.closed_now(p) && p.has_free();
+            if tr0.resolve_peek(env).is_some()
+                && tr0.params.iter().chain(tr1.params.iter()).any(|p| open(p, hist))
+            {
+                return Ok(None);
+            }
+            let equal = |f: BitFlags<ContainsFlags>, hist: &mut ContainsHist| {
+                for (a, b) in pairs() {
+                    if !a.contains_int(f, env, hist, b)?
+                        || !b.contains_int(f, env, hist, a)?
+                    {
+                        return Ok::<_, anyhow::Error>(false);
+                    }
+                }
+                Ok(true)
+            };
+            return match equal(probe, hist)? && (!commit || equal(flags, hist)?) {
+                true => Ok(Some(tr0.hold_bounds_with(tr1, env, commit)?)),
+                false => Ok(None),
+            };
+        };
+        if !Self::arguments_hold(&meets, probe, env, hist, &tr0.params, &tr1.params)? {
+            return Ok(Some(false));
+        }
+        if commit {
+            let trial = hist.trial
+                || on_copies([t0, t1], |copies, trial| match &copies {
+                    [Type::Ref(c0), Type::Ref(c1)] => Self::arguments_hold(
+                        &meets, flags, env, trial, &c0.params, &c1.params,
+                    ),
+                    _ => Ok(false),
+                })?;
+            if !trial
+                || !Self::arguments_hold(
+                    &meets,
+                    flags,
+                    env,
+                    hist,
+                    &tr0.params,
+                    &tr1.params,
+                )?
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(tr0.hold_bounds_with(tr1, env, commit)?))
+    }
+
+    /// The questions `meets` asks of each pair of `args0` and `args1`,
+    /// under `flags`: one asked with the sides swapped is asked as under
+    /// a function's argument, and a pair held both ways as an invariant
+    /// position holds it.
+    fn arguments_hold(
+        meets: &[variance::Meets],
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        args0: &[Type],
+        args1: &[Type],
+    ) -> Result<bool> {
+        let swapped = flags ^ ContainsFlags::Contra;
+        for ((a, b), m) in args0.iter().zip(args1.iter()).zip(meets.iter()) {
+            if m.walk() {
+                continue;
+            }
+            let as_written = match (m.holds(), m.held()) {
+                (true, true) => a.equal_int(flags, env, hist, b)?,
+                (true, false) => a.contains_int(flags, env, hist, b)?,
+                (false, true) => b.contains_int(flags, env, hist, a)?,
+                (false, false) => true,
+            };
+            let holds = as_written
+                && match (m.held_swapped(), m.holds_swapped()) {
+                    (true, true) => b.equal_int(swapped, env, hist, a)?,
+                    (true, false) => b.contains_int(swapped, env, hist, a)?,
+                    (false, true) => a.contains_int(swapped, env, hist, b)?,
+                    (false, false) => true,
+                };
+            if !holds {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Two distinct cells. Occurs checks run only where a cell would
     /// bind, alias or take a lower bound, the last along the relation's
     /// direction ([`Toward`]): an open cell meeting a bound cell whose
@@ -3817,10 +3914,8 @@ impl Type {
                     }
                     return Ok(true);
                 }
-                // a probe answers as the commit would: the cell's own
-                // conjuncts must admit the binding
                 if !cell_constraints_ok(t0, flags, env, hist, &b1)? {
-                    return Ok(false);
+                    return holds_by_lower(t0, flags, env, hist, &b1);
                 }
                 if commit && !t0.is_rigid() {
                     if graphix_dbg_bind() {
@@ -3882,7 +3977,7 @@ impl Type {
                             return Ok(true);
                         }
                     }
-                    rigid_holds_by_lower(t0, flags, env, hist, tt1)
+                    holds_by_lower(t0, flags, env, hist, tt1)
                 })
             }
             (None, None) => {
@@ -5773,16 +5868,16 @@ mod tests {
         }
     }
 
-    // Two instances of one definition over open cells are compared as two
-    // definitions are, by their expansions: `'q0` is left for `z` to
-    // decide, within the steps the twin definition is held to.
+    // Two applications of one definition are compared by their arguments,
+    // each as the body meets its parameter, in steps by the parameters:
+    // the `n!` applications their expansions reach are not walked. `'q0`
+    // is left for `z` to decide, as the twin definition leaves it.
     #[test]
-    fn open_instances_of_one_recursive_definition_compare_by_expansion() {
-        for n in [3, 4] {
-            let apps: usize = (1..=n).product();
+    fn applications_of_one_definition_compare_by_their_arguments() {
+        for n in [3, 4, 6, 12] {
             let (commit, probe) = permuted_steps("D", n);
-            assert!(probe <= 64 * apps, "n={n}: a probe took {probe} steps");
-            assert!(commit <= 100 * apps * apps, "n={n}: a commit took {commit} steps");
+            assert!(probe <= 2 * n, "n={n}: a probe took {probe} steps");
+            assert!(commit <= 6 * n, "n={n}: a commit took {commit} steps");
         }
     }
 

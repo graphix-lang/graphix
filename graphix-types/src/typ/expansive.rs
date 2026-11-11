@@ -463,7 +463,7 @@ pub(crate) fn through_aliases(
     Aliases::new(env, &formals).stored(name, body)
 }
 
-enum Named {
+pub(super) enum Named {
     Def(DefRef),
     Trait,
     Unknown,
@@ -486,7 +486,7 @@ enum Named {
 // module's typedef names once all of them are declared. probes:
 // ~/ptmp/cr29/scratch/r20/20c/ag/shadow-hang/, shadow-alias/
 // (typedef-import-shadow-01)
-fn definition(tr: &TypeRef, env: &Env) -> Named {
+pub(super) fn definition(tr: &TypeRef, env: &Env) -> Named {
     if let Some(d) = tr.resolve_peek(env) {
         return Named::Def(d);
     }
@@ -517,7 +517,7 @@ fn passes_formal(args: &[Type], formals: &[ArcStr]) -> bool {
     args.iter().any(|a| formals.iter().any(|f| holds_formal(a, f)))
 }
 
-fn holds_formal(t: &Type, f: &ArcStr) -> bool {
+pub(super) fn holds_formal(t: &Type, f: &ArcStr) -> bool {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => match tv.binding() {
             Some(b) => holds_formal(&b, f),
