@@ -9327,6 +9327,19 @@ run!(
     FuseExpect::None
 );
 
+// A cell two arguments of one definition share holds what both ask.
+run!(
+    a_cell_two_arguments_of_one_typedef_share_takes_both,
+    r#"{
+  type D<'a0, 'a1, 'a2> = [Array<D<'a1, 'a0, 'a2>>, `U('a0, 'a1, 'a2)];
+  let h = |k: D<'q1, 'q1, 'q2>| 0;
+  let x: D<i64, Any, Any> = `U(1, "s", null);
+  h(x)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
 // A variable a bound's typedef applications hold stands above what the
 // first argument gave them, undecided: a later argument those hold fits
 // it, recursive typedef or not, as it fits the union written out.

@@ -267,6 +267,16 @@ can keep the original member slice.
   and stored dep — scans compare u64s and fall back to full `TypeRef`
   equality only on a match (the string equality itself dominated once
   the walks were DAG-shaped).
+- Two applications of one definition compare by their arguments, a
+  step a parameter (`Type::applications_hold`, `typ::variance`): the
+  expansions of a definition that permutes `n` parameters reach `n!`
+  applications, which a walk over open cells visits each. Pins
+  `typ::contains::tests::
+  applications_of_one_definition_compare_by_their_arguments` (6 and 12
+  parameters, `n + 1` probe and `3n + 6` commit steps),
+  `lang::types::twelve_parameters_of_one_recursive_typedef_check`.
+  Two definitions with one body, and a parameter in a union with a
+  choice, are still walked (`open-app-commit-trials-01`).
 - No per-path expansion cut: an expansive typedef (`type T<'a> =
   [`Nil, `C(T<Array<'a>>)]`) is refused at its definition
   (`typ/expansive.rs`), so a path holds finitely many distinct

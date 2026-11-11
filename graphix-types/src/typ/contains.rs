@@ -1679,11 +1679,10 @@ fn conjuncts_admit(
     Ok(true)
 }
 
-/// Whether the open cell `tv` holds `t` through one of its lower bounds
-/// (`t ⊆ L ⊆ tv`), since whatever it stands for holds each: all a rigid
-/// cell holds besides itself and ⊥, and what a cell that cannot bind to
-/// `t` holds of it, bound to nothing. The bound that holds commits.
-fn holds_by_lower(
+/// Whether the rigid open cell `tv` holds `t`: a rigid cell holds only
+/// itself, ⊥ and what one of its lower bounds holds (`t ⊆ L ⊆ tv`), since
+/// whatever it stands for holds each. The bound that holds commits.
+fn rigid_holds_by_lower(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
     env: &Env,
@@ -3269,7 +3268,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t);
                 }
                 if (rigid || commit) && t0.is_rigid() {
-                    return holds_by_lower(t0, flags, env, hist, t);
+                    return rigid_holds_by_lower(t0, flags, env, hist, t);
                 }
                 if !cell_constraints_ok(t0, flags, env, hist, &Self::Any)? {
                     return Ok(false);
@@ -3417,7 +3416,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t1);
                 }
                 if (rigid || commit) && t0.is_rigid() {
-                    return holds_by_lower(t0, flags, env, hist, t1);
+                    return rigid_holds_by_lower(t0, flags, env, hist, t1);
                 }
                 if takes_lower(flags, t0, false) {
                     if !conjuncts_admit(t0, flags, env, hist, t1)? {
@@ -3435,8 +3434,10 @@ impl Type {
                     }
                     return Ok(true);
                 }
+                // A constraint violation fails here, at the site that
+                // tried it.
                 if !cell_constraints_ok(t0, flags, env, hist, t1)? {
-                    return holds_by_lower(t0, flags, env, hist, t1);
+                    return Ok(false);
                 }
                 if commit && !t0.is_rigid() {
                     if graphix_dbg_bind() {
@@ -3914,8 +3915,10 @@ impl Type {
                     }
                     return Ok(true);
                 }
+                // a probe answers as the commit would: the cell's own
+                // conjuncts must admit the binding
                 if !cell_constraints_ok(t0, flags, env, hist, &b1)? {
-                    return holds_by_lower(t0, flags, env, hist, &b1);
+                    return Ok(false);
                 }
                 if commit && !t0.is_rigid() {
                     if graphix_dbg_bind() {
@@ -3977,7 +3980,7 @@ impl Type {
                             return Ok(true);
                         }
                     }
-                    holds_by_lower(t0, flags, env, hist, tt1)
+                    rigid_holds_by_lower(t0, flags, env, hist, tt1)
                 })
             }
             (None, None) => {
@@ -4564,6 +4567,21 @@ impl Type {
     // could decide a cell differently: the trials are the cost. This is the more common
     // shape than the permuted one above and makes this CR worth more than its low.
     // Probes: ~/ptmp/cr29/scratch/r20/20c/review-tpe/{real1,real2a,ast_1_3,ast_3_6}.gx.
+    // 2026-11-11 claude: Two applications of ONE definition no longer take this walk:
+    // Type::applications_hold compares their arguments, each as the definition's body
+    // meets its parameter (typ::variance, kept by the definition), in a step a
+    // parameter, and falls back to the walk only for a parameter in a union with a
+    // choice whose arguments differ, a bounded parameter, or a commit that does not hold
+    // in parameter order. pk6.gx 60-90 s to 0.77G instructions, perm10.gx out of 8G to
+    // 0.77G, pc6.gx 5.08G to 0.77G, real2a.gx 9.4G to 3.46G (base-r20 3.40G; an empty
+    // program 0.75G);
+    // typ::contains::tests::applications_of_one_definition_compare_by_their_arguments
+    // holds 6 and 12 parameters to n + 1 probe and 3n + 6 commit steps. What is left
+    // here is the header's own subject, two definitions with one body (permx4/5/6.gx,
+    // the twin spelling of the above) and one definition whose parameters stand in a
+    // union with a choice: 5 of 400 generated twins (gen2.py MODE=perm) are killed at 30
+    // s in the two-definition spelling, on base-r20 as well. Probes:
+    // ~/ptmp/cr29/scratch/r20/20c/x1/.
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither

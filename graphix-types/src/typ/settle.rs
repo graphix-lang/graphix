@@ -146,6 +146,32 @@ impl TVar {
                 Ok(())
             }
             Err(false) => Ok(()),
+            // CR claude for claude: [bug/medium] A call over a declared chain of
+            // bounds whose first link is a union typedef with two members of one
+            // constructor is refused here, where another order of the parameters or
+            // an annotated argument runs it: `type P<'x, 'y> = [Array<'x>, Array<'y>,
+            // null]; type T2<'x> = [`Leaf('x), `Node(Array<'x>)]; let f = 'a0: P<'a1,
+            // 'a2>, 'a1: T2<'a2>, 'a2: Array<'a4>, 'a4: [i64, string] |x0: 'a0, x1:
+            // 'a1, x4: 'a4| 7; f([`Node([])], `Node([]), 1)` fails "unsatisfiable
+            // constraints on 'a2: Array<'a4: [i64, string]> & Array<'a4: i64>": 'a2
+            // holds its bound twice, over two cells of 'a4, one the call's (i64, from
+            // `1`) and one settled to its bound's witness. `|x1: 'a1, x0: 'a0, x4:
+            // 'a4|` and `let one: [i64, string] = 1; f(.., one)` run. base-r20 refuses
+            // it alike. Over the recursive `type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)]`
+            // base-r20 ran it, because the same-definition comparison asked both ways
+            // and so merged the two cells of 'a2 (GRAPHIX_DBG_BIND: LALIAS then
+            // CELL-MERGE); since typedef-param-equality-01 the recursive spelling is
+            // refused as the other is (RALIAS alone), and Type::applications_hold
+            // keeps that. The same union written out in the signature is refused
+            // outright ("[Array<'a1>, Array<'a2>] is a union of the type variables 'a1
+            // and 'a2 .. under one constructor"), which the typedef hides, so the fix
+            // may be that refusal for a name too. Not looked into further: which walk
+            // leaves 'a2 a conjunct over cells that are not the instance's. 4 of 1200
+            // generated programs (coord/rebase/mix.py, seeds 31 and 32) are refused
+            // this way and run on base-r20. probes:
+            // ~/ptmp/cr29/scratch/r20/coord/x1/{i1,i3,i2,i4}.gx,
+            // ~/ptmp/cr29/scratch/r20/coord/rebase/d4.gx
+            // (bound-chain-conjunct-cells-01)
             Err(true) => {
                 let cons = self.cell_constraints();
                 format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {

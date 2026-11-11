@@ -111,7 +111,7 @@ to the open cells of each lower bound, whichever came first
 in `|x| json::write_str([Box(x), `A])`, so each call judges it; a merge joins
 both cells' lists after each side's conjuncts admit the other's (a
 rigid cell admits none but itself, ⊥ and what one of its lower bounds
-holds, `contains::holds_by_lower`, and an open cell below a rigid
+holds, `contains::rigid_holds_by_lower`, and an open cell below a rigid
 survivor merges into it, since it can be no other type: `W<'c> ⊇ W(x)`
 under a rigid `'c` makes `x` `'c`; one whose merge is refused, the
 occurs check's case, stays below it, a lower bound); a copy, an image
@@ -119,6 +119,21 @@ and a level claim carry the list. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
+A cell binds only to a type that holds each of its lower bounds, so one
+above `[i64, string]` does not bind to `i64`. A call's argument that
+misfits such a variable of its formal settles it first, at the union of
+its lower bounds, where it stands whatever else it meets
+(`callsite::Widening::settle_bounded`): a declared bound's applications
+leave a variable so (`'a0: (T<'a1>, T<'a1>)` met by a `(T<[i64,
+string]>, T<[i64, string]>)`), and a later argument inside what they
+gave fits it, as it fits the bound written out; a wider one widens it,
+as it widens any (pins
+`lang::types::an_argument_a_bound_variables_lower_bound_holds_fits`
+and its twins, `a_member_of_a_bound_variables_lower_bound_fits`, the
+refusal `.._does_not_hold_is_refused`; under `GRAPHIX_NO_SUBST`,
+`no_subst::an_instance_checked_again_fits_what_a_lower_bound_holds`).
+Only a call does: a select's pattern over such a cell still decides it
+(`lang::types::select_arms_at_two_depths_over_two_payloads`).
 
 No pattern decides a cell held rigid. A pattern that tests or binds
 inside a value of one (a definition's declared variable, a variable its
@@ -1240,9 +1255,70 @@ through them (pins
 `typ::contains::tests::open_applications_of_a_recursive_definition_are_walked_once`,
 `a_kept_verdict_over_open_applications_is_the_pairs_own`,
 `an_application_key_holds_its_cells`,
-`lang::types::open_applications_of_recursive_typedefs_check`). Two
-instances of one definition over an open cell take the same walk
-(`design/env_independent_typerefs.md`, Same definition).
+`lang::types::open_applications_of_recursive_typedefs_check`).
+
+### Two applications of one definition
+
+`T<a> ⊇ T<b>` over one definition is answered from the arguments, a
+question a parameter, where their expansions ask no more
+(`Type::applications_hold`). What they ask of a pair of arguments is how
+the definition's body meets the parameter (`typ::variance::meets`, kept
+by the definition, `ResolvedRef::meets`): under constructors alone `a ⊇
+b`; under a function's argument `b ⊇ a` with the sides swapped
+(`ContainsFlags::Contra`); under a writable reference or an abstract
+type's parameter both ways; at two positions, each one's question;
+nowhere, nothing (`type P<'a> = [`N, `C(P<'a>)]`). A parameter passed
+to another application is met as that definition meets its own, and
+one a recursion only passes on to itself is met nowhere; the scan is a
+fixpoint over the definitions the body reaches, so a recursion that
+permutes its parameters meets each as every position it reaches does.
+
+The arguments stand for the expansions only where the walk over them
+has no choice to make. A parameter is left to the walk
+(`Meets::walk`), and its arguments must then be one type or the two
+applications are walked as two definitions are, where it stands:
+
+- in a union two of whose members may take one value and one of them
+  holds a parameter (a bare parameter, `['x, null]`; two members of one
+  constructor, `[Array<'x>, Array<i64>]`): which member takes a value
+  decides what its cells become. Members are told apart by their
+  outermost constructors, a named member by its body's; variants by
+  tag and arity, tuples by arity, structs by their fields;
+- as an argument to a bounded parameter, whose bound each expansion
+  holds, or to a name that is a trait or has another arity;
+- under a quantified function type or a constructor application
+  (`Type::App`);
+- past a scan of 65536 steps (`variance::BUDGET`), every parameter.
+
+A name its body reaches that is not defined yet gives no answer, kept
+by no definition, and the comparison is the one before it: equal
+arguments holding no open cell are one type, anything else is walked.
+
+A commit binds the arguments' cells in parameter order, and the walk
+binds them in the body's. Where two arguments share a cell the orders
+can differ in what holds (`D<'q, 'q>` against `D<i64, Any>`), so a
+commit is first tried on copies, and one that does not hold there is
+left to the walk, cells untouched. Where it holds, the application
+holds: each question was asked as some position of the expansion asks
+it, so what is bound is a solution of the expansion's constraints,
+though the walk's order may find none: over `type D<'a0, 'a1, 'a2> =
+[Array<D<'a1, 'a0, 'a2>>, `U('a0, 'a1, 'a2)]`, `let h = |k: D<'q1,
+'q1, 'q2>| 0` called with a `D<i64, Any, Any>` checks, `'q1` being
+`Any`, where against a textual twin `F<i64, Any, Any>` the walk binds
+`'q1` to `i64` first and refuses (pin
+`lang::types::a_cell_two_arguments_of_one_typedef_share_takes_both`). A
+refusal the arguments' probe finds binds nothing, so its message prints
+the cells as they stood.
+
+The cost is the parameters', not the applications the definition
+unfolds to: one definition of `n` parameters that permutes them reaches
+`n!` applications of itself, and two of them compare in `n + 1` probe
+steps (pins
+`typ::contains::tests::applications_of_one_definition_compare_by_their_arguments`
+at 6 and 12 parameters,
+`lang::types::{six,twelve}_parameters_of_one_recursive_typedef_check`,
+`typ::variance::test`). Two definitions with one body are still walked
+(`open-app-commit-trials-01`).
 
 ### The occurs check
 
@@ -1923,7 +1999,7 @@ b.0])`); a lower bound's check follows its direction, and the cells
 on a cycle through cells and unions alone are one type, merged
 (`tvar::cycle_toward`, `contains::merge_bare_cycle`,
 `design/tvar_constraints.md`). A rigid cell holds only itself, ⊥ and
-what one of its lower bounds holds (`contains::holds_by_lower`): an open
+what one of its lower bounds holds (`contains::rigid_holds_by_lower`): an open
 cell a merge would put below it merges into it, or, where the occurs
 check refuses that merge, stays a lower bound (`TVar::merge_into`).
 A cast to an integer type, a type-directed read's included, is an

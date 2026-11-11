@@ -1402,6 +1402,19 @@ fn holds_invariantly(
     })
 }
 
+// CR claude for claude: [bug/low] A variable a declared bound holds is decided
+// by the first argument that meets it, so the order of the parameters decides a
+// call. Over `type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)]; let v: (T<[i64,
+// string]>, T<[i64, string]>) = (`Node([]), `Leaf(1))`, `let f = 'a0: (T<'a1>,
+// T<'a1>), 'a1: [i64, string] |x0: 'a0, x1: 'a1| x1; f(v, 1)` runs (the bound
+// leaves 'a1 above [i64, string], which holds `1`) and `|x1: 'a1, x0: 'a0| x1`
+// called `f(1, v)` is refused: "'a0: unbound within (T<'a1: i64>, T<'a1: i64>)
+// does not contain (T<[i64, string]>, T<[i64, string]>)", `1` having bound 'a1
+// before the bound met `v`. Widening opens the variables the formal itself holds
+// (Widening::open over the formal's own cells), not one a bound of its variable
+// holds. base-r20 alike; `let one: [i64, string] = 1` runs. probes:
+// ~/ptmp/cr29/scratch/r20/coord/conflicts-verify/{d1swap,c3swap}.gx
+// (bound-variable-arg-order-01)
 /// A fresh instance's type variables that settle to the widest argument
 /// rather than the first: open in the definition `def`, and met only as
 /// data in `inst`, so a value of a wider type is well typed wherever the
@@ -1620,6 +1633,20 @@ impl Widening {
         Ok(())
     }
 
+    /// Settle each of `cells` that `formal` holds undecided above a lower
+    /// bound, at the union of its lower bounds: it binds to no argument
+    /// that does not hold them, and whatever it becomes holds them, so an
+    /// argument inside them fits and a wider one widens it.
+    fn settle_bounded(env: &Env, cells: &AHashMap<ArcStr, TVar>, formal: &Type) {
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        formal.collect_tvars(&mut held);
+        for (name, tv) in held.iter() {
+            if cells.contains_key(name) && !tv.is_bound() && !tv.cell_lower().is_empty() {
+                let _ = tv.settle_witness(env);
+            }
+        }
+    }
+
     // CR claude for claude: [bug/low] Two parts of one argument that hold one
     // widenable variable still decide it by their order: over `let f = |k: ('y,
     // 'y)| 0` and `n: [i64, null]`, `f((1, n))` is refused ("('y: i64, 'y: i64)
@@ -1651,6 +1678,7 @@ impl Widening {
         if cells.is_empty() {
             return check();
         }
+        Self::settle_bounded(env, cells, formal);
         let (open, opened) = Self::open(formal, cells.keys());
         if !open.contains(env, typ).map_err(ambiguous_parameter)? {
             return match open.discernible_refusal(env, typ) {

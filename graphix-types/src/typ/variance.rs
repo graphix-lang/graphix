@@ -12,8 +12,9 @@
 //! has no choice to make: a parameter inside a union two of whose members
 //! may take one value (a bare parameter, two members of one constructor)
 //! is left to the walk ([`Meets::walk`]), since which member takes a
-//! value decides what its cells become, and so is one passed to a
-//! bounded parameter, whose bound each expansion holds.
+//! value decides what its cells become, and so are one passed to a
+//! bounded parameter, whose bound each expansion holds, and the payload
+//! of core's `ErrChain`, where a chain of a chain is that chain.
 
 use crate::{
     env::Env,
@@ -254,6 +255,9 @@ impl<'a> Scan<'a> {
                 return to_walk(self);
             }
         };
+        if self.env.is_core_errchain(&c) {
+            return to_walk(self);
+        }
         let inner = self.meets_of(&c);
         let passed = |scan: &Self, j: usize| scan.holds(d, &tr.params[j]);
         let bounded =
@@ -396,8 +400,12 @@ pub(crate) fn meets(env: &Env, def: &DefRef) -> Option<Arc<[Meets]>> {
         scan.changed = false;
         let mut d = 0;
         while d < scan.defs.len() {
-            let body = scan.defs[d].def.typ().clone();
-            scan.walk(d, &body, Meets::COVARIANT);
+            let Def { def, .. } = &scan.defs[d];
+            let (body, at) = match env.is_core_errchain(def) {
+                true => (def.typ().clone(), Meets::TO_WALK),
+                false => (def.typ().clone(), Meets::COVARIANT),
+            };
+            scan.walk(d, &body, at);
             d += 1;
         }
     }
