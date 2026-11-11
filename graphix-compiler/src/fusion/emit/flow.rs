@@ -261,7 +261,7 @@ fn emit_select_node_tail<R: Rt>(
         &mut |cx, body, mark, _drops_from, guards_stale| {
             // A consulted guard's fire is an own fire too.
             let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-            let n = fold_consumed(cx.b, cur, guards_stale);
+            let n = cx.b.ins().band(cur, guards_stale);
             cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
             emit_body_tail(cx, body, ret)?;
             // The terminator already dropped the arm's owned binds; this

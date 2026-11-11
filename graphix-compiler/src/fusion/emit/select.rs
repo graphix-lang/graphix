@@ -34,8 +34,8 @@ use super::{
         propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
     body::{
-        BodyCx, emit_into_slot, ensure_owned_composite_src, fold_consumed, fold_stale,
-        node_composite_source,
+        BodyCx, CONSUMED_NONE, apply_consumed, emit_into_slot,
+        ensure_owned_composite_src, fold_consumed, fold_stale, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
     flow::emit_scope_drops,
@@ -1084,9 +1084,8 @@ fn emit_arm_condition<R: Rt>(
 /// `emit_arm` runs in the matched block with the arm's binds installed
 /// and must leave it terminated; it gets the env mark to truncate to,
 /// the mark every local above which it drops (the guard prologue's binds
-/// live until the select ends, so every exit drops them), and the AND of
-/// the consulted guards' STALE bits, with the OR of their MOVED, at its
-/// point
+/// live until the select ends, so every exit drops them), and the fold
+/// of the consulted guards ([`CONSUMED_NONE`]) at its point
 /// (structure-failed arms and arms below the taken one contribute
 /// nothing). `emit_miss` handles a tainted scrutinee, which makes no
 /// selection and consults no guard; `emit_undet` the undecidable
@@ -1204,7 +1203,7 @@ pub(super) fn emit_select_arms<R: Rt>(
     // At any read this holds the fold over exactly the consultation
     // points control flow executed.
     let acc = cx.b.declare_var(types::I64);
-    let init = cx.b.ins().iconst(types::I64, STALE);
+    let init = cx.b.ins().iconst(types::I64, CONSUMED_NONE);
     cx.b.def_var(acc, init);
     let chain_bl = cx.b.create_block();
     let clean = is_untainted(cx.b, sdisc);
@@ -1916,7 +1915,7 @@ fn install_arm_binds(
 
 /// Value-position arm-body emission: widen the arm's result to the
 /// select's merge shape and jump to the merge block. `guards_stale` is
-/// the consulted guards' STALE and MOVED fold at this arm.
+/// the consulted guards' fold at this arm ([`CONSUMED_NONE`]).
 fn emit_select_value_arm<R: Rt>(
     cx: &mut BodyCx,
     body: &Node<R>,
@@ -1958,7 +1957,7 @@ fn emit_select_value_arm<R: Rt>(
     let d = propagate_stale(cx.b, d, &[disc]);
     let scrut_stale = cx.b.ins().band_imm_u(scrut_disc, STALE);
     let d = fold_stale(cx.b, d, scrut_stale);
-    let d = fold_stale(cx.b, d, guards_stale);
+    let d = apply_consumed(cx.b, d, guards_stale);
     // Drop the arm's owned pattern binds; the widening above made the
     // result independently owned.
     emit_scope_drops(cx, drops_from)?;

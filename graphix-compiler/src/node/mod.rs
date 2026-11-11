@@ -88,19 +88,19 @@ pub(crate) enum VarRead<'a> {
     /// Last cycle's delivery, made after the walk passed this reader and
     /// handed to it alone now: its own tag applies.
     Late(&'a TagValue),
-    /// A standing store entry from the earlier cycle given: the value
+    /// A standing store entry, stamped in an earlier cycle: the value
     /// channel. Readers view it Stale, or Fired at a birth.
-    Standing(&'a TagValue, u64),
+    Standing(&'a (TagValue, u64)),
 }
 
 impl VarRead<'_> {
     /// The production a reader under `ctx`'s view takes from the read.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn production<R: Rt>(&self, ctx: &ExecCtx<'_, R>) -> TagValue {
         match self {
             VarRead::Delivered(tv) => delivered_view(ctx.event, tv),
             VarRead::Late(tv) => (*tv).clone(),
-            VarRead::Standing(tv, stamp) => {
+            VarRead::Standing((tv, stamp)) => {
                 let mut tv = standing_view(ctx.event, tv);
                 if wake::slept_through(ctx, *stamp) {
                     let tag = tv.tag().moved_if(true);
@@ -126,7 +126,7 @@ pub(crate) fn read_var<'a, R: Rt>(
     }
     match ctx.rt.store_get_var(ctx.rt.var_of(*id)) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
-        Some((tv, stamp)) => Some(VarRead::Standing(tv, *stamp)),
+        Some(standing) => Some(VarRead::Standing(standing)),
         None => None,
     }
 }
@@ -219,7 +219,7 @@ fn audit_standing<R: Rt>(
 /// that did not wake with it; a reader resuming in the same cycle reads
 /// it as it reads everything that stands, and one born into a standing
 /// world reads it stale.
-#[inline]
+#[inline(always)]
 pub(crate) fn delivered_view(event: &Event, tv: &TagValue) -> TagValue {
     let tag = tv.tag();
     let mut tv = tv.clone();
@@ -3172,7 +3172,7 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
                 let tv = match read {
                     VarRead::Delivered(tv)
                     | VarRead::Late(tv)
-                    | VarRead::Standing(tv, _) => tv,
+                    | VarRead::Standing((tv, _)) => tv,
                 };
                 self.cell = Self::cell(tv);
                 addressless = self.cell.is_none();

@@ -1384,6 +1384,9 @@ impl<R: Rt> Update<R> for Ref {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = dbgenv::gxdbg_ref();
         let r = match read_var_by(ctx, &self.id, self.top_id, None) {
+            Some(VarRead::Delivered(tv)) if !dbg && tv.tag().triggers() => {
+                self.resident.set(tv.clone())
+            }
             Some(read) => {
                 let tv = read.production(ctx);
                 if !tv.tag().triggers() {
@@ -2453,7 +2456,7 @@ impl<R: Rt> Update<R> for Deref<R> {
         let owed = super::wake::owed(ctx, &id);
         self.read.read(ctx.rt.cycle());
         let res = match read_var_by(ctx, &id, self.top_id, Some(&self.read)) {
-            Some(VarRead::Standing(tv, _)) if owed => {
+            Some(VarRead::Standing((tv, _))) if owed => {
                 Some(TagValue::fired(tv.value_cloned()))
             }
             Some(read) => Some(read.production(ctx)),

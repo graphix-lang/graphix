@@ -1104,9 +1104,9 @@ pub(super) fn emit_return_from_node<R: Rt>(
     }
 }
 
-/// AND `mask`'s STALE bit into `disc`'s and OR its MOVED bit: the fold
-/// of consumed inputs whose TAINT control flow decides (STALE survives
-/// only when BOTH sides are stale); every other bit is unchanged.
+/// AND `mask`'s STALE bit into `disc`'s — the firing fold (STALE
+/// survives only when BOTH sides are stale); every other bit is
+/// unchanged.
 pub(super) fn fold_stale(
     b: &mut FunctionBuilder,
     disc: ClifValue,
@@ -1115,22 +1115,39 @@ pub(super) fn fold_stale(
     let vs = b.ins().band_imm_u(disc, STALE);
     let folded = b.ins().band(vs, mask);
     let cleaned = b.ins().band_imm_u(disc, !STALE);
-    let moved = b.ins().band_imm_u(mask, MOVED);
-    let d = b.ins().bor(cleaned, folded);
-    b.ins().bor(d, moved)
+    b.ins().bor(cleaned, folded)
 }
 
-/// Fold a consumed input's `disc` into `acc`, the STALE and MOVED of the
-/// inputs consumed so far ([`fold_stale`]'s mask): STALE ANDs, MOVED ORs.
+/// An accumulator of the consumed inputs whose TAINT control flow
+/// decides (a select's consulted guards, a tail loop's scrutinees),
+/// before any is folded: STALE while none fired, and MOVED while none
+/// moved. MOVED is held inverted, so one AND folds both planes and two
+/// accumulators.
+pub(super) const CONSUMED_NONE: i64 = STALE | MOVED;
+
+/// Fold a consumed input's `disc` into the accumulator `acc`
+/// ([`CONSUMED_NONE`]): STALE ANDs, MOVED ORs.
 pub(super) fn fold_consumed(
     b: &mut FunctionBuilder,
     acc: ClifValue,
     disc: ClifValue,
 ) -> ClifValue {
-    let keep = b.ins().bor_imm_u(disc, !STALE);
-    let stale = b.ins().band(acc, keep);
-    let moved = b.ins().band_imm_u(disc, MOVED);
-    b.ins().bor(stale, moved)
+    let planes = b.ins().bxor_imm_u(disc, MOVED);
+    b.ins().band(acc, planes)
+}
+
+/// `disc` as the result of what the accumulator `acc` consumed too
+/// ([`CONSUMED_NONE`]): it fires when one of them fired, and moved when
+/// one of them did.
+pub(super) fn apply_consumed(
+    b: &mut FunctionBuilder,
+    disc: ClifValue,
+    acc: ClifValue,
+) -> ClifValue {
+    let d = fold_stale(b, disc, acc);
+    let unmoved = b.ins().band_imm_u(acc, MOVED);
+    let moved = b.ins().bxor_imm_u(unmoved, MOVED);
+    b.ins().bor(d, moved)
 }
 
 pub(super) fn emit_kernel_return(
@@ -1152,7 +1169,7 @@ pub(super) fn emit_kernel_return(
     // scrutinee or consulted guard on the executed path did, in any
     // pass of the loop (`TailCtx::tail_scrut_stale_acc`).
     let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-    cv.disc = fold_stale(cx.b, cv.disc, acc);
+    cv.disc = apply_consumed(cx.b, cv.disc, acc);
     // The disc is rebased on the static return shape's Value
     // discriminant: `TagValue::from_raw` decodes these exact bits, so
     // they must be a valid one-hot discriminant plus tag bits.

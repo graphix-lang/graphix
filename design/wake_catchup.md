@@ -469,7 +469,7 @@ that left the arm, saw none of it, so to that reader the stand is a fire.
   (`emit::abi::propagate_taint`, the slot accumulators, the fold carry)
   and test it nowhere: codegen only, no per-select or per-instance state.
   Where control flow decides `TAINT` and only `STALE` is folded, the bit
-  is folded beside it (`emit::body::fold_consumed`, `fold_stale`): a
+  is folded beside it (`emit::body::fold_consumed`, `apply_consumed`): a
   consulted guard's, and a tail loop's selects', whose scrutinees and
   guards reach the return through the spine's accumulator. A loop's
   result takes its source's bit only where it holds the source's elements

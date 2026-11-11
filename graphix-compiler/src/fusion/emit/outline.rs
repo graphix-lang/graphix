@@ -4,8 +4,8 @@
 //! `design/parallel_eval.md` §10).
 
 use super::{
-    abi::{JitEnv, Local, STALE, ValueVar, local_payload_ty},
-    body::{BodyCx, emit_kernel_abort},
+    abi::{JitEnv, Local, ValueVar, local_payload_ty},
+    body::{BodyCx, CONSUMED_NONE, emit_kernel_abort},
     call::{BufKind, close_buf, open_buf},
     jit::{ChunkFn, chunk_signature},
     lower::{
@@ -248,8 +248,8 @@ fn emit_chunk(
     }
     let CtxWord { born: born_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
     let tail_scrut_stale_acc = b.declare_var(types::I64);
-    let stale = b.ins().iconst(types::I64, STALE);
-    b.def_var(tail_scrut_stale_acc, stale);
+    let none = b.ins().iconst(types::I64, CONSUMED_NONE);
+    b.def_var(tail_scrut_stale_acc, none);
     let callee_refs: BTreeMap<KernelKey, KernelFns<FuncRef>> = p
         .callee_ids
         .iter()

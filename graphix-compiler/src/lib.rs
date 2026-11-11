@@ -2532,7 +2532,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
                 self.rt.notify_marked_var(var)
             }
         } else if tag.moved() {
-            self.stand_moved(var, &stored, notify)
+            self.stand_moved(var, stored, notify)
         } else {
             self.rt.store_insert_standing_var(var, stored)
         }
@@ -2545,7 +2545,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     pub fn stand(&mut self, id: BindId, tv: TagValue) {
         let var = self.rt.var_of(id);
         match tv.tag().moved() {
-            true => self.stand_moved(var, &tv, Notify::Walk),
+            true => self.stand_moved(var, tv, Notify::Walk),
             false => self.rt.store_insert_standing_var(var, tv),
         }
     }
@@ -2559,9 +2559,9 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// owed it later (`node::wake::owed`).
     #[cold]
     #[inline(never)]
-    fn stand_moved(&mut self, var: branch::Var, tv: &TagValue, notify: Notify) {
+    fn stand_moved(&mut self, var: branch::Var, tv: TagValue, notify: Notify) {
         match self.event.root {
-            None => self.rt.store_insert_var(var, tv.clone()),
+            None => self.rt.store_insert_var(var, tv),
             Some(root) => {
                 let mut passed = None;
                 let elsewhere = self.rt.store_fire(

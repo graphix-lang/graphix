@@ -34,8 +34,8 @@ use std::{
 use triomphe::Arc;
 
 use super::{
-    abi::{JitEnv, LocalKind, STALE, ValueVar},
-    body::{BodyRole, BodySource, emit_interrupt_check_every, param_id},
+    abi::{JitEnv, LocalKind, ValueVar},
+    body::{BodyRole, BodySource, CONSUMED_NONE, emit_interrupt_check_every, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
     record::{EmitConst, KernelConst},
@@ -130,12 +130,12 @@ pub(super) fn compile_into_function<'a>(
     // A tail-call rebind truncates the env back to this mark.
     let param_mark = env.mark();
 
-    // AND of every tail-position select scrutinee's STALE bit and OR of
-    // its MOVED; `emit_kernel_return` folds it into the returned disc.
-    // Defined in the entry block so it dominates loop-carried uses.
+    // What every tail-position select consumed (`CONSUMED_NONE`);
+    // `emit_kernel_return` folds it into the returned disc. Defined in
+    // the entry block so it dominates loop-carried uses.
     let tail_scrut_stale_acc = {
         let v = b.declare_var(types::I64);
-        let init = b.ins().iconst(types::I64, STALE);
+        let init = b.ins().iconst(types::I64, CONSUMED_NONE);
         b.def_var(v, init);
         v
     };
@@ -500,10 +500,9 @@ pub(super) struct TailCtx<'a> {
     pub(super) call_slots: &'a [kernel_abi::KernelParam],
     /// The body's own ids for the params' ([`BodySpec::params`]).
     pub(super) params: &'a [(BindId, BindId)],
-    /// AND over the STALE bit, and OR over the MOVED bit, of every
-    /// tail-position select scrutinee and consulted guard on the
-    /// executed path; `emit_kernel_return` folds it into the returned
-    /// disc.
+    /// The fold of every tail-position select scrutinee and consulted
+    /// guard on the executed path (`body::CONSUMED_NONE`: STALE ANDs,
+    /// MOVED ORs); `emit_kernel_return` folds it into the returned disc.
     pub(super) tail_scrut_stale_acc: Variable,
 }
 
