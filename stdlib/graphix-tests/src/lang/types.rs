@@ -3830,6 +3830,158 @@ run!(
     FuseExpect::None
 );
 
+/// An alias applied to a recursive type's parameter wraps nothing: the
+/// type is the one with the alias's union written out, and every walk
+/// over it ends (a type test, a cast, an equality, a map key, a generic
+/// function over an open instance).
+const ALIAS_OVER_A_RECURSIVE_PARAMETER: &str = r#"
+{
+    type Opt<'a> = ['a, null];
+    type T<'a> = [`N, `C('a, T<Opt<'a>>)];
+    type W<'a> = [`N, `C('a, W<['a, null]>)];
+    let x: T<i64> = `C(1, `C(null, `C(3, `N)));
+    let w: W<i64> = x;
+    let back: T<i64> = w;
+    let deep: T<Opt<Opt<i64>>> = back;
+    let flat: T<Opt<i64>> = deep;
+    let tested = select w { T<i64> as t => 1, _ => 0 };
+    let c = cast<T<i64>>(`C(1, `C(null, `N)))$;
+    let m: Map<T<i64>, i64> = {c => 10};
+    let second = |t: T<'q>| select t { `C(_, `C(h, _)) => h, _ => never() };
+    let n = select second(flat) { null as _ => 100, i64 as i => i };
+    let same = select x == back { true => 1000, false => 0 };
+    tested + m{c}$ + n + same
+}
+"#;
+
+run!(
+    alias_over_a_recursive_parameter,
+    ALIAS_OVER_A_RECURSIVE_PARAMETER,
+    is(Value::I64(1111))
+);
+
+/// An alias of an alias, the identity alias and a 50-member alias are
+/// looked through alike, and through a second definition on the way back.
+const ALIASES_OVER_A_RECURSIVE_PARAMETER: &str = r#"
+{
+    type Big<'a> = ['a, null, `M0(i64), `M1(i64), `M2(i64), `M3(i64), `M4(i64), `M5(i64), `M6(i64), `M7(i64), `M8(i64), `M9(i64), `M10(i64), `M11(i64), `M12(i64), `M13(i64), `M14(i64), `M15(i64), `M16(i64), `M17(i64), `M18(i64), `M19(i64), `M20(i64), `M21(i64), `M22(i64), `M23(i64), `M24(i64), `M25(i64), `M26(i64), `M27(i64), `M28(i64), `M29(i64), `M30(i64), `M31(i64), `M32(i64), `M33(i64), `M34(i64), `M35(i64), `M36(i64), `M37(i64), `M38(i64), `M39(i64), `M40(i64), `M41(i64), `M42(i64), `M43(i64), `M44(i64), `M45(i64), `M46(i64), `M47(i64), `M48(i64), `M49(i64)];
+    type Opt<'a> = ['a, null];
+    type Twice<'a> = Opt<Opt<'a>>;
+    type I<'b> = J<'b>;
+    type J<'c> = 'c;
+    type B<'a> = [`N, `C('a, B<Big<'a>>)];
+    type B2<'a> = [`N, `C('a, B2<Big<'a>>)];
+    type U<'a> = [`N, `C('a, U<Twice<'a>>)];
+    type V<'a> = [`N('a), `C(V<I<'a>>)];
+    type V2<'a> = [`N('a), `C(V2<'a>)];
+    type X<'a> = [`N('a), `C(Y<'a>)];
+    type Y<'b> = X<Opt<'b>>;
+    type X2<'a> = [`N('a), `C(X2<['a, null]>)];
+    let b: B<i64> = `C(1, `C(`M7(3), `C(null, `N)));
+    let b2: B2<i64> = b;
+    let u: U<string> = `C("a", `C(null, `N));
+    let v: V<i64> = `C(`C(`N(1)));
+    let v2: V2<i64> = v;
+    let x: X<i64> = `C(`C(`N(null)));
+    let x2: X2<i64> = x;
+    let y: Y<i64> = x2;
+    let t0 = select b2 { B<i64> as t => 1, _ => 0 };
+    let t1 = select v2 { V<i64> as t => 10, _ => 0 };
+    let t2 = select y { X<Opt<i64>> as t => 100, _ => 0 };
+    let t3 = select u { `C(_, `C(h, _)) => select h { null as _ => 1000, string as _ => 0 }, _ => 0 };
+    t0 + t1 + t2 + t3
+}
+"#;
+
+run!(
+    aliases_over_a_recursive_parameter,
+    ALIASES_OVER_A_RECURSIVE_PARAMETER,
+    is(Value::I64(1111))
+);
+
+/// The same under an abstract type's representation.
+const ALIAS_OVER_AN_ABSTRACT_PARAMETER: &str = r#"
+{
+    type Opt<'a> = ['a, null];
+    type W<'a> = Abstract<[`N('a), `C(W<Opt<'a>>)]>;
+    let v: W<i64> = W(`C(W(`N(null))));
+    let inner = select v.0 { `C(t) => select t.0 { `N(x) => x, `C(_) => 7 }, `N(x) => x };
+    let same = v == v;
+    select inner { null as _ => select same { true => 1, false => 0 }, i64 as _ => 0 }
+}
+"#;
+
+run!(
+    alias_over_an_abstract_parameter,
+    ALIAS_OVER_AN_ABSTRACT_PARAMETER,
+    is(Value::I64(1))
+);
+
+/// An alias whose body holds its parameter under a constructor still
+/// grows the type, whatever else its union adds.
+const ALIAS_OVER_A_CONSTRUCTOR_GROWS: &str = r#"
+{
+    type M<'b> = ['b, Array<'b>];
+    type A<'a> = [`N('a), `C(A<M<'a>>)];
+    let v: A<i64> = `N(1);
+    0
+}
+"#;
+
+run!(
+    alias_over_a_constructor_grows,
+    ALIAS_OVER_A_CONSTRUCTOR_GROWS,
+    refused("recursive type A grows its parameter 'a as it recurses");
+    FuseExpect::None
+);
+
+/// An alias is looked through where it is applied: one defined below the
+/// recursive type is named, and defined above it the type checks
+/// (`alias_over_a_recursive_parameter`).
+const ALIAS_BELOW_ITS_RECURSIVE_APPLICATION: &str = r#"
+{
+    type T<'a> = [`N, `C('a, T<Opt<'a>>)];
+    type Opt<'a> = ['a, null];
+    let x: T<i64> = `C(1, `C(null, `N));
+    0
+}
+"#;
+
+run!(
+    alias_below_its_recursive_application_refused,
+    ALIAS_BELOW_ITS_RECURSIVE_APPLICATION,
+    refused("passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first");
+    FuseExpect::None
+);
+
+/// An alias that bounds its parameter is not looked through; its body
+/// written out in its place checks.
+const BOUNDED_ALIAS_OVER_A_RECURSIVE_PARAMETER: &str = r#"
+{
+    type NumOpt<'a: Number> = ['a, null];
+    type T<'a: Number> = [`N, `C('a, T<NumOpt<'a>>)];
+    let x: T<i64> = `N;
+    0
+}
+"#;
+
+run!(
+    bounded_alias_over_a_recursive_parameter_refused,
+    BOUNDED_ALIAS_OVER_A_RECURSIVE_PARAMETER,
+    refused("passes its parameter 'a back to itself through NumOpt, which bounds a parameter of its own");
+    FuseExpect::None
+);
+
+const BOUNDED_ALIAS_WRITTEN_OUT: &str = r#"
+{
+    type T<'a> = [`N, `C('a, T<['a, null]>)];
+    let x: T<i64> = `C(1, `C(null, `N));
+    select x { `C(i, _) => i, `N => 0 }
+}
+"#;
+
+run!(bounded_alias_written_out, BOUNDED_ALIAS_WRITTEN_OUT, is(Value::I64(1)));
+
 /// A non-recursive typedef applied to ever larger arguments down a finite
 /// chain of typedefs compares and keys a map as its expansion does.
 const FINITE_CHAIN_OF_LARGER_ARGUMENTS: &str = r#"

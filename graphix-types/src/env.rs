@@ -10,7 +10,8 @@ use crate::{
     tracked::{TrackedMap, TrackedSet},
     typ::{
         AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
-        Unguarded, expansive::Expansive,
+        Unguarded,
+        expansive::{Blind, Expansive, through_aliases},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -532,6 +533,22 @@ fn expansive(name: &str, param: &TVar) -> String {
          comes back wrapped in a constructor, so {name} unfolds to ever larger types \
          and no check over it ends; a recursive type must pass its parameters on \
          unwrapped"
+    )
+}
+
+fn expansive_through(name: &str, param: &TVar, alias: &ModPath, why: Blind) -> String {
+    let why = match why {
+        Blind::Late => {
+            format!("is not defined above the type that applies it: define {alias} first")
+        }
+        Blind::Bounded => format!(
+            "bounds a parameter of its own, as only an application of {alias} \
+             can: write its body out there"
+        ),
+    };
+    format!(
+        "recursive type {name} passes its parameter {param} back to itself through \
+         {alias}, which {why}"
     )
 }
 
@@ -2223,6 +2240,8 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
+        let typ = through_aliases(self, name, &params, &typ).unwrap_or(typ);
+        let rep = rep.map(|r| through_aliases(self, name, &params, &r).unwrap_or(r));
         let new = || {
             std::sync::Arc::new(ResolvedRef::new(
                 scope.clone(),
@@ -2311,6 +2330,9 @@ impl Env {
         let guarded = self.typedef_guard(name, typ, def)?;
         match crate::typ::expansive::expansive(self, def) {
             Expansive::Grows(param) => bail!("{}", expansive(name, &param)),
+            Expansive::Through(param, alias, why) => {
+                bail!("{}", expansive_through(name, &param, &alias, why))
+            }
             Expansive::Unknown => Ok(guarded.or(Unguarded::Unknown)),
             Expansive::Regular => Ok(guarded),
         }

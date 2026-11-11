@@ -228,9 +228,12 @@ itself to a parameter wrapped in a constructor, a nested datatype
 (``type N<'a> = [`Nil, `Cons('a, N<Array<'a>>)]``, `P<('a, 'a)>`), is
 refused at its definition, naming the parameter, directly or through
 other typedefs. Passing a parameter to another position, replacing it
-with a closed type, or adding union members to it is fine. An alias applied
-to the parameter wraps it, even one that adds nothing (`U<I<'a>>` over
-`type I<'b> = 'b`): the checks compare applications as written.
+with a closed type, or adding union members to it is fine, written out
+or through an alias (`U<Opt<'a>>` over `type Opt<'a> = ['a, null]`, an
+alias of an alias, `type I<'b> = 'b`). The alias is defined above the
+recursive type and bounds no parameter, or the refusal names it; one
+with a constructor around its parameter (`type R<'b> = Array<'b>`) grows
+the type as the constructor does.
 
 ```graphix,cases
 no "refers back to itself" type T = [i64, T]; 1
@@ -239,5 +242,9 @@ no "grows its parameter 'b" type A<'a> = [`N, `C(B<'a>)]; type B<'b> = A<Array<'
 ok type S<'a, 'b> = [`Nil, `C('a, S<'b, 'a>)]; 1
 ok type K<'a> = [`Nil, `C('a, K<Array<i64>>)]; 1
 ok type U<'a> = [`Nil, `C('a, U<['a, null]>)]; 1
-no "grows its parameter 'a" type I<'b> = 'b; type U<'a> = [`Nil, `C('a, U<I<'a>>)]; 1
+ok type I<'b> = 'b; type U<'a> = [`Nil, `C('a, U<I<'a>>)]; 1
+ok type Opt<'b> = ['b, null]; type Two<'b> = Opt<Opt<'b>>; type U<'a> = [`Nil, `C('a, U<Two<'a>>)]; let u: U<i64> = `C(1, `C(null, `Nil)); u
+no "grows its parameter 'a" type R<'b> = Array<'b>; type U<'a> = [`Nil, `C('a, U<R<'a>>)]; 1
+no "through Opt, which is not defined above" type U<'a> = [`Nil, `C('a, U<Opt<'a>>)]; type Opt<'b> = ['b, null]; 1
+no "through Num, which bounds a parameter" type Num<'b: Number> = ['b, null]; type U<'a: Number> = [`Nil, `C('a, U<Num<'a>>)]; 1
 ```

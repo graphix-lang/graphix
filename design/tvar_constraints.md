@@ -1557,8 +1557,25 @@ N<Array<'a>>)]``, `type P<'a> = [`L('a), `N(P<('a, 'a)>)]`, and `type A<'a>
 `Env::deftype`, naming the definition and the parameter). A parameter
 passed on bare, to any position, or as a bare member of a union (unions
 flatten, so `T<['a, string]>` applied again is itself) flows plainly. An alias applied to a
-parameter wraps it, even `type I<'b> = 'b`: walks compare applications as
-written, so `A<I<'a>>` grows `A<I<I<'a>>>`. So
+parameter wraps nothing, but walks compare applications as written, and
+as written `A<I<'a>>` unfolds to `A<I<I<'a>>>`. So a definition stores
+such an argument as the alias's expansion (`expansive::through_aliases`,
+at `Env::deftype`): in each application that may unfold back to the
+definition (it names the definition, a name not defined yet, or a
+definition no walk has closed), an argument's member that applies a
+typedef to a parameter becomes its expansion where that leaves every
+parameter bare in a union or absent. `T<Opt<'a>>` over `type Opt<'a> =
+['a, null]` is stored as `T<['a, null]>`, an alias of an alias and a
+50-member alias alike, and no walk knows of it. An application of a
+closed definition cannot come back, so its arguments stay as written and
+its unfolding prints as before. An alias whose expansion holds the
+parameter under a constructor stays as written and grows the type. One
+that cannot be looked through where it is applied, because it is defined
+below the definition or because it bounds a parameter of its own (only
+its application holds the bound), stays as written and counts as a
+constructor; a cycle through it is refused naming the alias
+(`Expansive::Through`), since looking later would leave every walk made
+between the two definitions an unfolding that nests. So
 every type unfolds to finitely many applications, and every walk over
 types ends at a pair it meets again, with no growth cut. A definition
 whose body names something not defined yet is checked again once it is

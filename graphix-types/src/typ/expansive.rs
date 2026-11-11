@@ -6,11 +6,19 @@
 //! to it through a flow under a constructor (`type N<'a> = [`Nil,
 //! `Cons('a, N<Array<'a>>)]`). An abstract type with a representation
 //! is a definition too: a walk may look into it.
+//!
+//! An alias applied to a parameter in an argument (`T<Opt<'a>>` over
+//! `type Opt<'a> = ['a, null]`) wraps nothing, yet as written it nests
+//! at every unfolding. So a definition stores such an argument as the
+//! alias's expansion ([`through_aliases`]), and every walk unfolds the
+//! union written out. An alias that cannot be looked through where it
+//! is applied stays as written and counts as a constructor.
 
 use crate::{
     env::Env,
+    expr::ModPath,
     stack::ensure_sufficient,
-    typ::{AbstractId, ResolvedRef, TVar, Type, TypeRef},
+    typ::{AbstractId, AppKey, ResolvedRef, TVar, Type, TypeRef},
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -22,8 +30,39 @@ pub(crate) enum Expansive {
     Regular,
     /// The parameter whose flow returns to it under a constructor.
     Grows(TVar),
+    /// The parameter whose flow returns to it through nothing but
+    /// applications of the alias named, which no walk looks through.
+    Through(TVar, ModPath, Blind),
     /// A name the body reaches is not defined yet.
     Unknown,
+}
+
+/// Why an alias applied to a parameter is not looked through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Blind {
+    /// It is not defined above the definition that applies it.
+    Late,
+    /// A parameter of it has a bound, which only its application holds.
+    Bounded,
+}
+
+/// What a flow passes through.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wrap {
+    Bare,
+    Ctor,
+    /// The alias at this index of [`Flow::blind`].
+    Alias(usize),
+}
+
+impl Wrap {
+    /// What a cycle through `self` and `other` passes through.
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Wrap::Ctor, _) | (_, Wrap::Ctor) => Wrap::Ctor,
+            (Wrap::Bare, w) | (w, _) => w,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,8 +89,9 @@ struct Flow<'a> {
     env: &'a Env,
     index: LPooled<AHashMap<Key, usize>>,
     defs: LPooled<Vec<Def>>,
-    /// Per node, `(to, under a constructor)`.
-    flows: LPooled<Vec<LPooled<Vec<(usize, bool)>>>>,
+    /// Per node, `(to, through what)`.
+    flows: LPooled<Vec<LPooled<Vec<(usize, Wrap)>>>>,
+    blind: LPooled<Vec<(ModPath, Blind)>>,
     unknown: bool,
 }
 
@@ -59,6 +99,8 @@ struct Flow<'a> {
 thread_local! {
     /// Definitions scanned, for the tests' count of a check's work.
     static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Alias bodies looked through.
+    static LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl<'a> Flow<'a> {
@@ -69,6 +111,7 @@ impl<'a> Flow<'a> {
             index: LPooled::take(),
             defs: LPooled::take(),
             flows: LPooled::take(),
+            blind: LPooled::take(),
             unknown: false,
         };
         flow.intern(Key::Def(def.def_key()), def.params(), def.typ(), Some(def));
@@ -125,17 +168,35 @@ impl<'a> Flow<'a> {
             };
             for m in members {
                 let bare = bare_formal(m);
+                let mut wrap = None;
                 for (i, f) in formals.iter().enumerate() {
-                    let under = match &bare {
-                        Some(b) if b == f => false,
-                        _ if holds_formal(m, f) => true,
+                    let through = match &bare {
+                        Some(b) if b == f => Wrap::Bare,
+                        _ if holds_formal(m, f) => {
+                            *wrap.get_or_insert_with(|| self.wrap(formals, m))
+                        }
                         _ => continue,
                     };
                     let from = self.defs[d].first + i;
-                    self.flows[from].push((first + j, under));
+                    self.flows[from].push((first + j, through));
                 }
             }
         }
+    }
+
+    /// What the argument member `m`, which holds a formal and is none
+    /// bare, wraps it in. A definition stores an alias it looked through
+    /// as its expansion, so one that stands as written and wraps nothing
+    /// was not defined where it was applied.
+    fn wrap(&mut self, formals: &[ArcStr], m: &Type) -> Wrap {
+        let Type::Ref(tr) = m else { return Wrap::Ctor };
+        let (name, why) = match Aliases::new(self.env, formals).look(m) {
+            Look::Wraps => return Wrap::Ctor,
+            Look::Bare(_) => (tr.name.clone(), Blind::Late),
+            Look::Blind(name, why) => (name, why),
+        };
+        self.blind.push((name, why));
+        Wrap::Alias(self.blind.len() - 1)
     }
 
     fn walk(&mut self, d: usize, formals: &[ArcStr], t: &Type) {
@@ -178,9 +239,9 @@ impl<'a> Flow<'a> {
         })
     }
 
-    /// Per node, whether it lies on a cycle of flows through a flow under
-    /// a constructor (Tarjan's strongly connected components).
-    fn growing(&self) -> LPooled<Vec<bool>> {
+    /// Per node, what the cycles of flows it lies on pass through
+    /// (Tarjan's strongly connected components).
+    fn growing(&self) -> LPooled<Vec<Wrap>> {
         let n = self.flows.len();
         let mut order: LPooled<Vec<usize>> = LPooled::take();
         order.resize(n, usize::MAX);
@@ -225,17 +286,181 @@ impl<'a> Flow<'a> {
                 }
             }
         }
-        let mut grows: LPooled<Vec<bool>> = LPooled::take();
-        grows.resize(n, false);
+        let mut grows: LPooled<Vec<Wrap>> = LPooled::take();
+        grows.resize(n, Wrap::Bare);
         for v in 0..n {
-            for (w, under) in self.flows[v].iter() {
-                if *under && comp[*w] == comp[v] {
-                    grows[comp[v]] = true
+            for (w, through) in self.flows[v].iter() {
+                if comp[*w] == comp[v] {
+                    grows[comp[v]] = grows[comp[v]].and(*through)
                 }
             }
         }
         (0..n).map(|v| grows[comp[v]]).collect()
     }
+}
+
+/// What a typedef applied to a parameter, standing as an argument or a
+/// member of one, is to the flow of that parameter.
+#[derive(Clone)]
+enum Look {
+    /// Its expansion, where every parameter stands bare in a union or not
+    /// at all: the application adds members and wraps nothing.
+    Bare(Type),
+    /// Its expansion holds a parameter under a constructor.
+    Wraps,
+    /// The name that hides its expansion, and why.
+    Blind(ModPath, Blind),
+}
+
+/// The alias applications over `formals` looked through so far.
+struct Aliases<'a> {
+    env: &'a Env,
+    formals: &'a [ArcStr],
+    /// The definitions being expanded: one met again is recursive.
+    active: LPooled<Vec<usize>>,
+    /// Each application looked through, held so its key stays its own.
+    seen: LPooled<AHashMap<AppKey, (Type, Look)>>,
+}
+
+impl<'a> Aliases<'a> {
+    fn new(env: &'a Env, formals: &'a [ArcStr]) -> Self {
+        Aliases { env, formals, active: LPooled::take(), seen: LPooled::take() }
+    }
+
+    fn holds(&self, t: &Type) -> bool {
+        self.formals.iter().any(|f| holds_formal(t, f))
+    }
+
+    fn look(&mut self, t: &Type) -> Look {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => self.look(&b),
+                None => Look::Bare(t.clone()),
+            },
+            Type::Set(ms) => {
+                let mut members: LPooled<Vec<Type>> = LPooled::take();
+                let mut blind = None;
+                for m in ms.iter() {
+                    match self.look(m) {
+                        Look::Bare(t) => members.push(t),
+                        Look::Wraps => return Look::Wraps,
+                        hidden => blind = blind.or(Some(hidden)),
+                    }
+                }
+                blind.unwrap_or_else(|| Look::Bare(Type::flatten_set(members.drain(..))))
+            }
+            t if !self.holds(t) => Look::Bare(t.clone()),
+            Type::Ref(tr) => self.expand(t, tr),
+            _ => Look::Wraps,
+        })
+    }
+
+    fn expand(&mut self, t: &Type, tr: &TypeRef) -> Look {
+        let def = match definition(tr, self.env) {
+            Named::Def(def) => def,
+            Named::Trait => return Look::Wraps,
+            Named::Unknown => return Look::Blind(tr.name.clone(), Blind::Late),
+        };
+        let key = def.def_key();
+        if self.active.contains(&key) {
+            return Look::Wraps;
+        }
+        if def.params().iter().any(|(_, bound)| bound.is_some()) {
+            return Look::Blind(tr.name.clone(), Blind::Bounded);
+        }
+        let app = tr.app_key(key);
+        if let Some((_, found)) = self.seen.get(&app) {
+            return found.clone();
+        }
+        let found = self.expansion(&def, &tr.params);
+        self.seen.insert(app, (t.clone(), found.clone()));
+        found
+    }
+
+    /// `def`'s body over `args`, each looked through before the body is:
+    /// an alias in an argument is not the body naming itself.
+    fn expansion(&mut self, def: &ResolvedRef, args: &[Type]) -> Look {
+        #[cfg(test)]
+        LOOKS.with(|n| n.set(n.get() + 1));
+        let mut bare: LPooled<Vec<Type>> = LPooled::take();
+        for arg in args {
+            match self.look(arg) {
+                Look::Bare(t) => bare.push(t),
+                hidden => return hidden,
+            }
+        }
+        let Some(known) = def.bindings(&bare) else { return Look::Wraps };
+        self.active.push(def.def_key());
+        let found = self.look(&def.typ().replace_tvars(&known));
+        self.active.pop();
+        found
+    }
+
+    /// Whether an application of `tr` in the body of the typedef `name`
+    /// may unfold back to that body: `tr` names it, or something not
+    /// defined yet, or a definition no walk has closed.
+    fn may_return(&self, name: &str, tr: &TypeRef) -> bool {
+        match definition(tr, self.env) {
+            Named::Def(c) => c.regular.get().is_none() || tr.name == [name],
+            Named::Trait => false,
+            Named::Unknown => true,
+        }
+    }
+
+    fn arg(&mut self, name: &str, arg: &Type) -> Option<Type> {
+        let mut member = |m: &Type| match m {
+            Type::Ref(_) if self.holds(m) => match self.look(m) {
+                Look::Bare(t) => Some(t),
+                Look::Wraps | Look::Blind(..) => self.stored(name, m),
+            },
+            m => self.stored(name, m),
+        };
+        match arg {
+            Type::Set(ms) => Type::cow_slice(ms, member)
+                .map(|ms| Type::flatten_set(ms.iter().cloned())),
+            arg => member(arg),
+        }
+    }
+
+    fn stored(&mut self, name: &str, t: &Type) -> Option<Type> {
+        ensure_sufficient(|| match t {
+            Type::Ref(tr)
+                if passes_formal(&tr.params, self.formals)
+                    && self.may_return(name, tr) =>
+            {
+                Type::cow_slice(&tr.params, |a| self.arg(name, a))
+                    .map(|params| Type::Ref(Arc::new(tr.with_params(params))))
+            }
+            Type::Abstract { id, params }
+                if passes_formal(params, self.formals)
+                    && self.env.abstract_reps.get(id).is_some() =>
+            {
+                Type::cow_slice(params, |a| self.arg(name, a))
+                    .map(|params| Type::Abstract { id: *id, params })
+            }
+            t => t.cow_children(&mut |c| self.stored(name, c)),
+        })
+    }
+}
+
+/// `body`, the body or the representation of the typedef `name` over
+/// `params`, as its definition stores it, when that is not as written:
+/// in each application that may unfold back to the body, an argument
+/// that applies an alias to a parameter is the alias's expansion, where
+/// that leaves every parameter bare in a union. The alias is one defined
+/// already, so the definition's own unfolding never nests it.
+pub(crate) fn through_aliases(
+    env: &Env,
+    name: &str,
+    params: &Params,
+    body: &Type,
+) -> Option<Type> {
+    if params.is_empty() {
+        return None;
+    }
+    let formals: LPooled<Vec<ArcStr>> =
+        params.iter().map(|(f, _)| f.name.clone()).collect();
+    Aliases::new(env, &formals).stored(name, body)
 }
 
 enum Named {
@@ -244,6 +469,23 @@ enum Named {
     Unknown,
 }
 
+// CR claude for claude: [bug/medium] A module's typedef that shadows an import
+// which an earlier typedef of the module already named escapes this check, and a
+// walk over the type then never ends. With `type M<'a> = Array<'a>` in the parent,
+// `use super::M; type N<'a> = [`Nil, `Cons('a, M<'a>)]; type M<'a> = N<Array<'a>>`
+// is accepted: N's walk peeks M as the import, finds no cycle and settles N
+// regular, the local M's walk skips the settled N, and N<i64> unfolds to
+// N<Array<i64>> and on (`--check` killed at 30 s, on base-r20 too; without the
+// `use` M is refused). The alias look-through reads the same peek:
+// `type T<'a> = [`N, `C(Opt<'a>, T<Opt<'a>>)]` above a local Opt that shadows an
+// imported one stores T's argument as the imported Opt's body, while the Opt
+// beside it means the local one (T<i64> then holds what neither Opt alone
+// allows). A block refuses a name its later statement declares (Unseen::Later);
+// a module scope has no such rule for a name it takes from an import and then
+// declares. Either refuse the later typedef (or the earlier use), or resolve a
+// module's typedef names once all of them are declared. probes:
+// ~/ptmp/cr29/scratch/r20/20c/ag/shadow-hang/, shadow-alias/
+// (typedef-import-shadow-01)
 fn definition(tr: &TypeRef, env: &Env) -> Named {
     if let Some(d) = tr.resolve_peek(env) {
         return Named::Def(d);
@@ -294,7 +536,7 @@ fn holds_formal(t: &Type, f: &ArcStr) -> bool {
 /// the definitions it reaches. A walk that meets no undefined name
 /// settles every definition it reached whose parameters do not grow: each
 /// one's own walk is a part of this one.
-// CR claude for claude: [bug/medium] An alias applied to a recursive type's parameter
+// XCR claude for claude: [bug/medium] An alias applied to a recursive type's parameter
 // is judged a growth though it grows nothing. `type Opt<'a> = ['a, null]; type T<'a> =
 // [`N, `C('a, T<Opt<'a>>)]` is refused ("grows its parameter 'a .. wrapped in a
 // constructor") while `T<['a, null]>` written out is accepted, and `T<I<'a>>` over
@@ -311,17 +553,48 @@ fn holds_formal(t: &Type, f: &ArcStr) -> bool {
 // `U<I<'a>>` case in ide/skills/graphix-lang/generics.md and its prose, and the book
 // (udt/recursive.md). probes: ~/ptmp/cr29/d29/{alias,written,ident}.gx
 // (alias-growth-01)
+// 2026-11-10 claude: Built Eric's (b) at the definition, so no walk changed:
+// Env::deftype stores an argument that applies an alias to a parameter as the alias's
+// expansion (expansive::through_aliases) in every application that may unfold back to
+// the definition, where the expansion leaves each parameter bare in a union or absent;
+// T<Opt<'a>> is stored as T<['a, null]>, which every walk already ends on. An alias
+// with a constructor around the parameter stays as written and grows. One defined
+// below the type that applies it, or one that bounds a parameter, is not looked
+// through, counts as a constructor, and a cycle through it is refused naming the alias
+// (Expansive::Through) and the fix. An application of a closed (regular) definition
+// keeps its arguments as written, so no unfolding accepted before prints differently.
+// Pins that fail without it:
+// typ::expansive::test::{an_alias_applied_to_a_parameter_is_its_expansion,
+// parameters_passed_on_are_regular, an_alias_met_again_is_looked_through_once (8191
+// looks at depth 12 without the memo)},
+// lang::types::{alias_over_a_recursive_parameter, aliases_over_a_recursive_parameter
+// (a 50-member alias, an alias of an alias, the identity alias, a second definition on
+// the way back), alias_over_an_abstract_parameter}; refusals
+// lang::types::{alias_below_its_recursive_application_refused,
+// bounded_alias_over_a_recursive_parameter_refused} (twin bounded_alias_written_out)
+// and alias_over_a_constructor_grows; generics.md cases; the book's udt/recursive.md
+// fences. Judged here: the order rule (define the alias first) in place of a recheck
+// when the alias arrives, since a use between the two definitions would walk a nesting
+// unfolding. Found and not fixed: typedef-import-shadow-01. probes:
+// ~/ptmp/cr29/scratch/r20/20c/ag/
 pub(crate) fn expansive(env: &Env, def: &DefRef) -> Expansive {
     if def.params().is_empty() || def.regular.get().is_some() {
         return Expansive::Regular;
     }
     let flow = Flow::from(env, def);
     let growing = flow.growing();
-    let grows = |d: &Def| growing[d.first..d.first + d.params.len()].iter().any(|g| *g);
-    if grows(&flow.defs[0]) {
-        let at = def.params().iter().zip(&growing[..]).find(|(_, g)| **g);
-        let ((tv, _), _) = at.expect("a growing parameter");
+    let grows = |d: &Def| {
+        growing[d.first..d.first + d.params.len()].iter().any(|g| *g != Wrap::Bare)
+    };
+    let own = def.params().iter().zip(&growing[..]);
+    if let Some(((tv, _), _)) = own.clone().find(|(_, g)| **g == Wrap::Ctor) {
         return Expansive::Grows(tv.clone());
+    }
+    for ((tv, _), g) in own {
+        if let Wrap::Alias(i) = g {
+            let (alias, why) = &flow.blind[*i];
+            return Expansive::Through(tv.clone(), alias.clone(), *why);
+        }
     }
     if flow.unknown {
         return Expansive::Unknown;
@@ -384,7 +657,128 @@ mod test {
         grows(&[("A<'a>", "[`N, `C(B<'a>)]"), ("B<'b>", "A<Array<'b>>")], "B", "'b");
         grows(&[("W<'a>", "Abstract<[`N, `C(W<Array<'a>>)]>")], "W", "'a");
         grows(&[("U<'a>", "[`N, `C(U<['a, Array<'a>]>)]")], "U", "'a");
-        grows(&[("I<'b>", "'b"), ("A<'a>", "[`N('a), `C(A<I<'a>>)]")], "A", "'a");
+        grows(&[("R<'b>", "Array<'b>"), ("A<'a>", "[`N('a), `C(A<R<'a>>)]")], "A", "'a");
+        grows(
+            &[("M<'b>", "['b, Array<'b>]"), ("A<'a>", "[`N, `C(A<M<'a>>)]")],
+            "A",
+            "'a",
+        );
+        grows(
+            &[("O<'b>", "['b, null]"), ("A<'a>", "[`N, `C(A<O<Array<'a>>>)]")],
+            "A",
+            "'a",
+        );
+        grows(
+            &[("L<'b>", "[`Nil, `Cons('b, L<'b>)]"), ("A<'a>", "[`N, `C(A<L<'a>>)]")],
+            "A",
+            "'a",
+        );
+        grows(
+            &[("O<'b>", "['b, null]"), ("W<'a>", "Abstract<[`N, `C(W<Array<O<'a>>>)]>")],
+            "W",
+            "'a",
+        );
+    }
+
+    /// The body the typedef `name` of `env` stores.
+    fn stored(env: &Env, name: &str) -> String {
+        use crate::expr::ModPath;
+        let defs = env.lexical.typedefs.get(&ModPath::root()).expect("root typedefs");
+        defs.get(name).expect("defined").typ().to_string()
+    }
+
+    const OPT: (&str, &str) = ("O<'b>", "['b, null]");
+
+    #[test]
+    fn an_alias_applied_to_a_parameter_is_its_expansion() {
+        let t = |defs: &[(&str, &str)], name: &str| {
+            let (env, _) = Env::typed_at_root(defs, "i64").expect("regular");
+            stored(&env, name)
+        };
+        assert_eq!(t(&[OPT, ("T<'a>", "[`N, `C('a, T<O<'a>>)]")], "T"), {
+            t(&[("T<'a>", "[`N, `C('a, T<['a, null]>)]")], "T")
+        });
+        let id =
+            [("I<'b>", "J<'b>"), ("J<'c>", "'c"), ("T<'a>", "[`N('a), `C(T<I<'a>>)]")];
+        assert_eq!(t(&id, "T"), t(&[("T<'a>", "[`N('a), `C(T<'a>)]")], "T"));
+        let nested =
+            [OPT, ("P<'b>", "O<O<'b>>"), ("T<'a>", "[`N, `C(T<P<[O<'a>, string]>>)]")];
+        assert_eq!(
+            t(&nested, "T"),
+            t(&[("T<'a>", "[`N, `C(T<['a, null, string]>)]")], "T")
+        );
+        let two = [OPT, ("V<'a, 'b>", "[`N('a), `C(V<O<['a, 'b]>, 'a>)]")];
+        assert_eq!(
+            t(&two, "V"),
+            t(&[("V<'a, 'b>", "[`N('a), `C(V<['a, 'b, null], 'a>)]")], "V")
+        );
+        let alias = [OPT, ("A<'a>", "[`N('a), `C(B<'a>)]"), ("B<'b>", "A<O<'b>>")];
+        let written = [("A<'a>", "[`N('a), `C(B<'a>)]"), ("B<'b>", "A<['b, null]>")];
+        assert_eq!(t(&alias, "B"), t(&written, "B"));
+        let later =
+            [OPT, ("A<'a>", "[`N('a), `C(B<O<'a>>)]"), ("B<'b>", "[`M, `D(A<'b>)]")];
+        assert_eq!(t(&later, "A"), t(&[("A<'a>", "[`N('a), `C(B<['a, null]>)]")], "A"));
+        let rep = [OPT, ("W<'a>", "Abstract<[`N('a), `C(W<O<'a>>)]>")];
+        let (env, _) = Env::typed_at_root(&rep, "i64").expect("regular");
+        let rep = env.abstract_reps.into_iter().next().expect("a representation").1;
+        assert_eq!(rep.rep.to_string(), "[`C(W<[null, 'a]>), `N('a)]");
+    }
+
+    /// An application that cannot unfold back to the definition stores
+    /// its arguments as written: what its unfolding prints is unchanged.
+    #[test]
+    fn an_alias_argument_of_a_closed_definition_stays_as_written() {
+        let defs = [
+            OPT,
+            ("L<'a>", "[`Nil, `Cons('a, L<'a>)]"),
+            ("F<'a>", "[`F(L<O<'a>>), `G('a)]"),
+        ];
+        let (env, _) = Env::typed_at_root(&defs, "i64").expect("regular");
+        assert_eq!(stored(&env, "F"), "[`F(L<O<'a>>), `G('a)]");
+    }
+
+    #[test]
+    fn an_alias_defined_below_its_application_is_named() {
+        let late = |defs: &[(&str, &str)], name: &str, param: &str, alias: &str| {
+            let e = refusal(defs).expect("refused");
+            let want = format!(
+                "recursive type {name} passes its parameter {param} back to itself \
+                 through {alias}, which is not defined above"
+            );
+            assert!(e.starts_with(&want), "{e}");
+        };
+        late(&[("T<'a>", "[`N, `C('a, T<O<'a>>)]"), OPT], "T", "'a", "O");
+        let nested =
+            [("I<'b>", "J<'b>"), ("T<'a>", "[`N, `C(T<I<'a>>)]"), ("J<'c>", "'c")];
+        late(&nested, "T", "'a", "J");
+        let cycle =
+            [("A<'a>", "[`N('a), `C(B<O<'a>>)]"), OPT, ("B<'b>", "[`M, `D(A<'b>)]")];
+        late(&cycle, "B", "'b", "O");
+    }
+
+    /// A DAG of aliases, each naming the two below it, is looked through
+    /// once per alias, not once per path.
+    #[test]
+    fn an_alias_met_again_is_looked_through_once() {
+        const DEPTH: usize = 40;
+        let mut defs = vec![
+            ("A0<'a>".to_string(), "['a, null]".to_string()),
+            ("B0<'a>".to_string(), "['a, string]".to_string()),
+        ];
+        for i in 1..=DEPTH {
+            defs.push((format!("A{i}<'a>"), format!("[A{}<'a>, B{}<'a>]", i - 1, i - 1)));
+            defs.push((format!("B{i}<'a>"), format!("[B{}<'a>, A{}<'a>]", i - 1, i - 1)));
+        }
+        defs.push(("T<'a>".to_string(), format!("[`N, `C('a, T<A{DEPTH}<'a>>)]")));
+        let defs: Vec<(&str, &str)> =
+            defs.iter().map(|(n, b)| (n.as_str(), b.as_str())).collect();
+        super::LOOKS.with(|n| n.set(0));
+        let (env, _) = Env::typed_at_root(&defs, "i64").expect("regular");
+        let looks = super::LOOKS.with(|n| n.get());
+        assert!(looks <= 2 * (DEPTH + 1), "{looks} looks through {DEPTH} levels");
+        let written = [("T<'a>", "[`N, `C('a, T<['a, null, string]>)]")];
+        let (twin, _) = Env::typed_at_root(&written, "i64").expect("regular");
+        assert_eq!(stored(&env, "T"), stored(&twin, "T"));
     }
 
     #[test]
@@ -406,6 +800,13 @@ mod test {
             &[("R<'a>", "Abstract<[`N, `C('a, R<'a>)]>")],
             &[("U<'a>", "{n: [U<['a, string]>, null], v: 'a}")],
             &[("V<'a, 'b>", "[`N('a), `C(V<['a, 'b], 'a>)]")],
+            &[("I<'b>", "'b"), ("A<'a>", "[`N('a), `C(A<I<'a>>)]")],
+            &[OPT, ("T<'a>", "[`N, `C('a, T<O<'a>>)]")],
+            &[OPT, ("P<'b>", "O<O<'b>>"), ("T<'a>", "[`N, `C('a, T<P<'a>>)]")],
+            &[OPT, ("A<'a>", "[`N, `C(B<'a>)]"), ("B<'b>", "A<O<'b>>")],
+            &[OPT, ("B<'b>", "A<O<'b>>"), ("A<'a>", "[`N, `C(B<'a>)]")],
+            &[OPT, ("A<'a>", "[`N('a), `C(B<O<'a>>)]"), ("B<'b>", "[`M, `D(A<'b>)]")],
+            &[OPT, ("W<'a>", "Abstract<[`N('a), `C(W<O<'a>>)]>")],
         ] {
             assert_eq!(refusal(defs), None, "{defs:?}");
         }
