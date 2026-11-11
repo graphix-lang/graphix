@@ -1144,10 +1144,16 @@ pub(super) fn apply_consumed(
     disc: ClifValue,
     acc: ClifValue,
 ) -> ClifValue {
-    let d = fold_stale(b, disc, acc);
-    let unmoved = b.ins().band_imm_u(acc, MOVED);
-    let moved = b.ins().bxor_imm_u(unmoved, MOVED);
+    let tag = consumed_tag(b, acc);
+    let d = fold_stale(b, disc, tag);
+    let moved = b.ins().band_imm_u(tag, MOVED);
     b.ins().bor(d, moved)
+}
+
+/// The STALE and MOVED bits of what the accumulator `acc` consumed
+/// ([`CONSUMED_NONE`]), as a disc holds them.
+pub(super) fn consumed_tag(b: &mut FunctionBuilder, acc: ClifValue) -> ClifValue {
+    b.ins().bxor_imm_u(acc, MOVED)
 }
 
 pub(super) fn emit_kernel_return(

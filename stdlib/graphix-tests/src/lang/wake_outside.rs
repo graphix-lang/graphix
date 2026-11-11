@@ -1319,3 +1319,29 @@ async fn a_moved_source_moves_what_holds_its_elements() -> Result<()> {
         .collect();
     in_arm_agrees("array::filter([n, m], |e| true)", &ticks).await
 }
+
+/// [`in_arm`]'s ticks for a value the wake leaves bottom at clk 6, where
+/// the tick is missing: `v` is the value at each `n` the arm sees.
+fn bottomed(v: impl Fn(i64) -> i64) -> Vec<String> {
+    const N: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5];
+    const SEL: [i64; 10] = [0, 0, 1, 1, 1, 1, 0, 0, 0, 0];
+    const X: [i64; 10] = [0, 1, 1, 1, 1, 1, 3, 4, 4, 5];
+    const FIRES: [i64; 10] = [1, 2, 2, 2, 2, 2, 2, 3, 3, 4];
+    (0..10)
+        .filter(|i| *i != 6)
+        .map(|i| format!("[{i}, {}, {}, {}, {}]", N[i], SEL[i], v(X[i]), FIRES[i]))
+        .collect()
+}
+
+// A select the wake leaves with no arm, its scrutinee bottom or a
+// consulted guard's channel bottom over what the arm slept through, moved
+// to bottom: the reader outside loses the value at the wake, as it does
+// where an operator bottoms.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_select_a_wake_leaves_bottom_moves() -> Result<()> {
+    in_arm_agrees("10 / (n - 3)", &bottomed(|x| 10 / (x - 3))).await?;
+    let scrutinee = "select 10 / (n - 3) { 0 => 1, x => x }";
+    in_arm_agrees(scrutinee, &bottomed(|x| 10 / (x - 3))).await?;
+    let guard = "select k { x if 10 / (n - 3) > 0 => 1, _ => 0 }";
+    in_arm_agrees(guard, &bottomed(|x| (10 / (x - 3) > 0) as i64)).await
+}

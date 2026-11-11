@@ -455,7 +455,8 @@ that left the arm, saw none of it, so to that reader the stand is a fire.
 - **Who passes it on.** Everything that computes from values: `Tag::join`
   ORs it (it is dropped where the join fires, a fire says as much), so
   operators, data constructors, field reads, a select's emission (the
-  arm's, the scrutinee's and the consulted guards'), a call (its function
+  arm's, the scrutinee's and the consulted guards'; a select left with no
+  arm, by a bottom scrutinee or guard, is a bottom that moved), a call (its function
   value's too), a collection (a slot's, or its source's where the result
   reads elements) and a `Stateless` builtin (`CachedArgs`, the kernel's
   fast calls) carry it. A resident never keeps it: `Tag::quiet` clears it.

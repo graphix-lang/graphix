@@ -29,12 +29,12 @@ use triomphe::Arc;
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, OwnedKind, STALE, TAINT, ValueVar, bind_local,
+        CompiledExpr, LocalKind, MOVED, OwnedKind, STALE, TAINT, ValueVar, bind_local,
         clean_disc, is_tainted, is_untainted, local_payload_ty, owned_words,
         propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
     body::{
-        BodyCx, CONSUMED_NONE, apply_consumed, emit_into_slot,
+        BodyCx, CONSUMED_NONE, apply_consumed, consumed_tag, emit_into_slot,
         ensure_owned_composite_src, fold_consumed, fold_stale, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
@@ -302,9 +302,10 @@ pub(crate) fn emit_select_node<R: Rt>(
                 guards_stale,
             )
         },
-        // A standing bottom scrutinee does not re-fire the select.
+        // A standing bottom scrutinee does not re-fire the select, and
+        // one a wake moved moved it.
         &mut |cx| {
-            let s = cx.b.ins().band_imm_u(scrut_disc, STALE);
+            let s = cx.b.ins().band_imm_u(scrut_disc, STALE | MOVED);
             emit_select_bottom_value(cx, merge_shape, merge, s)
         },
         &mut |cx, stale_bits| {
@@ -328,7 +329,7 @@ pub(crate) fn emit_select_node<R: Rt>(
 }
 
 /// Jump to the merge with a drop-safe tainted bottom whose freshness
-/// is `stale_bits` (0 = fresh).
+/// is `stale_bits` (0 = fresh), with MOVED where a consumed input moved.
 fn emit_select_bottom_value(
     cx: &mut BodyCx,
     merge_shape: SelectMerge,
@@ -1089,7 +1090,7 @@ fn emit_arm_condition<R: Rt>(
 /// (structure-failed arms and arms below the taken one contribute
 /// nothing). `emit_miss` handles a tainted scrutinee, which makes no
 /// selection and consults no guard; `emit_undet` the undecidable
-/// outcome (a bottom consulted guard), given its STALE bits (0 = fresh).
+/// outcome (a bottom consulted guard), given its STALE and MOVED bits (0 = fresh).
 pub(super) fn emit_select_arms<R: Rt>(
     cx: &mut BodyCx,
     sel: &Select<R>,
@@ -1361,12 +1362,12 @@ pub(super) fn emit_select_arms<R: Rt>(
         cx.b.switch_to_block(ub);
         cx.b.seal_block(ub);
         drop_prologue(cx)?;
-        // The undecidable outcome is fresh iff a consumed input fired:
-        // the scrutinee or a consulted guard.
-        let ss = cx.b.ins().band_imm_u(sdisc, STALE);
+        // The undecidable outcome is fresh iff a consumed input fired,
+        // the scrutinee or a consulted guard, and moved iff one did.
         let af = cx.b.use_var(acc);
-        let undet_stale = cx.b.ins().band(ss, af);
-        emit_undet(cx, undet_stale)?;
+        let all = fold_consumed(cx.b, af, sdisc);
+        let undet_tag = consumed_tag(cx.b, all);
+        emit_undet(cx, undet_tag)?;
     }
     Ok(())
 }

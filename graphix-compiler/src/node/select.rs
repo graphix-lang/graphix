@@ -2443,7 +2443,7 @@ impl<R: Rt> Update<R> for Select<R> {
             if let Some(j) = selected.take().or(held) {
                 deselect(ctx, tracked, kept, j, &mut arms[j], sleep_on_deselect.get(j));
             }
-            return resident.set_bottom(arg_prod.triggers());
+            return resident.set_bottom_as(arg_prod);
         }
         let v = arg.value.as_ref().expect("Held keeps every non-bottom production");
         if crate::dbgenv::graphix_dbg_select() {
@@ -2520,7 +2520,11 @@ impl<R: Rt> Update<R> for Select<R> {
                         sleep_on_deselect.get(j),
                     );
                 }
-                return resident.set_bottom(planes.anyfire);
+                let tag = match planes.anyfire {
+                    true => Tag::FRESH_BOTTOM,
+                    false => Tag::STALE_BOTTOM.moved_if(planes.moved),
+                };
+                return resident.set_bottom_as(tag);
             }
             ChainOut::Quiet(i) => {
                 let view = standing_arm_view(ctx, &arms[i]);
