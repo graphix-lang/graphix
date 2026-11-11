@@ -3981,6 +3981,27 @@ impl Type {
         r
     }
 
+    // CR claude for claude: [bug/medium] An undecided type that a decided member and an
+    // undecided member of one union could both take goes to the decided one, which decides
+    // the type's own cell: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; let h = |x0: {v:
+    // 'a}, x1: P<'a, 'b>| 0; let f = |y| h({v: null}, [y]); f((1, 2))` is refused at the call
+    // of f, "null does not contain (i64, i64)": at the join Array<null> took [y] and bound y
+    // to null, where Array<'b> holds it for every y. The direct form (`let y = never();
+    // h({v: null}, [y]); y <- (1, 2)`) is refused with a hint to declare y: [null, (i64,
+    // i64)]. base-r20, r20-staging without lane 20b and r20-staging 557beb5ed run both
+    // (takes_as_it_stands held the member's cells alone and gave y's cell to Array<'b>, the
+    // pick r20-x6 removed because between two undecided members it went by order). Check and
+    // build agree; the refusal is a mismatch at the wrapper's call, far from the choice. 4 of
+    // 800 generated wrappers, none of the census's 2955 files. A fix to try: where no member
+    // takes the type with the cells of both held, the one undecided member that holds it
+    // with its own cells held takes it (two such are the choice AmbiguousMember refuses),
+    // outside a pre-unification, whose argument is not checked yet; then the differential
+    // (genw.py beside the round's generators) and a census, since it moves what the join
+    // gives an empty array beside one decided member (`f([], never(), 1)` over `'a: P<'b,
+    // 'c> |x: 'a, y: 'b, z: 'c|`). probes:
+    // ~/ptmp/cr29/scratch/r20/20b/x6rev/um/{um1,um3,um5}.gx,
+    // ~/ptmp/cr29/scratch/r20/20b/x6rev/gen2-w1/{w00087,w00018,w00135,w00580}.gx, generator
+    // ~/ptmp/cr29/scratch/r20/20b/x6rev/genw.py (undecided-into-decided-member-01)
     /// Commit `t` into the member of the union `s` that takes it, of those
     /// a probe admits it into, a tier at a time; `None` with no member. A
     /// probe judges each part apart, so it admits `fn(i: 'c) -> 'c` into
