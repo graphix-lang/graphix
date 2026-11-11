@@ -199,6 +199,16 @@ pub(super) struct ContainsHist {
     early: bool,
     /// [`identical_linked`]'s pairs found identical.
     identical: IdenticalMemo,
+    /// The definitions ([`ResolvedRef::def_key`]) whose two applications
+    /// this walk is expanding, innermost last.
+    ///
+    /// [`ResolvedRef::def_key`]: super::ResolvedRef::def_key
+    unfolding: SmallVec<[usize; 2]>,
+    /// Those the walk this one is a trial of was expanding when the trial
+    /// began ([`Type::place_in_order`]), and that walk's own: two
+    /// applications of one of them are its recursion met on fresh copies,
+    /// which no question in progress answers.
+    unfolded_above: SmallVec<[usize; 2]>,
 }
 
 /// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`],
@@ -343,6 +353,8 @@ impl ContainsHist {
             ordered: false,
             early: false,
             identical: IdenticalMemo::default(),
+            unfolding: SmallVec::new(),
+            unfolded_above: SmallVec::new(),
         }
     }
 
@@ -3198,16 +3210,22 @@ impl Type {
                 // cell, which the shortcut used to answer. probe:
                 // ~/ptmp/cr29/scratch/r20/20c/ag/u5min.gx (lane 19f's review/u5.gx)
                 // (open-instance-signature-01)
+                let mut one_definition = None;
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
-                    && let Some(held) =
-                        Self::applications_hold(flags, env, hist, (t0, tr0), (t1, tr1))?
                 {
-                    return Ok(held);
+                    let apps: [(&Type, &TypeRef); 2] = [(t0, tr0), (t1, tr1)];
+                    if let Some(held) =
+                        Self::applications_hold(flags, env, hist, apps[0], apps[1])?
+                    {
+                        return Ok(held);
+                    }
+                    one_definition = tr0.def_key();
                 }
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                hist.assuming(key, |hist| {
+                hist.unfolding.extend(one_definition);
+                let held = hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
                         return Ok(false);
                     };
@@ -3215,7 +3233,11 @@ impl Type {
                         return Ok(false);
                     };
                     e0.contains_int(flags, env, hist, &e1)
-                })
+                });
+                if one_definition.is_some() {
+                    hist.unfolding.pop();
+                }
+                held
             }
             // ⊥ fits whatever the cell becomes; binding would only
             // foreclose its writers. The cell remembers it was fed ⊥.
@@ -3743,6 +3765,13 @@ impl Type {
     /// another). A name that means nothing here, and a definition a name
     /// it reaches is not yet defined for, are one type where their
     /// arguments are equal and hold no open cell.
+    ///
+    /// On the copies of a trial made while this definition's applications
+    /// were being expanded ([`ContainsHist::unfolded_above`]) the
+    /// arguments answer for a parameter in a union's choice too
+    /// ([`variance::Meets::asked`]): the walk of the expansions there is
+    /// the walk the trial was made in, on cells no question in progress
+    /// knows, and a trial in each would never end.
     fn applications_hold(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -3759,9 +3788,34 @@ impl Type {
         };
         let pairs = || tr0.params.iter().zip(tr1.params.iter());
         let meets = tr0.resolve_peek(env).and_then(|def| variance::meets(env, &def));
-        let Some(meets) = meets.filter(|meets| {
-            pairs().zip(meets.iter()).all(|((a, b), m)| !m.walk() || same(a, b))
-        }) else {
+        let differ =
+            |((a, b), m): ((&Type, &Type), &variance::Meets)| m.walk() && !same(a, b);
+        if let Some(meets) = &meets
+            && tr0.def_key().is_some_and(|d| hist.unfolded_above.contains(&d))
+            && pairs().zip(meets.iter()).any(differ)
+        {
+            // each pair's questions; none where only the walk tells of two
+            // arguments that are one type
+            let asked: Option<SmallVec<[variance::Meets; 4]>> = pairs()
+                .zip(meets.iter())
+                .map(|((a, b), m)| match m.walk() && same(a, b) {
+                    true => Some(variance::Meets::default()),
+                    false => m.asked(),
+                })
+                .collect();
+            if let Some(asked) = asked {
+                let (a0, a1) = (&tr0.params, &tr1.params);
+                let held = Self::arguments_hold(&asked, probe, env, hist, a0, a1)?
+                    && (!commit
+                        || Self::arguments_hold(&asked, flags, env, hist, a0, a1)?);
+                return match held {
+                    true => Ok(Some(tr0.hold_bounds_with(tr1, env, commit)?)),
+                    false => Ok(Some(false)),
+                };
+            }
+        }
+        let Some(meets) = meets.filter(|meets| !pairs().zip(meets.iter()).any(differ))
+        else {
             let open =
                 |p: &Type, hist: &mut ContainsHist| !hist.closed_now(p) && p.has_free();
             if tr0.resolve_peek(env).is_some()
@@ -4619,7 +4673,14 @@ impl Type {
                 })
                 .collect();
             let Self::Set(c0) = &copy0 else { unreachable!("a copy keeps its shape") };
-            if place(flags, env, &mut trial(), &copy0, c0, &copy1)? {
+            let mut on_copies = trial();
+            on_copies.unfolded_above = hist
+                .unfolded_above
+                .iter()
+                .chain(hist.unfolding.iter())
+                .copied()
+                .collect();
+            if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
                 return place(flags, env, hist, t0, s0, order);
             }
         }
@@ -5896,6 +5957,38 @@ mod tests {
             let (commit, probe) = permuted_steps("D", n);
             assert!(probe <= 2 * n, "n={n}: a probe took {probe} steps");
             assert!(commit <= 6 * n, "n={n}: a commit took {commit} steps");
+        }
+    }
+
+    // A recursive definition with a bare parameter places its expansion's
+    // members on copies, where its own applications come back over fresh
+    // cells no question in progress knows: they are answered by their
+    // arguments there, or each would be expanded in a trial of its own.
+    #[test]
+    fn an_application_met_in_a_trial_of_its_own_expansion_is_not_unfolded() {
+        let trees = [
+            ("Tree<'a>", "['a, `Node(Array<Tree<'a>>)]", "Tree<'q>", "Tree<i64>"),
+            (
+                "D<'a, 'b>",
+                "[`U(D<'b, 'a>), 'b, `V(Array<'a>)]",
+                "D<'q, 'r>",
+                "D<i64, string>",
+            ),
+            (
+                "D<'a>",
+                "[`U(Array<D<'a>>), `V(i64), 'a, null]",
+                "D<['q, null]>",
+                "D<string>",
+            ),
+        ];
+        for (head, body, open, held) in trees {
+            let (env, _) = Env::typed_at_root(&[(head, body)], "i64").unwrap();
+            let open = at_root(&env, &format!("fn(x: {open}) -> i64"));
+            let held = at_root(&env, &format!("fn(x: {held}) -> i64"));
+            CONTAINS_STEPS.with(|n| n.set(0));
+            held.check_contains(&env, &open).unwrap();
+            let steps = CONTAINS_STEPS.with(|n| n.get());
+            assert!(steps <= 200, "{head}: a commit took {steps} steps");
         }
     }
 

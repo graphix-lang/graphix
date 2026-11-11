@@ -14,7 +14,10 @@
 //! is left to the walk ([`Meets::walk`]), since which member takes a
 //! value decides what its cells become, and so are one passed to a
 //! bounded parameter, whose bound each expansion holds, and the payload
-//! of core's `ErrChain`, where a chain of a chain is that chain.
+//! of core's `ErrChain`, where a chain of a chain is that chain. A
+//! parameter left to the walk for a union's choice alone keeps its
+//! questions ([`Meets::asked`]): arguments that answer them make the
+//! application hold, though the walk may ask less.
 
 use crate::{
     env::Env,
@@ -49,7 +52,11 @@ impl Meets {
     /// `b ⊇ a` with the sides swapped: a contravariant position.
     const HELD_SWAPPED: u8 = 8;
     const QUESTIONS: u8 = 15;
+    /// Its positions are not all known.
     const WALK: u8 = 16;
+    /// A position stands in a union with a choice.
+    const CHOICE: u8 = 32;
+    const TO_EXPANSIONS: u8 = Self::WALK | Self::CHOICE;
 
     const UNUSED: Self = Self(0);
     const COVARIANT: Self = Self(Self::HOLDS);
@@ -57,7 +64,21 @@ impl Meets {
 
     /// Only the expansions tell.
     pub(crate) fn walk(self) -> bool {
+        self.0 & Self::TO_EXPANSIONS != 0
+    }
+
+    /// Every question a position asks, where every position is known:
+    /// the arguments that answer them make the application hold.
+    pub(crate) fn asked(self) -> Option<Self> {
+        (self.0 & Self::WALK == 0).then_some(Self(self.0 & Self::QUESTIONS))
+    }
+
+    fn unknown(self) -> bool {
         self.0 & Self::WALK != 0
+    }
+
+    fn choice(self) -> Self {
+        Self(self.0 | Self::CHOICE)
     }
 
     pub(crate) fn holds(self) -> bool {
@@ -79,7 +100,7 @@ impl Meets {
     /// Each question `q` of `self` as question `f(q)`: a question is its
     /// bit's index, bit 0 the swap and bit 1 the direction.
     fn each(self, f: impl Fn(u8) -> u8) -> Self {
-        let mut out = self.0 & Self::WALK;
+        let mut out = self.0 & Self::TO_EXPANSIONS;
         for q in (0..4).filter(|q| self.0 & (1 << q) != 0) {
             out |= 1 << f(q)
         }
@@ -98,7 +119,10 @@ impl Meets {
 
     /// At a parameter its definition meets as `inner`.
     fn through(self, inner: Self) -> Self {
-        let mut out = (self.0 | inner.0) & Self::WALK;
+        if inner == Self::UNUSED {
+            return inner;
+        }
+        let mut out = (self.0 | inner.0) & Self::TO_EXPANSIONS;
         for q in (0..4).filter(|q| inner.0 & (1 << q) != 0) {
             out |= self.each(|p| p ^ q).0 & Self::QUESTIONS
         }
@@ -197,7 +221,7 @@ impl<'a> Scan<'a> {
             Type::Set(ms) => {
                 let at = match at.walk() || self.apart(d, ms) {
                     true => at,
-                    false => Meets::TO_WALK,
+                    false => at.choice(),
                 };
                 for m in ms.iter() {
                     self.walk(d, m, at)
@@ -239,7 +263,8 @@ impl<'a> Scan<'a> {
     /// definition applied meets its parameter, and not at all where that
     /// body never reaches it. One it leaves to the walk is looked
     /// through, since the argument may be what the walk needed: `['x,
-    /// null]` over a variant has two members apart.
+    /// null]` over a variant has two members apart; one being looked
+    /// through already stands in a choice.
     fn apply(&mut self, d: usize, tr: &TypeRef, at: Meets) {
         if !tr.params.iter().any(|a| self.holds(d, a)) {
             return;
@@ -265,21 +290,23 @@ impl<'a> Scan<'a> {
         if bounded {
             return to_walk(self);
         }
-        if at.walk() {
+        if at.unknown() {
             let reached =
                 tr.params.iter().zip(inner.iter()).filter(|(_, m)| **m != Meets::UNUSED);
             return reached.for_each(|(a, _)| self.walk(d, a, Meets::TO_WALK));
         }
-        if (0..inner.len()).any(|j| inner[j].walk() && passed(self, j)) {
-            return match self.expansion(&c, &tr.params) {
-                None => to_walk(self),
+        let at = match (0..inner.len()).any(|j| inner[j].walk() && passed(self, j)) {
+            false => at,
+            true => match self.expansion(&c, &tr.params) {
+                None => at.choice(),
                 Some(body) => {
                     self.active.push(c.def_key());
                     self.walk(d, &body, at);
                     self.active.pop();
+                    return;
                 }
-            };
-        }
+            },
+        };
         for (arg, inner) in tr.params.iter().zip(inner.iter()) {
             self.walk(d, arg, at.through(*inner))
         }
@@ -468,6 +495,30 @@ mod test {
         assert_eq!(one("[('a, i64), ('a, i64, i64), i64]"), CO);
         assert_eq!(one("[{a: 'a}, {b: 'a}]"), CO);
         assert_eq!(one("[Array<i64>, array, `A('a)]"), CO);
+    }
+
+    #[test]
+    fn a_parameter_in_a_choice_keeps_its_questions() {
+        let one = |body: &str| of(&[("T<'a>", body)], "T<i64>")[0];
+        let tree = one("['a, `Node(Array<T<'a>>)]");
+        assert!(tree.walk());
+        assert_eq!(tree.asked(), Some(CO));
+        assert_eq!(one("['a, null]").asked(), Some(CO));
+        assert_eq!(
+            one("[fn(x: 'a) -> i64, `N(T<'a>), fn(x: i64) -> i64]").asked(),
+            Some(CONTRA)
+        );
+        assert_eq!(
+            one("[&mut 'a, `N(Array<T<'a>>), &mut i64]").asked(),
+            Some(Meets(Meets::HOLDS | Meets::HELD))
+        );
+        assert_eq!(one("[`A('a), `N(T<'a>)]").asked(), Some(CO));
+        let defs = [("D<'a0, 'a1>", "[`U0(D<'a1, 'a0>), 'a1, `Uz(fn(x: 'a0) -> i64)]")];
+        let both = Some(Meets(Meets::HOLDS | Meets::HELD_SWAPPED));
+        assert_eq!(
+            of(&defs, "D<i64, i64>").iter().map(|m| m.asked()).collect::<Vec<_>>(),
+            [both; 2]
+        );
     }
 
     #[test]

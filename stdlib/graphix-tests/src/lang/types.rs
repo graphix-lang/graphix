@@ -9458,6 +9458,98 @@ run!(
     FuseExpect::None
 );
 
+// A recursive typedef with a bare parameter: the union of its expansion
+// places its members on copies, where the definition's applications are
+// answered by their arguments rather than expanded on fresh cells again.
+run!(
+    a_recursive_typedef_with_a_bare_parameter_over_an_open_cell_checks,
+    r#"{
+  type Tree<'a> = ['a, `Node(Array<Tree<'a>>)];
+  let f = |x: Tree<'q>, y: 'q| y;
+  let v: Tree<i64> = `Node([1]);
+  f(v, 2)
+}"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+
+run!(
+    a_recursive_typedef_with_a_bare_parameter_decides_its_cell,
+    r#"{
+  type Tree<'a> = ['a, `Node(Array<Tree<'a>>)];
+  let f = |x: Tree<'q>, y: 'q| y;
+  let v: Tree<i64> = `Node([1]);
+  f(v, "s")
+}"#,
+    refused("'q: i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_recursive_typedef_with_a_bare_parameter_written_out_checks,
+    r#"{
+  type Tree<'a> = ['a, `Node(Array<Tree<'a>>)];
+  let f = |x: ['q, `Node(Array<Tree<'q>>)], y: 'q| y;
+  let v: Tree<i64> = `Node([1]);
+  f(v, 2)
+}"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+
+run!(
+    a_recursive_typedef_with_a_bare_parameter_is_walked_by_a_closed_reader,
+    r#"{
+  type Tree<'a> = ['a, `Node(Array<Tree<'a>>)];
+  let rec sum = |x: Tree<i64>| -> i64 select x {
+    i64 as n => n,
+    `Node(a) => array::fold(a, 0, |acc, t| acc + sum(t))
+  };
+  let id = |x: Tree<'q>| x;
+  let v: Tree<i64> = `Node([1, `Node([2, 3])]);
+  sum(id(v))
+}"#,
+    prints("i64:6");
+    FuseExpect::Jit
+);
+
+run!(
+    two_recursive_typedefs_with_a_bare_parameter_over_an_open_cell_check,
+    r#"{
+  type D0<'a0> = ['a0, `U1(D1<'a0>), `U2(&mut 'a0)];
+  type D1<'a0> = [(D0<'a0>, i64), null, `Uz0(&mut 'a0)];
+  let f = |x: Array<D0<'q0>>| array::len(x);
+  let v: Array<D0<[i64, string, null]>> = [1, "s", `U1(null)];
+  f(v)
+}"#,
+    prints("i64:3");
+    FuseExpect::Jit
+);
+
+run!(
+    a_permuting_recursive_typedef_with_a_bare_parameter_checks,
+    r#"{
+  type D<'a0, 'a1> = [`U0(D<'a1, 'a0>), 'a1, `Uz0(Array<'a0>)];
+  let f = |x: Array<D<'q0, 'q1>>, y: 'q0, z: 'q1| y;
+  let v: Array<D<i64, string>> = ["s", `U0(1), `Uz0([1])];
+  f(v, 2, "t")
+}"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+
+run!(
+    a_bare_parameter_under_a_union_argument_of_a_recursive_typedef_checks,
+    r#"{
+  type D<'a0> = [`U0(Array<D<'a0>>), `U1(i64), 'a0, null];
+  let f = |x: Array<D<['q0, null]>>, y: 'q0| y;
+  let v: Array<D<string>> = ["s", `U1(1)];
+  f(v, "t")
+}"#,
+    prints("\"t\"");
+    FuseExpect::Jit
+);
+
 // Two recursive typedefs whose applications over cells that stay open
 // are every order of the cells, each reaching every other: an application
 // answered inside one still in progress is not walked again by a sibling.

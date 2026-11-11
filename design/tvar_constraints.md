@@ -1297,6 +1297,30 @@ A name its body reaches that is not defined yet gives no answer, kept
 by no definition, and the comparison is the one before it: equal
 arguments holding no open cell are one type, anything else is walked.
 
+A parameter left to the walk for a union's choice alone keeps its
+questions (`Meets::asked`): arguments that answer them make the
+application hold, since a type only grows with a parameter in a
+covariant position and shrinks with one in a contravariant one, though
+the walk, choosing members, may ask less. They answer in one place. A
+union holding a bare open cell beside a member that shares it places
+its members on copies first, to learn which order holds
+(`Type::place_in_order`), and a recursive definition with a bare
+parameter (`type Tree<'a> = ['a, `Node(Array<Tree<'a>>)]`) meets its own
+applications again there, over fresh cells that no question in progress
+knows: expanded, each would place its members on copies of its own,
+without end. So a walk records the definitions whose applications it is
+expanding (`ContainsHist::unfolding`), a trial on copies inherits them
+(`unfolded_above`), and two applications of one of them met in the
+trial are answered by their arguments, held or not; the walk on the
+cells themselves then meets the application as a question in progress.
+`Tree<'q>` holding a `Tree<i64>` gives `'q` its `i64` (pins
+`lang::types::a_recursive_typedef_with_a_bare_parameter_over_an_open_cell_checks`
+and the four after it,
+`typ::contains::tests::an_application_met_in_a_trial_of_its_own_expansion_is_not_unfolded`,
+`typ::variance::test::a_parameter_in_a_choice_keeps_its_questions`). Two
+definitions with one body have no arguments to ask, and still do not
+end (`twin-bare-parameter-regress-01`).
+
 A commit binds the arguments' cells in parameter order, and the walk
 binds them in the body's. Where two arguments share a cell the orders
 can differ in what holds (`D<'q, 'q>` against `D<i64, Any>`), so a
