@@ -8500,6 +8500,28 @@ run!(
 );
 
 run!(
+    a_call_through_a_function_or_null_names_the_union,
+    r#"{
+  let b = true;
+  let f = select b { true => |x: i64| x, false => null };
+  f(1)
+}"#,
+    refused("expected fn not [null, fn(x: i64) -> i64]");
+    FuseExpect::None
+);
+
+run!(
+    a_call_through_a_function_once_its_null_is_selected_off,
+    r#"{
+  let b = true;
+  let f = select b { true => |x: i64| x, false => null };
+  select f { null as _ => 0, g => g(1) }
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+run!(
     a_select_of_lambdas_over_one_declared_variable_is_one_member,
     r#"{
   let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} };
