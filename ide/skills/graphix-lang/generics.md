@@ -91,8 +91,9 @@ no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>| 0; f(
 ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'a>| 0; f(1)
 ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: E<'a, 'b>| 0; f(1, 2)
 no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
-no "write the type of the parameter" let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])
-ok let f = |x: Array<'e>| select x { [h, ..] => h, [] => 0 }; f([4, 5])
+no "write the type of the parameter" let f = |x| select x { [h, t..] => h, [] => 0 }; f([4, 5])
+ok let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5])
+ok let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
 ```
 

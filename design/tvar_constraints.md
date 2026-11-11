@@ -505,9 +505,10 @@ select's patterns (`contains_ordered`, `check_contains_ordered`: the
 narrowing walk in `tvar.rs`, `pattern.rs`, `Select`'s predicate against
 its scrutinee), whose arms are consulted top down. What a pattern leaves
 in a binding's or a parameter's type is judged where a value next meets
-it: `|x| select x { [h, ..] => h, [] => 0 }` types `x` as an array of the
-head's and the rest's cells, so `f([4, 5])` is refused until the parameter
-is written (`|x: Array<'e>|`).
+it: `|x| select x { [h, t..] => h, [] => 0 }` types `x` as a union of
+one array member an arm, so `f([4, 5])` is refused until the parameter is
+written (`|x: Array<'e>|`); with no rest bound (`[h, ..]`) the members
+are one and the call runs.
 
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
@@ -524,7 +525,7 @@ instance (below, An instance holds its signature cell by cell), so an
 implementation whose variables stand at the declaration's places passes
 (`val f: fn(x: E<'a, 'a>, ..)` implemented `|x: E<'a, 'b>, ..|`). Pins:
 `lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,slice_arms_over_an_unannotated_parameter}_refused*`
-and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
+and their twins, `slice_arms_binding_no_rest_over_an_unannotated_parameter`, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
 `lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
 `lang::interfaces::{open_union_call_refused,val_implementation_that_would_choose_a_member_refused,val_in_data_implementation_that_would_choose_a_member_refused,val_at_one_variable_implemented_at_two}`.
 

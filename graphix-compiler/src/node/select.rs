@@ -700,6 +700,22 @@ impl Reach {
             // undecided scrutinee, the arms' array predicates merged) before a release, since
             // the corpus census cannot see what users will write first. probes:
             // ~/ptmp/cr29/scratch/r20/20b/review/{c1,c3,c9}.txt (run with cases.sh)
+            // 2026-11-10 claude: Finisher of lane 20b, after rebasing onto r20-staging (the
+            // other lanes' select and union work): the CR's own probe now runs. '|x| select x
+            // { [h, ..] => h, [] => 0 }' is printed fn(x: Array<'_a>) -> [i64, '_a] there, f([4,
+            // 5]) and f(["a"]) run in every mode, and the pin and the skill case moved to the
+            // rest-bound form.
+            // With the rest bound ('[h, t..] => h', the reviewer's len, a list's '[<h,
+            // t..>]') the call is still refused, and GRAPHIX_DBG_BIND shows the choice is
+            // between [Array<['_a, '_a]>, Array<'_a>]: one cell throughout, so both members
+            // are one type and either pick decides the same, but contains::one_member
+            // compares them by strictly_identical, which tells ['_a, '_a] from '_a. Seeing
+            // such members as one at the pick (Type::take, residue_member) would run these
+            // idioms with no annotation; not built here, since it changes what the check
+            // accepts. Pins
+            // lang::types::slice_arms_over_an_unannotated_parameter_refused_at_the_call (rest
+            // bound) and slice_arms_binding_no_rest_over_an_unannotated_parameter; probes
+            // ~/ptmp/cr29/scratch/r20/20b/finisher/s/{s1,s2,s3,p1,p1a,p2}.gx.
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);

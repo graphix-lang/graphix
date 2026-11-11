@@ -7000,18 +7000,24 @@ run!(
     prints("i64:2")
 );
 // A select's patterns stay ordered, as its arms are consulted top down; the
-// union of two slice elements a function's parameter keeps is refused at
-// the call, and the parameter written takes it.
+// union of an array member an arm that a function's parameter keeps is
+// refused at the call, and the parameter written takes it. With no rest
+// bound the arms' members are one, and the call runs.
 run!(
     slice_arms_over_an_unannotated_parameter_refused_at_the_call,
-    r#"{ let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5]) }"#,
+    r#"{ let f = |x| select x { [h, t..] => h, [] => 0 }; f([4, 5]) }"#,
     refused("write the type of the parameter this argument is passed to");
     FuseExpect::None
 );
 run!(
     slice_arms_over_a_written_parameter,
-    r#"{ let f = |x: Array<'e>| select x { [h, ..] => h, [] => 0 }; f([4, 5]) }"#,
+    r#"{ let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5]) }"#,
     prints("i64:4")
+);
+run!(
+    slice_arms_binding_no_rest_over_an_unannotated_parameter,
+    r#"{ let f = |x| select x { [h, ..] => h, [] => 0 }; (f([4, 5]), f(["a"])) }"#,
+    prints(r#"[i64:4, "a"]"#)
 );
 
 // An instance holds its definition's signature at the call's types cell by
