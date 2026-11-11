@@ -211,6 +211,43 @@ run!(
     FuseExpect::None
 );
 
+// A callback's result written into an outer binding holds the enclosing
+// function's parameter type, so that function is one type in it.
+run!(
+    a_callbacks_result_in_an_outer_binding_is_the_callers_type,
+    "{ type W<'t> = Abstract<'t>; let y = never(); \
+     let g = |x| { y <- array::map([x], |e| W(e)); x }; \
+     let b = g(\"s\"); select y { [w, ..] => w.0 + 1, _ => 0 } }",
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+run!(
+    a_named_callbacks_result_in_an_outer_binding_is_the_callers_type,
+    "{ type W<'t> = Abstract<'t>; let y = never(); let mkw = |e| W(e); \
+     let g = |x| { y <- array::map([x], mkw); x }; \
+     let b = g(\"s\"); select y { [w, ..] => w.0 + 1, _ => 0 } }",
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+run!(
+    a_callbacks_result_in_an_outer_binding_takes_its_one_type,
+    "{ type W<'t> = Abstract<'t>; let y = never(); \
+     let g = |x| { y <- array::map([x], |e| W(e)); x }; \
+     let b = g(1); select y { [w, ..] => w.0 + 1, _ => 0 } }",
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+run!(
+    a_function_writing_a_callbacks_result_out_is_one_instance,
+    "{ type W<'t> = Abstract<'t>; let y = never(); \
+     let g = |x| { y <- array::map([x], |e| W(e)); x }; (g(1), g(\"s\")) }",
+    refused("does not contain string");
+    FuseExpect::None
+);
+
 run!(
     a_functions_result_is_one_instance,
     "{ let mk = |z| 'a: Number |x: 'a| x; let h = mk(0); (h(1), h(1.5)) }",

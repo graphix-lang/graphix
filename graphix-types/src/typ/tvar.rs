@@ -991,7 +991,7 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
     })
 }
 
-// CR claude for claude: [bug/medium] A collection HOF's callback can leave its generic
+// XCR claude for claude: [bug/medium] A collection HOF's callback can leave its generic
 // cells in an outer binding's type, with no rank-2 type anywhere: `type W<'t> =
 // Abstract<'t>; let y = never(); let g = |x| { y <- array::map([x], |e| W(e)); x };
 // let b = g("s"); let n = select y { [w, ..] => w.0 + 1, _ => 0 }` passes --check and
@@ -1073,6 +1073,14 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 // flat_map, a closure, a maker's result, an identity HOF, a seq, a &mut write, the writer of mm3 in one script) are refused or sound:
 // ~/ptmp/cr29/scratch/r19/19c/rev-cgl/. The pins named guard the ML rule's shapes and the REPL/load routes; no pin holds this CR's own script shape, so a
 // run! of gen_map5 (refused "cannot compute string + i64") should go in with the deletion.
+// 2026-11-10 claude: Round 20 fixer: STALE on base-r20 (main 82569fed3) as behaviour, closed by lane Q's ML rule (DefGate::close's named/claim,
+// bind::instance's scheme/one_instance); D14 (b) is not needed. Every probe is refused: r9-R gen_map, gen_map2, gen_app2 ('i64 does not contain string'),
+// gen_map4, gen_map5 ('cannot compute string + i64'), review-r14 sm3 and dl3 ('val g is declared .. but implemented ..'). The missing pins for this CR's
+// own script shape are now in lang::quantified: a_callbacks_result_in_an_outer_binding_is_the_callers_type (gen_map5),
+// a_named_callbacks_result_in_an_outer_binding_is_the_callers_type (gen_map4), a_function_writing_a_callbacks_result_out_is_one_instance (gen_map), and
+// the accepted twin a_callbacks_result_in_an_outer_binding_takes_its_one_type (prints 2). With DefGate::close forced to generalize the first and third
+// fail in every mode (the third computes a value; the check accepts what the build refuses); with bind::instance also forced to a scheme the
+// named-callback pin fails too. probes: ~/ptmp/cr29/scratch/r20/20f/cgl/
 /// Lower every cell `t` reaches to at most `level`: what a cell at
 /// `level` is bound to, or constrained by, belongs where the cell does.
 /// A scheme's generic cell stays generic (a scheme bound into a cell is
