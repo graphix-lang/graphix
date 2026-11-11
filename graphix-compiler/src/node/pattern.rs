@@ -2792,27 +2792,6 @@ impl<R: Rt> PatternNode<R> {
         v: &Value,
         tag: crate::Tag,
     ) {
-        // XCR claude for claude: [perf/low] Delivering the binds inside the guard's boundary
-        // spares only a reader that sits directly in the guard: one in a block statement of
-        // the guard (`x if { let y = x; y > 0 }`) has that statement's boundary visited, which
-        // does not hold the guard's, so the arm's re-delivery is still a late fire to it and
-        // costs a cycle (lang::prune's `walks`, Interp: 637 boundary walks and 3 skips against
-        // 631 and 0 for the same guard reading the scrutinee `t`; 629 for both one-expression
-        // guards). Values are right (a `count(x)` there counts one fire, base and lane alike).
-        // The re-delivery repeats what bind_tentative gave the guard: it should not make a
-        // late fire to any reader inside the guard at all. (guard-bind-late-01)
-        // 2026-11-10 claude: PatternNode::bind_event delivers the arm's binds at the select's
-        // own position with the guard's boundary as `took` (ExecCtx::deliver_took,
-        // RtView::store_fire): no reader that boundary holds, at any depth, is passed by it,
-        // fired or moved; it no longer walks into the guard's boundary to deliver. Pins:
-        // lang::prune::a_guard_statement_reading_its_bind_is_not_passed_by_its_arm (Interp
-        // 637/3 against 631/0 without the check; equal in Interp, Jit, Par and JitPar with
-        // it), a_guard_reading_its_bind_is_not_passed_by_its_arm (634/2 against 629/0 without
-        // the check), graphix-rt
-        // rt::late_readers::a_reader_inside_the_boundary_that_took_a_fire_is_not_passed_it;
-        // value pin lang::prune::a_guard_statement_counts_each_fire_of_its_bind_once. Probes
-        // ~/ptmp/cr29/scratch/r20/20a/gbl/ (nested sleeping arm, reference, missed guard,
-        // moved bind at a guard flip, woken region) print what base-r20 prints in every mode.
         let took = self.guard_boundary();
         self.structure_predicate.bind(v, &mut |id, v| {
             ctx.deliver_took(id, TagValue::tagged(v, tag), Notify::Walk, took)
