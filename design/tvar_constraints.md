@@ -375,6 +375,16 @@ position (`('y, 'y)` held at `(i64, Any)`) are two parts.
   unwalked. A variable in a union beside another undecided member
   (`['b, Array<'b>]`) is decided in order too: which member takes a type
   depends on what the cells are.
+- A variable in an application of a typedef that reaches itself waits
+  as any other does where the typedef holds it as data: two applications
+  over an open variable are related through their expansions, so over
+  `type T<'a> = [`Leaf('a), `Node(T<i64>)]`, `fn(t: T<i64>, k: [i64,
+  null])` holds `|t: T<'y>, k: 'y|` in either order. One the typedef
+  passes on to its own application (`type L<'a> = [`Nil, `Cons('a,
+  L<'a>)]`) is met inside its own expansion, the case above, and keeps
+  the first position: `fn(k: [i64, null], l: L<i64>)` holds `|k: 'y, l:
+  L<'y>|` and the same with `l` written first is refused (pins
+  `lang::functions::written_fn_type_recursive_typedef_*`).
 
 The pre-unification of a callback argument with its formal
 (`FnType::pre_unify_params`) defers the same way, so `app(f)` over `h:

@@ -4525,6 +4525,58 @@ run!(
     FuseExpect::None
 );
 
+// A variable an application of a typedef holds as data waits as any
+// other does, the typedef reaching itself or not: two applications over
+// an open variable are related through their expansions. Directly,
+// through another typedef, through mutual recursion and as a callback
+// argument, in either order.
+run!(
+    written_fn_type_recursive_typedef_variable_widest_position,
+    r#"{
+  type T<'a> = [`Leaf('a), `Node(T<i64>)];
+  type W<'a> = {inner: T<'a>};
+  type A<'a> = [`L('a), `N(B<i64>)];
+  type B<'a> = [`M('a), `O(A<i64>)];
+  let f = |k: 'y, t: T<'y>| -> 'y k;
+  let fr = |t: T<'y>, k: 'y| -> 'y k;
+  let fw = |w: W<'y>, k: 'y| -> 'y k;
+  let fa = |a: A<'y>, k: 'y| -> 'y k;
+  let g: fn(k: [i64, null], t: T<i64>) -> [i64, null] = f;
+  let gr: fn(t: T<i64>, k: [i64, null]) -> [i64, null] = fr;
+  let gw: fn(w: W<i64>, k: [i64, null]) -> [i64, null] = fw;
+  let ga: fn(a: A<i64>, k: [i64, null]) -> [i64, null] = fa;
+  let app = |h: fn(t: T<i64>, k: [i64, null]) -> [i64, null]| h(`Leaf(1), 4);
+  (g(null, `Leaf(1)), gr(`Leaf(1), 1), gw({inner: `Leaf(1)}, 2), ga(`L(1), 3), app(fr))
+}"#,
+    prints("[null, i64:1, i64:2, i64:3, i64:4]")
+);
+
+// A variable the typedef passes on to its own application keeps the
+// first position: the walk expands no definition inside its own
+// expansion, where a function type may hold the variable.
+run!(
+    written_fn_type_recursive_typedef_variable_first_position,
+    r#"{
+  type L<'a> = [`Nil, `Cons('a, L<'a>)];
+  let f = |k: 'y, l: L<'y>| -> 'y k;
+  let g: fn(k: [i64, null], l: L<i64>) -> [i64, null] = f;
+  g(null, `Cons(1, `Nil))
+}"#,
+    prints("null")
+);
+
+run!(
+    written_fn_type_recursive_typedef_variable_first_position_refused,
+    r#"{
+  type L<'a> = [`Nil, `Cons('a, L<'a>)];
+  let f = |l: L<'y>, k: 'y| -> 'y k;
+  let g: fn(l: L<i64>, k: [i64, null]) -> [i64, null] = f;
+  g(`Cons(1, `Nil), null)
+}"#,
+    refused("does not contain fn(l: L<'y: i64>, k: 'y: i64) -> 'y: i64");
+    FuseExpect::None
+);
+
 // A builtin binding declares every argument's type, its variadic's too.
 run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;

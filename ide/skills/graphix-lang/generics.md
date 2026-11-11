@@ -264,7 +264,9 @@ a callback parameter, a field, a write) decides its variables the same
 way: one that only data holds takes the widest of the written positions,
 in either order, and with none that holds the others it is refused, as a
 call is. One a callback also holds takes the first position's type: write
-the function type's earlier position as wide as the later ones need.
+the function type's earlier position as wide as the later ones need. So
+does one a recursive typedef passes on to itself (`l: L<'y>` over `type
+L<'a> = [`Nil, `Cons('a, L<'a>)]`).
 
 ```graphix,cases
 ok let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f; g(1, 2)
@@ -274,6 +276,9 @@ no "does not contain fn(b: 'y: i64, k: 'y: i64)" let f = |b: 'y, k: 'y| 0; let g
 no "-> i64 does not contain" let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null)
 no "does not contain fn(b: 'y: i64" let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: i64, k: Any, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
 ok let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: Any, k: i64, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
+ok type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |k: 'y, l: L<'y>| -> 'y k; let g: fn(k: [i64, null], l: L<i64>) -> [i64, null] = f; g(null, `Nil)
+no "does not contain fn(l: L<'y: i64>" type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |l: L<'y>, k: 'y| -> 'y k; let g: fn(l: L<i64>, k: [i64, null]) -> [i64, null] = f; g(`Nil, null)
+ok type T<'a> = [`Leaf('a), `Node(T<i64>)]; let f = |t: T<'y>, k: 'y| -> 'y k; let g: fn(t: T<i64>, k: [i64, null]) -> [i64, null] = f; g(`Leaf(1), null)
 ```
 
 ## Abstract comparisons
