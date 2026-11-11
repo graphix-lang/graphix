@@ -15,7 +15,12 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{self, Nop, Runs, bind::Bind, lambda::LambdaDef, traits},
+    node::{
+        self, Nop, Runs,
+        bind::Bind,
+        lambda::{LambdaDef, place_order},
+        traits,
+    },
     profile::{self, Phase},
     shared_map::SharedMap,
     typ::{
@@ -546,7 +551,7 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
-    // CR claude for claude: [bug/low] The binding named is the first capture whose type
+    // XCR claude for claude: [bug/low] The binding named is the first capture whose type
     // reaches the cell, and that may be one only built from the real holder, whose
     // annotation lifts nothing. With `let p = never(); let q = [p]; let c = {a: |x|
     // array::len(q), b: |x| { p <- x; x }}` under `val c: {a: fn(x: 'b) -> i64, b: fn(x:
@@ -556,10 +561,26 @@ impl Holder {
     // is (p) before one that holds it in data (q), or name every one. probes:
     // ~/ptmp/cr29/scratch/r20/20d/rev-djo/mir, mirq, mirp (base-r20 alike)
     // (holder-derived-binding-01)
+    // 2026-11-11 claude: Holder::of judges a level's captures together: one whose own
+    // type is the cell comes first, then the binding the program writes first
+    // (lambda::place_order), so a holder built from another is never named before it and
+    // the name no longer rests on a capture table's hash order. The pin's own fixture
+    // (coord/rules/hint/orig), which named q on r20-staging and p on base-r20, names p
+    // again, and the annotation named lifts each refusal. Pins that fail with the change
+    // undone: lang::interfaces::val_struct_names_the_capture_whose_type_is_the_cell,
+    // val_struct_names_the_holder_written_first (all modes),
+    // val_names_the_holder_written_first_of_one_lambda_s_captures and
+    // lang::traits::method_over_outer_bindings_names_the_one_whose_type_is_the_cell
+    // (some modes of each run, as the hash falls); each has an annotated twin that runs.
+    // probes:
+    // ~/ptmp/cr29/scratch/r20/20d/x2/{ord,ordq,ordsw,two,twoq,one,onep,tr.gx,trp.gx}
     /// What holds `tv` for the implementation's binding `id`: the nearest
     /// binding the lambdas it holds capture, or the lambdas those capture,
     /// whose type reaches the cell and which holds no lambda, the binding an
-    /// annotation can widen. A binding that holds lambdas in data (a struct
+    /// annotation can widen. Among the captures of one level, one whose own
+    /// type is the cell comes before one that holds it in data, and of two
+    /// alike the one the program writes first: a binding built from another
+    /// is written after it. A binding that holds lambdas in data (a struct
     /// of them) is followed to what they capture, and named only when they
     /// capture nothing that holds the cell.
     pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
@@ -573,11 +594,11 @@ impl Holder {
         let mut data_holder = None;
         let mut next: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
         while !level.is_empty() {
-            let mut found = None;
+            let mut found: Option<(bool, &crate::env::Bind)> = None;
             for def in level.drain(..).filter(|d| followed.insert(d.id)) {
                 def.captured_ids(&mut |id| {
                     let Some(b) = ctx.env.by_id.get(&id) else { return };
-                    if found.is_some() || !seen.insert(id) {
+                    if !seen.insert(id) {
                         return;
                     }
                     let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -586,15 +607,29 @@ impl Holder {
                         let before = next.len();
                         held_lambdas(ctx, id, &mut next);
                         if next.len() == before {
-                            found = Some(b.name.clone())
+                            let is_cell = matches!(
+                                &b.typ,
+                                Type::TVar(t) if t.stands_for() == tv.stands_for()
+                            );
+                            let first = found.is_none_or(|(c, f)| {
+                                c.cmp(&is_cell)
+                                    .then_with(|| {
+                                        place_order((&b.ori, b.pos), (&f.ori, f.pos))
+                                    })
+                                    .then(b.id.cmp(&f.id))
+                                    .is_lt()
+                            });
+                            if first {
+                                found = Some((is_cell, b))
+                            }
                         } else if held_lambda(ctx, id).is_none() {
                             data_holder.get_or_insert_with(|| b.name.clone());
                         }
                     }
                 });
             }
-            if let Some(name) = found {
-                return Self::Captured(name);
+            if let Some((_, b)) = found {
+                return Self::Captured(b.name.clone());
             }
             mem::swap(&mut level, &mut next);
         }

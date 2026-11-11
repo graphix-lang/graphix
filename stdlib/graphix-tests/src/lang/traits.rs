@@ -3020,6 +3020,32 @@ run!(
     refused("that of y, a binding outside its let: give y a type that holds every 'a")
 );
 
+// A method over outer bindings names the one whose own type is the shared
+// cell, not one built from it, and that annotation lifts the refusal.
+run!(
+    method_over_outer_bindings_names_the_one_whose_type_is_the_cell,
+    refused("that of p, a binding outside its let: give p a type that holds every 'a"),
+    "/test.gx" => r#"
+        let p = never();
+        let q = [p];
+        trait T { val m: fn(self, x: 'a) -> 'a };
+        impl T for i64 { let m = |s, x| { let n = array::len(q); p <- x; x } };
+        let result = (T::m(1, 2), T::m(1, "s"))
+    "#
+; FuseExpect::None);
+
+run!(
+    method_over_outer_bindings_with_the_named_one_annotated,
+    prints(r#"[i64:2, "s"]"#),
+    "/test.gx" => r#"
+        let p: Any = never();
+        let q = [p];
+        trait T { val m: fn(self, x: 'a) -> 'a };
+        impl T for i64 { let m = |s, x| { let n = array::len(q); p <- x; x } };
+        let result = (T::m(1, 2), T::m(1, "s"))
+    "#
+; FuseExpect::None);
+
 // A method whose value is neither a lambda nor a read of a generic binding
 // keeps the types its value holds, which no call copies: a variable each
 // call picks may not stand on one of them, a binding's outside or a call's

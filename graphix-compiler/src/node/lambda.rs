@@ -1047,6 +1047,23 @@ pub struct ParamCalls {
     pub captured: SmallVec<[BindId; 2]>,
 }
 
+/// The order the program writes two places in: by their loads (a
+/// session's inputs in the order given), then their origins, then where
+/// each stands in its own.
+pub(crate) fn place_order(
+    a: (&Arc<Origin>, SourcePosition),
+    b: (&Arc<Origin>, SourcePosition),
+) -> Ordering {
+    let ori = if Arc::ptr_eq(a.0, b.0) {
+        Ordering::Equal
+    } else {
+        a.0.load
+            .cmp(&b.0.load)
+            .then_with(|| a.0.partial_cmp(b.0).unwrap_or(Ordering::Equal))
+    };
+    ori.then(a.1.cmp(&b.1))
+}
+
 impl<R: Rt> LambdaDef<R> {
     pub(crate) fn captured_ids(&self, f: &mut impl FnMut(BindId)) {
         if let Some(tables) = self.table.get() {
@@ -1084,14 +1101,7 @@ impl<R: Rt> LambdaDef<R> {
     pub(crate) fn written_order(&self, other: &Self) -> Ordering {
         let place = match (&self.origin, &other.origin) {
             (DefOrigin::Source { spec: a, .. }, DefOrigin::Source { spec: b, .. }) => {
-                let ori = if Arc::ptr_eq(&a.ori, &b.ori) {
-                    Ordering::Equal
-                } else {
-                    a.ori.load.cmp(&b.ori.load).then_with(|| {
-                        a.ori.partial_cmp(&b.ori).unwrap_or(Ordering::Equal)
-                    })
-                };
-                ori.then(a.pos.cmp(&b.pos))
+                place_order((&a.ori, a.pos), (&b.ori, b.pos))
             }
             (DefOrigin::Source { .. }, DefOrigin::Runtime) => Ordering::Less,
             (DefOrigin::Runtime, DefOrigin::Source { .. }) => Ordering::Greater,

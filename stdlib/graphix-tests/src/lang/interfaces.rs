@@ -1936,15 +1936,61 @@ run!(
     "/test/m.gx" => "let y = never(); let store = |x| { y <- x; y }; let c = {f: |x| x, g: store}"
 );
 
-// Two lambdas of the literal capture bindings holding the cell: the refusal
-// names the capture of the one written first, though a struct literal
-// compiles its fields sorted by name.
+// Of the captures that hold the cell in data, the refusal names the binding
+// the program writes first, whichever lambda captures it: one built from
+// another is written after it, and the first's annotation lifts the refusal.
 run!(
-    val_struct_names_the_capture_written_first,
-    refused("that of q, a binding outside its let"),
+    val_struct_names_the_holder_written_first,
+    refused("that of q, a binding outside its let: declare the val at one type, or give q a type that holds every 'b"),
+    "/test.gx" => "mod m; let result = (m::c.b(1), m::c.b(\"s\"))",
+    "/test/m.gxi" => "val c: {a: fn(x: 'a) -> i64, b: fn(x: 'b) -> 'b}",
+    "/test/m.gx" => "let p = never(); let q = [p]; let r = [q]; let c = {a: |x| array::len(r), b: |x| { q <- [x]; x }}"
+);
+
+run!(
+    val_struct_holder_written_first_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::c.b(1), m::c.b(\"s\"))",
+    "/test/m.gxi" => "val c: {a: fn(x: 'a) -> i64, b: fn(x: 'b) -> 'b}",
+    "/test/m.gx" => "let p = never(); let q: Array<Any> = [p]; let r = [q]; let c = {a: |x| array::len(r), b: |x| { q <- [x]; x }}"
+    ; FuseExpect::None
+);
+
+run!(
+    val_names_the_holder_written_first_of_one_lambda_s_captures,
+    refused("that of q, a binding outside its let: declare the val at one type, or give q a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let p = never(); let q = [p]; let r = [q]; let f = |x| { let n = array::len(r); q <- [x]; x }"
+);
+
+run!(
+    val_holder_written_first_of_one_lambda_s_captures_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let p = never(); let q: Array<Any> = [p]; let r = [q]; let f = |x| { let n = array::len(r); q <- [x]; x }"
+    ; FuseExpect::None
+);
+
+// A capture whose own type is the cell is named before one that holds it
+// in data, whichever lambda is written first: only its annotation lifts
+// the refusal.
+run!(
+    val_struct_names_the_capture_whose_type_is_the_cell,
+    refused("that of p, a binding outside its let: declare the val at one type, or give p a type that holds every 'a"),
     "/test.gx" => "mod m; let result = (m::c.a(1), m::c.a(\"s\"))",
     "/test/m.gxi" => "val c: {a: fn(x: 'a) -> 'a, b: fn(x: 'b) -> i64}",
     "/test/m.gx" => "let p = never(); let q = [p]; let c = {b: |x| array::len(q), a: |x| { p <- x; x }}"
+);
+
+run!(
+    val_struct_capture_whose_type_is_the_cell_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::c.a(1), m::c.a(\"s\"))",
+    "/test/m.gxi" => "val c: {a: fn(x: 'a) -> 'a, b: fn(x: 'b) -> i64}",
+    "/test/m.gx" => "let p: Any = never(); let q = [p]; let c = {b: |x| array::len(q), a: |x| { p <- x; x }}"
+    ; FuseExpect::None
 );
 
 run!(
