@@ -3867,8 +3867,9 @@ impl<'a> T for Array<'a> { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
 
 // An impl's body reads a bound over `self` at its own target, so a union
 // self, which a call narrows in the receiver alone, is refused where a
-// variable's bound holds `self`, as where another parameter does; the
-// select the refusal names runs.
+// variable's bound holds `self`, as where another parameter does
+// (`lang::types::union_trait_self_argument`); the select the refusal names
+// runs.
 run!(
     union_self_under_a_bound_holding_self_refused,
     refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it, in another parameter or a variable's bound: select on the value and make the call for each member"),
@@ -3936,18 +3937,6 @@ run!(
         let f = 'a: T |v: 'a| T::k(v);
         let v: [i64, string] = "abc";
         let result = f(v)
-    "#
-; FuseExpect::None);
-
-run!(
-    union_self_in_another_parameter_refused,
-    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it"),
-    "/test.gx" => r#"
-        trait T { val m: fn(self, x: self) -> i64 };
-        impl T for i64 { let m = |s, x| x + s };
-        impl T for string { let m = |s, x| str::len(x) };
-        let v: [i64, string] = "abc";
-        let result = T::m(v, v)
     "#
 ; FuseExpect::None);
 
