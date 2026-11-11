@@ -1444,13 +1444,10 @@ fn stood_again(again: bool, away: i64, rest: &str) -> String {
     )
 }
 
-// A `let` a wake stands again is delivered quietly, and keeps the stamp
-// of the wake that moved it. The arm nested beside it slept through that
-// one and wakes in the cycle of the second: it reads `w` moved, and `u`
-// fires outside, as where the region woke once.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_let_stood_again_moved_for_the_arm_that_slept_through_it() -> Result<()> {
-    let rest = "let g = select s0 {
+/// A region holding `let w = a + 0` beside a select over `s1` whose arm 0
+/// reads it into `u`, a reference to which is read outside as `(v,
+/// count(v))`.
+const BESIDE: &str = "let g = select s0 {
     0 => {
       let w = a + 0;
       let c = count(s1);
@@ -1461,9 +1458,40 @@ async fn a_let_stood_again_moved_for_the_arm_that_slept_through_it() -> Result<(
   let h = once(g);
   let v = *h;
   clk ~ (clk, (v, count(v)))";
+
+// A `let` a wake stands again is delivered quietly, and keeps the stamp
+// of the wake that moved it. The arm nested beside it slept through that
+// one and wakes in the cycle of the second: it reads `w` moved, and `u`
+// fires outside, as where the region woke once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_stood_again_moved_for_the_arm_that_slept_through_it() -> Result<()> {
     let moved = ticks(9, |c| if c < 5 { "[1, 1]" } else { "[2, 2]" });
-    agrees(stood_again(true, 1, rest), &moved).await?;
-    agrees(stood_again(false, 1, rest), &moved).await
+    agrees(stood_again(true, 1, BESIDE), &moved).await?;
+    agrees(stood_again(false, 1, BESIDE), &moved).await
+}
+
+// `w` fires at clk 1 with its region awake, in the cycle the nested arm
+// is left. The region sleeps over clk 2 and 3 and wakes at clk 4, where
+// `w` stands again with the stamp of that fire and the nested arm wakes
+// having slept through it: `u` fires outside, as where the region never
+// slept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_stood_again_keeps_the_stamp_of_its_fire() -> Result<()> {
+    let program = |region: &str| {
+        format!(
+            "{{
+  let clk = array::iter(array::init(9, |i| i));
+  let (a, s0, s1) = (0, 0, 0);
+  a <- select clk {{ 0 => 1, _ => never() }};
+  s0 <- select clk {{ {region} _ => never() }};
+  s1 <- select clk {{ 0 => 1, 3 => 0, _ => never() }};
+  {BESIDE}
+}}"
+        )
+    };
+    let moved = ticks(9, |c| if c < 4 { "[1, 1]" } else { "[2, 2]" });
+    agrees(program("1 => 1, 3 => 0,"), &moved).await?;
+    agrees(program(""), &moved).await
 }
 
 // The same through a closure, for an arm of another select.
