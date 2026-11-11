@@ -3311,32 +3311,6 @@ fn lower_view(t: &Type) -> Option<Type> {
     go(t, &mut LPooled::take())
 }
 
-// XCR claude for claude: [bug/low] A cell the scrutinee holds only through a lower
-// bound that the arms leave open is not judged: `below` feeds only Deciding, and
-// still_open reads `outer` alone, so meets_undecided never sees it. `|x| { let r =
-// &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }` runs ([3, 1] for `M and `J),
-// though its plain twin `|x| select [x, 0] { [`J, _] => 1, _ => 3 }` is refused
-// "[`J, _] tests a value of 'x". Same on base-r19. Judging it needs the D5 follow-up
-// 2 exemption for irrefutable destructures to hold for open below-bound cells (so
-// `select *r { ((a, b), _) => a }` over `&mut (x, 0)` still checks), and the whole
-// exemption kept for a cell the bounds hold whole (`select W(x).0 { `J => 1, `M =>
-// 3 }`). probe: ~/ptmp/cr29/scratch/r19/19a/w6.gx (undecided-lower-bound-03)
-// 2026-11-10 claude: Deciding marks each cell it holds (Kept::Open, Below, Holder),
-// and Deciding::left_open adds the Below cells the arms left open to the decided set
-// before check_undecided, on both paths (the select's end and a dead arm), so they
-// are met as decided cells are, in what reaches the arm or in lower_view's reading;
-// the whole cell and an only-destructuring pattern keep their exemptions.
-// w6.gx/w6b.gx are refused naming x, w3.gx prints 3. Pins:
-// lang::select_undecided::tag_testing_an_open_part_below_a_reference_refused,
-// _the_referent_keeps_refused, _below_two_references_refused,
-// _below_an_abstract_parameter_refused,
-// tag_testing_a_never_let_below_a_reference_refused,
-// dead_arm_after_a_tested_open_part_below_a_reference_refused (24 runs fail with the
-// two left_open calls removed), and the select.md cases line (skill_fences_check
-// fails too); twins tag_over_an_annotated_open_part_below_a_reference,
-// tag_over_an_annotated_reference_to_an_open_part,
-// destructuring_an_open_part_below_a_reference pass. Census 2949 files: 0 verdict, 0
-// message changes. The same hole for a declared variable is rigid-lower-bound-01.
 /// What `meets` finds over `reaching`, else over `lower`.
 fn met_in(
     reaching: &Type,
