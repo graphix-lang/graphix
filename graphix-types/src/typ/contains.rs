@@ -3254,6 +3254,17 @@ impl Type {
                 // cell, which the shortcut used to answer. probe:
                 // ~/ptmp/cr29/scratch/r20/20c/ag/u5min.gx (lane 19f's review/u5.gx)
                 // (open-instance-signature-01)
+                // 2026-11-11 claude: Review of r20-x1: one more program the check accepts
+                // and the build refuses at the instance, a permuting recursive definition
+                // with a bare parameter under union arguments (`type D0<'a0, 'a1, 'a2> =
+                // [`U0(D0<'a0, 'a2, 'a1>, 'a1), 'a2, string, `Uz0(Kl<'a0>)]`, `|x:
+                // Array<D0<['q0, null], ['q1, null], ['q2, null]>>| 0` called with an
+                // Array<D0<[i64, null], [i64, null], [i64, string]>>): "an instance at fn(x:
+                // Array<D0<[null, i64, null], [null, i64, null, string], [null, i64,
+                // string]>>) -> i64 of a definition typed ..". base-r20, rev20 and
+                // r20-staging 316965a1e do not finish its check (killed at 30 s); since
+                // ContainsHist::seed the check ends and accepts it. Probe:
+                // ~/ptmp/cr29/scratch/r20/coord/x1/review/o5_p00764.gx.
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
@@ -4651,6 +4662,24 @@ impl Type {
     // union with a choice: 5 of 400 generated twins (gen2.py MODE=perm) are killed at 30
     // s in the two-definition spelling, on base-r20 as well. Probes:
     // ~/ptmp/cr29/scratch/r20/20c/x1/.
+    // 2026-11-11 claude: Review of r20-x1 (d1e533083): beside the cost this CR is about,
+    // the walk did not end at all for a recursive definition with a bare parameter over
+    // an open cell. `type Tree<'a> = ['a, `Node(Array<Tree<'a>>)]; let f = |x: Tree<'q>|
+    // 0; let v: Tree<i64> = 1; f(v)` ran out of 8 GB under --check on rev20, r20-staging
+    // 316965a1e and d1e533083 (base-r20 0.75G instructions: typedef-param-equality-01
+    // sent it here), and the two-definition spelling on base-r20 as well. The trial of a
+    // union with a bare open member (Type::place_in_order) expanded the definition's own
+    // recursion on its copies, where no question was in progress, and placed its members
+    // on copies again at every level. That trial now starts with the pairs its walk is
+    // expanding in progress (ContainsHist::seed): 0.76G, one definition or two; pins
+    // lang::types::a_recursive_typedef_with_a_bare_parameter_over_an_open_cell_checks,
+    // two_definitions_with_a_bare_parameter_check,
+    // typ::contains::tests::a_trial_meets_the_recursion_it_is_inside_by_assumption. 1600
+    // generated programs over typedefs with bare, contravariant, invariant and
+    // alias-wrapped parameters (genv.py, open mode): 10 that the staging build did not
+    // finish in 30 s now end, 8 of them with base-r20's verdict where base-r20 ended;
+    // the five twins named above are still killed at 15 s. Probes:
+    // ~/ptmp/cr29/scratch/r20/coord/x1/review/{k1,k1twin,k1w,k2,k3,k4,o6_p00560,o5_p00327}.gx.
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither

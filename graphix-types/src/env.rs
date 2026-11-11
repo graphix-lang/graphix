@@ -2240,6 +2240,14 @@ impl Env {
         if let Some(rep) = &rep {
             rep.check_tvars_declared(&declared)?;
         }
+        // CR claude for claude: [bug/low] The refusal of an unused type parameter
+        // names an arbitrary one where several are unused: `type D<'a0, 'a1, 'a2> =
+        // [`W('a2), `Z]` is refused "unused type parameter a0 in definition of D" in
+        // 4 of 6 runs of base-r20's --no-cache --check and "a1" in the other 2,
+        // `declared` being a hash set, so a pin of the message cannot name the
+        // parameter. Walk the parameters in the order written. probe:
+        // ~/ptmp/cr29/scratch/r20/coord/x1/review/unused.gx
+        // (unused-param-message-order-01)
         for dec in declared.iter() {
             if !used.contains_key(dec) {
                 bail!("unused type parameter {dec} in definition of {name}")
