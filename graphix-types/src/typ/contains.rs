@@ -2562,6 +2562,20 @@ impl Type {
                 tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
+                // CR claude for claude: [bug/medium] Since typedef-param-equality-01
+                // dropped the recursive escape below, a build refuses what the check
+                // accepts. Over `type G<'a> = [Error<G<['a, string]>>, Error<G<'a>>,
+                // `X('a)]` and its textual twin H, `let f = |x: G<'b>| -> H<'b> x; let g =
+                // |y| f(y); let z = g(never())` passes `--check`, and the build fails "an
+                // instance at fn(y: [Error<G<[string, _]>>, ..]) -> .. of a definition typed
+                // fn(y: [Error<G<[string, 'b]>>, ..]) -> .."; GRAPHIX_ELAB_AUDIT reports
+                // instance-signature at `f(y)`. base-r20 and the lane at 082a6e416 build and
+                // run it, 78582214c does not (bisected by building each). Not looked into
+                // further: the first suspect is the comparison of the instance's signature
+                // with its definition's, two applications of one definition over an open
+                // cell, which the shortcut used to answer. probe:
+                // ~/ptmp/cr29/scratch/r20/20c/ag/u5min.gx (lane 19f's review/u5.gx)
+                // (open-instance-signature-01)
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
