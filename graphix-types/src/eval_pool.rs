@@ -44,7 +44,7 @@ enum Rest {
     Awake,
     Asleep,
     /// Woken by an announcement to search, and counted in
-    /// [`Sleep::searching`] until that search ends.
+    /// [`Sleep::searching`] until it sleeps again or goes on busy.
     Called,
 }
 
@@ -60,10 +60,10 @@ struct Bed {
 struct Sleep {
     beds: Box<[Bed]>,
     sleepers: AtomicUsize,
-    /// Workers called whose search has not ended: an announcement calls
-    /// sleepers only for the jobs beyond them. A job announced while one
-    /// is counted is found by its search, by the search the epoch sends it
-    /// on again, or by the worker it calls if it ends busy and the last.
+    /// Workers called that have neither slept again nor gone on busy: an
+    /// announcement calls sleepers only for the jobs beyond them. One stays
+    /// counted through the searches the epoch sends it on, and going on
+    /// busy the last calls another, so every job announced is searched for.
     searching: AtomicUsize,
     /// Bumped by every announcement: a worker that read it before a
     /// search that found nothing sleeps only if it has not moved since.
@@ -140,14 +140,11 @@ impl Sleep {
         }
     }
 
-    /// A called worker's search ended. One `busy` with what it found, or
-    /// with its own work, calls another in its place unless one still
-    /// searches.
-    fn searched(&self, busy: bool) {
+    /// A called worker goes on busy, with the job it found or with its own
+    /// work: it calls another in its place unless one still searches.
+    fn searched(&self) {
         self.searching.fetch_sub(1, Ordering::SeqCst);
-        if busy {
-            self.call(1)
-        }
+        self.call(1)
     }
 
     /// Wake `worker` if it is asleep, `called` to search; whether it was.
@@ -169,19 +166,33 @@ impl Sleep {
         was
     }
 
-    /// Block `worker` until it is woken, unless a job was announced since
-    /// `seen` was read or it is `done` waiting; whether it was called.
-    fn park(&self, worker: usize, seen: u64, done: impl Fn() -> bool) -> bool {
+    /// Block `worker`, whose search found nothing, until it is woken, unless
+    /// a job was announced since `seen` was read or it is `done` waiting;
+    /// whether it leaves called. A `called` one that does not sleep still
+    /// is: the announcements that counted it called no one.
+    fn park(
+        &self,
+        worker: usize,
+        seen: u64,
+        called: bool,
+        done: impl Fn() -> bool,
+    ) -> bool {
         #[cfg(test)]
         self.parks.fetch_add(1, Ordering::Relaxed);
         let bed = &self.beds[worker];
         let mut rest = bed.rest.lock();
         self.sleepers.fetch_add(1, Ordering::SeqCst);
+        if called {
+            self.searching.fetch_sub(1, Ordering::SeqCst);
+        }
         if self.epoch.load(Ordering::SeqCst) == seen && !done() {
             *rest = Rest::Asleep;
             while *rest == Rest::Asleep {
                 bed.wake.wait(&mut rest)
             }
+        } else if called {
+            self.searching.fetch_add(1, Ordering::SeqCst);
+            *rest = Rest::Called;
         }
         self.sleepers.fetch_sub(1, Ordering::SeqCst);
         mem::take(&mut *rest) == Rest::Called
@@ -260,16 +271,18 @@ impl WorkerThread {
                 break;
             }
             let job = self.find();
-            if mem::take(&mut called) {
-                sleep.searched(job.is_some())
-            }
             match job {
-                Some(job) => job.run(),
-                None => called = sleep.park(self.index, seen, &done),
+                Some(job) => {
+                    if mem::take(&mut called) {
+                        sleep.searched()
+                    }
+                    job.run()
+                }
+                None => called = sleep.park(self.index, seen, called, &done),
             }
         }
         if called {
-            sleep.searched(true)
+            sleep.searched()
         }
     }
 }
@@ -628,11 +641,30 @@ mod test {
         assert_eq!(calls(), 1, "the worker called searches for the second job too");
         sleep.announce(3);
         assert_eq!(calls(), 3);
-        sleep.searched(false);
-        sleep.searched(true);
+        sleep.searched();
+        sleep.searched();
         assert_eq!(calls(), 3, "a searcher is left");
-        sleep.searched(true);
+        sleep.searched();
         assert_eq!(calls(), 4, "the last searcher, busy, calls one in its place");
+    }
+
+    #[test]
+    fn a_called_worker_sent_to_search_again_is_still_called() {
+        let sleep = Sleep::new(3);
+        for bed in &sleep.beds[1..] {
+            *bed.rest.lock() = Rest::Asleep
+        }
+        sleep.sleepers.store(2, Ordering::SeqCst);
+        sleep.searching.store(1, Ordering::SeqCst);
+        let calls = || sleep.calls.load(Ordering::Relaxed);
+        let seen = sleep.epoch.load(Ordering::SeqCst);
+        sleep.announce(1);
+        sleep.announce(1);
+        assert_eq!(calls(), 0, "worker 0, called, searches for both jobs");
+        assert!(sleep.park(0, seen, true, || false), "its search missed them");
+        assert_eq!((calls(), sleep.searching.load(Ordering::SeqCst)), (0, 1));
+        sleep.searched();
+        assert_eq!(calls(), 1, "busy with one job, it calls a worker for the other");
     }
 
     // each owner waits in its left side for every right side to run beside
@@ -674,7 +706,7 @@ mod test {
         let sleep = all_asleep(&pool);
         let parks = sleep.parks.load(Ordering::Relaxed) - parks;
         let calls = sleep.calls.load(Ordering::Relaxed);
-        assert!(parks < JOINS / 2, "{JOINS} joins: {parks} parks, {calls} calls");
+        assert!(calls < JOINS / 2, "{JOINS} joins: {calls} calls, {parks} parks");
     }
 
     #[test]

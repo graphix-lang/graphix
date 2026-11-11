@@ -825,22 +825,25 @@ Every announcement bumps an epoch, so a worker whose search began before
 one does not park.
 
 An announcement calls parked workers to search (a waiting one helps
-too), one for each job beyond the workers already called whose search
-has not ended. A called worker that finds a job, or returns to its own
-work, calls another in its place unless one still searches, so a job
-announced while it searched is searched for; one that finds nothing
-parks, the epoch sending it to search again if a job was announced
-since its search began. A busy owner's tiny joins, whose one job it
-usually runs itself, so call one worker at a time rather than one a
-join. No worker spins: beyond the jobs they run, a fork costs its
-workers a wake, a search and a park for each one called, and `Auto`
-weighs wall time alone (§5). A part's panic resumes on the forking
-thread once every part has finished. Pins:
+too), one for each job beyond the workers already called that have
+neither parked again nor gone on busy. A called worker that finds a job,
+or returns to its own work, calls another in its place unless one still
+searches, so a job announced while it searched is searched for; one that
+finds nothing parks, or, where a job was announced since its search
+began, searches again still called: the announcements that counted it
+called no one, so the job it finds may not be the only one waiting. A
+busy owner's tiny joins, whose one job it usually runs itself, so call
+one worker at a time rather than one a join. No worker spins: beyond
+the jobs they run, a fork costs its workers a wake, a search and a park
+for each one called, and `Auto` weighs wall time alone (§5). A part's
+panic resumes on the forking thread once every part has finished. Pins:
 `eval_pool::test::idle_workers_park_at_once` (every empty search is
 followed by a park), `a_searching_worker_answers_for_one_job` and
 `tiny_joins_call_one_searcher_at_a_time` (the calls),
 `joins_announced_while_others_search_run_side_by_side` (a job announced
-while the workers called search still finds a worker: the hand-off).
+while the workers called search still finds a worker: the hand-off),
+`a_called_worker_sent_to_search_again_is_still_called` (two jobs
+announced during one empty search).
 
 **Stack budget.** Per cycle: the `Control` counts the grown segments
 live in its cycle, on every thread (`Control::grown`), and a segment
