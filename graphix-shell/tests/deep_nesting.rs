@@ -1286,24 +1286,29 @@ fn written_holder_chains_check_in_linear_time() {
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,
-/// written or not and with or without a function in the pair: elaboration
-/// takes each shared node of an argument's type once, where once per path
-/// takes 2^links.
+/// written or not, with or without a function in the pair, and as a
+/// variant's payload: elaboration takes each shared node of an argument's
+/// type once, where once per path takes 2^links.
 #[test]
 #[cfg(target_os = "linux")]
 fn generic_pair_call_chains_build_in_time() {
     const LINKS: usize = 40;
-    let head = |x0: &str| format!("let mk = |f| (f, f);\nlet x0 = {x0};\n");
+    let head = |pair: &str, x0: &str| format!("let mk = |f| {pair};\nlet x0 = {x0};\n");
     let called = |i: usize| format!("let x{i} = mk(x{p});\n", p = i - 1);
     let written =
         |i: usize| format!("let x{i} = mk(x{p}); x{i} <- mk(x{p});\n", p = i - 1);
-    let links: [(&str, &dyn Fn(usize) -> String); 3] =
-        [("(|x| x, 1)", &called), ("1", &called), ("(|x| x, 1)", &written)];
-    for (x0, link) in links {
-        let program = chain(&head(x0), LINKS, link, "0\n");
+    let links: [(&str, &str, &dyn Fn(usize) -> String); 5] = [
+        ("(f, f)", "(|x| x, 1)", &called),
+        ("(f, f)", "1", &called),
+        ("(f, f)", "(|x| x, 1)", &written),
+        ("(f, f)", "(1, 1)", &written),
+        ("`V(f, f)", "(|x| x, 1)", &called),
+    ];
+    for (pair, x0, link) in links {
+        let program = chain(&head(pair, x0), LINKS, link, "0\n");
         completes_within(&["--expand", "--no-cache"], &program, 4 * BILLION)
     }
-    let run = chain(&head("(|x| x, 1)"), LINKS, &called, "sys::exit(0)\n");
+    let run = chain(&head("(f, f)", "(|x| x, 1)"), LINKS, &called, "sys::exit(0)\n");
     completes_within(&["--no-cache"], &run, 4 * BILLION)
 }
 

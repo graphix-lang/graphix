@@ -326,6 +326,21 @@ impl Type {
     }
 }
 
+// CR claude for claude: [perf/medium] `Brief` does not bound a union: each member
+// is printed whole into `text` before anything reaches the capped writer, so a member
+// that shares its parts prints as a tree, 2^depth, for a 512-byte diagnostic. Fusion
+// formats one for each region it refuses (try_fuse, "a region of type {} has no kernel
+// return"), so the build of a chain of calls of a constructor that returns a union is
+// exponential though its check is flat. `let mk = |f| select 0 { 0 => (f, f), _ =>
+// null }; let x0 = (|x| x, 1);` then `let x{i} = mk(x{i-1});`: --expand (--no-cache,
+// instructions:u, an empty program 0.76G) 0.97/3.53/11.69/44.39G at 12/16/18/20 links,
+// --check 0.77G and a --no-fusion run to exit 0.81G at 20; with arms `` `A(f, f) `` and
+// `` `B(f) `` 0.97/15.1/131/1161G at 8/12/14/16. base-r20 alike. perf at 16 links:
+// write_deref_set 78%, every stack that reaches a caller under fusion::try_fuse.
+// contains::tests::brief_is_bounded covers no union. Bound the scratch by what the
+// cap has left, and pin `Brief` of a union over a shared DAG and --expand of the
+// chain at 40 links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc-review/{mkn,mkn2}-*.gx
+// (brief-union-unbounded-01)
 /// A set whose cells print as what they hold: a member identical to an
 /// earlier one (two names of one cell), or printing as it does where
 /// either holds a cell (two cells bound to one type), prints once, and a

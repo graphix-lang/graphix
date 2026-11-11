@@ -38,9 +38,10 @@ structure is returned SHARED, never copied.
 
 **DAG traversal state per pass.**
 - `NormCx` (normalize): a visited-cell set plus a pointer-identity memo
-  keyed `(discriminant, content Arc address(es))` (`norm_key`),
-  restricted to variants whose Arcs ARE the whole content (`Ref`/
-  `Variant` carry extra fields; their composite children still memo).
+  keyed `(discriminant, content Arc address(es))` (`norm_key`): a
+  `Variant` by its payload's allocation and its tag's, since two tags may
+  wrap one payload. `Ref`, `Abstract` and `App` have no key (their
+  composite children still memo).
 - `ResolveTvarsCx` (resolve_tvars): bound cells snapshot ONCE per pass;
   unbound cells mint ONE fresh tvar per source cell — preserving the
   source's alias topology, the same discipline as `reset_tvars`'

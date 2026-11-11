@@ -3707,6 +3707,23 @@ impl Type {
         self.open_over_any_int(env, pred, &mut AnyWalk::default())
     }
 
+    // CR claude for claude: [perf/low] An arm's bind over a scrutinee whose DAG shares
+    // its parts through cells checks in 2^depth. `let x0 = (|x| x, 1);` then `let x{i}
+    // = select (x{i-1}, x{i-1}) { v => v };`: --check (--no-cache, instructions:u, an
+    // empty program 0.76G) 0.80/1.05/1.93/5.40G at 12/16/18/20 links, base-r20 alike;
+    // with `x0 = 1` (no open cell, so narrow_member skips the walk) 0.79G at 20. The
+    // same through a seq's steps over a generic call, `let mk = |f| (f, f);` and `seq
+    // { let x{i} = mk(x{i-1}); .. }`: 0.79/0.94/1.39/3.13G at 12/16/18/20. perf at 20
+    // links: open_over_any_inner 75% under narrow_member, from
+    // Select::typecheck0_with. The cause as read, not measured: NodePairs::key gives a
+    // pair with a cell on either side no key and open_over_any_inner recurses on the
+    // parts, so where every part is a bound cell (a select's result, an instance's
+    // result) no pair below the top is remembered. deep_nesting's
+    // select_holder_chains_check_and_run_in_linear_time holds only chains whose parts
+    // are composites. Key a pair by what its cells hold (the memo is already cleared
+    // at each bind; needs_split_int keys the same way), and pin both shapes at 40
+    // links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc-review/{seld,seld0,seqmk}-*.gx
+    // (any-walk-cell-pairs-01)
     /// [`Self::open_over_any`], each pair of shared nodes walked once
     /// while no cell is bound: a pair walked whole under the cells as they
     /// stand binds nothing when met again.

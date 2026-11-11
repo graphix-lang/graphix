@@ -22,8 +22,7 @@ use triomphe::Arc;
 
 /// Per-pass [`Type::normalize`] state: `cells` are the visited TVar
 /// cells (the first visit normalizes the binding in place); `memo` is a
-/// pointer-identity cache of composite results, keyed by (variant,
-/// content Arc address) for variants whose Arcs are their whole content.
+/// pointer-identity cache of composite results, keyed by [`norm_key`].
 /// Each entry pins the keyed type: an in-place rebinding frees the old
 /// binding, and its address must not be reused under its key.
 pub(super) struct NormCx {
@@ -101,6 +100,9 @@ impl ResolveTvarsCx {
     }
 }
 
+/// A composite's identity: its kind and its content allocation's address,
+/// and a variant's tag's too, since two tags may wrap one payload
+/// allocation. `None` for every other kind.
 #[doc(hidden)]
 pub fn norm_key(t: &Type) -> Option<NormKey> {
     let d = std::mem::discriminant(t);
@@ -113,6 +115,9 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         }
         Type::ByRef(m, a) => Some((d, &**a as *const Type as usize, *m as usize)),
         Type::Map(m) => Some((d, &**m as *const _ as usize, 0)),
+        Type::Variant(tag, ts, _) => {
+            Some((d, (**ts).as_ptr() as usize, tag.as_ptr() as usize))
+        }
         Type::Bottom
         | Type::Any
         | Type::Primitive(_)
@@ -121,8 +126,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Hole
         | Type::Bound(_)
         | Type::Ref(_)
-        | Type::TVar(_)
-        | Type::Variant(_, _, _) => None,
+        | Type::TVar(_) => None,
     }
 }
 

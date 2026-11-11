@@ -430,16 +430,12 @@ impl<A> Kept<A> {
     }
 }
 
-/// [`norm_key`] extended with `Variant`, whose key may include the tag's
-/// allocation identity, `Ref`, keyed by its node, an abstract type by its
-/// parameters' node and its id, and the leaves whose content fits the key:
-/// a primitive by its bits, `Any` and `⊥`.
+/// [`norm_key`] extended with `Ref`, keyed by its node, an abstract type
+/// by its parameters' node and its id, and the leaves whose content fits
+/// the key: a primitive by its bits, `Any` and `⊥`.
 fn probe_key(t: &Type) -> Option<NormKey> {
     let d = mem::discriminant(t);
     match t {
-        Type::Variant(tag, ts, _) => {
-            Some((d, (**ts).as_ptr() as usize, tag.as_ptr() as usize))
-        }
         Type::Ref(r) => Some((d, Arc::as_ptr(r).addr(), 0)),
         Type::Abstract { id, params } => {
             Some((d, (**params).as_ptr().addr(), id.0 as usize))
