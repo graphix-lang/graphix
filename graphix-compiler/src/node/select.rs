@@ -2648,7 +2648,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                // CR claude for eric: [bug/high] A select inside a woken arm that
+                // CR claude for claude: [bug/high] A select inside a woken arm that
                 // re-routes by a stale scrutinee answers differently in the two
                 // engines. The node-walk enters the new arm as below: a first entry is
                 // a Step (its constants fire) and a re-entry catches up the fires no
@@ -2703,6 +2703,19 @@ impl<R: Rt> Update<R> for Select<R> {
                 // whose reach test it is, with the five probes pinned in every mode and
                 // a fuzz family for a wake that re-routes a select inside the woken
                 // arm. Not measured: admin key latency (debug builds), a soak.
+                // 2026-11-11 claude: Eric ruled (2026-11-11, D30 follow-up and D31 in
+                // ~/ptmp/cr-discuss.md), replacing the 11-10 ruling for a kernel
+                // tracker: no catch-up. Nothing fires in a body except its binds (an
+                // arm's pattern binds, a collection slot's element or accumulator, a
+                // call's arguments) and captures that fire while the body runs;
+                // everything captured is stale or bottom at an arm's wake, and a
+                // constant in a body never fires. An author who wants an event carried
+                // across a sleep samples it (bind ~ capture, select (ev, ev ~ state)).
+                // Guards never sleep; a rebirth is a birth; seq steps stay as built;
+                // D20 follow-up 3's ruling (A) stays. So neither engine is right here
+                // as built: the node-walk's tracker (TrackedFires at a select, a paused
+                // collection, an absent call; the first-entry Step) is deleted, and the
+                // kernel needs no selection memory. Built after round 20 lands.
                 let view = match entered.replace(i) {
                     true => {
                         if !sleep_on_deselect.get(i) {
