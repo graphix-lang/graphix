@@ -292,39 +292,6 @@ impl<R: Rt> StructWith<R> {
     }
 }
 
-// XCR claude for claude: [bug/low] A bounded generic's struct update is
-// newly refused, with a message that names no annotation:
-// `let f = 'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1}` runs on main
-// 3cfcd2407 (prints 2) and is refused at the check since D27 (a) typed the
-// update as the literal: "type mismatch 'a: unbound within { n: i64 } does not
-// contain { n: i64 }". The literal `{n: s.n + 1}` is refused the same way, so
-// the verdict follows the ruling; what is open is whether a replacement whose
-// type is closed and equal to the source field's keeps the source's type, and
-// a refusal that names the annotation (drop `-> 'a`, or `s: {n: i64}`). Census
-// of both repos: no file affected. probe:
-// ~/ptmp/cr29/scratch/r19/h/fin/bounded-with.gx (bounded-with-refused-01)
-// 2026-11-10 claude: The refusal now names the fix. Where a lambda's written
-// return type holds a declared variable and the check of the body against it
-// fails only because that variable is rigid (a probe of the same pair that lets
-// the variable stand for its bound holds), GXLambda::typecheck0 appends
-// (picked_return in lambda.rs): "a call picks 'a, and the body's value need not
-// be of the type it picks; drop `-> 'a`, or write the body's type, `-> { n: i64
-// }`". Verdicts are unchanged (census 2949 files: 0 verdict, 0 message changes;
-// regress 567/0). Not built: keeping the source's type for a replacement equal
-// to the source field's. It is a new typing rule, sound only where the field
-// type has no proper subtype (with 'a: {n: [i64, null]} a call may pick {n:
-// i64}), and for a bound like that the variable has one instance, so dropping
-// the return type loses nothing. Pins that fail without the fix:
-// lang::tuples_structs::struct_update_of_a_bounded_variable_names_the_return_to_write,
-// lang::types::{a_returned_declared_variable_names_the_body_type,
-// a_return_holding_a_declared_variable_names_the_body_type,
-// a_return_of_one_declared_variable_names_the_other}, and the two new no-lines
-// in the skill's generics.md (skill_fences_check). Twins that run:
-// struct_update_of_a_bounded_variable_{without_a_return_type,returning_the_body_type},
-// a_return_naming_the_other_declared_variable_runs;
-// a_return_no_bound_holds_names_no_picked_variable pins that an unrelated
-// return mismatch gets no note. Found while fixing: bound-typedef-read-01
-// (node/mod.rs).
 /// The type of `{source with ..replace}`: the source's, each replaced
 /// field holding its replacement's type, as a literal's field does.
 fn updated_type<R: Rt>(
