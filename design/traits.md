@@ -1,7 +1,7 @@
 # Traits
 
 Status: built 2026-08-24 (v1, the core traits `Eq`/`Ord`/`Display`, the io traits)
-Pins: `stdlib/graphix-tests/src/lang/traits.rs` (`annotation_bound_enforced`, `poly_value_two_types`, `trait_method_value_then_generic`, `trait_union_dispatch`, `trait_union_dispatch_in_lambda`, `trait_dynamic_impl_*`, `trait_dynamic_core_impl`, `trait_interface_outer_default`, `dynamic_module_typecheck1`, `core_impl_interface_declared`, `core_impl_interface_rust_backed_refused`, `interface_type_after_impl`), `stdlib/graphix-tests/src/lib_tests/tls.rs` (`socket_union_dispatch`)
+Pins: `stdlib/graphix-tests/src/lang/traits.rs` (`annotation_bound_enforced`, `poly_value_two_types`, `trait_method_value_then_generic`, `trait_union_dispatch`, `trait_union_dispatch_in_lambda`, `trait_union_dispatch_over_a_dag_of_names`, `trait_dynamic_impl_*`, `trait_dynamic_core_impl`, `trait_interface_outer_default`, `dynamic_module_typecheck1`, `core_impl_interface_declared`, `core_impl_interface_rust_backed_refused`, `interface_type_after_impl`), `stdlib/graphix-tests/src/lib_tests/tls.rs` (`socket_union_dispatch`)
 Supersedes: interfaces.md
 
 ## 1. Why a language feature
@@ -400,9 +400,10 @@ in a generic impl, whose target holds the impl's variables, is refused
 
 **Constraint discharge** (`typ/contains.rs`): a trait `Ref` on the
 left of `contains` is the predicate `trait_contains`: ⊥ yes, `Any` no,
-a union iff every member, an open cell yes (the tvar merge carries the
-conjunct) unless it is RIGID without the conjunct, a typedef by its
-expansion, anything else by `Env::find_impl` — abstract targets by id,
+a union iff every member its dispatch tests (below), an open cell yes
+(the tvar merge carries the conjunct) unless it is RIGID without the
+conjunct, a typedef by its expansion, anything else by
+`Env::find_impl` — abstract targets by id,
 other heads by unification against a fresh instantiation (head bounds
 discharge through the cells) then equivalence; a type with an open
 interior cell never matches. A trait on the right is contained only by
@@ -433,6 +434,10 @@ union self type lowers the call to `{ let #s = self; let #a_i = arg_i;
 ..; select #s { M as #t => #bind::N(#t, #a_i, ..), .. } }` — `#bind::N`
 being the compiler's private spelling for a binding by id — and the
 `CallSite` delegates every `Update` method to the lowered node. The
+arms are `Type::dispatch_members`: the union flattened through its
+names, each named type expanded once and each member tested once, in
+the order first met, so a DAG of named unions costs its names, not its
+paths, and a member two names reach is one arm. The
 generated select fuses over a union of primitives
 (`lang::traits::native_on_a_union_dispatch` holds a `#[native]` call);
 over a union of abstract types it de-fuses (coverage residue). A

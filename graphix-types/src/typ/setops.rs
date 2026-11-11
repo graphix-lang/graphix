@@ -2280,9 +2280,10 @@ pub(crate) mod tests {
     }
 
     // Over names that each name the two before them, the paths to the
-    // first double at every level: each name is expanded once.
+    // first double at every level: each name is expanded once, and a
+    // member two names hold is one member, where it was first met.
     #[test]
-    fn distinct_members_expand_each_name_once() {
+    fn dispatch_members_expand_each_name_once() {
         let mut names = vec![
             ("L0".to_string(), "[`A, null, Error<`E>]".to_string()),
             ("M0".to_string(), "[`B, null]".to_string()),
@@ -2293,24 +2294,24 @@ pub(crate) mod tests {
         }
         let defs: Vec<(&str, &str)> = names.iter().map(|(n, b)| (&**n, &**b)).collect();
         let (env, t) = typed(&defs, "L40");
-        let members = Type::distinct_members(&env, &t).unwrap();
+        let members = Type::dispatch_members(&env, &t).unwrap();
         let printed = format_with_flags(PrintFlag::DerefTVars, || {
             members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
         });
-        assert_eq!(printed, "null, Error<`E>, `A, null, `B");
+        assert_eq!(printed, "null, Error<`E>, `A, `B");
     }
 
     // One definition applied to two open cells is two types, each
     // expanded; applied to one cell twice, it is expanded once.
     #[test]
-    fn distinct_members_expand_a_name_per_open_cell() {
+    fn dispatch_members_expand_a_name_per_open_cell() {
         let (env, t) = typed(&[("F<'t>", "['t, null]")], "[F<'a>, F<'b>, F<'a>]");
         t.alias_tvars(&mut AHashMap::default());
-        let members = Type::distinct_members(&env, &t).unwrap();
+        let members = Type::dispatch_members(&env, &t).unwrap();
         let printed = format_with_flags(PrintFlag::DerefTVars, || {
             members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
         });
-        assert_eq!(printed, "null, 'a: unbound, null, 'b: unbound");
+        assert_eq!(printed, "null, 'a: unbound, 'b: unbound");
     }
 
     /// `T` and `U`, each `[Error<T>, Error<U>, tag]`, `T` less an Error

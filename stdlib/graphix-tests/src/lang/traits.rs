@@ -186,6 +186,40 @@ run!(
     "#
 );
 
+// A member two names of the union reach is one arm of the dispatch.
+run!(
+    trait_union_dispatch_member_reached_twice,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "str a int 3"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int [x]" };
+        impl Show for string { let show = |x| "str [x]" };
+        type A = [i64, string];
+        let pick = |n: i64| -> [A, i64] select n { 0 => "a", n => n };
+        let result = "[Show::show(pick(0))] [Show::show(pick(3))]"
+    "#
+);
+
+// So over a DAG of named unions, each name holding the two below it, at a
+// call and through a function bounded by the trait.
+run!(
+    trait_union_dispatch_over_a_dag_of_names,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "str a int 3"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int [x]" };
+        impl Show for string { let show = |x| "str [x]" };
+        type L0 = [i64, string];
+        type M0 = [string, i64];
+        type L1 = [L0, M0];
+        type M1 = [M0, L0];
+        type L2 = [L1, M1];
+        let show = 'a: Show |v: 'a| Show::show(v);
+        let pick = |n: i64| -> L2 select n { 0 => "a", n => n };
+        let result = "[show(pick(0))] [Show::show(pick(3))]"
+    "#
+);
+
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,

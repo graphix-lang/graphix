@@ -798,33 +798,37 @@ fn first_expansion(seen: &mut Expanded, def: usize, params: &Arc<[Type]>) -> boo
     true
 }
 
-/// The walk of [`Type::dispatch_members`]; with `seen`, a named type
-/// already expanded is skipped.
+/// The walk of [`Type::dispatch_members`]: a named type already
+/// expanded is skipped, and a member already in `out` is not added.
 fn flatten_members(
     env: &Env,
     t: &Type,
-    mut seen: Option<&mut Expanded>,
+    seen: &mut Expanded,
     out: &mut SmallVec<[Type; 8]>,
 ) -> Result<()> {
+    fn add(out: &mut SmallVec<[Type; 8]>, m: Type) {
+        if !out.iter().any(|o| strictly_identical(o, &m)) {
+            out.push(m)
+        }
+    }
     ensure_sufficient(|| match t {
         Type::TVar(tv) => match tv.binding() {
             Some(b) => flatten_members(env, &b, seen, out),
-            None => Ok(out.push(t.clone())),
+            None => Ok(add(out, t.clone())),
         },
-        Type::Set(ts) => {
-            ts.iter().try_for_each(|t| flatten_members(env, t, seen.as_deref_mut(), out))
-        }
+        Type::Set(ts) => ts.iter().try_for_each(|t| flatten_members(env, t, seen, out)),
         Type::Ref(tr) => {
-            if let Some(seen) = seen.as_deref_mut()
-                && let Some(r) = tr.resolve_in(env)
+            if let Some(r) = tr.resolve_in(env)
                 && !first_expansion(seen, r.def_key(), &tr.params)
             {
                 return Ok(());
             }
             flatten_members(env, &t.lookup_ref(env)?, seen, out)
         }
-        Type::Primitive(p) => Ok(out.extend(p.iter().map(|b| Type::Primitive(b.into())))),
-        t => Ok(out.push(t.clone())),
+        Type::Primitive(p) => {
+            Ok(p.iter().for_each(|b| add(out, Type::Primitive(b.into()))))
+        }
+        t => Ok(add(out, t.clone())),
     })
 }
 
@@ -2360,7 +2364,7 @@ impl Type {
         None
     }
 
-    // CR claude for claude: [perf/medium] A trait call over a DAG of named unions
+    // XCR claude for claude: [perf/medium] A trait call over a DAG of named unions
     // (L_i = [L_i-1, M_i-1], M_i = [M_i-1, L_i-1], L0 = [i64, string]) costs 4^n: this
     // expands a name once per path (2^n members) and Type::dispatch_collision compares
     // every pair. `Show::show(x)` with `x: L_n`, --no-cache --check, instructions, lane
@@ -2372,21 +2376,34 @@ impl Type {
     // members dropped too, keeping the order the lowering's arms test in. probes:
     // ~/ptmp/cr29/scratch/r19/19b/tr6.gx .. tr14.gx, tb10.gx
     // (trait-dispatch-members-dag-01)
-    /// The members a dispatch over `t` tests: a union flattened through
-    /// its type references, a union of primitives split into its
-    /// primitives and an open cell kept as one member.
+    // 2026-11-10 claude: Type::dispatch_members now expands each named type once and
+    // drops a member strictly_identical to an earlier one, keeping first-met order
+    // (distinct_members merged into it; the ? strip's callers take it), and
+    // Type::trait_contains asks a union's dispatch members once each instead of recursing
+    // through every name. A trait call or a 'a: Show function over L_n checks in linear
+    // time: --no-cache --check instructions n = 10 16.4G -> 0.76G, n = 40 0.79G (the
+    // empty program's cost). It also fixes a build refusal the check missed: a member two
+    // names reach, [A, i64] with A = [i64, string] or L1 = [L0, M0], made a duplicate
+    // select arm (unreachable arm / will never match). Pins, each failing with its half
+    // undone:
+    // typ::contains::tests::a_trait_over_a_dag_of_named_unions_asks_each_member_once (96
+    // steps at n = 4 without the trait_contains change),
+    // typ::setops::tests::dispatch_members_expand_each_name_once and
+    // dispatch_members_expand_a_name_per_open_cell (print the repeats without the dedup),
+    // lang::traits::trait_union_dispatch_member_reached_twice and
+    // trait_union_dispatch_over_a_dag_of_names (refused at the build in every mode
+    // without the dedup). The fused run over a deep DAG is still 2^n in fusion's
+    // primitive_union (fusion-primitive-union-dag-01). probes:
+    // ~/ptmp/cr29/scratch/r20/20g/tr*.gx, tb*.gx, trs*.gx
+    /// The members a dispatch over `t` tests, each once, in the order
+    /// first met: a union flattened through its type references (each
+    /// named type expanded once, however many of the names it reaches
+    /// name it), a union of primitives split into its primitives and an
+    /// open cell kept as one member.
     pub fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
-        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        flatten_members(env, t, None, &mut members)?;
-        Ok(members)
-    }
-
-    /// [`Self::dispatch_members`] with each named type expanded once,
-    /// however many of the names it reaches name it.
-    pub fn distinct_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
         let mut seen: LPooled<Expanded> = LPooled::take();
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-        flatten_members(env, t, Some(&mut seen), &mut members)?;
+        flatten_members(env, t, &mut seen, &mut members)?;
         Ok(members)
     }
 
@@ -4027,12 +4044,19 @@ impl Type {
         if union && env.trait_def(tid).is_some_and(|d| d.takes_self_beyond_receiver()) {
             return Ok(false);
         }
-        // nor when its dispatch, which tests each member, can't tell two apart
-        if union
-            && env.trait_def(tid).is_some_and(|d| !d.hole)
-            && Self::dispatch_collision(env, &Self::dispatch_members(env, t)?).is_some()
-        {
-            return Ok(false);
+        // nor when its dispatch, which tests each member, can't tell two
+        // apart; each member is asked once, however many names reach it
+        if union && env.trait_def(tid).is_some_and(|d| !d.hole) {
+            let members = Self::dispatch_members(env, t)?;
+            if Self::dispatch_collision(env, &members).is_some() {
+                return Ok(false);
+            }
+            for m in members.iter() {
+                if !Self::trait_contains(tid, flags, env, hist, m)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
         }
         match t {
             Self::Bottom => Ok(true),
@@ -4595,6 +4619,56 @@ mod tests {
                 }
                 let steps = CONTAINS_STEPS.with(|n| n.get());
                 assert!(steps <= bound, "n={n}: L{n} ⊇ {a} took {steps} steps");
+            }
+        }
+    }
+
+    // A union implements a trait when each member does, and each member
+    // of a DAG of named unions is asked once: walked as a tree, `L<n>` is
+    // 2^n paths, each asking the impl table again.
+    #[test]
+    fn a_trait_over_a_dag_of_named_unions_asks_each_member_once() {
+        for (m0, holds) in [("[string, i64]", true), ("[string, bool]", false)] {
+            for n in [4, 8, 16, 32] {
+                let defs = union_dag(n, "[i64, string]", m0);
+                let defs: Vec<(&str, &str)> =
+                    defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+                let (mut env, l) = Env::typed_at_root(&defs, &format!("L{n}")).unwrap();
+                let (root, pos, ori) = (
+                    ModPath::root(),
+                    SourcePosition::default(),
+                    Arc::new(Default::default()),
+                );
+                let show = env
+                    .deftrait(
+                        &root,
+                        &literal!("Show"),
+                        std::iter::empty(),
+                        None,
+                        pos,
+                        ori,
+                    )
+                    .unwrap();
+                for t in [Typ::I64, Typ::String] {
+                    let im = ImplDef {
+                        trait_id: show.id,
+                        target: prim(t),
+                        params: Arc::from_iter([]),
+                        scope: root.clone(),
+                        methods: Default::default(),
+                        declared: false,
+                        pos,
+                        ori: Arc::new(Default::default()),
+                    };
+                    env.register_impl(Arc::new(im)).unwrap();
+                }
+                let mut hist = ContainsHist::new();
+                CONTAINS_STEPS.with(|n| n.set(0));
+                let r =
+                    Type::trait_contains(show.id, BitFlags::empty(), &env, &mut hist, &l);
+                assert_eq!(r.unwrap(), holds, "n={n}: L{n} over {m0}");
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                assert!(steps <= 16, "n={n}: Show for L{n} took {steps} steps");
             }
         }
     }

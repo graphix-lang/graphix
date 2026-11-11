@@ -636,7 +636,7 @@ impl Strip {
         }
         // what `?` raises is the operand's error part, which Any does not say
         if op == '?'
-            && Type::distinct_members(&ctx.env, typ)?
+            && Type::dispatch_members(&ctx.env, typ)?
                 .iter()
                 .any(|t| matches!(t, Type::Any))
         {
@@ -708,7 +708,7 @@ impl Strip {
             Self::Null => *m == removed,
         };
         let ms =
-            Type::distinct_members(env, typ)?.into_iter().filter(|m| takes(m) == taken);
+            Type::dispatch_members(env, typ)?.into_iter().filter(|m| takes(m) == taken);
         Ok(Type::Set(Arc::from_iter(ms)).normalize())
     }
 

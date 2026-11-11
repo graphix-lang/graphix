@@ -167,6 +167,17 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
     })
 }
 
+// CR claude for claude: [perf/medium] primitive_union's bits expands a typedef once per
+// path, so fusing a select over a DAG of named unions (L_i = [L_i-1, M_i-1], M_i =
+// [M_i-1, L_i-1], L0 = [i64, string]) costs 2^n: `let x: L_n = 3; select x { i64 as i
+// => "i", string as s => "s" }`, --no-cache run, instructions: n = 16 1.26G, 18 2.59G
+// (base-r20 the same), 20 7.9G, where --no-fusion stays at 0.8G; perf puts 79% of the
+// n = 20 run under bits, reached from Freeze::freeze and abi_kind_d. A trait call over
+// the same type (trait-dispatch-members-dag-01) runs fused in 1.5G at n = 16, 43G at 22
+// and is killed at 60 s at 40. A memo of the definitions bits expanded, as
+// Type::dispatch_members keeps, would make it linear. probes:
+// ~/ptmp/cr29/scratch/r20/20g/sel16.gx .. sel20.gx, tr16.gx .. tr22.gx, tr40.gx
+// (fusion-primitive-union-dag-01)
 /// A union with its primitives, unions of them and typedefs naming them
 /// (`Number = [Int, Real]`) folded into the one primitive set they are,
 /// beside its other members; `None` when that changes nothing.
