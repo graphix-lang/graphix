@@ -945,7 +945,7 @@ difference (pin `typ::setops::tests::diff_exact_past_the_budget_is_none`).
 There `?` and `$` split the operand by its members instead, read through
 cells and through names, each name expanded once per parameter list,
 whose open cells are told apart by identity (`F<'a>` and `F<'b>` are two)
-(`Type::distinct_members`): an error member (or the null) is what the
+(`Type::dispatch_members`): an error member (or the null) is what the
 strip takes, which decides the strip and is the raised type, and the rest
 is the result type (`Strip::taken`, `Strip::left`; pins
 `lang::errors::an_operand_past_the_pair_budget_*`,

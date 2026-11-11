@@ -798,6 +798,23 @@ fn first_expansion(seen: &mut Expanded, def: usize, params: &Arc<[Type]>) -> boo
     true
 }
 
+// CR claude for claude: [bug/medium] A union dispatch over two members that are one
+// type spelled two ways, or over a member another member holds, passes --check and is
+// refused at the build. The walk below drops only a member strictly_identical to an
+// earlier one, which reads through no name inside a member, and lower_trait_union
+// makes a select arm per member. `impl Show for Array<[i64, string]>; type X = [i64,
+// string]; let x: [Array<X>, Array<[i64, string]>, null] = [1]; Show::show(x)` fails
+// the run with "unreachable arm: the earlier arms already cover the whole scrutinee"
+// (q1.gx; q5.gx over `[Array<X>, Array<Y>]` with Y = [string, i64]; p02.gx with the
+// two spellings behind two names). With `impl<'a: Show> Show for Array<'a>`, `type A =
+// [Array<[i64, string]>, null]; type B = [Array<i64>, string]; let x: [A, B] = [1]`
+// fails the run with "type mismatch Array<'a: i64> does not contain [Array<i64>,
+// Array<[i64, string]>]" (q7.gx; q8.gx over `[B, A]`), where the inline `[Array<[i64,
+// string]>, Array<i64>, null]` runs (q6.gx). base-r20 and lane 20g behave alike, with
+// and without --no-fusion. The check and the build must agree: Type::trait_contains
+// refuses what the lowering cannot dispatch, or the members are one per type (equal
+// types by containment both ways) in an order that tests a narrower member first.
+// probes: ~/ptmp/cr29/scratch/r20/20g/rvw-tdm/ (trait-dispatch-equal-members-01)
 /// The walk of [`Type::dispatch_members`]: a named type already
 /// expanded is skipped, and a member already in `out` is not added.
 fn flatten_members(
