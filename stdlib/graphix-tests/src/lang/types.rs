@@ -7169,6 +7169,71 @@ run!(
     prints("i64:0")
 );
 
+// Through an inferred wrapper as at the direct call: the wrapper's
+// parameter took the union, so an empty array waits there for the other
+// arguments to decide the members, and is refused where none does.
+run!(
+    wrapper_empty_array_into_a_typedef_union_is_decided_by_the_other_parameters,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let g = |u, v, w| f(u, v, w);
+  let h = |a, b, c| g(a, b, c);
+  (g([], 1, "s"), h([], 1, "s"))
+}"#,
+    prints("[[], []]")
+);
+run!(
+    wrapper_empty_array_into_a_typedef_union_nothing_decides_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let g = |u, v, w| f(u, v, w);
+  g([], never(), never())
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+
+// A wrapper's parameter passed at a formal that holds a variable the
+// other arguments settle takes the formal's shape where it is passed, so
+// an argument after it reads its parts.
+run!(
+    wrapper_parameter_read_by_a_later_argument_of_the_same_call,
+    r#"{
+  let f = |x: ('a, i64), z: 'a| x.1;
+  let g = |y| f(y, y.0);
+  let p = |x: {a: 'a, b: i64}, z: Array<'a>| x.b;
+  let q = |y| p(y, [y.a]);
+  (g((1, 2)), q({a: 1, b: 3}))
+}"#,
+    prints("[i64:2, i64:3]")
+);
+run!(
+    wrapper_parameter_at_a_bounded_variable_read_by_a_later_argument,
+    r#"{
+  let f = 'a: (i64, i64) |x: 'a, z: i64| x;
+  let g = |y| f(y, y.0);
+  g((1, 2))
+}"#,
+    prints("[i64:1, i64:2]")
+);
+
+// An undecided argument's cell that the join put inside its formal's
+// variable is not made that variable: the two stay apart, and the
+// argument is held as a member of what the variable settled to.
+run!(
+    undecided_argument_inside_what_its_formals_variable_settled_to,
+    r#"{
+  let h = |a: Array<'a>, b: ('a, i64)| array::len(a);
+  let k = |a: Array<'a>, b: {v: 'a}| array::len(a);
+  let f = |y| h([y, 1], (y, 2));
+  let g = |y| k([y, 1, 2], {v: y});
+  (f("s"), g("s"))
+}"#,
+    prints("[i64:2, i64:3]")
+);
+
 // An undecided argument takes its formal's variables as the other
 // arguments settle them, the ones only bounds hold included, so the
 // instance is built at one type for each: a seq step's call, an argument

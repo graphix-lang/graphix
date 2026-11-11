@@ -105,6 +105,8 @@ no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; let g = |u, v, w| f(u, v, w); g([], 1, "s")
+ok let f = |x: ('a, i64), z: 'a| x.1; let g = |y| f(y, y.0); g((1, 2))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = 'a: P<'b, 'c> |x: 'a| x; let g = |y| f(y); g([null])
 ok type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string]; let f = 'a: E<'b, 'b>, 'b: Number |x: 'a, y: 'b| x; let h = f(|v| "s", 1); h(2)
 ok type A = [Array<i64>, Array<string>]; let f = |x: [A, null]| 0; f(["a"])

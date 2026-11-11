@@ -831,7 +831,11 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 /// answering how it fit. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
 /// and one holding an undecided cell outside function types is
-/// [`ArgFit::Open`].
+/// [`ArgFit::Open`]. An expression whose type its own check has yet to
+/// make is not pre-unified with an open copy: its check would commit the
+/// copy's bounds before the other arguments decide their variables. A
+/// binding's type stands already, and takes the copy's shape for the
+/// arguments after it to read.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
@@ -841,7 +845,8 @@ fn typecheck_arg<R: Rt>(
 ) -> Result<ArgFit> {
     // A reference instantiates its signature in its own typecheck0,
     // which must precede the pre-unify.
-    if matches!(n.view(), NodeView::Ref(_)) {
+    let named = matches!(n.view(), NodeView::Ref(_));
+    if named {
         wrap!(n, n.typecheck0(ctx))?;
     }
     let (opening, copies) = opening.unzip();
@@ -855,10 +860,8 @@ fn typecheck_arg<R: Rt>(
         Some(note) => e.context(note.clone()),
         None => e,
     };
-    // an undecided cell would take the copy's bounds alone, and commit them
-    // in its own check, before the other arguments decide their variables
-    let waits = opening.is_some() && n.typ().with_deref(|t| t.is_none());
-    if !waits {
+    let unchecked = !named && n.typ().with_deref(|t| t.is_none());
+    if opening.is_none() || !unchecked {
         Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
             .map_err(refused)?;
     }
@@ -882,14 +885,12 @@ fn typecheck_arg<R: Rt>(
 }
 
 /// Make each cell of a formal's open copy that nothing decided the
-/// formal's cell it copies: what an undecided argument took from the copy
-/// is then the formal's own, as the other arguments settled it.
+/// formal's cell it copies ([`TVar::rejoin`]): what an undecided argument
+/// took from the copy is then the formal's own, as the other arguments
+/// settled it.
 fn rejoin(copied: &Copied) {
-    for (cell, copy) in copied.iter().filter(|(_, copy)| !copy.is_bound()) {
-        match cell.is_bound() {
-            true => copy.bind(Type::TVar(cell.clone())),
-            false => copy.alias(cell),
-        }
+    for (cell, copy) in copied.iter() {
+        copy.rejoin(cell)
     }
 }
 
@@ -1472,6 +1473,20 @@ impl Widening {
         (open, opened)
     }
 
+    /// What `formal` stands for: a cell that is not widenable is what it
+    /// is bound to, so an inferred parameter that took a type holding
+    /// widenable variables opens as a written one does.
+    fn standing(cells: &AHashMap<ArcStr, TVar>, formal: &Type) -> Type {
+        let mut t = formal.clone();
+        while let Type::TVar(tv) = &t
+            && !cells.contains_key(&tv.name)
+            && let Some(b) = tv.binding()
+        {
+            t = b
+        }
+        t
+    }
+
     /// The widenable variables `formal` holds.
     fn held(
         &mut self,
@@ -1484,8 +1499,8 @@ impl Widening {
         if !self.fresh {
             return held;
         }
-        formal.collect_tvars(&mut held);
         let cells = Self::cells(&mut self.cells, env, def, inst);
+        Self::standing(cells, formal).collect_tvars(&mut held);
         held.retain(|name, _| cells.contains_key(name));
         held
     }
@@ -1507,9 +1522,10 @@ impl Widening {
         if !self.fresh {
             return None;
         }
+        let cells = Self::cells(&mut self.cells, env, def, inst);
+        let formal = &Self::standing(cells, formal);
         let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut all);
-        let cells = Self::cells(&mut self.cells, env, def, inst);
         if !all.keys().any(|name| cells.contains_key(name)) {
             return None;
         }

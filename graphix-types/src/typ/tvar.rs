@@ -2282,6 +2282,28 @@ impl TVar {
         self.merge_into(other, Merge::Name)
     }
 
+    /// Whether self's cell merged into other's would be reachable from
+    /// its own contents.
+    fn closes_cycle(&self, other: &Self) -> bool {
+        let (s_cell, o_cell) = (self.cell(), other.cell());
+        let scons = s_cell.read().constraints.clone();
+        would_cycle_inner(&s_cell, &Type::TVar(other.clone()))
+            || scons.iter().any(|c| would_cycle_inner(&o_cell, c))
+    }
+
+    /// Make self, an undecided copy of `cell`, the cell it copies: its
+    /// alias where `cell` is open, bound to it where it is decided. A copy
+    /// `cell` reaches stays apart: the two as one type would be infinite.
+    pub fn rejoin(&self, cell: &Self) {
+        if self.is_bound() || self.same_cell(cell) || self.closes_cycle(cell) {
+            return;
+        }
+        match cell.is_bound() {
+            true => self.bind(Type::TVar(cell.clone())),
+            false => self.alias(cell),
+        }
+    }
+
     /// Merge self's cell into other's for a unification-driven merge:
     /// bypasses the `frozen` gate [`Self::alias`] honors (frozen means
     /// name-aliasing already happened) but keeps its occurs checks.
@@ -2357,10 +2379,7 @@ impl TVar {
             // is an infinite type every later walk loops on. Skipping the
             // merge only keeps inference looser.
             let (s_addr, o_addr) = (s_cell.data_ptr().addr(), o_cell.data_ptr().addr());
-            let scons = s_cell.read().constraints.clone();
-            if would_cycle_inner(&s_cell, &Type::TVar(other.clone()))
-                || scons.iter().any(|c| would_cycle_inner(&o_cell, c))
-            {
+            if self.closes_cycle(other) {
                 if graphix_dbg_bind() {
                     eprintln!(
                         "ALIAS-REFUSE {}({s_addr:x}) -> {}({o_addr:x}): the merge closes a cycle",

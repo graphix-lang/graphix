@@ -303,10 +303,24 @@ check, each cell of the copy that nothing decided is made the formal's
 cell it copies (`callsite::rejoin`), a variable only a bound holds
 included, so the call has one type for each variable and the instance is
 built at it (`f([], never())` over `'a0: [Array<P<'a1, 'a2>>, null], 'a1:
-P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3|`). An argument that
-is a bare undecided cell (a seq step's captured argument) is not
-pre-unified: it would take the copy's bounds alone, and commit them in
-its own check before the other arguments decide them. An omitted default
+P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3|`). A copy's cell
+that the formal's cell reaches stays apart (`TVar::rejoin`): in `|y|
+h([y, 1], (y, 2))` over `|a: Array<'a>, b: ('a, i64)|` the join put `y`'s
+cell inside `'a`, and the two as one cell would be an infinite type (pin
+`lang::types::undecided_argument_inside_what_its_formals_variable_settled_to`).
+An argument expression whose type its own check has yet to make (a seq step's
+captured argument, a field read) is not pre-unified with the copy: its
+check would commit the copy's bounds before the other arguments decide
+them. A binding's type stands already (a wrapper's parameter), so it
+pre-unifies and takes the copy's shape, which an argument after it reads
+(`|y| f(y, y.0)` over `|x: ('a, i64), z: 'a|`; pin
+`lang::types::wrapper_parameter_read_by_a_later_argument_of_the_same_call`).
+A formal that is an inferred parameter's cell is opened as what the cell
+is bound to (`Widening::standing`), so an undecided argument waits
+through a wrapper as at the direct call: `g([], 1, "s")` over `let g =
+|u, v, w| f(u, v, w)` and `let f = |x: P<'a, 'b>, y: 'a, z: 'b|` (pin
+`lang::types::wrapper_empty_array_into_a_typedef_union_is_decided_by_the_other_parameters`).
+An omitted default
 holding an undecided cell waits the same way,
 checked at its formal once the join is known, whichever label comes
 first. A written argument or an omitted default that is neither wider
