@@ -4577,6 +4577,25 @@ run!(
     FuseExpect::None
 );
 
+// A function of many variables: each still takes its widest position,
+// one the walk made a single cell with another variable too (the call's
+// own `'p` meets `'y`, or `'y` and `'z` both, before their closed parts).
+run!(
+    written_fn_type_widest_position_among_many_variables,
+    r#"{
+  let f = |a0: 'a, a1: 'b, a2: 'c, a3: 'd, a4: 'e, a5: 'f, a6: 'g, a7: 'h, b: 'y, k: 'y| -> 'y k;
+  let fm = |a0: 'a, a1: 'b, a2: 'c, a3: 'd, a4: 'e, a5: 'f, a6: 'g, a7: 'h, m: 'y, b: 'y, k: 'y| -> 'y k;
+  let fz = |a0: 'a, a1: 'b, a2: 'c, a3: 'd, a4: 'e, a5: 'f, a6: 'g, a7: 'h, m: 'y, n: 'z, b: 'y, k: 'z| -> ('y, 'z) (b, k);
+  let g: fn(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, b: i64, k: [i64, null]) -> [i64, null] = f;
+  let app = |h: fn(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, m: 'p, b: i64, k: [i64, null]) -> [i64, null], x: 'p|
+    h(0, 0, 0, 0, 0, 0, 0, 0, x, 1, null);
+  let appz = |h: fn(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, m: 'p, n: 'p, b: i64, k: [i64, null]) -> ([i64, null], [i64, null]), x: 'p|
+    h(0, 0, 0, 0, 0, 0, 0, 0, x, x, 1, null);
+  (g(0, 0, 0, 0, 0, 0, 0, 0, 1, null), app(fm, null), appz(fz, null))
+}"#,
+    prints("[null, null, [i64:1, null]]")
+);
+
 // A builtin binding declares every argument's type, its variadic's too.
 run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;

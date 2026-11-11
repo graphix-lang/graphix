@@ -180,6 +180,12 @@ pub(super) struct ContainsHist {
     /// The cells whose closed parts wait for the end of a function's
     /// arguments ([`Self::defer`]), the innermost function's last.
     deferring: SmallVec<[Deferred; 2]>,
+    /// The first of `deferring` standing for each cell, where there are
+    /// more than [`DEFER_SCAN`], as the cells stood at the
+    /// [`cell_writes`] count beside it: a write may move a var to
+    /// another cell.
+    deferred_by_cell: Lazy<AddrMap<usize>>,
+    deferred_as_of: Option<u64>,
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
@@ -206,6 +212,10 @@ fn probe_flags(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
         false => flags,
     }
 }
+
+/// How many deferred cells [`ContainsHist::deferred_for`] searches one by
+/// one: more are indexed.
+const DEFER_SCAN: usize = 8;
 
 /// An open cell and the closed parts it must hold that wait for the end
 /// of a function's arguments, each with the flags it met the cell under.
@@ -323,6 +333,8 @@ impl ContainsHist {
             norm: None,
             gated: 0,
             deferring: SmallVec::new(),
+            deferred_by_cell: Lazy::new(),
+            deferred_as_of: None,
             trial: false,
             ordered: false,
             identical: IdenticalMemo::default(),
@@ -345,22 +357,47 @@ impl ContainsHist {
         let mark = self.deferring.len();
         self.deferring
             .extend(cells.into_iter().map(|tv| Deferred { tv, parts: SmallVec::new() }));
+        self.deferred_as_of = None;
         Some(mark)
     }
 
     /// Whether `tv ⊇ t` waits for the end of the arguments in progress.
     fn defers(&mut self, flags: BitFlags<ContainsFlags>, tv: &TVar, t: &Type) -> bool {
-        if self.deferring.is_empty() || tv.is_bound() || undecided(t) {
+        if self.deferring.is_empty() || tv.is_bound() {
             return false;
         }
-        let cell = tv.cell_addr();
-        match self.deferring.iter_mut().find(|d| d.tv.stands_for() == cell) {
-            Some(d) => {
-                d.parts.push((t.clone(), flags));
-                true
-            }
-            None => false,
+        let Some(i) = self.deferred_for(tv.cell_addr()) else { return false };
+        if !self.closed(t) && undecided(t) {
+            return false;
         }
+        self.deferring[i].parts.push((t.clone(), flags));
+        true
+    }
+
+    // CR claude for claude: [perf/low] The index is built again at the first lookup
+    // after any cell write, so a signature of n deferred variables whose positions
+    // alternate with ones that bind at once (`let f = |x: ('a0, &mut 'c0, 'a1, &mut
+    // 'c1, ..)| x; f(never())`) pays up to n builds of n entries: --expand --no-cache,
+    // debug, instructions at n = 2000 / 4000 pairs 1.471G / 2.126G, base-r20 (which
+    // defers nothing) 1.457G / 2.077G, so +14M / +49M. A count of only the writes that
+    // move a var to another cell (a merge, a binding to a cell) would stamp the index
+    // where cell_writes does now. probe: ~/ptmp/cr29/scratch/r20/20b/finisher/genmix2.py
+    // (defer-index-rebuild-01)
+    /// The first of `deferring` that stands for `cell`.
+    fn deferred_for(&mut self, cell: usize) -> Option<usize> {
+        if self.deferring.len() <= DEFER_SCAN {
+            return self.deferring.iter().position(|d| d.tv.stands_for() == cell);
+        }
+        let writes = Some(cell_writes());
+        let by_cell = self.deferred_by_cell.get_mut();
+        if self.deferred_as_of != writes {
+            by_cell.clear();
+            for (i, d) in self.deferring.iter().enumerate() {
+                by_cell.entry(d.tv.stands_for()).or_insert(i);
+            }
+            self.deferred_as_of = writes;
+        }
+        by_cell.get(&cell).copied()
     }
 
     /// End the deferral [`Self::defer`] marked, the arguments having held
@@ -377,6 +414,7 @@ impl ContainsHist {
     ) -> Result<bool> {
         let Some(mark) = mark else { return held };
         let deferred: SmallVec<[Deferred; 2]> = self.deferring.drain(mark..).collect();
+        self.deferred_as_of = None;
         let holds = match held {
             Ok(true) => self.meet_deferred(env, deferred),
             held => held,
