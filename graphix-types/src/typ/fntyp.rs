@@ -2807,12 +2807,15 @@ fn holds_open_union(t: &Type) -> bool {
 
 impl Type {
     /// Bind each open cell of `self` to what stands at its place in `at`,
-    /// wherever the two types are built alike. A union's members have no
-    /// places: a cell they alone hold is left open.
+    /// ⊥ included, wherever the two types are built alike. A union's
+    /// members have no places: a cell they alone hold is left open.
     pub fn place_cells(&self, env: &Env, at: &Self) {
         crate::stack::ensure_sufficient(|| match (self, at) {
             (Self::TVar(tv), _) => match tv.binding() {
                 Some(b) => b.place_cells(env, at),
+                None if at.with_deref(|a| matches!(a, Some(Self::Bottom))) => {
+                    tv.bind(Self::Bottom)
+                }
                 None => {
                     let _ = self.contains(env, at);
                 }

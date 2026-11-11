@@ -4718,7 +4718,18 @@ impl Type {
     /// the same way. TVar-free structure is returned shared. Capture
     /// avoiding under each function type it holds ([`under_quantifiers`]).
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Self>) -> Type {
-        self.replace_tvars_int(&mut Subst::new(known), &mut LPooled::take())
+        self.replace_tvars_copied(known, &mut LPooled::take())
+    }
+
+    /// [`Self::replace_tvars`], and in `copies` each cell it freshened by
+    /// the address of the cell it copies.
+    #[doc(hidden)]
+    pub fn replace_tvars_copied(
+        &self,
+        known: &AHashMap<ArcStr, Self>,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Type {
+        self.replace_tvars_int(&mut Subst::new(known), copies)
             .unwrap_or_else(|| self.clone())
     }
 

@@ -3873,8 +3873,8 @@ impl Type {
     }
 
     /// Commit `t` into `m`, an undecided member of a union, where it holds
-    /// `t` with every cell of its own held as it stands, so it decides
-    /// none of them; `None` where it does not, or holds no undecided cell.
+    /// `t` with every cell of both held as it stands, so it decides none
+    /// of them; `None` where it does not, or holds no undecided cell.
     fn takes_as_it_stands(
         m: &Type,
         flags: BitFlags<ContainsFlags>,
@@ -3887,6 +3887,7 @@ impl Type {
         }
         let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
         hold_rigid(m, &mut gates);
+        hold_rigid(t, &mut gates);
         hist.gated += 1;
         let r = on_copies([m, t], |[m, t], trial| m.contains_int(flags, env, trial, &t))
             .and_then(|holds| match holds {
@@ -3903,8 +3904,8 @@ impl Type {
     /// `fn(path: string) -> i64`, which a commit refuses after binding 'c:
     /// where another member admits `t` too, a member takes it only once it
     /// holds on copies. A member that holds it as it stands, deciding no
-    /// cell of the union, takes it first; else the one member that holds
-    /// it, in the first tier where one does. Two that could
+    /// cell of the union or of `t`, takes it first; else the one member
+    /// that holds it, in the first tier where one does. Two that could
     /// are a choice only the order of the check's relations would make
     /// ([`AmbiguousMember`]); a walk on copies takes the first, and a
     /// trial commits its members directly: a trial nested in each would

@@ -780,6 +780,13 @@ fn fill_omitted<R: Rt>(args: &mut ArgMap<R>, ftype: &FnType) -> Result<()> {
     Ok(())
 }
 
+/// The cells of a formal's open copy ([`Widening::opening`]), each by the
+/// address of the formal's cell it copies.
+type Copies = LPooled<AHashMap<usize, TVar>>;
+
+/// A formal's cells, each with its copy in the formal's open copy.
+type Copied = LPooled<Vec<(TVar, TVar)>>;
+
 /// How a call's argument met its formal.
 enum ArgFit {
     Fits,
@@ -787,8 +794,8 @@ enum ArgFit {
     Misfit,
     /// It holds a cell nothing has decided outside function types, at a
     /// formal the call opened: checked now it would take what the formal
-    /// holds so far.
-    Open,
+    /// holds so far. It pre-unified with the copy of these cells.
+    Open(Copied),
 }
 
 /// An argument that could go to either of two undecided members of its
@@ -812,7 +819,7 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
-    opening: Option<&Type>,
+    opening: Option<(Type, Copies)>,
     prebound: &AHashSet<usize>,
     n: &mut Node<R>,
 ) -> Result<ArgFit> {
@@ -821,6 +828,7 @@ fn typecheck_arg<R: Rt>(
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
+    let (opening, copies) = opening.unzip();
     let note = match opening {
         None if n.typ().has_free_in_data() => {
             decided_elsewhere(&ctx.env, typ, prebound, n.typ())?
@@ -831,15 +839,37 @@ fn typecheck_arg<R: Rt>(
         Some(note) => e.context(note.clone()),
         None => e,
     };
-    Type::pre_unify_arg(&ctx.env, opening.unwrap_or(typ), n.typ()).map_err(refused)?;
+    Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
+        .map_err(refused)?;
     wrap!(n, n.typecheck0(ctx)).map_err(refused)?;
-    Ok(if opening.is_some() && n.typ().has_free_in_data() {
-        ArgFit::Open
-    } else if wrap!(n, typ.contains(&ctx.env, n.typ()).map_err(ambiguous_parameter))? {
-        ArgFit::Fits
-    } else {
-        ArgFit::Misfit
+    Ok(match copies {
+        Some(copies) if n.typ().has_free_in_data() => {
+            let mut copied: Copied = LPooled::take();
+            Reach::default().go(typ, &mut |_| false, &mut |tv| {
+                if let Some(copy) = copies.get(&tv.cell_addr()) {
+                    copied.push((tv.clone(), copy.clone()))
+                }
+                false
+            });
+            ArgFit::Open(copied)
+        }
+        _ if wrap!(n, typ.contains(&ctx.env, n.typ()).map_err(ambiguous_parameter))? => {
+            ArgFit::Fits
+        }
+        _ => ArgFit::Misfit,
     })
+}
+
+/// Make each cell of a formal's open copy that nothing decided the
+/// formal's cell it copies: what an undecided argument took from the copy
+/// is then the formal's own, as the other arguments settled it.
+fn rejoin(copied: &Copied) {
+    for (cell, copy) in copied.iter().filter(|(_, copy)| !copy.is_bound()) {
+        match cell.is_bound() {
+            true => copy.bind(Type::TVar(cell.clone())),
+            false => copy.alias(cell),
+        }
+    }
 }
 
 /// `f`'s signature as a call through `site` instantiates it to pass the
@@ -1370,7 +1400,7 @@ struct Widening {
 /// What waits for the end of a call's argument loop, and why.
 enum Waiter {
     /// An argument holding a cell nothing has decided ([`ArgFit::Open`]).
-    Undecided(ArgKey),
+    Undecided(ArgKey, Copied),
     /// An argument neither wider nor narrower than a variable it holds.
     Incomparable(ArgKey),
     /// An omitted default of type `typ`, written at `at`, neither wider nor
@@ -1440,19 +1470,19 @@ impl Widening {
     }
 
     /// The formal an argument is pre-unified with where `formal` holds a
-    /// widenable variable: a copy with those variables open and every other
-    /// cell the formal's own, so no argument decides a widenable one before
-    /// the closed arguments join, and each decides the others as it meets
-    /// them. An argument holding a cell nothing has decided then waits for
-    /// the end of the argument loop, to take the widenable variables as the
-    /// closed arguments settle them.
+    /// widenable variable, and its cells: a copy with those variables open
+    /// and every other cell the formal's own, so no argument decides a
+    /// widenable one before the closed arguments join, and each decides
+    /// the others as it meets them. An argument holding a cell nothing has
+    /// decided then waits for the end of the argument loop, to take the
+    /// widenable variables as the closed arguments settle them.
     fn opening(
         &mut self,
         env: &Env,
         def: &Type,
         inst: &FnType,
         formal: &Type,
-    ) -> Option<Type> {
+    ) -> Option<(Type, Copies)> {
         if !self.fresh {
             return None;
         }
@@ -1467,14 +1497,15 @@ impl Widening {
             .filter(|(name, _)| !cells.contains_key(*name))
             .map(|(name, tv)| (name.clone(), Type::TVar(tv.clone())))
             .collect();
-        let open = formal.replace_tvars(&kept);
+        let mut copies: Copies = LPooled::take();
+        let open = formal.replace_tvars_copied(&kept, &mut copies);
         let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         open.collect_tvars(&mut opened);
         let widened = |name: &ArcStr| cells.contains_key(name) && all.contains_key(name);
         for (_, tv) in opened.iter().filter(|(name, _)| widened(name)) {
             tv.unbind()
         }
-        Some(open)
+        Some((open, copies))
     }
 
     /// The argument for `key` met `formal`: widen, wait, or the mismatch
@@ -1491,9 +1522,9 @@ impl Widening {
     ) -> Result<()> {
         match fit {
             ArgFit::Fits => Ok(()),
-            ArgFit::Open => {
-                Ok(self.deferred.push((Waiter::Undecided(key.clone()), formal.clone())))
-            }
+            ArgFit::Open(copied) => Ok(self
+                .deferred
+                .push((Waiter::Undecided(key.clone(), copied), formal.clone()))),
             ArgFit::Misfit => {
                 if !wrap!(n, self.widen(env, def, inst, formal, n.typ()))? {
                     self.deferred
@@ -1622,7 +1653,7 @@ fn annotation_may_fit(
         fresh.iter().map(|(name, tv)| (name.clone(), Type::TVar(tv.clone()))).collect();
     let open = formal.replace_tvars(&open);
     let arg = arg.reset_tvars();
-    if !open.contains(env, &arg)? {
+    if !open.contains_ordered(env, &arg)? {
         return Ok(false);
     }
     for (name, tv) in held.iter() {
@@ -1632,7 +1663,7 @@ fn annotation_may_fit(
             continue;
         };
         let given = given.reset_tvars();
-        if !new.contains(env, &given)? && !given.contains(env, &new)? {
+        if !new.contains_ordered(env, &given)? && !given.contains_ordered(env, &new)? {
             return Ok(false);
         }
     }
@@ -2554,10 +2585,11 @@ impl<R: Rt> CallSite<R> {
         };
         for (waiter, formal) in deferred {
             match waiter {
-                Waiter::Undecided(key) => {
+                Waiter::Undecided(key, copied) => {
                     let Some(n) = arg(&key) else { continue };
                     let note = undecided(widening, &mut met, &formal, n.typ())?
                         .then(|| undecided_note(ctx, n));
+                    rejoin(&copied);
                     wrap!(n, noted(formal.check_contains(env, n.typ()), note))?
                 }
                 Waiter::Incomparable(key) => {
@@ -4422,7 +4454,7 @@ impl<R: Rt> CallSite<R> {
             if let Some(n) = arg.node.as_mut() {
                 let opening =
                     widening.opening(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
-                let fit = typecheck_arg(ctx, &farg.typ, opening.as_ref(), &prebound, n)?;
+                let fit = typecheck_arg(ctx, &farg.typ, opening, &prebound, n)?;
                 widening.fit(
                     &ctx.env,
                     self.fnode.typ(),
@@ -4441,7 +4473,7 @@ impl<R: Rt> CallSite<R> {
                 if let Some(n) = arg.node.as_mut() {
                     let opening =
                         widening.opening(&ctx.env, self.fnode.typ(), ftype, typ);
-                    let fit = typecheck_arg(ctx, typ, opening.as_ref(), &prebound, n)?;
+                    let fit = typecheck_arg(ctx, typ, opening, &prebound, n)?;
                     widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
                 }
             }

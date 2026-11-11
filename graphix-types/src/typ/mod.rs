@@ -2926,7 +2926,9 @@ impl Type {
     /// Pre-unify a declared parameter type with an argument's type
     /// before the argument typechecks, so an unannotated callback's
     /// parameters take the declared types. A function-typed argument
-    /// unifies its parameter positions only; anything else whole.
+    /// unifies its parameter positions only; anything else whole. A
+    /// union's member that two could take is left to the argument's own
+    /// check, which meets the argument decided.
     #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
         let mut hist = contains::ContainsHist::new();
@@ -2969,7 +2971,10 @@ impl Type {
                 };
             let whole = |hist: &mut contains::ContainsHist| {
                 let flags = contains::ContainsFlags::Commit.into();
-                declared.contains_int(flags, env, hist, actual).map(|_| ())
+                match declared.contains_int(flags, env, hist, actual) {
+                    Err(e) if e.is::<AmbiguousMember>() => Ok(()),
+                    r => r.map(|_| ()),
+                }
             };
             match (&d, &a) {
                 (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
