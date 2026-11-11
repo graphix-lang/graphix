@@ -318,7 +318,9 @@ or through an alias (`U<Opt<'a>>` over `type Opt<'a> = ['a, null]`, an
 alias of an alias, `type I<'b> = 'b`). The alias is defined above the
 recursive type and bounds no parameter, or the refusal names it; one
 with a constructor around its parameter (`type R<'b> = Array<'b>`) grows
-the type as the constructor does.
+the type as the constructor does. A function over such a type names the
+tail's type to recurse into it (a `let rec` is one instance), in either
+spelling: `|v: U<Opt<'a>>|` is `|v: U<['a, null]>|`.
 
 ```graphix,cases
 no "refers back to itself" type T = [i64, T]; 1
@@ -332,4 +334,6 @@ ok type Opt<'b> = ['b, null]; type Two<'b> = Opt<Opt<'b>>; type U<'a> = [`Nil, `
 no "grows its parameter 'a" type R<'b> = Array<'b>; type U<'a> = [`Nil, `C('a, U<R<'a>>)]; 1
 no "through Opt, which is not defined above" type U<'a> = [`Nil, `C('a, U<Opt<'a>>)]; type Opt<'b> = ['b, null]; 1
 no "through Num, which bounds a parameter" type Num<'b: Number> = ['b, null]; type U<'a: Number> = [`Nil, `C('a, U<Num<'a>>)]; 1
+ok type Opt<'b> = ['b, null]; type U<'a> = [`Nil, `C('a, U<Opt<'a>>)]; let rec go = |v: U<Opt<'a>>, n: i64| -> i64 select v { `Nil => n, `C(_, t) => go(t, n + 1) }; let u: U<Opt<i64>> = `C(1, `C(null, `Nil)); go(u, 0)
+ok type Opt<'b> = ['b, null]; let f = |x: [Opt<'a>, null]| -> Opt<'a> x; f(1)
 ```

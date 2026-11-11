@@ -544,7 +544,16 @@ bound to `['x, 'y]` is `'x` and `'y`; a declared variable going into the
 union meets it flat too (`set_commit_flat`), so `let g = |v: 'r| f(v)`
 over `f = |x: ['a, Id<'b>]| ..` is refused where it is checked, not where
 `g` is built at a type (pin
-`lang::types::declared_variable_into_a_union_with_a_named_member_refused`). An undecided rhs member takes a
+`lang::types::declared_variable_into_a_union_with_a_named_member_refused`).
+A probe reads such a member as its members too, committing no bound of
+the name's parameters, so over a declared variable `[Opt<'a>, null]` is
+`Opt<'a>` and `['a, null]`, bare and under a constructor or a named
+type, and a recursive helper over `U<Opt<'a>>` (the tail's type of `type
+U<'a> = [`Nil, `C('a, U<Opt<'a>>)]`) checks as its written-out twin does
+(Eric 11-10, D29: a typedef names a union; pins
+`lang::types::alias_over_a_declared_variable`,
+`recursive_helper_over_an_alias`,
+`recursive_helper_over_an_alias_in_an_impl`). An undecided rhs member takes a
 union of undecided members whole, as it does alone (`['a, 'b] ⊇ 'c` binds
 `'c`), and an equality relates such a union as the contained side first
 (`equal_int`, `op::operand_type`: `u + 1` over `u: ['a, 'b]` decides

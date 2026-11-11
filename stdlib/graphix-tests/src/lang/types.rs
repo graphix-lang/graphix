@@ -3922,6 +3922,83 @@ run!(
     is(Value::I64(1))
 );
 
+/// An alias applied to a declared variable is its union there too: a
+/// union holding it as a member is the union with the alias written out,
+/// bare, under a constructor and under a named type, so a value of one
+/// spelling is a value of the other.
+const ALIAS_OVER_A_DECLARED_VARIABLE: &str = r#"
+{
+    type Opt<'b> = ['b, null];
+    type V<'a> = [`Nil, `C('a, V<'a>)];
+    type U<'a> = [`Nil, `C('a, U<Opt<'a>>)];
+    let f = |x: [Opt<'a>, null]| -> Opt<'a> x;
+    let g = |x: [Opt<'a>, null]| -> ['a, null] x;
+    let h = |x: Array<[Opt<'a>, null]>| -> Array<Opt<'a>> x;
+    let k = |x: V<[Opt<'a>, null]>| -> V<Opt<'a>> x;
+    let l = |x: U<[Opt<'a>, null]>| -> U<Opt<'a>> x;
+    let m = |x: U<Opt<Opt<'a>>>| -> U<Opt<'a>> x;
+    let a = select f(1) { null as _ => 0, i64 as i => i };
+    let b = select g(null) { null as _ => 10, i64 as i => i };
+    let c = select h([3, null])[0]$ { null as _ => 0, i64 as i => i * 100 };
+    let d = select k(`C(4, `Nil)) { `C(v, _) => select v { null as _ => 0, i64 as i => i * 1000 }, `Nil => 0 };
+    let e = select l(`C(5, `Nil)) { `C(v, _) => select v { null as _ => 0, i64 as i => i * 10000 }, `Nil => 0 };
+    let deep: U<Opt<Opt<i64>>> = `C(null, `Nil);
+    let n = select m(deep) { `C(v, _) => select v { null as _ => 600000, i64 as i => i }, `Nil => 0 };
+    a + b + c + d + e + n
+}
+"#;
+
+run!(
+    alias_over_a_declared_variable,
+    ALIAS_OVER_A_DECLARED_VARIABLE,
+    is(Value::I64(654311))
+);
+
+/// A recursive helper over a type that recurs through an alias of its
+/// parameter names the tail's type, the alias applied to its own
+/// variable, and calls itself on the tail, in either spelling.
+const RECURSIVE_HELPER_OVER_AN_ALIAS: &str = r#"
+{
+    type Opt<'b> = ['b, null];
+    type U<'a> = [`Nil, `C('a, U<Opt<'a>>)];
+    type X<'a> = [`Nil, `C('a, X<['a, null]>)];
+    let rec go = |v: U<Opt<'a>>, n: i64| -> i64 select v { `Nil => n, `C(_, t) => go(t, n + 1) };
+    let rec written = |v: X<['a, null]>, n: i64| -> i64 select v { `Nil => n, `C(_, t) => written(t, n + 1) };
+    let rec mixed = |v: X<Opt<'a>>, n: i64| -> i64 select v { `Nil => n, `C(_, t) => mixed(t, n + 1) };
+    let u: U<Opt<i64>> = `C(1, `C(null, `C(2, `Nil)));
+    let x: X<[i64, null]> = `C(1, `C(null, `Nil));
+    go(u, 0) + written(x, 0) * 10 + mixed(u, 0) * 100
+}
+"#;
+
+run!(recursive_helper_over_an_alias, RECURSIVE_HELPER_OVER_AN_ALIAS, is(Value::I64(323)));
+
+/// The same helper inside an impl, over the impl's own variable.
+const RECURSIVE_HELPER_OVER_AN_ALIAS_IN_AN_IMPL: &str = r#"
+{
+    type Opt<'b> = ['b, null];
+    type U<'a> = [`Nil, `C('a, U<Opt<'a>>)];
+    type W<'a> = Abstract<U<'a>>;
+    trait Len { val len: fn(self) -> i64; val push: fn(self, x: 'q) -> W<'q> };
+    impl<'a> Len for W<'a> {
+        let len = |s: self| -> i64 {
+            let rec go = |v: U<Opt<'a>>, n: i64| -> i64 select v { `Nil => n, `C(_, t) => go(t, n + 1) };
+            select s.0 { `Nil => 0, `C(_, t) => go(t, 1) }
+        };
+        let push = |s: self, x| W(`C(x, `Nil))
+    };
+    let u: W<i64> = W(`C(1, `C(null, `C(2, `Nil))));
+    let w: W<string> = W(`C("a", `Nil));
+    Len::len(u) + Len::len(w) * 10 + Len::len(Len::push(w, 3.0)) * 100
+}
+"#;
+
+run!(
+    recursive_helper_over_an_alias_in_an_impl,
+    RECURSIVE_HELPER_OVER_AN_ALIAS_IN_AN_IMPL,
+    is(Value::I64(113))
+);
+
 /// An alias whose body holds its parameter under a constructor still
 /// grows the type, whatever else its union adds.
 const ALIAS_OVER_A_CONSTRUCTOR_GROWS: &str = r#"

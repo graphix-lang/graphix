@@ -3526,18 +3526,14 @@ impl Type {
             // a member that names a variable or a union stands as what it
             // names: `['a, Id<'b>]` over `type Id<'x> = 'x` is `['a, 'b]`
             (Self::Set(s0), _)
-                if commit
-                    && !hist.closed(self)
-                    && s0.iter().any(|m| names_members(env, m)) =>
+                if !hist.closed(self) && s0.iter().any(|m| names_members(env, m)) =>
             {
-                Self::unfolded(env, s0)?.contains_int(flags, env, hist, t)
+                Self::unfolded(env, s0, commit)?.contains_int(flags, env, hist, t)
             }
             (_, Self::Set(s1))
-                if commit
-                    && !hist.closed(t)
-                    && s1.iter().any(|m| names_members(env, m)) =>
+                if !hist.closed(t) && s1.iter().any(|m| names_members(env, m)) =>
             {
-                self.contains_int(flags, env, hist, &Self::unfolded(env, s1)?)
+                self.contains_int(flags, env, hist, &Self::unfolded(env, s1, commit)?)
             }
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
@@ -3886,12 +3882,13 @@ impl Type {
 
     /// The union `s` with each member that [`names_members`] replaced by
     /// what it names, a union's members in its place, until none does; a
-    /// named type's parameter bounds are committed. A cell met again
-    /// under its own binding adds nothing.
-    fn unfolded(env: &Env, s: &[Type]) -> Result<Type> {
+    /// named type's parameter bounds are committed where `commit`. A cell
+    /// met again under its own binding adds nothing.
+    fn unfolded(env: &Env, s: &[Type], commit: bool) -> Result<Type> {
         fn unfold(
             env: &Env,
             m: &Type,
+            commit: bool,
             cells: &mut AddrSet,
             depth: usize,
             out: &mut SmallVec<[Type; 8]>,
@@ -3910,7 +3907,11 @@ impl Type {
             let mut head = m.clone();
             for _ in 0..HEAD_CHAIN_LIMIT {
                 head = match head.with_deref(|d| d.cloned()) {
-                    Some(d @ Type::Ref(_)) => d.lookup_ref(env)?,
+                    Some(d @ Type::Ref(_)) if commit => d.lookup_ref(env)?,
+                    Some(d @ Type::Ref(_)) => match d.lookup_ref_probe(env) {
+                        Some((_, x)) => x,
+                        None => break,
+                    },
                     Some(d) => d,
                     None => break,
                 };
@@ -3919,16 +3920,16 @@ impl Type {
                 }
             }
             ensure_sufficient(|| match &head {
-                Type::Set(ms) => {
-                    ms.iter().try_for_each(|m| unfold(env, m, cells, depth + 1, out))
-                }
+                Type::Set(ms) => ms
+                    .iter()
+                    .try_for_each(|m| unfold(env, m, commit, cells, depth + 1, out)),
                 _ => Ok(out.push(head.clone())),
             })
         }
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         let mut cells: LPooled<AddrSet> = LPooled::take();
         for m in s.iter() {
-            unfold(env, m, &mut cells, 0, &mut members)?
+            unfold(env, m, commit, &mut cells, 0, &mut members)?
         }
         Ok(Self::Set(Arc::from_iter(members)))
     }
@@ -3981,7 +3982,7 @@ impl Type {
             && s.iter().any(|m| names_members(env, m));
         match named {
             false => Self::set_commit(s, flags, env, hist, t),
-            true => match &Self::unfolded(env, s)? {
+            true => match &Self::unfolded(env, s, true)? {
                 Self::Set(s) => Self::set_commit(s, flags, env, hist, t),
                 _ => Ok(None),
             },
@@ -4957,7 +4958,7 @@ impl Type {
                 Type::Set(ms) => {
                     let chooses = match ms.iter().any(|m| names_members(env, m)) {
                         false => chooses(env, ms),
-                        true => match &Type::unfolded(env, ms) {
+                        true => match &Type::unfolded(env, ms, true) {
                             Ok(Type::Set(ms)) => chooses(env, ms),
                             Ok(_) | Err(_) => true,
                         },
