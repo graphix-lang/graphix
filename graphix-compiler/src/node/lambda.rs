@@ -1423,9 +1423,18 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
                     let rtype = &self.typ.rtype;
-                    let contain = rtype
-                        .check_contains_rigid(&ctx.env, &body)
-                        .map_err(|e| picked_return(&ctx.env, rtype, &body, e));
+                    let contain =
+                        rtype.check_contains_rigid(&ctx.env, &body).map_err(|e| {
+                            let method = ctx
+                                .lambda_defs
+                                .get(&self.id)
+                                .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
+                                .is_some_and(|d| method_value(&d.scope));
+                            match method {
+                                true => e,
+                                false => picked_return(&ctx.env, rtype, &body, e),
+                            }
+                        });
                     wrap!(self.body, contain)?;
                     // CR claude for claude: [bug/medium] A function read out of a declared
                     // return type that is a typedef application whose body holds it is called
@@ -2195,17 +2204,11 @@ impl Lambda {
                 }
             })?;
         }
-        // a lambda in a method's value outside every lambda's body is judged
-        // at its method (traits::written_method_unions), where the method's
-        // own lambda is told from what its trait fills in
-        let in_method = || {
-            Path::parts(&*scope.lexical)
-                .filter(|p| crate::is_fn_block(p) || crate::is_method_block(p))
-                .last()
-                .is_some_and(crate::is_method_block)
-        };
+        // a lambda in a method's value is judged at its method
+        // (traits::written_method_unions), where the method's own lambda is
+        // told from what its trait fills in
         if let Some(e) = union
-            && !in_method()
+            && !method_value(scope)
         {
             return Err(e.into());
         }
@@ -2609,9 +2612,18 @@ impl<R: Rt> DefGate<R> {
     }
 }
 
-/// The refusal of a body whose type the declared return holds only by the
-/// bounds of the variables it writes: each call picks those, a type
-/// narrower than a bound included. Told as the annotation that fixes it.
+/// Whether a lambda compiled in `scope` is in a method's value outside
+/// every lambda's body: what its signature leaves out is its trait's.
+fn method_value(scope: &Scope) -> bool {
+    Path::parts(&*scope.lexical)
+        .filter(|p| crate::is_fn_block(p) || crate::is_method_block(p))
+        .last()
+        .is_some_and(crate::is_method_block)
+}
+
+/// The refusal of a body whose type the written return would hold were
+/// its variables open: each call picks those, a type narrower than a
+/// bound included. Told as the annotation that fixes it.
 fn picked_return(
     env: &Env,
     rtype: &Type,
@@ -2629,7 +2641,10 @@ fn picked_return(
         .filter(|tv| !tv.generated() && tv.is_rigid() && tv.binding().is_none())
         .collect();
     if picked.is_empty()
-        || !rtype.contains_with_flags(BitFlags::empty(), env, body).unwrap_or(false)
+        || !rtype
+            .reset_tvars()
+            .contains_with_flags(BitFlags::empty(), env, body)
+            .unwrap_or(false)
     {
         return e;
     }

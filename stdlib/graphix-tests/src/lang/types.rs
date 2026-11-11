@@ -1944,6 +1944,30 @@ run!(
     FuseExpect::None
 );
 run!(
+    a_return_of_one_unbounded_variable_names_the_other,
+    "{ let f = |x: 'a, y: 'b| -> 'a y; f(1, 2) }",
+    refused(
+        "a call picks 'a, and the body's value need not be of the type it picks; \
+         drop `-> 'a`, or write the body's type, `-> 'b`"
+    );
+    FuseExpect::None
+);
+run!(
+    a_return_of_two_swapped_variables_names_both,
+    "{ let f = |x: 'a, y: 'b| -> ('a, 'b) (y, x); f(1, 2) }",
+    refused(
+        "a call picks 'a and 'b, and the body's value need not be of the types it \
+         picks; drop `-> ('a, 'b)`, or write the body's type, `-> ('b, 'a)`"
+    );
+    FuseExpect::None
+);
+run!(
+    a_return_of_two_swapped_variables_written_as_the_body_runs,
+    "{ let f = |x: 'a, y: 'b| -> ('b, 'a) (y, x); f(1, 2).0 }",
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+run!(
     a_return_naming_the_other_declared_variable_runs,
     "{ let f = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'b y; f(1, 2) }",
     is(Value::I64(2));
@@ -1956,6 +1980,54 @@ run!(
             && !format!("{e:#}").contains("a call picks")),
     "/test.gx" => "let result = { let f = 'a: Number |x: 'a| -> ('a, string) (x, 1); f(2) }"
 ; FuseExpect::None);
+// A method's return is its trait's: no return type written in the impl
+// makes a body of another type pass, so the refusal names none.
+run!(
+    a_methods_return_names_no_return_to_write,
+    |v: Result<&Value>| matches!(v, Err(e)
+        if format!("{e:#}").contains("'a: unbound within Number does not contain i64")
+            && !format!("{e:#}").contains("a call picks")),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait Idt { val idt: fn<'a: Number>(self, x: 'a) -> 'a };
+        impl Idt for W { let idt = |s, x| 1 };
+        let result = Idt::idt(W(0), 2)
+    "#
+; FuseExpect::None);
+run!(
+    a_default_methods_return_names_no_return_to_write,
+    |v: Result<&Value>| matches!(v, Err(e)
+        if format!("{e:#}").contains("'a: unbound within Number does not contain i64")
+            && !format!("{e:#}").contains("a call picks")),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait Idt { val idt: fn<'a: Number>(self, x: 'a) -> 'a = |s, x| 1 };
+        impl Idt for W {};
+        let result = Idt::idt(W(0), 2)
+    "#
+; FuseExpect::None);
+run!(
+    a_lambda_in_a_methods_body_names_its_return_to_write,
+    refused("drop `-> 'b`, or write the body's type, `-> i64`"),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait Idt { val idt: fn<'a: Number>(self, x: 'a) -> 'a };
+        impl Idt for W {
+            let idt = |s, x| { let h = 'b: Number |y: 'b| -> 'b 1; h(x) }
+        };
+        let result = Idt::idt(W(0), 2)
+    "#
+; FuseExpect::None);
+run!(
+    a_method_returning_its_argument_runs,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait Idt { val idt: fn<'a: Number>(self, x: 'a) -> 'a };
+        impl Idt for W { let idt = |s, x| x };
+        let result = Idt::idt(W(0), 2)
+    "#
+);
 run!(
     body_annotation_names_the_definitions_variable,
     "{ let f = 'e: Number |x: 'e| -> 'e { let v: 'e = 1; x }; 0 }",

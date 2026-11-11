@@ -32,13 +32,17 @@ variable, and a value of its bound is not one, since a call may pick a
 narrower type: `'a: Number |x: 'a| -> 'a 1` is refused. So is `'a: {n:
 i64} |s: 'a| -> 'a {s with n: s.n + 1}`: an update's type is a struct,
 as a literal's is. Drop the return type, or write the body's (`-> {n:
-i64}`).
+i64}`). Another declared variable is not that variable either: `|x: 'a,
+y: 'b| -> 'a y`. A trait method's return is its trait's, so there the
+body must change and the refusal names no return type.
 
 ```graphix,cases
 no "drop `-> 'a`, or write the body's type, `-> i64`" 'a: Number |x: 'a| -> 'a 1
 no "drop `-> 'a`, or write the body's type, `-> { n: i64 }`" 'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1}
 ok 'a: {n: i64} |s: 'a| {s with n: s.n + 1}
 ok 'a: {n: i64} |s: 'a| -> {n: i64} {s with n: s.n + 1}
+no "drop `-> 'a`, or write the body's type, `-> 'b`" |x: 'a, y: 'b| -> 'a y
+ok |x: 'a, y: 'b| -> 'b y
 ```
 
 A signature may not write a union of two of its type variables, `|x:
