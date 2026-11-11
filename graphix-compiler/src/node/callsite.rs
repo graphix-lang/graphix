@@ -839,8 +839,13 @@ fn typecheck_arg<R: Rt>(
         Some(note) => e.context(note.clone()),
         None => e,
     };
-    Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
-        .map_err(refused)?;
+    // an undecided cell would take the copy's bounds alone, and commit them
+    // in its own check, before the other arguments decide their variables
+    let waits = opening.is_some() && n.typ().with_deref(|t| t.is_none());
+    if !waits {
+        Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
+            .map_err(refused)?;
+    }
     wrap!(n, n.typecheck0(ctx)).map_err(refused)?;
     Ok(match copies {
         Some(copies) if n.typ().has_free_in_data() => {
