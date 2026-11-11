@@ -6705,6 +6705,124 @@ run!(
     prints("[i64:1]")
 );
 
+// Two function types the source writes in one union are two members
+// unless they name the same variables: a variable is its name there, so
+// the rule above judges both, and a typedef's body keeps what it wrote.
+// A member written twice is one member.
+run!(
+    nested_variable_union_of_function_types_refused,
+    r#"{ let f = |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64], y: 'c, z: 'd| -> i64 0; f(|x: i64| 0, 1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_function_types_refused_whatever_the_argument,
+    r#"{ let f = |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64], y: 'c, z: 'd| -> i64 0; f(|x: string| 0, 1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_swapped_function_types_refused,
+    r#"{ let f = |k: [fn(x: 'c) -> 'd, fn(x: 'd) -> 'c], y: 'c, z: 'd| -> i64 0; f(|x: i64| "s", 1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_arrays_of_function_types_refused,
+    r#"{ let f = |k: [Array<fn(x: 'c) -> i64>, Array<fn(x: 'd) -> i64>], y: 'c, z: 'd| -> i64 0; f([|x: i64| 0], 1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    nested_variable_union_of_function_fields_refused,
+    r#"{ let f = |k: [{g: fn(x: 'c) -> i64}, {g: fn(x: 'd) -> i64}], y: 'c, z: 'd| -> i64 0; f({g: |x: i64| 0}, 1, "s") }"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    function_type_written_twice_is_one_member,
+    r#"{ let f = |k: [fn(x: 'c) -> 'd, null, fn(x: 'c) -> 'd], y: 'c| -> 'c y; f(|x: i64| "s", 1) }"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    member_of_two_variables_written_twice_is_one_member,
+    r#"{ let f = |x: [('c, 'd), ('c, 'd)], y: 'c| -> 'c y; f((1, 2), 3) }"#,
+    prints("i64:3")
+);
+run!(
+    union_of_function_types_at_written_types,
+    r#"{ let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| -> i64 0; f(|x: string| 0) }"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+run!(
+    typedef_union_of_function_types_keeps_both_members,
+    r#"{
+  type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
+  let a: T<i64, string> = |x: i64| 1;
+  let b: T<i64, string> = |x: string| 2;
+  0
+}"#,
+    prints("i64:0")
+);
+run!(
+    union_of_function_types_over_enclosing_variables_keeps_both_members,
+    r#"{
+  let f = |y: 'c, z: 'd| {
+    let g = |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64]| -> i64 0;
+    g(|x: 'c| 0) + g(|x: 'd| 0)
+  };
+  f(1, "s")
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+// Behind a typedef the members reach the choice, which no order makes:
+// what a typedef's arguments or its body keep apart is not one member
+// because a renaming would make it one.
+run!(
+    typedef_union_of_function_types_refused_at_its_use,
+    r#"{
+  type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
+  let f = |k: T<'a, 'b>, y: 'a, z: 'b| -> i64 0;
+  f(|x: i64| 0, 1, "s")
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    function_types_as_typedef_arguments_refused_at_their_use,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = |k: E<fn(x: 'c) -> i64, fn(x: 'd) -> i64>, y: 'c, z: 'd| -> i64 0;
+  f(|x: string| 0, 1, "s")
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    function_types_as_typedef_arguments_at_a_written_type,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = |k: E<fn(x: i64) -> i64, fn(x: 'd) -> i64>, z: 'd| -> i64 0;
+  f(|x: string| 0, "s")
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+run!(
+    data_union_of_function_types_in_an_annotation_refused,
+    r#"{ let k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64] = |x: i64| 0; 0 }"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    data_union_of_function_types_of_one_variable_in_an_annotation,
+    r#"{ let k: [fn(x: i64) -> i64, fn(x: 'd) -> string] = |x: i64| 0; 0 }"#,
+    prints("i64:0")
+);
+
 // A type that could go to either of two undecided members of a union goes
 // to neither: which would take it follows the order the check relates
 // things in, which an instance's check need not share. The refusal names

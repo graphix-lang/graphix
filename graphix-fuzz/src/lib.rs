@@ -6202,6 +6202,17 @@ mod tests {
                 rep.rejects
             );
         }
+        // family 15's three shapes are each refused: two variables, two
+        // arrays of them, two function types a renaming would make one
+        let prog = "{ let g = |x| x; let h = |x| x; let k = |x| x; (g(1), h(1), k(1)) }";
+        let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+        let unions: Vec<_> =
+            rep.rejects.iter().filter(|p| p.id.starts_with("variable-union#")).collect();
+        assert!(
+            unions.len() == 3 && unions.iter().all(|p| p.verdict.is_none()),
+            "{prog}: {:?}",
+            rep.rejects
+        );
         // family 14 refuses its open cell beside the scrutinee's members and
         // inside a tuple, where the first arm testing it would decide it, or
         // beside a member whose shape an arm only takes apart

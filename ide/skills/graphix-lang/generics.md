@@ -64,8 +64,9 @@ ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m 
 
 Two members of one constructor holding two of its variables ask the
 same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
-'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`. Write one variable in both,
-or a written type in place of one. Members of two constructors stand.
+'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`, `[fn(x: 'c) -> i64, fn(x: 'd)
+-> i64]`. Write one variable in both, or a written type in place of one.
+Members of two constructors stand, and a member written twice is one.
 
 The same holds for a union nothing wrote: a value that two undecided
 members of a union could take goes to neither, and the check names what
@@ -98,6 +99,9 @@ no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b
 ```graphix,cases
 no "held by its members" |x: [Array<'c>, Array<'d>], y: 'c| y
 no "held by its members" |x: [('c, i64), (i64, 'd)], y: 'c| y
+no "held by its members" |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64], y: 'c| y
+ok |k: [fn(x: 'c) -> i64, fn(x: 'c) -> i64], y: 'c| y
+ok |x: [('c, 'd), ('c, 'd)], y: 'c| y
 ok |x: [Array<'c>, Array<string>], y: 'c| y
 ok |x: [Array<'c>, Map<string, 'd>], y: 'c| y
 ```

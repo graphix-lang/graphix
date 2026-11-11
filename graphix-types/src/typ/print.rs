@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay, item_end, item_sep, write_comments},
     },
     print_as_written,
-    typ::{Bound, Mutability, Type, TypeRef, setops::union_identical},
+    typ::{Bound, Mutability, Type, TypeRef, strictly_identical},
 };
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -361,7 +361,7 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
         write!(text, "{}", SetMember(t))?;
         let printed = &text[start..];
         let again = kept.iter().any(|(k, a, b)| {
-            union_identical(k, t)
+            strictly_identical(k, t)
                 || (&text[*a..*b] == printed && !(k.tvar_free() && t.tvar_free()))
         });
         match again {

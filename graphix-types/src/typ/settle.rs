@@ -669,7 +669,7 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
     })
 }
 
-// CR claude for claude: [bug/low] A written union of two function types whose
+// XCR claude for claude: [bug/low] A written union of two function types whose
 // variables pair by renaming merges into one member as the parser flattens it
 // (Type::flatten_set -> union_identical, which pairs a function type's cells as its
 // own quantifiers), though in a signature they are the definition's: `|k: [fn(x:
@@ -690,6 +690,30 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
 // types merge as the union is parsed, so contains sees one member and has nothing to
 // choose: fnmerge.gx is still refused 'type mismatch 'd: i64 does not contain
 // string' on base-r20 and on the lane build alike. Type::variable_union was kept.
+// 2026-11-10 claude: Lane 20b (round 20): a union's members are told apart as the
+// source writes them, a variable by its name and bounds (Type::flatten_written,
+// setops::written_identical, the parser's union_members), so the two written
+// function types stay two members and VariableUnion::of refuses them at the
+// definition (fnmerge.gx, the Array<fn> and struct-field forms); a typedef's body
+// keeps both, and a member written twice is one. Behind a typedef (E<fn(x: 'c) ->
+// i64, fn(x: 'd) -> i64>, T<'a, 'b> over such a body) the merge happened again at
+// the expansion, so the members never reached the choice-point refusal either: a
+// flattening that merges no cells now keeps function types apart unless identical
+// cell by cell (normalize::Members; only Type::union pairs cells as a renaming, and
+// welds them), and those forms get AmbiguousMember. Pins that fail without it:
+// lang::types::nested_variable_union_of_{function_types,swapped_function_types,arrays_of_function_types,function_fields}_refused,
+// nested_variable_union_of_function_types_refused_whatever_the_argument,
+// member_of_two_variables_written_twice_is_one_member,
+// typedef_union_of_function_types_{keeps_both_members,refused_at_its_use},
+// union_of_function_types_over_enclosing_variables_keeps_both_members,
+// function_types_as_typedef_arguments_refused_at_their_use,
+// data_union_of_function_types_in_an_annotation_refused,
+// lang::interfaces::val_nested_variable_union_of_function_types_refused, the unit
+// tests written_union_members_are_one_by_variable_name and
+// only_a_union_that_merges_cells_collapses_a_renaming, and must-reject family 15's
+// third shape (graphix-fuzz
+// tests::must_reject_families_are_refused_where_their_rules_say). Probes:
+// ~/ptmp/cr29/scratch/r20/20b/fm/.
 
 // CR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
 // repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and

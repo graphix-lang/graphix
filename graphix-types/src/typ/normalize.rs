@@ -4,7 +4,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, Mutability, NodeKey, TVar, Type,
-        setops::{Welds, union_collapses},
+        setops::{Welds, strictly_identical, union_collapses, written_identical},
     },
 };
 use ahash::AHashMap;
@@ -54,9 +54,34 @@ impl NormCx {
 struct FlatCx {
     flat: Option<LPooled<AHashMap<usize, (Arc<[Type]>, Type)>>>,
     flattened: usize,
+    members: Members,
+}
+
+/// How a flattening tells that two members of a union are one.
+#[derive(Default, Clone, Copy)]
+enum Members {
+    /// Identical, cell by cell ([`strictly_identical`]): nothing merges
+    /// the cells two function types would pair, so the two stay apart.
+    #[default]
+    AsTheyStand,
+    /// As the source writes them, a variable by its name
+    /// ([`written_identical`]).
+    Written,
+    /// Function types pair their cells as a renaming
+    /// ([`union_collapses`]): the union that asked merges the live pairs.
+    Welding,
 }
 
 impl FlatCx {
+    /// Whether a union keeps `t0` in place of `t1`.
+    fn collapses(&self, t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
+        match self.members {
+            Members::AsTheyStand => strictly_identical(t0, t1),
+            Members::Written => written_identical(t0, t1),
+            Members::Welding => union_collapses(t0, t1, welds),
+        }
+    }
+
     fn flat(&mut self, t: &Type) -> Type {
         let Type::Set(s) = t else { return t.clone() };
         let key = (**s).as_ptr() as usize;
@@ -244,6 +269,14 @@ impl Kept {
 impl Type {
     pub(crate) fn flatten_set(set: impl IntoIterator<Item = Self>) -> Self {
         Self::flatten_set_with(set, &mut FlatCx::default())
+    }
+
+    /// [`Self::flatten_set`] of the members the source writes in one union:
+    /// a variable is told from another by its name, so two function types
+    /// are one member only where they name the same variables.
+    pub(crate) fn flatten_written(set: impl IntoIterator<Item = Self>) -> Self {
+        let mut cx = FlatCx { members: Members::Written, ..FlatCx::default() };
+        Self::flatten_set_with(set, &mut cx)
     }
 
     fn flatten_set_with(set: impl IntoIterator<Item = Self>, cx: &mut FlatCx) -> Self {
@@ -444,6 +477,7 @@ impl Type {
     /// go on `welds`.
     pub(super) fn normalize_welding(&self, welds: &mut Welds) -> Self {
         let mut cx = NormCx::take();
+        cx.flat.members = Members::Welding;
         let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
         welds.extend(cx.welds.drain(..));
         r
@@ -529,9 +563,10 @@ impl Type {
         fn flat_eq(t0: &Type, t1: &Type, cx: &mut FlatCx, welds: &mut Welds) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
-                    union_collapses(&cx.flat(t0), &cx.flat(t1), welds)
+                    let (f0, f1) = (cx.flat(t0), cx.flat(t1));
+                    cx.collapses(&f0, &f1, welds)
                 }
-                (t0, t1) => union_collapses(t0, t1, welds),
+                (t0, t1) => cx.collapses(t0, t1, welds),
             }
         }
         // Products merge component-wise only when at most one component
@@ -569,7 +604,7 @@ impl Type {
         }
         match (self, t) {
             (Type::Ref(_), Type::Ref(_)) => {
-                if union_collapses(self, t, welds) {
+                if cx.collapses(self, t, welds) {
                     Some(self.clone())
                 } else {
                     None
@@ -582,7 +617,7 @@ impl Type {
             | (_, Type::Hole)
             | (Type::Bound(_), _)
             | (_, Type::Bound(_)) => {
-                if union_collapses(self, t, welds) {
+                if cx.collapses(self, t, welds) {
                     Some(self.clone())
                 } else {
                     None
@@ -597,10 +632,10 @@ impl Type {
                 Some(t.clone())
             }
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
-                if union_collapses(self, t, welds) { Some(self.clone()) } else { None }
+                if cx.collapses(self, t, welds) { Some(self.clone()) } else { None }
             }
             (Type::Fn(_), Type::Fn(_)) => {
-                if union_collapses(self, t, welds) {
+                if cx.collapses(self, t, welds) {
                     Some(self.clone())
                 } else {
                     None
@@ -723,7 +758,7 @@ impl Type {
             }
             // Strict tvar identity: two distinct unbound cells never merge.
             (t0v @ Type::TVar(_), t1v @ Type::TVar(_))
-                if union_collapses(t0v, t1v, welds) =>
+                if cx.collapses(t0v, t1v, welds) =>
             {
                 Some(t0v.clone())
             }
@@ -789,6 +824,27 @@ mod tests {
         let flat = Type::flatten_set_with(members.iter().cloned(), &mut cx);
         assert!(matches!(&flat, Type::Set(m) if m.len() == 2), "{flat}");
         assert_eq!(cx.flattened, 2 * depth);
+    }
+
+    /// Two function types that differ by a renaming of their cells stay
+    /// two members where nothing merges the cells: a normalize, a
+    /// flattening. The union of alternatives, which does, makes them one.
+    #[test]
+    fn only_a_union_that_merges_cells_collapses_a_renaming() {
+        let parsed = crate::expr::parser::parse_type(
+            "(fn(x: 'c) -> i64, fn(x: 'd) -> i64, fn(x: 'c) -> i64)",
+        );
+        let t = parsed.unwrap();
+        t.alias_tvars(&mut AHashMap::default());
+        let Type::Tuple(fs) = &t else { unreachable!() };
+        let members = |t: &Type| match t {
+            Type::Set(ms) => ms.len(),
+            _ => 1,
+        };
+        assert_eq!(members(&Type::Set(fs.clone()).normalize()), 2);
+        assert_eq!(members(&Type::flatten_set(fs.iter().cloned())), 2);
+        let alternatives = Type::union(&Env::default(), &[&fs[0], &fs[1]]).unwrap();
+        assert_eq!(members(&alternatives), 1);
     }
 
     /// A node shared by both sides compares equal without walking it.

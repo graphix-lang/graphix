@@ -930,7 +930,7 @@ fn noted_body() -> impl Strategy<Value = (Type, TypeNotes)> {
             let vs = vs.into_iter().map(|(tag, ts)| {
                 Type::Variant(tag, Arc::from_iter(ts), WrittenAt::NOWHERE)
             });
-            match &Type::flatten_set(vs) {
+            match &Type::flatten_written(vs) {
                 Type::Set(ms) => Type::Set(Arc::from_iter(ms.iter().enumerate().map(
                     |(i, m)| match m {
                         Type::Variant(tag, ts, _) => {
@@ -2036,8 +2036,11 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
 
 /// Types equal as values and as written: Type's equality calls any two
 /// open cells equal, so the names and bounds are compared by the
-/// canonical text.
+/// canonical text. A written type's variable is its name, so each side's
+/// same-named cells are one first.
 fn check_type(t0: &Type, t1: &Type) -> bool {
+    t0.alias_tvars(&mut ahash::AHashMap::new());
+    t1.alias_tvars(&mut ahash::AHashMap::new());
     let (t0, t1) = (t0.normalize(), t1.normalize());
     t0 == t1 && t0.to_string() == t1.to_string()
 }

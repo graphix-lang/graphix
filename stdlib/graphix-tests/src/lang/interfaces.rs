@@ -1357,6 +1357,14 @@ run!(
 ; FuseExpect::None);
 
 run!(
+    val_nested_variable_union_of_function_types_refused,
+    refused("is a union of the type variables 'a and 'b, held by its members fn(n: 'a) -> i64 and fn(n: 'b) -> i64"),
+    "/test.gx" => r#"mod inner; let result = inner::f(|n: i64| n, 1, "s")"#,
+    "/test/inner.gxi" => "val f: fn(k: [fn(n: 'a) -> i64, fn(n: 'b) -> i64], y: 'a, z: 'b) -> i64",
+    "/test/inner.gx" => "let f = |k: [fn(n: i64) -> i64, fn(n: string) -> i64], y: i64, z: string| -> i64 0"
+; FuseExpect::None);
+
+run!(
     implementation_nested_variable_union_refused,
     refused("is a union of the type variables 'c and 'd, held by"),
     "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,

@@ -3746,3 +3746,32 @@ fn unicode_escape_reads_in_value_literals_alone() {
         assert!(parse_one(s).is_err(), "{s}")
     }
 }
+
+/// A union's members are told apart as written, a variable by its name
+/// and bounds: two function types of other variables are two members,
+/// and a member written twice is one.
+#[test]
+fn written_union_members_are_one_by_variable_name() {
+    let members = |src: &str| match &parse_type(src).unwrap() {
+        Type::Set(ms) => ms.len(),
+        _ => 1,
+    };
+    for (src, n) in [
+        ("[fn(x: 'c) -> i64, fn(x: 'd) -> i64]", 2),
+        ("[fn(x: 'c) -> 'd, fn(x: 'd) -> 'c]", 2),
+        ("[fn(x: 'c) -> 'c, fn(x: 'c) -> 'd]", 2),
+        ("[Array<fn(x: 'c) -> i64>, Array<fn(x: 'd) -> i64>]", 2),
+        ("[{g: fn(x: 'c) -> i64}, {g: fn(x: 'd) -> i64}]", 2),
+        ("[fn<'a: Number>(x: 'a) -> 'a, fn<'a: Int>(x: 'a) -> 'a]", 2),
+        ("[fn<'a: Number>(x: 'a) -> 'a, fn<'b: Number>(x: 'b) -> 'b]", 2),
+        ("[fn(x: 'c) -> 'd, null, fn(x: 'c) -> 'd]", 2),
+        ("[fn(x: 'c) -> i64, fn(x: 'c) -> i64]", 1),
+        ("[fn<'a: Number>(x: 'a) -> 'a, fn<'a: Number>(x: 'a) -> 'a]", 1),
+        ("[('c, 'd), ('c, 'd)]", 1),
+        ("[Array<'c>, Array<'c>]", 1),
+        ("['c, 'c]", 1),
+        ("['c, 'd]", 2),
+    ] {
+        assert_eq!(members(src), n, "{src}")
+    }
+}

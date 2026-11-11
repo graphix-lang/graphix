@@ -377,8 +377,10 @@ told apart only by undecided cells under a partial struct pattern
 **15. A union of variables in a signature.** Site: a top-level `let`
 of a lambda whose first positional parameter is a name, written with no
 type or with one variable `'v`. Mutation: that parameter written
-`['tm__a, 'tm__b]`, or `['v, 'tm__b]`; every other probe
-`[Array<'tm__a>, Array<'tm__b>]`, or `[Array<'v>, Array<'tm__b>]`. Rule:
+`['tm__a, 'tm__b]`, or `['v, 'tm__b]`; in turn
+`[Array<'tm__a>, Array<'tm__b>]`, or `[Array<'v>, Array<'tm__b>]`, and
+`[fn(v: 'tm__a) -> null, fn(v: 'tm__b) -> null]`, two function types a
+renaming would make one. Rule:
 a union written in a function type holds no two or more of its own bare
 variables, nor two members of one constructor holding two distinct
 ones, under any constructor as written, no typedef looked through

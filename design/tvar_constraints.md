@@ -397,10 +397,13 @@ Array<fn(x: 'd) -> i64>]`). Members of two constructors (`[Array<'c>,
 Map<string, 'd>]`, `` [`A('c), `B('d)] ``), one variable among them
 (`[Array<'c>, Array<string>]`) and two typedefs of one expansion
 (`[A<'c>, B<'d>]` over `type A<'x> = Array<'x>` and `B` alike) stand:
-the rule reads the written form only. Two written function types whose
-variables pair by renaming merge as the union is parsed
-(`fn(x: 'c) -> i64` and `fn(x: 'd) -> i64` are one member), so that
-union never reaches the rule (formal-union-fn-merge-01).
+the rule reads the written form only. That form keeps what the source
+wrote apart: as a union is parsed, a variable is its name and bounds, so
+two members are one only where they are written alike
+(`Type::flatten_written`, `setops::written_identical`). `fn(x: 'c) ->
+i64` beside `fn(x: 'd) -> i64` is two members, which the rule refuses in
+a signature and a typedef's body keeps; a member written twice (`[('c,
+'d), ('c, 'd)]`) is one.
 
 The written-form rule is the earlier message, at the definition; the
 rule below is what makes the choice sound, whatever the source wrote.
@@ -561,7 +564,13 @@ the definition gates:
   definition under check never pair, since they cannot merge: `{g: |p:
   'a| p}` beside `{g: |q: 'b| q}` stays two members, and a call through
   them is refused, naming the members and the fix: one variable, or one
-  written type, in both (`callsite::FnUnion`). And
+  written type, in both (`callsite::FnUnion`). Only that union pairs
+  cells: a flattening that merges none (a normalize, a typedef's
+  expansion, a substitution) keeps two function types apart unless they
+  are identical cell by cell (`normalize::Members`), since dropping one
+  would pick a member for every later relation: `E<fn(x: 'c) -> i64,
+  fn(x: 'd) -> i64>` over `type E<'p, 'q> = ['p, 'q]` stays two members,
+  which the choice below judges. And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`): a member's generic cells meet
@@ -1940,10 +1949,13 @@ references name the target is told the recursive type alone
   `Any` binds an open
   cell only in a contravariant position (a `|v: Any|` callback fixes its
   formal's type; `let x: Any = y` decides nothing of `y`);
-  union collapse requires strict tvar identity (two function types pair
-  their cells as a renaming, generic with generic or live with live, never
-  a generic cell with a live one, `setops::Identity::cells`; a collapse a
-  `Type::union` makes merges the live pairs, `setops::union_collapses`;
+  union collapse requires strict tvar identity (in a `Type::union` alone
+  two function types pair their cells as a renaming, generic with generic
+  or live with live, never a generic cell with a live one,
+  `setops::Identity::cells`, and it merges the live pairs,
+  `setops::union_collapses`; any other flattening keeps them two members,
+  `normalize::Members`; a written union tells variables by name,
+  `Type::flatten_written`;
   a field read of a union and a select's arms meet their function
   members, through a copy of a member's generic cells, binding its live
   ones, `Type::union_of_alternatives`); a merge takes the

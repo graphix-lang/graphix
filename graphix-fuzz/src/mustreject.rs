@@ -1190,10 +1190,11 @@ fn rigid_pattern(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
 /// Family 15. A top-level `let` of a lambda whose first positional
 /// parameter is a name, written with no type or with one variable `'v`,
 /// gets that parameter written `['tm__a, 'tm__b]` (`['v, 'tm__b]`), or,
-/// every other probe, `[Array<'tm__a>, Array<'tm__b>]`
-/// (`[Array<'v>, Array<'tm__b>]`): a written function type may hold no
-/// union of two of its own variables, nor two members of one constructor
-/// holding two (`Type::variable_union`). Right site: the definition.
+/// in turn, `[Array<'tm__a>, Array<'tm__b>]` (`[Array<'v>, Array<'tm__b>]`)
+/// or `[fn(v: 'tm__a) -> null, fn(v: 'tm__b) -> null]`: a written function
+/// type may hold no union of two of its own variables, nor two members of
+/// one constructor holding two (`Type::variable_union`). Right site: the
+/// definition.
 fn variable_union(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     let sizes = mutate::sizes(root);
     let stmts = mutate::top_statements(root, &sizes);
@@ -1214,9 +1215,10 @@ fn variable_union(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
             Some(Type::TVar(tv)) => tv.name.as_str(),
             Some(_) => continue,
         };
-        let union = match taken % 2 {
+        let union = match taken % 3 {
             0 => format!("['{first}, 'tm__b]"),
-            _ => format!("[Array<'{first}>, Array<'tm__b>]"),
+            1 => format!("[Array<'{first}>, Array<'tm__b>]"),
+            _ => format!("[fn(v: '{first}) -> null, fn(v: 'tm__b) -> null]"),
         };
         let Ok(union) = parser::parse_type(&union) else { continue };
         let mut args: Vec<_> = l.args.iter().cloned().collect();

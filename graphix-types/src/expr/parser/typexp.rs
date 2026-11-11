@@ -675,7 +675,7 @@ pub(super) fn union_members(
             }
         }
     }
-    let typ = Type::flatten_set(items.drain(..).map(|i| i.item));
+    let typ = Type::flatten_written(items.drain(..).map(|i| i.item));
     let key = |at: SourcePosition| (at.line, at.column);
     // the lines below the last member print below the member written last,
     // which prints last, a nested union's included

@@ -344,6 +344,19 @@ pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
     same
 }
 
+/// [`union_identical`] of two members of a union as the source writes it,
+/// where no two occurrences of a variable share a cell yet and its name
+/// says which one it is: two open cells are identical when they have one
+/// name and the same bounds.
+pub(super) fn written_identical(t0: &Type, t1: &Type) -> bool {
+    Identity {
+        by_name: true,
+        pairs: Some(SmallVec::new()),
+        ..Identity::new(None, &mut NodePairs::default())
+    }
+    .same(t0, t1)
+}
+
 /// Weld each pair `welds` holds.
 pub(super) fn apply_welds(welds: &mut Welds) {
     for (a, b) in welds.drain(..) {
@@ -397,6 +410,9 @@ impl IdenticalMemo {
 /// Identity of `t0` and `t1`.
 struct Identity<'a> {
     strict: bool,
+    /// Two open cells of one name are identical, whatever holds them
+    /// (`pairs` holds those met, never `None`).
+    by_name: bool,
     /// Where the live cells paired inside a function type go.
     live: Option<&'a mut Welds>,
     /// Inside a function type: the cells paired so far, by address.
@@ -414,6 +430,7 @@ impl<'a> Identity<'a> {
     fn new(live: Option<&'a mut Welds>, found: &'a mut NodePairs) -> Self {
         Self {
             strict: false,
+            by_name: false,
             live,
             pairs: None,
             found,
@@ -456,6 +473,17 @@ impl<'a> Identity<'a> {
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
         let Some(pairs) = &mut self.pairs else { return false };
+        if self.by_name {
+            if a.name != b.name {
+                return false;
+            }
+            if !pairs.contains(&(x, y)) {
+                pairs.push((x, y));
+                let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
+                return self.all(&ca, &cb);
+            }
+            return true;
+        }
         if a.level().is_generic() != b.level().is_generic() {
             return false;
         }
@@ -539,6 +567,7 @@ impl<'a> Identity<'a> {
                 }
                 let r = f0.args.len() == f1.args.len()
                     && f0.quantifiers.len() == f1.quantifiers.len()
+                    && (!self.by_name || f0.quantifiers == f1.quantifiers)
                     && f0
                         .args
                         .iter()
@@ -2319,8 +2348,10 @@ pub(crate) mod tests {
     // expanded; applied to one cell twice, it is expanded once.
     #[test]
     fn dispatch_members_expand_a_name_per_open_cell() {
-        let (env, t) = typed(&[("F<'t>", "['t, null]")], "[F<'a>, F<'b>, F<'a>]");
+        let (env, t) = typed(&[("F<'t>", "['t, null]")], "(F<'a>, F<'b>, F<'a>)");
         t.alias_tvars(&mut AHashMap::default());
+        let Type::Tuple(members) = &t else { unreachable!() };
+        let t = Type::Set(members.clone());
         let members = Type::dispatch_members(&env, &t).unwrap();
         let printed = format_with_flags(PrintFlag::DerefTVars, || {
             members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
