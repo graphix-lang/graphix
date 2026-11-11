@@ -3715,6 +3715,22 @@ impl Type {
     // each by its variance in the definition (a fixpoint over the body, invariant where
     // unsure), would answer them without unfolding where no parameter stands bare in a
     // union; untried. Probes: ~/ptmp/cr29/scratch/r20/20c/tpe/.
+    // 2026-11-10 claude: Review of typedef-param-equality-01 (lane 20c, 78582214c): with
+    // that fix every call that passes one open instance of a recursive typedef to
+    // another takes this walk, not only permuted definitions, and no corpus file
+    // measures it (one recursive parameterized typedef in the stdlib, the book and
+    // netidx, book/src/examples/collection/cons_list.gx, so census and guicheck do not
+    // move). Instructions of --no-cache --check on the debug build, before the fix (the
+    // lane at b54e62912) and after: a generic list and tree library with 750 call lines
+    // (real1.gx) 2.18G / 2.33G; one definition of 6 variants over 2 parameters, 200 call
+    // lines (ast_1_3.gx) 2.47G / 3.58G; two definitions naming each other over 3
+    // parameters, 8 variants, 360 call lines (real2a.gx) 3.44G / 10.31G, 0.48 s / 1.08
+    // s, 59% of it under set_commit, place_in_order and place_each, 21% in replace_tvars
+    // for expansions built again (an empty program 0.75G). Each parameter passes through
+    // unchanged there, so every definition is one application and no order of members
+    // could decide a cell differently: the trials are the cost. This is the more common
+    // shape than the permuted one above and makes this CR worth more than its low.
+    // Probes: ~/ptmp/cr29/scratch/r20/20c/review-tpe/{real1,real2a,ast_1_3,ast_3_6}.gx.
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither

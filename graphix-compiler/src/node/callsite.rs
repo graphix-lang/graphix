@@ -1254,6 +1254,21 @@ pub(crate) fn carried_out(
 /// position kind, each held so an expansion's node keeps its address.
 type DataSeen = AHashMap<(usize, bool), Type>;
 
+// CR claude for claude: [perf/medium] The walk takes every path through typedefs
+// that name each other when they are applied over open cells: `expanding` stops a
+// definition only inside its own expansion, and DataSeen keys shared nodes, which
+// an expansion over an open cell is not (lookup_ref_probe builds it anew each
+// time), so a definition reached by many paths is walked once per path. One
+// generic call, `let lit = |x: 'a| -> T0<'a, 'm> `L0(x); let e0 = lit(0)`, over K
+// definitions T0..<'a, 'm> of 15 variants that name each other takes, for
+// --no-cache --check on base-r20's debug build, 0.82G / 1.16G / 3.35G / 12.1G /
+// 87.0G instructions for K = 3 / 4 / 5 / 6 / 7 (an empty program 0.74G), 87% of
+// it under Widening::cells, widenable, data_positions and expansion (perf, K = 6).
+// A verdict kept per definition, parameter keys and position kind, as
+// holds_invariantly keeps `clean` for the parameterless ones, would walk each
+// application once. Found reviewing typedef-param-equality-01 on lane 20c, whose
+// build takes the same. probes: ~/ptmp/cr29/scratch/r20/20c/review-tpe/dp{3..7}.gx
+// (data-positions-paths-01)
 /// Every type variable under `t` by name, with whether each occurrence
 /// is data: never under a function, a writable reference, a typedef application,
 /// a nominal type or a constructor application. Bindings are walked.
