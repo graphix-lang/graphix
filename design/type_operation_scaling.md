@@ -72,7 +72,11 @@ structure is returned SHARED, never copied.
   whole call, each by node. A committed pair's application is keyed by its
   definition and an id of its parameters' keys, and an application under a
   parameter by its own id (`app_id`), so a chain nested `n` deep is keyed
-  in a word a level. `RefHist::shape_id` keeps the shape hash of every
+  in a word a level. A new key's cells are held for the walk
+  (`TypeRef::key_cells`), so no later cell takes an address it reads;
+  the cells of an application the key holds by id are that
+  application's key's, held already, so holding is linear in the chain
+  too. `RefHist::shape_id` keeps the shape hash of every
   node whose hash read no cell (`fixed_hashes`); one that read a cell is
   hashed again. `expand_ref` asks `closure` whether an application holds a
   cell, and a committing walk copies a cached expansion only where a copy

@@ -5040,6 +5040,18 @@ mod tests {
         assert_eq!(Arc::count(absorbed), 2, "held here and by the walk");
     }
 
+    // An application keyed under another by its id holds its own key's
+    // cells: a chain nested `n` deep holds its cell once, not `n` times.
+    #[test]
+    fn a_nested_application_key_holds_its_cells_once() {
+        let defs = [("L<'a>", "['a, null]")];
+        let nest = (0..40).fold(String::from("'c"), |t, _| format!("L<{t}>"));
+        let (_env, app) = Env::typed_at_root(&defs, &nest).unwrap();
+        let mut hist = ContainsHist::new();
+        hist.pair_key(&app).unwrap();
+        assert_eq!(hist.app_cells.get().map(|c| c.len()), Some(1));
+    }
+
     /// `T0..T3` and `U0..U3`, each `[Error<next>, Error<next but one>, tag]`
     /// over its own four names: a DAG of named error unions.
     fn error_rings() -> (Env, Vec<Type>, Vec<Type>) {
