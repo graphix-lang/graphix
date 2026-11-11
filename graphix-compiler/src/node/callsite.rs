@@ -582,7 +582,7 @@ fn hidden_defaults_at<R: Rt>(
                 if let Type::Ref(_) = v {
                     return at(ctx, &d, v);
                 }
-                let mut holders = formals.iter().filter(|d| same_constructor(d, v));
+                let mut holders = formals.iter().filter(|d| d.takes_constructor_of(v));
                 match (holders.next(), holders.next()) {
                     (Some(d), None) => at(ctx, d, v),
                     _ => Ok(()),
@@ -644,25 +644,6 @@ fn union_members(
             }
         }
         t => out.push(t.clone()),
-    }
-}
-
-/// Whether `d` and `v` are built by one constructor, so a value of `v`
-/// can only be a `d` among a union's members.
-fn same_constructor(d: &Type, v: &Type) -> bool {
-    match (d, v) {
-        (Type::Fn(_), Type::Fn(_))
-        | (Type::Array(_), Type::Array(_))
-        | (Type::List(_), Type::List(_))
-        | (Type::Error(_), Type::Error(_))
-        | (Type::ByRef(..), Type::ByRef(..))
-        | (Type::Map { .. }, Type::Map { .. }) => true,
-        (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
-        (Type::Variant(t, a, _), Type::Variant(u, b, _)) => t == u && a.len() == b.len(),
-        (Type::Struct(a), Type::Struct(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(f, g)| f.0 == g.0)
-        }
-        _ => false,
     }
 }
 

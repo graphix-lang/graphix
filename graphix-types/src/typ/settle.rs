@@ -596,7 +596,7 @@ impl Error for VariableUnion {}
 impl VariableUnion {
     /// The written union `union` refused where two or more of its members
     /// are distinct variables `own` admits, or two members of one
-    /// constructor ([`same_constructor`]) hold two distinct ones.
+    /// constructor ([`Type::shares_constructor`]) hold two distinct ones.
     #[doc(hidden)]
     pub fn of(union: &Type, own: &dyn Fn(&TVar) -> bool) -> Option<Self> {
         let Type::Set(ms) = union else { return None };
@@ -631,7 +631,7 @@ impl VariableUnion {
             .collect();
         for (i, (a, avs)) in held.iter().enumerate() {
             for (b, bvs) in held[i + 1..].iter() {
-                if !same_constructor(a, b) {
+                if !a.shares_constructor(b) {
                     continue;
                 }
                 let distinct = avs
@@ -667,44 +667,6 @@ fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
         }
         t => t.for_each_child(&mut |c| own_vars(c, own, out)),
     })
-}
-
-// CR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
-// repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and
-// setops.rs's same_shape repeats the tuple, struct, variant, array, list and map arms, differing in
-// ByRef mutability and in leaving out Error and Fn. They already disagree on `&T` against `&mut T`.
-// One helper in graphix-types with the variants it needs, called from all three.
-// (one-constructor-dup-01)
-// 2026-11-10 claude: Lane 20b (round 20): formal-union-order-01's choice-point refusal kept
-// Type::variable_union and VariableUnion::of as the earlier message, so settle.rs's
-// same_constructor copy stays; the new refusal uses none of the three (it asks contains which
-// members hold the type).
-
-/// Whether two written union members are built by one constructor, so a
-/// value of the one may be a value of the other: two arrays, lists, maps,
-/// errors, references or function types; tuples of one arity; structs of
-/// one field set; variants of one tag and arity; one abstract type; one
-/// typedef by its written name; one constructor variable applied (`self<'c>`).
-fn same_constructor(a: &Type, b: &Type) -> bool {
-    match (a, b) {
-        (Type::Array(_), Type::Array(_))
-        | (Type::List(_), Type::List(_))
-        | (Type::Map(_), Type::Map(_))
-        | (Type::Error(_), Type::Error(_))
-        | (Type::ByRef(..), Type::ByRef(..))
-        | (Type::Fn(_), Type::Fn(_)) => true,
-        (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
-        (Type::Struct(a), Type::Struct(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.0 == y.0)
-        }
-        (Type::Variant(t, a, _), Type::Variant(u, b, _)) => t == u && a.len() == b.len(),
-        (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) => a == b,
-        (Type::Ref(a), Type::Ref(b)) => a.scope == b.scope && a.name == b.name,
-        (Type::App(f, _), Type::App(g, _)) => {
-            matches!((&**f, &**g), (Type::TVar(f), Type::TVar(g)) if f.name == g.name)
-        }
-        _ => false,
-    }
 }
 
 impl Type {

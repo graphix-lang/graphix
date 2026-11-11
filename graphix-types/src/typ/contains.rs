@@ -1162,7 +1162,7 @@ fn commit_parts(
             },
             (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist),
             (Type::Set(cs), t) if structured(t) && cs.iter().all(structured_or_prim) => {
-                let mut same = cs.iter().filter(|c| same_head(c, t));
+                let mut same = cs.iter().filter(|c| c.takes_constructor_of(t));
                 match (same.next(), same.next()) {
                     (Some(c), None) => commit_parts(tv, flags, env, hist, c, t),
                     _ => Ok(true),
@@ -1239,18 +1239,6 @@ fn structured_or_prim(t: &Type) -> bool {
             !p.intersects(Typ::Array | Typ::Map | Typ::Error | Typ::Abstract)
         }
         t => structured(t) || matches!(t, Type::Variant(..)),
-    }
-}
-
-/// Whether `c` and `t` are applications of one constructor.
-fn same_head(c: &Type, t: &Type) -> bool {
-    match (c, t) {
-        (Type::Variant(x, xs, _), Type::Variant(y, ys, _)) => {
-            x == y && xs.len() == ys.len()
-        }
-        (Type::Tuple(xs), Type::Tuple(ys)) => xs.len() == ys.len(),
-        (Type::ByRef(m, _), Type::ByRef(n, _)) => m == n,
-        _ => mem::discriminant(c) == mem::discriminant(t),
     }
 }
 
@@ -4567,14 +4555,10 @@ impl Type {
         // resolved could be anything
         fn one_constructor(h0: &Type, h1: &Type) -> bool {
             match (h0, h1) {
-                (Type::Variant(t0, ..), Type::Variant(t1, ..)) => t0 == t1,
-                (Type::Abstract { id: i0, .. }, Type::Abstract { id: i1, .. }) => {
-                    i0 == i1
-                }
-                (Type::Tuple(ts0), Type::Tuple(ts1)) => ts0.len() == ts1.len(),
                 (Type::Ref(_) | Type::App(..) | Type::Set(_), _)
-                | (_, Type::Ref(_) | Type::App(..) | Type::Set(_)) => true,
-                (h0, h1) => std::mem::discriminant(h0) == std::mem::discriminant(h1),
+                | (_, Type::Ref(_) | Type::App(..) | Type::Set(_))
+                | (Type::Primitive(_), Type::Primitive(_)) => true,
+                (h0, h1) => h0.shares_constructor(h1),
             }
         }
         fn chooses(env: &Env, ms: &[Type]) -> bool {

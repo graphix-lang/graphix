@@ -3178,6 +3178,24 @@ run!(select_of_structs_defaults_of_two_types, r#"{
     s.f(7)
 }"#, refused("the functions met here share one #d"); FuseExpect::None);
 
+// A read-only and a writable reference may be one value: a call through
+// either reaches the functions behind both.
+run!(select_of_mixed_references_defaults_of_two_types, r#"{
+    let i = 0;
+    let f1 = |#d = 1, x: i64| cast<string>(d)$;
+    let f2 = |#d = "q", x: i64| cast<string>(d)$;
+    let r = select i { 0 => &f1, _ => &mut f2 };
+    (*r)(7)
+}"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+run!(select_of_mixed_references_annotated, r#"{
+    let i = 0;
+    let f1: fn(?#d: [i64, string], x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$;
+    let f2: fn(?#d: [i64, string], x: i64) -> string = |#d = "q", x: i64| cast<string>(d)$;
+    let r = select i { 0 => &f1, _ => &mut f2 };
+    (*r)(7)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
 run!(nested_array_defaults_passed_on_name_the_annotation, r#"{
     let fs = [
         [|#d = 1, x: i64| cast<string>(d)$],
@@ -3500,6 +3518,24 @@ run!(default_fits_its_variant_member, r#"
     select t { `A(f) => f(4096), `B(f) => f("s") }
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
+
+// A read-only reference is a value of no writable member: the read-only
+// member alone holds it, and judges its function's default.
+run!(default_hidden_under_a_read_only_reference_member, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: [&fn(y: string) -> bool, &mut fn(y: i64) -> bool] = &g;
+    g(4096)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_fits_its_read_only_reference_member, r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let t: [&fn(y: i64) -> bool, &mut fn(y: string) -> bool] = &g;
+    g(4096)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);
 
 // A default a fn type hides decides the type its function's instance runs
 // with: here the target `str::parse` reads.

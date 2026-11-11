@@ -387,11 +387,11 @@ Two members of one constructor that hold two distinct variables of the
 definition ask the same question (`[Array<'c>, Array<'d>]`: a `[1]`
 fits either), and are refused the same way, at the same sites, naming
 the two members: write one variable in both, or a written type in place
-of one (`VariableUnion::of`, `same_constructor`). One constructor is two
-arrays, lists, maps, errors, references or function types, tuples of one
-arity, structs of one field set, variants of one tag and arity, one
-abstract type, one typedef by its written name, or one constructor
-variable applied (`[self<'c>, self<'d>]`); a variable anywhere
+of one (`VariableUnion::of`, `Type::shares_constructor`). One
+constructor is two arrays, lists, maps, errors, references or function
+types, tuples of one arity, structs of one field set, variants of one
+tag and arity, one abstract type, one typedef by its written name, or
+one constructor variable applied (`[self<'c>, self<'d>]`); a variable anywhere
 inside a member counts (`[('c, i64), (i64, 'd)]`, `[Array<'c>,
 Array<fn(x: 'd) -> i64>]`). Members of two constructors (`[Array<'c>,
 Map<string, 'd>]`, `` [`A('c), `B('d)] ``), one variable among them
@@ -575,18 +575,26 @@ the definition gates:
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`): a member's generic cells meet
   through a copy, and its live cells bind, so a lambda literal in an arm
-  is the instance the call through the union makes. Members of one shape
-  (arrays, lists, maps, references, tuples of one arity, structs of one
-  field list, one variant) meet part by part the same way
+  is the instance the call through the union makes. Members one value
+  may be (`Type::shares_constructor`: arrays, lists, maps, references
+  read-only or writable, tuples of one arity, structs of one field list,
+  variants of one tag and arity) meet part by part the same way
   (`Type::meet_parts`), so a call through a part of the union judges
   every member's defaults and binds every member's lambda (pins
   `lang::functions::nested_array_defaults_of_two_types` and its
-  neighbours). An alternative or a part that is itself a union meets as
-  its members (`Type::meet_alternatives`), each union rebuilt of its met
-  members: optional lambdas (`[fn(..), null]`) two arms hold are one
-  function, and a lambda beside an optional callback is the callback's
-  instance (pins `lang::functions::select_of_optional_defaults_of_two_types`,
-  `lambda_beside_an_optional_callback` and their neighbours). A written cell is: an enclosing
+  neighbours, `select_of_mixed_references_defaults_of_two_types`). An
+  alternative or a part that is itself a union meets as its members
+  (`Type::meet_alternatives`), each union rebuilt of its met members:
+  optional lambdas (`[fn(..), null]`) two arms hold are one function, and
+  a lambda beside an optional callback is the callback's instance (pins
+  `lang::functions::select_of_optional_defaults_of_two_types`,
+  `lambda_beside_an_optional_callback` and their neighbours). Where one
+  member must hold a value (a union bound passing its parts down to the
+  value's open cells, `contains::commit_parts`; a union formal judging a
+  function's hidden defaults, `hidden_defaults_at`), it is the one member
+  that takes the value's constructor (`Type::takes_constructor_of`): a
+  writable reference takes no read-only one, and two that take it are no
+  choice, so neither is judged. A written cell is: an enclosing
   definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
   Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
   of the enclosing definition's inner functions shares.

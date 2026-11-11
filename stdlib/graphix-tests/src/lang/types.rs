@@ -7914,6 +7914,42 @@ run!(
     is(Value::I64(0))
 );
 
+// A union bound passes its parts to the one member the value may be: a
+// struct of its field set, a read-only reference's read-only member (a
+// writable member holds no read-only reference).
+run!(union_bound_struct_member_reaches_open_cell, r#"{
+    let f = 'a: [{x: [i64, null]}, {y: string}] |v: 'a| v;
+    let g = |z| f({x: z});
+    g("hello")
+}"#, refused("[i64, null] does not contain string"); FuseExpect::None);
+
+run!(
+    union_bound_struct_member_accepts,
+    r#"{
+    let f = 'a: [{x: [i64, null]}, {y: string}] |v: 'a| v;
+    let g = |z| f({x: z});
+    g(i64:5).x
+}"#,
+    is(Value::I64(5))
+);
+
+run!(union_bound_reference_member_reaches_open_cell, r#"{
+    let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
+    let g = |z| f(&z);
+    *g("hello")
+}"#, refused("[i64, null] does not contain string"); FuseExpect::None);
+
+run!(
+    union_bound_reference_member_accepts,
+    r#"{
+    let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
+    let g = |z| f(&z);
+    *g(i64:5)
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
 // A union of primitives the cell's bound refuses whole holds the cell in
 // one of its bits, as a union holds it in one member.
 run!(

@@ -624,25 +624,6 @@ fn part(t: &Type, p: usize) -> &Type {
     }
 }
 
-/// Whether `a` and `b` are one constructor whose parts ([`part`]) pair by
-/// position.
-fn same_shape(a: &Type, b: &Type) -> bool {
-    match (a, b) {
-        (Type::Array(_), Type::Array(_))
-        | (Type::List(_), Type::List(_))
-        | (Type::Map(_), Type::Map(_)) => true,
-        (Type::ByRef(m0, _), Type::ByRef(m1, _)) => m0 == m1,
-        (Type::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
-        (Type::Variant(t0, a, _), Type::Variant(t1, b, _)) => {
-            t0 == t1 && a.len() == b.len()
-        }
-        (Type::Struct(a), Type::Struct(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.0 == y.0)
-        }
-        _ => false,
-    }
-}
-
 /// The members of the union `t` stands for through its bindings.
 fn members_of(t: &Type) -> Option<Arc<[Type]>> {
     t.with_deref(|t| match t {
@@ -961,8 +942,8 @@ impl Type {
     }
 
     /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
-    /// of members of one shape ([`same_shape`]). `None` when no member
-    /// changes.
+    /// of members one value may be ([`Type::shares_constructor`]), whose
+    /// parts ([`part`]) pair by position. `None` when no member changes.
     fn meet_members(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns = Self::meet_open_fns(env, ts)?;
         let parts = match &fns {
@@ -991,7 +972,9 @@ impl Type {
                 continue;
             }
             let group: SmallVec<[usize; 4]> = (i..members.len())
-                .filter(|j| members[*j].as_ref().is_some_and(|m| same_shape(head, m)))
+                .filter(|j| {
+                    members[*j].as_ref().is_some_and(|m| head.shares_constructor(m))
+                })
                 .collect();
             for j in group.iter() {
                 grouped[*j] = true;
@@ -1558,21 +1541,16 @@ impl Type {
                 Ok(Self::flatten_set(matched.drain(..)))
             }
             (p, t) => {
-                let same_shape = match (p, t) {
-                    (Self::Array(_), Self::Array(_))
-                    | (Self::List(_), Self::List(_))
-                    | (Self::Error(_), Self::Error(_))
-                    | (Self::Map { .. }, Self::Map { .. }) => true,
-                    (Self::Tuple(a), Self::Tuple(b)) => a.len() == b.len(),
-                    (Self::Variant(a, ats, _), Self::Variant(b, bts, _)) => {
-                        a == b && ats.len() == bts.len()
-                    }
-                    (Self::Struct(a), Self::Struct(b)) => {
-                        a.len() == b.len()
-                            && a.iter().zip(b.iter()).all(|((a, _, _), (b, _, _))| a == b)
-                    }
-                    _ => false,
-                };
+                let same_shape = matches!(
+                    p,
+                    Self::Array(_)
+                        | Self::List(_)
+                        | Self::Error(_)
+                        | Self::Map(_)
+                        | Self::Tuple(_)
+                        | Self::Variant(..)
+                        | Self::Struct(_)
+                ) && p.shares_constructor(t);
                 let rigid_inside = walk.inside && same_shape && t.has_rigid();
                 // CR claude for claude: [perf/low] Each of the two containment probes
                 // below starts a walk of its own (contains_with_flags), so nothing a
