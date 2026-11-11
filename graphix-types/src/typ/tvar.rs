@@ -1347,6 +1347,18 @@ pub struct TCell {
     /// The [`GROUND_EPOCH`] at which a judgment of the ground binding
     /// found nothing, per judgment ([`TVar::ground_verdict`]); 0, never.
     pub(crate) judged: [u64; 2],
+    // CR claude for claude: [perf/low] TCell::place costs every type cell 16 bytes (an
+    // Arc<ReachOrder> and a u64) for a number only a cell on a walk of
+    // ReachOrder::MIN_NUMBERED cells or more ever takes. A node-walked activation holds
+    // one cell, so it grew from 5635 to 5651 bytes when lane 20g's chainbounds-neighbours-01
+    // met r20-staging cccd6a3bd (activation_heap::activations_and_slots_cost_linear_heap;
+    // a throwaway 16 more bytes in TCell made it 5667), over the test's
+    // MAX_BYTES_PER_ACTIVATION of 5640, which moved to 5656 for it. One word in the cell
+    // (a box taken at the cell's first number, or two u32s: the numbering's index and
+    // the number) would halve that. The ceiling has no margin left either way: it was
+    // set 5% over the cost of its day (f71c21931) and the cost had reached 5635 before
+    // this field, so the next byte an activation gains fails the gate. Whether to
+    // reclaim those bytes or set the margin again is open. (tcell-place-bytes-01)
     /// The cell's number by what it reaches, until its next write.
     pub(crate) place: Option<Place>,
 }

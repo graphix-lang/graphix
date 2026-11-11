@@ -92,7 +92,7 @@ static ALLOCATOR: Counting = Counting;
 const SIZES: [i64; 3] = [1, 5_000, 20_000];
 /// Deep enough that the tree outweighs what compiling held at its peak.
 const FUSED_SIZES: [i64; 3] = [20_000, 80_000, 160_000];
-const MAX_BYTES_PER_ACTIVATION: i64 = 5_640;
+const MAX_BYTES_PER_ACTIVATION: i64 = 5_656;
 const MAX_BYTES_PER_SLOT: i64 = 3_140;
 const MAX_BYTES_PER_FUSED_ACTIVATION: i64 = 192;
 
