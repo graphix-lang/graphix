@@ -2580,7 +2580,7 @@ impl<R: Rt> Update<R> for Select<R> {
                 // constants stand, as a kernel's do. A pure arm, not slept
                 // when deselected since nothing in it runs, is slept now so
                 // its nodes recompute from what stands, as a slept arm's do.
-                // CR claude for claude: [bug/high] A select inside a woken arm that
+                // CR claude for eric: [bug/high] A select inside a woken arm that
                 // re-routes by a stale scrutinee answers differently in the two
                 // engines. The node-walk enters the new arm as below: a first entry is
                 // a Step (its constants fire) and a re-entry catches up the fires no
@@ -2595,6 +2595,46 @@ impl<R: Rt> Update<R> for Select<R> {
                 // probes: ~/ptmp/cr29/d20x/probes/design-B/{w_newarm,w_pend2}.gx,
                 // verify-B-engines/w_default.gx, verify-D-events/reent_w.gx,
                 // engines-impl/io_ir_x.gx (wake-entry-split-01)
+                // 2026-11-10 claude: D30 data, lane 20a on 2a800d11a (long form
+                // ~/ptmp/cr29/r20/d30-data.md; patches, probes and scripts
+                // ~/ptmp/cr29/scratch/r20/20a/d30/). Ruling (A)'s bit changed none of
+                // the five probes: 2/1, 3/2, 2/1, 1007/4, IO/nothing, as on base-r20.
+                // Option (a) built as a throwaway (171 lines): a region that runs a
+                // select, its own or a callee's, does not fuse inside a pause site (an
+                // arm or guard of a node-walked select, a collection callback, a
+                // run-time bind, and what they call) whose body holds an event
+                // consumer; a pure pause site at the top level needs no blocker, since
+                // its own result fires at every resume in both engines (probes
+                // pure_arm2, slot_pause, dyn_pause_nat). Of the 51 study probes (of
+                // 415) where the engines differ on the lane, 5 still differ under (a),
+                // all Io in a loop or guard window with no wake (a1_loop_pause_io,
+                // b2a_loop_window_io, b2c_loop_window_view, c1_guard_io, c1_guard_io2).
+                // Loss: fusecheck 10 of 573 pins change (9 lose 18 of 1215 regions),
+                // regress 0 outcome mismatches; graphix-tests lib 13 of 17068 runs in 8
+                // tests (10 #[native] refusals in lang::fusion's four
+                // *_fuse_in_slots/shared_region tests and two lang::wake_outside pins,
+                // 3 FuseExpect::Jit), graphix-shell 1 (#[tail_recursive]); book
+                // examples: no #[native] example refuses, 3 of 129 (tui/browser_*) lose
+                // 15 of 71 selects in kernels; bench none; netidx-admin's app compile:
+                // 86 of the 695 fused regions that hold or reach a select are lost (12
+                // percent; selects in kernels 370 to 340), 41 percent if every arm and
+                // callback is marked whatever it holds. Option (c) built at
+                // Select::update's arm entry (118 lines): the five probes agree but
+                // w_default; 15 probes still differ (5 guards, closed by also running a
+                // woken select's guards with no catch-up; 5 births inside the entered
+                // arm: w_default's labeled default, t_depth, rec_ir,
+                // e9_two_jump_leaves, e1_rec_unreached; the same 5 Io windows). It
+                // changes the node-walk's answer in 42 of the 415 probes and breaks no
+                // pin: 17637 tests, regress 573/0/0 and the 47 netidx-admin tests pass,
+                // so the behaviour it deletes is unpinned (a quiet entry happens 67
+                // times in graphix-tests, in 7 tests, and never in the admin tests).
+                // Besides the dropped fire, an arm first entered by a quiet re-route
+                // never runs its one-shot effects, then or later
+                // (c_first_entry_effect.gx). Recommendation: not (c); build (a) by
+                // position as the first half of the tracker under D30 question 2 (ii),
+                // whose reach test it is, with the five probes pinned in every mode and
+                // a fuzz family for a wake that re-routes a select inside the woken
+                // arm. Not measured: admin key latency (debug builds), a soak.
                 let view = match entered.replace(i) {
                     true => {
                         if !sleep_on_deselect.get(i) {
