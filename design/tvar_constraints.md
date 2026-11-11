@@ -298,7 +298,16 @@ which those variables are open and every other cell is the formal's own
 others, a variable a callback after it reads included, as it meets
 them; it is checked at the end of the argument loop, when the join is
 known (`CallSite::check_waiting`); its cells take what the join leaves
-them. An omitted default holding an undecided cell waits the same way,
+them. What it took from the copy is the formal's own by then: before the
+check, each cell of the copy that nothing decided is made the formal's
+cell it copies (`callsite::rejoin`), a variable only a bound holds
+included, so the call has one type for each variable and the instance is
+built at it (`f([], never())` over `'a0: [Array<P<'a1, 'a2>>, null], 'a1:
+P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3|`). An argument that
+is a bare undecided cell (a seq step's captured argument) is not
+pre-unified: it would take the copy's bounds alone, and commit them in
+its own check before the other arguments decide them. An omitted default
+holding an undecided cell waits the same way,
 checked at its formal once the join is known, whichever label comes
 first. A written argument or an omitted default that is neither wider
 nor narrower than what the others gave a variable waits too, and is
@@ -470,8 +479,8 @@ A containment that puts a type into a union (`contains.rs`: `set_commit`,
 one member, chosen by rules that read the union alone:
 
 - a member identical to the type, or one that holds it as it stands,
-  deciding none of its own cells (`takes_as_it_stands`: `[Array<'a>, null]
-  ⊇ null`), takes it and binds nothing;
+  deciding no cell of its own or of the type (`takes_as_it_stands`:
+  `[Array<'a>, null] ⊇ null`), takes it and binds nothing;
 - else constructor members before bare variables (`Result<'a, 'e> ⊇
   Error<`X>` is `Error<'e>`'s, `['b, Array<'b>]` takes an array through
   `Array<'b>`);
@@ -483,6 +492,21 @@ one member, chosen by rules that read the union alone:
   share it. An undecided member reaches an open cell no declaration holds
   rigid (`undecided`); a decided member that holds the type takes it
   before any undecided one.
+
+A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
+⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`
+(`type P<'p, 'q> = [Array<'p>, Array<'q>]`) is refused, and runs where
+the other parameters decide the members. Nothing gives an argument to a
+member before it is decided: a pre-unification that meets the choice
+leaves it to the argument's own check (`Type::pre_unify_arg`), and the
+probes behind a refusal's note are ordered walks on copies
+(`callsite::annotation_may_fit`). So a call through an inferred wrapper,
+a nested function or a seq step is refused where the direct call is, at
+the check, never at the instance (pins
+`lang::types::{wrapper,nested_function}_into_a_bound_union_of_two_undecided_refused`
+and their twins, `empty_array_into_a_typedef_union_of_two_undecided_arrays_refused`,
+`seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters`,
+`never_argument_beside_one_deciding_a_bound_union`).
 
 A member that is a name or a bound cell standing for an open variable or
 for a union holding one is its members first (`names_members`,
@@ -652,7 +676,13 @@ the definition gates:
   function's hidden defaults, `hidden_defaults_at`), it is the one member
   that takes the value's constructor (`Type::takes_constructor_of`): a
   writable reference takes no read-only one, and two that take it are no
-  choice, so neither is judged. One case of two is decided: a union bound
+  choice, so neither is judged, unless the value is a function and a
+  probe admits it into one alone, which then has the parts: a callback
+  whose result decides
+  between `fn(v: 'x) -> i64` and `fn(v: 'y) -> string` takes its
+  parameter from that member (pins
+  `lang::types::callback_into_{the_second_member_of_a_union_bound,a_union_bound_takes_the_members_parameter}`).
+  One case of two is decided: a union bound
   with a read-only and a writable reference member (`'a: [&[i64, null],
   &mut string]`) passes a writable reference that holds a cell to decide
   (`&mut z`, `z` not yet typed) to the writable member, which decides the
@@ -1329,8 +1359,14 @@ a written one is. So where the containment fails, the instance's copy
 takes each cell from what stands at its own place in the instance's
 signature, wherever the two are built alike (`Type::place_cells`: a named
 type's parameters, an array's element, a tuple's, a struct's, a function's
-positions; a union's members have no places), and the containment then
-judges the whole (`FnType::held_at`). Without it the build refused what
+positions; a union's members have no places; a place holding ⊥ gives its
+cell ⊥), and the containment then judges the whole (`FnType::held_at`).
+Where that still has to choose, the cells no position holds, a variable
+only bounds name, are first settled to their bounds, the deepest first
+(`TVar::settle_bounds_first`), as the call's check leaves a variable it
+did not decide; the members are then decided and the containment has no
+choice to make (pins
+`lang::types::instance_{cells_only_bounds_hold_settle_to_their_bounds,cell_at_a_bottom_place_is_bottom}`). Without it the build refused what
 the check accepted: `let f = |x: E<'a, 'b>, y: 'a, z: 'b| ..; f(never(),
 1, "s")`, or `|x: ['a, Error<'e>]| -> (Array<'a>, Array<'e>) ..` called
 with an `` [Error<`A>, Error<`B>] ``. Pins:

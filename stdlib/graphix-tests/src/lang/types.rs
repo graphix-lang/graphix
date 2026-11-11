@@ -7084,6 +7084,169 @@ run!(
     prints("[[], []]")
 );
 
+// A type two undecided members of a bound's union could take is refused
+// where the check meets it, through a wrapper or a nested function as at
+// the direct call: no member takes an argument before it is decided.
+run!(
+    wrapper_into_a_bound_union_of_two_undecided_refused,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a1, 'a2>, 'a1: P<'a2, 'a3>, 'a2: P<'a3, 'a4>, 'a3: P<'a4, 'a4>, 'a4: [i64, string] |x: ('a1, 'a0)| x;
+  let g = |y| f(y);
+  g(([null], null))
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    wrapper_into_a_bound_union_one_member_takes,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a1, 'a2>, 'a1: P<null, 'a3>, 'a2: P<'a3, 'a4>, 'a3: P<'a4, 'a4>, 'a4: [i64, string] |x: ('a1, 'a0)| x;
+  let g = |y| f(y);
+  g(([null], null))
+}"#,
+    prints("[[null], null]")
+);
+run!(
+    nested_function_into_a_bound_union_of_two_undecided_refused,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a1, 'a2>, 'a1: P<'a2, 'a3>, 'a2: P<'a3, 'a4>, 'a3: P<'a4, 'a4>, 'a4: [i64, string] |x: ('a1, 'a0)| x;
+  let g = |u| { let h = |w| f(w); h(u) };
+  g(([null], null))
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    nested_function_into_a_bound_union_one_member_takes,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a1, 'a2>, 'a1: P<null, 'a3>, 'a2: P<'a3, 'a4>, 'a3: P<'a4, 'a4>, 'a4: [i64, string] |x: ('a1, 'a0)| x;
+  let g = |u| { let h = |w| f(w); h(u) };
+  g(([null], null))
+}"#,
+    prints("[[null], null]")
+);
+run!(
+    empty_array_into_a_typedef_union_of_two_undecided_arrays_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>| -> i64 0;
+  f([])
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    empty_array_into_a_typedef_union_of_two_decided_arrays,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<i64, string>| -> i64 0;
+  f([])
+}"#,
+    prints("i64:0")
+);
+
+// An undecided argument takes its formal's variables as the other
+// arguments settle them, the ones only bounds hold included, so the
+// instance is built at one type for each: a seq step's call, an argument
+// of never() beside the one that decides a member.
+run!(
+    seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+  let t = 1;
+  seq t { let a = f([], null, ["s"]); a }
+}"#,
+    prints("[]")
+);
+run!(
+    never_argument_beside_one_deciding_a_bound_union,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3| [x3];
+  f([], never());
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+run!(
+    never_let_argument_beside_one_deciding_a_bound_union,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3| [x3];
+  let v = never();
+  f([], v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+run!(
+    several_undecided_arguments_into_bound_unions_join,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a1, 'a2>, 'a1: Q<'a2, 'a3>, 'a2: [Array<P<'a3, 'a4>>, null], 'a3: [Array<P<'a4, 'a5>>, null], 'a4: Q<'a5, 'a6>, 'a5: Q<'a6, 'a7>, 'a6: [('a7, 'a7), null], 'a7: Number |x0: 'a0, x1: 'a1, x3: 'a3, x4: 'a4, x5: 'a5| [x5];
+  f(`A(`B([])), `B([]), [], never(), `B(u8:3))
+}"#,
+    prints(r#"[["B", u8:3]]"#)
+);
+
+// An instance's cell that no position holds is what its bounds settle it
+// to, and one at a place holding ⊥ is ⊥, as the call's check left them.
+run!(
+    instance_cells_only_bounds_hold_settle_to_their_bounds,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type R<'x, 'y> = [Array<('x, 'y)>, null];
+  let f = 'a0: R<'a1, 'a2>, 'a1: R<'a2, 'a3>, 'a2: P<'a4, 'a3>, 'a3: P<'a5, 'a4>, 'a4: P<'a5, 'a6>, 'a5: P<'a6, 'a6>, 'a6: [i64, string] |x2: 'a2, x0: 'a0| [x0];
+  f(never(), [])
+}"#,
+    prints("[[]]")
+);
+run!(
+    instance_cell_at_a_bottom_place_is_bottom,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type R<'x, 'y> = [Array<('x, 'y)>, null];
+  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: R<'a2, 'a3>, 'a2: R<'a3, 'a3>, 'a3: i64 |x0: 'a0, x2: 'a2, x3: 'a3| x0;
+  let v0 = [];
+  f(v0, never(), 1)
+}"#,
+    prints("[]")
+);
+
+// A callback whose formal is a variable bounded by a union of function
+// types is given to no member before its result is known, and takes its
+// parameter's type from the member that then admits it.
+run!(
+    callback_into_the_second_member_of_a_union_bound,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a2: E<'a3, 'a3>, 'a3: Number |x: 'a2, y: 'a3| x;
+  let h = f(|v| "s", 1);
+  h(2)
+}"#,
+    prints(r#""s""#);
+    FuseExpect::None
+);
+run!(
+    callback_into_a_union_bound_takes_the_members_parameter,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a0: E<'a1, 'a2>, 'a1: E<'a2, 'a3>, 'a2: E<'a3, 'a3>, 'a3: Number |z: ['a3, null], x1: 'a2, x2: 'a0, x3: 'a3| 7;
+  f(1, |v| 1, |v| "s", 1)
+}"#,
+    prints("i64:7")
+);
+
 // A declared variable going into a union is judged over the union's
 // members as a value's type is: a member a name stands for is its members
 // there too, so the check refuses what the instance at a type would.

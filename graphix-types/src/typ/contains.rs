@@ -1335,9 +1335,9 @@ fn commit_cell_bounds(
 /// the least it must accept. Of a union's members the one that takes
 /// `t`'s constructor has the parts ([`Type::takes_constructor_of`]);
 /// where a read-only and a writable member both take a writable reference
-/// that holds a cell to decide, the writable one; of several others, the
-/// one a probe admits `t` into. A probe accepted `t` already; what the
-/// walk can't line up it leaves.
+/// that holds a cell to decide, the writable one; of several function
+/// types, the one a probe admits `t` into. A probe accepted `t` already;
+/// what the walk can't line up it leaves.
 fn commit_parts(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
@@ -1384,9 +1384,8 @@ fn commit_parts(
                     let own = takers().filter(|c| t.takes_constructor_of(c));
                     only(own).filter(|_| t.has_free())
                 });
-                let holder = match holder {
-                    Some(c) => Some(c),
-                    None => {
+                let holder = match (holder, t) {
+                    (None, Type::Fn(_)) => {
                         let mut admit: SmallVec<[&Type; 2]> = SmallVec::new();
                         for c in takers() {
                             if c.contains_int(guide(flags), env, hist, t)? {
@@ -1395,6 +1394,7 @@ fn commit_parts(
                         }
                         only(admit.into_iter())
                     }
+                    (holder, _) => holder,
                 };
                 match holder {
                     Some(c) => commit_parts(tv, flags, env, hist, c, t),

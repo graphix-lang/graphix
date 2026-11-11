@@ -82,7 +82,10 @@ an arm binds the rest (`[h, t..]`) or two arms bind elements: each such
 arm types the parameter as an array of its own, so write the parameter
 (`|x: Array<'e>|`). One arm that binds elements beside `[]` or `_` needs
 nothing. An impl's target may not union two of its head's variables
-either (`impl<'a, 'b> T for Array<['a, 'b]>`).
+either (`impl<'a, 'b> T for Array<['a, 'b]>`). An argument still undecided
+(`[]`) goes to no member either: it waits for the other parameters to
+decide the members, and is refused where none does. A callback is given
+to the member its result fits.
 
 ```graphix,cases
 no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
@@ -99,6 +102,11 @@ ok let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])
 no "write the type of the parameter" let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
 ok let f = |x: Array<'e>| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = 'a: P<'b, 'c> |x: 'a| x; let g = |y| f(y); g([null])
+ok type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string]; let f = 'a: E<'b, 'b>, 'b: Number |x: 'a, y: 'b| x; let h = f(|v| "s", 1); h(2)
 ```
 
 ```graphix,cases
