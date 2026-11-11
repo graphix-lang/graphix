@@ -2106,9 +2106,7 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     let mut v = ft.printed_view();
     let as_they_stand = PRINT_FLAGS.get().contains(PrintFlag::DerefTVars);
     v.retain(|(tv, _)| {
-        &*tv.name != "self"
-            && !tv.name.starts_with('#')
-            && (!as_they_stand || tv.open_cell().is_some_and(|c| c.level().is_generic()))
+        !tv.unwritten() && (!as_they_stand || tv.heads_a_printed_signature())
     });
     v
 }

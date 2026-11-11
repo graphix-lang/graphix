@@ -1709,11 +1709,21 @@ former consumer derives from the cells:
   (`fntyp::printed_quantifiers`), and one a call picked or one instance
   holds (an unnamed lambda's, a read no binding names, a call's result)
   prints where it occurs, like an inferred variable; canonical printing
-  lists every declared one. A message about a generic binding itself
+  lists every declared one. With no header to scope it, a named cell
+  keeps one name through one printed type and a second cell of that name
+  prints numbered apart (`'a1`; `tvar::printed_name`, one table per
+  outermost print, `tvar::Shown`, looked up by cell so a type of many
+  variables prints in linear time), so two instances side by side read
+  as two variables; a cell a header lists is that header's until the
+  signature ends (`tvar::quantifiers_apart`), under whatever name a
+  binding reaches it by. A message about a generic binding itself
   prints its scheme (`Type::scheme_read`), never the one instance a
   comparison held rigid: the refused write to a generic binding
   (`Connect::typecheck0_with`) names it header and all.
   Pins: `lang::quantified::*_prints_no_header`,
+  `two_instances_in_one_printed_type_*`,
+  `a_printed_quantifier_names_its_cell_inside_a_binding_too`,
+  `two_generic_functions_in_one_printed_type_keep_their_headers`,
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
   `a_refused_write_to_a_generic_binding_prints_its_header`. A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring

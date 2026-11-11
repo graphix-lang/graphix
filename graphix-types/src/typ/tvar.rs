@@ -22,7 +22,7 @@ use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     collections::hash_map::Entry,
     fmt::{self, Debug},
@@ -1728,6 +1728,20 @@ impl TVar {
         self.name.strip_prefix('_').is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
     }
 
+    /// Whether the name is one no program writes as a variable: the
+    /// receiver `self`, and the `#arg` of a trait written in argument
+    /// position.
+    pub(super) fn unwritten(&self) -> bool {
+        &*self.name == "self" || self.name.starts_with('#')
+    }
+
+    /// Whether a signature printing cells as they stand
+    /// ([`PrintFlag::DerefTVars`]) lists this quantifier in its header: a
+    /// call still picks it, so it is open and generic.
+    pub(super) fn heads_a_printed_signature(&self) -> bool {
+        self.open_cell().is_some_and(|c| c.level().is_generic())
+    }
+
     /// An open cell nothing names as a program writes it: the variable
     /// it wrote; a cell the checker made up has no name a program can
     /// write.
@@ -1761,6 +1775,7 @@ impl fmt::Display for TVar {
             thread_local! {
                 static PRINTING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
             }
+            let _printing = Printing::enter();
             let addr = self.cell_addr();
             let name = printed_name(self);
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
@@ -2997,7 +3012,7 @@ fn under_quantifiers(
     let mut renames: SmallVec<[(ArcStr, ArcStr); 2]> = SmallVec::new();
     let mut copies: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
     for q in captured {
-        let name = name_apart(&q, &avoid);
+        let name = name_apart(&q, |n| avoid.contains(n));
         avoid.insert(name.clone());
         if let Some(tv) = cells.get(&q) {
             let copy = match fresh.get(&tv.cell_addr()) {
@@ -3020,11 +3035,11 @@ fn under_quantifiers(
     Some((inner, renames))
 }
 
-/// `q` numbered to a name `avoid` does not hold.
-fn name_apart(q: &ArcStr, avoid: &AHashSet<ArcStr>) -> ArcStr {
+/// `q` numbered to a name not `taken`.
+fn name_apart(q: &ArcStr, taken: impl Fn(&ArcStr) -> bool) -> ArcStr {
     (1u64..)
         .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
-        .find(|n| !avoid.contains(n))
+        .find(|n| !taken(n))
         .unwrap()
 }
 
@@ -3060,7 +3075,7 @@ pub(super) fn keep_quantifiers(
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         copy.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
         avoid.extend(copy.quantifiers.iter().cloned());
-        let name = name_apart(&q, &avoid);
+        let name = name_apart(&q, |n| avoid.contains(n));
         let rename = |copy: &FnType, pick: &dyn Fn(&TVar) -> bool| {
             let mut memo = CopyMemo::default();
             copy.cow_walk(|t| t.renamed_cells(pick, &name, &mut memo))
@@ -3083,60 +3098,174 @@ pub(super) fn keep_quantifiers(
 }
 
 thread_local! {
-    /// The names printing signatures give their quantifiers' cells,
-    /// innermost signature last.
-    static PRINTED_APART: RefCell<SmallVec<[(usize, ArcStr); 2]>> =
-        const { RefCell::new(SmallVec::new_const()) };
+    static PRINT_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static SHOWN: RefCell<Shown> = RefCell::new(Shown::default());
 }
 
-/// The name `tv` prints under: the one a printing signature gave its cell
-/// ([`quantifiers_apart`]) where bindings print in place, else its own.
+/// The names the type being printed gave its named cells where bindings
+/// print in place ([`PrintFlag::DerefTVars`]): a cell a printing
+/// signature's header lists until that signature ends
+/// ([`quantifiers_apart`]), any other until the outermost print does
+/// ([`printed_name`]).
+#[derive(Default)]
+struct Shown {
+    names: AHashMap<usize, ArcStr>,
+    /// How many of `names`' cells print under each name.
+    taken: AHashMap<ArcStr, u32>,
+}
+
+impl Shown {
+    /// The capacity the tables keep from one print to the next.
+    const KEPT: usize = 64;
+
+    fn show(&mut self, addr: usize, name: ArcStr) {
+        *self.taken.entry(name.clone()).or_default() += 1;
+        self.names.insert(addr, name);
+    }
+
+    fn hide(&mut self, addr: usize) {
+        let Some(name) = self.names.remove(&addr) else { return };
+        if let Entry::Occupied(mut e) = self.taken.entry(name) {
+            *e.get_mut() -= 1;
+            if *e.get() == 0 {
+                e.remove();
+            }
+        }
+    }
+
+    /// `name` unless a cell prints under it, then numbered apart.
+    fn free_name(&self, name: &ArcStr) -> ArcStr {
+        match self.taken.contains_key(name) {
+            false => name.clone(),
+            true => name_apart(name, |n| self.taken.contains_key(n)),
+        }
+    }
+
+    fn clear(&mut self) {
+        if self.names.capacity() > Self::KEPT {
+            *self = Self::default()
+        } else {
+            self.names.clear();
+            self.taken.clear()
+        }
+    }
+}
+
+/// A type being printed with bindings in place. Until the outermost one
+/// ends, each named cell it shows that no header lists keeps one name
+/// ([`printed_name`]).
+pub(super) struct Printing;
+
+impl Printing {
+    pub(super) fn enter() -> Option<Self> {
+        PRINT_FLAGS.get().contains(PrintFlag::DerefTVars).then(|| {
+            PRINT_DEPTH.set(PRINT_DEPTH.get() + 1);
+            Printing
+        })
+    }
+}
+
+impl Drop for Printing {
+    fn drop(&mut self) {
+        let depth = PRINT_DEPTH.get() - 1;
+        PRINT_DEPTH.set(depth);
+        if depth == 0 {
+            SHOWN.with_borrow_mut(|s| s.clear())
+        }
+    }
+}
+
+// CR claude for claude: [readability/low] The names are one printed type's, so
+// a message that prints two types can show one cell under two names. `graphix
+// --no-cache --check ~/ptmp/cr29/scratch/r20/20h/x4/s2.gx` (`y <- (h, k); y <- k`
+// over two instances of one maker) says "y is (fn(x: 'a: unbound within Number)
+// -> 'a: unbound within Number, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold
+// fn(x: 'a: f64) -> 'a: f64": `k`'s variable is `'a1` in the first type and `'a`
+// in the second. Every such print runs inside a
+// `format_with_flags(PrintFlag::DerefTVars, ..)`, so the outermost of those
+// could own `Shown` in place of the outermost `Printing`. It would also number
+// apart a declared signature's variable and its implementation's of the same
+// name, which today read as counterparts: count the pins and transcripts that
+// move before choosing. (printed-name-message-scope-01)
+/// The name `tv` prints under where bindings print in place
+/// ([`PrintFlag::DerefTVars`]), else its own: the one a printing signature
+/// gave the cell its header lists ([`quantifiers_apart`]), and for a cell
+/// a program named that no header lists, its own unless the type being
+/// printed showed another cell under it, then numbered apart, so two
+/// instances' cells of one declared name read as two.
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
-    if !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
+    let in_place = PRINT_FLAGS.get().contains(PrintFlag::DerefTVars);
+    if !in_place || PRINT_DEPTH.get() == 0 {
         return tv.name.clone();
     }
     let addr = tv.cell_addr();
-    PRINTED_APART
-        .with_borrow(|v| v.iter().rev().find(|(a, _)| *a == addr).map(|(_, n)| n.clone()))
-        .unwrap_or_else(|| tv.name.clone())
+    SHOWN.with_borrow_mut(|s| match s.names.get(&addr) {
+        Some(name) => name.clone(),
+        None if tv.generated() || tv.unwritten() => tv.name.clone(),
+        None => {
+            let name = s.free_name(&tv.name);
+            s.show(addr, name.clone());
+            name
+        }
+    })
 }
 
-struct PrintedApart(usize);
+/// The cells a printing signature's header lists, hidden as it ends.
+struct Listed(LPooled<Vec<usize>>);
 
-impl Drop for PrintedApart {
+impl Drop for Listed {
     fn drop(&mut self) {
-        PRINTED_APART.with_borrow_mut(|v| v.truncate(self.0))
+        SHOWN.with_borrow_mut(|s| self.0.drain(..).for_each(|addr| s.hide(addr)))
     }
 }
 
-/// `f` with each of `ft`'s quantifiers printing under a name apart from
+/// `f`, printing `ft`, with each quantifier `ft`'s header lists
+/// ([`TVar::heads_a_printed_signature`]) printing under a name apart from
 /// the other cells of its name `ft` holds, where bindings print in place
 /// ([`PrintFlag::DerefTVars`]).
 pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
-    if ft.quantifiers.is_empty() || !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
+    let Some(_printing) = Printing::enter() else { return f() };
+    if ft.quantifiers.is_empty() {
         return f();
     }
-    let _scope = PrintedApart(PRINTED_APART.with_borrow(|v| v.len()));
     let mut own: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
-    ft.each_quantifier(|q, tv| own.push((q.clone(), tv.clone())));
+    ft.each_quantifier(|q, tv| {
+        if tv.heads_a_printed_signature() {
+            own.push((q.clone(), tv.clone()))
+        }
+    });
+    if own.is_empty() {
+        return f();
+    }
+    let mut listed = Listed(LPooled::take());
     let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for (q, tv) in own {
         let addr = tv.cell_addr();
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-        if ft
+        let alone = ft
             .try_for_each_type(&mut |t| t.holds_other_cell(&q, addr, &mut seen))
-            .is_continue()
-        {
-            continue;
-        }
-        if avoid.is_empty() {
-            seen.clear();
-            ft.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
-            avoid.extend(ft.quantifiers.iter().cloned());
-        }
-        let name = name_apart(&q, &avoid);
-        avoid.insert(name.clone());
-        PRINTED_APART.with_borrow_mut(|v| v.push((addr, name)));
+            .is_continue();
+        SHOWN.with_borrow_mut(|s| {
+            if s.names.contains_key(&addr) {
+                return;
+            }
+            let name = match alone {
+                true => q,
+                false => {
+                    if avoid.is_empty() {
+                        seen.clear();
+                        ft.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
+                        avoid.extend(ft.quantifiers.iter().cloned());
+                    }
+                    let name =
+                        name_apart(&q, |n| avoid.contains(n) || s.taken.contains_key(n));
+                    avoid.insert(name.clone());
+                    name
+                }
+            };
+            s.show(addr, name);
+            listed.0.push(addr)
+        })
     }
     f()
 }

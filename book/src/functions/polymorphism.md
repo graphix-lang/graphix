@@ -197,7 +197,9 @@ g(3)
 The shell and the compiler's messages show which one you have. The
 `fn<>` header lists a declared variable only while the function is
 generic, each call still picking it. One instance prints without the
-header, its variable where it occurs, as an inferred one does:
+header, its variable where it occurs, as an inferred one does. Two
+instances are two variables, so where one type holds both the second
+prints numbered apart, `'a1`:
 
 ```graphix
 〉let mk = |z: i64| 'a: Number |x: 'a| -> 'a x
@@ -205,6 +207,10 @@ header, its variable where it occurs, as an inferred one does:
 〉h
 -: fn(x: 'a: unbound within Number) -> 'a: unbound within Number
 Abstract('a: Number |x: 'a| -> 'a x)
+〉let k = mk(1)
+〉(h, k)
+-: (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)
+(Abstract('a: Number |x: 'a| -> 'a x), Abstract('a: Number |x: 'a| -> 'a x))
 ```
 
 A third bound, `Discernible`, says the values of a type can be told

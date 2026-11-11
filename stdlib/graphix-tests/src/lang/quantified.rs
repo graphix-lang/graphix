@@ -1346,6 +1346,14 @@ run!(
 );
 
 run!(
+    a_printed_quantifier_names_its_cell_inside_a_binding_too,
+    refused("but implemented fn<'a: Number>(x: 'a: unbound within Number) -> Array<'a: unbound within Number>:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val g: fn(x: string) -> string;",
+    "/test/m.gx" => "let g = 'a: Number |x: 'a| { let z = 1; [x] }"
+);
+
+run!(
     an_inner_quantifier_prints_apart_from_an_outer_of_its_name,
     refused("but implemented fn<'a: Number>(x: 'a: unbound within Number) -> fn<'a1: Number>(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>:"),
     "/test.gx" => "mod m; let result = 0",
@@ -1368,6 +1376,41 @@ run!(
     "{ let g = 'a: Number |x: 'a| 'a: Number |y: 'a| [x, y]; let h: fn(x: string) -> string = g; h }",
     refused("does not contain fn(x: 'a: unbound within Number) -> fn(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>");
     FuseExpect::None
+);
+
+// Two instances in one printed type are two cells of one declared name
+// with no header to scope either: the second prints numbered apart,
+// decided or not.
+run!(
+    two_instances_in_one_printed_type_name_their_variables_apart,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let y = never(); y <- (h, k); let r = y.0(1); let s = y.1(1.5); y <- 1; y }",
+    refused("y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold i64");
+    FuseExpect::None
+);
+
+run!(
+    two_instances_in_one_printed_type_stay_apart_while_one_is_open,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = h(1); let y = never(); y <- (h, k); y <- 1; y }",
+    refused("y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number) and cannot hold i64");
+    FuseExpect::None
+);
+
+// One instance held twice is one cell, under one name.
+run!(
+    one_instance_twice_in_one_printed_type_keeps_one_name,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- (h, h); y <- 1; y }",
+    refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a: unbound within Number) -> 'a: unbound within Number) and cannot hold i64");
+    FuseExpect::None
+);
+
+// A header scopes its variable: two generic functions in one printed type
+// each list their own `'a`.
+run!(
+    two_generic_functions_in_one_printed_type_keep_their_headers,
+    refused("but implemented (fn<'a: Number>(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a: Number>(y: 'a: unbound within Number) -> 'a: unbound within Number):"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val p: i64;",
+    "/test/m.gx" => "let p = ('a: Number |x: 'a| -> 'a x, 'a: Number |y: 'a| -> 'a y)"
 );
 
 const NO_HEADER: &str =

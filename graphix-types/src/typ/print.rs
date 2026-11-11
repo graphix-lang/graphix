@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay, item_end, item_sep, write_comments},
     },
     print_as_written,
-    typ::{Bound, Mutability, Type, TypeRef, strictly_identical},
+    typ::{Bound, Mutability, Type, TypeRef, strictly_identical, tvar::Printing},
 };
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -181,6 +181,7 @@ impl fmt::Display for SetMember<'_> {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _printing = Printing::enter();
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
     }
 }
@@ -429,6 +430,7 @@ fn pretty_lone_arg(
 
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        let _printing = Printing::enter();
         self.pretty(buf, None)
     }
 }

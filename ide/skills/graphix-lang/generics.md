@@ -193,12 +193,14 @@ ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: i64| p}, false => 
 A message and the shell's `-:` line print a function type's `fn<'a: ..>`
 header only while its declared variables are generic, each call still
 picking them. One instance prints without it, each variable where it
-occurs with its state: the next use that decides `'a` decides it for
-every other.
+occurs with its state: the next use that decides `'a` decides it
+wherever that instance holds it. Two instances are two variables, and
+in one printed type the second prints numbered apart (`'a1`).
 
 ```graphix,cases
 no "y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number>" let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1
 no "y is fn(x: 'a: unbound within Number) -> 'a: unbound within Number and" let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- h; y <- 1
+no "y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: f64) -> 'a1: f64) and" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let y = never(); y <- (h, k); let r = y.0(1); let s = y.1(1.5); y <- 1
 ```
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
