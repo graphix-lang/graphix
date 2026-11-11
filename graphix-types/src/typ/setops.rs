@@ -1545,6 +1545,20 @@ impl Type {
                     _ => false,
                 };
                 let rigid_inside = walk.inside && same_shape && t.has_rigid();
+                // CR claude for claude: [perf/low] Each of the two containment probes
+                // below starts a walk of its own (contains_with_flags), so nothing a
+                // probe learned (its probe memo, its expansions, its normalize pass)
+                // serves the next pair, and a matching_type over a DAG of named error
+                // unions asks the same distributions once per pair: cm4.gx makes about
+                // 1400 such walks asking 44000 distributions. One ContainsHist kept in
+                // MatchingTypes and passed to contains_int, as MatchHist keeps one for
+                // could_match, takes cm4 --no-cache --check from 5.83G to 3.22G
+                // instructions on lane 20g after contains-normalize-repeat-01 (an empty
+                // program 0.76G); the GUI examples' check is unchanged (40.7G). Not
+                // done there: a walk kept across top-level questions needs its own
+                // review (what an Err leaves in it, the probe memo across the pairs).
+                // probe: ~/ptmp/cr29/scratch/r19/19b/mtm/cm4.gx
+                // (matching-type-probe-walks-01)
                 if !rigid_inside
                     && !p.has_unbound()
                     && p.contains_with_flags(BitFlags::empty(), env, t)?
