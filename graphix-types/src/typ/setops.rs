@@ -1161,6 +1161,13 @@ impl Type {
     // finished pair's difference under a name the cut answers, so the residual stays a
     // finite graph. The message needs a printer that prints a shared node once, or a
     // size cap, either way. (diff-partial-residual-growth-01)
+    // 2026-11-11 claude: Review of the follow-up, on fresh seeds: of gen_sel.py seeds
+    // 601..1000 one is killed at 40 s on this tree, check and run alike (s764.gx: arms `T3
+    // as`, `U1 as` over four typedefs a side through Error, tuples and Array; not traced to
+    // this function), and three on r20-staging 8203ee95b (s764, s978, s996; the last two
+    // check here). The other 397 keep staging's verdict, and a run of each that checks
+    // prints the same fused, under --no-fusion and on staging. probe:
+    // ~/ptmp/cr29/scratch/r20/coord/x5/s764.gx
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(env, tr0, tr1) => {
