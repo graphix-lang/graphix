@@ -423,6 +423,25 @@ impl ContainsHist {
         by_cell.get(&cell).copied()
     }
 
+    // CR claude for claude: [risk/low] A deferral that fails drops `commit_pairs` and
+    // keeps the committing verdicts in `provisional`, which typedef-open-expansion-01
+    // (lane 20c) added after this was written: `commit_put` holds an open application's
+    // pair there while what it assumed stands, `commit_held` reads both, and
+    // `answer_assumption` moves such a pair into `commit_pairs` once its assumption is
+    // answered, which may be after the drop. A pair proven while a part of it waited
+    // would then hold though the part never met its cell. Not shown reachable: the
+    // pair outlives the deferral only where it rests on a pair in progress outside the
+    // function, so the function's own arguments reach the recursive type that holds the
+    // function, and `DataPositions` then finds the variable under a function type, so
+    // `FnType::order_free_cells` does not hold it open. Nothing pins that link. Counted
+    // with a throwaway report here over 4301 programs under --expand (4000 generated: a
+    // function over a DAG or chain of bounds through union typedefs held at a written
+    // function type; lane 20b's 301 probes): about 2100 deferrals failed, 1650 of them
+    // with proven pairs to drop, none with a provisional commit. Dropping the provisional
+    // verdicts whose key holds `Commit` here too would close it without the argument.
+    // Found reviewing the merge of lane 20b onto 20g. probes:
+    // ~/ptmp/cr29/scratch/r20/20b/merge-review/{gen_mix.py,runfs.sh}
+    // (defer-provisional-commit-01)
     /// End the deferral [`Self::defer`] marked, the arguments having held
     /// or not: each cell meets every part that waited for it, first the
     /// one that holds every other, so it takes the widest; with none such
@@ -448,6 +467,23 @@ impl ContainsHist {
         holds
     }
 
+    // CR claude for claude: [bug/low] The order of a function's parameters still decides
+    // whether a written function type holds it where one waiting variable's bound holds
+    // another: `let f = 'a0: ['a1, null], 'a1: [i64, null] |x: 'a0, k: 'a1| 0; let g:
+    // fn(x: i64, k: [i64, null]) -> i64 = f` is refused ("does not contain fn(x: 'a0:
+    // i64, k: 'a1: i64) -> i64") and the same with the parameters the other way round
+    // (`|k: 'a1, x: 'a0|`, `fn(k: [i64, null], x: i64)`) runs; `'a0: Array<'a1>` does the
+    // same, and so does a chain of 50 such bounds with its last variable at two
+    // positions (i64, then [i64, null]). The cells meet their parts in the order the
+    // signature writes them, and binding 'a0 to i64 commits its bound, which gives 'a1
+    // the i64 before 'a1 has met the [i64, null] that waited for it. base-r20 and
+    // r20-staging before lane 20b refuse and run the same two, so
+    // fn-annotation-order-01's fix left this; the variable written straight into the
+    // other's position (`|x: Array<'a1>, k: 'a1|`) takes the widest now. Every waiting
+    // cell meeting its widest part before any cell's bound is committed would decide
+    // both orders alike. Found reviewing the merge of lane 20b onto 20g. probes:
+    // ~/ptmp/cr29/scratch/r20/20b/merge-review/ord/{o1..o8}.gx, big/genbig.py
+    // (fn-annotation-bound-order-01)
     /// Each cell of `deferred` against the parts that waited for it.
     fn meet_deferred(
         &mut self,

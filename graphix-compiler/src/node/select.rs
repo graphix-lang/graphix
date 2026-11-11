@@ -664,6 +664,22 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
+            // CR claude for claude: [bug/medium] A function over an unannotated parameter
+            // whose one slice arm binds two elements and returns both passes --check, and
+            // its instance is refused at the build unless the elements are i64: `let f =
+            // |x| select x { [a, b, ..] => (a, b), _ => (0, 0) }; f(["b", "a"])` runs to
+            // "an instance at fn(x: Array<string>) -> [(i64, i64), (string, string)] of a
+            // definition typed fn(x: Array<'_a>) -> [(i64, i64), ('_a, '_b)]"; `f([4,
+            // "a"])` and `[a, b] => (b, a)` over `["x", 1.5]` alike, and GRAPHIX_ELAB_AUDIT
+            // reports instance-signature at the select. `f([4, 5])` runs, `|x: Array<'e>|`
+            // runs each of them, GRAPHIX_NO_SUBST=1 runs them, and a body that returns the
+            // two in an array (`[a, b]`) runs. The definition's printed type holds the
+            // second element's cell in its result and not in its parameter. base-r20,
+            // r20-staging before lane 20b and the lane build alike. Found reviewing the
+            // merge of lane 20b, beside slice-param-union-01: the one element cell a
+            // slice it proposes would likely close this too. probes:
+            // ~/ptmp/cr29/scratch/r20/20b/merge-review/sl/{d1..d6}.gx
+            // (slice-pair-instance-split-01)
             // CR claude for eric: [readability/low] An undecided scrutinee takes the
             // union of its arms' predicates, and a slice pattern's predicate gives every
             // element a cell of its own (`[h, ..]` is `Array<['h, 'rest]>`), so an
