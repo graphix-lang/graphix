@@ -2946,33 +2946,33 @@ fn cells_print_short(msg: &str) -> bool {
     })
 }
 
-// A signature's declared bounds print once, by name, joined by `+`.
-const PRINTED_BOUND: &str = r#"{
-  let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
-  let g: fn(x: string) -> bool = f;
-  0
-}"#;
-const PRINTED_BOUNDS: &str = r#"{
-  let f = 'a: Eq + Ord |x: 'a, y: 'a| -> bool x < y;
-  let g: fn(x: string) -> string = f;
-  0
-}"#;
+// A generic function's declared bounds print once in its header, by
+// name, joined by `+`.
+run!(
+    declared_bounds_print_in_the_header,
+    refused("but implemented fn<'a: Number + Singleton>(x: 'a: unbound within Number & Singleton, y: 'a: unbound within Number & Singleton) -> 'a: unbound within Number & Singleton:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val f: fn(x: string) -> bool;",
+    "/test/m.gx" => "let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y"
+);
 
-#[tokio::test(flavor = "current_thread")]
-async fn declared_bounds_print_in_the_header() -> Result<()> {
-    for (src, header) in [
-        (PRINTED_BOUND, "fn<'a: Number + Singleton>("),
-        (PRINTED_BOUNDS, "fn<'a: Eq + Ord + Ordered>("),
-    ] {
-        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
-            Err(msg) => msg,
-            Ok(v) => panic!("must be refused: {src} => {v:?}"),
-        };
-        assert!(msg.contains(header), "no {header} in: {msg}");
-        assert!(!msg.contains("Number & Number"), "a doubled bound in: {msg}");
-    }
-    Ok(())
-}
+run!(
+    several_declared_bounds_print_in_the_header,
+    refused("but implemented fn<'a: Eq + Ord + Ordered>(x: 'a: unbound within Eq & Ord & Ordered, y: 'a: unbound within Eq & Ord & Ordered) -> bool:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val f: fn(x: string) -> string;",
+    "/test/m.gx" => "let f = 'a: Eq + Ord |x: 'a, y: 'a| -> bool x < y"
+);
+
+// A read of it no binding names is one instance, which prints no header:
+// its variable prints where it occurs.
+run!(
+    one_read_of_a_generic_function_prints_no_header,
+    "{ let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f; 0 }",
+    refused(
+        "does not contain fn(x: 'a: unbound within Number & Singleton, y: 'a: unbound within Number & Singleton) -> 'a: unbound within Number & Singleton"
+    )
+);
 
 // Comparison is `fn('a, 'a) -> bool` over exactly one type: neither
 // operand's type may merely contain the other's.

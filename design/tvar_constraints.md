@@ -1467,7 +1467,17 @@ former consumer derives from the cells:
 - `FnType.quantifiers: Arc<[ArcStr]>` — the names the `fn<...>` header
   declared, in source order; the constraint types stay in the cells. The
   names decide which cells a call freshens or holds rigid and which
-  conjuncts `constraint_view` (so Eq and Ord) sees, and the image keys them. A self-referential constraint
+  conjuncts `constraint_view` (so Eq and Ord) sees, and the image keys them.
+  One instance keeps the list (a call through it shares its cells, which
+  the cells' levels say, not the list), so the header means "generic"
+  only in print: where cells print as they stand
+  (`PrintFlag::DerefTVars`: a checker message, the shell's `-:` line) it
+  lists a quantifier only while its cell is open and generic
+  (`fntyp::printed_quantifiers`), and one a call picked or one instance
+  holds (an unnamed lambda's, a read no binding names, a call's result)
+  prints where it occurs, like an inferred variable; canonical printing
+  lists every declared one. Pins: `lang::quantified::*_prints_no_header`,
+  `a_returned_functions_variable_keeps_its_header_in_the_scheme`. A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and
   conjunct; each listing walk holds a per-signature reentrancy guard, so

@@ -142,6 +142,17 @@ ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {
 ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: i64| p}, false => {g: |q: i64| q} }; f(false, 1, "s").g(2)
 ```
 
+A message and the shell's `-:` line print a function type's `fn<'a: ..>`
+header only while its declared variables are generic, each call still
+picking them. One instance prints without it, each variable where it
+occurs with its state: the next use that decides `'a` decides it for
+every other.
+
+```graphix,cases
+no "y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number>" let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1
+no "y is fn(x: 'a: unbound within Number) -> 'a: unbound within Number and" let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- h; y <- 1
+```
+
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
 other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
 serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:

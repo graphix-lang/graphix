@@ -1331,21 +1331,89 @@ run!(
 
 run!(
     a_printed_quantifier_is_not_read_for_a_cell_of_its_name,
-    "{ let g = 'a: Number |y, x: 'a| -> 'a { let z = array::len(y); x }; let h: fn(y: Array<i64>, x: string) -> string = g; h }",
-    refused("does not contain fn<'a1: Number>(y: Array<'a: i64>, x: 'a1: unbound within Number) -> 'a1: unbound within Number");
-    FuseExpect::None
+    refused("but implemented fn<'a1: Number>(y: Array<'a: unbound>, x: 'a1: unbound within Number) -> 'a1: unbound within Number:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val g: fn(y: Array<i64>, x: string) -> string;",
+    "/test/m.gx" => "let g = 'a: Number |y, x: 'a| -> 'a { let z = array::len(y); x }"
 );
 
 run!(
     a_printed_quantifier_is_renamed_inside_a_binding_too,
-    "{ let g = 'a: Number |y, x: 'a| { let z = array::len(y); [x] }; let h: fn(y: Array<i64>, x: string) -> string = g; h }",
-    refused("does not contain fn<'a1: Number>(y: Array<'a: i64>, x: 'a1: unbound within Number) -> Array<'a1: unbound within Number>");
-    FuseExpect::None
+    refused("but implemented fn<'a1: Number>(y: Array<'a: unbound>, x: 'a1: unbound within Number) -> Array<'a1: unbound within Number>:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val g: fn(y: Array<i64>, x: string) -> string;",
+    "/test/m.gx" => "let g = 'a: Number |y, x: 'a| { let z = array::len(y); [x] }"
 );
 
 run!(
     an_inner_quantifier_prints_apart_from_an_outer_of_its_name,
-    "{ let g = 'a: Number |x: 'a| 'a: Number |y: 'a| [x, y]; let h: fn(x: string) -> string = g; h }",
-    refused("does not contain fn<'a: Number>(x: 'a: unbound within Number) -> fn<'a1: Number>(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>");
+    refused("but implemented fn<'a: Number>(x: 'a: unbound within Number) -> fn<'a1: Number>(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val g: fn(x: string) -> string;",
+    "/test/m.gx" => "let g = 'a: Number |x: 'a| 'a: Number |y: 'a| [x, y]"
+);
+
+// One instance of a function type prints no `fn<..>` header in a message:
+// no call picks its declared variable any more, so it prints where it
+// occurs, named apart as the header would name it.
+run!(
+    one_read_names_its_variable_apart_from_a_cell_of_its_name,
+    "{ let g = 'a: Number |y, x: 'a| -> 'a { let z = array::len(y); x }; let h: fn(y: Array<i64>, x: string) -> string = g; h }",
+    refused("does not contain fn(y: Array<'a: i64>, x: 'a1: unbound within Number) -> 'a1: unbound within Number");
     FuseExpect::None
+);
+
+run!(
+    one_read_names_an_inner_variable_apart_from_an_outer_of_its_name,
+    "{ let g = 'a: Number |x: 'a| 'a: Number |y: 'a| [x, y]; let h: fn(x: string) -> string = g; h }",
+    refused("does not contain fn(x: 'a: unbound within Number) -> fn(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>");
+    FuseExpect::None
+);
+
+const NO_HEADER: &str =
+    "fn(x: 'a: unbound within Number) -> 'a: unbound within Number and cannot hold i64";
+
+run!(
+    a_callbacks_lambda_prints_no_header,
+    "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1; 0 }",
+    refused("y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number> and cannot hold i64");
+    FuseExpect::None
+);
+
+run!(
+    a_generic_name_a_callback_returns_prints_no_header,
+    "{ let h = 'a: Number |x: 'a| -> 'a x; let fs = array::map([1], |r| h); let y = never(); y <- fs; y <- 1; 0 }",
+    refused("y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number> and cannot hold i64");
+    FuseExpect::None
+);
+
+run!(
+    a_function_a_call_returns_prints_no_header,
+    "{ let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- h; y <- 1; 0 }",
+    refused(NO_HEADER);
+    FuseExpect::None
+);
+
+run!(
+    a_generic_name_written_to_a_binding_prints_no_header,
+    "{ let f = 'a: Number |x: 'a| -> 'a x; let y = never(); y <- f; y <- 1; 0 }",
+    refused(NO_HEADER);
+    FuseExpect::None
+);
+
+run!(
+    a_picked_variable_prints_no_header,
+    "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let z = fs[0]$(1); let y = never(); y <- fs; y <- 1; 0 }",
+    refused("y is Array<fn(x: 'a: i64) -> 'a: i64> and cannot hold i64");
+    FuseExpect::None
+);
+
+// What a function returns stays generic in its scheme: each call of `mk`
+// gives a function whose variable is still to pick.
+run!(
+    a_returned_functions_variable_keeps_its_header_in_the_scheme,
+    refused("but implemented fn(z: i64) -> fn<'a: Number>(x: 'a: unbound within Number) -> 'a: unbound within Number:"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val mk: fn(z: i64) -> i64;",
+    "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x"
 );

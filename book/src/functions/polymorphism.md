@@ -194,6 +194,19 @@ let g = fs[0]$;
 g(3)
 ```
 
+The shell and the compiler's messages show which one you have. The
+`fn<>` header lists a declared variable only while the function is
+generic, each call still picking it. One instance prints without the
+header, its variable where it occurs, as an inferred one does:
+
+```graphix
+〉let mk = |z: i64| 'a: Number |x: 'a| -> 'a x
+〉let h = mk(0)
+〉h
+-: fn(x: 'a: unbound within Number) -> 'a: unbound within Number
+Abstract('a: Number |x: 'a| -> 'a x)
+```
+
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are

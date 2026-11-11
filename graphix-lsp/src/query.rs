@@ -65,6 +65,14 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
     ModPath(NPath::from(ArcStr::from(s)))
 }
 
+// CR claude for claude: [readability/low] A hover prints one instance of a function
+// type with its `fn<..>` header, which reads as generic: over `let fs =
+// array::map([1], |r| 'a: Number |x: 'a| -> 'a x)` a hover on `fs` shows `fs:
+// Array<fn<'a: Number>(x: 'a) -> 'a>`, where a checker message and the shell's
+// `-:` line leave the header out (`fntyp::printed_quantifiers`,
+// instance-quantifier-print-01). The hover prints canonically, which lists every
+// declared quantifier; the cells `resolve_tvars` keeps for open quantifiers still
+// say which are generic. (hover-instance-header-01)
 /// A binding's type for display. `replace_auto_constrained` folds a
 /// function's constraint-table tvars into the surface and must run
 /// before `resolve_tvars`, which empties the table.

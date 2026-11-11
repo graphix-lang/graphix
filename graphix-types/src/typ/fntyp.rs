@@ -1213,7 +1213,7 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
-    // CR claude for claude: [readability/low] One instance keeps its scheme's
+    // XCR claude for claude: [readability/low] One instance keeps its scheme's
     // quantifier list, so a checker message prints a one-instance function type with a
     // quantifier header, which reads as generic and, written back as an annotation, is
     // refused by QUANTIFIED_FN: `let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a
@@ -1265,6 +1265,26 @@ impl FnType {
     // generic binding prints the scheme it names, one_instance drops its list, and the
     // unnamed lambda (hint1) still needs its own quantifier-free signature or a marker.
     // Probes ~/ptmp/cr29/scratch/r19/19c/rv-iqp/{hint1,named,pb}.gx.
+    // 2026-11-10 claude: Round 20 fixer: fixed in print alone
+    // (fntyp::printed_quantifiers). Where cells print as they stand
+    // (PrintFlag::DerefTVars: checker messages, the shell's -: line) the header lists a
+    // quantifier only while its cell is open and generic; one instance's, or one a call
+    // picked, prints where it occurs. hint1, named.gx, a call's result, a written
+    // binding and a picked variable now print no header; pb.gx prints none either (the
+    // read of f it prints is one instance), which is why round 19's 13 pin runs failed:
+    // those four pins now print the scheme through an interface mismatch (val .. is
+    // declared .. but implemented fn<..>), text unchanged, and the old fixtures are
+    // pinned header-less beside them. The list stays on the type (typing unchanged),
+    // canonical printing and the shell's line for a generic name are unchanged. Pins
+    // that fail without it (32 runs): lang::quantified::{a_callbacks_lambda,
+    // a_generic_name_a_callback_returns, a_function_a_call_returns,
+    // a_generic_name_written_to_a_binding, a_picked_variable}_prints_no_header,
+    // one_read_names_its_variable_apart_from_a_cell_of_its_name,
+    // one_read_names_an_inner_variable_apart_from_an_outer_of_its_name,
+    // lang::types::one_read_of_a_generic_function_prints_no_header. The second face
+    // (mq1) is not the list's doing, the undeclared sibling prints the same: it is now
+    // (module-open-instance-msg-01). Not covered: the language server's hover prints
+    // canonically and still shows the header on one instance.
     /// One instance of the scheme under the open gates `open`: what a
     /// call copies is a fresh cell at the current level, which every use of
     /// the copy shares (`Fresh::Instantiate`).
@@ -2216,11 +2236,19 @@ fn is_self_param(a: &FnArgType) -> bool {
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
-/// print as the trait at the argument). One entry per conjunct, a
-/// variable's conjuncts adjacent.
+/// print as the trait at the argument). Where cells print as they stand
+/// ([`PrintFlag::DerefTVars`]) a quantifier no call picks any more, bound
+/// or one instance's, is left out too: it prints where it occurs, as an
+/// inferred variable does. One entry per conjunct, a variable's conjuncts
+/// adjacent.
 fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     let mut v = ft.printed_view();
-    v.retain(|(tv, _)| &*tv.name != "self" && !tv.name.starts_with('#'));
+    let as_they_stand = PRINT_FLAGS.get().contains(PrintFlag::DerefTVars);
+    v.retain(|(tv, _)| {
+        &*tv.name != "self"
+            && !tv.name.starts_with('#')
+            && (!as_they_stand || tv.open_cell().is_some_and(|c| c.level().is_generic()))
+    });
     v
 }
 
