@@ -163,6 +163,24 @@ impl TVar {
         }
     }
 
+    /// [`Self::settle_witness`], after the open cells its conjuncts hold
+    /// that `seen` does not, so its witness is decided where theirs are;
+    /// a cell with no witness stays open.
+    pub(super) fn settle_bounds_first(&self, env: &Env, seen: &mut AddrSet) {
+        if self.is_bound() || !seen.insert(self.cell_addr()) {
+            return;
+        }
+        crate::stack::ensure_sufficient(|| {
+            for c in self.cell_constraints().iter() {
+                super::contains::find_open_cell(c, false, &mut |o| {
+                    o.settle_bounds_first(env, seen);
+                    false
+                });
+            }
+        });
+        let _ = self.settle_witness(env);
+    }
+
     /// [`Self::settle`], but a cell still unbound binds to ⊥: nothing was
     /// produced into it, and what bounds it (a trait a dispatch on it
     /// needs, a predicate) has no witness, so a dispatch on it is a

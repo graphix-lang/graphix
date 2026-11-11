@@ -2896,7 +2896,10 @@ impl FnType {
     /// the instance's own and bound to the instance's type. Where the
     /// containment would have to choose a union's member before the
     /// positions that decide it, each cell takes what stands at its own
-    /// place first ([`Type::place_cells`]).
+    /// place first ([`Type::place_cells`]); where it would still have to
+    /// choose, a cell only bounds hold, which has no place, is first what
+    /// its bounds settle it to ([`TVar::settle_bounds_first`]), as a
+    /// call's check leaves one it did not decide.
     pub fn held_at(
         &self,
         env: &Env,
@@ -2909,6 +2912,24 @@ impl FnType {
         }
         known.clear();
         let own = self.instantiate_owned(&mut known);
+        own.place_cells(env, instance);
+        if instance.check_contains(env, &own).is_ok() {
+            return Ok((own, known));
+        }
+        known.clear();
+        let own = self.instantiate_owned(&mut known);
+        let mut placed: LPooled<AddrSet> = LPooled::take();
+        own.for_each_type(&mut |t| {
+            super::contains::find_open_cell(t, true, &mut |tv| {
+                placed.insert(tv.cell_addr());
+                false
+            });
+        });
+        let unplaced = known.values().filter(|tv| !placed.contains(&tv.cell_addr()));
+        let unplaced = sorted_tvars(unplaced.map(|tv| (tv.name.clone(), tv.clone())));
+        for (_, tv) in unplaced.iter() {
+            tv.settle_bounds_first(env, &mut placed)
+        }
         own.place_cells(env, instance);
         instance.check_contains(env, &own)?;
         Ok((own, known))
