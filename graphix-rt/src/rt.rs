@@ -421,6 +421,30 @@ impl<X: GXExt> Rt for GXRt<X> {
         &self.aliases
     }
 
+    // CR claude for claude: [bug/medium] A closure that escapes a body with an
+    // interface module reads bottom forever once the body is deleted or reloaded
+    // while no reader is registered through the alias. The implementing binding's
+    // value lives under the val's variable, and a join that went keeps its alias
+    // here only while `alias_reads` counts a reader, so a captured function not
+    // yet called holds nothing. Serial, both engines, the same on main 82569fed3.
+    // In ~/ptmp/cr29/scratch/r20/coord/par20h/alias/ifc, `GRAPHIX_PAR=off graphix
+    // --no-cache main4.gx` (`let f = |k: i64| { mod m; m::get }`; `saved` takes
+    // `fs[0]$` at ep 4, the slots go at ep 6, `saved` is first called at ep 9)
+    // prints nothing. ctl4.gx there, the same function with plain lets in place of
+    // `mod m;`, prints `ep=10 escaped=[11, 12, 13]` and two more lines, and so
+    // does ~/ptmp/cr29/scratch/r20/coord/verify-runtime/ifc/main4_nodel.gx (main4
+    // with no deletion); main3.gx (an instance of `saved` lives at the deletion)
+    // keeps its values. The dynamic form is ../esc3.gx, serial: a `get` saved
+    // before a reload and first called after it prints nothing. This contradicts
+    // "a function value keeps the bindings it captures alive". For `mod m;` in a
+    // function body that rule gives the answer, ctl4's: keep the alias, or move
+    // the value to the inner binding's own key at `StaticCallees::forget` and
+    // `unjoin`, for as long as a function value captures the binding. For a
+    // dynamic module's reload the captured binding either keeps its last value or
+    // follows the val, which is Eric's to rule before it is built;
+    // `lang::modules::a_reload_in_a_forked_branch_retires_its_binding_in_the_event`
+    // holds forked runs to today's serial answer, bottom. Pin main4.gx against
+    // ctl4.gx. (escaped-closure-alias-bottom-01)
     fn set_var_aliases(&mut self, aliases: VarAliases) {
         let reads = &self.alias_reads;
         self.aliases =

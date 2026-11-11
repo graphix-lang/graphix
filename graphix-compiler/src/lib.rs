@@ -4111,6 +4111,22 @@ impl StaticCallees {
         ids
     }
 
+    // CR claude for claude: [perf/low] Each interface join costs a rebuild of the
+    // whole table: this collects `joined` into a fresh map with its 8 KB filter
+    // at each change count, `VarAliases::with_kept` clones the map before it
+    // knows it grew, and `GXRt::set_var_aliases` runs `with_kept` and
+    // `alias_reads.retain` at every sync. One `array::map` of n instances of `|x|
+    // { mod m; .. }` (~/ptmp/cr29/scratch/r20/coord/par20h/iface/sc1000.gx,
+    // sc2000.gx, sc4000.gx; `GRAPHIX_PAR=off`, `perf stat -e instructions:u`)
+    // takes 2.70 / 5.49 / 13.87 G, against 1.81 / 2.78 / 4.72 G for the same
+    // programs with plain lets in place of `mod m;`
+    // (~/ptmp/cr29/scratch/r20/coord/verify-runtime/iface/csc1000.gx, csc2000.gx,
+    // ctl4000.gx). st.gx beside sc1000.gx (about 10k instances) takes 43.8 G with
+    // half its samples under `ExecCtx::sync_var_aliases` (27% here, 23% in
+    // `GXRt::set_var_aliases`). The same on main 82569fed3. Apply a join or an
+    // unjoin as a delta, or keep a persistent map, and look for growth in
+    // `with_kept` before cloning. Pin the instructions at two sizes.
+    // (alias-table-rebuild-01)
     /// Each binding implementing a `val` mapped to the val's, its variable
     /// at run time, when a join or an unjoin changed them after the change
     /// `read_at` counts, a table's [`branch::VarAliases::read_at`]. Each
