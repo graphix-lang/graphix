@@ -236,7 +236,7 @@ pub(crate) fn inject<R: Rt>(
 ) {
     let v = match read_var(ctx, &id) {
         Some(VarRead::Delivered(tv)) if tv.tag().triggers() => return,
-        Some(VarRead::Delivered(tv) | VarRead::Standing(tv, _))
+        Some(VarRead::Delivered(tv) | VarRead::Standing((tv, _)))
             if !tv.tag().is_bottom() =>
         {
             tv.value_cloned()

@@ -117,9 +117,10 @@ runs it is the tracker's first cycle, which the arm never saw. An arm
 with nothing to pause is slept late, at its next entry or when the
 select around it sleeps, and what is slept then fell asleep in the
 cycle the arm stopped running, which its select's clock kept
-(`wake::asleep_since`, read by each sleep through `wake::stopped`): a
-select inside it stamps its arms with that cycle, and sleeps each arm
-it had left earlier as of that arm's own. An arm
+(`wake::asleep_since`, which a select's and a seq machine's sleep read
+through `wake::stopped`): a select inside it stamps its arms with that
+cycle, and sleeps each arm it had left earlier as of that arm's own. An
+arm
 evaluated under a wake or step view opens a catch-up scope
 (`node::wake::CatchUp`): that cycle, no later than the enclosing
 scope's (an arm sleeps whenever the arm around it does), the select's
