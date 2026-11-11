@@ -503,6 +503,16 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
+    // CR claude for claude: [bug/low] The binding named is the first capture whose type
+    // reaches the cell, and that may be one only built from the real holder, whose
+    // annotation lifts nothing. With `let p = never(); let q = [p]; let c = {a: |x|
+    // array::len(q), b: |x| { p <- x; x }}` under `val c: {a: fn(x: 'b) -> i64, b: fn(x:
+    // 'a) -> 'a}` the refusal says "give q a type that holds every 'a"; with `q:
+    // Array<Any>` the same refusal names p, and only `p: Any` checks. A fix: among the
+    // captures of one level that reach the cell, name the one whose own type the cell
+    // is (p) before one that holds it in data (q), or name every one. probes:
+    // ~/ptmp/cr29/scratch/r20/20d/rev-djo/mir, mirq, mirp (base-r20 alike)
+    // (holder-derived-binding-01)
     /// What holds `tv` for the implementation's binding `id`: the nearest
     /// binding the lambdas it holds capture, or the lambdas those capture,
     /// whose type reaches the cell and which holds no lambda, the binding an

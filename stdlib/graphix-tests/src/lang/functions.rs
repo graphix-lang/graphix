@@ -3114,10 +3114,14 @@ run!(array_defaults_of_three_named, r#"{
 // refused, at a formal that hides the label and at a call that omits it.
 run!(met_defaults_judged_as_written_at_a_formal, r#"{
     let s = {
-        b: |#d = 1, x: i64| cast<string>(d)$,
+        f: |#d = 1, x: i64| cast<string>(d)$,
+        e: |#d = "q", x: i64| cast<string>(d)$,
+        d: |#d = "q", x: i64| cast<string>(d)$,
+        c: |#d = "q", x: i64| cast<string>(d)$,
+        b: |#d = "q", x: i64| cast<string>(d)$,
         a: |#d = "q", x: i64| cast<string>(d)$
     };
-    array::len([s.a, s.b])
+    array::len([s.a, s.b, s.c, s.d, s.e, s.f])
 }"#, refused("i64 does not contain string"); FuseExpect::None);
 
 run!(met_defaults_judged_as_written_at_a_call, r#"{

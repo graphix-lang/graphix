@@ -1697,7 +1697,10 @@ references name the target is told the recursive type alone
   lambda literals in one array or list meet, one type of the array's own (a
   definition's type is untouched, however many met), whose label a call
   through it or a formal holding it judges each one's labeled defaults
-  against, a refusal naming the annotation (`callsite::met_default_note`);
+  against, in the order the program writes the lambdas
+  (`LambdaDef::written_order`: a session's inputs in the order given, a
+  load's sources by origin, then position), a refusal naming the annotation
+  (`callsite::met_default_note`);
   a type written
   in a body (a `let`
   annotation, `never<T>`, a select arm's type test, a nested lambda's

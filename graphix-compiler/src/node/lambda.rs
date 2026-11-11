@@ -1093,15 +1093,18 @@ impl<R: Rt> LambdaDef<R> {
     }
 
     /// The order the program writes `self` and `other` in: a source
-    /// definition by where its lambda is written, before one Rust built at
-    /// run time; the id decides only between two of one place.
+    /// definition by its load (a session's inputs in the order given), then
+    /// its origin, then where its lambda is written, before one Rust built
+    /// at run time; the id decides only between two of one place.
     pub(crate) fn written_order(&self, other: &Self) -> Ordering {
         let place = match (&self.origin, &other.origin) {
             (DefOrigin::Source { spec: a, .. }, DefOrigin::Source { spec: b, .. }) => {
                 let ori = if Arc::ptr_eq(&a.ori, &b.ori) {
                     Ordering::Equal
                 } else {
-                    a.ori.partial_cmp(&b.ori).unwrap_or(Ordering::Equal)
+                    a.ori.load.cmp(&b.ori.load).then_with(|| {
+                        a.ori.partial_cmp(&b.ori).unwrap_or(Ordering::Equal)
+                    })
                 };
                 ori.then(a.pos.cmp(&b.pos))
             }

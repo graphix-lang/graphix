@@ -641,6 +641,20 @@ async fn select_judgment_holds_across_inputs() -> Result<()> {
     .await
 }
 
+/// Lambdas of two inputs that meet in a third have their defaults judged
+/// in the order the inputs were given, not the order of their texts: `1`
+/// first, so `"q"` is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn met_defaults_judged_in_input_order() -> Result<()> {
+    session(&[
+        Accept("let z = |#d = 1, x: i64| x"),
+        Accept("let a = |#d = \"q\", x: i64| x"),
+        Refuse("array::len([a, z])", "i64 does not contain string"),
+        Refuse("select true { true => a, false => z }(7)", "i64 does not contain string"),
+    ])
+    .await
+}
+
 // A load is checked after the program that loads it: a binding the
 // program left at ⊥ holds what the loaded body writes to ⊥, so a generic
 // val over such a write is refused.
