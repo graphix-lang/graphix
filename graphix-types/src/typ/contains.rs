@@ -1114,13 +1114,32 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
+// CR claude for claude: [bug/medium] A union bound two of whose members take the value's
+// constructor passes nothing down to the value's open cells, and neither does a read-only
+// reference bound whose referent is a union to a writable reference: the check accepts what the
+// build refuses. `let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r =
+// f([z]); z <- 2.5; println(r)` passes --check and the build refuses the instance ("an instance at
+// fn(v: Array<f64>) -> Array<f64> of a definition typed fn<'a: [Array<i64>, Array<string>]>");
+// alike `'a: [&mut [i64, null], &mut string]` with `f(&mut z)`, and the lone bound `'a: &[i64,
+// null]` with `f(&mut z); z <- "hello"` (commit_parts pairs read-only references only). base-r20
+// alike. Two read-only members do narrow, by another path (`'a: [&[i64, null], &string]` with
+// `f(&z)` holds z within [i64, null, string]). The one case of two that is decided, an undecided
+// writable reference against a read-only and a writable member, goes to the writable member, so
+// `'a: [&[i64, null], &mut string]` with `let g = |z| f(&mut z); *g(5)` is refused ("string does
+// not contain i64") where `|z: i64|` runs. A fix refuses the choice where two members take a value
+// that holds a cell to decide, naming the annotation, or narrows the cell to what the members
+// allow together, and pairs a read-only member with a writable value; it needs a census. probes:
+// ~/ptmp/cr29/scratch/r20/20b/ocd-review/{m7,m8,m1,m11,m13}.gx (union-bound-two-takers-01)
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
 /// ⊇ [i64, 'k]` gives `'k: Int`), an exact part is committed as an exact
 /// conjunct is, and a function's argument takes the conjunct's argument,
-/// the least it must accept. A probe accepted `t` already; what the walk
-/// can't line up it leaves.
+/// the least it must accept. Of a union's members the one that takes
+/// `t`'s constructor has the parts ([`Type::takes_constructor_of`]);
+/// where a read-only and a writable member both take a writable reference
+/// that holds a cell to decide, the writable one. A probe accepted `t`
+/// already; what the walk can't line up it leaves.
 fn commit_parts(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
@@ -1162,10 +1181,14 @@ fn commit_parts(
             },
             (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist),
             (Type::Set(cs), t) if structured(t) && cs.iter().all(structured_or_prim) => {
-                let mut same = cs.iter().filter(|c| c.takes_constructor_of(t));
-                match (same.next(), same.next()) {
-                    (Some(c), None) => commit_parts(tv, flags, env, hist, c, t),
-                    _ => Ok(true),
+                let takers = || cs.iter().filter(|c| c.takes_constructor_of(t));
+                let holder = only(takers()).or_else(|| {
+                    let own = takers().filter(|c| t.takes_constructor_of(c));
+                    only(own).filter(|_| t.has_free())
+                });
+                match holder {
+                    Some(c) => commit_parts(tv, flags, env, hist, c, t),
+                    None => Ok(true),
                 }
             }
             (Type::Array(c), Type::Array(t))
@@ -1213,6 +1236,14 @@ fn commit_parts(
             _ => Ok(true),
         }
     })
+}
+
+/// The one item of `items`, where there is exactly one.
+fn only<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
+    match (items.next(), items.next()) {
+        (item, None) => item,
+        _ => None,
+    }
 }
 
 /// Whether `t` is built by a constructor with parts.

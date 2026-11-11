@@ -7950,6 +7950,56 @@ run!(
     FuseExpect::None
 );
 
+// A read-only member takes a writable reference, and decides its referent
+// where it is the one member that takes it.
+run!(union_bound_read_only_member_decides_writable_reference, r#"{
+    let f = 'a: [&i64, null] |v: 'a| v;
+    let g = |z| f(&mut z);
+    *g("hello")
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(
+    union_bound_read_only_member_takes_writable_reference,
+    r#"{
+    let f = 'a: [&i64, null] |v: 'a| v;
+    let g = |z| f(&mut z);
+    *g(i64:5)
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
+// A read-only and a writable member both take a writable reference: one
+// with a referent still to decide goes to the writable member, a decided
+// one to the member that holds it.
+run!(union_bound_undecided_writable_reference_takes_writable_member, r#"{
+    let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
+    let g = |z| f(&mut z);
+    *g(2.5)
+}"#, refused("string does not contain f64"); FuseExpect::None);
+
+run!(
+    union_bound_undecided_writable_reference_accepts,
+    r#"{
+    let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
+    let g = |z| f(&mut z);
+    *g("hello")
+}"#,
+    is(Value::String("hello".into()));
+    FuseExpect::None
+);
+
+run!(
+    union_bound_decided_writable_reference_takes_read_only_member,
+    r#"{
+    let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
+    let g = |z: i64| f(&mut z);
+    *g(5)
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
 // A union of primitives the cell's bound refuses whole holds the cell in
 // one of its bits, as a union holds it in one member.
 run!(

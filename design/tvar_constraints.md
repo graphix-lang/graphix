@@ -391,8 +391,8 @@ of one (`VariableUnion::of`, `Type::shares_constructor`). One
 constructor is two arrays, lists, maps, errors, references or function
 types, tuples of one arity, structs of one field set, variants of one
 tag and arity, one abstract type, one typedef by its written name, or
-one constructor variable applied (`[self<'c>, self<'d>]`); a variable anywhere
-inside a member counts (`[('c, i64), (i64, 'd)]`, `[Array<'c>,
+one constructor variable applied (`[self<'c>, self<'d>]`); a variable
+anywhere inside a member counts (`[('c, i64), (i64, 'd)]`, `[Array<'c>,
 Array<fn(x: 'd) -> i64>]`). Members of two constructors (`[Array<'c>,
 Map<string, 'd>]`, `` [`A('c), `B('d)] ``), one variable among them
 (`[Array<'c>, Array<string>]`) and two typedefs of one expansion
@@ -594,10 +594,15 @@ the definition gates:
   function's hidden defaults, `hidden_defaults_at`), it is the one member
   that takes the value's constructor (`Type::takes_constructor_of`): a
   writable reference takes no read-only one, and two that take it are no
-  choice, so neither is judged. A written cell is: an enclosing
-  definition's parameter merged into `'n` in `let p: fn(y: 'n) ->
-  Array<'n> = |y| [y, n]` makes `'n` that parameter, which every call
-  of the enclosing definition's inner functions shares.
+  choice, so neither is judged. One case of two is decided: a union bound
+  with a read-only and a writable reference member (`'a: [&[i64, null],
+  &mut string]`) passes a writable reference that holds a cell to decide
+  (`&mut z`, `z` not yet typed) to the writable member, which decides the
+  cell, so `z` is a string; a decided one (`z: i64`) is left to the
+  member the probe found (pins `lang::types::union_bound_*`). A written
+  cell is: an enclosing definition's parameter merged into `'n` in `let
+  p: fn(y: 'n) -> Array<'n> = |y| [y, n]` makes `'n` that parameter,
+  which every call of the enclosing definition's inner functions shares.
 - A gate's close marks generic every cell its signature reaches at its
   depth or deeper (`FnType::generalize`). A cell a binding lowered
   above it (`let t = |x| x + y` gives `x` the top-level `y`'s cell)
