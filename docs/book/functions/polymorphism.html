@@ -301,6 +301,22 @@ callback returns, decided to <code>i64</code> by its first call, so a second cal
 let g = fs[0]$;
 g(3)
 </code></pre>
+<p>The shell and the compiler's messages show which one you have. The
+<code>fn&lt;&gt;</code> header lists a declared variable only while the function is
+generic, each call still picking it. One instance prints without the
+header, its variable where it occurs, as an inferred one does. Two
+instances are two variables, so where one type holds both the second
+prints numbered apart, <code>'a1</code>:</p>
+<pre><code class="language-graphix">〉let mk = |z: i64| 'a: Number |x: 'a| -&gt; 'a x
+〉let h = mk(0)
+〉h
+-: fn(x: 'a: unbound within Number) -&gt; 'a: unbound within Number
+Abstract('a: Number |x: 'a| -&gt; 'a x)
+〉let k = mk(1)
+〉(h, k)
+-: (fn(x: 'a: unbound within Number) -&gt; 'a: unbound within Number, fn(x: 'a1: unbound within Number) -&gt; 'a1: unbound within Number)
+(Abstract('a: Number |x: 'a| -&gt; 'a x), Abstract('a: Number |x: 'a| -&gt; 'a x))
+</code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are

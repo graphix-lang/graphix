@@ -3299,6 +3299,22 @@ callback returns, decided to <code>i64</code> by its first call, so a second cal
 let g = fs[0]$;
 g(3)
 </code></pre>
+<p>The shell and the compiler's messages show which one you have. The
+<code>fn&lt;&gt;</code> header lists a declared variable only while the function is
+generic, each call still picking it. One instance prints without the
+header, its variable where it occurs, as an inferred one does. Two
+instances are two variables, so where one type holds both the second
+prints numbered apart, <code>'a1</code>:</p>
+<pre><code class="language-graphix">〉let mk = |z: i64| 'a: Number |x: 'a| -&gt; 'a x
+〉let h = mk(0)
+〉h
+-: fn(x: 'a: unbound within Number) -&gt; 'a: unbound within Number
+Abstract('a: Number |x: 'a| -&gt; 'a x)
+〉let k = mk(1)
+〉(h, k)
+-: (fn(x: 'a: unbound within Number) -&gt; 'a: unbound within Number, fn(x: 'a1: unbound within Number) -&gt; 'a1: unbound within Number)
+(Abstract('a: Number |x: 'a| -&gt; 'a x), Abstract('a: Number |x: 'a| -&gt; 'a x))
+</code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are
@@ -4046,13 +4062,23 @@ Caused by:
     1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
 </code></pre>
 <p>Passing a parameter to another position (<code>type S&lt;'a, 'b&gt; = [</code>Nil, <code>C('a, S&lt;'b, 'a&gt;)]</code>) or replacing it with a type that holds no parameter (<code>N&lt;Array&lt;i64&gt;&gt;</code>)
-is fine, and so is adding members to it as a union written out in place
-(<code>N&lt;['a, null]&gt;</code>). The check compares the application as written, so an alias
-counts as a constructor around the parameter, even one that expands to such a
-union: <code>N&lt;Opt&lt;'a&gt;&gt;</code> over <code>type Opt&lt;'a&gt; = ['a, null]</code> is refused where <code>N</code> is
-defined, and the written-out union beside it is not.</p>
-<pre><code class="language-graphix refused">type Opt&lt;'a&gt; = ['a, null];
+is fine, and so is adding members to it as a union, written out in place
+(<code>N&lt;['a, null]&gt;</code>) or through an alias that names the union. A typedef exists to
+name a common or a large union, so an alias applied to the parameter is its
+body there: the two definitions below are one type.</p>
+<pre><code class="language-graphix">type Opt&lt;'a&gt; = ['a, null];
 type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Opt&lt;'a&gt;&gt;)];
+type M&lt;'a&gt; = [`Nil, `Cons('a, M&lt;['a, null]&gt;)];
+let n: N&lt;i64&gt; = `Cons(1, `Cons(null, `Nil));
+let m: M&lt;i64&gt; = n;
+m
+</code></pre>
+<p>The alias must be defined above the recursive type that applies it, and it
+cannot put a bound on its parameter; the refusal names the alias in both cases.
+An alias with a constructor around its parameter (<code>type R&lt;'a&gt; = Array&lt;'a&gt;</code>)
+grows the type as the constructor itself would.</p>
+<pre><code class="language-graphix refused">type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Opt&lt;'a&gt;&gt;)];
+type Opt&lt;'a&gt; = ['a, null];
 let n: N&lt;i64&gt; = `Nil;
 n
 </code></pre>
@@ -4060,12 +4086,8 @@ n
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 2, column: 1 in file test.gx, in: type N&lt;'a&gt; = [`Cons('a, N&lt;Opt&lt;'a&gt;&gt;), `..
-    1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
-</code></pre>
-<pre><code class="language-graphix">type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;['a, null]&gt;)];
-let n: N&lt;i64&gt; = `Nil;
-n
+    0: at: line: 1, column: 1 in file test.gx, in: type N&lt;'a&gt; = [`Cons('a, N&lt;Opt&lt;'a&gt;&gt;), `..
+    1: recursive type N passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first
 </code></pre>
 <p>Anyway, lets define some functions to work on our new list type,</p>
 <pre><code class="language-graphix">type Lst&lt;'a&gt; = [
@@ -4369,14 +4391,22 @@ against the trait's signature with <code>self</code> replaced by the target
 annotations. A required method left out is a compile error; a method
 the trait does not declare is too. The trait's methods are visible
 bare inside the block, so one method may call another.</p>
+<p>Inside an <code>impl</code>, the type <code>self</code> is the target wherever the block
+writes a type: a method's own annotations, its <code>let</code>'s, and any lambda,
+cast or type test inside it. In <code>impl Show for i64</code>, <code>|x: self| "int [x + 1]"</code> reads <code>x: i64</code>.</p>
 <p>A method's type variables are each call's to pick, so a method must be
 as general as its declaration, a default included. Under <code>val put: fn(self, x: 'a) -&gt; 'a</code>, a method that keeps its argument in a binding
 outside it, <code>let y = never(); impl Put for C { let put = |s, x| { y &lt;- x; x } }</code>, would have one type for every call, and is refused: give <code>y</code>
 a type that holds every <code>'a</code> (<code>let y: Any = never()</code>). A method whose
-value is not a lambda (<code>(f, 1).0</code>, a call's result) keeps the types its
-value has, and no call copies one its value fixed (a type an outer
-binding shares, the type a call made): under such a variable it is
-refused, and the way out is to write the method as a lambda.</p>
+value reads a generic binding, or a field or tuple of one (<code>let put = id</code>, <code>let put = s.g</code> over <code>let s = {g: |s, x| x}</code>), is as generic as
+that binding, as a <code>let</code> of it is. Such a method has exactly the type
+of the binding it reads: where the trait declares a wider one (<code>fn(self) -&gt; [i64, null]</code> over <code>let m = f</code> with <code>f: fn(s: i64) -&gt; i64</code>), write the
+method as a lambda, <code>let m = |s| f(s)</code>, or annotate its <code>let</code>. Any other
+value that is not a lambda (<code>(f, 1).0</code>, a call's result, a read under an
+annotation on the method's <code>let</code>) keeps the types its value has, and no
+call copies one its value fixed (a type an outer binding shares, the
+type a call made): under such a variable it is refused, and the way out
+is to write the method as a lambda.</p>
 <p><code>impl Trait for Target;</code> (no body) implements a trait whose methods
 all have defaults, and is the form an interface file uses to declare
 that the implementation provides the impl (see below).</p>
@@ -4436,7 +4466,10 @@ call is a compile error: annotate the argument.</p>
 // ≡ select v { i64 as x =&gt; show(x), Counter as x =&gt; show(x) }
 show(v)
 </code></pre>
-<p>Every member needs an implementation.</p>
+<p>Every member needs an implementation. The call narrows only the <code>self</code>
+argument, so a trait with a method that takes <code>self</code> anywhere else (as
+another parameter's type, or in the bound of a type variable) cannot be
+called on a union: write the <code>select</code> yourself there.</p>
 <h2 id="traits-as-bounds"><a class="header" href="#traits-as-bounds">Traits as Bounds</a></h2>
 <p>A trait names no value's type; it constrains a type variable:</p>
 <pre><code class="language-graphix fragment">let describe = 'a: Show |x: 'a| "&lt;[show(x)]&gt;";

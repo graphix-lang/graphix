@@ -193,13 +193,23 @@ Caused by:
     1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
 </code></pre>
 <p>Passing a parameter to another position (<code>type S&lt;'a, 'b&gt; = [</code>Nil, <code>C('a, S&lt;'b, 'a&gt;)]</code>) or replacing it with a type that holds no parameter (<code>N&lt;Array&lt;i64&gt;&gt;</code>)
-is fine, and so is adding members to it as a union written out in place
-(<code>N&lt;['a, null]&gt;</code>). The check compares the application as written, so an alias
-counts as a constructor around the parameter, even one that expands to such a
-union: <code>N&lt;Opt&lt;'a&gt;&gt;</code> over <code>type Opt&lt;'a&gt; = ['a, null]</code> is refused where <code>N</code> is
-defined, and the written-out union beside it is not.</p>
-<pre><code class="language-graphix refused">type Opt&lt;'a&gt; = ['a, null];
+is fine, and so is adding members to it as a union, written out in place
+(<code>N&lt;['a, null]&gt;</code>) or through an alias that names the union. A typedef exists to
+name a common or a large union, so an alias applied to the parameter is its
+body there: the two definitions below are one type.</p>
+<pre><code class="language-graphix">type Opt&lt;'a&gt; = ['a, null];
 type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Opt&lt;'a&gt;&gt;)];
+type M&lt;'a&gt; = [`Nil, `Cons('a, M&lt;['a, null]&gt;)];
+let n: N&lt;i64&gt; = `Cons(1, `Cons(null, `Nil));
+let m: M&lt;i64&gt; = n;
+m
+</code></pre>
+<p>The alias must be defined above the recursive type that applies it, and it
+cannot put a bound on its parameter; the refusal names the alias in both cases.
+An alias with a constructor around its parameter (<code>type R&lt;'a&gt; = Array&lt;'a&gt;</code>)
+grows the type as the constructor itself would.</p>
+<pre><code class="language-graphix refused">type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;Opt&lt;'a&gt;&gt;)];
+type Opt&lt;'a&gt; = ['a, null];
 let n: N&lt;i64&gt; = `Nil;
 n
 </code></pre>
@@ -207,12 +217,8 @@ n
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 2, column: 1 in file test.gx, in: type N&lt;'a&gt; = [`Cons('a, N&lt;Opt&lt;'a&gt;&gt;), `..
-    1: recursive type N grows its parameter 'a as it recurses: 'a comes back wrapped in a constructor, so N unfolds to ever larger types and no check over it ends; a recursive type must pass its parameters on unwrapped
-</code></pre>
-<pre><code class="language-graphix">type N&lt;'a&gt; = [`Nil, `Cons('a, N&lt;['a, null]&gt;)];
-let n: N&lt;i64&gt; = `Nil;
-n
+    0: at: line: 1, column: 1 in file test.gx, in: type N&lt;'a&gt; = [`Cons('a, N&lt;Opt&lt;'a&gt;&gt;), `..
+    1: recursive type N passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first
 </code></pre>
 <p>Anyway, lets define some functions to work on our new list type,</p>
 <pre><code class="language-graphix">type Lst&lt;'a&gt; = [
