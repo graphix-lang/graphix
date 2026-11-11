@@ -1472,6 +1472,25 @@ former consumer derives from the cells:
   header and an inner fn that mentions `'a` reach the same cell and
   conjunct; each listing walk holds a per-signature reentrancy guard, so
   the regress stops at the signature already being listed.
+- A nest of signatures is read once, however many of its signatures
+  ask. Listing a signature reads the cells it names
+  (`collect_tvars`), and a quantified signature inside it answers with
+  the cells it names from outside itself (`fntyp::free_cells`). Under
+  the outermost walk, comparison or print (`PartsDepth`) that answer
+  is kept per signature beside its position cells, and dropped at any
+  cell write on the thread (`tvar::cell_writes`). Only an answer no
+  reentrancy guard cut is kept, and one that names a cell is used only
+  where no guard is held: an empty one is empty under every guard. The
+  parser keeps a stronger fact for the length of the outermost
+  signature's parse (`ParseDepth`): a signature whose declaration met
+  no name but its own quantifiers is closed (`FnType::declaring`), no
+  enclosing declaration aliases or seeds a cell of it, and the
+  enclosing signatures' alias walks, held checks and position cells
+  skip it. A nest where every signature names an outer variable is
+  still aliased once per enclosing signature. Pins:
+  `typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps`,
+  `nested_quantified_types_compare_in_linear_steps`,
+  `a_cell_write_drops_the_free_cells_read_before_it`.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
   directly (inference declares no header); `sig_matches_int`'s
   impl-constraint check is SATISFACTION — the

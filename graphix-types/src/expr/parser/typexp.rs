@@ -15,7 +15,8 @@ use crate::{
         TypeNote, TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
     },
     typ::{
-        Bound, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef, check_bounds_acyclic,
+        Bound, FnArgKind, FnArgType, FnType, ParseDepth, TVar, Type, TypeRef,
+        check_bounds_acyclic,
     },
 };
 use arcstr::{ArcStr, literal};
@@ -197,7 +198,12 @@ fn fnargs(i: &mut Input) -> R<LPooled<Vec<Either<FnArgType, Type>>>> {
 }
 
 pub(super) fn fntype(i: &mut Input) -> R<FnType> {
+    fnshared(i).map(Arc::unwrap_or_clone)
+}
+
+fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     keyword(i, "fn")?;
+    let _nest = ParseDepth::enter();
     let constraints = fnconstraints(i)?;
     let mut args = fnargs(i)?;
     i.spstring("->")?;
@@ -380,7 +386,7 @@ pub(super) fn typ(i: &mut Input) -> R<Type> {
             tupletyp,
             |i| structtyp(i, plain_typ, false).map(|(t, _)| t),
             varianttyp,
-            |i| fntype(i).map(|f| Type::Fn(Arc::new(f))),
+            |i| fnshared(i).map(Type::Fn),
             |i| applied(i, "Array").map(|t| Type::Array(Arc::new(t))),
             |i| applied(i, "List").map(|t| Type::List(Arc::new(t))),
             |i| keyword(i, "Any").map(|_| Type::Any),

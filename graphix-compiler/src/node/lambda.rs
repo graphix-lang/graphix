@@ -2400,7 +2400,7 @@ impl Lambda {
             ft.alias_tvars(&mut known);
             let ft = ft.declaring(&constraints);
             ft.check_quantifiers_held()?;
-            Arc::new(ft)
+            ft
         };
         typ.lambda_ids.set_id(id);
         typ.claim(level);

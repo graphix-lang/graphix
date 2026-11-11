@@ -61,8 +61,8 @@ pub use tval::member_of;
 pub mod tvar;
 
 pub use fntyp::{
-    CopySites, FnArgKind, FnArgType, FnType, ReadCopies, check_bounds_acyclic,
-    seed_conjuncts,
+    CopySites, FnArgKind, FnArgType, FnType, ParseDepth, ReadCopies,
+    check_bounds_acyclic, seed_conjuncts,
 };
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;

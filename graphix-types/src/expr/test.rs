@@ -700,8 +700,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                             }
                         }
                     }
-                    let ft = ft.declaring(&declared);
-                    Type::Fn(Arc::new(ft))
+                    Type::Fn(ft.declaring(&declared))
                 })
         ]
     })

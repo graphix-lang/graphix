@@ -318,6 +318,37 @@ thread_local! {
     /// each signature's once rather than once per signature above it.
     static POSITIONS: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
         RefCell::new(AddrMap::default());
+    /// For the outermost `for_each_part` call: what each nested quantified
+    /// signature names from outside itself, as `collect_tvars` finds it
+    /// under no guard, while this thread writes no cell.
+    static FREE: RefCell<FreeCells> = RefCell::new(FreeCells::default());
+    /// How many times a walk's guard has refused a signature or a cell.
+    static CUTS: Cell<u64> = const { Cell::new(0) };
+    /// How deep signature parses nest on this thread.
+    static PARSE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// For the outermost signature's parse: the signatures inside it that
+    /// name no variable from outside themselves, so no enclosing
+    /// signature's declaration aliases or seeds a cell of theirs.
+    static CLOSED: RefCell<AddrMap<Arc<FnType>>> = RefCell::new(AddrMap::default());
+}
+
+#[derive(Default)]
+struct FreeCells {
+    /// [`tvar::cell_writes`] when the entries were read from the cells.
+    writes: u64,
+    of: AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>,
+}
+
+impl FreeCells {
+    /// The entries that still stand: none after a cell write.
+    fn current(&mut self) -> &mut AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)> {
+        let writes = tvar::cell_writes();
+        if self.writes != writes {
+            self.writes = writes;
+            self.of.clear();
+        }
+        &mut self.of
+    }
 }
 
 #[cfg(test)]
@@ -343,8 +374,84 @@ impl Drop for PartsDepth {
             d.get() == 0
         });
         if outermost {
-            POSITIONS.with_borrow_mut(|m| m.clear());
+            POSITIONS.with_borrow_mut(|m| {
+                if !m.is_empty() {
+                    m.clear()
+                }
+            });
+            FREE.with_borrow_mut(|m| {
+                if !m.of.is_empty() {
+                    m.of.clear()
+                }
+            });
         }
+    }
+}
+
+/// One signature's parse, which the signatures it holds are parsed
+/// inside; the outermost forgets the closed signatures on its way out,
+/// unwind too.
+pub struct ParseDepth;
+
+impl ParseDepth {
+    pub fn enter() -> Self {
+        PARSE_DEPTH.with(|d| d.set(d.get() + 1));
+        ParseDepth
+    }
+}
+
+impl Drop for ParseDepth {
+    fn drop(&mut self) {
+        let outermost = PARSE_DEPTH.with(|d| {
+            d.set(d.get() - 1);
+            d.get() == 0
+        });
+        if outermost {
+            CLOSED.with_borrow_mut(|m| m.clear());
+        }
+    }
+}
+
+/// Whether `ft` is a signature the parse in progress found to name no
+/// variable from outside itself: a walk for an enclosing signature's
+/// variables finds none in it.
+pub(super) fn closed(ft: &Arc<FnType>) -> bool {
+    PARSE_DEPTH.with(|d| d.get()) > 0
+        && CLOSED.with_borrow(|m| m.contains_key(&(Arc::as_ptr(ft) as usize)))
+}
+
+/// The cells the quantified signature `ft` names from outside itself, its
+/// own quantifiers' left out, into `known`: memoized while a
+/// `for_each_part` walk is in progress. A walk no guard cut is the same
+/// under every guard, and one that found nothing finds nothing under any.
+pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
+    let key = Arc::as_ptr(ft) as usize;
+    let unguarded = || {
+        CONSTRAINING.with_borrow(|s| s.is_empty())
+            && CONJUNCTS.with_borrow(|s| s.is_empty())
+    };
+    let hit = FREE.with_borrow_mut(|m| match m.current().get(&key) {
+        Some((_, cells)) if cells.is_empty() || unguarded() => {
+            for (name, tv) in cells {
+                known.entry(name.clone()).or_insert_with(|| tv.clone());
+            }
+            true
+        }
+        Some(_) | None => false,
+    });
+    if hit {
+        return;
+    }
+    let cuts = CUTS.with(|c| c.get());
+    let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.collect_tvars(&mut inner);
+    inner.retain(|name, _| !ft.quantifiers.contains(name));
+    if PARTS_DEPTH.with(|d| d.get()) > 0 && CUTS.with(|c| c.get()) == cuts {
+        let cells = inner.iter().map(|(n, tv)| (n.clone(), tv.clone())).collect();
+        FREE.with_borrow_mut(|m| m.current().insert(key, (ft.clone(), cells)));
+    }
+    for (name, tv) in inner.drain() {
+        known.entry(name).or_insert(tv);
     }
 }
 
@@ -387,7 +494,11 @@ impl Walking {
     }
 
     fn enter_key(set: &'static LocalKey<RefCell<AddrSet>>, key: usize) -> Option<Self> {
-        set.with_borrow_mut(|s| s.insert(key)).then_some(Walking { set, key })
+        let entered = set.with_borrow_mut(|s| s.insert(key));
+        if !entered {
+            CUTS.with(|c| c.set(c.get() + 1));
+        }
+        entered.then_some(Walking { set, key })
     }
 }
 
@@ -568,11 +679,35 @@ fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
 }
 
 impl FnType {
+    // CR claude for claude: [perf/low] A nest of signatures in which every
+    // level names a variable of an enclosing one still parses in time quadratic
+    // in its depth: none is closed, so each enclosing declaration's alias walk
+    // (and the position cells its conjunct pass collects) covers the whole nest
+    // below it. `graphix fmt --stdout` of gen.py fnqo N (each level `fn<'a:
+    // Any>(x: .., y: 'z) -> 'a` under one `fn<'z: Any>`) costs 0.079 / 0.234 /
+    // 0.833 / 3.18 / 7.07 / 12.5 G instructions at N = 40 / 80 / 160 / 320 /
+    // 480 / 640 (base-r20: 0.097 / 0.310 / 1.14 at 40 / 80 / 160, not measured
+    // deeper); gen.py fnv N (`fn(x: fn(x: .. 'a) -> 'a) -> 'a`, no quantifier)
+    // costs 0.037 / 0.086 / 0.279 / 1.04 / 2.31 / 4.07 G, against 0.037 / 0.085
+    // / 0.272 on base-r20 at 40 / 80 / 160: the rank2-print-01 fix does not
+    // help this shape and costs it about 3% at 160. The profile at 320 is
+    // alias_tvars_in, collect_position_tvars and their pooled maps. Comparing
+    // such nests is linear (free_cells keeps the cells each names). A var's
+    // link points at its cell, so each enclosing declaration re-points every
+    // handle of the name; a linear parse would need the handles to follow the
+    // abandoned cell's forward link, or one alias pass from the outermost
+    // signature with a scope per level. Neither is tried. As with
+    // rank2-print-01 only `graphix fmt` reaches a written nest of quantified
+    // types (QUANTIFIED_FN); the unquantified shape checks. probe:
+    // ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/gen.py, fnqo_160.gx,
+    // fnv_160.gx (rank2-open-nest-01)
     /// `self` declaring `constraints`: its quantifiers are their names
     /// in source order (a `+`-bound variable is one quantifier), and every
     /// same-named tvar of the signature and of a conjunct is the
-    /// quantifier's, whose cell holds the conjuncts.
-    pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Self {
+    /// quantifier's, whose cell holds the conjuncts. Inside a signature's
+    /// parse ([`ParseDepth`]), one that names no other variable is
+    /// remembered closed.
+    pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Arc<Self> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
         for (tv, _) in constraints.iter() {
@@ -582,9 +717,14 @@ impl FnType {
             }
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
-        self.alias_tvars(&mut known);
+        let ft = Arc::new(self);
+        ft.alias_tvars(&mut known);
         seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
-        self
+        // every name the signature or a bound holds is in `known`
+        if known.len() == ft.quantifiers.len() && PARSE_DEPTH.with(|d| d.get()) > 0 {
+            CLOSED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, ft.clone()));
+        }
+        ft
     }
 
     /// The tvar cells reachable from args / vargs / rtype / throws,
@@ -724,6 +864,7 @@ impl FnType {
 /// constraints compare only once the shape is equal.
 impl PartialEq for FnType {
     fn eq(&self, other: &Self) -> bool {
+        let _scope = PartsDepth::enter();
         self.args == other.args
             && self.vargs == other.vargs
             && self.rtype == other.rtype
@@ -742,6 +883,7 @@ impl PartialOrd for FnType {
 
 impl Ord for FnType {
     fn cmp(&self, other: &Self) -> Ordering {
+        let _scope = PartsDepth::enter();
         self.args
             .cmp(&other.args)
             .then_with(|| self.vargs.cmp(&other.vargs))
@@ -2071,7 +2213,7 @@ fn is_self_param(a: &FnArgType) -> bool {
         }
 }
 
-// CR claude for claude: [perf/low] Nested rank-2 function types print in
+// XCR claude for claude: [perf/low] Nested rank-2 function types print in
 // time quadratic in their nesting: `let y: fn<'a: Any>(x: fn<'a: Any>(x: ..)
 // -> 'a) -> 'a = never()` N levels deep costs 0.037 / 0.143 / 0.446 / 1.56 /
 // 5.82 G instructions under `graphix fmt --stdout` at N = 14 / 40 / 80 / 160
@@ -2117,6 +2259,42 @@ fn is_self_param(a: &FnArgType) -> bool {
 // position occurrence where constraint_view takes the first occurrence in
 // for_each_part order (conjuncts before throws), which differs only for two
 // distinct cells sharing a quantifier's name.
+// 2026-11-10 claude: Round 20 fixer: the probe's three per-level walks are
+// gone. (1) Eq/Ord hold a PartsDepth scope, and a nested quantified signature
+// answers collect_tvars from a memo of the cells it names from outside itself
+// (fntyp::free_cells: kept only when no reentrancy guard cut the walk, a
+// non-empty answer used only under no guard, all dropped at any cell write,
+// tvar::cell_writes). (2) The parser remembers, for the outermost signature's
+// parse (ParseDepth), each signature whose declaration met no name but its own
+// quantifiers (FnType::declaring, known.len() == quantifiers.len() after
+// seeding); the alias walk, collect_tvars and collect_position_tvars skip it.
+// fmt --stdout of the probe at 40/80/160/320/480/640:
+// 0.076/0.237/0.869/3.38/7.57/13.4 G instructions on base-r20,
+// 0.031/0.048/0.102/0.286/0.570/0.956 G now. What is left follows the output,
+// which is itself quadratic in the depth (3.29 MB at 640, one indent step a
+// level): about 85% of the 640 profile is the parser reading whitespace and the
+// printer writing it; a nest through the return type, which does not indent, is
+// 0.061/0.105/0.192 G at 160/320/640. So the linear claim is the step pins, not
+// the instruction counts. Pins:
+// typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps (16240 /
+// 256960 steps at 40 / 160 with the closed skip off),
+// nested_quantified_types_compare_in_linear_steps (23428 / 362548 with the memo
+// off, 32320 / 513280 without the Eq scope),
+// a_cell_write_drops_the_free_cells_read_before_it (fails without the write
+// stamp), a_bound_naming_an_outer_variable_is_the_outer_cell (fails if closed
+// is decided before seeding). NOT fixed: a nest where every signature names an
+// enclosing signature's variable is not closed, so its parse still walks the
+// nest once per level (gen.py fnqo: 1.14 G at 160 on base-r20, 0.83 G now, 12.5
+// G at 640; fnv, unquantified with one variable throughout, 4.07 G at 640); its
+// comparison is linear (the pin's 'naming outer' shape). That is
+// (rank2-open-nest-01). Differential check before removal (verify-*.patch):
+// every skip replayed as the plain walk and every memo hit as the unmemoized
+// one, asserting no change, over graphix-types, graphix-compiler and
+// graphix-tests (17567 tests) and the fmt corpus: 1810 alias, 54067 collect,
+// 215630 position skips but only 786 memo hits, plus 932 on the probes, so the
+// memo's sample is thin. fmt --stdout of all 2949 .gx/.gxi in both repos is
+// byte-identical to base-r20. Probes
+// ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/.
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
@@ -2476,12 +2654,129 @@ mod tests {
         assert!(met.iter().all(|n| *n > 400), "{met:?}");
     }
 
+    /// `n` signatures, each but `leaf` holding the next as `wrap` writes it.
+    fn nested(n: usize, leaf: &str, wrap: impl Fn(&str) -> String) -> String {
+        (1..n).fold(String::from(leaf), |s, _| wrap(&s))
+    }
+
     fn nested_quantified(n: usize) -> String {
-        let mut s = String::from("fn<'a: Any>(x: i64) -> 'a");
-        for _ in 1..n {
-            s = format!("fn<'a: Any>(x: {s}) -> 'a");
+        nested(n, "fn<'a: Any>(x: i64) -> 'a", |s| format!("fn<'a: Any>(x: {s}) -> 'a"))
+    }
+
+    /// Each signature the bound of the next one's variable.
+    fn nested_by_bound(n: usize) -> String {
+        nested(n, "fn<'a: Any>(x: 'a) -> 'a", |s| format!("fn<'a: {s}>(x: 'a) -> 'a"))
+    }
+
+    fn nested_unquantified(n: usize) -> String {
+        nested(n, "fn(x: i64) -> i64", |s| format!("fn(x: {s}) -> i64"))
+    }
+
+    /// Every signature names the outermost's `'z` beside its own variable.
+    fn nested_naming_outer(n: usize) -> String {
+        let inner = nested(n, "fn<'a: Any>(x: 'z) -> 'a", |s| {
+            format!("fn<'a: Any>(x: {s}, y: 'z) -> 'a")
+        });
+        format!("fn<'z: Any>(x: {inner}) -> 'z")
+    }
+
+    fn walk_steps(f: impl FnOnce()) -> usize {
+        super::TVAR_WALK_STEPS.with(|c| c.set(0));
+        f();
+        super::TVAR_WALK_STEPS.with(|c| c.get())
+    }
+
+    // Parsing a nest of signatures that name nothing outside themselves
+    // walks each a bounded number of times, however they nest.
+    #[test]
+    fn nested_closed_signatures_parse_in_linear_steps() {
+        let shapes: [(&str, fn(usize) -> String); 3] = [
+            ("argument", nested_quantified),
+            ("bound", nested_by_bound),
+            ("unquantified", nested_unquantified),
+        ];
+        for (name, shape) in shapes {
+            let parse = |n| {
+                let src = shape(n);
+                walk_steps(|| drop(parse_fn_type(&src).unwrap()))
+            };
+            let (a, b) = (parse(40), parse(160));
+            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
         }
-        s
+    }
+
+    // Comparing two nests of quantified signatures reads each signature's
+    // variables a bounded number of times, the ones it names from outside
+    // included.
+    #[test]
+    fn nested_quantified_types_compare_in_linear_steps() {
+        let shapes: [(&str, fn(usize) -> String); 3] = [
+            ("argument", nested_quantified),
+            ("bound", nested_by_bound),
+            ("naming outer", nested_naming_outer),
+        ];
+        for (name, shape) in shapes {
+            let compare = |n| {
+                let (a, b) = (
+                    parse_fn_type(&shape(n)).unwrap(),
+                    parse_fn_type(&shape(n)).unwrap(),
+                );
+                walk_steps(|| assert!(a == b && a.cmp(&b).is_eq()))
+            };
+            let (a, b) = (compare(40), compare(160));
+            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
+        }
+    }
+
+    /// The cell of the variable `name` that `t`, a signature, reaches.
+    fn cell_named(t: &crate::typ::Type, name: &str) -> usize {
+        let crate::typ::Type::Fn(ft) = t else { panic!("{t} is no signature") };
+        let mut cells = ahash::AHashMap::default();
+        ft.collect_tvars_through_bounds(&mut cells);
+        cells[name].cell_addr()
+    }
+
+    // A nested signature that names an enclosing signature's variable only
+    // in a bound is not closed: the variable is the enclosing signature's
+    // cell.
+    #[test]
+    fn a_bound_naming_an_outer_variable_is_the_outer_cell() {
+        for inner in [
+            "fn<'b: Array<'z>>(y: 'b) -> 'b",
+            "fn<'b: Any>(y: fn<'c: Array<'z>>(v: 'c) -> 'c) -> 'b",
+        ] {
+            let src = format!("fn<'z: Number>(x: {inner}, w: 'z) -> 'z");
+            let ft = parse_fn_type(&src).unwrap();
+            let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
+            assert_eq!(cell_named(&ft.args[0].typ, "z"), outer.cell_addr(), "{src}");
+        }
+    }
+
+    // A nested signature's own variable stays apart from an enclosing
+    // signature's of the same name.
+    #[test]
+    fn a_closed_signature_keeps_its_own_variable() {
+        let src = "fn<'a: Number>(x: fn<'a: Any>(y: 'a) -> 'a, w: 'a) -> 'a";
+        let ft = parse_fn_type(src).unwrap();
+        let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
+        assert_ne!(cell_named(&ft.args[0].typ, "a"), outer.cell_addr());
+        assert_eq!(ft.to_string(), src);
+    }
+
+    // What a nested signature names from outside itself is read again
+    // after a cell write: a conjunct added to a cell it names is seen.
+    #[test]
+    fn a_cell_write_drops_the_free_cells_read_before_it() {
+        use crate::typ::{TVar, Type};
+        let ft = parse_fn_type("fn(x: fn<'b: Any>(y: 'b, q: 'z) -> 'b) -> 'z").unwrap();
+        let _scope = super::PartsDepth::enter();
+        let mut before = ahash::AHashMap::default();
+        ft.args[0].typ.collect_tvars(&mut before);
+        assert!(before.contains_key("z") && !before.contains_key("w"));
+        before["z"].add_cell_constraint(Type::TVar(TVar::empty_named("w".into())));
+        let mut after = ahash::AHashMap::default();
+        ft.args[0].typ.collect_tvars(&mut after);
+        assert!(after.contains_key("w"));
     }
 
     /// The tvar-walk steps printing an `n`-deep nest of quantified function

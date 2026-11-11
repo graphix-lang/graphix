@@ -3247,11 +3247,26 @@ impl Type {
         self.alias_tvars_in(known, &ConjunctsPassed::take())
     }
 
+    // CR claude for claude: [risk/low] The alias walk passes the conjuncts of
+    // a signature's position cells only, so a variable an enclosing signature
+    // declares that a nested quantified signature names only in the bound of a
+    // bound stays a cell of its own: in `fn<'z: Number>(x: fn<'b: 'c, 'c:
+    // Array<'z>>(y: 'b) -> 'b, w: 'z) -> 'z` the `'z` inside `'c`'s bound is
+    // not the `'z` of `w` (collect_tvars_through_bounds over the argument
+    // against the return type's cell). The nested signature's own declaration
+    // aliases every bound (seed_conjuncts); the enclosing one's walk does not
+    // reach it. No checked program holds one: a written nested quantified
+    // function type is refused (QUANTIFIED_FN), so only `graphix fmt`, which
+    // prints names, parses it. Found fixing rank2-print-01, whose closed test
+    // counts such a signature open (seed_conjuncts puts `'z` in `known`).
+    // (nested-bound-alias-01)
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
         passed: &ConjunctsPassed,
     ) {
+        #[cfg(test)]
+        super::fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
@@ -3263,6 +3278,7 @@ impl Type {
                     e.insert(tv.clone());
                 }
             },
+            Type::Fn(ft) if super::fntyp::closed(ft) => (),
             // a nested fn type's own quantifiers are its own, whatever an
             // enclosing signature names alike
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
@@ -3372,17 +3388,12 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
+            Type::Fn(ft) if super::fntyp::closed(ft) => (),
             // a nested fn type's own quantifiers are its own, whatever an
             // enclosing signature names alike; a node it shares with the
             // outside names them there, so it is walked apart
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
-                let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                ft.collect_tvars(&mut inner);
-                for (name, tv) in inner.drain() {
-                    if !ft.quantifiers.contains(&name) {
-                        known.entry(name).or_insert(tv);
-                    }
-                }
+                super::fntyp::free_cells(ft, known)
             }
             Type::Fn(ft) => ft.collect_tvars_seen(known, seen),
             t => t.for_each_child(&mut |c| c.collect_tvars_seen(known, seen)),
@@ -3485,6 +3496,7 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
+            Type::Fn(ft) if super::fntyp::closed(ft) => (),
             Type::Fn(ft) => {
                 let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 super::fntyp::position_cells(ft, &mut inner);
