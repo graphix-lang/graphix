@@ -2650,33 +2650,6 @@ impl Type {
         });
     }
 
-    // XCR claude for claude: [structure/low] Three copies of one judgment: this same_constructor
-    // repeats callsite.rs's same_constructor arm for arm (adding Abstract, Ref by name and App), and
-    // setops.rs's same_shape repeats the tuple, struct, variant, array, list and map arms, differing in
-    // ByRef mutability and in leaving out Error and Fn. They already disagree on `&T` against `&mut T`.
-    // One helper in graphix-types with the variants it needs, called from all three.
-    // (one-constructor-dup-01)
-    // 2026-11-10 claude: Lane 20b (round 20): formal-union-order-01's choice-point refusal kept
-    // Type::variable_union and VariableUnion::of as the earlier message, so settle.rs's
-    // same_constructor copy stays; the new refusal uses none of the three (it asks contains which
-    // members hold the type).
-    // 2026-11-10 claude: Merged into Type::takes_constructor_of (a value of v may be a self by
-    // outermost constructor; a writable reference takes no read-only one) and Type::shares_constructor
-    // (either way), both here in typ/mod.rs. Six copies, not three, called them now: settle
-    // VariableUnion::of and setops meet_parts (shares), callsite hidden_defaults_at and contains
-    // commit_parts (takes), contains may_choose_member (shares, behind its own arms for unresolved
-    // heads and primitives), setops matching_type_int (shares, over the constructors it narrows). Two
-    // holes closed: alternatives &f1 and &mut f2 never met in meet_parts (check passed, run failed
-    // binding the callee), and commit_parts took any two structs for one head, so a union bound [{x:
-    // [i64, null]}, {y: string}] passed nothing down and the build refused what the check accepted.
-    // callsite's Abstract, Ref and App arms are a no-op there (values are opened, Refs judged before).
-    // Pins failing with the merge undone:
-    // lang::functions::select_of_mixed_references_defaults_of_two_types,
-    // default_hidden_under_a_read_only_reference_member,
-    // lang::types::union_bound_struct_member_reaches_open_cell; with a mutability-blind helper:
-    // default_hidden_under_a_read_only_reference_member,
-    // lang::types::union_bound_reference_member_reaches_open_cell. Probes
-    // ~/ptmp/cr29/scratch/r20/20b/ocd/.
     /// Whether a value of `v` may be a value of `self` by their outermost
     /// constructors alone: two arrays, lists, maps, errors or function
     /// types; tuples of one arity; structs of one field set; variants of
