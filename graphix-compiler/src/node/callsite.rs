@@ -3024,6 +3024,13 @@ impl<R: Rt> CallSite<R> {
             // 567 programs, 0 regressions, outcome and fusion manifests 0 mismatches.
             // Land the branch with quiet-refresh-op-01 once that CR's kernel half is
             // settled; the admin TUI's first-bind cost is still to measure in quick.
+            // 2026-11-10 claude: quiet-refresh-op-01 is built and reviewed on lane 20a
+            // (e81a36cc6, 817ad8039; Eric's 11-10 ruling (A) with a tag bit:
+            // Tag::MOVED, design/wake_catchup.md, What a wake stands) and its XCR is
+            // gone: a run-time bind's closure reads a formal a wake re-stood as a fire
+            // in both engines (lang::wake_outside,
+            // lang::prune::standing_formal_refresh_marks_its_readers in every mode).
+            // What (b) still waits on is wake-entry-split-01 (cr-discuss D30).
             if !ctx.fusion.disabled() {
                 // an assertion the bind reaches asks for the kernels its
                 // check reads
