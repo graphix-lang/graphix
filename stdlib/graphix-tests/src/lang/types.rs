@@ -7332,6 +7332,37 @@ run!(
     prints("i64:7")
 );
 
+// A formal that reaches a variable an earlier argument settled only
+// through another variable's bound leaves it settled: the copy the
+// argument pre-unifies with opens its own cells alone.
+run!(
+    callback_into_a_union_bound_beside_a_function_over_the_bounded_variable,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a1: E<'a2, 'a3>, 'a3: E<'a4, 'a4> |x0: 'a3, x1: 'a1, z: fn(q: 'a1) -> i64, x4: 'a4| 7;
+  f(|v| 1, |v| "s", |q| 1, 1)
+}"#,
+    prints("i64:7")
+);
+run!(
+    variable_settled_before_a_function_over_its_holder_takes_no_other_type_refused,
+    r#"{
+  let f = 'a1: Array<'a3> |x0: 'a3, z: fn(q: 'a1) -> i64, w: 'a3| (x0, w);
+  f(1, |q| 1, "s")
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    variable_settled_before_a_function_over_its_holder_takes_its_own_type,
+    r#"{
+  let f = 'a1: Array<'a3> |x0: 'a3, z: fn(q: 'a1) -> i64, w: 'a3| (x0, w);
+  let (a, b) = f(1, |q| array::len(q), 2);
+  a + b
+}"#,
+    prints("i64:3")
+);
+
 // A declared variable going into a union is judged over the union's
 // members as a value's type is: a member a name stands for is its members
 // there too, so the check refuses what the instance at a type would.

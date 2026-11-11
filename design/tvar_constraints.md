@@ -296,7 +296,13 @@ pre-unifies with a copy of its formal in
 which those variables are open and every other cell is the formal's own
 (`Widening::opening`), so it decides none of them, and decides the
 others, a variable a callback after it reads included, as it meets
-them; it is checked at the end of the argument loop, when the join is
+them. Only the copy's own cells are opened: a widenable variable the
+formal reaches through another variable's bound alone (`z: fn(q: 'a1) ->
+i64` under `'a1: Array<'a3>`) is the formal's cell, and stays as the
+arguments before it settled it (pins
+`lang::types::callback_into_a_union_bound_beside_a_function_over_the_bounded_variable`,
+`variable_settled_before_a_function_over_its_holder_takes_no_other_type_refused`).
+The argument is checked at the end of the argument loop, when the join is
 known (`CallSite::check_waiting`); its cells take what the join leaves
 them. What it took from the copy is the formal's own by then: before the
 check, each cell of the copy that nothing decided is made the formal's

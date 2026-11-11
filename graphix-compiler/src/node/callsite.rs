@@ -1557,10 +1557,8 @@ impl Widening {
             .collect();
         let mut copies: Copies = LPooled::take();
         let open = formal.replace_tvars_copied(&kept, &mut copies);
-        let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        open.collect_tvars(&mut opened);
         let widened = |name: &ArcStr| cells.contains_key(name) && all.contains_key(name);
-        for (_, tv) in opened.iter().filter(|(name, _)| widened(name)) {
+        for tv in copies.values().filter(|tv| widened(&tv.name)) {
             tv.unbind()
         }
         Some((open, copies))
