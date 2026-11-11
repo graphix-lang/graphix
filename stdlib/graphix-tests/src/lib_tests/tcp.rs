@@ -185,7 +185,11 @@ run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
 
 // The listener is replaced while an accept on the old one is pending: the
 // new invocation aborts it, so the new listener's client is accepted and
-// the old listener, which nothing holds now, has closed its port.
+// the old listener, which nothing holds now, closes its port. The client
+// connects to the second address when it arrives, and the old port is
+// tried once the new accept has answered. The old listener's drop is the
+// tokio runtime's, after the abort: a connect is tried every 100 ms
+// until one is refused.
 const TCP_ACCEPT_REPLACED_LISTENER: &str = r#"
 {
   use sys::tcp::Socket;
@@ -195,10 +199,14 @@ const TCP_ACCEPT_REPLACED_LISTENER: &str = r#"
   let first = once(la);
   addr <- first ~ "127.0.0.1:0";
   let srv = sys::tcp::accept(l, null)?;
-  let settled = sys::time::after_idle(duration:300.ms, la);
-  let cl = sys::tcp::connect(settled)?;
-  let old = sys::tcp::connect(settled ~ first);
-  Socket::local_addr(srv)? == (cl ~ la) && is_err(old)
+  let second = skip(#n: 1, la);
+  let cl = sys::tcp::connect(second)?;
+  let attempt = never();
+  attempt <- srv ~ 0;
+  let refused = is_err(sys::tcp::connect(attempt ~ first));
+  attempt <- select refused { false => sys::time::after_idle(duration:100.ms, attempt + 1), true => never() };
+  let closed = select (refused, attempt) { (true, _) => true, (false, n) if n >= 50 => false, _ => never() };
+  Socket::local_addr(srv)? == (cl ~ second) && first != second && closed
 }
 "#;
 
