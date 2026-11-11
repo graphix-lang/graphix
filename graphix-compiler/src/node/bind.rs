@@ -1625,53 +1625,6 @@ fn lambda_value<R: Rt>(node: &Node<R>) -> Option<&super::lambda::Lambda> {
     }
 }
 
-// XCR claude for claude: [bug/medium] A holder whose data holds a call's result, a
-// closure over a cell its maker writes, passes --check and its run refuses the bind:
-// `let mk = || { let v = never(); |x| { v <- x; v } }; let s = {f: |x| x, g: |y| y};
-// let t = {s with g: mk()}; (t.g(1), t.g("s"))` runs to "a run-time bind at
-// t.g(\"s\") did not type: an instance at fn(y: string) -> string of a definition
-// typed fn(x: _) -> _" (GRAPHIX_ELAB_AUDIT); so do an array of such composites read
-// by index (t[1]$.f, t.a[1]$.f), a struct update over a reference holder, and a
-// module's s.h. The holder's reads copy every closed definition's signature its type
-// holds (Type::scheme_read), the maker's inner lambda's included, whose cells are the
-// maker instance's written `v`; under the ML rule a function value leaving a call
-// is one instance, so a read should copy only what a binding names. Main 038729af4
-// and lane Q's HEAD the same; not the write path item 1 closes. probes
-// ~/ptmp/cr29/scratch/review-r16/Q-r3-1/{a3_structwith_call,
-// b2_array_of_composites_direct,b4_holder_holds_array,b5b_structwith_outer_wrongval,
-// b6_structwith_ref_holder,b7_structwith_wrongval}.gx, Q-r3-1/m4 (holder-call-result-01)
-// 2026-11-09 claude: Stale on main 3cfcd2407 (base-r19): every probe the CR names
-// (Q-r3-1/{a3,b2,b4,b5b,b6,b7}.gx) and the siblings a1-a13, b1-b9 are refused at --check
-// with 'type mismatch i64 does not contain string' at the second-type call (e.g.
-// t.g("s")), and m4's module is refused at its val ('implemented ... one type all uses
-// share'); their one-type twins check and run with GRAPHIX_ELAB_AUDIT=1 silent ((1, 2)),
-// and a field from the named holder (t.f(1), t.f("s") over {s with g: mk()}) stays
-// generic and runs. Likely closed by the D11/D12 work (40c511a72, ec6d5fa05), not
-// bisected. No pin in the tree holds these shapes; a reviewer may want lang::types pins
-// of a3, b2, b4, b6 and m4 as refusals. Probes
-// ~/ptmp/cr29/scratch/r19/19a/holder-call-result-01/.
-// 2026-11-10 claude: No code change: every shape the CR names is refused at --check on
-// base-r20 (82569fed3) with 'type mismatch i64 does not contain string' at the
-// second-type call, m4 at its val, and each one-type twin runs with GRAPHIX_ELAB_AUDIT=1
-// silent, as the 11-09 note found on base-r19. Pins added:
-// lang::types::{struct_update_holding_a_call_result_shares_its_type (this CR's own
-// program), struct_update_over_a_name_of_a_call_result_shares_its_type (b6),
-// array_of_composites_holding_a_call_result_shares_its_type (b2),
-// holder_of_an_array_holding_a_call_result_shares_its_type (b4)} refused, with the
-// running twins struct_update_holding_a_call_result_runs_at_its_type (one_a3 and x3: the
-// holder's other field stays generic) and
-// composites_holding_a_call_result_run_at_its_type;
-// lang::interfaces::val_struct_update_holding_a_call_result_refused (m4) and its twin
-// val_struct_update_holding_a_call_result_at_one_type (m5); two generics.md cases. All
-// pass in interp, par, jit and jit_par. A mutation that makes a holder's read copy every
-// signature its type holds (ReadWalk::go without the copied_beneath guard, Fresh::Scheme
-// copying cells of every level) fails the three struct-update pins with this CR's own
-// run-time bind error; the array and module pins hold under it and under two other
-// mutations tried (merge_one's level claim, setops::Identity::cells pairing generic with
-// live cells), so what closes those shapes is elsewhere; on main 038729af4 they passed
-// --check (this CR's text). The closing commit is not bisected. The val refusal's remedy
-// for m4 names a binding that is not there: (val-call-result-remedy-01). probes
-// ~/ptmp/cr29/scratch/r20/20d/holder-call-result-01/
 /// Whether the value `node` builds holds, in a data literal (a struct, its
 /// update, a tuple, a variant, an array, a list or a map), a part a `let`
 /// of it would name ([`names_generic`]), each seen past grouping
