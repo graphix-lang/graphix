@@ -910,9 +910,12 @@ Error<T_i+2>, `A_i]` gives an exponential number of pairs. So one walk
 unfolds at most `setops::WALK_PAIRS` (1000) pairs, a side of each a named
 type, counted, never timed (Eric 11-05, diff-cycle-hang-01 follow-up 2
 (b)), past which diff subtracts nothing and could_match answers an overlap
-wherever a pair is met (pins
+wherever a pair is met, beside the pair that spent the budget too, so a dead
+arm is accepted there (pins
 `typ::setops::tests::diff_over_branching_unions_is_bounded`,
-`could_match_over_branching_unions_is_bounded`). A residual is a DAG:
+`could_match_over_branching_unions_is_bounded`,
+`typ::matches::tests::could_match_answers_an_overlap_past_the_pair_budget`).
+A residual is a DAG:
 over `T = [Error<T>, Error<U>, `A]`, `U` alike, a test nested `d` deep
 leaves `2^d` paths through `d` shared levels. diff keeps the difference
 of each finished pair whose walk was cut only at itself or below it (a

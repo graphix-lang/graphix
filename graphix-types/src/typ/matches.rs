@@ -298,7 +298,7 @@ impl MatchHist {
 const NO_LINK: u32 = u32::MAX;
 const NO_NODE: u32 = u32::MAX;
 
-// CR claude for claude: [perf/low] could_match is polynomial where a failing pair
+// XCR claude for claude: [perf/low] could_match is polynomial where a failing pair
 // takes back a chain of trues that each level above walks again: P_k = ([Error<P_k+1>,
 // `K], C1, `A) over a chain C1..CM ending in [Error<P_1>, .., Error<P_N>], a twin Q/D
 // side with `B, names sorted so the union scan meets the innermost pair in progress
@@ -361,6 +361,25 @@ const NO_NODE: u32 = u32::MAX;
 // this CR as stale on cost, or keep it as the precision item above. probes:
 // ~/ptmp/cr29/scratch/r19/19b/ (mkflip.py, flip16.gx refused, flip32.gx accepted,
 // nest128.gx, nest256.gx, nosel256.gx).
+// 2026-11-10 claude: The cost this CR measures is bounded since c1d43af72
+// (setops::WALK_PAIRS, diff-cycle-hang-01 follow-up 2 (b)): could_match_int calls at
+// the budget stay 7k to 11k whatever n (pin
+// typ::matches::tests::could_match_keeps_the_node_pairs_found_apart, 9437 at n=64
+// m=32). On base-r20 (main 82569fed3), perf instructions:u --no-cache --check of the
+// mknest family at m=32, the select's share over the same program without it: n=64
+// 0.42G, 128 1.41G, 256 5.43G, 512 21.5G; could_match is under 1% of it. The growth is
+// the type test's other walks: gdb samples of nest512 put it in
+// PatternNode::capture_type -> Type::matching_type -> contains (about half,
+// place_each/set_commit) and in cast::rep_collision (from Select::typecheck0_with, and
+// from told under drain_pending_settles). It is quadratic in the width of the chain's
+// last union (n members against n), about 83k instructions a member pair, and does not
+// depend on the chain's length (n=256 at m=8/32/128: 6.31G/6.31G/6.34G), so it is the
+// pairwise member scan, not this re-walk; no new CR for it. What the re-walk still
+// costs is precision, the widening Eric accepted: past the budget a pair beside the one
+// that spent it overlaps, so a dead arm is accepted; new pin
+// typ::matches::tests::could_match_answers_an_overlap_past_the_pair_budget ((false,
+// 901) at n=18 m=32, (true, 1000) at n=20; it fails when WALK_PAIRS is 500 or 2000),
+// named in design/tvar_constraints.md. probes: ~/ptmp/cr29/scratch/r20/20d/cmrc/
 /// What could_match's trues rest on. Each pair of names entered and each
 /// node pair found to overlap by assuming a pair in progress is a node,
 /// which rests on the nodes its walk read true. A pair whose walk fails
@@ -1231,6 +1250,23 @@ mod tests {
         };
         assert_eq!(walk(16, 8), (false, 3868, 384));
         assert_eq!(walk(64, 32), (false, 9437, super::super::setops::WALK_PAIRS));
+    }
+
+    // Past the walk's pair budget could_match answers an overlap wherever a
+    // pair is met, beside the pair that spent it too: the nested pairs walk
+    // the chain again at each level, about n * m pairs, and once that passes
+    // the budget `H(Z0) against `H(Z1) overlaps, so the arm testing
+    // [`G(P998), `H(Z0)] is no longer found dead.
+    #[test]
+    fn could_match_answers_an_overlap_past_the_pair_budget() {
+        let walk = |n: usize, m: usize| {
+            let mut defs = nested_pairs(n, m);
+            defs.push(("Z0".into(), "[`ZA]".into()));
+            defs.push(("Z1".into(), "[`ZB]".into()));
+            pairs_walked(&defs, "[`G(P998), `H(Z0)]", "[`G(Q998), `H(Z1)]")
+        };
+        assert_eq!(walk(18, 32), (false, 901));
+        assert_eq!(walk(20, 32), (true, super::super::setops::WALK_PAIRS));
     }
 
     // Where every overlap rests on a pair in progress, the walk takes each
