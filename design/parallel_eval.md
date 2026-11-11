@@ -445,7 +445,7 @@ serial until it re-probes or its slots double. A server's instances are
 judged as a collection's slots are. The times are wall times, which
 also stand for the fork's CPU: a worker that finds no job parks at
 once (§9), so the pool spends nothing after the fork beyond its parts and
-one empty search for each worker it woke. `T`
+a wake, an empty search and a park for each worker it called. `T`
 is four times the lower quartile of nine latencies of handing an idle
 pool a job, measured once per process on a thread of its own, against a pool of
 its own that nothing forks onto, as many workers as a runtime's, started when a
@@ -817,17 +817,30 @@ its children.
 The pool is our own (`graphix_types::eval_pool`): a crossbeam deque a
 worker and an injector for the jobs handed in from off the pool
 (`install`). A fork pushes its parts but the first onto its worker's
-deque, wakes as many parked workers, runs the first, then runs jobs (its
-own newest first, else the injector's or another worker's oldest) until
-every part is done. A worker that finds no job, idle or waiting on its
-fork, parks at once in its own bed: an announcement wakes any parked
-worker (so a waiting one helps), and the last part of a fork wakes its
-owner. Every announcement bumps an epoch, so a worker whose search began
-before one does not park. No worker spins, so a fork's CPU is about its
-wall time, and `Auto` weighs wall time alone (§5). A part's panic
-resumes on the forking thread once every part has finished. Pin:
+deque, announces them, runs the first, then runs jobs (its own newest
+first, else the injector's or another worker's oldest) until every part
+is done. A worker that finds no job, idle or waiting on its fork, parks
+at once in its own bed, and the last part of a fork wakes its owner.
+Every announcement bumps an epoch, so a worker whose search began before
+one does not park.
+
+An announcement calls parked workers to search (a waiting one helps
+too), one for each job beyond the workers already called whose search
+has not ended. A called worker that finds a job, or returns to its own
+work, calls another in its place unless one still searches, so a job
+announced while it searched is searched for; one that finds nothing
+parks, the epoch sending it to search again if a job was announced
+since its search began. A busy owner's tiny joins, whose one job it
+usually runs itself, so call one worker at a time rather than one a
+join. No worker spins: beyond the jobs they run, a fork costs its
+workers a wake, a search and a park for each one called, and `Auto`
+weighs wall time alone (§5). A part's panic resumes on the forking
+thread once every part has finished. Pins:
 `eval_pool::test::idle_workers_park_at_once` (every empty search is
-followed by a park).
+followed by a park), `a_searching_worker_answers_for_one_job` and
+`tiny_joins_call_one_searcher_at_a_time` (the calls),
+`joins_announced_while_others_search_run_side_by_side` (a job announced
+while the workers called search still finds a worker: the hand-off).
 
 **Stack budget.** Per cycle: the `Control` counts the grown segments
 live in its cycle, on every thread (`Control::grown`), and a segment

@@ -1,6 +1,7 @@
 //! The evaluation pool: work-stealing workers, each parking the moment it
-//! finds no job, so a fork costs its woken workers no more CPU than the
-//! jobs they run (`design/parallel_eval.md` §9).
+//! finds no job, so beyond the jobs they run a fork costs its workers a
+//! wake and a park for each one called to search (`design/parallel_eval.md`
+//! §9).
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use parking_lot::{Condvar, Mutex};
@@ -36,10 +37,21 @@ impl JobRef {
     }
 }
 
+/// A worker's state in its bed.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Rest {
+    #[default]
+    Awake,
+    Asleep,
+    /// Woken by an announcement to search, and counted in
+    /// [`Sleep::searching`] until that search ends.
+    Called,
+}
+
 /// Where one worker blocks.
 #[derive(Default)]
 struct Bed {
-    asleep: Mutex<bool>,
+    rest: Mutex<Rest>,
     wake: Condvar,
 }
 
@@ -48,19 +60,43 @@ struct Bed {
 struct Sleep {
     beds: Box<[Bed]>,
     sleepers: AtomicUsize,
+    /// Workers called whose search has not ended: an announcement calls
+    /// sleepers only for the jobs beyond them. A job announced while one
+    /// is counted is found by its search, by the search the epoch sends it
+    /// on again, or by the worker it calls if it ends busy and the last.
+    searching: AtomicUsize,
     /// Bumped by every announcement: a worker that read it before a
     /// search that found nothing sleeps only if it has not moved since.
     epoch: AtomicU64,
     terminated: AtomicBool,
-    /// Searches that found no job, and parks: one a search.
+    /// Searches that found no job, parks (one a search), and workers
+    /// called.
     #[cfg(test)]
     empty_searches: AtomicU64,
     #[cfg(test)]
     parks: AtomicU64,
+    #[cfg(test)]
+    calls: AtomicU64,
 }
 
 impl Sleep {
-    // CR claude for claude: [perf/low] Every fork wakes as many parked workers as it pushed jobs,
+    fn new(workers: usize) -> Self {
+        Sleep {
+            beds: (0..workers).map(|_| Bed::default()).collect(),
+            sleepers: AtomicUsize::new(0),
+            searching: AtomicUsize::new(0),
+            epoch: AtomicU64::new(0),
+            terminated: AtomicBool::new(false),
+            #[cfg(test)]
+            empty_searches: AtomicU64::new(0),
+            #[cfg(test)]
+            parks: AtomicU64::new(0),
+            #[cfg(test)]
+            calls: AtomicU64::new(0),
+        }
+    }
+
+    // XCR claude for claude: [perf/low] Every fork wakes as many parked workers as it pushed jobs,
     // and in a 2-part join the owner usually pops the one job itself first, so the woken worker
     // searches once, finds nothing and parks again: a futex wake, a context switch and a park per
     // join. Under GRAPHIX_PAR=force with many tiny forks (fh300.gx, --no-fusion) wall time is about
@@ -69,55 +105,93 @@ impl Sleep {
     // job wake the next while more remain, or keep an atomic mask of asleep beds; then re-measure and
     // correct parallel_eval.md section 9's fork-cost sentence. probe:
     // ~/ptmp/cr29/scratch/r19/coord/runtime/fh300.gx (eval-pool-wake-batch-01)
-    /// `jobs` new jobs are visible: wake that many sleepers.
-    fn announce(&self, mut jobs: usize) {
+    // 2026-11-10 claude: An announcement now calls sleepers only for the jobs beyond the workers
+    // already called whose search has not ended (Sleep::searching, Rest::Called); a called worker
+    // that finds a job, or returns to its own work, calls another unless one still searches
+    // (Sleep::searched), so tiny joins call one worker at a time. fh300.gx force --no-fusion against
+    // the lane before the fix: 32 workers 3.7-3.9M context switches, 30.5-31.3 s task-clock, 65-67G
+    // instr -> 0.37-0.41M, 14.0-14.9 s, 50G; 16 workers 2.0-2.5M -> 0.40-0.50M; 2 workers equal
+    // within noise. The bed scan was left: Sleep::wake is 0.33% of samples after (3.97% before).
+    // Pins: eval_pool::test::a_searching_worker_answers_for_one_job and
+    // tiny_joins_call_one_searcher_at_a_time fail with an announcement calling one per job (4000
+    // joins: 4001 calls, 4484 parks; fixed 164-460 calls, 302-801 parks over 16 runs);
+    // joins_announced_while_others_search_run_side_by_side hangs with the hand-off in Sleep::searched
+    // removed. parallel_eval.md sections 5 and 9 restated.
+    /// `jobs` new jobs are visible.
+    fn announce(&self, jobs: usize) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        if jobs == 0 || self.sleepers.load(Ordering::SeqCst) == 0 {
+        self.call(jobs)
+    }
+
+    /// Call a sleeper to search for each of `jobs` beyond those the
+    /// workers searching cover.
+    fn call(&self, jobs: usize) {
+        if self.sleepers.load(Ordering::SeqCst) == 0 {
             return;
         }
+        let mut jobs = jobs.saturating_sub(self.searching.load(Ordering::SeqCst));
         for worker in 0..self.beds.len() {
-            if self.wake(worker) {
+            if jobs == 0 {
+                break;
+            }
+            if self.wake(worker, true) {
                 jobs -= 1;
-                if jobs == 0 {
-                    break;
-                }
             }
         }
     }
 
-    /// Wake `worker` if it is asleep; whether it was.
-    fn wake(&self, worker: usize) -> bool {
+    /// A called worker's search ended. One `busy` with what it found, or
+    /// with its own work, calls another in its place unless one still
+    /// searches.
+    fn searched(&self, busy: bool) {
+        self.searching.fetch_sub(1, Ordering::SeqCst);
+        if busy {
+            self.call(1)
+        }
+    }
+
+    /// Wake `worker` if it is asleep, `called` to search; whether it was.
+    fn wake(&self, worker: usize, called: bool) -> bool {
         let bed = &self.beds[worker];
-        let mut asleep = bed.asleep.lock();
-        let was = mem::replace(&mut *asleep, false);
+        let mut rest = bed.rest.lock();
+        let was = *rest == Rest::Asleep;
         if was {
+            *rest = if called {
+                #[cfg(test)]
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.searching.fetch_add(1, Ordering::SeqCst);
+                Rest::Called
+            } else {
+                Rest::Awake
+            };
             bed.wake.notify_one();
         }
         was
     }
 
     /// Block `worker` until it is woken, unless a job was announced since
-    /// `seen` was read or it is `done` waiting.
-    fn park(&self, worker: usize, seen: u64, done: impl Fn() -> bool) {
+    /// `seen` was read or it is `done` waiting; whether it was called.
+    fn park(&self, worker: usize, seen: u64, done: impl Fn() -> bool) -> bool {
         #[cfg(test)]
         self.parks.fetch_add(1, Ordering::Relaxed);
         let bed = &self.beds[worker];
-        let mut asleep = bed.asleep.lock();
+        let mut rest = bed.rest.lock();
         self.sleepers.fetch_add(1, Ordering::SeqCst);
         if self.epoch.load(Ordering::SeqCst) == seen && !done() {
-            *asleep = true;
-            while *asleep {
-                bed.wake.wait(&mut asleep)
+            *rest = Rest::Asleep;
+            while *rest == Rest::Asleep {
+                bed.wake.wait(&mut rest)
             }
         }
         self.sleepers.fetch_sub(1, Ordering::SeqCst);
+        mem::take(&mut *rest) == Rest::Called
     }
 
     fn terminate(&self) {
         self.terminated.store(true, Ordering::SeqCst);
         self.epoch.fetch_add(1, Ordering::SeqCst);
         for worker in 0..self.beds.len() {
-            self.wake(worker);
+            self.wake(worker, false);
         }
     }
 }
@@ -179,15 +253,23 @@ impl WorkerThread {
     /// Run jobs until `done`, parking whenever there is none to run.
     fn run_until(&self, done: impl Fn() -> bool) {
         let sleep = &self.registry.sleep;
+        let mut called = false;
         loop {
             let seen = sleep.epoch.load(Ordering::SeqCst);
             if done() {
                 break;
             }
-            match self.find() {
-                Some(job) => job.run(),
-                None => sleep.park(self.index, seen, &done),
+            let job = self.find();
+            if mem::take(&mut called) {
+                sleep.searched(job.is_some())
             }
+            match job {
+                Some(job) => job.run(),
+                None => called = sleep.park(self.index, seen, &done),
+            }
+        }
+        if called {
+            sleep.searched(true)
         }
     }
 }
@@ -236,7 +318,7 @@ unsafe fn run_part(data: *const (), index: usize) {
     // worker belongs to, is not
     let (sleep, owner) = (fork.sleep, fork.owner);
     if fork.pending.fetch_sub(1, Ordering::Release) == 1 {
-        sleep.wake(owner);
+        sleep.wake(owner, false);
     }
 }
 
@@ -293,16 +375,7 @@ impl EvalPool {
         let registry = Arc::new(Registry {
             injector: Injector::new(),
             stealers: locals.iter().map(Worker::stealer).collect(),
-            sleep: Sleep {
-                beds: (0..threads).map(|_| Bed::default()).collect(),
-                sleepers: AtomicUsize::new(0),
-                epoch: AtomicU64::new(0),
-                terminated: AtomicBool::new(false),
-                #[cfg(test)]
-                empty_searches: AtomicU64::new(0),
-                #[cfg(test)]
-                parks: AtomicU64::new(0),
-            },
+            sleep: Sleep::new(threads),
         });
         let pool = EvalPool { registry };
         for (index, local) in locals.drain(..).enumerate() {
@@ -526,14 +599,82 @@ mod test {
             let mut parts = [0u8; 4];
             pool.for_each(&mut parts, |p| *p += 1);
         }
-        let sleep = &pool.registry.sleep;
-        while !sleep.beds.iter().all(|b| *b.asleep.lock()) {
-            thread::sleep(Duration::from_millis(1));
-        }
+        let sleep = all_asleep(&pool);
         let empty = sleep.empty_searches.load(Ordering::Relaxed);
         let parks = sleep.parks.load(Ordering::Relaxed);
         assert!(empty > 0);
         assert_eq!(empty, parks, "{empty} empty searches, {parks} parks");
+    }
+
+    fn all_asleep(pool: &EvalPool) -> &Sleep {
+        let sleep = &pool.registry.sleep;
+        while !sleep.beds.iter().all(|b| *b.rest.lock() == Rest::Asleep) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        sleep
+    }
+
+    #[test]
+    fn a_searching_worker_answers_for_one_job() {
+        let sleep = Sleep::new(4);
+        for bed in sleep.beds.iter() {
+            *bed.rest.lock() = Rest::Asleep
+        }
+        sleep.sleepers.store(4, Ordering::SeqCst);
+        let calls = || sleep.calls.load(Ordering::Relaxed);
+        sleep.announce(1);
+        assert_eq!(calls(), 1);
+        sleep.announce(1);
+        assert_eq!(calls(), 1, "the worker called searches for the second job too");
+        sleep.announce(3);
+        assert_eq!(calls(), 3);
+        sleep.searched(false);
+        sleep.searched(true);
+        assert_eq!(calls(), 3, "a searcher is left");
+        sleep.searched(true);
+        assert_eq!(calls(), 4, "the last searcher, busy, calls one in its place");
+    }
+
+    // each owner waits in its left side for every right side to run beside
+    // it, so a right side announced while the workers called were searching
+    // must still be searched for
+    #[test]
+    fn joins_announced_while_others_search_run_side_by_side() {
+        const PARTS: usize = 4;
+        let pool = pool(2 * PARTS);
+        let arrived = AtomicU32::new(0);
+        let meet = || {
+            arrived.fetch_add(1, Ordering::SeqCst);
+            while arrived.load(Ordering::SeqCst) < 2 * PARTS as u32 {
+                thread::yield_now()
+            }
+        };
+        for _ in 0..20 {
+            all_asleep(&pool);
+            arrived.store(0, Ordering::SeqCst);
+            let mut parts = [(); PARTS];
+            pool.for_each(&mut parts, |_| {
+                pool.join(meet, meet);
+            });
+        }
+    }
+
+    // a busy owner's tiny joins, each of whose one job it runs itself,
+    // call one searcher at a time, not a sleeper a join
+    #[test]
+    fn tiny_joins_call_one_searcher_at_a_time() {
+        const JOINS: u64 = 4000;
+        let pool = pool(16);
+        let parks = all_asleep(&pool).parks.load(Ordering::Relaxed);
+        pool.install(|| {
+            for _ in 0..JOINS {
+                pool.join(|| (), || ());
+            }
+        });
+        let sleep = all_asleep(&pool);
+        let parks = sleep.parks.load(Ordering::Relaxed) - parks;
+        let calls = sleep.calls.load(Ordering::Relaxed);
+        assert!(parks < JOINS / 2, "{JOINS} joins: {parks} parks, {calls} calls");
     }
 
     #[test]
