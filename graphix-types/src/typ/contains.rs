@@ -1188,6 +1188,18 @@ fn names_members(env: &Env, m: &Type) -> bool {
     named(m) && go(env, m, &mut Expanded::default())
 }
 
+/// Whether `m`, a union's member, is a name or a bound cell that stands
+/// for a union or for primitives (a union of them is one member), or
+/// [`names_members`].
+fn names_union(env: &Env, m: &Type) -> bool {
+    names_members(env, m)
+        || (matches!(m, Type::Ref(_) | Type::TVar(_))
+            && matches!(
+                named_head(env, m, &mut Expanded::default()),
+                Some(Type::Set(_) | Type::Primitive(_))
+            ))
+}
+
 /// Two vars sharing one cell, or one id, are already unified.
 fn one_variable(t0: &TVar, t1: &TVar) -> bool {
     t0.wrapper_addr() == t1.wrapper_addr()
@@ -3568,7 +3580,12 @@ impl Type {
                     && !hist.closed(self)
                     && s0.iter().any(|m| names_members(env, m)) =>
             {
-                Self::unfolded(env, s0, true)?.contains_int(flags, env, hist, t)
+                let flat = Self::unfolded(env, s0, true)?;
+                let held = t.with_deref(|t| match t {
+                    Some(Self::Set(s1)) => Self::unfolded_held(env, s1).map(Some),
+                    _ => Ok(None),
+                })?;
+                flat.contains_int(flags, env, hist, held.as_ref().unwrap_or(t))
             }
             (_, Self::Set(s1))
                 if commit
@@ -3922,20 +3939,26 @@ impl Type {
         Ok(false)
     }
 
-    /// The union `s` with each member that [`names_members`] replaced by
-    /// what it names, a union's members in its place, until none does; a
-    /// named type's parameter bounds are committed where `commit`. A cell
-    /// met again under its own binding adds nothing.
-    fn unfolded(env: &Env, s: &[Type], commit: bool) -> Result<Type> {
+    /// The members of the union `s`, each that `names` holds
+    /// ([`names_members`], [`names_union`]) replaced by what it names, a
+    /// union's members in its place, until none does; a named type's
+    /// parameter bounds are committed where `commit`. A cell met again
+    /// under its own binding adds nothing.
+    fn unfolded_members(
+        env: &Env,
+        s: &[Type],
+        commit: bool,
+        names: fn(&Env, &Type) -> bool,
+    ) -> Result<SmallVec<[Type; 8]>> {
         fn unfold(
             env: &Env,
             m: &Type,
-            commit: bool,
+            (commit, names): (bool, fn(&Env, &Type) -> bool),
             cells: &mut AddrSet,
             depth: usize,
             out: &mut SmallVec<[Type; 8]>,
         ) -> Result<()> {
-            if !names_members(env, m) {
+            if !names(env, m) {
                 return Ok(out.push(m.clone()));
             }
             if depth > HEAD_CHAIN_LIMIT {
@@ -3962,18 +3985,40 @@ impl Type {
                 }
             }
             ensure_sufficient(|| match &head {
-                Type::Set(ms) => ms
-                    .iter()
-                    .try_for_each(|m| unfold(env, m, commit, cells, depth + 1, out)),
+                Type::Set(ms) => ms.iter().try_for_each(|m| {
+                    unfold(env, m, (commit, names), cells, depth + 1, out)
+                }),
                 _ => Ok(out.push(head.clone())),
             })
         }
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         let mut cells: LPooled<AddrSet> = LPooled::take();
         for m in s.iter() {
-            unfold(env, m, commit, &mut cells, 0, &mut members)?
+            unfold(env, m, (commit, names), &mut cells, 0, &mut members)?
         }
+        Ok(members)
+    }
+
+    /// The union `s` with each member that [`names_members`] as what it
+    /// names ([`Self::unfolded_members`]).
+    fn unfolded(env: &Env, s: &[Type], commit: bool) -> Result<Type> {
+        let members = Self::unfolded_members(env, s, commit, names_members)?;
         Ok(Self::Set(Arc::from_iter(members)))
+    }
+
+    /// The union `s` as an unfolded one must contain it: every member
+    /// that names a union as what it names ([`names_union`]) and its
+    /// primitives a type apiece, so each goes to the holder's member that
+    /// takes it and only what none takes to an open one.
+    fn unfolded_held(env: &Env, s: &[Type]) -> Result<Type> {
+        let members = Self::unfolded_members(env, s, true, names_union)?;
+        Ok(Self::Set(Arc::from_iter(members.iter().flat_map(|m| {
+            let (bits, whole) = match m {
+                Self::Primitive(p) => (Some(p.iter()), None),
+                m => (None, Some(m.clone())),
+            };
+            bits.into_iter().flatten().map(|b| Self::Primitive(b.into())).chain(whole)
+        }))))
     }
 
     /// Decide `s ⊇ t` by the member that takes `t` ([`Self::take`]),
@@ -4602,6 +4647,26 @@ impl Type {
                     }
                 }
             }
+            // CR claude for claude: [bug/medium] A union with a bare variable takes a
+            // member of several primitive types whole: where no one constructor member
+            // admits all of it, the whole member goes to the variable, the types a
+            // constructor member covers included. `let f = 'a: Number |x: [['a, null],
+            // Array<i64>]| x; let v: [i64, null, Array<i64>] = 1; f(v)` is refused,
+            // "[null, 'a: unbound within Number, Array<i64>] does not contain [i64, null,
+            // Array<i64>]", where 'a = i64 holds it (base-r20 alike). Unbounded, `let f =
+            // |x: ['a, null]| -> 'a x$` over `v: [Array<i64>, i64, null]` gives 'a the
+            // null too: `select f(v) { i64 as i => .., Array<i64> as a => .. }` is refused
+            // for a null arm that can never be taken. A primitive alone (`v: [i64, null]`)
+            // is taken a type at a time (contains_dispatch's `Self::Primitive(p) if p.len()
+            // > 1` arm), and so is the alias spelling of the first (`[Opt<'a>,
+            // Array<i64>]` checks and runs, Type::unfolded_held): the alias accepts what
+            // its written-out twin refuses. What would fix it: a primitive member no
+            // constructor member admits whole gives each of its types to the constructor
+            // member that admits it and only the rest to the residue. That moves what a
+            // call infers (the second example's select must drop its null arm), so it
+            // wants a census of both repos first. probes:
+            // ~/ptmp/cr29/scratch/r20/coord/x5/{h2,h3,k1,k2}.gx (h3 is h2's alias
+            // spelling) (union-prim-member-whole-01)
             if admit.is_empty() {
                 residue.push(m.clone());
             } else if commit

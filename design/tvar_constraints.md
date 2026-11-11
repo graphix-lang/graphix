@@ -545,6 +545,16 @@ union meets it flat too (`set_commit_flat`), so `let g = |v: 'r| f(v)`
 over `f = |x: ['a, Id<'b>]| ..` is refused where it is checked, not where
 `g` is built at a type (pin
 `lang::types::declared_variable_into_a_union_with_a_named_member_refused`).
+What such a union must contain is met flat beside it (`Type::unfolded_held`):
+each member that names a union or primitives as what it names
+(`names_union`, a closed `Opt<i64>` too) and its primitives a type apiece,
+so each part goes to the member that takes it and only what none takes to
+an open one. `[Opt<'a>, string] ⊇ [Opt<i64>, string]` is `[null, 'a,
+string] ⊇ [string, i64, null]`, which gives `'a` the `i64` alone;
+`Opt<i64>` whole fits no member and would go to `'a`, breaking a bound on
+it, and `[Opt<'a>, i64] ⊇ [i64, null, Opt<'a>]` would find no member for
+`[i64, null]` (pins `lang::types::alias_beside_primitives`,
+`bounded_variable_under_an_alias`, each beside its written-out twin).
 A rigid check never commits, so one that fails is asked again with such
 members as their members, committing no bound of the name's parameters
 (`Type::contains_unfolded`, under `ContainsFlags::RigidCheck` alone: every

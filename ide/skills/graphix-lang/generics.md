@@ -336,4 +336,6 @@ no "through Opt, which is not defined above" type U<'a> = [`Nil, `C('a, U<Opt<'a
 no "through Num, which bounds a parameter" type Num<'b: Number> = ['b, null]; type U<'a: Number> = [`Nil, `C('a, U<Num<'a>>)]; 1
 ok type Opt<'b> = ['b, null]; type U<'a> = [`Nil, `C('a, U<Opt<'a>>)]; let rec go = |v: U<Opt<'a>>, n: i64| -> i64 select v { `Nil => n, `C(_, t) => go(t, n + 1) }; let u: U<Opt<i64>> = `C(1, `C(null, `Nil)); go(u, 0)
 ok type Opt<'b> = ['b, null]; let f = |x: [Opt<'a>, null]| -> Opt<'a> x; f(1)
+ok type Opt<'b> = ['b, null]; let f = |x: [Opt<'a>, i64, null]| -> [Opt<'a>, i64] x; f(1)
+ok type Opt<'b> = ['b, null]; let f = 'a: Number |x: [Opt<'a>, string]| x; let v: [Opt<i64>, string] = 1; f(v)
 ```

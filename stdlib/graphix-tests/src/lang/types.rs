@@ -3999,6 +3999,94 @@ run!(
     is(Value::I64(113))
 );
 
+/// A union holding an alias applied to a declared variable beside
+/// primitives of its own is the union with the alias written out: the
+/// alias's `null` and the union's `i64` are one member, so a value of
+/// `[i64, null]` goes into it.
+const ALIAS_BESIDE_PRIMITIVES: &str = r#"
+{
+    type Opt<'b> = ['b, null];
+    let f = |x: [Opt<'a>, i64, null]| -> [Opt<'a>, i64] x;
+    let g = |x: [Opt<'a>, f64, i64, null]| -> [Opt<'a>, i64, f64] x;
+    let h = |x: Array<[Opt<'a>, i64, null]>| -> Array<[Opt<'a>, i64]> x;
+    let a = select f("s") { string as _ => 1, _ => 0 };
+    let b = select f(7) { i64 as i => i * 10, _ => 0 };
+    let c = select g(2.5) { f64 as _ => 100, _ => 0 };
+    let d = select h(["s", null, 3])[2]$ { i64 as i => i * 1000, _ => 0 };
+    a + b + c + d
+}
+"#;
+
+run!(alias_beside_primitives, ALIAS_BESIDE_PRIMITIVES, is(Value::I64(3171)));
+
+const UNION_BESIDE_PRIMITIVES: &str = r#"
+{
+    let f = |x: [['a, null], i64, null]| -> [['a, null], i64] x;
+    let g = |x: [['a, null], f64, i64, null]| -> [['a, null], i64, f64] x;
+    let h = |x: Array<[['a, null], i64, null]>| -> Array<[['a, null], i64]> x;
+    let a = select f("s") { string as _ => 1, _ => 0 };
+    let b = select f(7) { i64 as i => i * 10, _ => 0 };
+    let c = select g(2.5) { f64 as _ => 100, _ => 0 };
+    let d = select h(["s", null, 3])[2]$ { i64 as i => i * 1000, _ => 0 };
+    a + b + c + d
+}
+"#;
+
+run!(union_beside_primitives, UNION_BESIDE_PRIMITIVES, is(Value::I64(3171)));
+
+/// A bounded variable under an alias, in a union with another member,
+/// takes its own part of an argument: `[Opt<'a>, string]` holds
+/// `[Opt<i64>, string]` at `'a = i64`, and `[Opt<'a>, Array<i64>]` holds
+/// `[i64, null, Array<i64>]` so, the null going to the alias's own, in
+/// the check and in the instance; an argument that decides nothing of
+/// `'a` builds its instance too.
+const BOUNDED_VARIABLE_UNDER_AN_ALIAS: &str = r#"
+{
+    type Opt<'b> = ['b, null];
+    let f = 'a: Number |x: [Opt<'a>, string]| x;
+    let g = 'a: Number |x: [Opt<'a>, string, null]| -> [Opt<'a>, string] x;
+    let h = 'a: Number |x: [Opt<'a>, Array<i64>]| x;
+    let v: [Opt<i64>, string] = 1;
+    let w: [i64, null, Array<i64>] = 5;
+    let n: [Opt<i64>, Array<i64>] = 6;
+    let a = select f(1) { i64 as i => i, _ => 0 };
+    let b = select f(v) { i64 as i => i * 10, _ => 0 };
+    let c = select g(2.5) { f64 as _ => 100, _ => 0 };
+    let d = select g("s") { string as _ => 1000, _ => 0 };
+    let e = select h(4) { i64 as i => i * 10000, _ => 0 };
+    let k = select h(w) { i64 as i => i * 100000, _ => 0 };
+    let l = select h(n) { i64 as i => i * 1000000, _ => 0 };
+    a + b + c + d + e + k + l
+}
+"#;
+
+run!(
+    bounded_variable_under_an_alias,
+    BOUNDED_VARIABLE_UNDER_AN_ALIAS,
+    is(Value::I64(6541111))
+);
+
+const BOUNDED_VARIABLE_UNDER_A_UNION: &str = r#"
+{
+    let f = 'a: Number |x: [['a, null], string]| x;
+    let g = 'a: Number |x: [['a, null], string, null]| -> [['a, null], string] x;
+    let h = 'a: Number |x: [['a, null], Array<i64>]| x;
+    let v: [[i64, null], string] = 1;
+    let a = select f(1) { i64 as i => i, _ => 0 };
+    let b = select f(v) { i64 as i => i * 10, _ => 0 };
+    let c = select g(2.5) { f64 as _ => 100, _ => 0 };
+    let d = select g("s") { string as _ => 1000, _ => 0 };
+    let e = select h(4) { i64 as i => i * 10000, _ => 0 };
+    a + b + c + d + e
+}
+"#;
+
+run!(
+    bounded_variable_under_a_union,
+    BOUNDED_VARIABLE_UNDER_A_UNION,
+    is(Value::I64(41111))
+);
+
 /// An alias whose body holds its parameter under a constructor still
 /// grows the type, whatever else its union adds.
 const ALIAS_OVER_A_CONSTRUCTOR_GROWS: &str = r#"
