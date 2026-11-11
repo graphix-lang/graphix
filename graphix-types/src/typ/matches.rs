@@ -1253,10 +1253,10 @@ mod tests {
     }
 
     // Past the walk's pair budget could_match answers an overlap wherever a
-    // pair is met, beside the pair that spent it too: the nested pairs walk
-    // the chain again at each level, about n * m pairs, and once that passes
-    // the budget `H(Z0) against `H(Z1) overlaps, so the arm testing
-    // [`G(P998), `H(Z0)] is no longer found dead.
+    // pair is met, beside the pair that spent it too: the nested pairs take
+    // n * (n + m) pairs, and once that passes the budget `H(Z0) against
+    // `H(Z1) overlaps, so the arm testing [`G(P998), `H(Z0)] is not found
+    // dead.
     #[test]
     fn could_match_answers_an_overlap_past_the_pair_budget() {
         let walk = |n: usize, m: usize| {
