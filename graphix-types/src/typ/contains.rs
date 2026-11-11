@@ -361,9 +361,14 @@ impl ContainsHist {
         Some(mark)
     }
 
-    /// Whether `tv ⊇ t` waits for the end of the arguments in progress.
+    /// Whether `tv ⊇ t` waits for the end of the arguments in progress. A
+    /// bare undecided variable never does, and is answered before the
+    /// index, which its merge outdates.
     fn defers(&mut self, flags: BitFlags<ContainsFlags>, tv: &TVar, t: &Type) -> bool {
-        if self.deferring.is_empty() || tv.is_bound() {
+        if self.deferring.is_empty()
+            || tv.is_bound()
+            || (is_unbound_tvar(t) && undecided(t))
+        {
             return false;
         }
         let Some(i) = self.deferred_for(tv.cell_addr()) else { return false };
@@ -383,6 +388,24 @@ impl ContainsHist {
     // move a var to another cell (a merge, a binding to a cell) would stamp the index
     // where cell_writes does now. probe: ~/ptmp/cr29/scratch/r20/20b/finisher/genmix2.py
     // (defer-index-rebuild-01)
+    // 2026-11-11 claude: On the tree rebased onto lane 20g (r20-staging 8203ee95b) the
+    // rebuild was live at 20x: an impl head over a chain of bounds merges one of the
+    // method's cells at every position of the tuple, each a write, and each position's
+    // lookup built the index again (--no-cache --check, debug, instructions:u at 5000 /
+    // 10000 / 20000 links 9.57 / 33.4 / 126 G, staging 2.00 / 3.27 / 5.97 G;
+    // deep_nesting an_impl_head_with_a_chain_of_bounds_checks_in_linear_time failed).
+    // defers now answers a bare undecided variable before the index, since it never
+    // waits: 2.03 / 3.36 / 6.14 G. What this CR describes stands, and its numbers do not
+    // reproduce: genmix2.py at 2000 / 4000 pairs retires 3.79 / 11.6 G (--expand
+    // --no-cache, instructions:u, GRAPHIX_EVAL_THREADS=1) against base-r20's 1.35 / 1.97
+    // G and staging's 1.36 / 1.98 G, and genmix.py (a function type between the
+    // variables, whose own deferral also clears deferred_as_of) 3.08 / 7.83 G against
+    // 1.84 / 2.95 G; the lane before the rebase (0a0f773b0) measured the same, so this
+    // is nearer perf/medium. A count of merges does not help there (every write is a
+    // merge). A hit stays valid while its cell is open, so an index read without the
+    // stamp would answer both shapes, but it finds an entry of the class, not the first:
+    // meet_deferred would have to judge a merged class's parts together. probes:
+    // ~/ptmp/cr29/scratch/r20/20b/finisher2/
     /// The first of `deferring` that stands for `cell`.
     fn deferred_for(&mut self, cell: usize) -> Option<usize> {
         if self.deferring.len() <= DEFER_SCAN {
