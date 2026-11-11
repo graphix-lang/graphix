@@ -538,6 +538,7 @@ quiet value that differs from its last production (`node::audit_quiet`):
 an entry that stands, or one a wake stood again in the same cycle, which
 a `let` publishes through the event. Pins: `lang::wake_outside` (the
 late sleep: `an_arm_slept_at_its_entry_stopped_at_its_deselect`,
+`a_late_sleep_reaches_a_select_through_a_call_and_a_slot`,
 `an_arm_slept_with_its_select_stopped_at_its_own_deselect`; an entry
 stood again: `a_let_stood_again_moved_for_the_arm_that_slept_through_it`,
 `a_let_stood_again_moved_for_another_selects_arm`,

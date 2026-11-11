@@ -1390,6 +1390,23 @@ async fn an_arm_slept_at_its_entry_stopped_at_its_deselect() -> Result<()> {
     agrees(nested(writes, &held), &moved).await
 }
 
+// The arm slept at its entry holds the select behind a call and in a
+// collection's slot: their sleep is the arm's, as of the arm's deselect.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_sleep_reaches_a_select_through_a_call_and_a_slot() -> Result<()> {
+    let writes = "a <- select clk { 1 => 1, _ => never() };
+  s0 <- select clk { 1 => 1, 3 => 0, _ => never() };
+  s2 <- select clk { 3 => 1, 5 => 0, _ => never() };";
+    let moved = ticks(13, |c| if c < 6 { "[0, 1]" } else { "[1, 2]" });
+    let called = format!("{writes}\n  let f = |s2: i64| {INNER};");
+    agrees(nested(&called, "f(s2)"), &moved).await?;
+    let slot = "array::map([0], |i| select s2 {
+      0 => { let w = a + i; &w },
+      _ => { let w = a + 200; &w }
+    })[0]$";
+    agrees(nested(writes, slot), &moved).await
+}
+
 // The middle select leaves its arm at clk 2, `a` lands at clk 3 and the
 // outer arm sleeps over clk 4 and 5. Slept with the outer arm at its
 // entry at clk 6, the middle arm stopped at clk 2, not at clk 4: entered
