@@ -7140,6 +7140,16 @@ run!(
     prints(r#"[[["s"]]]"#)
 );
 run!(
+    literal_into_the_second_member_of_a_named_union,
+    r#"{
+  type A = [Array<i64>, Array<string>];
+  let f = |x: [A, null]| select x { A as [] => 0, A as [_, ..] => 1, null => 2 };
+  [f([]), f(["a"]), f(null)]
+}"#,
+    prints("[i64:0, i64:1, i64:2]");
+    FuseExpect::None
+);
+run!(
     empty_array_into_a_typedef_union_of_two_undecided_arrays_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];

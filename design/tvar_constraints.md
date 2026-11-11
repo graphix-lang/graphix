@@ -502,7 +502,9 @@ leaves it to the argument's own check (`Type::pre_unify_arg`), a decided
 member beside another that could take the undecided argument included
 (`ContainsHist::early`: `g(["s"], [[["s"]]])` through a wrapper, where the
 first argument has decided one member by the time the second
-pre-unifies), and the
+pre-unifies; `f(["a"])` over `|x: [A, null]|` with `type A = [Array<i64>,
+Array<string>]`, where the first member took the literal before its
+element was checked), and the
 probes behind a refusal's note are ordered walks on copies
 (`callsite::annotation_may_fit`). So a call through an inferred wrapper,
 a nested function or a seq step is refused where the direct call is, at
@@ -511,7 +513,8 @@ the check, never at the instance (pins
 and their twins, `empty_array_into_a_typedef_union_of_two_undecided_arrays_refused`,
 `seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters`,
 `never_argument_beside_one_deciding_a_bound_union`,
-`wrapper_argument_into_a_bound_union_beside_a_decided_member`).
+`wrapper_argument_into_a_bound_union_beside_a_decided_member`,
+`literal_into_the_second_member_of_a_named_union`).
 
 A member that is a name or a bound cell standing for an open variable or
 for a union holding one is its members first (`names_members`,

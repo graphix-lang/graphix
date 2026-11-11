@@ -107,6 +107,7 @@ ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b|
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = 'a: P<'b, 'c> |x: 'a| x; let g = |y| f(y); g([null])
 ok type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string]; let f = 'a: E<'b, 'b>, 'b: Number |x: 'a, y: 'b| x; let h = f(|v| "s", 1); h(2)
+ok type A = [Array<i64>, Array<string>]; let f = |x: [A, null]| 0; f(["a"])
 ```
 
 ```graphix,cases
