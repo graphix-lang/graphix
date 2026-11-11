@@ -2854,6 +2854,40 @@ impl FnType {
         self.throws.place_cells(env, &at.throws)
     }
 
+    // CR claude for claude: [bug/medium] A call through an inferred wrapper passes
+    // the check and its instance is refused at the build, where the direct call is
+    // refused at the check: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; let f =
+    // 'a0: P<'a1, 'a2>, 'a1: P<'a2, 'a3>, 'a2: P<'a3, 'a4>, 'a3: P<'a4, 'a4>, 'a4:
+    // [i64, string] |x: ('a1, 'a0)| x; let g = |y| f(y); println(g(([null], null)))`.
+    // --check exits 0; a run or --expand refuses "in the instance of g(([null],
+    // null)) at this call site: an instance at fn(y: (Array<null>, null)) ->
+    // (Array<null>, null) of a definition typed ..", and GRAPHIX_ELAB_AUDIT reports
+    // it. `f(([null], null))` is refused at the check ("Array<null> could go to
+    // Array<'a2 ..> or Array<'a3 ..> .. which nothing has decided"), and with one link
+    // fewer (`'a2: P<'a3, 'a3>`) both forms check and run. r20-staging 8203ee95b,
+    // before D8 follow-up 2 (c), checks and runs the wrapper form. The same through
+    // a nested function (`let g = |u| { let h = |w| f(..); h(u) }`), a wrapper of
+    // several parameters, and a call that is a seq step (`seq t { let a = f([], null,
+    // ["s"]); .. }`, g3_p00841). Of 2650 programs of lane 20g's review generator
+    // (rvw-udb g1..g4) staging splits check from build on 40 and this tree on 21, 9
+    // of them programs staging does not split: 5 of this shape, 4 of
+    // never-arg-instance-split-01's. probes:
+    // ~/ptmp/cr29/scratch/r20/20b/finisher2/split/{c4w,c4d,c3w,w296,w063,w647,g3_p00271,g3_p00841}.gx
+    // (wrapper-union-instance-split-01)
+    // CR claude for claude: [bug/medium] An argument of `never()` beside one that
+    // decides a typedef union's member passes the check and its instance is refused
+    // at the build: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; type T<'x> =
+    // [`Leaf('x), `Node(Array<T<'x>>)]; let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1:
+    // P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3| [x3]; println(f([],
+    // never()))`. --check exits 0; a run refuses "an instance at fn(x0: Array<[null,
+    // Array<P<T<_>, _>>, Array<T<i64>>]>, x3: _) -> Array<_> of a definition typed
+    // ..", and GRAPHIX_ELAB_AUDIT reports instance-signature. `f([], 1)` checks and
+    // runs. r20-staging 8203ee95b refuses both at the check ("unsatisfiable
+    // constraints on 'a2: T<'a3: i64> & P<'a2: T<'a3: _>, 'a3: _>"). Also as a seq
+    // step, with a `let` over `never()` for the argument (g3_p00068), and where
+    // staging checks and runs the program (g3_p00385: `f(1, [], never())`). probes:
+    // ~/ptmp/cr29/scratch/r20/20b/finisher2/split/{n1,n1b,sq177,sq177d,g3_p00068,g3_p00385}.gx
+    // (never-arg-instance-split-01)
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
     /// the instance's own and bound to the instance's type. Where the
