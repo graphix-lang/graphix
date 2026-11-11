@@ -1140,6 +1140,27 @@ impl Type {
         r
     }
 
+    // CR claude for claude: [bug/high] A type test over two families of recursive unions
+    // still does not return where the test takes a PART of what reaches it. Of the 600
+    // generated selects of round 20's review (gen_sel.py, seeds 1..600) two are killed at
+    // 40 s with the name rule below in place (ten on r20-staging before it), probes in
+    // ~/ptmp/cr29/scratch/r20/coord/x5/: s225.gx (four mutually recursive unions through
+    // Error, Array and tuples, arms `U1 as`, `Error<U2> as`, `U3 as`: over 350 G
+    // instructions in this function under Select::typecheck0_with's `among.diff(test)`)
+    // and s99.gx (its differences end; Reach::exhausted then formats the residual for
+    // the "missing" message as a tree, print::write_deref_set). The cause in both is the
+    // residual of a partial subtraction. `Error<T> - Error<U>` keeps the Error around
+    // what is left of its payload, and a pair in progress answers its minuend, so each
+    // return through the recursion wraps what the levels below left in another Error:
+    // over s432.gx's four typedefs `Error<[T0, T3]>` less `T3` is a tower of dozens of nested
+    // Errors. Such a residual is a new type at every pair, which no key meets again, so
+    // the walk ends only at the pair budget, on a type every later walk (the next arm's
+    // difference, could_match, the form check, the message) reads as deep. What would
+    // fix it: bound the residual, answering the minuend whole (wider, sound) once a
+    // difference nests the pair's own constructor inside itself again, or keep a
+    // finished pair's difference under a name the cut answers, so the residual stays a
+    // finite graph. The message needs a printer that prints a shared node once, or a
+    // size cap, either way. (diff-partial-residual-growth-01)
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(env, tr0, tr1) => {
@@ -1192,10 +1213,15 @@ impl Type {
                 if let Some(defs) = defs {
                     hist.reach(Reach::Defs(defs));
                 }
-                // a residual keeps the names it took nothing from: a later
-                // pair is keyed by them, and met again
-                let r = t0.diff_int(env, hist, &t1).map(|d| match self {
-                    Type::Ref(_) if union_identical(&d, &t0) => self.clone(),
+                // a residual keeps the name of a union or an error it took
+                // nothing from (the two a difference builds anew): a later
+                // pair is keyed by it, and met again
+                let r = t0.diff_int(env, hist, &t1).map(|d| match (self, &t0) {
+                    (Type::Ref(_), Type::Set(_) | Type::Error(_))
+                        if union_identical(&d, &t0) =>
+                    {
+                        self.clone()
+                    }
                     _ => d,
                 });
                 hist.unfoldings.leave(defs);
@@ -2172,7 +2198,7 @@ pub(crate) mod tests {
         let m = t.matching_type(&env, &s).unwrap();
         NARROW_STEPS.with(|n| n.set(0));
         assert!(s.narrow_pattern(&env, &m).unwrap());
-        assert_eq!(NARROW_STEPS.with(|n| n.get()), 61);
+        assert_eq!(NARROW_STEPS.with(|n| n.get()), 79);
     }
 
     /// Error cycles `C<l>_j = [Error<C<l>_j+1 mod l>, tag]` of the lengths

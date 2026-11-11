@@ -4165,7 +4165,7 @@ impl Type {
                     return Ok(false);
                 }
             }
-            let Some(pair) = walk.pair(env, self, pred) else {
+            let Some(pair) = key.map(|_| walk.pair(env, self, pred)) else {
                 return self.narrow_pattern_inner(env, pred, walk);
             };
             let depth = walk.open.len();
@@ -5037,9 +5037,10 @@ struct Narrowing {
     closure: ContainsHist,
     held: NodePairs,
     failed: NodePairs,
-    /// The pairs being narrowed that [`Self::pair`] keys, each with how
-    /// many were open when it was: one met again inside itself holds, as
-    /// a containment's does, so a narrowing over two recursive types ends.
+    /// The pairs of shared nodes being narrowed ([`Self::pair`]), each
+    /// with how many were open when it was: one met again inside itself
+    /// holds, as a containment's does, so a narrowing over two recursive
+    /// types ends.
     open: LPooled<AHashMap<(usize, usize), usize>>,
     /// The outermost open pair the narrowing at hand took to hold: a
     /// pair held on the word of one still open is not remembered.
@@ -5062,14 +5063,11 @@ impl Narrowing {
         (self.closure.closed(t) && self.closure.closed(pred)).then_some(k)
     }
 
-    /// A pair a narrowing may come back to, by its sides' structure
-    /// ([`super::RefHist::param_id`]): the predicate has parts or names a
-    /// type, and neither side reaches an open cell, so the pair binds
-    /// nothing however often it is narrowed.
-    fn pair(&mut self, env: &Env, t: &Type, pred: &Type) -> Option<(usize, usize)> {
-        let parts = matches!(pred, Type::Ref(_)) || node_addr(pred).is_some();
-        (parts && self.closure.closed(pred) && self.closure.closed(t))
-            .then(|| (self.closure.param_id(t, env), self.closure.param_id(pred, env)))
+    /// A pair [`Self::key`] keys, by its sides' structure
+    /// ([`super::RefHist::param_id`]): a named type's unfolding is built
+    /// anew at each visit, and is the pair the narrowing left.
+    fn pair(&mut self, env: &Env, t: &Type, pred: &Type) -> (usize, usize) {
+        (self.closure.param_id(t, env), self.closure.param_id(pred, env))
     }
 }
 

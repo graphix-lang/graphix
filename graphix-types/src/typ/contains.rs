@@ -1168,13 +1168,15 @@ fn takes_lower(flags: BitFlags<ContainsFlags>, tv: &TVar, rigid_part: bool) -> b
 /// for an open variable or for a union holding one as a member: its
 /// members are the union's.
 fn names_members(env: &Env, m: &Type) -> bool {
-    fn go(env: &Env, m: &Type, seen: &mut Expanded) -> bool {
-        let named = match m {
+    fn named(m: &Type) -> bool {
+        match m {
             Type::Ref(tr) => !tr.params.iter().all(|p| p.tvar_free()),
             Type::TVar(tv) => tv.is_bound() && !is_unbound_tvar(m),
             _ => false,
-        };
-        named
+        }
+    }
+    fn go(env: &Env, m: &Type, seen: &mut Expanded) -> bool {
+        named(m)
             && ensure_sufficient(|| match &named_head(env, m, seen) {
                 Some(Type::Set(ms)) => {
                     ms.iter().any(|m| is_unbound_tvar(m) || go(env, m, seen))
@@ -1183,7 +1185,7 @@ fn names_members(env: &Env, m: &Type) -> bool {
                 None => false,
             })
     }
-    go(env, m, &mut Expanded::default())
+    named(m) && go(env, m, &mut Expanded::default())
 }
 
 /// Two vars sharing one cell, or one id, are already unified.
@@ -3026,13 +3028,49 @@ impl Type {
             return Ok(r);
         }
         let (height, outer) = hist.enter_verdict();
-        let r = self.contains_dispatch(flags, env, hist, t);
+        let r = match self.contains_dispatch(flags, env, hist, t) {
+            Ok(false) if flags.contains(ContainsFlags::RigidCheck) => {
+                self.contains_unfolded(flags, env, hist, t)
+            }
+            r => r,
+        };
         let rests = hist.leave_verdict(outer);
         let r = r?;
         if hist.gated == 0 {
             hist.probe_put((probe, self, t), r, height, rests);
         }
         Ok(r)
+    }
+
+    /// A rigid check that failed, asked again with each union member that
+    /// names its members ([`names_members`]) as those members: a commit
+    /// reads them so first, and a rigid check never commits. `Opt<'a> ⊇
+    /// [Opt<'a>, null]` over `type Opt<'x> = ['x, null]` holds for a
+    /// declared `'a`. False where neither side holds such a member.
+    fn contains_unfolded(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Self,
+    ) -> Result<bool> {
+        let mut unfolded = |t: &Self| match t {
+            Self::Set(s)
+                if s.iter().any(|m| names_members(env, m)) && !hist.closed(t) =>
+            {
+                Self::unfolded(env, s, false).ok()
+            }
+            _ => None,
+        };
+        match (unfolded(self), unfolded(t)) {
+            (None, None) => Ok(false),
+            (t0, t1) => t0.as_ref().unwrap_or(self).contains_int(
+                flags,
+                env,
+                hist,
+                t1.as_ref().unwrap_or(t),
+            ),
+        }
     }
 
     fn contains_dispatch(
@@ -3526,14 +3564,18 @@ impl Type {
             // a member that names a variable or a union stands as what it
             // names: `['a, Id<'b>]` over `type Id<'x> = 'x` is `['a, 'b]`
             (Self::Set(s0), _)
-                if !hist.closed(self) && s0.iter().any(|m| names_members(env, m)) =>
+                if commit
+                    && !hist.closed(self)
+                    && s0.iter().any(|m| names_members(env, m)) =>
             {
-                Self::unfolded(env, s0, commit)?.contains_int(flags, env, hist, t)
+                Self::unfolded(env, s0, true)?.contains_int(flags, env, hist, t)
             }
             (_, Self::Set(s1))
-                if !hist.closed(t) && s1.iter().any(|m| names_members(env, m)) =>
+                if commit
+                    && !hist.closed(t)
+                    && s1.iter().any(|m| names_members(env, m)) =>
             {
-                self.contains_int(flags, env, hist, &Self::unfolded(env, s1, commit)?)
+                self.contains_int(flags, env, hist, &Self::unfolded(env, s1, true)?)
             }
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member

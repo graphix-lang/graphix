@@ -545,9 +545,12 @@ union meets it flat too (`set_commit_flat`), so `let g = |v: 'r| f(v)`
 over `f = |x: ['a, Id<'b>]| ..` is refused where it is checked, not where
 `g` is built at a type (pin
 `lang::types::declared_variable_into_a_union_with_a_named_member_refused`).
-A probe reads such a member as its members too, committing no bound of
-the name's parameters, so over a declared variable `[Opt<'a>, null]` is
-`Opt<'a>` and `['a, null]`, bare and under a constructor or a named
+A rigid check never commits, so one that fails is asked again with such
+members as their members, committing no bound of the name's parameters
+(`Type::contains_unfolded`, under `ContainsFlags::RigidCheck` alone: every
+other probe is followed by a commit, and scanning each failed one's union
+cost a 100-arm select 2 G). So over a declared variable `[Opt<'a>, null]`
+is `Opt<'a>` and `['a, null]`, bare and under a constructor or a named
 type, and a recursive helper over `U<Opt<'a>>` (the tail's type of `type
 U<'a> = [`Nil, `C('a, U<Opt<'a>>)]`) checks as its written-out twin does
 (Eric 11-10, D29: a typedef names a union; pins
@@ -1154,10 +1157,11 @@ after the deep test is dead at any depth (pins
 `lang::select::dead_arm_after_a_deep_test_is_refused`;
 diff-residual-depth-01).
 
-A residual is built of the names it came from. A named minuend whose
-difference is its own definition, nothing taken, is answered as the name,
-at any depth, and a union member taken whole leaves no empty member
-beside the rest. Unfolded instead, a name is a new type at every level
+A residual is built of the names it came from. A named minuend, a union
+or an error by its definition (the two a difference builds anew), whose
+difference is that definition, nothing taken, is answered as the name, at
+any depth, and a union member taken whole leaves no empty member beside
+the rest. Unfolded instead, a name is a new type at every level
 it recurs through (`Error<[T0, `A1]> - Error<U1>` over `T0 = [Error<[T0,
 `A1]>, Error<T0>, `A0]`), no pair is met again and the walk spends its
 whole budget on a residual 1000 levels deep, which every later walk then

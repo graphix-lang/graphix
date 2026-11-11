@@ -1862,32 +1862,39 @@ impl Type {
     /// Opt<'x> = ['x, null]`, `'b` the test's own variable, would test
     /// for null alone where `['b, null]` written out passes every value.
     pub fn blind_named_args(&self) -> Option<Type> {
-        fn go(
-            t: &Type,
-            named: bool,
-            clean: &mut AHashSet<(usize, bool)>,
-        ) -> Option<Type> {
+        /// The shared nodes holding nothing to change, those of 16 nodes
+        /// or more: a small test takes no table.
+        struct Clean {
+            nodes: super::Lazy<AHashSet<(usize, bool)>>,
+            steps: u32,
+        }
+        fn go(t: &Type, named: bool, clean: &mut Clean) -> Option<Type> {
+            clean.steps += 1;
             ensure_sufficient(|| match t {
                 Type::Bottom if named => Some(Type::Any),
                 Type::TVar(tv) => go(&tv.binding()?, named, clean),
                 Type::Fn(_) => None,
                 t => {
                     let node = super::node_addr(t).map(|n| (n, named));
-                    if node.is_some_and(|n| clean.contains(&n)) {
+                    if let Some(n) = &node
+                        && clean.nodes.get().is_some_and(|c| c.contains(n))
+                    {
                         return None;
                     }
+                    let from = clean.steps;
                     let named = named || matches!(t, Type::Ref(_));
                     let blind = t.cow_children(&mut |c| go(c, named, clean));
                     if blind.is_none()
+                        && clean.steps - from >= 16
                         && let Some(n) = node
                     {
-                        clean.insert(n);
+                        clean.nodes.get_mut().insert(n);
                     }
                     blind
                 }
             })
         }
-        go(self, false, &mut LPooled::take())
+        go(self, false, &mut Clean { nodes: super::Lazy::new(), steps: 0 })
     }
 
     /// True if v is structurally compatible with the type.
