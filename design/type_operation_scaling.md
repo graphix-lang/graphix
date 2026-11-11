@@ -228,9 +228,8 @@ structure is returned SHARED, never copied.
 **A select's walks over two recursive unions.** The runtime-form check
 (`cast::rep_collision`) keys the pair it is at, a side of it a named
 type, by the two sides' `RefHist::param_id`s: an id hashes each shared
-node of a side once, where the types themselves as the key hashed a
-residual's DAG as a tree at every pair (three of the 600 generated
-selects of round 20's review end for it, at 2.6 to 5.3 G). A narrowing
+node of a side once, where the types themselves as the key would hash a
+residual's DAG as a tree at every pair. A narrowing
 (`Type::narrow_pattern`) holds the pairs of shared nodes it is narrowing
 whose sides reach no open cell (`tvar::Narrowing::open`, by their
 `RefHist::param_id`s, a named type's unfolding being built anew at each
