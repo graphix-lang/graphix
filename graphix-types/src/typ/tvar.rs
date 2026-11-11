@@ -3183,6 +3183,15 @@ impl Drop for Printing {
 // apart a declared signature's variable and its implementation's of the same
 // name, which today read as counterparts: count the pins and transcripts that
 // move before choosing. (printed-name-message-scope-01)
+// 2026-11-11 claude: A name numbered apart can also take a name the program
+// declared: `graphix --no-cache --check
+// ~/ptmp/cr29/scratch/r20/20h/x4/review/print/q5.gx` (`y <- (h, k, m)`, h and k
+// two instances of a maker declaring 'a, m an instance of one declaring 'a1)
+// prints k's variable as 'a1 and m's own 'a1 as 'a11; with m first (q6.gx beside
+// it) m keeps 'a1 and k prints 'a2. Unambiguous, but a declared name moves.
+// Whoever owns the table per message can walk the names it will show first
+// (`Type::names_held`) and number around them, as `quantifiers_apart` does within
+// one signature.
 /// The name `tv` prints under where bindings print in place
 /// ([`PrintFlag::DerefTVars`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for a cell
