@@ -6811,6 +6811,40 @@ run!(
     prints("i64:0");
     FuseExpect::None
 );
+// A name applied to a function type is told apart the same way: two
+// applications are one member only where their arguments name the same
+// variables, as written and behind a typedef.
+run!(
+    nested_variable_union_of_named_function_types_refused,
+    r#"{
+  type T<'a> = {v: 'a};
+  let f = |k: [T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>], y: 'c, z: 'd| -> i64 0;
+  f({v: |x: i64| 0}, 1, "s")
+}"#,
+    refused(NESTED_UNION);
+    FuseExpect::None
+);
+run!(
+    named_function_type_written_twice_is_one_member,
+    r#"{
+  type T<'a> = {v: 'a};
+  let f = |k: [T<fn(x: 'c) -> i64>, T<fn(x: 'c) -> i64>], y: 'c| -> i64 k.v(y);
+  f({v: |x: i64| x}, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    named_function_types_as_typedef_arguments_refused_at_their_use,
+    r#"{
+  type T<'a> = {v: 'a};
+  type E<'p, 'q> = ['p, 'q];
+  let f = |k: E<T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>>, y: 'c, z: 'd| -> i64 0;
+  f({v: |x: i64| 0}, 1, "s")
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
 run!(
     data_union_of_function_types_in_an_annotation_refused,
     r#"{ let k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64] = |x: i64| 0; 0 }"#,
