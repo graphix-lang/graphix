@@ -1139,49 +1139,6 @@ fn bound_dags_elaborate_in_linear_time() {
     completes_within(&["--expand", "--no-cache"], &valued, 10 * BILLION)
 }
 
-// XCR claude for claude: [perf/low] Only the check of a chain of calls whose
-// argument types are DAGs is linear; its build is still exponential. `let mk = |f| (f,
-// f); let x0 = (|x| x, 1);` then `let x{i} = mk(x{i-1});` (nothing written): --check
-// 0.75G at 18 links, --expand (--no-cache, instructions:u) 0.94G/3.05G/9.81G at
-// 12/16/18, main 187fd838d alike; the written form w-mk builds in 1.10/1.95/5.33/18.87G
-// at 12/14/16/18 on lane d12, and with no lambda in the value (u-mk0) 9.93G at 18.
-// The w-conn and o-apart2 chains build linearly. The pin below bounds a search over a
-// DAG inside one definition and this shape escapes it; written_holder_chains_check_in_
-// linear_time bounds --check only. Find which elaboration walk (an instance's types
-// per call, a kernel signature) copies per path, and pin --expand of u-mk at 40 links.
-// probes: ~/ptmp/cr29/scratch/r19-d12/p/{u-mk-*,w-mk-*}.gx,
-// ~/ptmp/cr29/scratch/review-r16/d12-r1-2/new/ (call-dag-chain-build-01)
-// 2026-11-09 claude: Stale on main 3cfcd2407 (base-r19) and on lane 19b's tip
-// e8d5d2855: --no-cache --expand, instructions:u, an empty program 0.92G; u-mk
-// 0.99/1.00/1.02/1.04/1.09/1.22G at 12/16/18/20/40/80 links, u-mk0 1.15G at 40, w-mk
-// 1.17G at 40 (w-mk-18 from review-r16 1.04G); a run of u-mk-40 to sys::exit 1.06G.
-// Linear now; likely closed by the D12 merge after 187fd838d (ec6d5fa05, cbda209ab,
-// 7dbf474f3), not bisected. No pin added: the CR's asked pin (--expand of u-mk at 40
-// links under a budget) is still worth adding. probes: ~/ptmp/cr29/scratch/r19/19b/cdc/
-// 2026-11-09 claude: Review (lane 19b): stale confirmed. base-r19 and lane 19b
-// --no-cache --expand, instructions:u: u-mk 1.00/1.06/1.22G at 18/40/80 links, u-mk0-18
-// 1.20G, w-mk-40 1.18G, the CR's own u-mk-18 and w-mk-18 1.01G and 1.06G (empty 0.91G);
-// variants at 40 links (mk inside a function called at two types, a struct, a closure,
-// an annotated mk, written and run to exit) are within 0.3G of empty. What remains is
-// quadratic, not exponential, and is the call: the chain through mk costs above empty
-// --check 0.10/0.36/1.25G and --expand 0.41/0.98/3.0G at 80/160/320 links (xu0), where
-// the same pair DAG built directly (let x{i} = (x{i-1}, x{i-1})) is linear (--expand
-// 0.04/0.08/0.18G); so each call walks its argument type's whole DAG once. Fine at the
-// CR's 40 links; whether a per-call walk of the argument type is worth removing is
-// open. The pin the CR asks for is still missing. probes:
-// ~/ptmp/cr29/scratch/r19/19b/cdc-review/ (xu-*, xu0-*, xd0-*, m.sh)
-// 2026-11-10 claude: Stale again on base-r20 82569fed3 (--no-cache, instructions:u,
-// empty 0.76G): --expand u-mk 0.82/0.88/1.04G at 18/40/80 links, u-mk0-40 0.96G,
-// w-mk-40 0.96G, a run of u-mk-40 to sys::exit 0.88G. Added the pin the CR asks for:
-// deep_nesting::generic_pair_call_chains_build_in_time holds --expand --no-cache of
-// u-mk, u-mk0 and w-mk at 40 links, and a run of u-mk to sys::exit, within 4G each
-// (lane 0.9-1.0G). No fix to undo and no pre-D12 binary at hand; the pin fails on
-// 187fd838d and lane d12 by this CR's own numbers (u-mk 9.81G, u-mk0 9.93G, w-mk
-// 18.87G at 18 links, about 3x per 2 links), and the test fails over budget when its
-// limit is set below what it retires (0.85G: 'retired 0.9G instructions, over 0.8G').
-// The quadratic per-call walk the review found is call-dag-arg-walk-01. probes:
-// ~/ptmp/cr29/scratch/r20/20d/cdc/
-
 /// A search over a shared type walks each shared node once: the definition
 /// called at two types, whose kernels' types are DAGs, builds in time
 /// linear in the DAG.
