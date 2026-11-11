@@ -469,6 +469,18 @@ fn check_val(
             ", that of {b}, a binding outside its let: declare the val at one type, or \
              give {b} a type that holds every {v}"
         ),
+        // CR claude for claude: [bug/low] A generic implementation whose shared cell is a
+        // call's result held in data, not a binding's, is told "that of a binding outside
+        // its let: declare the val at one type, or give that binding a type that holds
+        // every 'a", and there is no binding to annotate: `let mk = || |x| x; let base =
+        // {g: |x| x, h: |x| x}; let s = {base with h: mk()}` under `val s: {g: fn(x: 'a)
+        // -> 'a, h: fn(x: 'a) -> 'a}` gets it, and with a maker that writes `let v: Any`
+        // the same refusal stands. The way out is the val at one type or a lambda in
+        // place of the call (`{base with h: |x| x}` checks and runs), what the
+        // `Holder::NoLambda` arms say. A fix: name a binding only where a read in the
+        // value holds the cell, else the literal-of-lambdas remedy. probes:
+        // ~/ptmp/cr29/scratch/r20/20d/holder-call-result-01/{m4,m4nov,m4any,m6}
+        // (val-call-result-remedy-01)
         (true, _) => format_compact!(
             ", that of a binding outside its let: declare the val at one type, or give \
              that binding a type that holds every {v}"

@@ -1910,6 +1910,24 @@ run!(
     "/test/m.gx" => "let mk = |z| {f: |x| select true { true => x, false => z }}; let c = mk(never())"
 );
 
+// A struct update holding a call's result is generic in the parts it takes
+// from a generic binding alone: the result is one instance.
+run!(
+    val_struct_update_holding_a_call_result_refused,
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    "/test.gx" => "mod m; let result = (m::s.h(1), m::s.h(\"s\"))",
+    "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let mk = || { let v = never(); |x| { v <- x; x } }; let base = {g: |x| x, h: |x| x}; let s = {base with h: mk()}"
+);
+
+run!(
+    val_struct_update_holding_a_call_result_at_one_type,
+    prints("[i64:1, \"s\", i64:2]"),
+    "/test.gx" => "mod m; let result = (m::s.g(1), m::s.g(\"s\"), m::s.h(2))",
+    "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: i64) -> i64}",
+    "/test/m.gx" => "let mk = || { let v = never(); |x| { v <- x; x } }; let base = {g: |x| x, h: |x| x}; let s = {base with h: mk()}"
+; FuseExpect::None);
+
 run!(
     val_over_an_outer_binding_of_every_type,
     prints("[i64:1, \"s\"]"),

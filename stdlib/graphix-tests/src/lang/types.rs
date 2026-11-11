@@ -8621,6 +8621,86 @@ run!(
     FuseExpect::None
 );
 
+// A function a call returns is one instance, a closure over a cell its maker
+// writes included: a holder whose data holds it, directly or through a name
+// of it, shares its type, while the holder's other parts stay generic.
+const ONE_INSTANCE_CALLED: &str = "type mismatch i64 does not contain string";
+
+run!(
+    struct_update_holding_a_call_result_shares_its_type,
+    r#"{
+  let mk = || { let v = never(); |x| { v <- x; v } };
+  let s = {f: |x| x, g: |y| y};
+  let t = {s with g: mk()};
+  (t.g(1), t.g("s"))
+}"#,
+    refused(ONE_INSTANCE_CALLED);
+    FuseExpect::None
+);
+
+run!(
+    struct_update_over_a_name_of_a_call_result_shares_its_type,
+    r#"{
+  let mk = || { let v = never(); |x| { v <- x; x } };
+  let g0 = mk();
+  let s = {f: |x| x, g: |y| y};
+  let t = {s with g: g0};
+  (t.g(1), t.g("s"))
+}"#,
+    refused(ONE_INSTANCE_CALLED);
+    FuseExpect::None
+);
+
+run!(
+    struct_update_holding_a_call_result_runs_at_its_type,
+    r#"{
+  let mk = || { let v = never(); |x| { v <- x; x } };
+  let s = {f: |x| x, g: |y| y};
+  let t = {s with g: mk()};
+  let u = {s with g: mk()};
+  (t.g(1), t.g(2), t.f(3), t.f("s"), u.g("t"))
+}"#,
+    prints(r#"[i64:1, i64:2, i64:3, "s", "t"]"#);
+    FuseExpect::None
+);
+
+run!(
+    array_of_composites_holding_a_call_result_shares_its_type,
+    r#"{
+  let mk = || { let v = never(); |x| { v <- x; x } };
+  let s = {f: |x| x};
+  let t = [s, {f: mk()}];
+  (t[1]$.f(1), t[1]$.f("s"))
+}"#,
+    refused(ONE_INSTANCE_CALLED);
+    FuseExpect::None
+);
+
+run!(
+    holder_of_an_array_holding_a_call_result_shares_its_type,
+    r#"{
+  let mk = || { let v = never(); |x| { v <- x; x } };
+  let s = {f: |x| x};
+  let t = {a: [s, {f: mk()}]};
+  (t.a[1]$.f(1), t.a[1]$.f("s"))
+}"#,
+    refused(ONE_INSTANCE_CALLED);
+    FuseExpect::None
+);
+
+run!(
+    composites_holding_a_call_result_run_at_its_type,
+    r#"{
+  let mk = || { let v = never(); |x| { v <- x; x } };
+  let s = {f: |x| x};
+  let t = [s, {f: mk()}];
+  let u = {a: [s, {f: mk()}]};
+  (t[1]$.f(1), t[1]$.f(2), u.a[1]$.f("s"))
+}"#,
+    prints(r#"[i64:1, i64:2, "s"]"#);
+    FuseExpect::None
+);
+
 // Two lambdas no binding names are one union member where their live cells
 // pair as a renaming, so a select of composites holding them destructures.
 run!(

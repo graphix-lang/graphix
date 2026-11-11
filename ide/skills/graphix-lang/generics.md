@@ -131,6 +131,8 @@ no "i64 does not contain string" let id = |x| x; let g = (id, 1).0; (g(1), g("s"
 no "i64 does not contain string" let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
 no "i64 does not contain string" let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; j <- |x: i64| x; (p(true).f("s"), p(false).f(1))
 ok let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; (p(true).f("s"), p(false).f(1))
+no "i64 does not contain string" let mk = |z| |x| x; let s = {f: |x| x, g: |y| y}; let t = {s with g: mk(0)}; (t.g(1), t.g("s"))
+ok let mk = |z| |x| x; let s = {f: |x| x, g: |y| y}; let t = {s with g: mk(0)}; (t.f(1), t.f("s"), t.g(2))
 no "needs its type known here" let s = {f: |x| x}; let j = never(); let t = {s with f: j}; let r = t.f("s"); j <- |x: i64| x + 1; r
 ok let s = {f: |x| x}; let j: fn(x: i64) -> i64 = never(); let t = {s with f: j}; let r = t.f(2); j <- |x: i64| x + 1; r
 ok let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => r.f(v) } }; (k(2), k(-2))
