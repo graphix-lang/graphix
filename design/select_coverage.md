@@ -176,9 +176,13 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`Type::blind_named_args`, `Select::typecheck1`), which both engines
   read: `Array<Opt<'b>> as [x, ..]` matches what `Array<['b, null]> as
   [x, ..]` matches, under an array, a typedef's parameter and a
-  recursive typedef's, and a closed argument (`Opt<i64>`) is tested
-  (pins `lang::select::written_test_alias_over_its_own_variable`,
-  `written_test_union_over_its_own_variable`).
+  recursive typedef's, and a closed argument (`Opt<i64>`) is tested. The
+  union written out under a recursive typedef's argument (`U<['b, null]>`
+  over `type U<'a> = [`Nil, `C('a, U<Opt<'a>>)]`) is rewritten alike: its
+  tail's argument is the alias over it, which would drop the ⊥ a link
+  down (pins `lang::select::written_test_alias_over_its_own_variable`,
+  `written_test_union_over_its_own_variable`, each over a value three
+  links deep).
 
 - **`name@ pattern` captures** are typed from the SCRUTINEE (a `let`'s
   from its value, `Bind::complete_partial`): under an

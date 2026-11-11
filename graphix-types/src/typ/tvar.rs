@@ -4156,18 +4156,16 @@ impl Type {
         walk: &mut Narrowing,
     ) -> Result<bool> {
         ensure_sufficient(|| {
-            let key = walk.key(self, pred);
-            if let Some(k) = key {
-                if walk.held.contains(k) {
-                    return Ok(true);
-                }
-                if walk.failed.contains(k) {
-                    return Ok(false);
-                }
-            }
-            let Some(pair) = key.map(|_| walk.pair(env, self, pred)) else {
+            let Some(k) = walk.key(self, pred) else {
                 return self.narrow_pattern_inner(env, pred, walk);
             };
+            if walk.held.contains(k) {
+                return Ok(true);
+            }
+            if walk.failed.contains(k) {
+                return Ok(false);
+            }
+            let pair = walk.pair(env, self, pred);
             let depth = walk.open.len();
             if let Some(&at) = walk.open.get(&pair) {
                 walk.assumed = walk.assumed.min(at);
@@ -4182,12 +4180,10 @@ impl Type {
                 walk.assumed = walk.assumed.min(assumed)
             }
             let r = r?;
-            if let Some(k) = key {
-                match r {
-                    true if assumed < depth => (),
-                    true => walk.held.insert(k, self, pred),
-                    false => walk.failed.insert(k, self, pred),
-                }
+            match r {
+                true if assumed < depth => (),
+                true => walk.held.insert(k, self, pred),
+                false => walk.failed.insert(k, self, pred),
             }
             Ok(r)
         })
