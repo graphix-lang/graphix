@@ -1486,11 +1486,13 @@ former consumer derives from the cells:
   no name but its own quantifiers is closed (`FnType::declaring`), no
   enclosing declaration aliases or seeds a cell of it, and the
   enclosing signatures' alias walks, held checks and position cells
-  skip it. A nest where every signature names an outer variable is
+  skip it, so a closed signature inside another is the signature it
+  is alone. A nest where every signature names an outer variable is
   still aliased once per enclosing signature. Pins:
   `typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps`,
   `nested_quantified_types_compare_in_linear_steps`,
-  `a_cell_write_drops_the_free_cells_read_before_it`.
+  `a_cell_write_drops_the_free_cells_read_before_it`,
+  `a_closed_signature_nests_as_it_stands_alone`.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
   directly (inference declares no header); `sig_matches_int`'s
   impl-constraint check is SATISFACTION — the

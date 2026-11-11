@@ -201,6 +201,23 @@ pub(super) fn fntype(i: &mut Input) -> R<FnType> {
     fnshared(i).map(Arc::unwrap_or_clone)
 }
 
+// CR claude for claude: [bug/medium] Some nests of quantified function types
+// do not finish parsing, or printing. `graphix --no-cache --check
+// parse_hang.gx` (one `let` annotated with a 2.7 KB function type: signatures
+// nested several deep, each declaring up to three of four names, their bounds
+// naming the others) is killed at 20 s on base-r20 and on r20-h, and so is
+// `graphix fmt --stdout` of it; print_hang.gx (2.3 KB) parses in 5 ms, is
+// refused by `--check`, and `fmt --stdout` of it is killed at 20 s in the
+// printer. Both profiles are Type::normalize_int_inner under
+// FnType::collect_tvars_seen and FnType::for_each_part_passing, nested deep;
+// whether the walk is exponential or circular is not established. None of
+// 66000 generated types under 1.2 KB hangs the parser. The check refuses every
+// such program (QUANTIFIED_FN) but the parse comes first, so `--check` and the
+// language server hang on it too. Perhaps the cells merged by
+// (nested-quantifier-capture-01) let a bound reach its own signature. The
+// generator is r20h_diff_tmp.rs beside the probes (seeds 124606 and 15940).
+// probes: ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/review/parse_hang.gx,
+// print_hang.gx (nested-signature-hang-01)
 fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     keyword(i, "fn")?;
     let _nest = ParseDepth::enter();

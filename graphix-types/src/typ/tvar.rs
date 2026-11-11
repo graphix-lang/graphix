@@ -3260,6 +3260,37 @@ impl Type {
     // prints names, parses it. Found fixing rank2-print-01, whose closed test
     // counts such a signature open (seed_conjuncts puts `'z` in `known`).
     // (nested-bound-alias-01)
+    // CR claude for claude: [bug/low] An enclosing declaration's alias walk
+    // captures a variable across signatures. Walking a nested quantified
+    // signature, it passes the conjuncts of every cell that signature's
+    // positions name (FnType::for_each_part_passing) under that signature's
+    // scope of names. A cell an enclosing signature declared holds its bound
+    // there too, so a variable the bound names is aliased to the nested
+    // signature's own quantifier of the same name. `graphix fmt --stdout` of
+    // `let y: fn(x: fn<'z: Array<'a>, 'a: Number>(x0: fn<'a: Any>(x1: 'z, q0:
+    // 'a) -> 'a, x1: 'z, q1: 'a, w: 'k) -> 'a, k: 'k) -> i64 = never()` prints
+    // the innermost header as `fn<'a: Any + Number>`: the two `'a` cells are
+    // merged, the reparse merges them again, so the guard passes and the
+    // formatter rewrites the program. The middle signature alone parses right,
+    // since its own declaration walks before its bounds are seeded; only a walk
+    // from an enclosing signature finds them. Since rank2-print-01 a signature
+    // that names nothing outside itself is not walked again (the closed set of
+    // FnType::declaring; pin
+    // typ::fntyp::tests::a_closed_signature_nests_as_it_stands_alone), so the
+    // same program without `w: 'k` and `k: 'k` prints right on r20-h, where
+    // base-r20 rewrites both. Seen beside it, cause not traced: on a signature
+    // of bounds_order.gx as base-r20 parses it,
+    // FnType::collect_tvars_through_bounds answers `'c` with one cell or another
+    // from one call to the next (three calls in a row disagree in about half
+    // the runs). Only `graphix fmt` reaches a written nest of quantified types
+    // (QUANTIFIED_FN). A fix to try: for a nested signature pass the conjuncts
+    // of its own quantifiers' cells only, a cell declared outside it being
+    // passed in its declarer's scope. Found reviewing rank2-print-01 with a
+    // generator of nested signatures run against the plain walks
+    // (r20h_diff_tmp.rs, differential-knobs.patch). probes:
+    // ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/review/cap_open.gx,
+    // cap_closed.gx, cap_alone.gx, bounds_order.gx
+    // (nested-quantifier-capture-01)
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,

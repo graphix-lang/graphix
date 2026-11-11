@@ -2763,6 +2763,17 @@ mod tests {
         assert_eq!(ft.to_string(), src);
     }
 
+    // A signature that names nothing outside itself is the same signature
+    // inside an enclosing one, whose declaration aliases none of its cells.
+    #[test]
+    fn a_closed_signature_nests_as_it_stands_alone() {
+        let closed = "fn<'a: Number, 'z: Array<'a>>(x0: fn<'a: Any>(x1: 'z, q0: 'a) -> 'a, \
+                      x1: 'z, q1: 'a) -> 'a";
+        assert_eq!(parse_fn_type(closed).unwrap().to_string(), closed);
+        let nested = format!("fn(x: {closed}) -> i64");
+        assert_eq!(parse_fn_type(&nested).unwrap().to_string(), nested);
+    }
+
     // What a nested signature names from outside itself is read again
     // after a cell write: a conjunct added to a cell it names is seen.
     #[test]
