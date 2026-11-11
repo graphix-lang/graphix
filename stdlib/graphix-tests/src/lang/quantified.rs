@@ -1413,6 +1413,25 @@ run!(
     "/test/m.gx" => "let p = ('a: Number |x: 'a| -> 'a x, 'a: Number |y: 'a| -> 'a y)"
 );
 
+// A header's variable takes no name the printed type shows another cell
+// under, its own or one numbered apart: inside the signature the header's
+// variable and the instance it holds read as two.
+run!(
+    a_header_prints_apart_from_an_instance_shown_before_it,
+    refused("but implemented (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> ('a1: unbound within Number, fn(x: 'a: unbound within Number) -> 'a: unbound within Number)):"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val p: i64;",
+    "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let p = (h, 'a: Number |x: 'a| (x, h))"
+);
+
+run!(
+    a_header_prints_apart_from_a_name_numbered_before_it,
+    refused("fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn<'a11: Number>(x: 'a11: unbound within Number) -> ('a11: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)):"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val p: i64;",
+    "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let p = (h, k, 'a1: Number |x: 'a1| (x, k))"
+);
+
 const NO_HEADER: &str =
     "fn(x: 'a: unbound within Number) -> 'a: unbound within Number and cannot hold i64";
 

@@ -1716,14 +1716,18 @@ former consumer derives from the cells:
   variables prints in linear time), so two instances side by side read
   as two variables; a cell a header lists is that header's until the
   signature ends (`tvar::quantifiers_apart`), under whatever name a
-  binding reaches it by. A message about a generic binding itself
-  prints its scheme (`Type::scheme_read`), never the one instance a
-  comparison held rigid: the refused write to a generic binding
-  (`Connect::typecheck0_with`) names it header and all.
+  binding reaches it by, and its header takes no name the type already
+  shows another cell under, so no two cells showing share one. A message
+  about a generic binding itself prints its scheme
+  (`Type::scheme_read`), never the one instance a comparison held rigid:
+  the refused write to a generic binding (`Connect::typecheck0_with`)
+  names it header and all.
   Pins: `lang::quantified::*_prints_no_header`,
   `two_instances_in_one_printed_type_*`,
   `a_printed_quantifier_names_its_cell_inside_a_binding_too`,
   `two_generic_functions_in_one_printed_type_keep_their_headers`,
+  `a_header_prints_apart_from_an_instance_shown_before_it`,
+  `a_header_prints_apart_from_a_name_numbered_before_it`,
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
   `a_refused_write_to_a_generic_binding_prints_its_header`. A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring

@@ -3110,8 +3110,8 @@ thread_local! {
 #[derive(Default)]
 struct Shown {
     names: AHashMap<usize, ArcStr>,
-    /// How many of `names`' cells print under each name.
-    taken: AHashMap<ArcStr, u32>,
+    /// The names of `names`, each one cell's.
+    taken: AHashSet<ArcStr>,
 }
 
 impl Shown {
@@ -3119,25 +3119,21 @@ impl Shown {
     const KEPT: usize = 64;
 
     fn show(&mut self, addr: usize, name: ArcStr) {
-        *self.taken.entry(name.clone()).or_default() += 1;
+        self.taken.insert(name.clone());
         self.names.insert(addr, name);
     }
 
     fn hide(&mut self, addr: usize) {
-        let Some(name) = self.names.remove(&addr) else { return };
-        if let Entry::Occupied(mut e) = self.taken.entry(name) {
-            *e.get_mut() -= 1;
-            if *e.get() == 0 {
-                e.remove();
-            }
+        if let Some(name) = self.names.remove(&addr) {
+            self.taken.remove(&name);
         }
     }
 
     /// `name` unless a cell prints under it, then numbered apart.
     fn free_name(&self, name: &ArcStr) -> ArcStr {
-        match self.taken.contains_key(name) {
+        match self.taken.contains(name) {
             false => name.clone(),
-            true => name_apart(name, |n| self.taken.contains_key(n)),
+            true => name_apart(name, |n| self.taken.contains(n)),
         }
     }
 
@@ -3221,7 +3217,8 @@ impl Drop for Listed {
 
 /// `f`, printing `ft`, with each quantifier `ft`'s header lists
 /// ([`TVar::heads_a_printed_signature`]) printing under a name apart from
-/// the other cells of its name `ft` holds, where bindings print in place
+/// the other cells of its name `ft` holds and from every name the type
+/// being printed shows another cell under, where bindings print in place
 /// ([`PrintFlag::DerefTVars`]).
 pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
     let Some(_printing) = Printing::enter() else { return f() };
@@ -3249,7 +3246,7 @@ pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
             if s.names.contains_key(&addr) {
                 return;
             }
-            let name = match alone {
+            let name = match alone && !s.taken.contains(&q) {
                 true => q,
                 false => {
                     if avoid.is_empty() {
@@ -3258,7 +3255,7 @@ pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
                         avoid.extend(ft.quantifiers.iter().cloned());
                     }
                     let name =
-                        name_apart(&q, |n| avoid.contains(n) || s.taken.contains_key(n));
+                        name_apart(&q, |n| avoid.contains(n) || s.taken.contains(n));
                     avoid.insert(name.clone());
                     name
                 }
