@@ -83,8 +83,8 @@ pub(crate) mod wake;
 pub(crate) enum VarRead<'a> {
     /// Found in the overlay (this cycle's transient deliveries) or
     /// store-stamped THIS cycle: the entry's own tag applies, but for a
-    /// wake's moved stand ([`delivered_view`]) and, to a resume, an entry
-    /// stood again quietly ([`wake::stands_since`]).
+    /// wake's moved stand ([`delivered_view`]) and, to a resume or a step,
+    /// an entry stood again quietly ([`wake::stands_since`]).
     Delivered(&'a TagValue),
     /// Last cycle's delivery, made after the walk passed this reader and
     /// handed to it alone now: its own tag applies.
@@ -96,8 +96,8 @@ pub(crate) enum VarRead<'a> {
 
 impl<'a> VarRead<'a> {
     /// The entry and its stamp, where the reader of `id` reads one that
-    /// stands: stamped in an earlier cycle, or, to a resume, stood again
-    /// quietly in this one ([`wake::stands_since`]).
+    /// stands: stamped in an earlier cycle, or, to a resume or a step,
+    /// stood again quietly in this one ([`wake::stands_since`]).
     #[inline(always)]
     pub(crate) fn standing<R: Rt>(
         &self,

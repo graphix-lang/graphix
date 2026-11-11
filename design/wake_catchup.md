@@ -120,8 +120,7 @@ cycle the arm stopped running, which its select's clock kept
 (`wake::asleep_since`, which a select's and a seq machine's sleep read
 through `wake::stopped`): a select inside it stamps its arms with that
 cycle, and sleeps each arm it had left earlier as of that arm's own. An
-arm
-evaluated under a wake or step view opens a catch-up scope
+arm evaluated under a wake or step view opens a catch-up scope
 (`node::wake::CatchUp`): that cycle, no later than the enclosing
 scope's (an arm sleeps whenever the arm around it does), the select's
 tracked inputs and fire bits, and the scopes around it. A callee bound
@@ -458,10 +457,12 @@ to that reader the stand is a fire.
   the evaluating arm did not see (`wake::slept_through`,
   `VarRead::production`). An entry delivered quietly this cycle (a `let`
   another wake stands again as it is) is the same standing entry to a
-  resume, read by the stamp its store entry keeps (`wake::stands_since`),
-  and no delivery to `wake::owed`. A select arm that resumes on a stale
-  scrutinee binds its pattern moved when the scrutinee fired or moved
-  since the arm last ran (`LazyArmFacts::scrutinee_moved`).
+  resume and to a step, read by the stamp its store entry keeps
+  (`wake::stands_since`), and no delivery to `wake::owed`: a step's call
+  is owed it as it is owed one that only stands. A select arm that
+  resumes on a stale scrutinee binds its pattern moved when the scrutinee
+  fired or moved since the arm last ran
+  (`LazyArmFacts::scrutinee_moved`).
 - **Who passes it on.** Everything that computes from values: `Tag::join`
   ORs it (it is dropped where the join fires, a fire says as much), so
   operators, data constructors, field reads, a select's emission (the
@@ -542,7 +543,8 @@ late sleep: `an_arm_slept_at_its_entry_stopped_at_its_deselect`,
 `an_arm_slept_with_its_select_stopped_at_its_own_deselect`; an entry
 stood again: `a_let_stood_again_moved_for_the_arm_that_slept_through_it`,
 `a_let_stood_again_moved_for_another_selects_arm`,
-`a_target_stood_again_is_owed_to_the_arm_that_learns_it`),
+`a_target_stood_again_is_owed_to_the_arm_that_learns_it`,
+`a_let_stood_again_is_owed_to_a_steps_call`),
 `lang::prune::standing_formal_refresh_marks_its_readers`,
 `graphix-shell/tests/shell/wake_outside_roots.rs` for readers in other
 roots, and `graphix-fuzz/findings/wake-outside-nov2026/`. The reactive

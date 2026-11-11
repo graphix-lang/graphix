@@ -184,9 +184,9 @@ pub(crate) fn slept_through<R: Rt>(ctx: &ExecCtx<'_, R>, stamp: u64) -> bool {
 }
 
 /// The stamp `id`'s store entry keeps beside `delivered`, its quiet
-/// delivery this cycle, read by a resume: an entry that stands again (a
-/// `let` republished at its wake) is no write, so the stamp of its last
-/// one says whether the reader slept through it.
+/// delivery this cycle, read by a resume or a step: an entry that stands
+/// again (a `let` republished at its wake) is no write, so the stamp of
+/// its last one says whether the reader slept through it or is owed it.
 #[inline]
 pub(crate) fn stands_since<R: Rt>(
     ctx: &ExecCtx<'_, R>,
@@ -194,11 +194,7 @@ pub(crate) fn stands_since<R: Rt>(
     delivered: &TagValue,
 ) -> Option<u64> {
     let tag = delivered.tag();
-    if ctx.event.view != View::Wake
-        || tag.triggers()
-        || tag.moved()
-        || ctx.catch_up.is_none()
-    {
+    if !ctx.event.wake() || tag.triggers() || tag.moved() || ctx.catch_up.is_none() {
         return None;
     }
     let (_, stamp) = ctx.rt.store_get_var(ctx.rt.var_of(*id))?;

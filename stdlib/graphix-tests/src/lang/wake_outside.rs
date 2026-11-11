@@ -1510,3 +1510,23 @@ async fn a_target_stood_again_is_owed_to_the_arm_that_learns_it() -> Result<()> 
     agrees(stood_again(true, 3, rest), &owed).await?;
     agrees(stood_again(false, 3, rest), &owed).await
 }
+
+// A seq step's call is a fresh call, owed each capture that stands. It
+// runs at clk 5, the cycle the region's second wake stands `w` again as
+// it is: the callee's `count` takes `w`'s fire and the run completes, as
+// where the region woke once and `w` only stands.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_stood_again_is_owed_to_a_steps_call() -> Result<()> {
+    let rest = "let g0 = select s0 {
+    0 => { let w = a + 0; let c = count(s0); |y: i64| count(w) + y },
+    _ => { let w = 100; |y: i64| count(w) + y }
+  };
+  let h0 = once(g0);
+  let r = seq filter(clk, |c| c == 4) { let x = h0(10); x };
+  let got = 0;
+  got <- r;
+  clk ~ (clk, got)";
+    let owed = ticks(9, |c| if c < 8 { "0" } else { "11" });
+    agrees(stood_again(true, 3, rest), &owed).await?;
+    agrees(stood_again(false, 3, rest), &owed).await
+}
