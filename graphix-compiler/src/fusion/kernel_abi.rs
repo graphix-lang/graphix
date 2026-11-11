@@ -796,6 +796,23 @@ pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
     try_freeze_for_abi_normalized(t).ok()
 }
 
+// CR claude for claude: [risk/low] The selective retry refuses a type the
+// unconditional retry freezes: `App(Set([Hole, TVar a := Hole]), A)`, a
+// constructor union one of whose members is a cell bound to the hole.
+// Type::fill_hole fills the bare hole and leaves the one inside the cell, so
+// the filled union's second member freezes Unsupported, which is not retried;
+// `resolve_tvars().normalize()` first makes both members holes, the union
+// collapses and the application freezes to `A`. Fusion is lost, no answer is
+// wrong; no program is known to hold the type. The proptest
+// tests::selective_retry_matches_unconditional_retry finds it at random (seeds
+// are fresh each run): once in round 20's gate of lane 20h, 1 run in 3000 of
+// the test alone after that, and its seed fails the same on main 82569fed3.
+// Either fill_hole looks through a bound cell, or a freeze that fails on a
+// filled constructor is NonCanonical. The seed is not in
+// proptest-regressions/fusion/kernel_abi.txt (it would fail every gate): it is
+// `cc c3b87ec6923fa53de409cdb05d795bbf86ed5d39c84aea87e47c8fe1f50c0078`, kept
+// with the gate's log in ~/ptmp/cr29/scratch/r20/20h/finisher/.
+// (freeze-ctor-cell-hole-01)
 pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeError> {
     super::TypeMemo::frozen(t, || match try_freeze_for_abi(t) {
         Err(FreezeError::NonCanonical) => {
