@@ -589,6 +589,21 @@ fn emit_qop_always_bad<R: Rt>(
     emit_bottom_placeholder_of_kind(cx, kind, cv.disc)
 }
 
+// CR claude for claude: [bug/low] The engines answer `x$` apart where `x`
+// is null or an error that stands, read under a resume: the node-walk's
+// result is a bottom that fires, a kernel's a bottom that stands (the
+// placeholder takes the operand's STALE). On main the difference reaches a
+// reader outside a woken arm: in bq1.gx arm 0's `let w = select o$ { 0 =>
+// 1, x => x }` over `o` that turned null while the arm slept gives the
+// reader a bottom at the wake node-walked (the tick at clk 6 is missing)
+// and leaves it at 1 fused (base-r20: `(6, 3, 0, 1, 2)` fused, no such
+// tick with --no-fusion). On this tree both give the bottom there, the
+// kernel's by `Tag::MOVED` through the select's miss, so that probe
+// agrees; the fresh bottom against the stale one still differs wherever a
+// reader tells them apart with no move to carry it (a wake that slept
+// through no fire of `o`). By "inside a woken arm nothing fires" the
+// kernel's answer is the intended one. Probe:
+// ~/ptmp/cr29/scratch/r20/20a/rev-engines/bq1.gx (qop-wake-bottom-01)
 /// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`, or a `[T, null]`
 /// inner under a null sink; an inner with nothing to strip passes
 /// through. `result_typ` is the qop node's static type, which selects
