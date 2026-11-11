@@ -1359,6 +1359,20 @@ pub struct TCell {
     // set 5% over the cost of its day (f71c21931) and the cost had reached 5635 before
     // this field, so the next byte an activation gains fails the gate. Whether to
     // reclaim those bytes or set the margin again is open. (tcell-place-bytes-01)
+    // 2026-11-11 claude: A correction to the text above (the coordinator's review of round
+    // 20): a cell takes a number on a walk of fewer than ReachOrder::MIN_NUMBERED cells too,
+    // where the walk passed standing cells of a numbering (CycleWalk::number numbers what it
+    // walked above them whatever its length, one cell included); only a walk that met no
+    // numbering needs MIN_NUMBERED cells to start one. design/type_operation_scaling.md says
+    // both now. On the bytes, read not measured: Option<Place> is an Arc and a u64, 16
+    // bytes; Option<Box<Place>> is 8, a contained change (ten uses of the field in tvar.rs),
+    // at one allocation per cell at its first number and one more pointer read where a walk
+    // passes a standing cell by, the path the chain-of-bounds pins in deep_nesting measure.
+    // That takes an activation from 5651 to 5643 bytes against the ceiling of 5656. Two u32s
+    // in the cell need a table of numberings outside it, which a process with many contexts
+    // has no place for. Not changed here: 8 bytes an activation against an allocation on the
+    // chains the numbering was built for is a trade to measure (activation_heap's pin,
+    // guicheck, deep_nesting's chain pins) before it is made.
     /// The cell's number by what it reaches, until its next write.
     pub(crate) place: Option<Place>,
 }

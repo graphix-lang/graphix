@@ -145,7 +145,14 @@ structure is returned SHARED, never copied.
   its cell has walked a set closed under the edges it takes; where it
   met no cell twice on its own path (the cells form no cycle), it
   numbers them, each after every cell it reaches (`CycleWalk::number`,
-  the number in `TCell::place`). The invariant: while a cell's number
+  the number in `TCell::place`). A walk that met no standing numbering
+  starts one only where it walked `ReachOrder::MIN_NUMBERED` (32) cells
+  or more: a shorter chain is walked again by each of its links, a
+  bounded cost, and takes no number, so neither the pass-by nor a
+  standing probe verdict (`tvar::Standing`) applies to it, and a test or
+  a generator of chains under 32 cells exercises no numbering. A walk
+  that passed standing cells numbers what it walked above them whatever
+  its length, one cell included. The invariant: while a cell's number
   stands, every cell it reaches holds a lower number of the same
   numbering, standing too, and none of them has been written. So a
   later walk passes by a standing cell unless the cell it looks for
