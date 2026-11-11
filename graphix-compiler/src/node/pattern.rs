@@ -2453,14 +2453,7 @@ impl StructPatternNode {
     }
 
     pub fn delete<R: Rt>(&self, ctx: &mut ExecCtx<'_, R>) {
-        self.ids(&mut |id| {
-            if ctx.control.lives().orphan_if_pinned(id) {
-                ctx.env.unbind_name(id);
-            } else {
-                ctx.rt.store_release(&id);
-                ctx.env.unbind_variable(id);
-            }
-        })
+        self.ids(&mut |id| ctx.delete_binding(id))
     }
 }
 

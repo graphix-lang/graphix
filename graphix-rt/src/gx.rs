@@ -993,6 +993,8 @@ impl<X: GXExt> GX<X> {
                         ref_var_keys,
                         ref_var_total,
                         store_len: self.ctx.rt.store.len(),
+                        aliases_len: self.ctx.rt.aliases.len()
+                            + self.ctx.rt.alias_reads.len(),
                         lambda_defs_len: self.ctx.lambda_defs.len(),
                         lowerings_len: self.ctx.lowerings_len(),
                         restored: self.restored,

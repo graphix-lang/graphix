@@ -1869,7 +1869,7 @@ impl<R: Rt> Module<R> {
             if private_inner {
                 // what the body wrote through its binding and has not
                 // landed goes with it, a reference to it alive or not
-                ctx.rt.store_release(&inner);
+                ctx.rt.forget_writes(inner);
                 ctx.static_callees.unjoin(inner, outer)
             }
         }
@@ -2067,6 +2067,10 @@ impl<R: Rt> Update<R> for Module<R> {
             source.delete(ctx);
         }
         self.clear_compiled(ctx);
+        for (_, val) in self.sig_binds.iter() {
+            ctx.forget_binding(*val);
+            ctx.delete_binding(*val)
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {

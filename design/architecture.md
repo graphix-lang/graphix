@@ -158,7 +158,9 @@ the body's `let` publishes to it, and
 every read, write, store entry and registration through the
 implementing binding is the val's, in one queue; a reload drops the
 writes the replaced body made through its binding and had not landed,
-while one through the val lands on the new body. A
+while one through the val lands on the new body, and a binding that
+leaves its join while a function value or a reference names it keeps
+what the val held as its own (`design/module_system.md`). A
 running program's failures (an unhandled `?`, a hot operator's failure)
 are logged under `graphix_compiler::FAILURE_TARGET`, never printed; the
 shell shows that target on stderr.

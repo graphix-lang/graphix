@@ -118,7 +118,8 @@ fn filter_bit(id: BindId) -> (usize, u64) {
 }
 
 impl VarAliases {
-    pub(crate) fn new(map: IntMap<BindId, BindId>, read_at: u64) -> Self {
+    #[doc(hidden)]
+    pub fn new(map: IntMap<BindId, BindId>, read_at: u64) -> Self {
         let (Some(lo), Some(hi)) =
             (map.keys().map(BindId::inner).min(), map.keys().map(BindId::inner).max())
         else {
@@ -162,8 +163,8 @@ impl VarAliases {
         Var(self.aliases.as_ref().and_then(|a| a.map.get(&id).copied()).unwrap_or(id))
     }
 
-    /// These with every alias of `kept` it lacks for which `keep` holds.
-    pub fn with_kept(&self, kept: &Self, mut keep: impl FnMut(&BindId) -> bool) -> Self {
+    /// These with every alias of `kept` they lack.
+    fn with_kept(&self, kept: &Self) -> Self {
         let Some(old) = &kept.aliases else { return self.clone() };
         if self.same(kept) {
             return self.clone();
@@ -171,7 +172,7 @@ impl VarAliases {
         let mut m = self.aliases.as_ref().map(|a| a.map.clone()).unwrap_or_default();
         let mut grew = false;
         for (inner, outer) in old.map.iter() {
-            if !m.contains_key(inner) && keep(inner) {
+            if !m.contains_key(inner) {
                 m.insert(*inner, *outer);
                 grew = true
             }
@@ -184,9 +185,48 @@ impl VarAliases {
     pub(crate) fn absorb(&mut self, child: &Self) {
         let read_at = self.read_at.max(child.read_at);
         if !self.same(child) {
-            *self = child.with_kept(self, |_| true)
+            *self = child.with_kept(self)
         }
         self.read_at = read_at
+    }
+
+    /// These without `ids`.
+    fn without(&self, ids: &[BindId]) -> Self {
+        let Some(a) = &self.aliases else { return self.clone() };
+        if !ids.iter().any(|id| a.map.contains_key(id)) {
+            return self.clone();
+        }
+        let mut m = a.map.clone();
+        for id in ids {
+            m.remove(id);
+        }
+        Self::new(m, self.read_at)
+    }
+
+    /// Whether these were read before `other` was: the runtime keeps the
+    /// later reading of two.
+    pub fn older_than(&self, other: &Self) -> bool {
+        self.read_at < other.read_at
+    }
+
+    /// Each binding these name another's variable that `later` does not,
+    /// with that variable: its join went.
+    pub fn each_left(&self, later: &Self, mut f: impl FnMut(BindId, BindId)) {
+        let Some(old) = &self.aliases else { return };
+        if self.same(later) {
+            return;
+        }
+        for (inner, outer) in old.map.iter() {
+            if later.var(*inner) == *inner {
+                f(*inner, *outer)
+            }
+        }
+    }
+
+    /// How many bindings are another's variable.
+    #[doc(hidden)]
+    pub fn len(&self) -> usize {
+        self.aliases.as_ref().map_or(0, |a| a.map.len())
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {
@@ -258,6 +298,9 @@ pub struct ForkRt<R: Rt> {
     readers: IntMap<BindId, SmallVec<[Reader; 1]>>,
     log: Vec<RtOp>,
     aliases: VarAliases,
+    /// The bindings that left their variables in this branch
+    /// ([`RtView::store_own`]): no table it takes in names them again.
+    left: SmallVec<[BindId; 2]>,
     /// The core-trait hook sites this branch ran, returned to the parent
     /// by [`merge_in_order`] once it holds their readers.
     pub(crate) hook_sites: crate::node::coretraits::BranchSites<R>,
@@ -306,6 +349,7 @@ impl<R: Rt> ForkRt<R> {
             readers: IntMap::default(),
             log: Vec::new(),
             aliases: parent.var_aliases().clone(),
+            left: SmallVec::new(),
             hook_sites: Default::default(),
         }
     }
@@ -372,7 +416,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
-    // CR claude for claude: [bug/medium] A forked branch's table only grows, so
+    // XCR claude for claude: [bug/medium] A forked branch's table only grows, so
     // once a branch has merged a nested branch that reloaded a dynamic module,
     // the rest of its cycle still names the retired binding as the val. A
     // function of the retired body first called there takes the val's value at
@@ -397,6 +441,16 @@ impl<'a, R: Rt> RtView<'a, R> {
     // (escaped-closure-alias-bottom-01)'s question, and if the alias is to stay
     // while a function value captures the binding there is nothing to drop
     // here: decide that one first. (forked-retire-first-call-01)
+    // 2026-11-11 claude: Fixed with (escaped-closure-alias-bottom-01): there is no
+    // reader count to consult any more, so a branch that retires a binding
+    // something still names drops its alias there and then (RtView::store_own,
+    // ForkRt::left), each branch that merges it drops it too (RtView::merge), and
+    // merge_in_order gives a forked view's event its table as it does the root's.
+    // d1.gx prints '11 [6, 7, 8] [7, 8, 9] ..' in all four modes (base-r22: nothing
+    // serial, '11 [25, 26, 27] [26, 27, 28] ..' forked); d2.gx the same. Pin:
+    // lang::modules::a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding,
+    // whose par and jit_par modes fail ('[25, 26, 27]' first) with the Fork arm of
+    // store_own removed. Copies of the probes: ~/ptmp/cr29/scratch/r21/21r/x4.
     pub(crate) fn set_var_aliases(&mut self, aliases: VarAliases) {
         match self {
             Self::Root(r) => r.set_var_aliases(aliases),
@@ -682,12 +736,33 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// A binding released or deleted: its stored value and the writes
     /// still waiting for it go. A binding that is another's variable
-    /// takes only the writes made through it: the variable stays.
+    /// takes only the writes made through it, and what it kept as its
+    /// own ([`Self::store_own`]): the variable stays.
     pub fn store_release(&mut self, id: &BindId) {
-        logged!(self, forget_writes(*id), RtOp::ForgetWrites(*id));
-        let var = self.var_of(*id);
-        if var.0 == *id {
-            self.store_remove_var(var)
+        self.forget_writes(*id);
+        self.store_remove_var(Var(*id))
+    }
+
+    /// See [`Rt::forget_writes`].
+    pub fn forget_writes(&mut self, id: BindId) {
+        logged!(self, forget_writes(id), RtOp::ForgetWrites(id))
+    }
+
+    /// `id`, a binding that is another's variable, leaves it while a
+    /// function value or a reference names it, keeping what the variable
+    /// holds as its own until [`Self::store_release`]: what it reads from
+    /// here on in a forked branch, and in the runtime once its join has
+    /// gone ([`VarAliases::each_left`]).
+    pub fn store_own(&mut self, id: BindId) {
+        let var = self.var_of(id);
+        if var.0 == id {
+            return;
+        }
+        let entry = self.store_get_var(var).cloned();
+        self.store_put_var(Var(id), entry);
+        if let Self::Fork(f) = self {
+            f.left.push(id);
+            f.aliases = f.aliases.without(&[id])
         }
     }
 
@@ -737,11 +812,16 @@ impl<'a, R: Rt> RtView<'a, R> {
             readers,
             log,
             aliases,
+            left,
             hook_sites: _,
         } = child;
         match self {
             Self::Fork(f) => {
+                f.left.extend(left);
                 f.aliases.absorb(&aliases);
+                if !f.left.is_empty() {
+                    f.aliases = f.aliases.without(&f.left)
+                }
                 if let (Some(mine), Some(theirs)) = (&f.reads, reads) {
                     mine.lock().extend(theirs.into_inner());
                 }
@@ -1329,12 +1409,12 @@ fn merge_in_order<R: Rt>(
     }
     // a branch's table was read when its sync ran, in no order with its
     // siblings' joins: the runtime ends with the joins as they stand, and
-    // the event with the runtime's, which alone drops one
+    // the event with its view's, less the bindings that left
     if let RtView::Root(_) = &ctx.rt {
-        ctx.sync_var_aliases();
-        let aliases = ctx.rt.var_aliases().clone();
-        ctx.event.variables.set_aliases(aliases)
+        ctx.sync_var_aliases()
     }
+    let aliases = ctx.rt.var_aliases().clone();
+    ctx.event.variables.set_aliases(aliases)
 }
 
 /// Run `f` on a branch of its own forked from `ctx`, on this thread, and

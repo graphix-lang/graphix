@@ -224,20 +224,18 @@ joins again whenever the count has passed its table's
 (`ExecCtx::sync_var_aliases`, `StaticCallees::aliases_after`): a branch
 that joins reads its own join whatever its siblings read first, and one
 that joins nothing may read a sibling's early, which names bindings it
-never uses. A branch's table only grows (`VarAliases::absorb`). The
-tables it read replay into the runtime in the branch's order at the
-merge, so a retired body's readers leave before its join does, and once
-the branches have merged the runtime, which alone drops a join, reads
-the joins as they stand and gives the cycle's event its table
-(`branch::merge_in_order`). Without the read a table a sibling took
-while a reload compiled, replayed after the reload's own, leaves the
-retired binding the val's for a write made later in the cycle; without
-the event's a branch's grown table leaves it the val's for every later
-delivery. Pins: `lang::modules::
+never uses. A branch's table grows (`VarAliases::absorb`), except by
+the bindings that left their variables in it or in a branch it merged
+(`ForkRt::left`, below), which it stops naming at once. The tables it
+read replay into the runtime in the branch's order at the merge, so a
+retired body's readers leave before its join does; the runtime keeps the
+later reading of two (`VarAliases::older_than`), so a table a sibling
+took while a reload compiled, replayed after the reload's own, does not
+bring the retired binding back; and once the branches have merged the
+runtime reads the joins as they stand and each view gives the cycle's
+event its table (`branch::merge_in_order`). Pins: `lang::modules::
 a_write_through_a_binding_retired_beside_syncing_siblings_misses_the_val`
-and `a_reload_in_a_forked_branch_retires_its_binding_in_the_event`. A
-branch that merged a nested branch's reload still names the retired
-binding for the rest of that cycle (CR forked-retire-first-call-01).
+and `a_reload_in_a_forked_branch_retires_its_binding_in_the_event`.
 
 A reload joins its new body's binding before the body it replaces
 retires; while the new source compiles, the replaced body's bindings
@@ -245,10 +243,39 @@ are no names of the variable (`StaticCallees::set_aside`), so a write
 it made marks nothing the reload sees. The retirement drops the writes
 the replaced body made through its binding and had not landed, a
 reference to that binding alive or not, while a write made through the
-val waiting across the reload lands on the new body. A binding a join
-left stays the val's at run time while a reader registered through it
-lives (an instance of the replaced body's function a call site still
-holds): `GXRt` keeps its alias until the last such reader goes.
+val waiting across the reload lands on the new body.
+
+**A binding that leaves its join is a variable of its own again**, at
+its body's deletion (a slot of a function whose body declares the
+module) and at its retirement by a reload alike. Where a function value
+or a reference still names it (`Lives::pinned`), it keeps what the
+val's variable held at that moment as its own, that cycle's fire
+included (`ExecCtx::forget_binding`, `RtView::store_own`), and the
+readers registered through it go with it, with the fires they are owed,
+while the writes made through it that had not landed go
+(`GXRt::set_var_aliases`, `alias_reads`). This is the rule of a deleted
+slot (`design/activation_state.md`, Closure lifetimes): the capture is
+kept alive, its initializer no longer runs. So a function saved from a
+module is a closure over the bindings of the body it was made in,
+whenever it is first called. After a reload it reads what that body's
+bindings last held; a write through the val reaches the new body alone,
+and a write through the saved function the retired binding alone. Code
+that wants the new body calls through the module again. A forked branch
+that retires a binding stops naming it the val's there and then, and so
+does each branch that merges it, so a first call later in the reload's
+own cycle reads the retired binding too. The kept value goes with the
+last function value or reference that names the binding
+(`ExecCtx::release_references`), and a deleted module's `val` bindings
+are deleted as a `let`'s are (`ExecCtx::delete_binding`): nothing of a
+module outlives it but what a value still names. Pins: `lang::modules::
+a_function_saved_across_a_reload_reads_the_retired_binding`,
+`a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding`,
+`a_function_escaping_a_deleted_interface_module_keeps_its_binding`
+(against `a_function_escaping_a_deleted_body_keeps_its_binding`, the
+same program over plain lets), `lib_tests::leaks::
+a_function_saved_across_reloads_keeps_nothing_once_dropped`,
+`a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped`
+and graphix-shell's `retired_binding_image` (cold and from an image).
 
 ### A `val`'s type variables
 

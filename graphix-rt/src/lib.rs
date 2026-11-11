@@ -546,6 +546,9 @@ pub struct EnvStats {
     pub ref_var_total: usize,
     /// number of variables with a delivery in the runtime store
     pub store_len: usize,
+    /// number of bindings that are another's variable, and of those with
+    /// a reader registered through them
+    pub aliases_len: usize,
     /// number of lambda definitions the context holds (`lambda_defs`)
     pub lambda_defs_len: usize,
     /// number of lowerings the live definitions keep

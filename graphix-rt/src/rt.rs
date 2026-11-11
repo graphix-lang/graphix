@@ -250,40 +250,48 @@ impl Default for Readers {
 }
 
 impl Readers {
-    fn add(&mut self, r: Reader) {
+    /// Add `n` reads by `r`.
+    fn add(&mut self, r: Reader, n: u32) {
         match self {
             Self::Few(few) => match few.iter().position(|(e, _)| *e == r) {
-                Some(i) => few[i].1 += 1,
-                None if few.len() < FEW_READERS => few.push((r, 1)),
+                Some(i) => few[i].1 += n,
+                None if few.len() < FEW_READERS => few.push((r, n)),
                 None => {
                     let mut many: AHashMap<Reader, u32> = few.drain(..).collect();
-                    many.insert(r, 1);
+                    many.insert(r, n);
                     *self = Self::Many(many)
                 }
             },
-            Self::Many(many) => *many.entry(r).or_insert(0) += 1,
+            Self::Many(many) => *many.entry(r).or_insert(0) += n,
         }
     }
 
-    /// Drop one read by `r`; false when `r` reads nothing here.
-    fn remove(&mut self, r: &Reader) -> bool {
+    /// Drop `n` reads by `r`; false when `r` reads nothing here.
+    fn remove(&mut self, r: &Reader, n: u32) -> bool {
         match self {
             Self::Few(few) => {
                 let Some(i) = few.iter().position(|(e, _)| e == r) else { return false };
-                few[i].1 -= 1;
+                few[i].1 = few[i].1.saturating_sub(n);
                 if few[i].1 == 0 {
                     few.swap_remove(i);
                 }
             }
             Self::Many(many) => {
-                let Some(n) = many.get_mut(r) else { return false };
-                *n -= 1;
-                if *n == 0 {
+                let Some(left) = many.get_mut(r) else { return false };
+                *left = left.saturating_sub(n);
+                if *left == 0 {
                     many.remove(r);
                 }
             }
         }
         true
+    }
+
+    fn reads(&self, r: &Reader) -> bool {
+        match self {
+            Self::Few(few) => few.iter().any(|(e, _)| e == r),
+            Self::Many(many) => many.contains_key(r),
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -336,11 +344,11 @@ pub struct GXRt<X: GXExt> {
     /// The fires to deliver next cycle to readers that met them late.
     pub(super) late: Vec<(BindId, TagValue, Reader)>,
     /// The bindings that are another's variable ([`Rt::var_aliases`]): the
-    /// compile's joins, and each binding a join left that a reader still
-    /// reads through.
+    /// compile's joins.
     pub(super) aliases: VarAliases,
-    /// The readers registered through each binding in `aliases`.
-    pub(super) alias_reads: IntMap<BindId, u32>,
+    /// The readers registered through each binding in `aliases`, which
+    /// become its own when its join goes.
+    pub(super) alias_reads: IntMap<BindId, Readers>,
     pub ext: X,
 }
 
@@ -421,7 +429,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         &self.aliases
     }
 
-    // CR claude for claude: [bug/medium] A closure that escapes a body with an
+    // XCR claude for claude: [bug/medium] A closure that escapes a body with an
     // interface module reads bottom forever once the body is deleted or reloaded
     // while no reader is registered through the alias. The implementing binding's
     // value lives under the val's variable, and a join that went keeps its alias
@@ -450,12 +458,61 @@ impl<X: GXExt> Rt for GXRt<X> {
     // body's binding, the rule of a deleted slot: the capture is kept alive, its
     // initializer no longer runs. Code that wants the new module calls through the
     // module again.
+    // 2026-11-11 claude: Built as ruled. A binding that leaves its join, its body
+    // deleted or retired by a reload, is a variable of its own again: where a
+    // function value or a reference names it, it keeps what the val's variable held
+    // (ExecCtx::forget_binding, RtView::store_own), and the readers registered
+    // through it move to it (GXRt::set_var_aliases; alias_reads holds the readers,
+    // and no alias outlives its join, so an instance alive across a reload reads
+    // the retired binding too, where it used to follow the val). A deleted module's
+    // val bindings are deleted as a let's are (ModuleNode::delete): they were never
+    // released, which kept the escaped function, and so the binding it captures,
+    // for good. main4.gx prints what ctl4.gx prints, esc3.gx and esc5.gx print, the
+    // same in --no-fusion, fused, GRAPHIX_PAR=off and force, clean under
+    // GRAPHIX_PAR_AUDIT=1 GRAPHIX_PRUNE=audit GRAPHIX_QUIET=audit. Pins:
+    // lang::modules::a_function_escaping_a_deleted_interface_module_keeps_its_binding
+    // (its twin over plain lets:
+    // a_function_escaping_a_deleted_body_keeps_its_binding),
+    // a_function_saved_across_a_reload_reads_the_retired_binding,
+    // a_reload_in_a_forked_branch_retires_its_binding_in_the_event (rewritten to
+    // the retired binding's value),
+    // a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding, and
+    // graphix-shell retired_binding_image (cold and from an image), all failing in
+    // every mode with the store_own call in forget_binding removed;
+    // lib_tests::leaks::a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped
+    // fails (3 store entries and 3 bindings a slot) without the val delete in
+    // ModuleNode::delete;
+    // lib_tests::leaks::a_function_saved_across_reloads_keeps_nothing_once_dropped
+    // (1000 reloads, nothing grows) and graphix-rt
+    // rt::tests::readers_follow_a_binding_out_of_its_variable guard the new
+    // bookkeeping. Probes: ~/ptmp/cr29/scratch/r21/21r. Needs a soak.
     fn set_var_aliases(&mut self, aliases: VarAliases) {
-        let reads = &self.alias_reads;
-        self.aliases =
-            aliases.with_kept(&self.aliases, |id| reads.get(id).is_some_and(|n| *n > 0));
-        let aliases = &self.aliases;
-        self.alias_reads.retain(|id, n| *n > 0 && aliases.var(*id) != *id)
+        let Self { aliases: held, alias_reads, by_ref, late, var_updates, .. } = self;
+        if aliases.older_than(held) {
+            return;
+        }
+        held.each_left(&aliases, |inner, outer| {
+            var_updates.forget_from(&outer, &inner);
+            let Some(moved) = alias_reads.remove(&inner) else { return };
+            if let Some(readers) = by_ref.get_mut(&outer) {
+                for (r, n) in moved.iter() {
+                    readers.remove(r, n);
+                }
+                if readers.is_empty() {
+                    by_ref.remove(&outer);
+                }
+            }
+            for (var, _, r) in late.iter_mut() {
+                if *var == outer && moved.reads(r) {
+                    *var = inner
+                }
+            }
+            let own = by_ref.entry(inner).or_default();
+            for (r, n) in moved.iter() {
+                own.add(r.clone(), n)
+            }
+        });
+        *held = aliases
     }
 
     fn store_insert(&mut self, var: Var, tv: TagValue) {
@@ -506,15 +563,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("REF_VAR {id:?} by {ref_by:?}");
         }
-        let id = match self.aliases.var(id) {
-            var if var == id => id,
-            var => {
-                *self.alias_reads.entry(id).or_default() += 1;
-                var
-            }
-        };
-        let readers = self.by_ref.entry(id).or_default();
-        readers.add(ref_by)
+        let var = self.aliases.var(id);
+        if var != id {
+            self.alias_reads.entry(id).or_default().add(ref_by.clone(), 1)
+        }
+        self.by_ref.entry(var).or_default().add(ref_by, 1)
     }
 
     fn readers(&self, var: Var, f: &mut dyn FnMut(&Reader)) {
@@ -527,20 +580,21 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
         }
-        let id = match self.aliases.var(id) {
-            var if var == id => id,
-            var => {
-                if let Some(n) = self.alias_reads.get_mut(&id) {
-                    *n = n.saturating_sub(1)
-                }
-                var
+        let var = self.aliases.var(id);
+        if var != id
+            && let Some(through) = self.alias_reads.get_mut(&id)
+        {
+            through.remove(&ref_by, 1);
+            if through.is_empty() {
+                self.alias_reads.remove(&id);
             }
-        };
+        }
+        let id = var;
         let Some(readers) = self.by_ref.get_mut(&id) else {
             debug_assert!(false, "unref_var of an unregistered {id:?} by {ref_by:?}");
             return;
         };
-        let removed = readers.remove(&ref_by);
+        let removed = readers.remove(&ref_by, 1);
         debug_assert!(
             removed,
             "unref_var of an unregistered {id:?} by {ref_by:?}, registered by {readers:?}"
@@ -645,5 +699,62 @@ impl<X: GXExt> Rt for GXRt<X> {
 
     fn watch_var(&mut self, s: mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>) {
         self.var_watches.push(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NoExt;
+
+    fn reader() -> Reader {
+        Reader { root: ExprId::new(), boundary: None, late: true, read: None }
+    }
+
+    fn joined(pairs: &[(BindId, BindId)], read_at: u64) -> VarAliases {
+        VarAliases::new(pairs.iter().copied().collect(), read_at)
+    }
+
+    fn reads(rt: &GXRt<NoExt>, id: BindId) -> Vec<(Reader, u32)> {
+        rt.by_ref
+            .get(&id)
+            .into_iter()
+            .flat_map(Readers::iter)
+            .map(|(r, n)| (r.clone(), n))
+            .collect()
+    }
+
+    #[test]
+    fn readers_follow_a_binding_out_of_its_variable() {
+        let mut rt = GXRt::<NoExt>::new();
+        let (inner, outer) = (BindId::new(), BindId::new());
+        let (through, direct) = (reader(), reader());
+        rt.set_var_aliases(joined(&[(inner, outer)], 1));
+        rt.ref_var(inner, through.clone());
+        rt.ref_var(inner, through.clone());
+        rt.ref_var(outer, direct.clone());
+        assert_eq!(reads(&rt, inner), []);
+        let var = rt.var_of(outer);
+        for r in [&through, &direct] {
+            rt.late(var, TagValue::fired(Value::I64(1)), r.clone())
+        }
+        rt.set_var(inner, Value::I64(2));
+        rt.set_var(outer, Value::I64(3));
+        // a table read before the runtime's own names nothing anew
+        rt.set_var_aliases(joined(&[], 0));
+        assert_eq!(rt.var_of(inner), var);
+        assert_eq!(rt.waiting_writes(&outer), 2);
+        rt.set_var_aliases(joined(&[], 2));
+        assert_eq!(rt.var_of(inner).id(), inner);
+        assert_eq!((rt.waiting_writes(&outer), rt.waiting_writes(&inner)), (1, 0));
+        assert_eq!(reads(&rt, inner), [(through.clone(), 2)]);
+        assert_eq!(reads(&rt, outer), [(direct.clone(), 1)]);
+        assert!(rt.alias_reads.is_empty());
+        let owed: Vec<_> = rt.late.iter().map(|(id, _, r)| (*id, r.clone())).collect();
+        assert_eq!(owed, [(inner, through.clone()), (outer, direct.clone())]);
+        rt.unref_var(inner, through.clone());
+        rt.unref_var(inner, through);
+        rt.unref_var(outer, direct);
+        assert!(rt.by_ref.is_empty());
     }
 }

@@ -217,6 +217,9 @@ multiplicity question does not arise in kernels.
   the emitted `LambdaDef` pins their instance ids through `reference::Captures`.
   Deletion removes the names from the current scope but retains the type records
   and stored values until the last owner drops. The initializer does not survive.
+  A binding implementing a module's `val` is the val's variable while its body
+  lives; deleted, or retired by a reload, while something names it, it keeps
+  what the val held as its own (`design/module_system.md`).
   An orphan that only orphans' values keep (a self-reference, a `let rec`
   closure) is collected (`reference::Lives::collect`, over netidx-value's
   `Value::edges`; design/place_references.md). Pins:

@@ -2176,9 +2176,9 @@ run!(
 
 // A function of a retired body is no reader of the module's val: `saved`
 // is the first body's `get`, first called once the reload has retired
-// that body, so its `v` is the retired binding's and never the val the
-// later writes land on, in the branch that reloaded as in the cycle's
-// event once the branches merge.
+// that body, so its `v` is the retired binding's, which keeps the last
+// value it had and never takes the val's later writes, in the branch that
+// reloaded as in the cycle's event once the branches merge.
 run!(
     a_reload_in_a_forked_branch_retires_its_binding_in_the_event,
     r#"{
@@ -2207,9 +2207,142 @@ run!(
     let escaped = array::map(xs, |x| saved(x + ep));
     let seen = "";
     seen <- escaped ~ "[seen] [escaped]";
-    select ep { 14 => "[m.0][seen]", _ => never() }
+    select ep { 14 => ep ~ "[m.0][seen]", _ => never() }
 }"#,
-    is(Value::String("11".into()));
+    is(Value::String(
+        "11 [10, 11, 12] [11, 12, 13] [12, 13, 14] [13, 14, 15] [14, 15, 16]".into()
+    ));
+    FuseExpect::Jit
+);
+
+// The same in the reload's own cycle: `saved` is first called in the
+// branch that merged the reload, beside the val the new body has just
+// published.
+run!(
+    a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding,
+    r#"{
+    let ep = 0;
+    ep <- select ep { n if n < 9 => n + 1, _ => never() };
+    let xs: Array<i64> = never();
+    xs <- select ep { 4 => [0, 1, 2], _ => never() };
+    let ys: Array<i64> = never();
+    ys <- select ep { 2 => [0, 1], 4 => [0, 1, 2, 3], _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => "let v = 1; let get = |x: i64| x + v",
+        4 => "let v = 20; let get = |x: i64| x * 1000 + v",
+        _ => never()
+    };
+    let saved: fn(x: i64) -> i64 = never();
+    let m = (
+        {
+            let s = mod d dynamic { sandbox unrestricted; sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
+            saved <- select ep { 3 => d::get, _ => never() };
+            select s { error as e => never(dbg(e)), null as _ => d::v }
+        },
+        array::map(ys, |y| y * 2),
+        array::map(xs, |x| saved(x + ep))
+    );
+    let seen = "";
+    seen <- m.2 ~ "[seen] [m.2]";
+    select ep { 9 => ep ~ "[m.0][seen]", _ => never() }
+}"#,
+    is(Value::String("20 [6, 7, 8] [7, 8, 9] [8, 9, 10] [9, 10, 11]".into()));
+    FuseExpect::Jit
+);
+
+// A function saved from a dynamic module is a closure over the bindings
+// of the body it was made in. `get0` and `set0` are the first body's:
+// after the reload (`ep` 7) the instance `held` has kept and the ones
+// `late` first calls (`ep` 9) read that body's `v` as it last stood, a
+// write through the val (`ep` 10) reaches the new body alone, and a write
+// through `set0` (`ep` 12) the retired binding alone. Each entry is the
+// val, `held` and `late`.
+run!(
+    a_function_saved_across_a_reload_reads_the_retired_binding,
+    r#"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => "let v = 1; let get = |x: i64| x + v; let set = |x: i64| -> null { v <- x; null }",
+        6 => "let v = 20; let get = |x: i64| x * 1000 + v; let set = |x: i64| -> null { v <- x * 2; null }",
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val v: i64; val get: fn(x: i64) -> i64; val set: fn(x: i64) -> null };
+        source src
+    };
+    let get0: fn(x: i64) -> i64 = never();
+    get0 <- select ep { 4 => ep ~ d::get, _ => never() };
+    let set0: fn(x: i64) -> null = never();
+    set0 <- select ep { 4 => ep ~ d::set, _ => never() };
+    d::v <- select ep { 9 => 30, _ => never() };
+    set0(select ep { 11 => 50, _ => never() });
+    let held = get0(ep);
+    let xs: Array<i64> = never();
+    xs <- select ep { 8 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| get0(x + ep));
+    let seen = "";
+    seen <- late ~ "[seen] [d::v] [held] [late]";
+    select ep { 14 => ep ~ seen, _ => never() }
+}"#,
+    is(Value::String(
+        " 20 10 [10, 11] 30 11 [11, 12] 30 12 [12, 13] 30 62 [62, 63] 30 63 [63, 64]"
+            .into()
+    ));
+    FuseExpect::Jit
+);
+
+/// Slots born at `ep` 3 each run `body`, which returns a function over a
+/// binding `v` of its own, written to a hundred times the slot's element.
+/// `saved` takes the second slot's at 5, the slots are deleted at 7, and
+/// `saved` is first called at 10. The program's value is every result of
+/// those calls.
+fn a_function_escaping_deleted_slots(body: &str) -> String {
+    format!(
+        r#"
+let ep = 0;
+ep <- select ep {{ n if n < 12 => n + 1, _ => never() }};
+let xs: Array<i64> = never();
+xs <- select ep {{ 2 => [1, 2], 6 => [], _ => never() }};
+let ys: Array<i64> = never();
+ys <- select ep {{ 9 => [0, 1, 2], _ => never() }};
+let f = |k: i64| {{ {body} }};
+let saved: fn(x: i64) -> i64 = never();
+let fs = array::map(xs, |x| f(x));
+saved <- select ep {{ 4 => ep ~ fs[1]$, _ => never() }};
+let escaped = array::map(ys, |y| saved(y + ep));
+let seen = "";
+seen <- escaped ~ "[seen] [escaped]";
+let result = select ep {{ 12 => ep ~ seen, _ => never() }}
+"#
+    )
+}
+
+const ESCAPED_FROM_DELETED_SLOTS: &str = " [210, 211, 212] [211, 212, 213]";
+
+// A function that escapes a body holding an interface module keeps the
+// binding it captures alive when the body is deleted before its first
+// call, as it does one a plain `let` made.
+run!(
+    a_function_escaping_a_deleted_interface_module_keeps_its_binding,
+    is(Value::String(ESCAPED_FROM_DELETED_SLOTS.into())),
+    "/test.gx" => a_function_escaping_deleted_slots(
+        "mod m; m::v <- once(k) ~ k * 100; m::get"
+    ),
+    "/test/m.gxi" => "val v: i64; val get: fn(x: i64) -> i64",
+    "/test/m.gx" => "let v = 1; let get = |x: i64| x + v";
+    FuseExpect::Jit
+);
+
+run!(
+    a_function_escaping_a_deleted_body_keeps_its_binding,
+    is(Value::String(ESCAPED_FROM_DELETED_SLOTS.into())),
+    "/test.gx" => a_function_escaping_deleted_slots(
+        "let v = 1; v <- once(k) ~ k * 100; let get = |x: i64| x + v; get"
+    );
     FuseExpect::Jit
 );
 

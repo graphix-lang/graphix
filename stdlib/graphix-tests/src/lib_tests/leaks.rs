@@ -5,8 +5,11 @@
 use crate::init;
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
-use graphix_compiler::expr::ExprId;
-use graphix_package_core::testing::TestCtx;
+use graphix_compiler::{
+    BindId,
+    expr::{ExprId, VfsEntry},
+};
+use graphix_package_core::testing::{Mode, TestCtx, fixture_runtime};
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use poolshark::global::GPooled;
@@ -240,3 +243,117 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
     assert_eq!(before.ref_var_total, after.ref_var_total);
     Ok(())
 }
+
+/// What the runtime and the env hold: a count that grows with what a
+/// session has run and deleted is a leak.
+async fn held(ctx: &TestCtx) -> Result<[usize; 5]> {
+    let s = ctx.rt.env_stats().await?;
+    Ok([s.store_len, s.aliases_len, s.ref_var_keys, s.ref_var_total, s.by_id_len])
+}
+
+/// The root binding `name`, which a test writes to drive a program.
+async fn root_bind(ctx: &TestCtx, name: &str) -> Result<BindId> {
+    let env = ctx.rt.get_env().await?;
+    let root = &graphix_compiler::Scope::root().lexical;
+    match env.lookup_bind(root, &[name].into())? {
+        Some((_, bind)) => Ok(bind.id),
+        None => bail!("{name} not in scope"),
+    }
+}
+
+/// Whether a value is the tuple `(a, b)`.
+fn is_pair(a: i64, b: i64) -> impl Fn(&Value) -> bool {
+    move |v| matches!(v, Value::Array(t) if t[..] == [Value::I64(a), Value::I64(b)])
+}
+
+/// `RELOADS` reloads of a dynamic module, each load's `get` saved and
+/// called through the next reload, which retires the body whose `v` it
+/// captures, then replaced by the new load's: a retired binding's value,
+/// readers and alias go with the last function that names it.
+async fn a_function_saved_across_reloads_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    const RELOADS: i64 = 1000;
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _tick = ctx.rt.compile(literal!("let tick: i64 = 0;")).await?;
+    let (eid, _expr) = compile_one(
+        &ctx,
+        r#"{
+          let src = "let v = [tick]; let get = |x: i64| x + v";
+          let s = mod d dynamic {
+              sandbox whitelist [core];
+              sig { val v: i64; val get: fn(x: i64) -> i64 };
+              source src
+          };
+          let saved: fn(x: i64) -> i64 = never();
+          saved <- d::get;
+          (d::v, saved(d::v))
+        }"#,
+    )
+    .await?;
+    let tick = root_bind(&ctx, "tick").await?;
+    let at = |n: i64| is_pair(n, 2 * n);
+    for n in 1..=20 {
+        ctx.rt.set(tick, n)?;
+        await_update(&mut rx, eid, at(n)).await?;
+    }
+    let early = held(&ctx).await?;
+    for n in 21..=20 + RELOADS {
+        ctx.rt.set(tick, n)?;
+        await_update(&mut rx, eid, at(n)).await?;
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, late, "{mode:?}: grew over {RELOADS} reloads");
+    Ok(())
+}
+
+/// `ROUNDS` slots of a function whose body declares an interface module,
+/// each born, its `m::get` saved and called once the slot is deleted,
+/// then replaced by the next slot's.
+async fn a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    const ROUNDS: i64 = 1000;
+    let files = [
+        ("/m.gxi", VfsEntry::from(literal!("val v: i64; val get: fn(x: i64) -> i64"))),
+        ("/m.gx", VfsEntry::from(literal!("let v = 1; let get = |x: i64| x + v"))),
+    ];
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _tick = ctx.rt.compile(literal!("let tick: i64 = 0;")).await?;
+    let (eid, _expr) = compile_one(
+        &ctx,
+        r#"{
+          let f = |k: i64| { mod m; m::v <- once(k) ~ k * 100; m::get };
+          let xs = select tick % 2 { 0 => [tick], _ => [] };
+          let fs = array::map(xs, |x| f(x));
+          let saved: fn(x: i64) -> i64 = never();
+          saved <- fs[0]$;
+          (tick, saved(tick))
+        }"#,
+    )
+    .await?;
+    let tick = root_bind(&ctx, "tick").await?;
+    // the slot born at an even tick writes its `v` a hundred times the
+    // tick, and `saved` is its `get` until the next even tick
+    let at = |n: i64| is_pair(n, n + 100 * (n - n % 2));
+    for n in 1..=20 {
+        ctx.rt.set(tick, n)?;
+        await_update(&mut rx, eid, at(n)).await?;
+    }
+    let early = held(&ctx).await?;
+    for n in 21..=20 + 2 * ROUNDS {
+        ctx.rt.set(tick, n)?;
+        await_update(&mut rx, eid, at(n)).await?;
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, late, "{mode:?}: grew over {ROUNDS} slots");
+    Ok(())
+}
+
+modes!(
+    a_function_saved_across_reloads_keeps_nothing_once_dropped,
+    a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
+);

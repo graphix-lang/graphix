@@ -2447,6 +2447,35 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         }
     }
 
+    /// Forget what the indexes that outlive a batch hold for `id`, a
+    /// binding about to be deleted. One that is another's variable
+    /// ([`StaticCallees::join`]) leaves it here, and where a reference or
+    /// a function value still names it, it keeps what the variable holds
+    /// ([`branch::RtView::store_own`]).
+    pub(crate) fn forget_binding(&mut self, id: BindId) {
+        self.bind_to_lambda.remove(&id);
+        self.builtin_bindings.remove(&id);
+        if self.rt.var(id) != id && self.control.lives().pinned(id) {
+            self.rt.store_own(id)
+        }
+        self.static_callees.forget(id);
+        self.connect_targets.remove(&id);
+        self.batch_connect_targets.remove(&id);
+    }
+
+    /// Delete the binding `id`: its name goes, and with it its value and
+    /// its type record, unless a reference or a function value still
+    /// names it, when those go with the last of them
+    /// ([`Self::release_references`]).
+    pub fn delete_binding(&mut self, id: BindId) {
+        if self.control.lives().orphan_if_pinned(id) {
+            self.env.unbind_name(id)
+        } else {
+            self.rt.store_release(&id);
+            self.env.unbind_variable(id)
+        }
+    }
+
     /// Let go of what the references released since the last cycle kept:
     /// a cell's place, chain link and value, and a binding deleted while a
     /// reference named it.
@@ -4115,6 +4144,15 @@ impl StaticCallees {
     // unjoin as a delta, or keep a persistent map, and look for growth in
     // `with_kept` before cloning. Pin the instructions at two sizes.
     // (alias-table-rebuild-01)
+    // 2026-11-11 claude: (escaped-closure-alias-bottom-01) changed the runtime's
+    // half: GXRt::set_var_aliases no longer runs with_kept or alias_reads.retain,
+    // it ignores a table older than its own and walks the old table once for the
+    // bindings that left (VarAliases::each_left), still O(table) at each change;
+    // with_kept is now absorb's alone. A forked branch that retires a named
+    // binding rebuilds its table once more (VarAliases::without). The rebuild in
+    // aliases_after is untouched. The CR's probes on that build, GRAPHIX_PAR=off,
+    // instructions:u: sc1000 2.54 G (base-r22 2.71), sc2000 4.97 G (5.51), sc4000
+    // 11.97 G (13.90).
     /// Each binding implementing a `val` mapped to the val's, its variable
     /// at run time, when a join or an unjoin changed them after the change
     /// `read_at` counts, a table's [`branch::VarAliases::read_at`]. Each

@@ -92,6 +92,11 @@ impl Lives {
         Captures { ids, lives: lives.clone() }
     }
 
+    /// Whether a reference or a function value names `id`.
+    pub fn pinned(&self, id: BindId) -> bool {
+        self.0.lock().pins.contains_key(&id)
+    }
+
     /// The binding `id` is deleted: true when a reference still names it,
     /// whose value then goes with the last such reference.
     pub fn orphan_if_pinned(&self, id: BindId) -> bool {

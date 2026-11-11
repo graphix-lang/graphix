@@ -821,15 +821,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // The static-resolution index outlives batches; a deleted
-        // bind's entry must go with it.
-        self.pattern.ids(&mut |id| {
-            ctx.bind_to_lambda.remove(&id);
-            ctx.builtin_bindings.remove(&id);
-            ctx.static_callees.forget(id);
-            ctx.connect_targets.remove(&id);
-            ctx.batch_connect_targets.remove(&id);
-        });
+        self.pattern.ids(&mut |id| ctx.forget_binding(id));
         self.node.delete(ctx);
         self.pattern.delete(ctx);
     }
