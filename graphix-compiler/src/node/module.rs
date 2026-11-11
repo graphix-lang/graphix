@@ -551,29 +551,6 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
-    // XCR claude for claude: [bug/low] The binding named is the first capture whose type
-    // reaches the cell, and that may be one only built from the real holder, whose
-    // annotation lifts nothing. With `let p = never(); let q = [p]; let c = {a: |x|
-    // array::len(q), b: |x| { p <- x; x }}` under `val c: {a: fn(x: 'b) -> i64, b: fn(x:
-    // 'a) -> 'a}` the refusal says "give q a type that holds every 'a"; with `q:
-    // Array<Any>` the same refusal names p, and only `p: Any` checks. A fix: among the
-    // captures of one level that reach the cell, name the one whose own type the cell
-    // is (p) before one that holds it in data (q), or name every one. probes:
-    // ~/ptmp/cr29/scratch/r20/20d/rev-djo/mir, mirq, mirp (base-r20 alike)
-    // (holder-derived-binding-01)
-    // 2026-11-11 claude: Holder::of judges a level's captures together: one whose own
-    // type is the cell comes first, then the binding the program writes first
-    // (lambda::place_order), so a holder built from another is never named before it and
-    // the name no longer rests on a capture table's hash order. The pin's own fixture
-    // (coord/rules/hint/orig), which named q on r20-staging and p on base-r20, names p
-    // again, and the annotation named lifts each refusal. Pins that fail with the change
-    // undone: lang::interfaces::val_struct_names_the_capture_whose_type_is_the_cell,
-    // val_struct_names_the_holder_written_first (all modes),
-    // val_names_the_holder_written_first_of_one_lambda_s_captures and
-    // lang::traits::method_over_outer_bindings_names_the_one_whose_type_is_the_cell
-    // (some modes of each run, as the hash falls); each has an annotated twin that runs.
-    // probes:
-    // ~/ptmp/cr29/scratch/r20/20d/x2/{ord,ordq,ordsw,two,twoq,one,onep,tr.gx,trp.gx}
     /// What holds `tv` for the implementation's binding `id`: a binding the
     /// lambdas it holds capture, or the lambdas those capture, whose type
     /// reaches the cell, the binding an annotation can widen. One whose own
