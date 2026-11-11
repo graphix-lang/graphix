@@ -437,7 +437,7 @@ impl<R: Rt> Update<R> for SeqMachine<R> {
             }
         }
         if let Some((tracked, _)) = &mut self.tracked {
-            tracked.all_fell_asleep(ctx.rt.cycle());
+            tracked.all_fell_asleep(super::wake::stopped(ctx));
         }
         self.current = None;
     }

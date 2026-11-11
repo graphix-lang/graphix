@@ -114,6 +114,12 @@ chain passes by, the select's or the machine's own sleep while it is
 selected) makes it the cycle it fell asleep in, so walk pruning, which
 skips a selected arm nothing marked, changes nothing; until the arm
 runs it is the tracker's first cycle, which the arm never saw. An arm
+with nothing to pause is slept late, at its next entry or when the
+select around it sleeps, and what is slept then fell asleep in the
+cycle the arm stopped running, which its select's clock kept
+(`wake::asleep_since`, read by each sleep through `wake::stopped`): a
+select inside it stamps its arms with that cycle, and sleeps each arm
+it had left earlier as of that arm's own. An arm
 evaluated under a wake or step view opens a catch-up scope
 (`node::wake::CatchUp`): that cycle, no later than the enclosing
 scope's (an arm sleeps whenever the arm around it does), the select's
@@ -449,9 +455,12 @@ to that reader the stand is a fire.
 - **Where it starts.** A read under a resume (`View::Wake` inside a
   catch-up scope) of a standing entry stamped at or after the first cycle
   the evaluating arm did not see (`wake::slept_through`,
-  `VarRead::production`). A select arm that resumes on a stale scrutinee
-  binds its pattern moved when the scrutinee fired or moved since the arm
-  last ran (`LazyArmFacts::scrutinee_moved`).
+  `VarRead::production`). An entry delivered quietly this cycle (a `let`
+  another wake stands again as it is) is the same standing entry to a
+  resume, read by the stamp its store entry keeps (`wake::stands_since`),
+  and no delivery to `wake::owed`. A select arm that resumes on a stale
+  scrutinee binds its pattern moved when the scrutinee fired or moved
+  since the arm last ran (`LazyArmFacts::scrutinee_moved`).
 - **Who passes it on.** Everything that computes from values: `Tag::join`
   ORs it (it is dropped where the join fires, a fire says as much), so
   operators, data constructors, field reads, a select's emission (the
@@ -526,7 +535,12 @@ the very next cycle (CR `late-stand-asleep-01`).
 `GRAPHIX_QUIET=audit` panics where a reader in an ordinary cycle reads a
 quiet value that differs from its last production (`node::audit_quiet`):
 an entry that stands, or one a wake stood again in the same cycle, which
-a `let` publishes through the event. Pins: `lang::wake_outside`,
+a `let` publishes through the event. Pins: `lang::wake_outside` (the
+late sleep: `an_arm_slept_at_its_entry_stopped_at_its_deselect`,
+`an_arm_slept_with_its_select_stopped_at_its_own_deselect`; an entry
+stood again: `a_let_stood_again_moved_for_the_arm_that_slept_through_it`,
+`a_let_stood_again_moved_for_another_selects_arm`,
+`a_target_stood_again_is_owed_to_the_arm_that_learns_it`),
 `lang::prune::standing_formal_refresh_marks_its_readers`,
 `graphix-shell/tests/shell/wake_outside_roots.rs` for readers in other
 roots, and `graphix-fuzz/findings/wake-outside-nov2026/`. The reactive

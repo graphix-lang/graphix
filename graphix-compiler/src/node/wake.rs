@@ -13,8 +13,26 @@ use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::mem;
+use std::{cell::Cell, mem};
 use triomphe::Arc;
+
+thread_local! {
+    static STOPPED: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// Run `sleep`, the sleep of a body that stopped running in `cycle`: an
+/// arm with nothing to pause is not slept at its deselect but when it is
+/// next entered, or when the select around it sleeps.
+pub(crate) fn asleep_since(cycle: u64, sleep: impl FnOnce()) {
+    let _restore = crate::Restore::replace(&STOPPED, Some(cycle));
+    sleep()
+}
+
+/// The cycle the body being put to sleep stopped running in: this one,
+/// unless it is slept late ([`asleep_since`]).
+pub(crate) fn stopped<R: Rt>(ctx: &ExecCtx<'_, R>) -> u64 {
+    STOPPED.get().unwrap_or_else(|| ctx.rt.cycle())
+}
 
 /// What an evaluation catching up owes the inputs it learns only as it
 /// runs (a callee bound at its dispatch, a reference's new target): the
@@ -121,7 +139,7 @@ pub(crate) fn in_fresh_frame<R: Rt>(ctx: &ExecCtx<'_, R>) -> bool {
 /// stand stands for.
 pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
     let Some(scope) = &ctx.catch_up else { return false };
-    !ctx.event.variables.contains_key(id)
+    ctx.event.variables.get(id).is_none_or(|tv| stands_since(ctx, id, tv).is_some())
         && ctx.rt.store_get(id).is_some_and(|(tv, stamp)| {
             let tag = tv.tag();
             *stamp >= scope.unseen
@@ -165,6 +183,28 @@ pub(crate) fn slept_through<R: Rt>(ctx: &ExecCtx<'_, R>, stamp: u64) -> bool {
         && ctx.catch_up.as_ref().is_some_and(|s| !s.fresh && stamp >= s.unseen)
 }
 
+/// The stamp `id`'s store entry keeps beside `delivered`, its quiet
+/// delivery this cycle, read by a resume: an entry that stands again (a
+/// `let` republished at its wake) is no write, so the stamp of its last
+/// one says whether the reader slept through it.
+#[inline]
+pub(crate) fn stands_since<R: Rt>(
+    ctx: &ExecCtx<'_, R>,
+    id: &BindId,
+    delivered: &TagValue,
+) -> Option<u64> {
+    let tag = delivered.tag();
+    if ctx.event.view != View::Wake
+        || tag.triggers()
+        || tag.moved()
+        || ctx.catch_up.is_none()
+    {
+        return None;
+    }
+    let (_, stamp) = ctx.rt.store_get_var(ctx.rt.var_of(*id))?;
+    (*stamp < ctx.rt.cycle()).then_some(*stamp)
+}
+
 /// Deliver, fired at its standing value, each input `fill` names that the
 /// catch-up scope owes; the deliveries are for [`TrackedFires::restore`].
 pub(crate) fn deliver_owed<R: Rt>(
@@ -196,7 +236,7 @@ pub(crate) fn inject<R: Rt>(
 ) {
     let v = match read_var(ctx, &id) {
         Some(VarRead::Delivered(tv)) if tv.tag().triggers() => return,
-        Some(VarRead::Delivered(tv) | VarRead::Standing((tv, _)))
+        Some(VarRead::Delivered(tv) | VarRead::Standing(tv, _))
             if !tv.tag().is_bottom() =>
         {
             tv.value_cloned()

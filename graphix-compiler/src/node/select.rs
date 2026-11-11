@@ -5,7 +5,7 @@ use super::{
         ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
         rigid_refusal, written_refusal,
     },
-    wake::{ArmMask, TrackedFires},
+    wake::{self, ArmMask, TrackedFires},
 };
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
@@ -262,7 +262,7 @@ fn evaluate_arm<R: Rt>(
     let mut injected = tracked.deliver(ctx, i);
     for (_, ids) in guard_took.iter().filter(|(j, _)| *j == i) {
         for id in ids {
-            super::wake::inject(ctx, *id, &mut injected);
+            wake::inject(ctx, *id, &mut injected);
         }
     }
     let scope = tracked.open(ctx, i, arm_boundary(arm));
@@ -2706,7 +2706,8 @@ impl<R: Rt> Update<R> for Select<R> {
                 let view = match entered.replace(i) {
                     true => {
                         if !sleep_on_deselect.get(i) {
-                            arms[i].1.sleep(ctx);
+                            let since = tracked.unseen(i);
+                            wake::asleep_since(since, || arms[i].1.sleep(ctx));
                         }
                         match flags.contains(CFlag::RunEvent) {
                             true => View::Step,
@@ -2781,13 +2782,15 @@ impl<R: Rt> Update<R> for Select<R> {
             flags: _,
         } = self;
         slept.set();
-        if let Some(facts) = arm_facts {
-            let cycle = ctx.rt.cycle();
-            facts.tracked.all_fell_asleep(cycle);
+        let stopped = wake::stopped(ctx);
+        if let Some(facts) = arm_facts.as_mut() {
+            facts.tracked.all_fell_asleep(stopped);
         }
         arg.sleep(ctx);
-        for (pat, body) in arms {
-            body.sleep(ctx);
+        for (i, (pat, body)) in arms.iter_mut().enumerate() {
+            let since =
+                arm_facts.as_ref().map_or(stopped, |f| f.tracked.unseen(i).min(stopped));
+            wake::asleep_since(since, || body.sleep(ctx));
             if let Some(n) = &mut pat.guard {
                 n.sleep(ctx)
             }

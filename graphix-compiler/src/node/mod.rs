@@ -89,8 +89,10 @@ pub(crate) enum VarRead<'a> {
     /// handed to it alone now: its own tag applies.
     Late(&'a TagValue),
     /// A standing store entry, stamped in an earlier cycle: the value
-    /// channel. Readers view it Stale, or Fired at a birth.
-    Standing(&'a (TagValue, u64)),
+    /// channel. Readers view it Stale, or Fired at a birth. To a resume
+    /// its quiet delivery this cycle is the same entry
+    /// ([`wake::stands_since`]).
+    Standing(&'a TagValue, u64),
 }
 
 impl VarRead<'_> {
@@ -100,7 +102,7 @@ impl VarRead<'_> {
         match self {
             VarRead::Delivered(tv) => delivered_view(ctx.event, tv),
             VarRead::Late(tv) => (*tv).clone(),
-            VarRead::Standing((tv, stamp)) => {
+            VarRead::Standing(tv, stamp) => {
                 let mut tv = standing_view(ctx.event, tv);
                 if wake::slept_through(ctx, *stamp) {
                     let tag = tv.tag().moved_if(true);
@@ -122,11 +124,14 @@ pub(crate) fn read_var<'a, R: Rt>(
         f.note_read(*id);
     }
     if let Some(tv) = ctx.event.variables.get(id) {
-        return Some(VarRead::Delivered(tv));
+        return Some(match wake::stands_since(ctx, id, tv) {
+            Some(stamp) => VarRead::Standing(tv, stamp),
+            None => VarRead::Delivered(tv),
+        });
     }
     match ctx.rt.store_get_var(ctx.rt.var_of(*id)) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
-        Some(standing) => Some(VarRead::Standing(standing)),
+        Some((tv, stamp)) => Some(VarRead::Standing(tv, *stamp)),
         None => None,
     }
 }
@@ -3172,7 +3177,7 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
                 let tv = match read {
                     VarRead::Delivered(tv)
                     | VarRead::Late(tv)
-                    | VarRead::Standing((tv, _)) => tv,
+                    | VarRead::Standing(tv, _) => tv,
                 };
                 self.cell = Self::cell(tv);
                 addressless = self.cell.is_none();

@@ -2456,7 +2456,7 @@ impl<R: Rt> Update<R> for Deref<R> {
         let owed = super::wake::owed(ctx, &id);
         self.read.read(ctx.rt.cycle());
         let res = match read_var_by(ctx, &id, self.top_id, Some(&self.read)) {
-            Some(VarRead::Standing((tv, _))) if owed => {
+            Some(VarRead::Standing(tv, _)) if owed => {
                 Some(TagValue::fired(tv.value_cloned()))
             }
             Some(read) => Some(read.production(ctx)),

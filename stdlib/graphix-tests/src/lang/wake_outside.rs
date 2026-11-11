@@ -1345,3 +1345,151 @@ async fn a_select_a_wake_leaves_bottom_moves() -> Result<()> {
     let guard = "select k { x if 10 / (n - 3) > 0 => 1, _ => 0 }";
     in_arm_agrees(guard, &bottomed(|x| (10 / (x - 3) > 0) as i64)).await
 }
+
+/// `[clk, v(clk)]` for each of `n` ticks.
+fn ticks(n: i64, v: impl Fn(i64) -> &'static str) -> Vec<String> {
+    (0..n).map(|c| format!("[{c}, {}]", v(c))).collect()
+}
+
+/// A select over `s2` whose arm 0 holds `let w = a + 0` and gives a
+/// reference to it.
+const INNER: &str =
+    "select s2 { 0 => { let w = a + 0; &w }, _ => { let w = a + 200; &w } }";
+
+/// [`INNER`]'s reference out of `arm`, arm 0 of a select over `s0`, read
+/// outside as `(v, count(v))`. The switches are written by `writes`, which
+/// take `a` to 1.
+fn nested(writes: &str, arm: &str) -> String {
+    format!(
+        "{{
+  let clk = array::iter(array::init(13, |i| i));
+  let (a, s0, s1, s2) = (0, 0, 0, 0);
+  {writes}
+  let g = select s0 {{ 0 => {arm}, _ => {{ let w = a + 100; &w }} }};
+  let h = once(g);
+  let v = *h;
+  clk ~ (clk, (v, count(v)))
+}}"
+    )
+}
+
+// An arm with nothing to pause is slept when it is next entered. The
+// outer arm sleeps over clk 2 and 3 while `a` lands at clk 2, and is
+// entered again at clk 4, in the cycle the select inside leaves the arm
+// that holds `w`. That arm stopped running with the outer arm, at clk 2,
+// so its wake at clk 6 slept through `a` and `w` fires outside.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_arm_slept_at_its_entry_stopped_at_its_deselect() -> Result<()> {
+    let writes = "a <- select clk { 1 => 1, _ => never() };
+  s0 <- select clk { 1 => 1, 3 => 0, _ => never() };
+  s2 <- select clk { 3 => 1, 5 => 0, _ => never() };";
+    let moved = ticks(13, |c| if c < 6 { "[0, 1]" } else { "[1, 2]" });
+    agrees(nested(writes, INNER), &moved).await?;
+    // an arm holding a `count` sleeps at its deselect
+    let held = format!("{{ let c = count(s2); {INNER} }}");
+    agrees(nested(writes, &held), &moved).await
+}
+
+// The middle select leaves its arm at clk 2, `a` lands at clk 3 and the
+// outer arm sleeps over clk 4 and 5. Slept with the outer arm at its
+// entry at clk 6, the middle arm stopped at clk 2, not at clk 4: entered
+// at clk 8 as the innermost select leaves the arm holding `w`, that arm
+// wakes at clk 10 having slept through `a`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_arm_slept_with_its_select_stopped_at_its_own_deselect() -> Result<()> {
+    let writes = "a <- select clk { 2 => 1, _ => never() };
+  s0 <- select clk { 3 => 1, 5 => 0, _ => never() };
+  s1 <- select clk { 1 => 1, 7 => 0, _ => never() };
+  s2 <- select clk { 7 => 1, 9 => 0, _ => never() };";
+    let mid = format!("select s1 {{ 0 => {INNER}, _ => {{ let w = a + 300; &w }} }}");
+    let moved = ticks(13, |c| if c < 10 { "[0, 1]" } else { "[1, 2]" });
+    agrees(nested(writes, &mid), &moved).await?;
+    let held = format!("{{ let c = count(s1); {mid} }}");
+    agrees(nested(writes, &held), &moved).await
+}
+
+/// `a` lands at clk 1 while the region that holds `let w = a + 0` sleeps;
+/// the region wakes at clk 3, where `w` stands moved, and, with `again`,
+/// sleeps at clk 4 and wakes once more at clk 5, where `w` stands again
+/// as it is. `s1` is 1 from `away` to clk 5; `rest` reads `w`.
+fn stood_again(again: bool, away: i64, rest: &str) -> String {
+    let again = if again { "3 => 1, 4 => 0," } else { "" };
+    format!(
+        "{{
+  let clk = array::iter(array::init(9, |i| i));
+  let (a, s0, s1) = (0, 0, 0);
+  a <- select clk {{ 0 => 1, _ => never() }};
+  s0 <- select clk {{ 0 => 1, 2 => 0, {again} _ => never() }};
+  s1 <- select clk {{ {} => 1, 4 => 0, _ => never() }};
+  {rest}
+}}",
+        away - 1
+    )
+}
+
+// A `let` a wake stands again is delivered quietly, and keeps the stamp
+// of the wake that moved it. The arm nested beside it slept through that
+// one and wakes in the cycle of the second: it reads `w` moved, and `u`
+// fires outside, as where the region woke once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_stood_again_moved_for_the_arm_that_slept_through_it() -> Result<()> {
+    let rest = "let g = select s0 {
+    0 => {
+      let w = a + 0;
+      let c = count(s1);
+      select s1 { 0 => { let u = w + 1; &u }, _ => { let u = w + 100; &u } }
+    },
+    _ => { let u = a + 500; &u }
+  };
+  let h = once(g);
+  let v = *h;
+  clk ~ (clk, (v, count(v)))";
+    let moved = ticks(9, |c| if c < 5 { "[1, 1]" } else { "[2, 2]" });
+    agrees(stood_again(true, 1, rest), &moved).await?;
+    agrees(stood_again(false, 1, rest), &moved).await
+}
+
+// The same through a closure, for an arm of another select.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_let_stood_again_moved_for_another_selects_arm() -> Result<()> {
+    let rest = "let g0 = select s0 {
+    0 => { let w = a + 0; |y: i64| w },
+    _ => { let w = 100; |y: i64| w }
+  };
+  let h0 = once(g0);
+  let g1 = select s1 {
+    0 => { let u = h0(1) + 1; |y: i64| u },
+    _ => { let u = 100; |y: i64| u }
+  };
+  let h1 = once(g1);
+  let v = h1(1);
+  clk ~ (clk, (h0(1), v, count(v)))";
+    let moved = ticks(9, |c| match c {
+        0..3 => "[0, 1, 1]",
+        3 | 4 => "[1, 1, 1]",
+        _ => "[1, 2, 2]",
+    });
+    agrees(stood_again(true, 3, rest), &moved).await?;
+    agrees(stood_again(false, 3, rest), &moved).await
+}
+
+// The waking arm's reference moved to `w` while it slept, a target it
+// learns as it runs: it is owed `w`'s fire, which `count` takes, whether
+// or not `w` stands again in that cycle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_target_stood_again_is_owed_to_the_arm_that_learns_it() -> Result<()> {
+    let rest = "let k = 0;
+  k <- select clk { 2 => 1, _ => never() };
+  let g0 = select s0 { 0 => { let w = a + 0; &w }, _ => { let w = a + 500; &w } };
+  let x = 7;
+  let refs = [&x, once(g0)];
+  let g1 = select s1 { 0 => { let r = refs[k]$; count(*r) }, _ => k - 100 };
+  clk ~ (clk, g1)";
+    let owed = ticks(9, |c| match c {
+        0..3 => "1",
+        3 | 4 => "-99",
+        _ => "2",
+    });
+    agrees(stood_again(true, 3, rest), &owed).await?;
+    agrees(stood_again(false, 3, rest), &owed).await
+}
