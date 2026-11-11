@@ -228,7 +228,16 @@ never uses. A branch's table only grows (`VarAliases::absorb`). The
 tables it read replay into the runtime in the branch's order at the
 merge, so a retired body's readers leave before its join does, and once
 the branches have merged the runtime, which alone drops a join, reads
-the joins as they stand (`branch::merge_in_order`).
+the joins as they stand and gives the cycle's event its table
+(`branch::merge_in_order`). Without the read a table a sibling took
+while a reload compiled, replayed after the reload's own, leaves the
+retired binding the val's for a write made later in the cycle; without
+the event's a branch's grown table leaves it the val's for every later
+delivery. Pins: `lang::modules::
+a_write_through_a_binding_retired_beside_syncing_siblings_misses_the_val`
+and `a_reload_in_a_forked_branch_retires_its_binding_in_the_event`. A
+branch that merged a nested branch's reload still names the retired
+binding for the rest of that cycle (CR forked-retire-first-call-01).
 
 A reload joins its new body's binding before the body it replaces
 retires; while the new source compiles, the replaced body's bindings

@@ -733,7 +733,9 @@ in one cycle. The joins live in `StaticCallees`,
 the one table every branch shares, and each view of the runtime reads
 them for itself (`design/module_system.md`, "one variable"): a
 sibling's sync between a branch's join and that branch's own takes
-nothing from the joining branch.
+nothing from the joining branch. A branch's table only grows; the
+runtime alone drops a join, and at the root's merge the event takes the
+runtime's table.
 
 **Core-trait hooks** reach `&mut ExecCtx` through a raw pointer
 published in `VALUE_HOOKS` (C/node/coretraits.rs:368) and re-enter node

@@ -2174,6 +2174,109 @@ run!(
     FuseExpect::Jit
 );
 
+// A function of a retired body is no reader of the module's val: `saved`
+// is the first body's `get`, first called once the reload has retired
+// that body, so its `v` is the retired binding's and never the val the
+// later writes land on, in the branch that reloaded as in the cycle's
+// event once the branches merge.
+run!(
+    a_reload_in_a_forked_branch_retires_its_binding_in_the_event,
+    r#"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let xs: Array<i64> = never();
+    xs <- select ep { 8 => [0, 1, 2], _ => never() };
+    let ys: Array<i64> = never();
+    ys <- select ep { 2 => [0, 1], 4 => [0, 1, 2, 3], _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => "let v = 1; let get = |x: i64| x + v",
+        4 => "let v = 20; let get = |x: i64| x * 1000 + v",
+        _ => never()
+    };
+    let saved: fn(x: i64) -> i64 = never();
+    let m = (
+        {
+            let s = mod d dynamic { sandbox unrestricted; sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
+            d::v <- select ep { 10 => 9, 12 => 11, _ => never() };
+            saved <- select ep { 3 => d::get, _ => never() };
+            select s { error as e => never(dbg(e)), null as _ => d::v }
+        },
+        array::map(ys, |y| y * 2)
+    );
+    let escaped = array::map(xs, |x| saved(x + ep));
+    let seen = "";
+    seen <- escaped ~ "[seen] [escaped]";
+    select ep { 14 => "[m.0][seen]", _ => never() }
+}"#,
+    is(Value::String("11".into()));
+    FuseExpect::Jit
+);
+
+/// A tuple whose first field loads the dynamic module `d` and whose
+/// second is collections that each compile a slot of their own size in
+/// the cycles `d` reloads (every third `ep`). `saved` is the running
+/// body's `set`, called in each reload's cycle after the tuple, when the
+/// reload has retired the body it writes. Forked, a collection that syncs
+/// while the reload compiles reads the retiring binding's join and replays
+/// it after the reload's own tables. The program's value is every value
+/// `d::v` had, in order.
+fn reload_beside_slower_and_faster_siblings() -> String {
+    let lets: Vec<String> = (0..60).map(|i| format!("let a{i} = {i} + v")).collect();
+    let sizes = [160, 120, 80, 60, 40, 30, 20, 15, 10, 5];
+    let maps: Vec<String> = sizes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let steps: Vec<String> =
+                (1..*n).map(|k| format!("let b{k} = b{} + 1", k - 1)).collect();
+            format!(
+                "array::map(xs, |x| {{ let b0 = uniq(x) + {i}; {}; b{} }})",
+                steps.join("; "),
+                n - 1
+            )
+        })
+        .collect();
+    format!(
+        r#"{{
+    let ep = 0;
+    ep <- select ep {{ n if n < 19 => n + 1, _ => never() }};
+    let xs: Array<i64> = [];
+    xs <- select ep {{ n if n % 3 == 2 => array::push(xs, n), _ => never() }};
+    let src: string = never();
+    src <- select ep {{
+        n if n % 3 == 2 => "let v = [n]; let set = |x: i64| -> null {{ v <- x; null }}; {lets}",
+        _ => never()
+    }};
+    let saved: fn(x: i64) -> null = never();
+    let r = (
+        {{
+            let s = mod d dynamic {{ sandbox unrestricted; sig {{ val v: i64; val set: fn(x: i64) -> null }}; source src }};
+            saved <- d::set;
+            select s {{ error as e => never(dbg(e)), null as _ => d::v }}
+        }},
+        [{maps}]
+    );
+    saved(select ep {{ n if n % 3 == 0 => 1000 + n, _ => never() }});
+    let seen = "";
+    seen <- r.0 ~ "[seen] [r.0]";
+    select ep {{ 19 => seen, _ => never() }}
+}}"#,
+        lets = lets.join("; "),
+        maps = maps.join(", "),
+    )
+}
+
+// A write through a retired body's binding is no write to the val, in the
+// cycle of the reload too: once the branches have merged the runtime holds
+// the joins as they stand, whatever table a sibling read last.
+run!(
+    a_write_through_a_binding_retired_beside_syncing_siblings_misses_the_val,
+    reload_beside_slower_and_faster_siblings(),
+    is(Value::String(" 2 5 8 11 14 17".into()));
+    FuseExpect::Jit
+);
+
 /// Twelve sibling collections whose callback calls `f`, a function
 /// whose body declares the interface module `m`. Each slot's instance
 /// joins `m`'s vals with its own body's bindings, so forked siblings each
