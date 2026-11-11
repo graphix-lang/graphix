@@ -1340,6 +1340,23 @@ impl Typing {
         let Some(tables) = table.get() else {
             bail!("an instance of {:?}, whose definition's check recorded no types", id)
         };
+        // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
+        // where an alias that adds a member is applied to a variable under an invariant
+        // constructor and the argument already holds that member. `type Opt<'a> = ['a,
+        // null]; let nest = |w: &mut Opt<'a>| -> &mut 'a never(); let n0: Opt<Opt<i64>> =
+        // null; let x: &mut Opt<i64> = nest(&mut n0)` passes `--check`, and the run fails
+        // "an instance at fn(w: &mut Opt<[i64, null]>) -> &mut [i64, null] of a definition
+        // typed fn(w: &mut Opt<'a>) -> &mut 'a", on base-r20 and on lane 20c alike;
+        // `B<Opt<'a>>` over `type B<'a> = Abstract<'a>` does the same. The check binds 'a
+        // to [i64, null], as the instance's printed signature shows. Written out (`w: &mut
+        // ['a, null]`) the check refuses the same call, "&mut [i64, null] does not contain
+        // &mut 'a: i64", so the alias and its body written out already differ in the
+        // check. 'a has two solutions here (i64 and [i64, null]); not looked into
+        // further: the first suspect is that the instance's signature is matched against
+        // the definition's by expansion and takes the other one. It may be a choice
+        // (formal-union-order-01) comes to refuse. probes:
+        // ~/ptmp/cr29/scratch/r20/20c/ag-review/inst3.gx, inst4.gx (written out:
+        // inst1.gx, inst2.gx) (alias-instance-signature-01)
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
