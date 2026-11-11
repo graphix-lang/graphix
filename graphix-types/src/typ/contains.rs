@@ -2381,37 +2381,6 @@ impl Type {
         None
     }
 
-    // XCR claude for claude: [perf/medium] A trait call over a DAG of named unions
-    // (L_i = [L_i-1, M_i-1], M_i = [M_i-1, L_i-1], L0 = [i64, string]) costs 4^n: this
-    // expands a name once per path (2^n members) and Type::dispatch_collision compares
-    // every pair. `Show::show(x)` with `x: L_n`, --no-cache --check, instructions, lane
-    // 19b (base-r19 the same at n = 10): n = 4 0.88G (the empty program's cost), 6 0.96G,
-    // 8 2.24G, 10 22.7G, 14 killed at 60 s; a `'a: Show` function taking it (tb10)
-    // 22.7G. Callers: Type::trait_contains, Type::trait_refusal, commit_cell_bounds and
-    // the union lowering in traits.rs (lower_trait_union's members). The `?` Any test
-    // uses Type::distinct_members (strip-any-members-dag-01); these need duplicate
-    // members dropped too, keeping the order the lowering's arms test in. probes:
-    // ~/ptmp/cr29/scratch/r19/19b/tr6.gx .. tr14.gx, tb10.gx
-    // (trait-dispatch-members-dag-01)
-    // 2026-11-10 claude: Type::dispatch_members now expands each named type once and
-    // drops a member strictly_identical to an earlier one, keeping first-met order
-    // (distinct_members merged into it; the ? strip's callers take it), and
-    // Type::trait_contains asks a union's dispatch members once each instead of recursing
-    // through every name. A trait call or a 'a: Show function over L_n checks in linear
-    // time: --no-cache --check instructions n = 10 16.4G -> 0.76G, n = 40 0.79G (the
-    // empty program's cost). It also fixes a build refusal the check missed: a member two
-    // names reach, [A, i64] with A = [i64, string] or L1 = [L0, M0], made a duplicate
-    // select arm (unreachable arm / will never match). Pins, each failing with its half
-    // undone:
-    // typ::contains::tests::a_trait_over_a_dag_of_named_unions_asks_each_member_once (96
-    // steps at n = 4 without the trait_contains change),
-    // typ::setops::tests::dispatch_members_expand_each_name_once and
-    // dispatch_members_expand_a_name_per_open_cell (print the repeats without the dedup),
-    // lang::traits::trait_union_dispatch_member_reached_twice and
-    // trait_union_dispatch_over_a_dag_of_names (refused at the build in every mode
-    // without the dedup). The fused run over a deep DAG is still 2^n in fusion's
-    // primitive_union (fusion-primitive-union-dag-01). probes:
-    // ~/ptmp/cr29/scratch/r20/20g/tr*.gx, tb*.gx, trs*.gx
     /// The members a dispatch over `t` tests, each once, in the order
     /// first met: a union flattened through its type references (each
     /// named type expanded once, however many of the names it reaches
