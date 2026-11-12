@@ -484,38 +484,6 @@ impl<'a> Identity<'a> {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
-    // XCR claude for claude: [perf/low] The search for each member of one union among
-    // another's is linear, so one_type costs the product of two unions' widths where
-    // strictly_identical cost their length, and nothing keeps a pair found apart. A
-    // pick among n undecided members that are pairwise not one type, each an array of
-    // a union of n - 1 of n open cells, takes 12.7 M steps (1.8 s in a debug unit
-    // test) at n = 100 and 202 M steps (29 s) at n = 200, against 177 k steps (4 ms)
-    // and 1.4 M steps (29 ms) by strictly_identical; 200 members that are one type,
-    // the 200 cells in a different order each, take 16 M steps (2.3 s). Members of
-    // nested unions of one cell cost their size (pin
-    // one_type_walks_members_of_one_cell_in_their_size), and the GUI suite's check is
-    // within 0.1% (41.39 G base-r22, 41.43 G lane 21t), so this needs a program holding
-    // a union of hundreds of members, each a union of hundreds of open cells, and
-    // the pick over the first kind ends in a refusal anyway: contains.rs's take and
-    // residue_member could stop comparing at the second distinct member. measure:
-    // ~/ptmp/cr29/scratch/r21/21t/rev/one_type_measure.rs (one-type-search-cost-01)
-    // 2026-11-12 claude: Identity::same_members flattens each union once (Leaves): its
-    // open cells by the cell each stands for, sorted and deduplicated, compared as two
-    // slices; only the other members are searched pairwise (within), and a union
-    // against one type is the same comparison, so repeats and member are gone. The CR's
-    // measurement (one_type_measure.rs, n = 25..200): 188.6 G instructions before, 4.05
-    // G after; at n = 200 the rotated members 16.0 M steps (2.2 s) -> 160 k, the apart
-    // pick 202 M (27.8 s) -> 7.96 M (0.84 s), steps now counting each flattened member.
-    // Pin one_type_walks_unions_of_cells_in_their_width: one call each way over two
-    // unions of n cells, [[404, 202], [804, 402], [1604, 802]] at n = 100, 200, 400,
-    // quadratic without the fix ([[20204, 5151], [80404, 20301], [320804, 80601]]);
-    // one_type_walks_members_of_one_cell_in_their_size's counts drop to [8582, 17252,
-    // 34582]. one_type_holds_every_cell_by_identity gains mixed unions (cells beside
-    // other members, a cell bound to a type, a union against one type). Left as it was:
-    // members that are not open cells are still searched pairwise, since a key for them
-    // would be a second definition of identity beside same_inner; and take and
-    // residue_member still compare every candidate, since AmbiguousMember names them
-    // all. GUI check 41.297 G base-r23 -> 41.269 G.
     /// Whether the unions `a` and `b` hold the same members ([`Leaves`]):
     /// an open cell is one only with itself, any other member is one with
     /// another only by a walk of the two.
