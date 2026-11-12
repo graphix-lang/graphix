@@ -2095,13 +2095,13 @@ fn is_self_param(a: &FnArgType) -> bool {
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
 /// print as the trait at the argument). Where cells print as they stand
-/// ([`PrintFlag::DerefTVars`]) a quantifier no call picks any more, bound
+/// ([`crate::print_standing`]) a quantifier no call picks any more, bound
 /// or one instance's, is left out too: it prints where it occurs, as an
 /// inferred variable does. One entry per conjunct, a variable's conjuncts
 /// adjacent.
 fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     let mut v = ft.printed_view();
-    let as_they_stand = PRINT_FLAGS.get().contains(PrintFlag::DerefTVars);
+    let as_they_stand = crate::print_standing();
     v.retain(|(tv, _)| {
         !tv.unwritten() && (!as_they_stand || tv.heads_a_printed_signature())
     });

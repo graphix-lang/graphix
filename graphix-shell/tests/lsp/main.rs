@@ -73,6 +73,31 @@ fn a_typedef_hover_shows_its_parameters() {
     hover_is(&mut c, "let p: |Pair", decl);
 }
 
+/// A header lists its quantifiers only while a call still picks them, as a
+/// checker message's does: one instance of a generic function prints its
+/// variables where they occur, two instances' numbered apart.
+#[test]
+fn one_instance_hovers_with_no_header() {
+    const SRC: &str = "\
+let h = 'a: Number |x: 'a| -> 'a x;
+let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x);
+let mk = |z: i64| 'a: Number |x: 'a| -> 'a x;
+let k = mk(0);
+let pair = (k, mk(1));
+let hs = array::map([1], |r| h);
+0
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "let |h", "h: fn<'a: Number>(x: 'a) -> 'a");
+    hover_is(&mut c, "let |fs", "fs: Array<fn(x: 'a) -> 'a>");
+    hover_is(&mut c, "let |mk", "mk: fn(z: i64) -> fn<'a: Number>(x: 'a) -> 'a");
+    hover_is(&mut c, "let |k", "k: fn(x: 'a) -> 'a");
+    hover_is(&mut c, "let |pair", "pair: (fn(x: 'a) -> 'a, fn(x: 'a1) -> 'a1)");
+    hover_is(&mut c, "let |hs", "hs: Array<fn(x: 'a) -> 'a>");
+}
+
 #[test]
 fn hover_never_answers_for_another_name() {
     let mut c = two_files();

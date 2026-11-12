@@ -1958,7 +1958,10 @@ former consumer derives from the cells:
   One instance keeps the list (a call through it shares its cells, which
   the cells' levels say, not the list), so the header means "generic"
   only in print: where cells print as they stand
-  (`PrintFlag::DerefTVars`: a checker message, the shell's `-:` line) it
+  (`PrintFlag::DerefTVars`: a checker message, the shell's `-:` line; and
+  `PrintFlag::StandingHeaders`, which prints each variable by its name
+  alone: the language server's hover, completion and outline, over the
+  type `resolve_tvars` copied, whose open cells keep their levels) it
   lists a quantifier only while its cell is open and generic
   (`fntyp::printed_quantifiers`), and one a call picked or one instance
   holds (an unnamed lambda's, a read no binding names, a call's result)
@@ -1988,7 +1991,9 @@ former consumer derives from the cells:
   `a_header_prints_apart_from_an_instance_shown_before_it`,
   `a_header_prints_apart_from_a_name_numbered_before_it`,
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
-  `a_refused_write_to_a_generic_binding_prints_its_header`. A self-referential constraint
+  `a_refused_write_to_a_generic_binding_prints_its_header`; the hover's:
+  `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`.
+  A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and
   conjunct; each listing walk holds a per-signature reentrancy guard, so

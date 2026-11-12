@@ -13,9 +13,10 @@ use crate::{
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
-    BindId, SourcePosition,
+    BindId, PrintFlag, SourcePosition,
     env::{Bind, TraitDef, TypeDef},
     expr::{ModPath, Origin, Source},
+    format_with_flags,
     ide::ModuleRefSite,
     mod_root,
     typ::Type,
@@ -65,7 +66,7 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
     ModPath(NPath::from(ArcStr::from(s)))
 }
 
-// CR claude for claude: [readability/low] A hover prints one instance of a function
+// XCR claude for claude: [readability/low] A hover prints one instance of a function
 // type with its `fn<..>` header, which reads as generic: over `let fs =
 // array::map([1], |r| 'a: Number |x: 'a| -> 'a x)` a hover on `fs` shows `fs:
 // Array<fn<'a: Number>(x: 'a) -> 'a>`, where a checker message and the shell's
@@ -73,15 +74,29 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
 // instance-quantifier-print-01). The hover prints canonically, which lists every
 // declared quantifier; the cells `resolve_tvars` keeps for open quantifiers still
 // say which are generic. (hover-instance-header-01)
+// 2026-11-12 claude: display_type prints under a new PrintFlag::StandingHeaders
+// (implied by DerefTVars, crate::print_standing): printed_quantifiers lists a
+// quantifier only while its cell (the copy resolve_tvars made, level kept) is open
+// and generic, and printed_name numbers a second cell of one name apart, each
+// variable printing by its name alone. Hover, completion and outline now show fs:
+// Array<fn(x: 'a) -> 'a>, k = mk(0): fn(x: 'a) -> 'a, (k, mk(1)): (fn(x: 'a) -> 'a,
+// fn(x: 'a1) -> 'a1); generic h and mk's scheme keep their headers. Pin:
+// graphix-shell/tests/lsp/main.rs one_instance_hovers_with_no_header (fails without
+// the flag at fs). Left as messages have it: a let rec's self-read bound in its own
+// body (let w = f) prints a header, the close having generalized the cells.
 /// A binding's type for display. `replace_auto_constrained` folds a
 /// function's constraint-table tvars into the surface and must run
-/// before `resolve_tvars`, which empties the table.
+/// before `resolve_tvars`, which empties the table. A header lists only
+/// the quantifiers a call still picks, as a checker message's does.
 pub(crate) fn display_type(typ: &Type) -> CompactString {
     let folded = match typ {
         Type::Fn(ft) => Type::Fn(Arc::new(ft.replace_auto_constrained())),
         t => t.clone(),
     };
-    format_compact!("{}", folded.resolve_tvars())
+    let resolved = folded.resolve_tvars();
+    format_with_flags(PrintFlag::ReplacePrims | PrintFlag::StandingHeaders, || {
+        format_compact!("{resolved}")
+    })
 }
 
 /// A typedef as its declaration reads: `type Pair<'a: Bound> = body`.

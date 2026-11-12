@@ -1750,7 +1750,7 @@ impl TVar {
     }
 
     /// Whether a signature printing cells as they stand
-    /// ([`PrintFlag::DerefTVars`]) lists this quantifier in its header: a
+    /// ([`crate::print_standing`]) lists this quantifier in its header: a
     /// call still picks it, so it is open and generic, as it was where the
     /// message being printed was made ([`HeldQuantifiers`]).
     pub(super) fn heads_a_printed_signature(&self) -> bool {
@@ -1784,7 +1784,7 @@ impl fmt::Display for TVar {
                     return write!(f, "{c}");
                 }
             }
-            write!(f, "'{}", ShortName(&self.name))
+            write!(f, "'{}", ShortName(&printed_name(self)))
         } else {
             // A cell can be reachable from its own constraints; a
             // revisit on the print stack elides. Contents are cloned
@@ -3167,8 +3167,8 @@ impl HeldQuantifiers {
     }
 }
 
-/// The names the type being printed gave its named cells where bindings
-/// print in place ([`PrintFlag::DerefTVars`]): a cell a printing
+/// The names the type being printed gave its named cells where cells
+/// print as they stand ([`crate::print_standing`]): a cell a printing
 /// signature's header lists until that signature ends
 /// ([`quantifiers_apart`]), any other until the outermost print does
 /// ([`printed_name`]).
@@ -3212,14 +3212,14 @@ impl Shown {
     }
 }
 
-/// A type being printed with bindings in place. Until the outermost one
+/// A type being printed as its cells stand. Until the outermost one
 /// ends, each named cell it shows that no header lists keeps one name
 /// ([`printed_name`]).
 pub(super) struct Printing;
 
 impl Printing {
     pub(super) fn enter() -> Option<Self> {
-        PRINT_FLAGS.get().contains(PrintFlag::DerefTVars).then(|| {
+        crate::print_standing().then(|| {
             PRINT_DEPTH.set(PRINT_DEPTH.get() + 1);
             Printing
         })
@@ -3257,15 +3257,14 @@ impl Drop for Printing {
 // Whoever owns the table per message can walk the names it will show first
 // (`Type::names_held`) and number around them, as `quantifiers_apart` does within
 // one signature.
-/// The name `tv` prints under where bindings print in place
-/// ([`PrintFlag::DerefTVars`]), else its own: the one a printing signature
+/// The name `tv` prints under where cells print as they stand
+/// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for a cell
 /// a program named that no header lists, its own unless the type being
 /// printed showed another cell under it, then numbered apart, so two
 /// instances' cells of one declared name read as two.
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
-    let in_place = PRINT_FLAGS.get().contains(PrintFlag::DerefTVars);
-    if !in_place || PRINT_DEPTH.get() == 0 {
+    if !crate::print_standing() || PRINT_DEPTH.get() == 0 {
         return tv.name.clone();
     }
     let addr = tv.cell_addr();
@@ -3292,8 +3291,8 @@ impl Drop for Listed {
 /// `f`, printing `ft`, with each quantifier `ft`'s header lists
 /// ([`TVar::heads_a_printed_signature`]) printing under a name apart from
 /// the other cells of its name `ft` holds and from every name the type
-/// being printed shows another cell under, where bindings print in place
-/// ([`PrintFlag::DerefTVars`]).
+/// being printed shows another cell under, where cells print as they
+/// stand ([`crate::print_standing`]).
 pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
     let Some(_printing) = Printing::enter() else { return f() };
     if ft.quantifiers.is_empty() {

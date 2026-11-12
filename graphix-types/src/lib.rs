@@ -200,6 +200,10 @@ pub enum PrintFlag {
     /// Print the names a lowering built (`--expand`) rather than the
     /// names the program wrote for them.
     Lowered,
+    /// Print signature headers and variable names as the cells stand, as
+    /// `DerefTVars` does, each variable by its name alone: the language
+    /// server's view of a resolved type.
+    StandingHeaders,
 }
 
 thread_local! {
@@ -214,6 +218,12 @@ pub fn print_as_written() -> bool {
 #[doc(hidden)]
 pub fn print_lowered() -> bool {
     PRINT_FLAGS.get().contains(PrintFlag::Lowered)
+}
+
+/// Whether headers and names print as the cells stand
+/// ([`PrintFlag::StandingHeaders`], or [`PrintFlag::DerefTVars`]).
+pub(crate) fn print_standing() -> bool {
+    PRINT_FLAGS.get().intersects(PrintFlag::DerefTVars | PrintFlag::StandingHeaders)
 }
 
 /// Run `f` with the given type-formatting flags on this thread.
