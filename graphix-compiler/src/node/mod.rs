@@ -3606,7 +3606,7 @@ impl<R: Rt> Update<R> for Any<R> {
         // the first triggering value-bearing production wins; a
         // triggering bottom never beats one (`any(risky?, default)`); at a
         // wake, the child the resident came from standing bottom now
-        // stands the resident bottom, as its missed fire would have
+        // stands the resident bottom, moved
         let woke = self.slept.take();
         let mut winner: Option<(usize, TagValue)> = None;
         let mut bottomed = false;
@@ -3630,7 +3630,7 @@ impl<R: Rt> Update<R> for Any<R> {
                 self.resident.set(tv)
             }
             None if bottomed => self.resident.set_bottom(true),
-            None if lost => self.resident.set_bottom(false),
+            None if lost => self.resident.set_bottom_as(Tag::MOVED),
             None => self.resident.ride(),
         }
     }

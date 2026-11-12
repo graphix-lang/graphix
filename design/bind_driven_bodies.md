@@ -154,10 +154,11 @@ an error that stands (`node/error.rs::strip_production`; nothing is raised or re
 fired), and a loop's bottom over a bottom source, which ran no slot to carry it
 (`fusion/emit/scaffold.rs::SlotFlags::apply`). Everything that consumes events drops it: a stateful
 builtin keeps its state, a sample whose trigger did not fire rides, an `Io` call does not act and its
-result moved when its trigger argument did. A resident never keeps the bit (`Tag::quiet`). A kernel ORs
-the bit into a disc wherever it ORs `TAINT` (`emit::abi::propagate_taint`, the slot accumulators,
-`emit::body::fold_consumed`) and tests it nowhere; it runs, and never rides, when a feeder moved. A
-guard's tentative binds are retracted and stand nowhere.
+result moved when its trigger argument did. An `any` keeps its value too, except at a wake that finds the
+child the value came from bottom: it stands bottom then, moved (`node::Any::update`). A resident never
+keeps the bit (`Tag::quiet`). A kernel ORs the bit into a disc wherever it ORs `TAINT`
+(`emit::abi::propagate_taint`, the slot accumulators, `emit::body::fold_consumed`) and tests it nowhere;
+it runs, and never rides, when a feeder moved. A guard's tentative binds are retracted and stand nowhere.
 
 **Kernels.** A kernel's one source of birth is the context word its wrapper passes; a call site's first
 use, a loop slot's first iteration and a self-call's fresh block are not births, so a tail recursion that

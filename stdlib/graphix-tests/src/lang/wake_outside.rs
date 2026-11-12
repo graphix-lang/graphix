@@ -1416,6 +1416,22 @@ async fn an_unwrap_a_wake_leaves_bottom_raises_nothing() -> Result<()> {
     Ok(())
 }
 
+// An `any` whose value came from a child the wake leaves bottom stands
+// bottom, moved: an operator and a call's formal over it recompute, and
+// the reader outside loses the value at the wake.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_any_a_wake_leaves_bottom_moves() -> Result<()> {
+    for read in [
+        "any(10 / (n - 3), m)",
+        "any(10 / (n - 3), m) + 0",
+        "{ let f = |x: i64| x; f(any(10 / (n - 3), m)) }",
+        "select any(10 / (n - 3), m) { x => x + 0 }",
+    ] {
+        agrees(in_let(read), &bottomed(|x| 10 / (x - 3))).await?
+    }
+    Ok(())
+}
+
 // A loop over a source the wake leaves bottom ran no slot to carry the
 // move: its result is the source's bottom, moved with the source.
 #[tokio::test(flavor = "multi_thread")]
