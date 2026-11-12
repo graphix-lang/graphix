@@ -683,7 +683,7 @@ impl Reach {
                     let _ = itype.contains_ordered(env, scrut);
                 }
                 false => {
-                    // CR claude for claude: [bug/high] A function over a parameter written
+                    // XCR claude for claude: [bug/high] A function over a parameter written
                     // with two variables, taken apart by slice arms that return a bind
                     // of the other variable in two shapes, panics the runtime: `let f =
                     // |s: (Array<'e>, 'a)| select s { ([h, ..], b) => b, ([], b) => (b,
@@ -704,6 +704,27 @@ impl Reach {
                     // slice-param-union-01, not caused by it. probes:
                     // ~/ptmp/cr29/scratch/r21/21t/kp/{k1..k12}.gx
                     // (slice-arm-bind-bottom-panic-01)
+                    // 2026-11-12 claude: The cause was in the definition's check, not the
+                    // instance: the first arm's predicate is (Array<['h, 'r]>, 'b), one
+                    // element cell for the bind and one for the rest, and 'e, held rigid,
+                    // refused the union of the two (contains::rigid_holds_by_lower knew
+                    // only itself, bottom and a lower bound), so the arm's narrowing
+                    // failed, its verdict is dropped (narrow-verdict-dropped-01), and b
+                    // kept a cell nothing decides: f was fn(s: (Array<'e>, 'a)) -> ['_N,
+                    // ('a, 'a)]. A rigid cell now holds a union member by member, probed
+                    // whole before any member commits, so f is -> ['a, ('a, 'a)]; k1..k12
+                    // print 3 fused, unfused and under GRAPHIX_NO_SUBST. It also accepts
+                    // |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b },
+                    // typing a and b as 'e, as the one-arm body always was. Pins that fail
+                    // without it:
+                    // contains::tests::a_declared_var_holds_a_union_of_open_cells_as_each;
+                    // lang::types::slice_arm_inside_a_written_tuple_binds_its_other_variable
+                    // and .._struct_.. (jit, the kernel panic),
+                    // slice_arm_inside_a_written_tuple_types_its_result_by_its_other_variable
+                    // (all modes, the hole at the check),
+                    // declared_result_over_arms_of_two_undecided_parameters and
+                    // .._takes_one_type. Census base-r23 against this: 2962 files, no
+                    // verdict or message changed. probes: ~/ptmp/cr29/scratch/r23/23d/sab/
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     for p in preds.iter().filter(|p| p.explicit_type_predicate) {
                         p.type_predicate.reached_cells(&mut written)
@@ -2967,6 +2988,19 @@ impl<R: Rt> Select<R> {
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             union_members(&ctx.env, &reaching, &mut members)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
+            // CR claude for claude: [risk/low] The verdict of this narrowing is
+            // dropped: where an inferred pattern's predicate is not held by what
+            // reaches a live arm, its binds keep cells nothing decides, and inside a
+            // lambda those generalize into the function's type as variables no
+            // argument decides (slice-arm-bind-bottom-panic-01 was this: `fn(s:
+            // (Array<'e>, 'a)) -> ['_N, ('a, 'a)]`, a kernel compiled without the
+            // member). No witness is left: a debug print of every `false` here over
+            // the census (2962 files, both repos) found 8, seven in arms the
+            // coverage then refuses as dead and one under a written test, which
+            // Type::matching_type types. What would close it: after Reach::arm
+            // finds the arm live, refuse an inferred predicate the narrowing did
+            // not hold, naming the written test (`T as pattern`). probes:
+            // ~/ptmp/cr29/scratch/r23/23d/sab/ (narrow-verdict-dropped-01)
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))

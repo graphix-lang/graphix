@@ -2243,7 +2243,11 @@ on a cycle through cells and unions alone are one type, merged
 `design/tvar_constraints.md`). A rigid cell holds only itself, ⊥ and
 what one of its lower bounds holds (`contains::rigid_holds_by_lower`): an open
 cell a merge would put below it merges into it, or, where the occurs
-check refuses that merge, stays a lower bound (`TVar::merge_into`).
+check refuses that merge, stays a lower bound (`TVar::merge_into`). It
+holds a union member by member, probed whole before any member commits:
+`'e ⊇ ['p, 'q]` makes both open cells `'e` (a slice pattern's element
+cells over `Array<'e>`, two arms' results under a declared `-> 'e`), and
+`'e ⊇ ['p, i64]` is refused with `'p` left open.
 A cast to an integer type, a type-directed read's included, is an
 `InvalidCast` where the value does not fit (a float drops its fraction);
 a float cast to `decimal` is the decimal its shortest text names,

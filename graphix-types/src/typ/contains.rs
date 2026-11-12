@@ -1842,25 +1842,34 @@ fn conjuncts_admit(
     Ok(true)
 }
 
-/// Whether the rigid open cell `tv` holds `t`: a rigid cell holds only
-/// itself, ⊥ and what one of its lower bounds holds (`t ⊆ L ⊆ tv`), since
-/// whatever it stands for holds each. The bound that holds commits.
+/// Whether the rigid open cell `tv` (as `tt`) holds `t`: a rigid cell
+/// holds only itself, ⊥, what one of its lower bounds holds (`t ⊆ L ⊆
+/// tv`), since whatever it stands for holds each, and a union of such.
+/// The bound that holds commits, and so does each member of a union
+/// held whole.
 fn rigid_holds_by_lower(
-    tv: &TVar,
+    (tt, tv): (&Type, &TVar),
     flags: BitFlags<ContainsFlags>,
     env: &Env,
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
+    let commit = flags.contains(ContainsFlags::Commit);
     for l in tv.cell_lower().iter() {
         if l.contains_int(guide(flags), env, hist, t)? {
-            return match flags.contains(ContainsFlags::Commit) {
+            return match commit {
                 true => l.contains_int(flags, env, hist, t),
                 false => Ok(true),
             };
         }
     }
-    Ok(false)
+    match t {
+        Type::Set(s) if tt.holds_each(guide(flags), env, hist, s)? => match commit {
+            true => tt.holds_each(flags, env, hist, s),
+            false => Ok(true),
+        },
+        _ => Ok(false),
+    }
 }
 
 /// Whether the open cell `to` (as `tt`) admits the lower bounds of the
@@ -3500,7 +3509,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t);
                 }
                 if (rigid || commit) && t0.is_rigid() {
-                    return rigid_holds_by_lower(t0, flags, env, hist, t);
+                    return rigid_holds_by_lower((self, t0), flags, env, hist, t);
                 }
                 if !cell_constraints_ok(t0, flags, env, hist, &Self::Any)? {
                     return Ok(false);
@@ -3648,7 +3657,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t1);
                 }
                 if (rigid || commit) && t0.is_rigid() {
-                    return rigid_holds_by_lower(t0, flags, env, hist, t1);
+                    return rigid_holds_by_lower((self, t0), flags, env, hist, t1);
                 }
                 if takes_lower(flags, t0, false) {
                     if !conjuncts_admit(t0, flags, env, hist, t1)? {
@@ -4247,7 +4256,7 @@ impl Type {
                             return Ok(true);
                         }
                     }
-                    rigid_holds_by_lower(t0, flags, env, hist, tt1)
+                    rigid_holds_by_lower((tt0, t0), flags, env, hist, tt1)
                 })
             }
             (None, None) => {
@@ -6881,6 +6890,25 @@ mod tests {
         Type::TVar(a.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
         assert!(a.same_cell(&p) && a.same_cell(&q));
         assert!(a.is_rigid() && !a.is_bound());
+    }
+
+    /// A declared var holds a union of open cells as each of them, and no
+    /// union with a member it does not hold, which decides none of them.
+    #[test]
+    fn a_declared_var_holds_a_union_of_open_cells_as_each() {
+        let env = Env::default();
+        let union = |ts: [Type; 2]| Type::Set(Arc::from_iter(ts));
+        let (a, p, q) = (var("a"), var("p"), var("q"));
+        let _gate = a.open_rigid();
+        let both = union([Type::TVar(p.clone()), Type::TVar(q.clone())]);
+        assert!(Type::TVar(a.clone()).contains_ordered(&env, &both).unwrap());
+        assert!(a.same_cell(&p) && a.same_cell(&q));
+        assert!(a.is_rigid() && !a.is_bound());
+        let (b, r) = (var("b"), var("r"));
+        let _gate = b.open_rigid();
+        let mixed = union([Type::TVar(r.clone()), prim(Typ::I64)]);
+        assert!(!Type::TVar(b.clone()).contains_ordered(&env, &mixed).unwrap());
+        assert!(!b.same_cell(&r) && !r.is_bound());
     }
 
     #[test]

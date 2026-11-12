@@ -7496,6 +7496,67 @@ run!(
 }"#,
     prints("[i64:2, i64:1, i64:3]")
 );
+// Over a parameter written with two variables, a slice arm's element cells
+// are the declared element, so the arm's other binds take their parts of
+// the parameter: the result is of the second variable in both shapes.
+run!(
+    slice_arm_inside_a_written_tuple_binds_its_other_variable,
+    r#"{
+  let f = |s: (Array<'e>, 'a)| select s { ([h, ..], b) => b, ([], b) => (b, b) };
+  let r = f(([1], "x"));
+  let q = f(([], 4));
+  (r, q)
+}"#,
+    prints(r#"["x", [i64:4, i64:4]]"#)
+);
+run!(
+    slice_arm_inside_a_written_struct_binds_its_other_variable,
+    r#"{
+  let f = |s: {a: Array<'e>, b: 'a}| select s { {a: [h, t..], b} => b, {a: [], b} => [b] };
+  let r = f({a: [1, 2], b: "x"});
+  let q = f({a: [], b: 4});
+  (r, q)
+}"#,
+    prints(r#"["x", [i64:4]]"#)
+);
+run!(
+    slice_arm_inside_a_written_tuple_types_its_result_by_its_other_variable,
+    r#"{
+  let f = |s: (Array<'e>, 'a)| select s { ([h, ..], b) => b, ([], b) => (b, b) };
+  let r: [string, (i64, i64)] = f(([1], 3));
+  r
+}"#,
+    refused("type mismatch [string, (i64, i64)] does not contain");
+    FuseExpect::None
+);
+// A declared variable holds a union of two undecided types as each of
+// them, and no union with a member it does not hold.
+run!(
+    declared_result_over_arms_of_two_undecided_parameters,
+    r#"{
+  let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b };
+  (f(1, true, 2, 3), f("a", false, "b", "c"))
+}"#,
+    prints(r#"[i64:2, "c"]"#)
+);
+run!(
+    declared_result_over_arms_of_two_undecided_parameters_takes_one_type,
+    r#"{
+  let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b };
+  f(1, true, 2, "s")
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    declared_result_over_an_arm_of_another_type_refused,
+    r#"{
+  let f = |x: 'e, c: bool, a| -> 'e select c { true => a, false => 1 };
+  f(1, true, 2)
+}"#,
+    refused("a call picks 'e, and the body's value need not be of the type it picks");
+    FuseExpect::None
+);
 run!(
     list_arms_over_an_unannotated_parameter,
     r#"{
