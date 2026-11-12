@@ -4794,8 +4794,8 @@ impl<R: Rt> CallSite<R> {
                 }
             }
         }
-        // what the arguments decided, the judgments below and the site's
-        // settle walk past where it holds no open cell
+        // the judgments below and the site's settle pass by each cell the
+        // arguments left reaching no open cell
         for farg in ftype.args.iter() {
             farg.typ.prove_ground();
         }

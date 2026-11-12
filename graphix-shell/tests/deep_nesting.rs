@@ -1313,6 +1313,17 @@ fn written_holder_chains_check_in_linear_time() {
 // CompileCtx::monomorphic rebuilds each link's type and the connect's contains walks
 // it; --check 3.29 -> 1.69 G at 320, 41.5 -> 13.2 G at 1280. probes:
 // ~/ptmp/cr29/scratch/r23/23g/call-dag-arg-walk-01/ (xu0-*, fn-*, w-*, m.sh)
+// 2026-11-12 claude: Review (lane 23g) of 1d5ec450f: the partial work holds.
+// Reproduced, debug instructions:u base-r23 -> lane: --check 1280 links 15.13 -> 1.30
+// G, written chain 320 3.28 -> 1.68 G, --expand 320/640 3.52/10.80 -> 2.15/5.12 G;
+// fn-in-pair 1.64 -> 1.61 G, so (a) to (c) above stand. The pins fail with the fix
+// undone (check at 1280 is cut off at 3.1 G; the cast pin without mark_ground's kept
+// reset). Added
+// typ::cast::tests::a_ground_cell_keeps_no_finding_that_looked_a_name_up, which fails
+// without the Verdicts::looked_up guard. Census 2962 files 0 verdict / 0 message
+// changes; regress clean; graphix-tests lib 18954 pass; guicheck base 41.341 G, lane
+// 41.404 G. Probes agree fused, --no-fusion, GRAPHIX_PAR=force and a warm image:
+// ~/ptmp/cr29/scratch/r23/23g/call-dag-arg-walk-01/review/.
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,
@@ -1346,10 +1357,9 @@ fn generic_pair_call_chains_build_in_time() {
 /// the pair of the last, checks in time linear in its length: a call
 /// proves its formals ground once its arguments are checked, and the
 /// walks of the call and of its settle pass a ground cell by or read what
-/// it keeps of its binding, where each walked the argument's whole DAG.
-/// Its build at 320 links is held where it stands: an instance's
-/// elaboration and fusion still walk its resolved signature
-/// (call-dag-arg-walk-01).
+/// it keeps of its binding. Its build at 320 links is held where it
+/// stands: an instance's elaboration and fusion still walk its resolved
+/// signature (call-dag-arg-walk-01).
 #[test]
 #[cfg(target_os = "linux")]
 fn generic_pair_call_chains_check_in_linear_time() {

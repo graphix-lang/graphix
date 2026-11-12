@@ -3722,6 +3722,24 @@ pub(crate) mod tests {
         assert!(pair.holds_fn(&env));
     }
 
+    // What a search found by looking a type reference up is the env's
+    // word, not the binding's: a ground cell keeps none of it, and a
+    // search in an env that resolves the name finds what it names.
+    #[test]
+    fn a_ground_cell_keeps_no_finding_that_looked_a_name_up() {
+        let (bare, _) = typed(&[], "i64");
+        let (named, _) = typed(&[("F", "fn(x: i64) -> i64")], "i64");
+        let cell = TVar::empty_named(literal!("c"));
+        cell.bind(parsed(&bare, "(F, i64)"));
+        let pair = Type::Tuple(Arc::from_iter([
+            Type::TVar(cell.clone()),
+            Type::TVar(cell.clone()),
+        ]));
+        assert!(pair.prove_ground());
+        assert!(!pair.holds_fn(&bare));
+        assert!(pair.holds_fn(&named));
+    }
+
     // A search that finds nothing under an application while a definition
     // it names is being decided says nothing of the application: `B`'s
     // `C<i64>` is first met inside `A`, before `A`'s own `_`, and `W`

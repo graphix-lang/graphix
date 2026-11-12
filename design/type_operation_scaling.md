@@ -158,7 +158,8 @@ structure is returned SHARED, never copied.
   reach toward the signature's own cells (`settle::Reaching`) that stops
   once it has met them all. Pins: `deep_nesting::
   generic_pair_call_chains_check_in_linear_time`,
-  `typ::cast::tests::a_ground_cell_forgets_its_findings_when_its_binding_changes`.
+  `typ::cast::tests::a_ground_cell_forgets_its_findings_when_its_binding_changes`,
+  `typ::cast::tests::a_ground_cell_keeps_no_finding_that_looked_a_name_up`.
   What the proof does not reach stays quadratic in such a chain: a pair
   that holds a generic function value holds the function's quantifiers
   open, so nothing above it is ground; a written binding's
