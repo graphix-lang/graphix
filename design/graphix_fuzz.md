@@ -248,6 +248,18 @@ are tag-strict; `normalize_diag` strips process-global abstract ids
 from compile errors. Zero relaxations are encoded in
 `Trace::agrees_with`: the triage policy is fix, don't whitelist.
 
+**A run's identities are numbered, not compared** (`trace.rs::normalize`):
+a reference is `&refN` and a Rust-backed handle `&handleN`, N its first
+sight across the trace, so two runs compare which values alias. Handles
+order by identity, which differs between two runs of one program
+(`book/src/stdlib/sys.md`), so a map with a handle in a key holds its
+entries in a run's order: they are numbered in the order of their forms
+with every unseen handle given one name (`Naming::Blank`), and only
+entries alike in that form keep the map's order. A program that reads
+handle order any other way (a sort of handles, a fold over such a map
+into an array, a print of it) differs between runs by the language's own
+rule and the trace reports it: such a finding is the program's.
+
 **One route.** Every run reaches the runtime the way the shell's
 script path does (`GXConfig::program`: the subject's module table
 behind a resolver, the registration image restored, the program

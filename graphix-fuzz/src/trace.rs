@@ -58,10 +58,29 @@ fn is_handle(v: &Value) -> bool {
 /// `&refN` and a handle ([`is_handle`]) to `&handleN`, N its index in
 /// `ids` (first sight across the trace): which values alias is a
 /// program's, their identity a run's. An abstract value's payload
-/// normalizes too. Iterative because value nesting depth is
-/// program-controlled.
+/// normalizes too.
+///
+/// A map with a handle in a key holds its entries in the handles' order, a
+/// run's too: they are numbered in the order of their [`Naming::Blank`]
+/// forms, and entries alike in that form in the map's.
 fn normalize(v: &Value, ids: &mut RunIds) -> Value {
-    if !holds_run_ids(v) {
+    rewrite(v, ids, Naming::Number)
+}
+
+/// What [`rewrite`] calls a reference or a handle `ids` does not hold.
+#[derive(Clone, Copy, PartialEq)]
+enum Naming {
+    /// The next number, held in `ids`.
+    Number,
+    /// The next number, not held, so all of them share it and `ids` is only
+    /// read. A map with a handle in a key is the sorted array of its
+    /// entries: the form holds nothing of the handles' order.
+    Blank,
+}
+
+/// Iterative because value nesting depth is program-controlled.
+fn rewrite(v: &Value, ids: &mut RunIds, naming: Naming) -> Value {
+    if !holds(v, run_id) {
         return v.clone();
     }
     enum Task<'a> {
@@ -69,8 +88,10 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
         BuildArray(usize),
         BuildError,
         BuildMap(usize),
+        BuildEntries(usize),
         BuildAbstract(&'a abstract_value::GxAbstract),
     }
+    let keep = naming == Naming::Number;
     let mut work: Vec<Task> = vec![Task::Visit(v)];
     let mut out: Vec<Value> = Vec::new();
     while let Some(t) = work.pop() {
@@ -90,22 +111,32 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
                 work.push(Task::Visit(&a.payload));
             }
             Task::Visit(Value::Map(m)) => {
-                work.push(Task::BuildMap(m.len()));
-                let pairs: Vec<(&Value, &Value)> = m.into_iter().collect();
+                let mut pairs: Vec<(&Value, &Value)> = m.into_iter().collect();
+                let by_handle = pairs.iter().any(|(k, _)| holds(k, is_handle));
+                if by_handle && keep {
+                    pairs.sort_by_cached_key(|(k, v)| {
+                        (rewrite(k, ids, Naming::Blank), rewrite(v, ids, Naming::Blank))
+                    });
+                }
+                work.push(if by_handle && !keep {
+                    Task::BuildEntries(m.len())
+                } else {
+                    Task::BuildMap(m.len())
+                });
                 for (k, v) in pairs.into_iter().rev() {
                     work.push(Task::Visit(v));
                     work.push(Task::Visit(k));
                 }
             }
             Task::Visit(v) if let Some(c) = reference::cell(v) => {
-                let i = first_sight(&mut ids.refs, c);
+                let i = sight(&mut ids.refs, c, keep);
                 out.push(Value::String(ArcStr::from(format_compact!("&ref{i}").as_str())))
             }
             Task::Visit(Value::String(t)) if let Some(n) = fresh_cells(t) => {
                 out.push(Value::String(ArcStr::from(n)))
             }
             Task::Visit(v) if is_handle(v) => {
-                let i = first_sight(&mut ids.handles, v.clone());
+                let i = sight(&mut ids.handles, v.clone(), keep);
                 out.push(Value::String(ArcStr::from(
                     format_compact!("&handle{i}").as_str(),
                 )))
@@ -142,6 +173,16 @@ fn normalize(v: &Value, ids: &mut RunIds) -> Value {
                 drop(it);
                 out.push(Value::Map(pairs.into_iter().collect()));
             }
+            Task::BuildEntries(n) => {
+                let mut entries: Vec<Value> = Vec::with_capacity(n);
+                let mut it = out.drain(out.len() - n * 2..);
+                while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                    entries.push(Value::Array([k, v].into_iter().collect()));
+                }
+                drop(it);
+                entries.sort();
+                out.push(Value::Array(entries.into_iter().collect()));
+            }
         }
     }
     out.pop().expect("normalize: empty result stack")
@@ -157,7 +198,7 @@ pub fn fresh_cells(text: &str) -> Option<String> {
     let (mut out, mut seen, mut last) =
         (String::with_capacity(text.len()), Vec::new(), 0);
     for (i, head, end) in run_names(text) {
-        let n = first_sight(&mut seen, &text[i..end]);
+        let n = sight(&mut seen, &text[i..end], true);
         out.push_str(&text[last..i]);
         out.push_str(&text[i..head]);
         out.push_str(&format_compact!(
@@ -196,16 +237,30 @@ fn run_names(s: &str) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
     })
 }
 
-fn first_sight<T: PartialEq>(seen: &mut Vec<T>, x: T) -> usize {
-    seen.iter().position(|s| *s == x).unwrap_or_else(|| {
-        seen.push(x);
-        seen.len() - 1
-    })
+/// The index of `x` in `seen`; one it does not hold takes the next, and is
+/// held there where `keep`.
+fn sight<T: PartialEq>(seen: &mut Vec<T>, x: T, keep: bool) -> usize {
+    let i = seen.iter().position(|s| *s == x).unwrap_or(seen.len());
+    if keep && i == seen.len() {
+        seen.push(x)
+    }
+    i
 }
 
-/// Whether `v` holds a lambda, a reference, a handle or a string naming a
-/// fresh cell anywhere, what [`normalize`] rewrites.
-fn holds_run_ids(v: &Value) -> bool {
+/// What [`rewrite`] rewrites: a lambda, a reference, a handle or a string
+/// naming a fresh cell.
+fn run_id(v: &Value) -> bool {
+    match v {
+        Value::String(t) => fresh_cells(t).is_some(),
+        v => {
+            reference::cell(v).is_some()
+                || matches!(v, Value::Abstract(_)) && rep::marker_kind(v).is_none()
+        }
+    }
+}
+
+/// Whether `leaf` holds of a value anywhere in `v`.
+fn holds(v: &Value, leaf: impl Fn(&Value) -> bool) -> bool {
     let mut work: Vec<&Value> = vec![v];
     while let Some(v) = work.pop() {
         match v {
@@ -213,11 +268,8 @@ fn holds_run_ids(v: &Value) -> bool {
             Value::Error(e) => work.push(e),
             Value::Map(m) => m.into_iter().for_each(|(k, v)| work.extend([k, v])),
             v if let Some(a) = abstract_value::get(v) => work.push(&a.payload),
-            Value::String(t) if fresh_cells(t).is_some() => return true,
             v => {
-                if reference::cell(v).is_some()
-                    || matches!(v, Value::Abstract(_)) && rep::marker_kind(v).is_none()
-                {
+                if leaf(v) {
                     return true;
                 }
             }
@@ -517,6 +569,47 @@ mod tests {
         let nested2 = Value::Array([d.clone(), c.clone()].into_iter().collect());
         assert_eq!(norm(&[&a, &a, &nested]), norm(&[&c, &c, &nested2]));
         assert_ne!(norm(&[&a, &a, &b]), norm(&[&c, &d, &d]));
+    }
+
+    /// A map keyed by handles holds them in address order, a run's: two
+    /// runs pairing the same values with handles in another address order
+    /// compare equal, and a handle the trace saw before the map keeps its
+    /// name in it.
+    #[test]
+    fn handle_keyed_maps_compare_by_aliasing() {
+        let map = |pairs: &[(&Value, &Value)]| {
+            Value::Map(pairs.iter().map(|(k, v)| ((*k).clone(), (*v).clone())).collect())
+        };
+        let norm = |vs: &[&Value]| {
+            let mut ids = RunIds::default();
+            vs.iter().map(|v| normalize(v, &mut ids)).collect::<Vec<_>>()
+        };
+        let name = |i: usize| Value::String(ArcStr::from(format!("&handle{i}")));
+        let mut hs: Vec<Value> = (0..6)
+            .map(|_| HANDLE.wrap(Handle { inner: triomphe::Arc::new(0) }))
+            .collect();
+        hs.sort();
+        let [lo, mid, hi] = [&hs[0], &hs[1], &hs[2]];
+        let i = Value::I64;
+        let one = map(&[(lo, &i(2)), (mid, &i(4)), (hi, &i(200))]);
+        let other = map(&[(lo, &i(200)), (mid, &i(2)), (hi, &i(4))]);
+        let named = map(&[(&name(0), &i(2)), (&name(1), &i(4)), (&name(2), &i(200))]);
+        assert_eq!(norm(&[&one]), vec![named.clone()]);
+        assert_eq!(norm(&[&other]), vec![named]);
+        assert_eq!(norm(&[lo, &one]), norm(&[mid, &other]));
+        assert_ne!(norm(&[lo, &one]), norm(&[lo, &other]));
+        let tuple = |h: &Value| Value::Array([h.clone(), i(1)].into_iter().collect());
+        let keyed = |a: &Value, b: &Value| map(&[(&tuple(a), &i(7)), (&tuple(b), &i(8))]);
+        assert_eq!(norm(&[&keyed(lo, hi)]), norm(&[&keyed(hi, lo)]));
+        let nested = |h: [&Value; 6]| {
+            map(&[
+                (h[0], &map(&[(h[1], &i(1)), (h[2], &i(2))])),
+                (h[3], &map(&[(h[4], &i(1)), (h[5], &i(3))])),
+            ])
+        };
+        let up = nested([&hs[0], &hs[1], &hs[2], &hs[3], &hs[4], &hs[5]]);
+        let down = nested([&hs[5], &hs[4], &hs[3], &hs[2], &hs[1], &hs[0]]);
+        assert_eq!(norm(&[&up]), norm(&[&down]));
     }
 
     #[test]

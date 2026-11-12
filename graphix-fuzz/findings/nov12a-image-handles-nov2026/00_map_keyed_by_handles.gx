@@ -1,0 +1,10 @@
+// A map keyed by three stream handles. Handles order by identity, a
+// run's (book/src/stdlib/sys.md): which handle sorts first differs between
+// two runs of one program, so the entries of the map stand in another
+// order in each. A trace numbers handles by first sight, and numbered
+// them in the map's order: the no-cache run read `&handle0 => 2` and the
+// run that wrote the image `&handle0 => 200`, reported as an image bug.
+// The trace numbers such a map's entries in an order no run's identity
+// decides (trace.rs::Naming).
+// Expected trace (every run): {"&handle0" => 2, "&handle1" => 4, "&handle2" => 200}.
+{ let m = {"a" => 1, "b" => 2, "c" => 100}; map::map(m, |(k, v)| (sys::io::stdout(null), v * 2)) }
