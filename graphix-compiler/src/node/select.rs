@@ -683,48 +683,6 @@ impl Reach {
                     let _ = itype.contains_ordered(env, scrut);
                 }
                 false => {
-                    // XCR claude for claude: [bug/high] A function over a parameter written
-                    // with two variables, taken apart by slice arms that return a bind
-                    // of the other variable in two shapes, panics the runtime: `let f =
-                    // |s: (Array<'e>, 'a)| select s { ([h, ..], b) => b, ([], b) => (b,
-                    // b) }; f(([1], 3))` dies with "kernel param `result`: runtime
-                    // I64(3) does not match the compiled Tuple { elems: [I64, I64] }
-                    // slot" (fusion/kernel.rs), the struct form (`|s: {a: Array<'e>,
-                    // b: 'a}|` over `{a: [h, t..], b} => b, {a: [], b} => (b, b)`) and
-                    // `[b]` for `(b, b)` alike. --check passes, --no-fusion prints 3,
-                    // and GRAPHIX_NO_SUBST=1 refuses the instance, "type mismatch [_,
-                    // (i64, i64)] does not contain [i64, (i64, i64)]" at the select: the
-                    // instance types the first arm's `b` as bottom. It runs with a
-                    // bool test in place of the slice (`{a: true, b} => b`), with the
-                    // two as separate parameters (`|a: Array<'e>, b: 'a|`), with the
-                    // parameter written closed (`{a: Array<i64>, b: i64}`), with the
-                    // result written (`-> ['a, ('a, 'a)]`), with `[]` as the argument
-                    // (the second arm), and with the parameter unannotated. base-r22
-                    // and lane 21t alike; found by the twin differential of
-                    // slice-param-union-01, not caused by it. probes:
-                    // ~/ptmp/cr29/scratch/r21/21t/kp/{k1..k12}.gx
-                    // (slice-arm-bind-bottom-panic-01)
-                    // 2026-11-12 claude: The cause was in the definition's check, not the
-                    // instance: the first arm's predicate is (Array<['h, 'r]>, 'b), one
-                    // element cell for the bind and one for the rest, and 'e, held rigid,
-                    // refused the union of the two (contains::rigid_holds_by_lower knew
-                    // only itself, bottom and a lower bound), so the arm's narrowing
-                    // failed, its verdict is dropped (narrow-verdict-dropped-01), and b
-                    // kept a cell nothing decides: f was fn(s: (Array<'e>, 'a)) -> ['_N,
-                    // ('a, 'a)]. A rigid cell now holds a union member by member, probed
-                    // whole before any member commits, so f is -> ['a, ('a, 'a)]; k1..k12
-                    // print 3 fused, unfused and under GRAPHIX_NO_SUBST. It also accepts
-                    // |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b },
-                    // typing a and b as 'e, as the one-arm body always was. Pins that fail
-                    // without it:
-                    // contains::tests::a_declared_var_holds_a_union_of_open_cells_as_each;
-                    // lang::types::slice_arm_inside_a_written_tuple_binds_its_other_variable
-                    // and .._struct_.. (jit, the kernel panic),
-                    // slice_arm_inside_a_written_tuple_types_its_result_by_its_other_variable
-                    // (all modes, the hole at the check),
-                    // declared_result_over_arms_of_two_undecided_parameters and
-                    // .._takes_one_type. Census base-r23 against this: 2962 files, no
-                    // verdict or message changed. probes: ~/ptmp/cr29/scratch/r23/23d/sab/
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     for p in preds.iter().filter(|p| p.explicit_type_predicate) {
                         p.type_predicate.reached_cells(&mut written)
