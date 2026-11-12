@@ -1267,7 +1267,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for eric: [bug/medium] A build refuses an instance the check
+        // CR claude for claude: [bug/medium] A build refuses an instance the check
         // accepted where a nominal constructor inside a definition is given an undecided
         // type and the call passes another construction of one. `type B<'p> =
         // Abstract<'p>; let f = |a| a <- B([never()]); f(B([]))` passes `--check`, and
@@ -1317,6 +1317,13 @@ impl<R: Rt> Construct<R> {
         // 2026-11-12 claude: Readdressed to eric: whether the witness welds such cells
         // is a rule of the check, asked as D35 in ~/ptmp/cr-discuss.md (recommendation:
         // weld).
+        // 2026-11-12 claude: Eric ruled (2026-11-12): (a), merge the cells. Where two
+        // lower bounds of a cell are the same type but for undecided cells that have no
+        // bounds of their own, the witness is that type once and the cells become one,
+        // so the union above settles to one array. It closes the select form and the
+        // NO_SUBST difference; a program that decides the two cells differently after
+        // the settle changes from a union of both to a mismatch or one widened cell. To
+        // be built with a census and a differential (cr-discuss D35).
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {
