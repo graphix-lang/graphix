@@ -528,34 +528,6 @@ fn check_val(
             ": declare the val at one type, or annotate the implementation's let with \
              a quantified type (fn<{v}: ..>)"
         ),
-        // XCR claude for claude: [bug/low] A generic implementation whose shared cell is a
-        // call's result held in data, not a binding's, is told "that of a binding outside
-        // its let: declare the val at one type, or give that binding a type that holds
-        // every 'a", and there is no binding to annotate: `let mk = || |x| x; let base =
-        // {g: |x| x, h: |x| x}; let s = {base with h: mk()}` under `val s: {g: fn(x: 'a)
-        // -> 'a, h: fn(x: 'a) -> 'a}` gets it, and with a maker that writes `let v: Any`
-        // the same refusal stands. The way out is the val at one type or a lambda in
-        // place of the call (`{base with h: |x| x}` checks and runs), what the
-        // `Holder::NoLambda` arms say. A fix: name a binding only where a read in the
-        // value holds the cell, else the literal-of-lambdas remedy. probes:
-        // ~/ptmp/cr29/scratch/r20/20d/holder-call-result-01/{m4,m4nov,m4any,m6}
-        // (val-call-result-remedy-01)
-        // 2026-11-12 claude: check_val's generalized arm now names a binding only where
-        // Holder::of finds one, else the Holder::NoLambda remedies (a lambda, or a
-        // literal of lambdas); held_lambdas follows a generalized binding's read of a
-        // function (let f = s0.g) to the lambdas behind it, so what they capture is named
-        // (y, whose Any annotation runs), while a function a call returns stays
-        // unfollowed; the trait arm in traits::implements gets the same split. Pins
-        // failing without it (all 4 modes):
-        // lang::interfaces::{val_struct_update_holding_a_call_result_refused,
-        // val_struct_update_holding_a_read_of_a_call_result_names_a_lambda,
-        // val_generic_read_names_the_binding_its_lambda_writes,
-        // val_names_what_a_captured_generic_read_writes,
-        // val_generic_read_of_a_call_result_names_a_lambda},
-        // lang::traits::{method_value_read_over_an_outer_binding_is_refused,
-        // method_value_read_of_a_call_result_names_a_lambda}; twins run. Wording only, no
-        // verdict change. The (true, Holder::Lambda) arm keeps the unnamed binding:
-        // (written-capture-remedy-01).
         (_, Holder::NoLambda) if is_function => format_compact!(
             ": declare the val at one type, or make the implementation a lambda over \
              variables of its own"
