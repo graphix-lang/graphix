@@ -2240,20 +2240,6 @@ impl Env {
         if let Some(rep) = &rep {
             rep.check_tvars_declared(&declared)?;
         }
-        // XCR claude for claude: [bug/low] The refusal of an unused type parameter
-        // names an arbitrary one where several are unused: `type D<'a0, 'a1, 'a2> =
-        // [`W('a2), `Z]` is refused "unused type parameter a0 in definition of D" in
-        // 4 of 6 runs of base-r20's --no-cache --check and "a1" in the other 2,
-        // `declared` being a hash set, so a pin of the message cannot name the
-        // parameter. Walk the parameters in the order written. probe:
-        // ~/ptmp/cr29/scratch/r20/coord/x1/review/unused.gx
-        // (unused-param-message-order-01)
-        // 2026-11-12 claude: Env::deftype_inner walks params in the order written and
-        // names the parameter as written ('a0); declared stays only for the
-        // declared-variable checks. Pin:
-        // lang::types::typedef_unused_parameter_named_in_order (8 params, only 'a
-        // used, refused naming 'b), fails in every mode with the hash-set walk
-        // restored. The CR's probe now names 'a0 in 6 of 6 runs.
         for (tv, _) in params.iter() {
             if !used.contains_key(&tv.name) {
                 bail!("unused type parameter {tv} in definition of {name}")
