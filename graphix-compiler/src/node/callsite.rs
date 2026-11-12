@@ -4694,7 +4694,7 @@ impl<R: Rt> CallSite<R> {
                 // the def's own cells (`ExecCtx::rec_defs`).
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-                // CR claude for claude: [bug/low] A recursive function that returns its
+                // XCR claude for claude: [bug/low] A recursive function that returns its
                 // parameter of a union of two arrays is refused where it is defined: `let
                 // rec f = |x: [Array<i64>, Array<string>], n: i64| select n { 0 => x, _
                 // => f(x, n - 1) }` fails at the select, "type mismatch Array<i64> does
@@ -4707,6 +4707,18 @@ impl<R: Rt> CallSite<R> {
                 // member of the other arm's union. base-r22 alike; not looked into. Found
                 // reviewing decided-arg-waits-01. probe:
                 // ~/ptmp/cr29/scratch/r21/21t/rev/rec.txt (let-rec-union-result-01)
+                // 2026-11-12 claude: Type::contains_int over an open cell and a union
+                // holding that cell (`'r ⊇ [T.., 'r]`, a self-call's result beside other
+                // arms) took each member in turn (holds_each), so the first constructor
+                // member bound the cell and the next was refused. A new arm drops the
+                // cell's own member, takes each open member as one type with it (as
+                // before), and holds the rest together: `'r := [Array<i64>,
+                // Array<string>]`, what the non-recursive twin returns. Pins
+                // lang::types::rec_union_result_{of_a_param,of_arms,of_declared_variables}
+                // fail in 4 modes each without it; rec_union_result_infinite_rejects pins
+                // the bound (a member holding the cell under a constructor is still
+                // refused); the slice_arms_* pins fail if open members are held in the
+                // union instead of merged. Census 2962: 0 verdict, 0 message changes.
                 let identity = self.fn_arg_identity(ctx);
                 let active_ftype = ftype
                     .lambda_ids

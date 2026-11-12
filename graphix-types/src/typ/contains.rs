@@ -1281,6 +1281,12 @@ fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
 
+/// Whether `m` stands for the open cell `tv`: its var, or a chain of
+/// bindings to vars ending there.
+fn is_own_cell(m: &Type, tv: &TVar) -> bool {
+    matches!(m, Type::TVar(m) if m.open_cell().is_some_and(|c| c.same_cell(tv)))
+}
+
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
 /// A rigid cell never unifies, so it makes no cycle.
 fn open_cell_reaches(a: &Type, b: &Type) -> bool {
@@ -3726,6 +3732,34 @@ impl Type {
                     (ContainsHist::trial, Inherit::Assumed),
                     Self::place_each,
                 )
+            }
+            // `'r ⊇ [T.., 'r]` is `'r ⊇ [T..]`: the cell's own member asks
+            // nothing of it, an open member is one type with it, and the
+            // rest are held together, as a union without it would be
+            (Self::TVar(t0), Self::Set(s))
+                if !t0.is_rigid() && s.iter().any(|m| is_own_cell(m, t0)) =>
+            {
+                let mut held: SmallVec<[Type; 4]> = SmallVec::new();
+                for m in s.iter() {
+                    if is_own_cell(m, t0) {
+                        continue;
+                    }
+                    if is_unbound_tvar(m) {
+                        if !self.contains_int(flags, env, hist, m)? {
+                            return Ok(false);
+                        }
+                    } else if !held.iter().any(|h| one_member(h, m)) {
+                        held.push(m.clone());
+                    }
+                }
+                match held.len() {
+                    0 => Ok(true),
+                    1 => self.contains_int(flags, env, hist, &held[0]),
+                    _ => {
+                        let held = Self::Set(Arc::from_iter(held.drain(..)));
+                        self.contains_int(flags, env, hist, &held)
+                    }
+                }
             }
             (t0, Self::Set(s)) => t0.holds_each(flags, env, hist, s),
             (Self::Set(s), t) => {

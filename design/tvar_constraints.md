@@ -1482,9 +1482,15 @@ parameter take every edge. Where two cells meet (`contains_tvars`):
   `Nil; l <- `Cons(1, t ~ l)`, or a REPL input's `b = B([1])`, whose
   `'p` settled to `Array<i64>` before `b <- B([t ~ b.0])`), nothing
   meets itself and the write names the union.
-- An open cell meeting a bound cell whose binding reaches it walks the
-  binding, where a union collapses (`'r ⊇ [T, 'r]` binds `'r := T`;
-  pins `lang::types::rec_block_*_collapses`).
+- An open cell holding a union it is a member of drops that member
+  (`'r ⊇ [T, 'r]` binds `'r := T`), and so does an open cell meeting a
+  bound cell whose binding reaches it, which walks the binding. The
+  union's open members are one type with the cell, as each would be
+  alone; the others are held together, as the union without the cell
+  would be: `'r ⊇ [Array<i64>, Array<string>, 'r]` binds `'r :=
+  [Array<i64>, Array<string>]`, never its first member, so a recursive
+  function's result is its non-recursive twin's (pins
+  `lang::types::rec_block_*_collapses`, `rec_union_result_*`).
 - A path through cells and unions alone otherwise (`'p` above `'q`
   above `'p`): every cell on it is one type (`merge_bare_cycle`, the
   paths' vars from `tvar::bare_path`; every path, so a cycle through

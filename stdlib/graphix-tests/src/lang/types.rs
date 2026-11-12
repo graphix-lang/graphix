@@ -1345,6 +1345,68 @@ run!(
     FuseExpect::None
 );
 
+// `'r ⊇ [T.., 'r]` binds `'r := [T..]`: a result that is a union of
+// two constructors is the whole union, never its first member.
+const REC_UNION_RESULT_OF_A_PARAM: &str = r#"
+{
+  let rec f = |x: [Array<i64>, Array<string>], n: i64| select n { 0 => x, _ => f(x, n - 1) };
+  let a = f([1], 2);
+  select f(["a"], 3) { Array<i64> as _ => a, s => s }
+}
+"#;
+
+run!(
+    rec_union_result_of_a_param,
+    REC_UNION_RESULT_OF_A_PARAM,
+    prints(r#"["a"]"#);
+    FuseExpect::Jit
+);
+
+const REC_UNION_RESULT_OF_ARMS: &str = r#"
+{
+  let rec f = |n: i64| select n { 0 => [1], 1 => ["a"], 2 => null, _ => { let t = f(n - 3); t } };
+  "[f(3)] [f(4)] [f(5)]"
+}
+"#;
+
+run!(
+    rec_union_result_of_arms,
+    REC_UNION_RESULT_OF_ARMS,
+    prints(r#""[1] [\"a\"] null""#);
+    FuseExpect::Jit
+);
+
+const REC_UNION_RESULT_OF_DECLARED_VARIABLES: &str = r#"
+{
+  type P<'p, 'q> = [Array<'p>, Map<string, 'q>];
+  let rec f = |x: P<'a, 'b>, n: i64| select n { 0 => x, _ => f(x, n - 1) };
+  let v: P<i64, string> = {"k" => "v"};
+  f(v, 2)
+}
+"#;
+
+run!(
+    rec_union_result_of_declared_variables,
+    REC_UNION_RESULT_OF_DECLARED_VARIABLES,
+    prints(r#"{"k" => "v"}"#);
+    FuseExpect::Jit
+);
+
+// The members held together still may not hold the cell.
+const REC_UNION_RESULT_INFINITE_REJECTS: &str = r#"
+{
+  let rec f = |n: i64| select n { 0 => [1], 1 => ["a"], 2 => [f(n - 2)], _ => f(n - 2) };
+  f(3)
+}
+"#;
+
+run!(
+    rec_union_result_infinite_rejects,
+    REC_UNION_RESULT_INFINITE_REJECTS,
+    refused("cannot infer a finite type here");
+    FuseExpect::None
+);
+
 const REC_RETURN_SELF_BLOCK_REJECTS: &str = r#"
 {
   let a = [0, 0, {let rec f = |n, acc| { let t = f; t }; f(0, buffer::to_string)}, 4, 0];
