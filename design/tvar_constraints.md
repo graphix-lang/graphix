@@ -1359,6 +1359,36 @@ reads (pins `typ::setops::tests::diff_keeps_a_name_it_takes_nothing_from`,
 17 pairs for 1000; `deep_nesting::
 a_type_test_over_two_recursive_unions_checks_in_time`).
 
+A residual nests few Errors over a recursion. `Error<T> - Error<U>` keeps
+the Error around what is left of its payload, and a pair met again answers
+its minuend whole, wider than what is left there. The next subtraction
+from that residual (the subtrahend's next member, the next arm) unfolds
+the minuend again beneath the Errors already built, so each return through
+the recursion wraps what the levels below left in one more Error: a new
+type at every pair, which no key meets again, a walk that ends only at its
+budget, and a residual a thousand Errors deep whose paths every later
+walk, and the refusal's message, read one by one. So a walk knows what the
+difference it is building holds (`DiffHist::over_cut`): a minuend answered
+whole (for a pair met again, past the budget, or a collection or an Error
+kept whole over one), and how many Errors it built around that minuend. An
+Error whose payload's difference holds one beneath
+`setops::ERRORS_OVER_CUT` (three) built Errors keeps its payload whole:
+wider, and sound as below. A part of which nothing is left holds nothing,
+so a difference that is exact through a recursion (`U - T` above, each
+level of a deep test) is built as deep as the test is written. Three was
+chosen from 2600 generated selects (gen_rnd.py seeds 1..1600 of review-r8
+X-r1-1, gen_sel.py seeds 1..1000 of round 20): main's six timeouts end,
+none of its other verdicts is lost, and 13 dead arms its budget hid are
+found (a catch-all after an arm that covers the scrutinee, a test an
+earlier arm holds), for 2087G instructions where main takes 2387G on the
+files it finishes. One Error costs 2080G and loses five of main's
+dead-arm refusals, two lose six, four lose two (pins
+`typ::setops::tests::a_residual_nests_few_errors_over_a_pair_met_again`,
+`residuals_over_two_families_of_recursive_unions_stay_shallow`,
+`diff_over_names_recurring_through_errors_ends`, 58 pairs for 1000;
+`deep_nesting::
+type_tests_over_two_families_of_recursive_unions_check_in_time`).
+
 A wider residual is sound: fewer dead arms are found, a missing case may
 be refused that a `_` arm fixes, a later arm's bind is wider. It is not
 sound for a caller that reads what a difference left out: `?` and `$`

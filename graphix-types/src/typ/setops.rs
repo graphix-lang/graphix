@@ -71,13 +71,32 @@ struct DiffHist {
     reached: Reached,
     /// A budget made the walk subtract less than it would have.
     widened: bool,
+    /// What the difference of the pair being walked holds.
+    over_cut: OverCut,
 }
 
-/// A finished pair's difference and what its walk reached.
+/// A finished pair's difference, what its walk reached and what the
+/// difference holds.
 struct Done {
     answer: Type,
     reached: Reached,
+    over_cut: OverCut,
 }
+
+/// The Errors a walk built, nested, around a minuend it answered whole
+/// (for a pair met again, past the budget, or a collection or an Error
+/// kept whole over one); `None` for a difference that holds no such
+/// minuend.
+type OverCut = Option<usize>;
+
+/// A minuend answered whole, no Error built around it.
+const CUT: OverCut = Some(0);
+
+/// How many Errors, nested, a difference builds around a minuend answered
+/// whole: an Error whose payload's difference holds that many keeps its
+/// payload whole, so no residual grows with the recursion it was cut in
+/// (`design/tvar_constraints.md`, Unfolding a pair of definitions).
+pub(super) const ERRORS_OVER_CUT: usize = 3;
 
 /// What a diff walk reached that a path may hold: a pair by its key, a
 /// pair of definitions ([`Unfoldings`] cuts a walk at one met again).
@@ -125,6 +144,7 @@ impl DiffHist {
             cut: usize::MAX,
             reached: Reached::default(),
             widened: false,
+            over_cut: None,
         }
     }
 
@@ -162,6 +182,22 @@ impl DiffHist {
             _ => return None,
         }
         Some((t0.node_key()?, t1.node_key()?))
+    }
+
+    fn holds(&mut self, c: OverCut) {
+        self.over_cut = self.over_cut.max(c)
+    }
+
+    /// `f`'s difference, apart from the pair being walked: the pair holds
+    /// what it holds unless nothing is left of it.
+    fn part(&mut self, f: impl FnOnce(&mut Self) -> Result<Type>) -> Result<Type> {
+        let outer = mem::take(&mut self.over_cut);
+        let r = f(self);
+        let part = mem::replace(&mut self.over_cut, outer);
+        if r.as_ref().is_ok_and(|d| !is_empty_ty(d)) {
+            self.holds(part)
+        }
+        r
     }
 
     /// Whether the path holds nothing of `r`.
@@ -1334,6 +1370,11 @@ impl Type {
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         #[cfg(test)]
         DIFF_STEPS.with(|n| n.set(n.get() + 1));
+        hist.part(|hist| self.diff_part(env, hist, t))
+    }
+
+    /// [`Self::diff_int`], [`DiffHist::over_cut`] this pair's alone.
+    fn diff_part(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         let Some(key) = hist.parts_key(self, t) else {
             return ensure_sufficient(|| self.diff_inner(env, hist, t));
         };
@@ -1344,8 +1385,10 @@ impl Type {
             && *at == writes
             && hist.path_clear_of(&k.reached)
         {
-            let (answer, reached) = (k.answer.clone(), k.reached.clone());
+            let (answer, reached, over_cut) =
+                (k.answer.clone(), k.reached.clone(), k.over_cut);
             hist.reached.union(&reached);
+            hist.holds(over_cut);
             return Ok(answer);
         }
         let depth = hist.hist.len() + 1;
@@ -1360,13 +1403,14 @@ impl Type {
             && cell_writes() == writes
             && let Ok(d) = &r
         {
-            let done = (Done { answer: d.clone(), reached }, writes);
+            let done =
+                (Done { answer: d.clone(), reached, over_cut: hist.over_cut }, writes);
             hist.parts.get_mut().insert(key, Kept::new(done, self, t));
         }
         r
     }
 
-    // CR claude for claude: [bug/high] A type test over two families of recursive unions
+    // XCR claude for claude: [bug/high] A type test over two families of recursive unions
     // still does not return where the test takes a PART of what reaches it. Of the 600
     // generated selects of round 20's review (gen_sel.py, seeds 1..600) two are killed at
     // 40 s with the name rule below in place (ten on r20-staging before it), probes in
@@ -1394,6 +1438,25 @@ impl Type {
     // check here). The other 397 keep staging's verdict, and a run of each that checks
     // prints the same fused, under --no-fusion and on staging. probe:
     // ~/ptmp/cr29/scratch/r20/coord/x5/s764.gx
+    // 2026-11-12 claude: diff tracks what the difference it builds holds
+    // (DiffHist::over_cut): a minuend answered whole (a pair met again, the budget, a
+    // collection or an Error kept whole over one) and the Errors built around it; an Error
+    // whose payload's difference holds one under setops::ERRORS_OVER_CUT (3) built Errors
+    // keeps its payload whole, and a part of which nothing is left holds nothing, so exact
+    // differences through a recursion keep their depth. s225, s99 and s764 check in 0.8 to
+    // 0.9G instructions (an empty program 0.77G); the refusals of s99 and s764 print a
+    // residual at most four Errors deep. Three by census of 2600 selects (gen_rnd.py 1..1600,
+    // gen_sel.py 1..1000): base-r23's six timeouts end, no verdict lost, 13 dead arms its
+    // budget hid are found; 1, 2 and 4 lose 5, 6 and 2 of its dead-arm refusals. Pins that
+    // fail with the rule off:
+    // typ::setops::tests::a_residual_nests_few_errors_over_a_pair_met_again,
+    // residuals_over_two_families_of_recursive_unions_stay_shallow,
+    // diff_over_names_recurring_through_errors_ends (58 pairs for 1000),
+    // diff_over_error_cycles_walks_pairs_by_their_lengths, and
+    // deep_nesting::type_tests_over_two_families_of_recursive_unions_check_in_time (over 3G).
+    // The printer the CR's last sentence asks for is not built: a residual of a recursion is
+    // small now, and the exact residual of a deep written test still prints as a tree
+    // (residual-message-tree-01). probes and census results: ~/ptmp/cr29/scratch/r23/23c/dpr/
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(env, tr0, tr1) => {
@@ -1409,15 +1472,18 @@ impl Type {
                     && let Some(k) = hist.done.get().and_then(|m| m.get(&key))
                     && hist.path_clear_of(&k.answer.reached)
                 {
-                    let (answer, reached) =
-                        (k.answer.answer.clone(), k.answer.reached.clone());
+                    let k = &k.answer;
+                    let (answer, reached, over_cut) =
+                        (k.answer.clone(), k.reached.clone(), k.over_cut);
                     hist.reached.union(&reached);
+                    hist.holds(over_cut);
                     return Ok(answer);
                 }
                 if let Some((r, depth)) = hist.hist.get(&key) {
                     let r = r.clone();
                     hist.cut = hist.cut.min(*depth);
                     hist.reach(Reach::Pair(key));
+                    hist.holds(CUT);
                     return Ok(r);
                 }
                 // a pair met again inside its own difference subtracts
@@ -1426,11 +1492,13 @@ impl Type {
                     let depth = hist.hist.get(&k).map_or(0, |(_, d)| *d);
                     hist.cut = hist.cut.min(depth);
                     hist.reach(Reach::Defs(defs));
+                    hist.holds(CUT);
                     return Ok(self.clone());
                 }
                 if !hist.pairs.unfold() {
                     hist.cut = 0;
                     hist.widened = true;
+                    hist.holds(CUT);
                     return Ok(self.clone());
                 }
                 #[cfg(test)]
@@ -1467,7 +1535,8 @@ impl Type {
                     && cut >= depth
                     && let Ok(d) = &r
                 {
-                    let done = Done { answer: d.clone(), reached };
+                    let done =
+                        Done { answer: d.clone(), reached, over_cut: hist.over_cut };
                     hist.done.get_mut().insert(key, Kept::new(done, self, t));
                 }
                 r
@@ -1499,11 +1568,11 @@ impl Type {
             }),
             (Type::Set(s0), Type::Set(s1)) => {
                 let mut s: LPooled<Vec<Type>> = LPooled::take();
-                for i in 0..s0.len() {
-                    s.push(s0[i].clone());
-                    for j in 0..s1.len() {
-                        s[i] = s[i].diff_int(env, hist, &s1[j])?
-                    }
+                for m in s0.iter() {
+                    let less = |hist: &mut DiffHist| {
+                        s1.iter().try_fold(m.clone(), |d, t| d.diff_int(env, hist, t))
+                    };
+                    s.push(hist.part(less)?);
                 }
                 Ok(Self::flatten_set(s.drain(..).filter(|d| !is_empty_ty(d))))
             }
@@ -1623,7 +1692,10 @@ impl Type {
                     );
                 match covered {
                     true => Ok(Type::Primitive(BitFlags::empty())),
-                    false => Ok(self.clone()),
+                    false => {
+                        hist.over_cut = hist.over_cut.min(CUT);
+                        Ok(self.clone())
+                    }
                 }
             }
             (Type::Primitive(p), Type::Array(t)) => {
@@ -1673,7 +1745,16 @@ impl Type {
                         Type::Primitive(p) if p.is_empty() => {
                             Ok(Type::Primitive(BitFlags::empty()))
                         }
-                        d => Ok(Type::Error(Arc::new(d))),
+                        d if hist.over_cut >= Some(ERRORS_OVER_CUT)
+                            || union_identical(&d, e0) =>
+                        {
+                            hist.over_cut = hist.over_cut.min(CUT);
+                            Ok(self.clone())
+                        }
+                        d => {
+                            hist.over_cut = hist.over_cut.map(|n| n + 1);
+                            Ok(Type::Error(Arc::new(d)))
+                        }
                     }
                 }
             }
@@ -1939,7 +2020,11 @@ pub(crate) mod tests {
             Bound, NodePairs, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
-            setops::{Identical, IdenticalMemo, WALK_PAIRS, one_type, union_identical},
+            node_addr,
+            setops::{
+                ERRORS_OVER_CUT, Identical, IdenticalMemo, WALK_PAIRS, one_type,
+                union_identical,
+            },
         },
     };
     use ahash::AHashMap;
@@ -2477,7 +2562,7 @@ pub(crate) mod tests {
             [&[2, 3], &[2, 3, 5], &[2, 3, 5, 7], &[2, 3, 5, 7, 11, 13]];
         let apart: Vec<usize> = sets.iter().map(|ls| pairs(ls, false)).collect();
         let shared: Vec<usize> = sets.iter().map(|ls| pairs(ls, true)).collect();
-        assert_eq!((apart, shared), (vec![10, 17, 26, 54], vec![12, 22, 36, 127]));
+        assert_eq!((apart, shared), (vec![10, 17, 26, 54], vec![12, 22, 34, 62]));
     }
 
     // A name a subtrahend takes nothing from stays the name, at every
@@ -2505,8 +2590,8 @@ pub(crate) mod tests {
         );
     }
 
-    // Names recurring through Error payloads end within the walk's pair
-    // budget.
+    // Names recurring through Error payloads leave a residual built of
+    // them, well inside the walk's pair budget.
     #[test]
     fn diff_over_names_recurring_through_errors_ends() {
         let defs: Vec<(String, String)> = [
@@ -2519,7 +2604,95 @@ pub(crate) mod tests {
         .iter()
         .map(|(n, b)| (n.to_string(), b.to_string()))
         .collect();
-        assert_eq!(diff_pairs(&defs, "At", "K").1, WALK_PAIRS);
+        let rest = "[Error<Ct>, Error<Error<At>>, `R]".to_string();
+        assert_eq!(diff_pairs(&defs, "At", "K"), (rest, 58));
+    }
+
+    /// How deep `t` nests Errors, each shared node walked once.
+    fn errors_nested(t: &Type) -> usize {
+        fn go(t: &Type, seen: &mut AHashMap<usize, usize>) -> usize {
+            let node = node_addr(t);
+            if let Some(d) = node.and_then(|n| seen.get(&n)) {
+                return *d;
+            }
+            let mut below = 0;
+            t.for_each_child(&mut |c| below = below.max(go(c, seen)));
+            let d = below + matches!(t, Type::Error(_)) as usize;
+            if let Some(n) = node {
+                seen.insert(n, d);
+            }
+            d
+        }
+        go(t, &mut AHashMap::default())
+    }
+
+    /// The pairs each of `arms` unfolds, taken in turn off `x`, and how
+    /// deep what it leaves nests Errors.
+    fn arms_cost(defs: &[(&str, &str)], x: &str, arms: &[&str]) -> Vec<(usize, usize)> {
+        let (env, mut t) = typed(defs, x);
+        let mut costs = vec![];
+        for arm in arms {
+            super::DIFF_PAIRS.with(|n| n.set(0));
+            t = t.diff(&env, &parsed(&env, arm)).unwrap();
+            costs.push((super::DIFF_PAIRS.with(|n| n.get()), errors_nested(&t)));
+        }
+        costs
+    }
+
+    // An Error whose payload's difference holds a minuend answered for a
+    // pair met again is rebuilt around it ERRORS_OVER_CUT deep and kept
+    // whole beyond.
+    #[test]
+    fn a_residual_nests_few_errors_over_a_pair_met_again() {
+        let defs = [("T", "[Error<T>, `A, `C]"), ("U", "[Error<U>, `B, `C]")];
+        let (env, _) = typed(&defs, "T");
+        let nested = |name: &str, d: usize| {
+            parsed(&env, &format!("{}{name}{}", "Error<".repeat(d), ">".repeat(d)))
+        };
+        let less = |d: usize| nested("T", d).diff(&env, &nested("U", d)).unwrap();
+        assert_eq!(less(0).to_string(), "[Error<T>, `A]");
+        assert_eq!(
+            less(ERRORS_OVER_CUT).to_string(),
+            nested("[Error<T>, `A]", ERRORS_OVER_CUT).to_string()
+        );
+        let whole = nested("T", ERRORS_OVER_CUT + 1);
+        assert_eq!(less(ERRORS_OVER_CUT + 1).to_string(), whole.to_string());
+    }
+
+    // Arms testing recursive unions over a value of others, each taking a
+    // part of what reaches it through Errors: every walk ends inside its
+    // pair budget, on a residual a few Errors deep.
+    #[test]
+    fn residuals_over_two_families_of_recursive_unions_stay_shallow() {
+        let through_arrays = [
+            ("T0", "[Array<T1>, Error<T1>, Error<T0>, `A0]"),
+            ("T1", "[Array<T1>, (T1, T0), Error<T1>, `A1]"),
+            ("T2", "[Error<T2>, Error<[T1, T2]>, Array<T0>, `A2]"),
+            ("U0", "[Array<U1>, Error<U1>, Error<U0>, `A0]"),
+            ("U1", "[(U1, U0), Error<U1>, `A1]"),
+            ("U2", "[Error<[U1, U2]>, Array<U0>, `A2]"),
+        ];
+        let costs = arms_cost(&through_arrays, "T2", &["U2", "Error<U1>"]);
+        assert_eq!(costs, vec![(51, 1), (10, 4)]);
+        let one_family = [
+            ("T0", "[Error<T2>, Error<T3>, Error<T0>, `A0]"),
+            ("T2", "[Error<[T2, T2]>, Array<T2>, `P2(T0), `A2]"),
+            ("T3", "[Error<T0>, Error<[T0, T2]>, `A3]"),
+        ];
+        assert_eq!(arms_cost(&one_family, "T0", &["T3"]), vec![(479, 1)]);
+        let four_a_side = [
+            ("T0", "[Error<T2>, i64, Error<[T3, T0]>, `A0]"),
+            ("T1", "[string, Error<T0>, `A1]"),
+            ("T2", "[string, Error<T3>, Error<T2>, Array<T3>, `A2]"),
+            ("T3", "[`P0(T1), Error<T2>, (T3, T1), Error<Error<T3>>, `A3]"),
+            ("U0", "[Error<U2>, i64, Error<[U3, U0]>, `B0, null]"),
+            ("U1", "[string, Error<U0>, `B1]"),
+            ("U2", "[string, Error<U3>, Error<U2>, Array<U3>, `B2]"),
+            ("U3", "[`P0(U1), (U3, U1), Error<Error<U3>>, `B3]"),
+        ];
+        let arms = ["U1", "Error<U2>", "U3", "U1", "Error<U2>"];
+        let costs = arms_cost(&four_a_side, "T0", &arms);
+        assert_eq!(costs, vec![(95, 4), (56, 4), (33, 4), (95, 4), (56, 4)]);
     }
 
     /// `T0 .. Tn-1`, each `[Error<Ti+1>, Error<Ti+2>, `Ai]` (indices mod

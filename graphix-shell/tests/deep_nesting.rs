@@ -1692,6 +1692,63 @@ fn a_type_test_over_two_recursive_unions_checks_in_time() {
     }
 }
 
+/// Arms that test one family of recursive unions over a value of another,
+/// each taking a part of what reaches it through `Error` payloads, check
+/// in the time of a program without them, accepted or refused: what an
+/// arm leaves nests a few Errors over the recursion, so the next arm's
+/// walk and the refusal's message read a small type.
+#[test]
+#[cfg(target_os = "linux")]
+fn type_tests_over_two_families_of_recursive_unions_check_in_time() {
+    let four_a_side = "\
+        type T0 = [Error<T2>, i64, Error<[T3, T0]>, `A0];\n\
+        type T1 = [string, Error<T0>, `A1];\n\
+        type T2 = [string, Error<T3>, Error<T2>, Array<T3>, `A2];\n\
+        type T3 = [`P0(T1), Error<T2>, (T3, T1), Error<Error<T3>>, `A3];\n\
+        type U0 = [Error<U2>, i64, Error<[U3, U0]>, `B0, null];\n\
+        type U1 = [string, Error<U0>, `B1];\n\
+        type U2 = [string, Error<U3>, Error<U2>, Array<U3>, `B2];\n\
+        type U3 = [`P0(U1), (U3, U1), Error<Error<U3>>, `B3];\n\
+        let x: T0 = error(`A0);\n\
+        select x {\n\
+            U1 as u0 => 0,\n\
+            Error<U2> as u1 => 1,\n\
+            U3 as u2 => 2,\n\
+            U1 as u3 => 3,\n\
+            Error<U2> as u4 => 4,\n\
+            _ => 999\n\
+        }\n";
+    checks_within(four_a_side, 3 * BILLION);
+    let through_arrays = "\
+        type T0 = [Array<T1>, Error<T1>, Error<T0>, `A0];\n\
+        type T1 = [Array<T1>, (T1, T0), Error<T1>, `A1];\n\
+        type T2 = [Error<T2>, Error<[T1, T2]>, Array<T0>, `A2];\n\
+        type U0 = [Array<U1>, Error<U1>, Error<U0>, `A0];\n\
+        type U1 = [(U1, U0), Error<U1>, `A1];\n\
+        type U2 = [Error<[U1, U2]>, Array<U0>, `A2];\n\
+        let x: T2 = `A2;\n\
+        select x { U2 as u0 => 0, Error<U1> as u1 => 1 }\n";
+    let one_family = "\
+        type T0 = [Error<T2>, Error<T3>, Error<T0>, `A0];\n\
+        type T1 = [i64, (T1, T3), (T0, T3), Error<T2>, `A1];\n\
+        type T2 = [Error<[T2, T2]>, Array<T2>, `P2(T0), `A2];\n\
+        type T3 = [Error<T0>, Error<[T0, T2]>, `A3];\n\
+        let x: T0 = never();\n\
+        select x { T3 as u0 => 0, `A2 => 1, _ => 999 }\n";
+    for (program, refusal) in [
+        (through_arrays, "missing match cases: no arm covers"),
+        (one_family, "pattern `A2 will never match"),
+    ] {
+        let out = exits_within(
+            &["--check", "--no-cache"],
+            &[("program.gx", program)],
+            3 * BILLION,
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && stderr.contains(refusal), "{stderr}");
+    }
+}
+
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn deep_nesting_does_not_overflow() {

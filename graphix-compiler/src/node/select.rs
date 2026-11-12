@@ -1165,6 +1165,24 @@ impl Reach {
                 break;
             }
         }
+        // CR claude for claude: [bug/medium] A refusal that prints what the arms leave
+        // prints a shared type as a tree. What a test written `d` Errors deep leaves of
+        // unions that branch (`type T = [Error<T>, Error<U>, `A]; type U = [Error<T>,
+        // Error<U>, `B]`, `x: T`, arms `Error<..Error<`A>..> as e => 0, `A => 1`) is
+        // exact and shares its levels: 2^d paths through d nodes, which diff walks in
+        // pairs linear in d (`typ::setops::tests::
+        // diff_of_a_shared_residual_walks_each_part_once`). "missing match cases: no arm
+        // covers {}" below writes every path, and so do "pattern {} will never match {}"
+        // and any message that prints a later arm's bind: `--no-cache --check` of the
+        // program takes 0.8G instructions at d = 12, 10 to 15 s at d = 24 and is killed at 30 s
+        // at d = 40, all of it under `Type`'s Display (print::write_deref_set), base-r23
+        // and lane 23c alike. What a recursion leaves is bounded
+        // (`setops::ERRORS_OVER_CUT`); this residual is as deep as its test is written.
+        // What would fix it: the printer writes a message's type within a count of nodes
+        // (the parts past it as `..`), under `PrintFlag::DerefTVars` alone since default
+        // printing is program-visible, or names a shared node once. probes:
+        // ~/ptmp/cr29/scratch/r23/23c/dpr/deep12.gx, deep24.gx, deep40.gx
+        // (residual-message-tree-01)
         format_with_flags(PrintFlag::DerefTVars, || {
             let gap = match open {
                 None => format_compact!(""),

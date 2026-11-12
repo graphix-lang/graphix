@@ -128,7 +128,9 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   with a side that is no named type uncounted; met again, diff
   subtracts nothing and could_match answers an overlap
   (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs
-  (either side named) in one walk: a wider residual, so fewer dead arms
+  (either side named) in one walk, and an Error keeps its payload whole
+  where the payload's difference nests `setops::ERRORS_OVER_CUT` Errors
+  over a pair met again: a wider residual, so fewer dead arms
   are found and a missing case may be refused that `_` fixes. What reads
   the part a difference left out (`?`'s strip and raised type) and
   `?`/`$`'s result type split the operand by its members, each name
