@@ -5181,7 +5181,8 @@ impl Type {
 
     /// The member of the union `s`'s open `members` that takes the
     /// `residue` no other member covers: one a probe admits it into (a
-    /// rigid member admits only itself), else the first. Two undecided
+    /// rigid member admits what [`rigid_holds_by_lower`] holds, before an
+    /// undecided one), else the first. Two undecided
     /// ones that admit it are a choice only the order of the check's
     /// relations would make ([`AmbiguousMember`]); a walk on copies takes
     /// the first.

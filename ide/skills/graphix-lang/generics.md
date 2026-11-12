@@ -68,6 +68,16 @@ ok trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b }; imp
 no "drop `-> 'b`, or write the body's type, `-> [i64, null]`" 'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> 'b { let r: [i64, null] = f(s); r }
 ```
 
+An unannotated parameter the declared result takes is of that variable,
+from one arm or from several, and a call must give it the type it gives
+the variable.
+
+```graphix,cases
+ok let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b }; f(1, true, 2, 3)
+no "i64 does not contain string" let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b }; f(1, true, 2, "s")
+no "drop `-> 'e`, or write the body's type" |x: 'e, c: bool, a| -> 'e select c { true => a, false => 1 }
+```
+
 A signature may not write a union of two of its type variables, `|x:
 ['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
 trait method's alike, nor a function type a `let` annotation writes: no

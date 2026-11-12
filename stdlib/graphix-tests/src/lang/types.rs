@@ -7558,6 +7558,73 @@ run!(
     FuseExpect::None
 );
 run!(
+    slice_arm_over_a_declared_list_binds_its_other_variable,
+    r#"{
+  let f = |s: (List<'e>, 'a)| select s { ([<h, t..>], b) => b, ([<>], b) => (b, b) };
+  let r = f(([<1, 2>], 3));
+  let q = f(([<>], "x"));
+  (r, q)
+}"#,
+    prints(r#"[i64:3, ["x", "x"]]"#)
+);
+run!(
+    slice_arm_over_a_bounded_alias_binds_its_other_variable,
+    r#"{
+  type P<'x> = Array<'x>;
+  let f = 'e: Number |s: (P<'e>, Array<'e>, 'a)| select s {
+    ([h, ..], [i.., l], b) => b,
+    (_, _, b) => (b, b)
+  };
+  let r = f(([1], [2, 3], 3));
+  let q = f(([], [1.], "x"));
+  (r, q)
+}"#,
+    prints(r#"[i64:3, ["x", "x"]]"#)
+);
+// A union that holds a declared variable beside an undecided member gives
+// a value still undecided to the variable, two of them as it gives one.
+run!(
+    union_beside_a_declared_variable_gives_it_one_undecided_value,
+    r#"{
+  let f = |x: 'e, c: bool, a| {
+    let o = never();
+    let u = select c { true => [x], false => o };
+    u <- [a];
+    u
+  };
+  f(1, false, "s")
+}"#,
+    refused("type mismatch 'e: i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    union_beside_a_declared_variable_gives_it_two_undecided_values,
+    r#"{
+  let f = |x: 'e, c: bool, a, b| {
+    let o = never();
+    let u = select c { true => [x], false => o };
+    u <- [a, b];
+    u
+  };
+  f(1, false, "s", 2.)
+}"#,
+    refused("type mismatch 'e: i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    union_beside_a_declared_variable_takes_two_written_values,
+    r#"{
+  let f = |x: 'e, c: bool, a: string, b: f64| {
+    let o = never();
+    let u = select c { true => [x], false => o };
+    u <- [a, b];
+    u
+  };
+  f(1, false, "s", 2.)
+}"#,
+    prints(r#"["s", f64:2.]"#)
+);
+run!(
     list_arms_over_an_unannotated_parameter,
     r#"{
   let rec len = |x| select x { [<h, t..>] => 1 + len(t), [<>] => 0 };
