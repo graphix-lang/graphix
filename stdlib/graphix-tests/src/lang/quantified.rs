@@ -1488,3 +1488,19 @@ run!(
     "/test/m.gxi" => "val f: fn<'a: Number>(x: 'a) -> 'a",
     "/test/m.gx" => "let f = 'a: Number |x: 'a| -> 'a x"
 );
+
+// Inside its own body a `let rec` is one instance: its variables are not
+// picked again, so a refusal there prints them where they occur.
+run!(
+    a_let_recs_read_of_itself_prints_no_header,
+    "{ let rec f = 'a: Number |x: 'a| -> 'a { let g: string = f; x }; 0 }",
+    refused("type mismatch string does not contain fn(x: 'a: unbound within Number) -> 'a: unbound within Number");
+    FuseExpect::None
+);
+
+run!(
+    a_let_recs_read_of_itself_in_a_struct_prints_no_header,
+    "{ let rec f = 'a: Number |x: 'a| -> 'a { let s: {g: string} = {g: f}; x }; 0 }",
+    refused("type mismatch { g: string } does not contain { g: fn(x: 'a: unbound within Number) -> 'a: unbound within Number }");
+    FuseExpect::None
+);

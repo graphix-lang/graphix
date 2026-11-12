@@ -1751,9 +1751,12 @@ impl TVar {
 
     /// Whether a signature printing cells as they stand
     /// ([`PrintFlag::DerefTVars`]) lists this quantifier in its header: a
-    /// call still picks it, so it is open and generic.
+    /// call still picks it, so it is open and generic, as it was where the
+    /// message being printed was made ([`HeldQuantifiers`]).
     pub(super) fn heads_a_printed_signature(&self) -> bool {
-        self.open_cell().is_some_and(|c| c.level().is_generic())
+        self.open_cell().is_some_and(|c| {
+            c.level().is_generic() && !HELD.with_borrow(|h| h.contains(&c.cell_addr()))
+        })
     }
 
     /// An open cell nothing names as a program writes it: the variable
@@ -3118,6 +3121,50 @@ pub(super) fn keep_quantifiers(
 thread_local! {
     static PRINT_DEPTH: Cell<u32> = const { Cell::new(0) };
     static SHOWN: RefCell<Shown> = RefCell::new(Shown::default());
+    /// The cells of the [`HeldQuantifiers`] being printed.
+    static HELD: RefCell<SmallVec<[usize; 4]>> = RefCell::new(SmallVec::new());
+}
+
+/// The quantifiers of a refusal's types that no call picked when it was
+/// made: a definition's own, read in its body (a `let rec`'s self-read),
+/// and one instance's. They print where they occur, as they did then,
+/// though the definition's close generalizes them before the message prints.
+#[derive(Debug)]
+pub(crate) struct HeldQuantifiers(SmallVec<[TVar; 2]>);
+
+impl HeldQuantifiers {
+    pub(crate) fn of(types: [&Type; 2]) -> Self {
+        let mut held = SmallVec::new();
+        for t in types {
+            t.each_quantifier(&mut |_, tv| {
+                if let Some(c) = tv.open_cell()
+                    && !c.level().is_generic()
+                {
+                    held.push(c)
+                }
+            })
+        }
+        Self(held)
+    }
+
+    /// `f`, printing these quantifiers as when the refusal was made.
+    pub(crate) fn printing<R>(&self, f: impl FnOnce() -> R) -> R {
+        struct Truncate(usize);
+        impl Drop for Truncate {
+            fn drop(&mut self) {
+                HELD.with_borrow_mut(|h| h.truncate(self.0))
+            }
+        }
+        if self.0.is_empty() {
+            return f();
+        }
+        let _truncate = Truncate(HELD.with_borrow_mut(|h| {
+            let len = h.len();
+            h.extend(self.0.iter().map(TVar::cell_addr));
+            len
+        }));
+        f()
+    }
 }
 
 /// The names the type being printed gave its named cells where bindings

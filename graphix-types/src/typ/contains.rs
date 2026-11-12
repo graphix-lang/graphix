@@ -15,8 +15,9 @@ use crate::{
             Identical, IdenticalMemo, one_type, strictly_identical, union_identical,
         },
         tvar::{
-            CellFact, CellLock, Cycle, Fresh, RigidGate, Standing, Toward, bare_path,
-            cell_writes, cycle_toward, settled_cause_note, would_cycle_inner,
+            CellFact, CellLock, Cycle, Fresh, HeldQuantifiers, RigidGate, Standing,
+            Toward, bare_path, cell_writes, cycle_toward, settled_cause_note,
+            would_cycle_inner,
         },
         variance,
     },
@@ -2283,6 +2284,7 @@ pub struct TypeMismatch {
     infinite: bool,
     /// [`settled_cause_note`] of the two sides.
     settled: Option<CompactString>,
+    held: HeldQuantifiers,
 }
 
 impl std::fmt::Display for TypeMismatch {
@@ -2304,10 +2306,12 @@ impl std::fmt::Display for TypeMismatch {
                     s(passed)
                 )?;
             }
-            let (expected, actual) = (
-                format_compact!("{}", Brief(&self.expected)),
-                format_compact!("{}", Brief(&self.actual)),
-            );
+            let (expected, actual) = self.held.printing(|| {
+                (
+                    format_compact!("{}", Brief(&self.expected)),
+                    format_compact!("{}", Brief(&self.actual)),
+                )
+            });
             write!(f, "type mismatch {expected} does not contain {actual}")?;
             if self.kept_bare {
                 write!(f, ": a [`Keep(T), null] keeps v as `Keep(v)")?;
@@ -2903,6 +2907,7 @@ impl Type {
             kept_bare: kept_bare(env, self, t),
             infinite: false,
             settled: settled_cause_note(env, self, t, false),
+            held: HeldQuantifiers::of([self, t]),
         })
     }
 

@@ -1963,7 +1963,12 @@ former consumer derives from the cells:
   (`fntyp::printed_quantifiers`), and one a call picked or one instance
   holds (an unnamed lambda's, a read no binding names, a call's result)
   prints where it occurs, like an inferred variable; canonical printing
-  lists every declared one. With no header to scope it, a named cell
+  lists every declared one. A refusal formatted after its check
+  (`TypeMismatch`) prints a quantifier as it stood at the refusal
+  (`tvar::HeldQuantifiers`): a `let rec`'s read of itself in its own body
+  is one instance, its variables held by the open definition, and prints
+  no header, though the definition's close has generalized the cells by
+  the time the message prints. With no header to scope it, a named cell
   keeps one name through one printed type and a second cell of that name
   prints numbered apart (`'a1`; `tvar::printed_name`, one table per
   outermost print, `tvar::Shown`, looked up by cell so a type of many
