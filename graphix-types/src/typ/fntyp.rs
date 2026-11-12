@@ -745,45 +745,6 @@ fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
 }
 
 impl FnType {
-    // XCR claude for claude: [perf/low] A nest of signatures in which every
-    // level names a variable of an enclosing one still parses in time quadratic
-    // in its depth: none is closed, so each enclosing declaration's alias walk
-    // (and the position cells its conjunct pass collects) covers the whole nest
-    // below it. `graphix fmt --stdout` of gen.py fnqo N (each level `fn<'a:
-    // Any>(x: .., y: 'z) -> 'a` under one `fn<'z: Any>`) costs 0.079 / 0.234 /
-    // 0.833 / 3.18 / 7.07 / 12.5 G instructions at N = 40 / 80 / 160 / 320 /
-    // 480 / 640 (base-r20: 0.097 / 0.310 / 1.14 at 40 / 80 / 160, not measured
-    // deeper); gen.py fnv N (`fn(x: fn(x: .. 'a) -> 'a) -> 'a`, no quantifier)
-    // costs 0.037 / 0.086 / 0.279 / 1.04 / 2.31 / 4.07 G, against 0.037 / 0.085
-    // / 0.272 on base-r20 at 40 / 80 / 160: the rank2-print-01 fix does not
-    // help this shape and costs it about 3% at 160. The profile at 320 is
-    // alias_tvars_in, collect_position_tvars and their pooled maps. Comparing
-    // such nests is linear (free_cells keeps the cells each names). A var's
-    // link points at its cell, so each enclosing declaration re-points every
-    // handle of the name; a linear parse would need the handles to follow the
-    // abandoned cell's forward link, or one alias pass from the outermost
-    // signature with a scope per level. Neither is tried. As with
-    // rank2-print-01 only `graphix fmt` reaches a written nest of quantified
-    // types (QUANTIFIED_FN); the unquantified shape checks. probe:
-    // ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/gen.py, fnqo_160.gx,
-    // fnv_160.gx (rank2-open-nest-01)
-    // 2026-11-12 claude: A declaration inside another signature's parse aliases
-    // only its own quantifiers (FnType::declaring, Aliasing::Known), every
-    // other name left to the enclosing declarations, and records the cells it
-    // names from outside itself (DECLARED); the parse's walks read that record
-    // rather than walk the signature again (aliases_into, declared_free,
-    // closed), and the positions memo lasts the whole parse. fmt --stdout
-    // instructions base-r23 -> this: fnqo 160 / 640: 0.832 / 12.47 -> 0.124 /
-    // 1.05 G; fnv 160 / 640: 0.279 / 4.07 -> 0.064 / 0.52 G; what remains grows
-    // with the printed text, whose indentation is quadratic in the depth (4.1
-    // MB for fnqo 640). --no-cache --check of fnv 640: 2.60 -> 0.82 G (0.77 G
-    // of it startup); the check's refusal of the quantified shape is still
-    // quadratic, filed as (rank2-refusal-walk-01). fmt and --check of 9000
-    // generated nests and of every .gx/.gxi in both repos print the same as
-    // base-r23. Pins:
-    // typ::fntyp::tests::nested_open_signatures_parse_in_linear_steps (without
-    // the fix: naming outer 21932 -> 337292 steps at 40 -> 160 deep),
-    // an_open_nest_names_its_declarers_cells.
     /// `self` declaring `constraints`: its quantifiers are their names
     /// in source order (a `+`-bound variable is one quantifier), and every
     /// same-named tvar of the signature and of a conjunct is the
