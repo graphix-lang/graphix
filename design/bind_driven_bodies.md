@@ -151,20 +151,21 @@ fires, so an operator, a data constructor, a field read, a select's result (from
 and its consulted guards), a call, a collection and a `Stateless` builtin (`CachedArgs`, a kernel's fast
 call) carry it. A bottom made of a moved value carries it too: the bottom `$` or `?` makes of a null or
 an error that stands (`node/error.rs::strip_production`; nothing is raised or reported, since nothing
-fired). Everything that consumes events drops it: a stateful builtin keeps its state, a sample whose
-trigger did not fire rides, an `Io` call does not act and its result moved when its trigger argument
-did. A resident never keeps the bit (`Tag::quiet`). A kernel ORs the bit into a disc wherever it ORs
-`TAINT` (`emit::abi::propagate_taint`, the slot accumulators, `emit::body::fold_consumed`) and tests it
-nowhere; it runs, and never rides, when a feeder moved. A guard's tentative binds are retracted and
-stand nowhere.
+fired), and a loop's bottom over a bottom source, which ran no slot to carry it
+(`fusion/emit/scaffold.rs::SlotFlags::apply`). Everything that consumes events drops it: a stateful
+builtin keeps its state, a sample whose trigger did not fire rides, an `Io` call does not act and its
+result moved when its trigger argument did. A resident never keeps the bit (`Tag::quiet`). A kernel ORs
+the bit into a disc wherever it ORs `TAINT` (`emit::abi::propagate_taint`, the slot accumulators,
+`emit::body::fold_consumed`) and tests it nowhere; it runs, and never rides, when a feeder moved. A
+guard's tentative binds are retracted and stand nowhere.
 
 **Kernels.** A kernel's one source of birth is the context word its wrapper passes; a call site's first
 use, a loop slot's first iteration and a self-call's fresh block are not births, so a tail recursion that
 performs or raises to a handler is one native loop whose passes act as the activations do. A guard's binds
 are masked by its arm's shape, and under an unguarded arm by the type that arm narrows it to
 (`fusion/emit/select.rs::emit_narrowed_test`). A loop fires when a slot fires or its source fires (resized,
-empty, or passed through); a resize under a quiet source is a quiet result that moved. A core trait hook's
-first call is an entry too (`node/coretraits.rs`).
+empty, or passed through); a resize under a quiet source is a quiet result that moved, and so is a source
+that moved to bottom. A core trait hook's first call is an entry too (`node/coretraits.rs`).
 
 **An effect in an arm or a guard fuses.** An Io call or a raise to a handler in an arm's body performs
 or raises on a live fire of its trigger or operand in both engines, so it fuses. A kernel computes a guard

@@ -1387,6 +1387,32 @@ async fn an_unwrap_a_wake_leaves_bottom_moves() -> Result<()> {
     Ok(())
 }
 
+// A loop over a source the wake leaves bottom ran no slot to carry the
+// move: its result is the source's bottom, moved with the source.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loop_over_a_source_a_wake_leaves_bottom_moves() -> Result<()> {
+    let absent = "let o = select n { 3 => never(), x => [x, m] };";
+    let null = "let o: [Array<i64>, null] = select n { 3 => null, x => [x, m] };";
+    let element = "let o = [10 / (n - 3) * 0 + n, m];";
+    let length =
+        "let o = array::init(10 / (n - 3) * 0 + 2, |i| select i { 0 => n, _ => m });";
+    for (o, read) in [
+        (absent, "array::fold(o, -7, |a, e| a + e)"),
+        (absent, "array::map(o, |e| e + 1)[0]$ - 1"),
+        (absent, "array::filter_map(o, |e| `Keep(e))[0]$"),
+        (absent, "array::find(o, |e| true)$"),
+        (null, "array::fold(o$, -7, |a, e| a + e)"),
+        (element, "array::fold(o, -7, |a, e| a + e)"),
+        (length, "array::fold(o, -7, |a, e| a + e)"),
+    ] {
+        for read in [read.to_string(), format!("#[native] ({read})")] {
+            let expr = format!("{{ {o} {read} }}");
+            agrees(in_let(&expr), &bottomed(|x| x)).await?
+        }
+    }
+    Ok(())
+}
+
 /// `[clk, v(clk)]` for each of `n` ticks.
 fn ticks(n: i64, v: impl Fn(i64) -> &'static str) -> Vec<String> {
     (0..n).map(|c| format!("[{c}, {}]", v(c))).collect()

@@ -52,7 +52,8 @@ touching the init flag:
   (`Tag::MOVED`). `SlotFlags` (`emit/scaffold.rs`) folds it into the
   loop's STALE and MOVED bits. A TAINTED source is never a resize and
   forgets the length (the word takes the `FORGOT` bit, so the source's
-  return is one) but not the slots. The word is read before the loop as
+  return is one) but not the slots; the result is its bottom, moved
+  where the source moved. The word is read before the loop as
   the slots the instance had ENTERED: a slot at or past that count is
   new. A new slot is entered, not born: its iteration runs under the
   kernel's own born flag, so a constant in the loop body fires in a new
