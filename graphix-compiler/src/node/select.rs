@@ -1085,30 +1085,6 @@ impl Reach {
         if self.wildcard || self.atype == empty {
             return Ok(());
         }
-        // XCR claude for claude: [bug/medium] Slice arms inside a variant's payload over
-        // an unannotated parameter are refused as not exhaustive, though they cover
-        // every length: `let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 };
-        // f(`A([1, 2]))` is refused at the definition, "missing match cases: no arm
-        // covers `A(Array<'_a>)", and with the rest bound (`A([h, t..])`) "no arm
-        // covers `A([Array<'_a>, Array<'_b>])". The same arms in a tuple or a struct
-        // (`(x, [h, ..]) => h, (x, []) => x`, `{a: [h, t..]} => h, {a: []} => 0`) and
-        // bare check and run, a catch-all second arm (`A(_) => 0`) checks, and so does
-        // the parameter written (`|x: [`A(Array<'e>)]|`). base-r22 and lane 21t alike.
-        // The payload is typed by a union of one array member an arm, which are one
-        // type (slice-param-union-01 made such members one at the pick); the cover
-        // here does not join the arms' lengths through a variant's payload. probes:
-        // ~/ptmp/cr29/scratch/r21/21t/kp/{v1,v2,v3,v4}.gx (variant-slice-coverage-01)
-        // 2026-11-12 claude: The payload of one variant member is a union of one array
-        // an arm, and inner_slices stopped at any position holding two members, so no
-        // nested ladder was climbed. A position's members now each give the pattern's
-        // slices (member_slices), and the position stands on the ladder where they
-        // agree: a union of arrays or lists, of tuples or structs holding one, also
-        // when written. A position holding a member the slice cannot match climbs none.
-        // Newly refused: an arm dead behind such a ladder. Census 2962 files: no
-        // change. Pins lang::select::nested_slice_ladder_union_position_exhaustive and
-        // _dead_arm_refused fail with the fix off; _gap_refused and
-        // _other_member_refused hold the rule's edge. probes:
-        // ~/ptmp/cr29/scratch/r23/23d/vsc/
         let covered: LPooled<Vec<&Type>> = self.covered.iter().collect();
         let covered = Type::union_exact(env, &covered)?;
         if !undecided.is_empty() && covered.contains_holding(env, scrut, undecided)? {
