@@ -9329,6 +9329,33 @@ run!(typedef_bound_update_is_no_type_a_call_picks, r#"{
   f({x: 0, y: 2})
 }"#, refused("a call picks 'a"); FuseExpect::None);
 
+// An abstract type's payload is read through a bound that names it.
+run!(
+    reads_an_abstract_payload_through_its_bound,
+    prints("[i64:4, i64:7]"),
+    "/test.gx" => r#"
+        type W = Abstract<{x: i64}>;
+        type B<'t> = Abstract<('t, string)>;
+        let f = 'a: W |w: 'a| w.0.x;
+        let g = 'a: B<i64> |b: 'a| b.0.0 + 1;
+        let result = [f(W({x: 4})), g(B((6, "s")))]
+    "#
+);
+
+// A trait bound names no structure: a read through it needs the type,
+// never a typedef of the trait's name.
+run!(
+    trait_bound_is_read_through_as_no_typedef,
+    refused("reading a struct needs its type known here"),
+    "/test.gx" => r#"
+        trait Sh { val sh: fn(self) -> string };
+        impl Sh for i64 { let sh = |s| "i" };
+        let f = 'a: Sh |p: 'a| p.x;
+        let result = f(1)
+    "#
+    ; FuseExpect::None
+);
+
 run!(
     binary_keys_keep_kinds_text_keys_refuse_collisions,
     prints(r#"["written", "refused"]"#),

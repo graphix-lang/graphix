@@ -315,7 +315,8 @@ macro_rules! deref_typ {
     };
     ($name:literal, $ctx:expr, $typ:expr; $union:expr; $($pat:pat => $body:expr),+) => {{
         // an unbound cell is read through its one bound when that is, or a
-        // typedef names, a structure: every type it admits has it
+        // typedef names, a structure or an abstract type: every type it
+        // admits has it
         let mut bound = match &$typ {
             $crate::typ::Type::TVar(tv) => {
                 let mut c = tv.cell_constraints();
@@ -355,14 +356,17 @@ macro_rules! deref_typ {
                     })?,
                     None => {
                         let mut b = bound.take();
-                        while let Some(rt @ $crate::typ::Type::Ref(_)) = &b {
+                        while let Some(rt @ $crate::typ::Type::Ref(_)) = &b
+                            && !rt.is_trait_ref(&$ctx.env)
+                        {
                             b = Some(rt.lookup_ref(&$ctx.env)?);
                         }
                         match b {
                             Some(
                                 b @ ($crate::typ::Type::Struct(_)
                                 | $crate::typ::Type::Tuple(_)
-                                | $crate::typ::Type::Fn(_)),
+                                | $crate::typ::Type::Fn(_)
+                                | $crate::typ::Type::Abstract { .. }),
                             ) => typ = Some(b),
                             _ => anyhow::bail!(
                                 "reading a {} needs its type known here: annotate the binding",
