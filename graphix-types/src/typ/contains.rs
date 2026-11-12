@@ -5764,6 +5764,31 @@ mod tests {
         }
     }
 
+    // Function types apart in their parts are keyed apart by their shape
+    // hash, so keying many compares none with another; two whose cells
+    // differ only by name share a key, two that pair their cells otherwise
+    // do not.
+    #[test]
+    fn function_types_are_keyed_by_their_parts() {
+        use crate::typ::setops::IDENTITY_STEPS;
+        const N: usize = 200;
+        let env = Env::default();
+        let mut hist = ContainsHist::new();
+        IDENTITY_STEPS.with(|c| c.set(0));
+        let ids: AHashSet<_> = (0..N)
+            .map(|k| {
+                let arg = format!("{}i64{}", "Array<".repeat(k), ">".repeat(k));
+                hist.ref_id(&parsed(&format!("fn(x: {arg}) -> i64")), &env).unwrap()
+            })
+            .collect();
+        let steps = IDENTITY_STEPS.with(|c| c.get());
+        assert_eq!(ids.len(), N);
+        assert!(steps <= N, "{steps} identity steps");
+        let mut id = |s: &str| hist.ref_id(&parsed(s), &env).unwrap();
+        assert_eq!(id("fn(x: 'a) -> 'a"), id("fn(x: 'b) -> 'b"));
+        assert_ne!(id("fn(x: 'a) -> 'a"), id("fn(x: 'a) -> 'b"));
+    }
+
     // A hash that read a cell is taken again: once the cell is bound the
     // type is its binding's.
     #[test]

@@ -78,10 +78,19 @@ structure is returned SHARED, never copied.
   application's key's, held already, so holding is linear in the chain
   too. `RefHist::shape_id` keeps the shape hash of every
   node whose hash read no cell (`fixed_hashes`); one that read a cell is
-  hashed again. `expand_ref` asks `closure` whether an application holds a
-  cell, and a committing walk copies a cached expansion only where a copy
-  differs from it: where it holds a cell or a function type
-  (`Closure::Plain` is neither).
+  hashed again. A function type hashes its parts, any open cell inside it
+  alike (identity pairs a function's cells), so keying many function types
+  compares only those that may be one. `expand_ref` asks `closure` whether
+  an application holds a cell, and a committing walk copies a cached
+  expansion only where a copy differs from it: where it holds a cell or a
+  function type (`Closure::Plain` is neither). A function's containment
+  asks whether a position holds a union of open cells, or a cell the
+  arguments widen (`FnType::order_free_cells`), only of a position
+  `closure` finds open, so a chain of function types is walked once, not
+  once a link. Pins: `typ::contains::tests::
+  function_types_are_keyed_by_their_parts`, `deep_nesting::
+  a_chain_of_bounds_through_function_types_elaborates_in_linear_time`,
+  `a_chain_of_bounds_through_a_function_typedef_elaborates_in_time`.
 - The unions a `contains` walk builds to ask about (a distribution's pool
   of its candidates' parts, a placement's residue) are normalized in one
   pass kept for the call (`ContainsHist::normal_union`), so a node many

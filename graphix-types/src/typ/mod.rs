@@ -562,18 +562,44 @@ struct RefHist<H: IsoPoolable> {
 type FixedHashes = AddrMap<(Type, u64)>;
 
 /// A hash of `t`'s structure consistent with `union_identical`: a bound
-/// cell is its binding, an open cell its cell, a union's members in any
-/// order, a function only its shape (its equality is loose).
+/// cell is its binding, an open cell its cell (inside a function type,
+/// whose identity pairs its cells, any open cell alike), a union's members
+/// in any order.
 fn shape_hash(t: &Type, fixed: &mut FixedHashes) -> u64 {
-    shape_hash_memo(t, &mut LPooled::take(), fixed).0
+    let mut memo = ShapeMemo { outside: LPooled::take(), in_fn: Lazy::new() };
+    shape_hash_memo(t, false, &mut memo, fixed).0
+}
+
+/// The hashes one [`shape_hash`] took of shared nodes that read a cell,
+/// by identity, those taken inside a function type apart.
+struct ShapeMemo {
+    outside: LPooled<AddrMap<u64>>,
+    in_fn: Lazy<AddrMap<u64>>,
+}
+
+impl ShapeMemo {
+    fn get(&self, in_fn: bool, k: usize) -> Option<u64> {
+        match in_fn {
+            false => self.outside.get(&k).copied(),
+            true => self.in_fn.get().and_then(|m| m.get(&k)).copied(),
+        }
+    }
+
+    fn insert(&mut self, in_fn: bool, k: usize, h: u64) {
+        match in_fn {
+            false => self.outside.insert(k, h),
+            true => self.in_fn.get_mut().insert(k, h),
+        };
+    }
 }
 
 /// [`shape_hash`], and whether it read no cell: each shared node hashed
 /// once (`memo`, by identity), and one that read no cell once for all
-/// (`fixed`).
+/// (`fixed`). `in_fn`: `t` is inside a function type.
 fn shape_hash_memo(
     t: &Type,
-    memo: &mut AddrMap<u64>,
+    in_fn: bool,
+    memo: &mut ShapeMemo,
     fixed: &mut FixedHashes,
 ) -> (u64, bool) {
     let key = t.shared_identity();
@@ -581,18 +607,16 @@ fn shape_hash_memo(
         if let Some((_, h)) = fixed.get(&k) {
             return (*h, true);
         }
-        if let Some(h) = memo.get(&k) {
-            return (*h, false);
+        if let Some(h) = memo.get(in_fn, k) {
+            return (h, false);
         }
     }
-    let (h, cell_free) = shape_hash_node(t, memo, fixed);
+    let (h, cell_free) = shape_hash_node(t, in_fn, memo, fixed);
     match key {
         Some(k) if cell_free => {
             fixed.insert(k, (t.clone(), h));
         }
-        Some(k) => {
-            memo.insert(k, h);
-        }
+        Some(k) => memo.insert(in_fn, k, h),
         None => (),
     }
     (h, cell_free)
@@ -600,7 +624,8 @@ fn shape_hash_memo(
 
 fn shape_hash_node(
     t: &Type,
-    memo: &mut AddrMap<u64>,
+    in_fn: bool,
+    memo: &mut ShapeMemo,
     fixed: &mut FixedHashes,
 ) -> (u64, bool) {
     #[cfg(test)]
@@ -608,14 +633,15 @@ fn shape_hash_node(
     ensure_sufficient(|| {
         let mut h = ahash::AHasher::default();
         let mut cell_free = true;
-        let mut part = |t: &Type, memo: &mut AddrMap<u64>, fixed: &mut FixedHashes| {
-            let (h, free) = shape_hash_memo(t, memo, fixed);
+        let mut part = |t: &Type, in_fn: bool, memo: &mut ShapeMemo| {
+            let (h, free) = shape_hash_memo(t, in_fn, memo, fixed);
             cell_free &= free;
             h
         };
         match t {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => return (shape_hash_memo(&b, memo, fixed).0, false),
+                Some(b) => return (part(&b, in_fn, memo), false),
+                None if in_fn => return (0, false),
                 None => {
                     (0u8, tv.cell_addr()).hash(&mut h);
                     return (h.finish(), false);
@@ -623,10 +649,19 @@ fn shape_hash_node(
             },
             Type::Set(ts) => {
                 let members =
-                    ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, memo, fixed)));
+                    ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, in_fn, memo)));
                 (1u8, members).hash(&mut h)
             }
-            Type::Fn(f) => (2u8, f.args.len(), f.vargs.is_some()).hash(&mut h),
+            Type::Fn(f) => {
+                (2u8, f.args.len(), f.vargs.is_some(), f.quantifiers.len()).hash(&mut h);
+                for a in f.args.iter() {
+                    part(&a.typ, true, memo).hash(&mut h)
+                }
+                if let Some(v) = &f.vargs {
+                    part(v, true, memo).hash(&mut h)
+                }
+                (part(&f.rtype, true, memo), part(&f.throws, true, memo)).hash(&mut h)
+            }
             Type::Primitive(p) => (3u8, p.bits()).hash(&mut h),
             Type::Ref(tr) => (4u8, &tr.scope, &tr.name).hash(&mut h),
             Type::Variant(tag, _, _) => (5u8, tag).hash(&mut h),
@@ -639,7 +674,7 @@ fn shape_hash_node(
             t => (9u8, mem::discriminant(t)).hash(&mut h),
         }
         if !matches!(t, Type::Set(_) | Type::Fn(_)) {
-            t.for_each_child(&mut |c| part(c, memo, fixed).hash(&mut h));
+            t.for_each_child(&mut |c| part(c, in_fn, memo).hash(&mut h));
         }
         (h.finish(), cell_free)
     })

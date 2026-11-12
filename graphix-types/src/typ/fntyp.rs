@@ -1663,7 +1663,10 @@ impl FnType {
         let later: SmallVec<[bool; 8]> = positions
             .iter()
             .map(|p| {
-                p.is_some_and(|(c, t, _)| holds_open_union(c) || holds_open_union(t))
+                p.is_some_and(|(c, t, _)| {
+                    (!hist.closed(c) && holds_open_union(c))
+                        || (!hist.closed(t) && holds_open_union(t))
+                })
             })
             .collect();
         let hold = |hist: &mut ContainsHist, of: Range<usize>, round: bool| {
@@ -1684,7 +1687,10 @@ impl FnType {
         // a variable of `t` no function type holds takes the widest of the
         // closed types the arguments give it, whatever their order
         let mark = match flags.contains(ContainsFlags::Commit) {
-            true => hist.defer(t.order_free_cells(env)),
+            true => {
+                let cells = t.order_free_cells(env, hist);
+                hist.defer(cells)
+            }
             false => None,
         };
         let held = hold(hist, 0..arguments, false);
@@ -1698,11 +1704,15 @@ impl FnType {
     /// the order the signature writes them: a value of a wider type is
     /// well typed wherever the signature holds one as data, and a
     /// position that holds one exactly decides it whenever it is met.
-    fn order_free_cells(&self, env: &Env) -> SmallVec<[TVar; 2]> {
+    fn order_free_cells(
+        &self,
+        env: &Env,
+        hist: &mut ContainsHist,
+    ) -> SmallVec<[TVar; 2]> {
         let mut cells = SmallVec::new();
-        let open = |t: &Type| t.has_free_in_data();
+        let mut open = |t: &Type| !hist.closed(t) && t.has_free_in_data();
         if !self.args.iter().any(|a| open(&a.typ))
-            && !self.vargs.as_ref().is_some_and(open)
+            && !self.vargs.as_ref().is_some_and(&mut open)
         {
             return cells;
         }
@@ -1772,7 +1782,8 @@ impl FnType {
     /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
         let mut hist = ContainsHist::new();
-        let mark = hist.defer(t.order_free_cells(env));
+        let cells = t.order_free_cells(env, &mut hist);
+        let mark = hist.defer(cells);
         let held = self.align(t).0.into_iter().try_for_each(|(s, t)| {
             let flags = ContainsFlags::Commit.into();
             t.typ.contains_int(flags, env, &mut hist, &s.typ).map(drop)

@@ -332,11 +332,13 @@ fn program(shape: &str, d: usize) -> String {
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
         // The chain through a function type: the next variable its
-        // parameter, its result, or its parameter with only the first link
-        // on the definition's.
-        "chainboundsfn" | "chainboundsfnret" | "chainboundsfnheld" => {
+        // parameter, its result, its parameter with only the first link on
+        // the definition's, or its parameter through a typedef.
+        "chainboundsfn" | "chainboundsfnret" | "chainboundsfnheld"
+        | "chainboundsfnalias" => {
             let link = |i: usize| match shape {
                 "chainboundsfnret" => format!("'a{i}: fn(x: i64) -> 'a{}", i + 1),
+                "chainboundsfnalias" => format!("'a{i}: C<'a{}>", i + 1),
                 _ => format!("'a{i}: fn(x: 'a{}) -> i64", i + 1),
             };
             let bounds = (0..d)
@@ -351,7 +353,11 @@ fn program(shape: &str, d: usize) -> String {
                     (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ")
                 ),
             };
-            format!("let f = {bounds} |x: {cells}| x;\nf(never())")
+            let typedef = match shape {
+                "chainboundsfnalias" => "type C<'x> = fn(x: 'x) -> i64;\n",
+                _ => "",
+            };
+            format!("{typedef}let f = {bounds} |x: {cells}| x;\nf(never())")
         }
         // The chain through a union with each link the next one bare, the
         // call passing a value for every link; with each link implementing a
@@ -899,6 +905,38 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // Found reviewing chainbounds-elab-quadratic-01. probes:
 // ~/ptmp/cr29/scratch/r20/20g/rev/ (gen2.py fnalias|alias|rec|nested|formals N OUT,
 // meas.sh BIN --expand FILES) (chainbounds-elab-alias-01)
+// 2026-11-12 claude: Partly fixed. RefHist::shape_id hashed a function type by its
+// arity alone, so every link's expansion of `type C<'x> = fn(x: 'x) -> i64` fell in
+// one bucket and was compared with every other's by union_identical, each
+// comparison a walk to the chain's end: shape_hash now hashes a function's parts,
+// any open cell inside one alike. FnType::contains_gated asked holds_open_union of
+// each position and order_free_cells asked has_free_in_data of each argument, each
+// a walk to the chain's end at every link: both now ask only of a position
+// ContainsHist::closed finds open. `--expand --no-cache`, debug, G instructions
+// (empty 0.76), base-r23 -> lane: fnalias 250/500 6.11/44.08 -> 0.89/1.04, and
+// 1.45/2.64/6.41 at 1000/2000/4000; the function type written out (`'a{i}: fn(x:
+// 'a{i+1}) -> i64`) 3.59/11.65 -> 1.31/1.90 at 1000/2000, 256 -> 6.6 at 10000
+// (fnret 183 -> 6.4). Pins:
+// typ::contains::tests::function_types_are_keyed_by_their_parts (1353200 identity
+// steps with the arity hash),
+// deep_nesting::a_chain_of_bounds_through_function_types_elaborates_in_linear_time
+// and a_chain_of_bounds_through_a_function_typedef_elaborates_in_time (each fails
+// with its fix undone). What remains: (1) fnalias is still quadratic:
+// ContainsHist::expand_ref copies an expansion that holds a function type
+// (Type::reset_tvars) at each committing visit, through every bound cell it
+// reaches, so each link copies the rest of the chain; a copy that stops at ground
+// cells changes which lambda_ids a commit reaches, so it was not tried. (2) The
+// unguarded alias (`type M<'x> = ['x, null]`) is unchanged, 2.22/5.59/17.99 at
+// 1000/2000/4000 (base-r23 alike): FnType::bounds_hold -> place_each ->
+// applications_hold -> identical_linked walks each link's parameters to the chain's
+// end, since IdenticalMemo forgets its pairs at every cell write and the commit
+// writes once a link; names_members' tvar_free shows too. (3) The formals shape is
+// quadratic in --check, 4.57/15.57 at 1000/2000 (base-r23 alike): Widening::opening
+// copies each formal (replace_tvars_copied) through the chain of conjuncts its cell
+// reaches. (4) rec and nested are linear on base-r23 already (1.29/1.83 and
+// 1.30/1.85 at 1000/2000). probes:
+// ~/ptmp/cr29/scratch/r23/23g/chainbounds-elab-alias-01/ (gen2.py, gencb.py,
+// meas.sh, pmpc.py: a gdb stack sampler for builds without frame pointers)
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
@@ -916,6 +954,30 @@ fn a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time() 
             (2 * budget - 1) * BILLION,
         )
     }
+}
+
+/// The chain through function types elaborates in time linear in its
+/// length, at two depths: a link's positions are asked whether they hold a
+/// union of open cells, or a cell the arguments widen, only where they
+/// reach an open cell, which the walk keeps for each node it has met.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_through_function_types_elaborates_in_linear_time() {
+    let expand = ["--expand", "--no-cache"];
+    for shape in ["chainboundsfn", "chainboundsfnret", "chainboundsfnheld"] {
+        completes_within(&expand, &program(shape, CHAIN_DEPTH), 9 * BILLION);
+        completes_within(&expand, &program(shape, 2 * CHAIN_DEPTH), 17 * BILLION)
+    }
+}
+
+/// The chain through a function typedef elaborates without comparing each
+/// link's expansion with every other's: a function type is keyed by its
+/// parts, any open cell inside it alike.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_through_a_function_typedef_elaborates_in_time() {
+    let expand = ["--expand", "--no-cache"];
+    completes_within(&expand, &program("chainboundsfnalias", 2000), 5 * BILLION)
 }
 
 /// The chain through a union elaborates in time linear in its length, at

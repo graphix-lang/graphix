@@ -1857,7 +1857,7 @@ fn same_resolved<'a, 'b>(
 thread_local! {
     pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DIFF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static IDENTITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static IDENTITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
