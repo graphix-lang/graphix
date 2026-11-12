@@ -75,8 +75,10 @@ select of two undecided values (`u <- select c { true => x, false => y
 }`) and is then written a value: declare `u` (`let u: [i64, string] =
 never()`), or `x` and `y`. And a typedef that unions its parameters
 (`type E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: an
-argument either variable could take is refused, unless an earlier
-parameter decided one of them, so write one variable (`E<'a, 'a>`).
+argument either variable could take waits for the call's other arguments
+to decide them, wherever its parameter stands, and is refused where two
+members could still take it, so write one variable (`E<'a, 'a>`) or give
+the function a parameter that decides one.
 Members that are one type are one member and need nothing: an
 unannotated parameter a select takes apart with slice patterns (`[h,
 t..]`, two arms that bind elements, a recursive `len(t)`) is typed as one
@@ -87,7 +89,10 @@ type: write the parameter (`|s: (Array<'e>, 'b)|`). An impl's target may
 not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
 either: it waits for the other parameters to decide the members, and is
-refused where none does. A callback is given to the member its result
+refused where none does. The wait is one call's arguments': the parts of
+a single argument are met in their order (`|x: (P<'a, 'b>, 'a, 'b)|`
+refuses `([1], 1, "s")`; write the deciding parts first, or as
+parameters). A callback is given to the member its result
 fits.
 
 ```graphix,cases
@@ -98,7 +103,7 @@ ok let f = |c, a, b| { let u = select c { true => a, false => b }; u + 1 }; f(tr
 no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>| 0; f(1)
 ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'a>| 0; f(1)
 ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: E<'a, 'b>| 0; f(1, 2)
-no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
+ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
 ok let f = |x| select x { [h, t..] => h, [] => 0 }; (f([4, 5]), f(["a"]))
 ok let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5])
 ok let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
@@ -112,6 +117,12 @@ ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) =
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(1, "s", [1])
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], never(), never())
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w); h([1], 1, "s")
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, 'a, 'b)| x; f(([1], 1, "s"))
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: ('a, 'b, P<'a, 'b>)| x; f((1, "s", [1]))
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; let g = |u, v, w| f(u, v, w); g([], 1, "s")

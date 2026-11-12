@@ -6698,9 +6698,14 @@ run!(
 );
 run!(
     typedef_union_of_variables_refused_at_its_use,
-    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>| -> i64 0; f([1]) }"#,
     refused(AMBIGUOUS_MEMBER);
     FuseExpect::None
+);
+run!(
+    typedef_union_of_variables_decided_by_a_later_parameter,
+    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    prints("i64:2")
 );
 run!(
     typedef_union_at_a_written_type,
@@ -6859,9 +6864,14 @@ run!(
 );
 run!(
     nested_union_typedef_refused_at_its_use,
-    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, Array<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
+    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, Array<'d>]| -> i64 0; f([1]) }"#,
     refused(AMBIGUOUS_MEMBER);
     FuseExpect::None
+);
+run!(
+    nested_union_typedef_decided_by_a_later_parameter,
+    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, Array<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
+    prints("i64:2")
 );
 run!(
     nested_data_union_of_variables_in_an_annotation_refused,
@@ -6950,25 +6960,57 @@ run!(
 );
 // Behind a typedef the members reach the choice, which no order makes:
 // what a typedef's arguments or its body keep apart is not one member
-// because a renaming would make it one.
+// because a renaming would make it one. The call's other arguments make
+// it where they decide the members.
 run!(
     typedef_union_of_function_types_refused_at_its_use,
     r#"{
   type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
-  let f = |k: T<'a, 'b>, y: 'a, z: 'b| -> i64 0;
-  f(|x: i64| 0, 1, "s")
+  let f = |k: T<'a, 'b>| -> i64 0;
+  f(|x: i64| 0)
 }"#,
     refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    typedef_union_of_function_types_decided_by_the_other_parameters,
+    r#"{
+  type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
+  let f = |k: T<'a, 'b>, y: 'a, z: 'b| -> i64 0;
+  let l = |y: 'a, z: 'b, k: T<'a, 'b>| -> i64 1;
+  (f(|x: i64| 0, 1, "s"), l(1, "s", |x: i64| 0), f(|x| 0, 1, "s"))
+}"#,
+    prints("[i64:0, i64:1, i64:0]");
+    FuseExpect::None
+);
+run!(
+    typedef_union_of_function_types_no_decided_member_takes_refused,
+    r#"{
+  type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
+  let f = |k: T<'a, 'b>, y: 'a, z: 'b| -> i64 0;
+  f(|x: f64| 0, 1, "s")
+}"#,
+    refused("type mismatch T<'a: i64, 'b: string> does not contain fn(x: f64) -> i64");
     FuseExpect::None
 );
 run!(
     function_types_as_typedef_arguments_refused_at_their_use,
     r#"{
   type E<'p, 'q> = ['p, 'q];
+  let f = |k: E<fn(x: 'c) -> i64, fn(x: 'd) -> i64>| -> i64 0;
+  f(|x: string| 0)
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    function_types_as_typedef_arguments_decided_by_the_other_parameters,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
   let f = |k: E<fn(x: 'c) -> i64, fn(x: 'd) -> i64>, y: 'c, z: 'd| -> i64 0;
   f(|x: string| 0, 1, "s")
 }"#,
-    refused(AMBIGUOUS_MEMBER);
+    prints("i64:0");
     FuseExpect::None
 );
 run!(
@@ -7009,10 +7051,21 @@ run!(
     r#"{
   type T<'a> = {v: 'a};
   type E<'p, 'q> = ['p, 'q];
+  let f = |k: E<T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>>| -> i64 0;
+  f({v: |x: i64| 0})
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+run!(
+    named_function_types_as_typedef_arguments_decided_by_the_other_parameters,
+    r#"{
+  type T<'a> = {v: 'a};
+  type E<'p, 'q> = ['p, 'q];
   let f = |k: E<T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>>, y: 'c, z: 'd| -> i64 0;
   f({v: |x: i64| 0}, 1, "s")
 }"#,
-    refused(AMBIGUOUS_MEMBER);
+    prints("i64:0");
     FuseExpect::None
 );
 run!(
@@ -7542,6 +7595,140 @@ run!(
 }"#,
     refused(AMBIGUOUS_MEMBER);
     FuseExpect::None
+);
+
+// A decided argument that two undecided members of its parameter's union
+// could take waits for the call's other arguments too, and joins once
+// they have decided the members, so no order of the parameters decides
+// the call: one member then takes it, or it is refused where two still
+// could.
+run!(
+    decided_argument_into_a_typedef_union_is_decided_by_the_other_parameters,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let m = |y: 'a, x: P<'a, 'b>, z: 'b| x;
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  (f([1], 1, "s"), m(1, [1], "s"), l(1, "s", [1]), f(["t"], 1, "s"), f([2], 1, 3))
+}"#,
+    prints(r#"[[i64:1], [i64:1], [i64:1], ["t"], [i64:2]]"#)
+);
+run!(
+    decided_argument_into_a_typedef_union_no_parameter_decides_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  f([1], never(), never())
+}"#,
+    refused("Array<i64> could go to Array<'a: unbound> or Array<'b: unbound> of the union");
+    FuseExpect::None
+);
+run!(
+    decided_argument_into_a_typedef_union_takes_the_member_left_open,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'c| x;
+  f([1], "s", 2)
+}"#,
+    prints(r#"[i64:1]"#)
+);
+run!(
+    decided_argument_into_a_typedef_union_no_member_holds_it_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  f([1.5], 1, "s")
+}"#,
+    refused("could go to Array<'a: unbound> or Array<'b: unbound> of the union");
+    FuseExpect::None
+);
+run!(
+    decided_argument_into_a_typedef_union_of_bare_variables,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: E<'a, 'b>, y: 'a| x;
+  let l = |y: 'a, x: E<'a, 'b>| x;
+  (f(1, 2), l(2, 1))
+}"#,
+    prints("[i64:1, i64:1]")
+);
+// The wait is the call's, whoever writes it: a wrapper with the
+// parameters written, an inferred one (whose instance holds a decided
+// argument where its definition held an undecided cell), a labeled
+// argument, a declared bound, a seq step.
+run!(
+    annotated_wrapper_of_a_typedef_union_function,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w);
+  let k = |v: 'a, w: 'b, u: P<'a, 'b>| f(u, v, w);
+  (h([1], 1, "s"), k(1, "s", [1]), h([], 1, "s"))
+}"#,
+    prints("[[i64:1], [i64:1], []]")
+);
+run!(
+    decided_argument_into_a_typedef_union_other_callers,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let g = |u, v, w| f(u, v, w);
+  let l = |#x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let b = 'c: P<'a, 'b> |x: 'c, y: 'a, z: 'b| x;
+  let t = 1;
+  let s = seq t { let r = f([t], 1, "s"); r };
+  (g([1], 1, "s"), l(#x: [1], 1, "s"), b([1], 1, "s"), s)
+}"#,
+    prints("[[i64:1], [i64:1], [i64:1], [i64:1]]")
+);
+// The defaults the call omits decide the members as written arguments do.
+run!(
+    decided_argument_into_a_typedef_union_is_decided_by_omitted_defaults,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |#y: 'a = 1, #z: 'b = "s", x: P<'a, 'b>| x;
+  (f([1]), f(#y: 2, [3]), f(#z: "q", #y: 2, ["r"]))
+}"#,
+    prints(r#"[[i64:1], [i64:3], ["r"]]"#)
+);
+// Two arguments that each meet a choice join in any order: the one the
+// other arguments decide joins first, and what it decides places the
+// other.
+run!(
+    two_decided_arguments_into_typedef_unions_join_in_any_order,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: P<'a, 'b>, y: E<'a, 'c>, z: 'c| (x, y);
+  let l = |y: E<'a, 'c>, x: P<'a, 'b>, z: 'c| (x, y);
+  (f([1], 5, "s"), l(5, [1], "s"))
+}"#,
+    prints("[[[i64:1], i64:5], [[i64:1], i64:5]]")
+);
+run!(
+    two_decided_arguments_into_typedef_unions_neither_decided_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: P<'a, 'b>, y: E<'a, 'c>, z: 'd| (x, y);
+  f([1], 5, "s")
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+// An argument a member holds only once another argument has widened the
+// member's variable joins after that argument, wherever it stands.
+run!(
+    decided_argument_into_a_typedef_union_widens_its_member_in_any_order,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let n: [i64, null] = null;
+  let f = |y: 'a, z: 'b, x: P<'a, 'b>, w: 'a| x;
+  let l = |y: 'a, z: 'b, w: 'a, x: P<'a, 'b>| x;
+  let m = |x: P<'a, 'b>, y: 'a, z: 'b, w: 'a| x;
+  (f(1, "s", [n], n), l(1, "s", n, [n]), m([n], 1, "s", n))
+}"#,
+    prints("[[null], [null], [null]]")
 );
 
 // A wrapper's parameter passed at a formal that holds a variable the

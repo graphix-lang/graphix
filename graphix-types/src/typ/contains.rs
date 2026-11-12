@@ -1714,6 +1714,16 @@ fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 // ~/ptmp/cr29/scratch/r20/coord/x2rev/recursion/{r1,r2,r3_trait}.gx (killed), ok_*.gx
 // (check); `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 timeout -s
 // KILL 60 graphix --no-cache --check r1.gx` (bound-holds-own-cell-01)
+// 2026-11-11 claude: A plain call reaches it, with no wrapper and no trait: `let f = 'x:
+// Array<['a, null]> |y: 'x| y; f([1])` under --check passes 2 G in about a second and is
+// killed (exit 137), base-r22 and lane 21t alike, and GRAPHIX_DBG_BIND=1 prints `SET-T
+// [null, 'a] >= i64` without end, as above. `'x: Array<['a, string]>` the same;
+// `f([null])`, `'x: ['a, null]` called `f(1)`, `'x: (['a, null], i64)`, `'x: Array<'a>`
+// and a bound over one variable twice or a written member (`Array<E<'a, 'a>>`,
+// `Array<E<'a, i64>>`) check. Found by the differential of decided-arg-waits-01 (3 of
+// 1958 generated programs, killed on both sides). probes:
+// ~/ptmp/cr29/scratch/r21/21t/d32/oom/{j1,j11,m3}.gx (killed), {j8,j9,j10,j12,j4,j5}.gx
+// (check)
 /// True iff every conjunct of the cell's constraints contains `t`. A
 /// pure probe.
 fn conjuncts_admit(
@@ -3268,6 +3278,19 @@ impl Type {
                 // r20-staging 316965a1e do not finish its check (killed at 30 s); since
                 // ContainsHist::seed the check ends and accepts it. Probe:
                 // ~/ptmp/cr29/scratch/r20/coord/x1/review/o5_p00764.gx.
+                // 2026-11-11 claude: A smaller program the check accepts and the build
+                // refuses at the instance, with no recursive typedef: `type P<'p, 'q> =
+                // [Array<'p>, Array<'q>]; type O<'t> = ['t, null]; let f = |x: P<'a,
+                // string>, y: O<'a>| (x, y); let g = |u, v| f(u, v); g(["s"], null)` passes
+                // --check and the build fails "an instance at fn(u: [Array<string>,
+                // Array<_>], v: [null, _]) -> .. of a definition typed fn(u: [Array<string>,
+                // Array<'a: unbound>], v: [null, 'a: unbound]) -> ..": no argument decides
+                // 'a, which two parameters of the inferred wrapper hold under two unions.
+                // The direct call `f(["s"], null)` runs, and so does the wrapper over one
+                // such parameter. base-r22 and lane 21t alike; 11 of 5484 programs of
+                // decided-arg-waits-01's differential, the only check/build splits it found
+                // (also inside a nested function, g3/f0207_nest_p0.gx). probes:
+                // ~/ptmp/cr29/scratch/r21/21t/d32/ois/{o5,o9,o1,o6,o7}.gx
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()
@@ -4906,6 +4929,21 @@ impl Type {
         // ~/ptmp/cr29/scratch/r19/19g/{s3,s4}.gx (union-nosubst-order-01)
         // an undecided rhs member takes a union of undecided members whole,
         // as it would alone: no one member is picked for it
+        // 2026-11-11 claude: Another split of the same kind, where a variable of a
+        // typedef union stays undecided at the call: `type S2<'p, 'q> = [{v: 'p}, {v:
+        // 'q}]; let f = |y1: 'b, x0: S2<'b, 'c>, y2: 'c| (x0, y1, y2); let g = |t|
+        // f(2, {v: 2}, never()); g(1)` checks and runs, and under GRAPHIX_NO_SUBST=1
+        // the instance of g is refused, "type mismatch ([{ v: i64 }, { v: _ }], i64,
+        // _) does not contain ({ v: 'b: i64 }, 'b: i64, 'c: i64)": the instance holds
+        // 'c at `_`, and its own check relates the call's result to that signature
+        // after the arguments, where the callee's open {v: 'c} goes into the decided
+        // {v: i64} and 'c is then i64 against `_`. base-r22 alike. Since
+        // decided-arg-waits-01 the call with the union's parameter first is accepted
+        // too and splits the same way; in that CR's differential (5484 generated
+        // programs) 32 programs differ in verdict under NO_SUBST, 22 of them accepted
+        // by base-r22 and split there too, the other 10 newly accepted orders of the
+        // same shapes (this one, and choice-widen-order-01's). probes:
+        // ~/ptmp/cr29/scratch/r21/21t/d32/nsb/{b1,b2,b3}.gx, nscmp.out
         let mut undecided_free = s0
             .iter()
             .zip(&free)

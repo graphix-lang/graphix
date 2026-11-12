@@ -346,7 +346,42 @@ holding an undecided cell waits the same way,
 checked at its formal once the join is known, whichever label comes
 first. A written argument or an omitted default that is neither wider
 nor narrower than what the others gave a variable waits too, and is
-checked once they have widened it. Order can then decide only between a
+checked once they have widened it.
+
+A decided argument that two undecided members of its formal's union
+could take (`AmbiguousMember`, below: A union's member takes a type by
+rule) waits as well (Eric 11-11, D32): the call's other arguments may
+decide the members. It meets its formal where it is written
+(`Widening::join`: it fits, or widens, or is neither wider nor narrower,
+or meets the choice, `Joined::Choice`), and one that met the choice
+joins again once the written arguments and the omitted defaults have
+(`CallSite::join_choosing`), as an argument written after them would,
+before the undecided arguments are checked: a member the others decided
+takes it, or the one member still open does, or it widens a variable.
+Several such arguments join in rounds, while one of them joins, so one
+whose member another of them decides does not depend on which stands
+first (`f([1], 5, "s")` over `|x: P<'a, 'b>, y: E<'a, 'c>, z: 'c|`). One
+that two members could still take when a round places none is refused,
+with the choice's message, naming the parameter to write. So `f([1], 1,
+"s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|` (`type P<'p, 'q> = [Array<'p>,
+Array<'q>]`) runs as `|y: 'a, z: 'b, x: P<'a, 'b>|` does, a wrapper with
+its parameters written checks (`|u: P<'a, 'b>, v: 'a, w: 'b| f(u, v,
+w)`: the declared `'a` and `'b` are decided by `v` and `w`), and an
+instance checked again (`GRAPHIX_NO_SUBST`), which holds a decided
+argument where its definition held an undecided cell, accepts what the
+definition's check did; `f([1], never(), never())` and `f([1])` over
+`|x: P<'a, 'b>|` stay refused (pins
+`lang::types::decided_argument_into_a_typedef_union_*`,
+`annotated_wrapper_of_a_typedef_union_function`,
+`two_decided_arguments_into_typedef_unions_*`, the shell's
+`no_subst::an_instance_checked_again_waits_for_the_arguments_that_decide_a_union`).
+A part of the argument before the choice has met its formal by then (in
+`(1, [1])` over `('c, P<'a, 'b>)` the `1` decided `'c` where the argument
+is written), and the parts of one argument are still met in their order.
+An omitted default that meets the choice is checked with the waiting
+defaults, after every argument.
+
+Order can then decide only between a
 value and a refusal, never between two types: where the join does not
 hold the argument (`f(str::parse(s), 1)` over `|x: 'a, y: 'a|`: `'a` is
 `i64`, which holds no parse error), the mismatch is refused, in either
@@ -542,7 +577,9 @@ one member, chosen by rules that read the union alone:
 A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
 ⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`
 (`type P<'p, 'q> = [Array<'p>, Array<'q>]`) is refused, and runs where
-the other parameters decide the members. Nothing gives an argument to a
+the other parameters decide the members, as a decided argument does (`f([1],
+1, "s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|`): at a call the choice waits
+for the other arguments, whatever their order (A call's widening). Nothing gives an argument to a
 member before it is decided: a pre-unification that meets the choice
 leaves it to the argument's own check (`Type::pre_unify_arg`), a decided
 member beside another that could take the undecided argument included
@@ -2227,7 +2264,10 @@ references name the target is told the recursive type alone
   the variable and does not hold it, "annotate it", naming the bindings it
   reads, where a decision of its cells could fit (`Widening::opening`,
   `check_waiting`); a written argument or an omitted default neither wider
-  nor narrower waits for the others to widen it. One a
+  nor narrower waits for the others to widen it, and a decided argument
+  that two undecided members of its formal's union could take waits for
+  the others to decide them, refused where two still could
+  (`CallSite::join_choosing`). One a
   callback holds settles to the first argument, and one an abstract
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a

@@ -56,3 +56,24 @@ fn an_instance_checked_again_fits_what_a_lower_bound_holds() {
          h([`Nil], \"s\", \"s\")\n";
     assert_eq!(run(program, true), "[`Nil]");
 }
+
+/// An instance that checks its body again holds a decided argument where
+/// its definition held an undecided cell or a declared variable: one that
+/// two undecided members of a union could take waits for the call's other
+/// arguments there too.
+#[test]
+fn an_instance_checked_again_waits_for_the_arguments_that_decide_a_union() {
+    let typedef = "type P<'p, 'q> = [Array<'p>, Array<'q>];\n\
+         let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;\n";
+    let programs = [
+        ("let g = |u, v, w| f(u, v, w);\ng([], 1, \"s\")\n", "[]"),
+        ("let g = |u, v, w| f(u, v, w);\ng([1], 1, \"s\")\n", "[1]"),
+        ("let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w);\nh([1], 1, \"s\")\n", "[1]"),
+        ("let g = |u| { let (p, q, r) = u; f(p, q, r) };\ng(([], 1, \"s\"))\n", "[]"),
+    ];
+    for (program, expected) in programs {
+        let program = format!("{typedef}{program}");
+        assert_eq!(run(&program, false), expected, "{program}");
+        assert_eq!(run(&program, true), expected, "under GRAPHIX_NO_SUBST: {program}");
+    }
+}

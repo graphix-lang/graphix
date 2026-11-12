@@ -787,15 +787,26 @@ type Copies = LPooled<AHashMap<usize, TVar>>;
 /// A formal's cells, each with its copy in the formal's open copy.
 type Copied = LPooled<Vec<(TVar, TVar)>>;
 
-/// How a call's argument met its formal.
+/// How a call's argument stands once its own check is done.
 enum ArgFit {
-    Fits,
-    /// It does not fit the formal as it stands.
-    Misfit,
+    /// Every cell it holds outside function types is decided: it joins
+    /// the call's widening where it is written ([`Widening::join`]).
+    Decided,
     /// It holds a cell nothing has decided outside function types, at a
     /// formal the call opened: checked now it would take what the formal
     /// holds so far. It pre-unified with the copy of these cells.
     Open(Copied),
+}
+
+/// How a decided argument, or an omitted default, met its formal.
+enum Joined {
+    Fits,
+    /// It is neither wider nor narrower than a variable it holds.
+    Incomparable,
+    /// Two undecided members of a union could take it
+    /// ([`AmbiguousMember`], the refusal): the call's other arguments may
+    /// decide them.
+    Choice(anyhow::Error),
 }
 
 /// An argument that could go to either of two undecided members of its
@@ -811,7 +822,7 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-// CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
+// XCR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
 // refuses a call its definition's check accepted where an argument was undecided at
 // the definition and is decided at the instance: `let g = |y0, y1, y4, y5, y6| f(y0,
 // y1, y4, y5, y6); g([[]], null, [[1]], [1], 1)` over `'a0: O<P<'a1, 'a2>>, 'a1:
@@ -851,8 +862,44 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 // 2026-11-11 claude: Eric ruled (11-11, D32): (a) wait. A decided argument that meets a
 // choice between undecided members waits for the call's other arguments, and is refused only
 // if two members could still take it; the refusal must not depend on argument order.
-/// Check a call's argument node against its formal's type `typ`,
-/// answering how it fit. Where the call opens the formal
+// 2026-11-11 claude: Built as ruled (D32). A decided argument meets its formal through
+// Widening::join, and one that two undecided members of the formal's union could take
+// (AmbiguousMember from the containment or from the widening probe) is no longer refused
+// where it is written: it waits (Widening::choosing) and joins again in
+// CallSite::join_choosing, once the written arguments and the omitted defaults have, before
+// the undecided arguments are checked, in rounds while one of them joins; one two members
+// could still take is refused there with the same message. A decided argument one member
+// takes is placed at once as before. The four programs of D32 run in every mode, the CR's
+// probes run alike with and without GRAPHIX_NO_SUBST (q/t5.gx is refused by its own
+// annotation in both), and `f([1], never(), never())`, `f([1])` over `|x: P<'a, 'b>|`
+// stay refused. Pins that fail with the wait undone (Joined::Choice turned back into the
+// refusal):
+// lang::types::{decided_argument_into_a_typedef_union_is_decided_by_the_other_parameters,
+// decided_argument_into_a_typedef_union_of_bare_variables,
+// decided_argument_into_a_typedef_union_takes_the_member_left_open,
+// decided_argument_into_a_typedef_union_widens_its_member_in_any_order,
+// decided_argument_into_a_typedef_union_other_callers,
+// annotated_wrapper_of_a_typedef_union_function,
+// two_decided_arguments_into_typedef_unions_join_in_any_order,
+// typedef_union_of_variables_decided_by_a_later_parameter,
+// nested_union_typedef_decided_by_a_later_parameter,
+// typedef_union_of_function_types_decided_by_the_other_parameters,
+// typedef_union_of_function_types_no_decided_member_takes_refused,
+// function_types_as_typedef_arguments_decided_by_the_other_parameters,
+// named_function_types_as_typedef_arguments_decided_by_the_other_parameters},
+// lang::interfaces::open_union_call_decided_by_the_other_argument, and the shell's
+// no_subst::an_instance_checked_again_waits_for_the_arguments_that_decide_a_union; the
+// refused twins (decided_argument_into_a_typedef_union_no_parameter_decides_refused,
+// _no_member_holds_it_refused,
+// two_decided_arguments_into_typedef_unions_neither_decided_refused, and the five
+// *_refused_at_{its,their}_use pins and lang::interfaces::open_union_call_refused, rewritten
+// to calls no other argument decides) pass either way.
+// What is left of the order is three new CRs: choice-widen-order-01 (an argument wider than
+// the member the others decided), choice-within-arg-order-01 (the parts of one argument),
+// wrapper-widen-order-01 (no union; an inferred wrapper). Differential (gend.py,
+// rund.sh): ~/ptmp/cr29/scratch/r21/21t/d32/{g1,g2,g3}.summary, {g1,g2,g3}/all.txt
+/// Check a call's argument node, whose formal's type is `typ`,
+/// answering how it stands. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
 /// and one holding an undecided cell outside function types is
 /// [`ArgFit::Open`]. An expression whose type its own check has yet to
@@ -901,10 +948,7 @@ fn typecheck_arg<R: Rt>(
             });
             ArgFit::Open(copied)
         }
-        _ if wrap!(n, typ.contains(&ctx.env, n.typ()).map_err(ambiguous_parameter))? => {
-            ArgFit::Fits
-        }
-        _ => ArgFit::Misfit,
+        _ => ArgFit::Decided,
     })
 }
 
@@ -1461,13 +1505,19 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 /// included, whatever the order. An argument that does not fit is probed
 /// once against its formal with those variables open; it widens the
 /// variables it holds wider, and waits for the end of the argument loop
-/// when it is neither wider nor narrower. An argument holding an undecided
-/// cell decides none of them: it waits, and takes what the others settle.
+/// when it is neither wider nor narrower. One that two undecided members
+/// of its formal could take waits for the others to decide them, and
+/// joins after them, so the order a call writes its arguments in decides
+/// no such choice. An argument holding an undecided cell decides none of
+/// the variables: it waits, and takes what the others settle.
 struct Widening {
     fresh: bool,
     cells: Option<LPooled<AHashMap<ArcStr, TVar>>>,
     /// What is checked at the end of the argument loop, at its formal.
     deferred: LPooled<Vec<(Waiter, Type)>>,
+    /// The decided arguments that met a choice ([`Joined::Choice`]), each
+    /// with its formal: they join once the others have.
+    choosing: LPooled<Vec<(ArgKey, Type)>>,
 }
 
 /// What waits for the end of a call's argument loop, and why.
@@ -1477,9 +1527,10 @@ enum Waiter {
     /// An argument neither wider nor narrower than a variable it holds.
     Incomparable(ArgKey),
     /// An omitted default of type `typ`, written at `at`, neither wider nor
-    /// narrower than a variable it holds or holding an undecided cell, with
-    /// the note a refusal of it takes ([`met_defaults`]) and, where it is
-    /// undecided, the bindings to annotate ([`undecided_binds`]).
+    /// narrower than a variable it holds, met a choice or holding an
+    /// undecided cell, with the note a refusal of it takes
+    /// ([`met_defaults`]) and, where it is undecided, the bindings to
+    /// annotate ([`undecided_binds`]).
     Default {
         typ: Type,
         at: Expr,
@@ -1490,7 +1541,7 @@ enum Waiter {
 
 impl Widening {
     fn new(fresh: bool) -> Self {
-        Self { fresh, cells: None, deferred: LPooled::take() }
+        Self { fresh, cells: None, deferred: LPooled::take(), choosing: LPooled::take() }
     }
 
     fn cells<'a>(
@@ -1524,6 +1575,18 @@ impl Widening {
         (open, opened)
     }
 
+    // CR claude for claude: [bug/low] Through an inferred wrapper a variable settles
+    // to the first argument, not the widest: over `let f = |x: Array<'b>, y: ('b,
+    // i64)| (x, y); let g = |u, v| f(u, v)` and `n: [i64, null]`, `g([1], (n, 2))` is
+    // refused, "type mismatch ('b: i64, i64) does not contain ([i64, null], i64)",
+    // where `f([1], (n, 2))` runs, and so does the wrapper with the wider argument
+    // first (`let f = |y: ('b, i64), x: Array<'b>| ..; g((n, 2), [1])`). The wrapper's
+    // parameters are cells bound to the callee's formals; Widening::standing opens
+    // them for an undecided argument, and the decided argument that does not fit as
+    // the first left the variable is not widened. No union is needed; a typedef
+    // union in the callee's formal shows the same (`x: P<'b, string>`). base-r22
+    // alike. Not looked into further. probes:
+    // ~/ptmp/cr29/scratch/r21/21t/d32/wr/{a,b,c,d,e,f}.gx (wrapper-widen-order-01)
     /// What `formal` stands for: a cell that is not widenable is what it
     /// is bound to, so an inferred parameter that took a type holding
     /// widenable variables opens as a written one does.
@@ -1594,7 +1657,68 @@ impl Widening {
         Some((open, copies))
     }
 
-    /// The argument for `key` met `formal`: widen, wait, or the mismatch
+    // CR claude for claude: [bug/low] A decided argument wider than the member the
+    // other arguments decide still meets its formal's union by the order of the
+    // parameters. Over `type P<'p, 'q> = [Array<'p>, Array<'q>]` and `n: [i64, null]`,
+    // `f(1.5, [n], 1)` over `|z: 'b, x: P<'a, 'b>, y: 'a|` runs (`[n]` met 'a undecided
+    // beside 'b: f64, which does not hold it, so the one member left open took it at
+    // once, and `1` then fits), and the same call with the parameters in the other
+    // three orders is refused: `|x, y, z|` and `|y, z, x|` "Array<[i64, null]> could
+    // go to Array<'a: unbound> or Array<'b: unbound>" (both members are decided,
+    // neither holds it, and Widening::widen's probe opens both), `|y, x, z|` "'b:
+    // [i64, null] does not contain f64" ('b was the member left open). With `null`
+    // for `1.5` two orders run at two types: `f(null, [n], 1)` over `|z, x, y|` has
+    // 'a: [i64, null], 'b: null and `f(1, [n], null)` over `|y, x, z|` has 'a: i64,
+    // 'b: [i64, null]; the other two orders are refused. decided-arg-waits-01 made
+    // the choice between two undecided members wait; here one member is decided and
+    // could take the argument by widening. A rule that would close it: a decided
+    // member whose variable is widenable counts as able to take the argument, so the
+    // argument waits as a choice does and, once the others have joined, widens the
+    // one variable that opened alone holds it wider (Widening::open over one name),
+    // refused where two could. That refuses the two orders that run at two types, so
+    // it needs a census. An instance checked again (GRAPHIX_NO_SUBST) meets the same
+    // probe where its definition met declared variables: `let h = |y0: O<'a>, x0:
+    // P<'b, string>, y1: Array<'b>, x1: E<'a, 'b>| f(y0, x0, y1, x1); h(null, ["s"],
+    // ["s"], n)` over an `f` of the same parameters (`type O<'t> = ['t, null]; type
+    // E<'p, 'q> = ['p, 'q]`) runs, and under NO_SUBST its instance is refused, "[i64,
+    // null, string] could go to 'a: unbound or 'b: unbound". base-r22 the same on
+    // every program above. Two arguments that both waited meet it among themselves
+    // (CallSite::join_choosing joins them in the order they stand): `f(#x0: [n],
+    // #x1: [n], 1)` over `|#x0: O<P<'a, 'b>>, #x1: Array<E<'a, 'b>>, y0: O<'b>|` runs
+    // ('b: i64, then `x0` gives 'a [i64, null], which holds `x1`), and with `#x1`
+    // first it is refused: `x1` joins by giving 'a the `null` that 'b: i64 leaves
+    // of [i64, null], and `x0` then fits neither member (base-r22 refuses both). Of
+    // 1360 generated families (gend.py, seeds 101, 202 and 303) 5 are decided by
+    // order this way: g1/f0306_direct, g2/f0353_bound, g2/f0324_lab, g3/f0246_sel,
+    // g3/f0348_wrap. probes:
+    // ~/ptmp/cr29/scratch/r21/21t/d32/res/{r1,r2,r3,r4,s1,s2,s3,s4}.gx,
+    // g1/f0075_ann_p0.gx, g1/f0306_direct_p{0,1,2}.gx, g2/f0324_lab_p{0,1}.gx
+    // (choice-widen-order-01)
+    /// A decided argument or omitted default of type `typ` meets `formal`:
+    /// it fits as the formal stands or widens the variables it holds
+    /// wider, waits to be either, or meets a choice the other arguments
+    /// may make; else the mismatch error.
+    fn join(
+        &mut self,
+        env: &Env,
+        def: &Type,
+        inst: &FnType,
+        formal: &Type,
+        typ: &Type,
+    ) -> Result<Joined> {
+        let joined = match formal.contains(env, typ) {
+            Ok(false) => self.widen(env, def, inst, formal, typ),
+            fits => fits,
+        };
+        match joined {
+            Ok(true) => Ok(Joined::Fits),
+            Ok(false) => Ok(Joined::Incomparable),
+            Err(e) if e.is::<AmbiguousMember>() => Ok(Joined::Choice(e)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The argument for `key` met `formal`: join, wait, or the mismatch
     /// error.
     fn fit<R: Rt>(
         &mut self,
@@ -1607,18 +1731,22 @@ impl Widening {
         fit: ArgFit,
     ) -> Result<()> {
         match fit {
-            ArgFit::Fits => Ok(()),
-            ArgFit::Open(copied) => Ok(self
+            ArgFit::Open(copied) => self
                 .deferred
-                .push((Waiter::Undecided(key.clone(), copied), formal.clone()))),
-            ArgFit::Misfit => {
-                if !wrap!(n, self.widen(env, def, inst, formal, n.typ()))? {
-                    self.deferred
-                        .push((Waiter::Incomparable(key.clone()), formal.clone()))
+                .push((Waiter::Undecided(key.clone(), copied), formal.clone())),
+            ArgFit::Decided => {
+                match wrap!(n, self.join(env, def, inst, formal, n.typ()))? {
+                    Joined::Fits => (),
+                    Joined::Incomparable => self
+                        .deferred
+                        .push((Waiter::Incomparable(key.clone()), formal.clone())),
+                    Joined::Choice(_) => {
+                        self.choosing.push((key.clone(), formal.clone()))
+                    }
                 }
-                Ok(())
             }
         }
+        Ok(())
     }
 
     /// An omitted default of type `typ`, written at `at`, meets `formal` as
@@ -1639,10 +1767,7 @@ impl Widening {
     ) -> Result<()> {
         let waits =
             typ.has_free_in_data() && !self.held(env, def, inst, formal).is_empty();
-        if waits
-            || !formal.contains(env, typ).map_err(ambiguous_parameter)?
-                && !self.widen(env, def, inst, formal, typ)?
-        {
+        if waits || !matches!(self.join(env, def, inst, formal, typ)?, Joined::Fits) {
             let waiter =
                 Waiter::Default { typ: typ.clone(), at: at.clone(), met, undecided };
             self.deferred.push((waiter, formal.clone()))
@@ -1685,9 +1810,7 @@ impl Widening {
         formal: &Type,
         typ: &Type,
     ) -> Result<bool> {
-        let check = || {
-            formal.check_contains(env, typ).map(|()| true).map_err(ambiguous_parameter)
-        };
+        let check = || formal.check_contains(env, typ).map(|()| true);
         if !self.fresh || typ.has_unbound() {
             return check();
         }
@@ -1697,7 +1820,7 @@ impl Widening {
         }
         Self::settle_bounded(env, cells, formal);
         let (open, opened) = Self::open(formal, cells.keys());
-        if !open.contains(env, typ).map_err(ambiguous_parameter)? {
+        if !open.contains(env, typ)? {
             return match open.discernible_refusal(env, typ) {
                 Some(e) => Err(e),
                 None => check(),
@@ -2563,6 +2686,62 @@ impl<R: Rt> CallSite<R> {
         Ok(known)
     }
 
+    // CR claude for claude: [bug/low] The parts of one argument still meet a choice
+    // in their order: over `type P<'p, 'q> = [Array<'p>, Array<'q>]`, `f(([1], 1,
+    // "s"))` over `|x: (P<'a, 'b>, 'a, 'b)|` is refused ("Array<i64> could go to
+    // Array<'a: unbound> or Array<'b: unbound>") and `f((1, "s", [1]))` over `|x: ('a,
+    // 'b, P<'a, 'b>)|` runs, where the same three as arguments run in every order
+    // since decided-arg-waits-01. The containment of the one argument raises the
+    // choice at its first part, before the parts that would decide the members are
+    // met, and joining the argument again finds the same; an annotation meets it the
+    // same way (`let v: (P<'a, 'b>, 'a, 'b) = ([1], 1, "s")`). The skill's
+    // generics.md states the order as the rule. Closing it means a containment that
+    // defers a part meeting a choice until its other parts are related, as
+    // ContainsHist::defer does for a function type's positions. base-r22 the same.
+    // probes: ~/ptmp/cr29/scratch/r21/21t/d32/{t1,t2}.gx (choice-within-arg-order-01)
+    /// Join the decided arguments that met a choice, once the written
+    /// arguments and the omitted defaults have joined: each as one written
+    /// after them would, again while another of them joins, so the order
+    /// they stand in decides nothing. One that two undecided members
+    /// could still take is refused.
+    fn join_choosing(
+        &self,
+        ctx: &CompileCtx<R>,
+        ftype: &FnType,
+        widening: &mut Widening,
+    ) -> Result<()> {
+        let mut choosing = mem::take(&mut widening.choosing);
+        let (env, def) = (&ctx.env, self.fnode.typ());
+        while !choosing.is_empty() {
+            let waiting = choosing.len();
+            let mut refusal = None;
+            let mut i = 0;
+            while let Some((key, formal)) = choosing.get(i) {
+                let Some(n) = self.args.get(key).and_then(|a| a.node.as_ref()) else {
+                    choosing.remove(i);
+                    continue;
+                };
+                match wrap!(n, widening.join(env, def, ftype, formal, n.typ()))? {
+                    Joined::Fits => drop(choosing.remove(i)),
+                    Joined::Incomparable => {
+                        let (key, formal) = choosing.remove(i);
+                        widening.deferred.push((Waiter::Incomparable(key), formal))
+                    }
+                    Joined::Choice(e) => {
+                        refusal.get_or_insert(wrap!(n, ambiguous_parameter(e)));
+                        i += 1
+                    }
+                }
+            }
+            if let Some(e) = refusal
+                && choosing.len() == waiting
+            {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
     /// Check the arguments `widening` held back at their formals, once the
     /// written arguments and the omitted defaults have joined. One holding
     /// an undecided cell that the join, or an undecided argument before
@@ -2573,6 +2752,7 @@ impl<R: Rt> CallSite<R> {
         ftype: &FnType,
         widening: &mut Widening,
     ) -> Result<()> {
+        self.join_choosing(ctx, ftype, widening)?;
         let deferred = mem::take(&mut *widening.deferred);
         let mut met: LPooled<AHashSet<ArcStr>> = LPooled::take();
         let env = &ctx.env;

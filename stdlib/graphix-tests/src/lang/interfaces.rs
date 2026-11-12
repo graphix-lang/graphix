@@ -1300,14 +1300,23 @@ run!(
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
 );
 
-// A value that either member could take is refused at the call.
+// A value that either member could take is refused at the call where no
+// other argument decides the members, and goes to the member one decides.
 run!(
     open_union_call_refused,
     refused("which nothing has decided, and the check picks none by order"),
-    "/test.gx" => "mod m; let result = m::f([1], 2)",
+    "/test.gx" => "mod m; let result = m::f([1], never())",
     "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a) -> 'a;",
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
 ; FuseExpect::None);
+
+run!(
+    open_union_call_decided_by_the_other_argument,
+    is(Value::I64(2)),
+    "/test.gx" => "mod m; let result = m::f([1], 2)",
+    "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a) -> 'a;",
+    "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
+);
 
 // A val's use is checked against its declaration alone, and builds an
 // instance of the implementation: one whose own signature would have that
