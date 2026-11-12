@@ -2277,6 +2277,67 @@ run!(
     prints("[i64:1, i64:5]")
 );
 
+// An instance holds a variable another's bound names at that variable's own
+// place, wider than the bound's holder alone would decide it.
+run!(
+    bound_naming_a_wider_variable_builds,
+    r#"{
+  let f = 'b: Array<'a> |x: 'b, y: 'a| y;
+  let g = 'a: Any, 'b: Array<'a> |x: 'b, y: 'a| x;
+  let e: [i64, string] = 1;
+  (f([2], e), g([2], e))
+}"#,
+    prints("[i64:1, [i64:2]]")
+);
+
+// A waiting argument whose cell stands above lower bounds takes what the
+// others settle only where that holds them.
+run!(
+    undecided_binding_above_a_lower_bound_refused,
+    r#"{
+  type B<'p> = Abstract<'p>;
+  let x = B(1);
+  x <- B("a");
+  let v = x.0;
+  let f = |a: Array<'a>, b: 'a| b;
+  let r: i64 = f([10], v);
+  r
+}"#,
+    refused(
+        "'a: i64 does not contain [string, i64]: `v` is undecided at this call; \
+         annotate `v`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    undecided_binding_above_a_lower_bound_builtin_refused,
+    r#"{
+  type B<'p> = Abstract<'p>;
+  let x = B(1);
+  x <- B("a");
+  let v = x.0;
+  let r: Array<i64> = array::push([10], v);
+  r
+}"#,
+    refused("`v` is undecided at this call; annotate `v`");
+    FuseExpect::None
+);
+
+run!(
+    undecided_binding_above_a_lower_bound_it_holds_joins,
+    r#"{
+  type B<'p> = Abstract<'p>;
+  let x = B(1);
+  let v = x.0;
+  let f = |a: Array<'a>, b: 'a| b;
+  let n: [i64, null] = null;
+  let r: i64 = f([10], v);
+  (r, f([n], v))
+}"#,
+    prints("[i64:1, i64:1]")
+);
+
 // A variable a callback also holds is decided by the first argument: an
 // undecided argument after it is refused naming the argument that decided
 // it, one before it runs, and so does the deciding argument annotated wide.

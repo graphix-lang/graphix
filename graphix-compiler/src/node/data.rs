@@ -1299,6 +1299,21 @@ impl<R: Rt> Construct<R> {
         // divergence_000000. probes:
         // ~/ptmp/cr29/scratch/nov11b/{m1,p1,p2,p3,p4,p8,s5}.gx
         // (construct-lower-merge-01)
+        // 2026-11-12 claude: Partly fixed. The write forms build: FnType::held_at takes
+        // a last attempt in which a union's first member that holds a type takes it
+        // (ContainsHist::ordered), since the definition's check holds at either of two
+        // members nothing tells apart; no rule of the check changed. m1, d5 and the
+        // soak's program build and run in both engines (pins
+        // lang::types::undecided_payloads_met_at_a_call_build,
+        // findings/instance-held-at-nov2026/00). Still open: the select form (p3.gx, the
+        // |a| { let c = B([never()]); select true { true => a, false => c } } program
+        // above) passes held_at and is then refused where CallSite::setup_static_bind
+        // unifies the instance's result back into the site's, the same choice between
+        // two undecided members. Taking the first member there would bind the site's
+        // live cells by order after the check, so it is left. Also not decided: whether
+        // the witness of two lower bounds that differ only in undecided cells should be
+        // one member (the cells welded) in place of this union, which would close both
+        // forms and make GRAPHIX_NO_SUBST agree.
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {

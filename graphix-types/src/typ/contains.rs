@@ -368,7 +368,7 @@ impl ContainsHist {
         }
     }
 
-    fn ordered() -> Self {
+    pub(super) fn ordered() -> Self {
         ContainsHist { ordered: true, ..Self::new() }
     }
 

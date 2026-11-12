@@ -698,6 +698,21 @@ async fn callee_reference_is_a_publication() -> Result<()> {
     Ok(())
 }
 
+// A sibling that reads every variable (a builtin handed a callback) reads
+// that cell too.
+#[tokio::test(flavor = "current_thread")]
+async fn callee_reference_beside_a_reader_of_everything() -> Result<()> {
+    let from = "null as _ => -1, r => *r";
+    assert!(CALLEE_REF.contains(from));
+    let code =
+        CALLEE_REF.replace(from, "null as _ => [], r => array::group(*r, |c, _| c == 2)");
+    let serial = run_par(&code, ParMode::Off).await?;
+    for _ in 0..8 {
+        assert_eq!(run_par(&code, ParMode::Force).await?.values, serial.values);
+    }
+    Ok(())
+}
+
 // A call with no static target may call something else at its next bind,
 // so siblings that make one are not independent: once `h` calls the
 // queuefn wrapper the queue still sees the fields' calls in order, whether

@@ -171,6 +171,7 @@ trace	foldq-empty-overfire-jul2026/01_empty_fold_reemits_init.gx
 trace	foldq-empty-overfire-jul2026/02_init_runaway_local_bottom.gx
 trace	foldq-reactive-size-jul2026/01_fold_over_growing_init.gx
 trace	foldq-reactive-size-jul2026/02_fold_shrink_emits_held.gx
+trace	fork-callee-ref-reads-all-nov2026/00_group_of_a_dereference.gx
 trace	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
 trace	formal-bottom-persists-aug2026/00_wrapper_formal_resurrection.gx
 trace	frame-formal-init-view-aug2026/00_guard_flip_rec_arm.gx
@@ -219,6 +220,8 @@ trace	init-over-limit-aug2026/02_fold_over_oversize_init_fires_init.gx
 trace	inloop-bottom-cache-jul2026/00_filter_div0_slot.gx
 reject	N: cannot compare null with iN: comparison is fn('a, 'a) -> bool — both operands must be one type	instance-copy-skew-jul2026/01_null_elem_filter.gx
 reject	N: cannot compute iN + fn(path: string) -> Result<bytes, `IOError(string)>: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
+trace	instance-held-at-nov2026/00_two_undecided_payloads.gx
+trace	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
 trace	interface-ctor-trait-oct2026/00_two_collections.gx
 trace	interface-ctor-trait-oct2026/01_six_modules.gx
 trace	interp-format-jul2026/01_union_array_typed_prefix.gx
@@ -547,6 +550,7 @@ trace	variant-arity-tag-only-aug2026/03_no_annotation_needed.gx
 trace	variant-rec-depth-jul2026/01_variant_nontail_depth_guard.gx
 trace	varint-literal-sep2026/00_literal_over_a_varint.gx
 trace	varint-literal-sep2026/01_varint_or_pattern.gx
+reject	N: type mismatch 'a: iN does not contain [iN, string]: `v` is undecided at this call; annotate `v` (line N, column N in module /test)	waiting-arg-lower-bound-nov2026/00_let_of_an_open_payload.gx
 trace	wake-bind-init-view-aug2026/01_builtin_over_pattern_interp.gx
 trace	wake-catchup-sep2026/00_wake_recompute_table.gx
 trace	wake-catchup-sep2026/01_shared_input_spent.gx

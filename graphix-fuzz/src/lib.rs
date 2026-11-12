@@ -3031,9 +3031,37 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     (d.bisect(), d.reference.kind(), d.tested.kind(), td)
 }
 
-/// A divergence's [`Finding::key`]: its pair and [`bucket`].
+/// A divergence's [`Finding::key`]: its pair and [`bucket`], and for a
+/// build that refused what the check accepted, what it refused
+/// ([`refusal_class`]): two refusals are two bugs.
 fn finding_key(d: &Divergence) -> String {
-    format!("{:?} {:?}", d.pair, bucket(d))
+    match (d.pair, &d.tested) {
+        (Pair::Check, Outcome::CompileErr(e)) => {
+            format!("{:?} {:?} {}", d.pair, bucket(d), refusal_class(e))
+        }
+        _ => format!("{:?} {:?}", d.pair, bucket(d)),
+    }
+}
+
+/// The root cause of the compile error `e`, the last numbered line of its
+/// chain and what follows it (the lines above quote the program), every
+/// number collapsed: one refusal met with other variable ids is one class.
+fn refusal_class(e: &str) -> String {
+    let cause = |l: &str| {
+        let l = l.trim_start();
+        let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+        (digits > 0 && l[digits..].starts_with(": ")).then(|| digits + 2)
+    };
+    let mut root = e.trim();
+    let mut at = 0;
+    for l in e.split_inclusive('\n') {
+        if let Some(skip) = cause(l) {
+            let lead = l.len() - l.trim_start().len();
+            root = e[at + lead + skip..].trim();
+        }
+        at += l.len();
+    }
+    collapse_numbers(root)
 }
 
 /// The minimizations a campaign spends on one [`Finding::key`]; later
@@ -7747,6 +7775,35 @@ mod trace_probes {
         assert!(corpus.record_crash("f(1)", hang, &claim, None));
         let reloaded = Corpus::load(dir.path());
         assert_eq!(reloaded.keys.lock().unwrap().get(&claim), Some(&1));
+    }
+
+    /// Two builds that refuse what the check accepted for two reasons are
+    /// two keys; one reason met with other variable ids, at another place
+    /// in another program, is one.
+    #[test]
+    fn check_findings_key_on_what_the_build_refused() {
+        let refused = |code: &str, cause: &str| Divergence {
+            code: code.to_string(),
+            reference: Outcome::Checked,
+            tested: Outcome::CompileErr(format!(
+                "in program\n\nCaused by:\n    0: at: line: 1, column: 3, in: {code}\n    \
+                 1: {cause}"
+            )),
+            tier: OracleTier::Exact,
+            pair: Pair::Check,
+        };
+        let instance =
+            "an instance at fn(a: '_8360: unbound) -> _ of a definition typed X";
+        let a = finding_key(&refused("f(1)", instance));
+        let b = finding_key(&refused("{ g(2) }", &instance.replace("8360", "9117")));
+        let c =
+            finding_key(&refused("f(1)", "type mismatch i64 does not contain string"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.ends_with(
+            "an instance at fn(a: '_N: unbound) -> _ of a definition typed X"
+        ));
+        assert_eq!(refusal_class("no chain at all 12"), "no chain at all N");
     }
 
     /// A marker names a builtin, not the tail of a longer name, a string's

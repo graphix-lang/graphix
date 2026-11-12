@@ -1,0 +1,11 @@
+// expect: reject
+// nov11b katana typeflip_000000 (let-inline): `x`'s payload stands open
+// above the lower bounds i64 and string, and `v` reads it. `v` waits for
+// the call's other arguments, which settle 'a to i64; the wait then bound
+// the open copy of 'a, by then one cell with `x`'s payload, to i64 with
+// no look at the bounds below it, so the check passed and a string
+// reached an Array<i64>. The same call with `x.0` written in place was
+// refused. A copy above a lower bound is now left to the relation that
+// follows the wait (TVar::rejoin), which refuses it: "'a: i64 does not
+// contain [string, i64]: `v` is undecided at this call; annotate `v`".
+{ type B<'p> = Abstract<'p>; let t = sys::time::timer(duration:10.ms, false); let x = B(1); let y = B(t ~ x.0); x <- y; y <- B(t ~ "a"); let v = x.0; let seen = []; seen <- array::window(#n: 3, [10, 20, 30], v); select array::len(seen) { 3 => seen, _ => never() } }

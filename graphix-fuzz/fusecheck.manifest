@@ -171,6 +171,7 @@
 1	foldq-empty-overfire-jul2026/02_init_runaway_local_bottom.gx
 2	foldq-reactive-size-jul2026/01_fold_over_growing_init.gx
 2	foldq-reactive-size-jul2026/02_fold_shrink_emits_held.gx
+2	fork-callee-ref-reads-all-nov2026/00_group_of_a_dereference.gx
 1	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
 4	formal-bottom-persists-aug2026/00_wrapper_formal_resurrection.gx
 2	frame-formal-init-view-aug2026/00_guard_flip_rec_arm.gx
@@ -219,6 +220,8 @@
 1	inloop-bottom-cache-jul2026/00_filter_div0_slot.gx
 0	instance-copy-skew-jul2026/01_null_elem_filter.gx
 0	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
+0	instance-held-at-nov2026/00_two_undecided_payloads.gx
+1	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
 1	interface-ctor-trait-oct2026/00_two_collections.gx
 26	interface-ctor-trait-oct2026/01_six_modules.gx
 2	interp-format-jul2026/01_union_array_typed_prefix.gx
@@ -547,6 +550,7 @@
 1	variant-rec-depth-jul2026/01_variant_nontail_depth_guard.gx
 1	varint-literal-sep2026/00_literal_over_a_varint.gx
 1	varint-literal-sep2026/01_varint_or_pattern.gx
+0	waiting-arg-lower-bound-nov2026/00_let_of_an_open_payload.gx
 2	wake-bind-init-view-aug2026/01_builtin_over_pattern_interp.gx
 1	wake-catchup-sep2026/00_wake_recompute_table.gx
 1	wake-catchup-sep2026/01_shared_input_spent.gx

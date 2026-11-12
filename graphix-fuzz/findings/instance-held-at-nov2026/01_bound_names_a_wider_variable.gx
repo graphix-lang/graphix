@@ -1,0 +1,7 @@
+// nov11b aieka divergence_000000: the check accepted and the build
+// refused "an instance at fn(x: Array<i64>, y: [i64, string]) -> [i64,
+// string] of a definition typed fn<'a: Any, 'b: Array<'a>>(x: 'b, y: 'a)
+// -> 'a". FnType::held_at placed 'b at Array<i64> first, whose bound
+// then decided 'a as i64, narrower than what stands at 'a's own place.
+// The cells whose bounds hold no other cell are now placed first.
+{ let f = 'a: Any, 'b: Array<'a> |x: 'b, y: 'a| y; f([2], { let rec f = |x: i64| { let t = select x { 0 => 0, 1 => "a", _ => x - 1 }; t }; f(3) }) }

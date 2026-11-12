@@ -496,10 +496,12 @@ drawn. Pin: `findings/nested-seqq-credit-nov2026/`.
 
 Dedup before minimizing (a fuzzer rediscovers a bug thousands of times
 an hour): the coarse key (`Finding::key`) is the pair plus the bisect
-label, the two outcome kinds and the trace difference class. A campaign
-minimizes the first three findings of a key (keys of findings on disk
-count, from each file's `// key:` line) and counts the rest as known;
-a crash dedups on its digit-normalized text.
+label, the two outcome kinds and the trace difference class, and for a
+build that refused what the check accepted, the build's root cause with
+its numbers collapsed (`refusal_class`), so two refusals are two keys. A
+campaign minimizes the first three findings of a key (keys of findings on
+disk count, from each file's `// key:` line) and counts the rest as
+known; a crash dedups on its digit-normalized text.
 After minimization a finding is a `.gx` file in a directory under
 `graphix-fuzz/findings/<class-date>/` with a README recording the
 adjudication; the directory IS the regression gate. `regress` runs the

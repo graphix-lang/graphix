@@ -2323,12 +2323,16 @@ impl TVar {
     /// Make self, an undecided copy of `cell`, the cell it copies: its
     /// alias where `cell` is open, bound to it where it is decided. A copy
     /// `cell` reaches stays apart: the two as one type would be infinite.
+    /// So does a copy above a lower bound beside a decided `cell`: the
+    /// relation the caller makes next binds it, or refuses what its bounds
+    /// do not fit.
     pub fn rejoin(&self, cell: &Self) {
         if self.is_bound() || self.same_cell(cell) || self.closes_cycle(cell) {
             return;
         }
         match cell.is_bound() {
-            true => self.bind(Type::TVar(cell.clone())),
+            true if self.cell_lower().is_empty() => self.bind(Type::TVar(cell.clone())),
+            true => (),
             false => self.alias(cell),
         }
     }

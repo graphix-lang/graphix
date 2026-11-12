@@ -4842,6 +4842,21 @@ run!(
     FuseExpect::None
 );
 
+// Two constructions over undecided payloads that meet at a call leave the
+// instance a union of two members nothing tells apart: the build holds the
+// definition at it.
+run!(
+    undecided_payloads_met_at_a_call_build,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a| { a <- B([never()]); 1 };
+    let g = |a| { let c = B([never()]); a <- c; a.0 };
+    let x = B([]);
+    (f(B([])), g(x))
+}"#,
+    prints("[i64:1, []]")
+);
+
 // A bound's cell below a union with a decided member is bound to the
 // union where that holds every bound: `x` may hold either member.
 run!(

@@ -2812,14 +2812,37 @@ fn holds_open_union(t: &Type) -> bool {
     go(t, &mut LPooled::take())
 }
 
+/// The open cells a pass of [`Type::place_cells`] binds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placed {
+    /// Those whose bounds hold no open cell: binding one decides no other.
+    Free,
+    All,
+}
+
 impl Type {
     /// Bind each open cell of `self` to what stands at its place in `at`,
-    /// ⊥ included, wherever the two types are built alike. A union's
-    /// members have no places: a cell they alone hold is left open.
+    /// ⊥ included, wherever the two types are built alike: first the cells
+    /// whose bounds hold no other, so a cell a bound holds takes its own
+    /// place, not what the bound's holder is placed at. A union's members
+    /// have no places: a cell they alone hold is left open.
     pub fn place_cells(&self, env: &Env, at: &Self) {
+        self.place(env, at, Placed::Free);
+        self.place(env, at, Placed::All)
+    }
+
+    /// One pass of [`Self::place_cells`], over the cells `placed` names.
+    fn place(&self, env: &Env, at: &Self, placed: Placed) {
+        let decides_others = |tv: &TVar| {
+            let open = |c: &Type| {
+                super::contains::find_open_cell(c, true, &mut |_| true).is_some()
+            };
+            tv.cell_constraints().iter().any(open)
+        };
         crate::stack::ensure_sufficient(|| match (self, at) {
             (Self::TVar(tv), _) => match tv.binding() {
-                Some(b) => b.place_cells(env, at),
+                Some(b) => b.place(env, at, placed),
+                None if placed == Placed::Free && decides_others(tv) => (),
                 None if at.with_deref(|a| matches!(a, Some(Self::Bottom))) => {
                     tv.bind(Self::Bottom)
                 }
@@ -2829,21 +2852,21 @@ impl Type {
             },
             (_, Self::TVar(tv)) => {
                 if let Some(b) = tv.binding() {
-                    self.place_cells(env, &b)
+                    self.place(env, &b, placed)
                 }
             }
             (Self::Set(_), _) | (_, Self::Set(_)) => (),
-            (Self::Fn(f0), Self::Fn(f1)) => f0.place_cells(env, f1),
+            (Self::Fn(f0), Self::Fn(f1)) => f0.place(env, f1, placed),
             (Self::Ref(r0), Self::Ref(r1)) => {
                 if r0.same_definition(r1, env) && r0.params.len() == r1.params.len() {
                     for (own, at) in r0.params.iter().zip(r1.params.iter()) {
-                        own.place_cells(env, at)
+                        own.place(env, at, placed)
                     }
                 }
             }
             (own, at) => {
                 any_part_pair(own, at, &mut |own, at| {
-                    own.place_cells(env, at);
+                    own.place(env, at, placed);
                     false
                 });
             }
@@ -2853,15 +2876,22 @@ impl Type {
 
 impl FnType {
     /// [`Type::place_cells`] over two signatures, position by position.
-    pub fn place_cells(&self, env: &Env, at: &Self) {
+    fn place(&self, env: &Env, at: &Self, placed: Placed) {
         for (own, at) in self.align(at).0 {
-            own.typ.place_cells(env, &at.typ)
+            own.typ.place(env, &at.typ, placed)
         }
         if let (Some(own), Some(at)) = (&self.vargs, &at.vargs) {
-            own.place_cells(env, at)
+            own.place(env, at, placed)
         }
-        self.rtype.place_cells(env, &at.rtype);
-        self.throws.place_cells(env, &at.throws)
+        self.rtype.place(env, &at.rtype, placed);
+        self.throws.place(env, &at.throws, placed)
+    }
+
+    /// [`Type::place_cells`] over two signatures: both passes over every
+    /// position.
+    pub fn place_cells(&self, env: &Env, at: &Self) {
+        self.place(env, at, Placed::Free);
+        self.place(env, at, Placed::All)
     }
 
     /// `self`, a definition's signature, as an instance at `instance`
@@ -2872,7 +2902,9 @@ impl FnType {
     /// place first ([`Type::place_cells`]); where it would still have to
     /// choose, a cell only bounds hold, which has no place, is first what
     /// its bounds settle it to ([`TVar::settle_bounds_first`]), as a
-    /// call's check leaves one it did not decide.
+    /// call's check leaves one it did not decide. Where two undecided
+    /// members of a union of the instance's could still take one of its
+    /// types, the first does: the definition's check holds at either.
     pub fn held_at(
         &self,
         env: &Env,
@@ -2904,8 +2936,24 @@ impl FnType {
             tv.settle_bounds_first(env, &mut placed)
         }
         own.place_cells(env, instance);
-        instance.check_contains(env, &own)?;
+        if instance.check_contains(env, &own).is_ok() {
+            return Ok((own, known));
+        }
+        known.clear();
+        let own = self.instantiate_owned(&mut known);
+        own.place_cells(env, instance);
+        instance.check_contains_ordered(env, &own)?;
         Ok((own, known))
+    }
+
+    /// [`Self::check_contains`] where a union's first member that holds a
+    /// type takes it ([`Type::contains_ordered`]).
+    fn check_contains_ordered(&self, env: &Env, other: &Self) -> Result<()> {
+        let flags = ContainsFlags::Commit.into();
+        if !self.contains_int(flags, env, &mut ContainsHist::ordered(), other)? {
+            bail!("Fn type mismatch {self} does not contain {other}")
+        }
+        Ok(())
     }
 }
 

@@ -329,6 +329,11 @@ that the formal's cell reaches stays apart (`TVar::rejoin`): in `|y|
 h([y, 1], (y, 2))` over `|a: Array<'a>, b: ('a, i64)|` the join put `y`'s
 cell inside `'a`, and the two as one cell would be an infinite type (pin
 `lang::types::undecided_argument_inside_what_its_formals_variable_settled_to`).
+So does a copy that stands above a lower bound beside a decided cell: the
+pre-unification made it one cell with the argument's (a binding's open
+payload, `let v = x.0`), and the check that follows binds it only where
+what the join decided holds those bounds (pins
+`lang::functions::undecided_binding_above_a_lower_bound_{refused,it_holds_joins}`).
 An argument expression whose type its own check has yet to make (a seq step's
 captured argument, a field read) is not pre-unified with the copy: its
 check would commit the copy's bounds before the other arguments decide
@@ -1635,7 +1640,15 @@ only bounds name, are first settled to their bounds, the deepest first
 (`TVar::settle_bounds_first`), as the call's check leaves a variable it
 did not decide; the members are then decided and the containment has no
 choice to make (pins
-`lang::types::instance_{cells_only_bounds_hold_settle_to_their_bounds,cell_at_a_bottom_place_is_bottom}`). Without it the build refused what
+`lang::types::instance_{cells_only_bounds_hold_settle_to_their_bounds,cell_at_a_bottom_place_is_bottom}`).
+The placing takes the cells whose bounds hold no open cell first, so a
+variable a bound names takes its own place, not what the bound's holder
+is placed at (`'b: Array<'a> |x: 'b, y: 'a|` at `Array<i64>` and `[i64,
+string]`; pin `lang::functions::bound_naming_a_wider_variable_builds`).
+Where two undecided members of a union of the instance's could each
+take one of the definition's types, the first does: the definition's
+check holds at either (pin
+`lang::types::undecided_payloads_met_at_a_call_build`). Without it the build refused what
 the check accepted: `let f = |x: E<'a, 'b>, y: 'a, z: 'b| ..; f(never(),
 1, "s")`, or `|x: ['a, Error<'e>]| -> (Array<'a>, Array<'e>) ..` called
 with an `` [Error<`A>, Error<`B>] ``. Pins:

@@ -1,0 +1,8 @@
+// nov11b ryouko divergence_000000: forked node-walk != serial node-walk.
+// The tuple's first field calls `mk`, whose body makes a reference; its
+// second hands `*r` to array::group, a builtin with a callback, which
+// reads every variable. Only a read through a reference was held against
+// a reference an earlier sibling's callee makes, a read of everything was
+// not, so the two fields forked and the second read the cell before the
+// first published it. Serial: -9223372036854775808; [10, 20]; [30, 40].
+{ let n = 0; n <- select n { k if k < 4 => k + 1, _ => never() }; let mk = || -> &i64 &(n * 10); let saved: [null, &i64] = null; let pair = (mk(), select saved { null as _ => -9223372036854775808, r => array::group(*r, |n, _| n == 2) }); saved <- once(pair.0); pair.1 }
