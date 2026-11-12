@@ -3282,58 +3282,6 @@ impl Drop for Printing {
     }
 }
 
-// XCR claude for claude: [readability/low] The names are one printed type's, so
-// a message that prints two types can show one cell under two names. `graphix
-// --no-cache --check ~/ptmp/cr29/scratch/r20/20h/x4/s2.gx` (`y <- (h, k); y <- k`
-// over two instances of one maker) says "y is (fn(x: 'a: unbound within Number)
-// -> 'a: unbound within Number, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold
-// fn(x: 'a: f64) -> 'a: f64": `k`'s variable is `'a1` in the first type and `'a`
-// in the second. Every such print runs inside a
-// `format_with_flags(PrintFlag::DerefTVars, ..)`, so the outermost of those
-// could own `Shown` in place of the outermost `Printing`. It would also number
-// apart a declared signature's variable and its implementation's of the same
-// name, which today read as counterparts: count the pins and transcripts that
-// move before choosing. (printed-name-message-scope-01)
-// 2026-11-11 claude: A name numbered apart can also take a name the program
-// declared: `graphix --no-cache --check
-// ~/ptmp/cr29/scratch/r20/20h/x4/review/print/q5.gx` (`y <- (h, k, m)`, h and k
-// two instances of a maker declaring 'a, m an instance of one declaring 'a1)
-// prints k's variable as 'a1 and m's own 'a1 as 'a11; with m first (q6.gx beside
-// it) m keeps 'a1 and k prints 'a2. Unambiguous, but a declared name moves.
-// Whoever owns the table per message can walk the names it will show first
-// (`Type::names_held`) and number around them, as `quantifiers_apart` does within
-// one signature.
-// 2026-11-12 claude: The language server prints under this table too
-// (PrintFlag::StandingHeaders, hover-instance-header-01): whoever moves its owner
-// moves graphix_lsp::query::display_type's format_with_flags with it, and
-// graphix-shell/tests/lsp/main.rs one_instance_hovers_with_no_header pins the
-// hover's numbering. A name a header listed is free once its signature ends, so a
-// later cell takes it: (kk, h, mk(1)), kk = mk(0) and h generic, prints (fn(x:
-// 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1, fn(x: 'a1) -> 'a1) in a hover and
-// the same with bounds in a .gxi mismatch on base-r23
-// (~/ptmp/cr29/scratch/r23/23h/hover-review/gxi1/test.gx): two cells under 'a1,
-// lexically apart.
-// 2026-11-12 claude: The outermost format_with_flags owns the table now
-// (tvar::Message; Printing only tracks depth and records each top-level type
-// printed). A name numbered apart is new to the message: no cell or header showed
-// it and no type the message printed holds it (Shown::used, the printed types
-// walked by Type::names_held only when a name numbers apart), so q5.gx prints (h
-// 'a, k 'a2, m 'a1), the hover-review gxi1 probe and the hover print (.., fn<'a1:
-// Number>(..), fn(x: 'a2) -> 'a2), and s2.gx says 'a1 in both types.
-// quantifiers_apart's own avoid walk is gone (the message's covers it). What
-// moved: write_through_a_struct_of_functions_val_refused (the written instance's
-// variable is now 'a1 beside the scheme's 'a: two cells; the .gxi signature and
-// implementation pins did not move), and
-// a_header_prints_apart_from_a_name_numbered_before_it, now
-// a_header_keeps_its_name_beside_a_name_numbered_apart (k 'a2, header keeps its
-// declared 'a1). Pins that fail without it:
-// lang::quantified::{one_message_names_a_cell_alike_in_each_type_it_prints,
-// a_name_numbered_apart_takes_no_name_the_type_declares,
-// a_header_keeps_its_name_beside_a_name_numbered_apart,
-// a_later_cell_takes_no_name_a_header_listed},
-// lang::interfaces::write_through_a_struct_of_functions_val_refused,
-// graphix-shell lsp a_hover_numbers_an_instance_past_a_header_name; two
-// generic-skill cases lines.
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for a cell
