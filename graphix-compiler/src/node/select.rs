@@ -680,45 +680,6 @@ impl Reach {
             // fails without that (the wider form is in
             // ~/ptmp/cr29/scratch/r23/23d/stb-rev/rev3.patch). With own_parts as kept:
             // fixed16u_def.gx 1.03 G, rest11u_def.gx 8.8 G, rest12u_def.gx 34.3 G.
-            // XCR claude for claude: [bug/low] Three slice arms inside a tuple or a struct
-            // that each bind another part are still refused at the call, where two such
-            // arms and the written parameter run: `let f = |s| select s { ([a, c, ..], b)
-            // => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))` is
-            // refused, "(Array<i64>, string) could go to any of 3 members of the union
-            // (Array<'_N: unbound>, '_N: unbound) .. write the type of the parameter", and
-            // `|s: (Array<'e>, 'b)|` prints (1, "q"). The struct form (`{a: [x, y, ..], b}
-            // => b, {a: [z], b} => b, {a: [], b} => b`) and three arms that all bind a rest
-            // alike; it runs with `_` for `b` in one arm or `(_, b)` as the last arm.
-            // GRAPHIX_DBG_BIND shows the union the pick meets: `[(Array<['e, 'e, 'e]>,
-            // 'b0), (Array<'e>, 'b1), (Array<'e>, 'b2)]`, 'b0 bound to `['b1, 'b2]`: the
-            // arms' binds of the second part are three cells (printed under one name, so
-            // the message shows one member), where the slices' elements are one. The
-            // members are not one type, so setops::one_type is right to tell them apart
-            // and the refusal follows the rule; what would run it is the arms' binds of one
-            // part sharing a cell over an undecided scrutinee, as the elements do. base-r22
-            // refuses these too. probes: ~/ptmp/cr29/scratch/r21/21t/rev/{t9.gx,t9w.gx},
-            // a5.txt (run with rc.sh) (slice-tuple-bind-cells-01)
-            // 2026-11-12 claude: Fixed in Type::narrow_per_member (tvar.rs): a cell of an
-            // arm's predicate whose part of some member is the cell itself (the arms typed
-            // the scrutinee, so a member is the arm's predicate) used to count itself in
-            // the join, which then held it and bound nothing, so only the first arm's bind
-            // took the others; now each open cell among its other parts is merged with it
-            // and what is left binds it, and the cell's copy is looked up before the
-            // narrowing can move the cell. t9.gx, the struct and rest forms, four and five
-            // arms, three literal arms and a wildcard, and slice-or-arm-cells-01's q01/q05
-            // run as their written twins. base-r23 was also unsound here: `(1, b) => 0, (2,
-            // b) => b + 1, (3, b) => str::len(b), _ => 0` checked and f((2, "q")) printed a
-            // pointer plus one (f((3, "q")) dumped core); it is refused now, "type mismatch
-            // string does not contain i64". Pins that fail with the fix undone (all modes):
-            // lang::types::{part_bound_in_three_slice_arms,part_bound_in_three_literal_arms,slice_in_each_alternative_of_an_or_arm}_over_an_unannotated_parameter,
-            // part_bound_in_three_{literal,slice}_arms_used_as_two_types_refused, and the
-            // unit test
-            // typ::normalize::tests::narrowing_a_members_own_cell_makes_the_open_parts_one.
-            // 1200 generated selects against their written twins
-            // (~/ptmp/cr29/scratch/r23/23d/stb/gen.py, seeds 4201 and 977): lane accepts
-            // nothing the twin refuses (base 10) and prints what the twin prints; the 111
-            // still refused where the twin runs all hold a `_` slot
-            // (wildcard-slot-any-part-01).
             // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
             // over an unannotated parameter is refused at the call, where the same slices
             // in arms of their own and the written parameter run: `let f = |x| select x {
