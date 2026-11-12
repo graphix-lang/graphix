@@ -128,7 +128,8 @@ flow — `design/seq_blocks.md` §7).
   `a_handler_never_hears_a_raise_given_up`,
   `a_raise_given_up_stands_in_the_binder`,
   `a_raise_given_up_is_an_event_to_no_reader`,
-  `a_raise_given_up_reads_alike_fused`.
+  `a_raise_given_up_reads_alike_fused`,
+  `a_raise_given_up_rethrows_and_writes_nothing`.
 
 ## The rules in brief
 

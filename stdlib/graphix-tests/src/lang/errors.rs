@@ -1345,6 +1345,39 @@ run!(
     FuseExpect::Jit
 );
 
+// The handler's own `?` and a `<-` from its binder act on the raises heard
+// alone: `outer` hears the one rethrow, `w` keeps the one write made, and a
+// plain read beside it shows the last error to land (`n`).
+run!(
+    a_raise_given_up_rethrows_and_writes_nothing,
+    r#"{
+        let t = 0;
+        t <- select t { t if t < 8 => t + 1, _ => never() };
+        let outer = 0;
+        let last = 0;
+        catch(o) outer <- o ~ outer * 10 + select o.0.error { `R(k) => k };
+        select t {
+            t if t != 2 => {
+                catch(e) {
+                    let n = select e.0.error { `R(k) => k };
+                    let w = 0;
+                    w <- n;
+                    last <- t ~ w * 10 + n;
+                    e?
+                };
+                let a = select t { 1 => error(`R(t))?, _ => 0 };
+                let b = select t { 1 => error(`R(2 * t))?, _ => 0 };
+                let c = select t { 1 => error(`R(3 * t))?, _ => 0 };
+                let d = select t { 1 => error(`R(4 * t))?, _ => 0 };
+                a + b + c + d
+            },
+            _ => never()
+        };
+        select t { 8 => t ~ outer * 100 + last, _ => never() }
+    }"#,
+    is(Value::I64(114))
+);
+
 // A write a declaration would admit names the type to declare as one the
 // program can write: a constructed value's open parameter shows as what
 // its payload put below it, and two payloads as the parameter's union.

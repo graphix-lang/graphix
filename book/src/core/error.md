@@ -52,6 +52,15 @@ to wait for errors. Write `catch(e) failed <- e ~ true`, rather than
 before any error has arrived, and never when one does. The checker warns
 when a handler never reads its binder.
 
+Errors raised to one catch in the same cycle arrive one per cycle, in the
+order they were raised. A catch inside a [select](select.md) arm that falls
+asleep before they have all arrived never hears the rest: nothing that
+waits on its binder (a `~`, a `<-`, a `count`) runs for them. The binder
+still takes each of them, so an expression in the handler that only
+computes from it (`"[e]"`) shows the last error raised once the arm is
+selected again. A catch outside the arm does not sleep with it, and hears
+every error.
+
 The catch here covers `calc(in0)` — and only that block: a catch installed
 inside a block covers the rest of THAT block, nothing outside it. A second
 catch in the same block shadows the first for the statements below it; a

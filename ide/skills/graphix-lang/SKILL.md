@@ -616,6 +616,12 @@ before any error, and the checker warns. Connect the handler to state you read. 
 catch shadows the first below it; a handler's own `?` rethrows outward.
 Inside `seq`, use `try … with`.
 
+Errors raised to one catch in one cycle arrive one a cycle. A `catch`
+inside a select arm that sleeps before they have all arrived never hears
+the rest: nothing sampled on its binder runs for them, though a plain
+read of the binder (`"[e]"`) shows the last one. A `catch` outside the
+arm hears every one.
+
 `x$` is "or never": the success value, or bottom on an error. It is the
 one-token spelling of `select x { error as _ => never(), v => v }` and
 of `{ catch(e) never(); x? }` — never write either of those. A dropped
