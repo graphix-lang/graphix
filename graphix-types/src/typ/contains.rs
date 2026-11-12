@@ -1490,6 +1490,16 @@ fn commit_cell_bounds(
         // GRAPHIX_DBG_BIND); the union written in the parameter leaves u open until `u + 1`
         // is checked. probes: ~/ptmp/cr29/scratch/r23/23c/early_bind{,_ok_unbounded}.gx
         // (bound-union-binds-argument-early-01)
+        // 2026-11-12 claude: Review of bound-holds-own-cell-01: two more witnesses, with no
+        // arithmetic. Over `let f = 'x: Array<['a, null]> |y: 'x| y`, `let g = |u| f([u,
+        // [u]]); g(1)` and `let u = never(); let r = f([u, (u, 1)]); u <- 1` are refused,
+        // "type mismatch 'x: unbound within Array<[null, 'a: unbound above '_N: unbound
+        // within [null, 'a: …]]> does not contain Array<[null, 'a: ['_N: .., Array<'_N:
+        // ..>]]>", a message that names nothing to annotate, where the union written in the
+        // parameter prints [1, [1]] and [1, (1, 1)]. GRAPHIX_DBG_BIND shows the same `BIND
+        // rhs` of the array's element to `[null, 'a]` before its elements are checked.
+        // base-r23 does not return. probes: ~/ptmp/cr29/scratch/r23/23c/rev/{p5,p4}.gx
+        // (refused), {q5,q4}.gx (the written twins)
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, c, t)?,

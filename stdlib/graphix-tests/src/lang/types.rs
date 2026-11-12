@@ -11276,6 +11276,66 @@ run!(
     prints("[[i64:2], [i64:1]]")
 );
 
+// Two undecided elements of one array under such a bound: each stays
+// within the bound's union and the bound's variable is above both, so
+// each one's conjunct comes to hold its own cell, and admits whatever
+// the cell takes. What else decides the variable still holds them.
+run!(
+    two_undecided_elements_take_the_union_of_a_bound_over_another_variable,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x| y;
+  let g = |u, v| f([u, v]);
+  let u = never();
+  let v = never();
+  let r = f([u, v]);
+  u <- 1;
+  v <- "s";
+  (g(1, 2), g(1, null), g("s", 1), r)
+}"#,
+    prints(r#"[[i64:1, i64:2], [i64:1, null], ["s", i64:1], [i64:1, "s"]]"#)
+);
+run!(
+    two_undecided_elements_of_a_bound_widen_its_variable,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x| y;
+  let u = never();
+  let v = never();
+  let r = f([u, v]);
+  u <- 1;
+  v <- "s";
+  select r[0]$ { i64 as i => i, null as _ => 0 }
+}"#,
+    refused("no arm covers string");
+    FuseExpect::None
+);
+run!(
+    two_undecided_elements_under_a_bound_fit_what_decides_its_variable,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x, z: fn(q: 'a) -> i64| z(y[1]$$);
+  let u = never();
+  let v = never();
+  let r = f([u, v], |q: i64| q + 1);
+  u <- 1;
+  v <- 2;
+  r
+}"#,
+    prints("i64:3")
+);
+run!(
+    two_undecided_elements_under_a_bound_keep_what_decides_its_variable,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x, z: fn(q: 'a) -> i64| z(y[1]$$);
+  let u = never();
+  let v = never();
+  let r = f([u, v], |q: i64| q + 1);
+  u <- 1;
+  v <- "s";
+  r
+}"#,
+    refused("within [null, 'a: i64] and cannot hold string");
+    FuseExpect::None
+);
+
 // Behind a typedef the bound's union is over two of the function's
 // variables: an element another argument decided goes to its member, and
 // one nothing decided is the choice between two undecided members.

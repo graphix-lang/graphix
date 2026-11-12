@@ -1595,9 +1595,11 @@ element to `['a, null]`, whose own part for `'a` is that union, and
 `'a` the same way. Kept as a conjunct it sends each probe of the cell
 (`conjuncts_admit`) back to the cell, a check without end, so the probe
 skips one that came to hold its cell later too (a member took the cell
-as a lower bound after the conjunct was added). Pins:
+as a lower bound after the conjunct was added): `f([u, v])` over `'x:
+Array<['a, null]>` with `u` and `v` undecided leaves each within `['a,
+null]` and `'a` above both, and whatever decides either probes it. Pins:
 `lang::types::wrapper_passing_a_union_over_its_variable_*`,
-`undecided_element*_bound_*`,
+`undecided_element*_bound_*`, `two_undecided_elements_*`,
 `contains::tests::a_bound_that_holds_its_own_cell_narrows_nothing`,
 `a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type`.
 
