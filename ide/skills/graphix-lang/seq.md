@@ -101,7 +101,9 @@ waits for it (two cycles over inline). With a trigger, it runs at its
 step's entry if the trigger fired since a step of the seq last read it,
 before this run included: a step is owed the fires it missed, once (a
 select arm is owed nothing). Otherwise it waits for the trigger's next
-fire, in every run.
+fire, in every run: one triggered on a level that stands (`seq let c =
+cfg { .. }`) runs in the first run and stalls every later one. Read a
+level as a step, `let c = cfg`.
 A builtin under `live` is owed missed fires too: `until live(ready);
 live(count(ev))` counts an `ev` that fired while the `until` waited.
 `graphix --expand` shows the machine.

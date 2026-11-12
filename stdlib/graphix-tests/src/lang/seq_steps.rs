@@ -444,11 +444,38 @@ async fn a_callback_born_with_its_step_fires_nothing(mode: Mode) -> Result<()> {
         let p = |x| x ~ true;
         seq go { live(count(CALL)) }
     }"#;
-    for call in
-        ["filter(t, |x| x ~ true)", "filter(t, p)", "array::map([t], |x| x ~ 1)", "p(t)"]
-    {
-        assert_eq!(run(&code.replace("CALL", call), mode).await?, [1], "{call}");
+    let calls = [
+        "filter(t, |x| x ~ true)",
+        "filter(t, p)",
+        "array::map([t], |x| x ~ 1)",
+        "array::map([t], p)",
+        "array::map([t], |x| x)",
+        "array::fold([t], 0, |a, x| x ~ a)",
+        "p(t)",
+    ];
+    let mut counts = vec![];
+    for call in calls {
+        counts.push(run(&code.replace("CALL", call), mode).await?);
     }
+    assert_eq!(counts, [[1]; 7]);
+    Ok(())
+}
+
+// Nor does it give the call's last value a fire: a function the step reads
+// from a variable answers what its body computes in this run.
+async fn a_call_born_with_its_step_answers_this_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 24 => n + 1, _ => never() };
+        let go = select step { 1 | 9 | 17 => step, _ => never() };
+        let k = 1;
+        let f = select k {
+            1 => |u: i64| { let s = never(); s <- u + 100; s },
+            _ => |u: i64| 0
+        };
+        seq go { f(go) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [101, 109, 117]);
     Ok(())
 }
 
@@ -520,6 +547,7 @@ modes!(
     a_fire_an_awake_step_read_is_not_owed_again,
     a_nested_seq_waits_for_its_trigger_in_every_run,
     a_callback_born_with_its_step_fires_nothing,
+    a_call_born_with_its_step_answers_this_run,
     a_fire_read_through_a_reference_is_spent,
     a_callee_bound_in_an_earlier_run_is_caught_up,
     a_step_asleep_with_its_machine_saw_what_came_before,

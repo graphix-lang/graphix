@@ -519,10 +519,13 @@ entry). A function written in the step is one of the constants that
 fire, and that fire writes the call holding it nothing: a call born
 again takes its body's own tag unless it binds a new function
 (`CallSite::update_call`), so a builtin's callback fires as the same
-function named outside the step does. A nested seq's trigger gate,
+function named outside the step does, and a function the step reads
+from a variable answers what its body computes in this run, never the
+call's last value. A nested seq's trigger gate,
 `filter(t, |x| x ~ idle)`, therefore passes nothing until `t` fires
 (pins: `lang::seq_steps::{a_nested_seq_waits_for_its_trigger_in_every_run,
-a_callback_born_with_its_step_fires_nothing}`). It completes when its
+a_callback_born_with_its_step_fires_nothing,
+a_call_born_with_its_step_answers_this_run}`). It completes when its
 value's `let` publishes a FIRED production (a fired `true` for an
 `until`); only then do its writes run. The completed step sleeps, as a
 select deselects an arm, and the next enters: in the same cycle when
