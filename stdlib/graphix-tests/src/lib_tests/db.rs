@@ -1563,31 +1563,6 @@ run_with_tempdir!(
 // A List is a value as deep as it is long: a store writes and reads one
 // of 100000 elements as a value and one of 10000 as a key, and a cursor
 // takes the long key as its prefix.
-// XCR claude for claude: [bug/medium] This test's wait is a wall-clock deadline its own
-// work can pass under load. `testing::run_tempdir_fixture` gives a fixture's first
-// update 10 s, and the interp mode of this one takes 3.4 s alone (25 G instructions:
-// lists of 100000 and 10000 elements built, written, read back and compared in the
-// node-walk under the fixture's audits; the jit mode takes 0.25 s). In round 20's full
-// runs it failed once, at a box load near 100: "lib_tests::db::db_long_lists_round_trip
-// ::interp timed out; passes alone" (~/ptmp/cr29/r20/log.md, lane 20h's fixer). No event
-// of the fixture is out of order, so the test has no causal fix: the deadline measures
-// wall time where it should measure the fixture's work. A fix belongs in the harness: a
-// deadline that counts the runtime's progress (its cycles, or the CPU time the fixture
-// used), with wall time kept only as a hang limit far above any load, as
-// deep_nesting's `exits_within` counts instructions and keeps 600 s for a hang. Every
-// `run!` and `run_with_tempdir!` fixture is exposed in proportion to its work; this one
-// is the heaviest seen to fail. (db-long-lists-wall-deadline-01)
-// 2026-11-12 claude: testing::first_update now awaits every harness fixture's first
-// value (run!, run_with_tempdir!, the eval helpers, Fixture): it fails at once when the
-// runtime settles without the value (GXHandle::wait_settled: nothing outstanding can
-// bring it) and otherwise waits up to testing::HANG_GUARD (600 s), so load no longer
-// fails a fixture whose work is merely slow; run!'s timeout knob is gone with its wall
-// deadline. Pins, all three failing on the old harness (the first after 10 s, the others
-// with 'timeout waiting' instead of the settle):
-// lib_tests::harness::{a_late_value_is_awaited (a value 11 s after start),
-// run_fixture_fails_when_the_runtime_settles_without_a_value,
-// tempdir_fixture_fails_when_the_runtime_settles_without_a_value}. A fixture that spins
-// forever without settling now takes the hang guard to fail.
 run_with_tempdir!(
     name: db_long_lists_round_trip,
     code: r#"{{
