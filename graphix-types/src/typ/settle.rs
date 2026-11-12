@@ -10,7 +10,7 @@ use crate::{
     typ::{
         AppKey, Bound, FnType, TVar, Type, TypeRef, Written,
         contains::{ContainsHist, InfiniteType},
-        setops::strictly_identical,
+        setops::{Welds, apply_welds, lower_collapses, strictly_identical},
         tvar::{CellFact, Fresh, Level, would_cycle_open},
     },
 };
@@ -110,6 +110,22 @@ impl TVar {
         Ok(Err(candidates))
     }
 
+    /// Make one cell of the open cells that alone tell two of this cell's
+    /// lower bounds apart ([`lower_collapses`]): a settle's [witness] then
+    /// holds those bounds once, where their union would be two members
+    /// nothing decides between.
+    ///
+    /// [witness]: Self::witness
+    pub(super) fn weld_lower(&self) {
+        let below = self.cell_lower();
+        let mut welds = Welds::new();
+        for (i, l) in below.iter().enumerate().skip(1) {
+            if below[..i].iter().any(|k| lower_collapses(k, l, &mut welds)) {
+                apply_welds(&mut welds)
+            }
+        }
+    }
+
     /// Bind an unbound cell once its writers are checked: to ⊥ when only
     /// ⊥ was produced into it ([`CellFact::BottomFed`], and no lower bound
     /// but ⊥), whatever constrains it, else as [`Self::settle_witness`].
@@ -138,6 +154,7 @@ impl TVar {
         if self.earlier_task() {
             return Ok(());
         }
+        self.weld_lower();
         match self.witness(env)? {
             Ok(w) => {
                 if graphix_dbg_bind() {
@@ -230,9 +247,12 @@ impl TVar {
                 .cell_lower()
                 .iter()
                 .all(|l| l.with_deref(|l| matches!(l, Some(Type::Bottom))));
-        if !fed && let Ok(w) = self.witness(env)? {
-            self.bind(w);
-            return Ok(());
+        if !fed {
+            self.weld_lower();
+            if let Ok(w) = self.witness(env)? {
+                self.bind(w);
+                return Ok(());
+            }
         }
         if self.cell().read().facts.contains(CellFact::CycleRefused) {
             bail!(InfiniteType)
@@ -386,13 +406,19 @@ impl FnType {
         more.extend(
             positional.values().filter(|tv| seen.insert(tv.cell_addr())).cloned(),
         );
-        // a cell only a bound of a bound names is the site's to settle too
+        // a cell only a bound of a bound names is the site's to settle too,
+        // and so is one a lower bound holds: a position of the witness its
+        // cell settles to
         let mut todo: LPooled<Vec<TVar>> = LPooled::take();
         todo.extend(tvs.values().chain(more.iter()).cloned());
         let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
         nodes.clear();
         while let Some(tv) = todo.pop() {
-            for c in tv.cell_constraints().iter() {
+            let below = match exempt.contains(&tv.cell_addr()) {
+                true => SmallVec::new(),
+                false => tv.cell_lower(),
+            };
+            for c in tv.cell_constraints().iter().chain(below.iter()) {
                 walk_positions(c, &mut nodes, &mut |tv| {
                     let addr = tv.cell_addr();
                     let first = !tv.ground_now() && walked.insert(addr);
@@ -1168,6 +1194,7 @@ impl Type {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::typ::tvar::AtLevel;
 
     /// A call's terminal settle decides `'a4`, which only the bound of a
     /// bound names: the signature holds no open cell after it.
@@ -1189,5 +1216,75 @@ mod test {
         open.sort();
         assert_eq!(cells.len(), 5, "{cells:?}");
         assert!(open.is_empty(), "open after the settle: {open:?}");
+    }
+
+    fn open(name: &'static str) -> TVar {
+        TVar::empty_named(ArcStr::from(name))
+    }
+
+    fn array_of(tv: &TVar) -> Type {
+        Type::Array(triomphe::Arc::new(Type::TVar(tv.clone())))
+    }
+
+    /// Two lower bounds apart only by open cells nothing bounds settle to
+    /// one of them, those cells one cell; reading the witness welds
+    /// nothing.
+    #[test]
+    fn a_settle_welds_lower_bounds_apart_by_unbounded_cells() {
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let (p, a, b) = (open("p"), open("a"), open("b"));
+        p.add_lower(array_of(&a));
+        p.add_lower(array_of(&b));
+        let w = p.witness(&env).unwrap().unwrap();
+        assert!(matches!(&w, Type::Set(ms) if ms.len() == 2), "{w}");
+        assert!(!a.same_cell(&b));
+        p.settle_witness(&env).unwrap();
+        assert!(a.same_cell(&b));
+        let bound = p.binding().unwrap();
+        assert!(strictly_identical(&bound, &array_of(&a)), "{bound}");
+    }
+
+    /// A cell with a bound of its own, a cell held rigid and a decided
+    /// type each keep their lower bound a member of its own.
+    #[test]
+    fn a_settle_keeps_lower_bounds_apart_by_more_than_unbounded_cells() {
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
+        let (_, number) = Env::typed_at_root(&[], "Number").unwrap();
+        let bounded = open("b");
+        bounded.add_cell_constraint(number);
+        let rigid = open("r");
+        let _gate = rigid.open_rigid();
+        let others = [Type::TVar(bounded), Type::TVar(rigid), i64_t];
+        for other in others {
+            let (p, a) = (open("p"), open("a"));
+            p.add_lower(array_of(&a));
+            p.add_lower(Type::Array(triomphe::Arc::new(other.clone())));
+            p.settle_witness(&env).unwrap();
+            let bound = p.binding().unwrap();
+            assert!(matches!(&bound, Type::Set(ms) if ms.len() == 2), "{bound}");
+            assert!(!a.is_bound(), "{other}");
+        }
+    }
+
+    /// A call's terminal settle decides the cell a lower bound of its
+    /// signature's cell holds: the witness holds no open cell after it.
+    #[test]
+    fn a_terminal_settle_decides_a_cell_a_lower_bound_holds() {
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, t) = Env::typed_at_root(&[], "fn(x: 'p) -> i64").unwrap();
+        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
+        ft.alias_tvars(&mut LPooled::take());
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ft.collect_tvars(&mut cells);
+        let p = cells.get("p").unwrap().clone();
+        p.set_level(Level::TOP);
+        let (a, b) = (open("a"), open("b"));
+        p.add_lower(array_of(&b));
+        b.add_lower(array_of(&a));
+        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
+        assert!(matches!(a.binding(), Some(Type::Bottom)), "{a:?}");
+        assert!(!p.binding().unwrap().has_unbound(), "{p:?}");
     }
 }

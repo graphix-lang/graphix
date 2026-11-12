@@ -1267,7 +1267,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A build refuses an instance the check
+        // XCR claude for claude: [bug/medium] A build refuses an instance the check
         // accepted where a nominal constructor inside a definition is given an undecided
         // type and the call passes another construction of one. `type B<'p> =
         // Abstract<'p>; let f = |a| a <- B([never()]); f(B([]))` passes `--check`, and
@@ -1324,6 +1324,37 @@ impl<R: Rt> Construct<R> {
         // NO_SUBST difference; a program that decides the two cells differently after
         // the settle changes from a union of both to a mismatch or one widened cell. To
         // be built with a census and a differential (cr-discuss D35).
+        // 2026-11-12 claude: Built Eric's ruling (a) and closed the select form, which
+        // the weld alone does not reach. (1) A settle welds the open cells nothing
+        // bounds that alone tell two of a cell's lower bounds apart, then takes the
+        // witness (TVar::weld_lower, setops::lower_collapses; a probe of the witness
+        // welds nothing; two cells earlier tasks left open stay two). It is what makes
+        // GRAPHIX_NO_SUBST agree on m1 and d5 and accepts `let f = |a| { a <-
+        // B([never()]); a.0 }; let r = f(B([])); r <- [1]`, refused before for the
+        // union. (2) The select form had another cause: no cell there has two lower
+        // bounds. The call's terminal settle bound each payload to its witness
+        // Array<'_1> and left '_1 open, where the same cell under a bound array is
+        // settled to bottom (the array analog of p3 always built), so the site's result
+        // was a union of two open members when the build unified the instance's result
+        // into it. FnType::settle_terminal now walks the cells a lower bound of its set
+        // holds and settles them first. (3) With both, FnType::held_at's attempt that
+        // took a union's first member by order has nothing left to do in any pin or
+        // probe and is removed. Fail without (1):
+        // lang::types::payload_bounds_apart_by_undecided_cells_are_one,
+        // typ::settle::test::a_settle_welds_lower_bounds_apart_by_unbounded_cells.
+        // Without (2): lang::types::undecided_payloads_met_in_a_select_build (the check
+        // accepts what the build refuses),
+        // typ::settle::test::a_terminal_settle_decides_a_cell_a_lower_bound_holds,
+        // findings/instance-held-at-nov2026/02. Without both:
+        // lang::types::undecided_payloads_met_at_a_call_build. Census 2962 files: no
+        // verdict or message changed. Differential of 600 generated programs of this
+        // family (~/ptmp/cr29/scratch/r23/23b/gen.py) against base-r23: 120 the base
+        // checked and refused to build now build, 9 the base refused are accepted (the
+        // weld), 60 refused alike, none newly refused, no check/build or NO_SUBST
+        // difference left, no output differs fused or unfused; 23 run out of memory in
+        // the check on both sides (select-undecided-union-oom-01). The fused-region
+        // count of findings/instance-held-at-nov2026/00 goes 0 to 1 (the payload is one
+        // decided array). Needs a soak.
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {

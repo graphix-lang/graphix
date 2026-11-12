@@ -415,6 +415,24 @@ pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
     same
 }
 
+/// [`union_collapses`] for two lower bounds of one cell: outside a function
+/// type too it pairs two open cells nothing bounds ([`TVar::unbounded`]),
+/// so bounds that differ only in such cells are one bound once the pairs
+/// weld. Two cells earlier compile tasks left open are decided open, and
+/// stay two.
+pub(super) fn lower_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
+    let start = welds.len();
+    let same = Identity {
+        unbounded: true,
+        ..Identity::new(Some(welds), &mut NodePairs::default())
+    }
+    .same(t0, t1);
+    if !same {
+        welds.truncate(start)
+    }
+    same
+}
+
 /// [`union_identical`] of two members of a union as the source writes it,
 /// where no two occurrences of a variable share a cell yet and its name
 /// says which one it is: two open cells are identical when they have one
@@ -523,7 +541,10 @@ struct Identity<'a> {
     /// Two open cells of one name are identical, whatever holds them
     /// (`pairs` holds those met, never `None`).
     by_name: bool,
-    /// Where the live cells paired inside a function type go.
+    /// Two open cells nothing bounds are identical outside a function
+    /// type too, and go on `live` ([`lower_collapses`]).
+    unbounded: bool,
+    /// Where the live cells paired go.
     live: Option<&'a mut Welds>,
     /// Names are compared by what they mean here, else by their cells.
     env: Option<&'a Env>,
@@ -550,6 +571,7 @@ impl<'a> Identity<'a> {
             strict: false,
             sets: false,
             by_name: false,
+            unbounded: false,
             live,
             env: None,
             pairs: None,
@@ -628,7 +650,21 @@ impl<'a> Identity<'a> {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
-        let Some(pairs) = &mut self.pairs else { return false };
+        let Some(pairs) = &mut self.pairs else {
+            return match &mut self.live {
+                Some(live)
+                    if self.unbounded
+                        && a.unbounded()
+                        && b.unbounded()
+                        && !(a.earlier_task() && b.earlier_task()) =>
+                {
+                    live.push((a.clone(), b.clone()));
+                    self.renamed = true;
+                    true
+                }
+                _ => false,
+            };
+        };
         if self.by_name {
             if a.name != b.name {
                 return false;

@@ -5083,9 +5083,9 @@ run!(
     FuseExpect::None
 );
 
-// Two constructions over undecided payloads that meet at a call leave the
-// instance a union of two members nothing tells apart: the build holds the
-// definition at it.
+// Two constructions over undecided payloads that meet at a call are one
+// payload type at the call's settle, so the build holds the definition at
+// the instance with no member to choose.
 run!(
     undecided_payloads_met_at_a_call_build,
     r#"{
@@ -5096,6 +5096,37 @@ run!(
     (f(B([])), g(x))
 }"#,
     prints("[i64:1, []]")
+);
+
+// Two lower bounds of a payload that differ only in cells nothing has
+// decided are one type and those cells one cell: the payload is one array,
+// whose element its later writer decides.
+run!(
+    payload_bounds_apart_by_undecided_cells_are_one,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a| { a <- B([never()]); a.0 };
+    let r = f(B([]));
+    r <- [1];
+    select r { [x] => x, _ => never() }
+}"#,
+    prints("i64:1")
+);
+
+// A call's settle decides the cells its payloads' bounds hold, as it does a
+// cell an array holds, so the instance's result meets a union with nothing
+// left to choose between its members.
+run!(
+    undecided_payloads_met_in_a_select_build,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a| { let c = B([never()]); select true { true => a, false => c } };
+    let g = |a, c| select true { true => a, false => c };
+    let r = f(B([]));
+    let s = g(B([]), B([never()]));
+    (r ~ 1, s ~ 2)
+}"#,
+    prints("[i64:1, i64:2]")
 );
 
 // A bound's cell below a union with a decided member is bound to the

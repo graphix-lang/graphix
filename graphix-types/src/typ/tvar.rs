@@ -3019,6 +3019,19 @@ impl TVar {
         self.read().cell.read().rigid_gates > 0
     }
 
+    /// Whether the cell is open with nothing to say what it is: no
+    /// binding, no bound above or below, no declaration holding it rigid
+    /// and no scheme owning it.
+    pub(super) fn unbounded(&self) -> bool {
+        let cell = self.cell();
+        let cell = cell.read();
+        cell.binding.is_none()
+            && cell.rigid_gates == 0
+            && cell.constraints.is_empty()
+            && cell.lower.is_empty()
+            && !cell.level.is_generic()
+    }
+
     /// Bind the open cell to ⊥ as a requirement; see
     /// [`CellFact::BottomRequired`].
     pub(super) fn bind_bottom_required(&self) {

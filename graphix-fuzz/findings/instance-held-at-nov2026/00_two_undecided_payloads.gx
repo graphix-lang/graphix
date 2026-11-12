@@ -2,8 +2,9 @@
 // refused "an instance at fn(a: B<[Array<'_1>, Array<'_2>]>, ..) of a
 // definition typed fn(a: B<Array<'_1>>, ..)". The constructor's payload
 // is a lower bound, the call merges it with the argument's, and the
-// instance's variable settles to a union of two arrays nothing tells
+// instance's variable settled to a union of two arrays nothing tells
 // apart; the definition's own bound could go to either member, so
-// FnType::held_at refused the choice. Either member types the body, and
-// the first now takes it.
+// FnType::held_at refused the choice. The two bounds differ only in
+// cells nothing has decided: the settle makes those one cell and the
+// payload one array.
 { type B<'p> = Abstract<'p>; let pair = |a, b: B<'q>| { let c = B([never()]); a <- c }; let x = B([]); pair(x, x) }

@@ -3891,6 +3891,8 @@ impl Type {
                     if !commit || t1.is_rigid() {
                         return Ok(true);
                     }
+                    t1.weld_lower();
+                    let Ok(w) = t1.witness(env)? else { return Ok(false) };
                     t1.bind(w.clone());
                     return t0.contains_int(flags, env, hist, &w);
                 }

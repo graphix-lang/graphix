@@ -1,0 +1,9 @@
+// The select form of 00: the check accepted and the build refused
+// "B<Array<'_1>> could go to B<Array<'_2>> or B<Array<'_1>> of the union
+// [B<Array<'_2>>, B<Array<'_1>>]", where the instance's result was
+// unified into the call site's. The call's settle bound each payload to
+// its lower bound and left the cell that bound holds open, so the site's
+// result was a union of two members nothing told apart. The settle now
+// decides the cells a lower bound holds, as it does a cell an array
+// holds.
+{ type B<'p> = Abstract<'p>; let f = |a| { let c = B([never()]); select true { true => a, false => c } }; f(B([])) }

@@ -1166,6 +1166,26 @@ pub fn union_members_with(
     union_members_stopping(env, t, out, &|_| false, &|_| None, open)
 }
 
+// CR claude for claude: [bug/high] A check runs out of memory on a select with a
+// constructor pattern over a call's result that is a union of two constructions of
+// one nominal type whose payloads hold undecided cells. `type B<'p> = Abstract<'p>;
+// let f = |a, c| select true { true => a, false => c }; select f(B([]), B([])) {
+// B(v) => 0 }` under `--check` reaches 8 GB in 3 s and is killed (2 GB in under a
+// second); `f(B([1]), B([]))` and the call bound by a `let` first do the same. A
+// backtrace of the running check (gdb, interrupted after 0.7 s) is
+// Select::check_undecided, then union_members_stopping's `go` calling itself for
+// every frame shown (60), the innermost in a closure of check_undecided reading
+// TVar::stands_for: a walk that meets a type again inside itself, through `held`
+// or a union's members, with nothing to stop it. Not looked into further: which
+// binding holds itself (GRAPHIX_DBG_BIND shows the pattern's containment merging
+// the two payload cells, RALIAS then CELL-MERGE, just before). These check:
+// `f(B(never()), B(never()))`, `f(B(1), B(2))`, `f(B([1]), B(["s"]))`, and the
+// select of the two constructions with no function between (`let x = select true {
+// true => B([1]), false => B([]) }; select x { B(v) => v }`). base-r23 alike, and
+// construct-lower-merge-01's fix does not change it. 23 of the 25 `spay` programs
+// of that fix's differential (~/ptmp/cr29/scratch/r23/23b/gen.py) are killed this
+// way. probes: ~/ptmp/cr29/scratch/r23/23b/{o1,o3,o7}.gx (killed),
+// {o2,o4,o5,o6,o8,o9}.gx (check) (select-undecided-union-oom-01)
 /// [`union_members_with`], where a tvar `stop` takes is handed to `open`
 /// as it stands, bound or not, and one `held` reads is that binding.
 fn union_members_stopping(

@@ -3362,9 +3362,7 @@ impl FnType {
     /// place first ([`Type::place_cells`]); where it would still have to
     /// choose, a cell only bounds hold, which has no place, is first what
     /// its bounds settle it to ([`TVar::settle_bounds_first`]), as a
-    /// call's check leaves one it did not decide. Where two undecided
-    /// members of a union of the instance's could still take one of its
-    /// types, the first does: the definition's check holds at either.
+    /// call's check leaves one it did not decide.
     pub fn held_at(
         &self,
         env: &Env,
@@ -3396,24 +3394,8 @@ impl FnType {
             tv.settle_bounds_first(env, &mut placed)
         }
         own.place_cells(env, instance);
-        if instance.check_contains(env, &own).is_ok() {
-            return Ok((own, known));
-        }
-        known.clear();
-        let own = self.instantiate_owned(&mut known);
-        own.place_cells(env, instance);
-        instance.check_contains_ordered(env, &own)?;
+        instance.check_contains(env, &own)?;
         Ok((own, known))
-    }
-
-    /// [`Self::check_contains`] where a union's first member that holds a
-    /// type takes it ([`Type::contains_ordered`]).
-    fn check_contains_ordered(&self, env: &Env, other: &Self) -> Result<()> {
-        let flags = ContainsFlags::Commit.into();
-        if !self.contains_int(flags, env, &mut ContainsHist::ordered(), other)? {
-            bail!("Fn type mismatch {self} does not contain {other}")
-        }
-        Ok(())
     }
 }
 

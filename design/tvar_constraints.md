@@ -125,6 +125,17 @@ one of its own conjuncts implies it. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
+Two lower bounds that are the same type but for open cells nothing
+bounds (no conjunct, no lower bound, not rigid, not a scheme's) are one
+bound, and those cells one cell: a settle welds them before it takes the
+witness (`TVar::weld_lower`, `setops::lower_collapses`), so `B([never()])`
+met by `B([])` settles the payload to one array, where the union
+`[Array<'_1>, Array<'_2>]` is two members nothing decides between, which
+the next type to go into it is refused for. A later decision of one cell
+is a decision of both. Two cells earlier compile tasks left open stay
+two, and a probe of the witness welds nothing (Eric 11-12; pins
+`lang::types::payload_bounds_apart_by_undecided_cells_are_one`,
+`typ::settle::test::a_settle_{welds_lower_bounds_apart_by_unbounded_cells,keeps_lower_bounds_apart_by_more_than_unbounded_cells}`).
 A cell binds only to a type that holds each of its lower bounds, so one
 above `[i64, string]` does not bind to `i64`. A call's argument that
 misfits such a variable of its formal settles it first, at the union of
@@ -1076,7 +1087,14 @@ An image carries each cell's level and each definition's depth.
   as positions included and every cell a chain of bounds reaches from
   them, however deep, each cell's binding walked once (pin
   `typ::settle::test::a_terminal_settle_decides_a_bound_of_a_bound`), and settles
-  whatever remains. A cell still
+  whatever remains. The cells a lower bound of any of them holds are
+  walked too, and settle before the cell they bound: they are positions
+  of the witness it settles to, so a payload's `Array<'_1>` leaves the
+  site decided as a bound `Array<'_1>` does, and the build's unification
+  of an instance's result into the site's meets no open cell the check
+  left (an omitted default's exempt cell keeps its bounds' cells; pins
+  `typ::settle::test::a_terminal_settle_decides_a_cell_a_lower_bound_holds`,
+  `lang::types::undecided_payloads_met_in_a_select_build`). A cell still
   unbound after the whole tc0 phase binds ⊥ (`TVar::settle_or_bottom`):
   nothing ever produced into it, and what bounds it (a trait, a
   predicate) has no witness, so a trait dispatch on it is a standing
@@ -1809,9 +1827,10 @@ The placing takes the cells whose bounds hold no open cell first, so a
 variable a bound names takes its own place, not what the bound's holder
 is placed at (`'b: Array<'a> |x: 'b, y: 'a|` at `Array<i64>` and `[i64,
 string]`; pin `lang::functions::bound_naming_a_wider_variable_builds`).
-Where two undecided members of a union of the instance's could each
-take one of the definition's types, the first does: the definition's
-check holds at either (pin
+The containment picks no member of a union by order. The instance of
+`|a| a <- B([never()])` at `B([])` holds one array: the settle made one
+bound of the two that differ only in cells nothing has decided, and the
+call's settle decided the cells its bounds hold (pin
 `lang::types::undecided_payloads_met_at_a_call_build`). Without it the build refused what
 the check accepted: `let f = |x: E<'a, 'b>, y: 'a, z: 'b| ..; f(never(),
 1, "s")`, or `|x: ['a, Error<'e>]| -> (Array<'a>, Array<'e>) ..` called
