@@ -131,7 +131,7 @@ pub(super) struct ContainsHist {
     /// and a chain of open cells is probed once however many of its
     /// links a call binds.
     probe_standing: Lazy<AHashMap<MemoKey, Standing>>,
-    // CR claude for claude: [perf/low] A call passing a value for every link of a
+    // XCR claude for claude: [perf/low] A call passing a value for every link of a
     // chain of bounds whose links carry a trait conjunct ('a{i}: ['a{i+1}, null] + Tr,
     // impl Tr for i64, f((1, 1, ..))) still checks in quadratic time: 3.2 / 10.0 / 37.0
     // G instructions at 500 / 1000 / 2000 links (base-r20 3.1 / 9.7 / 35.6), where the
@@ -143,9 +143,19 @@ pub(super) struct ContainsHist {
     // Env::find_impl, whose walks are their own, would keep the standing verdicts of a
     // walk that met no such impl. probe: ~/ptmp/cr29/scratch/r20/20g/cnb/genvt.py tr N
     // OUT, meas.sh (chainbounds-valued-trait-01)
-    /// The walk asked whether a type implements a trait: the answer reads
-    /// the heads of the environment's impls, whose cells are none a var
-    /// reaches, so from then on no verdict stands by `probe_standing`.
+    // 2026-11-12 claude: Only a head with parameters marks the walk now
+    // (find_impl_with, as reset_tvars copies it), and trait_contains's two separate
+    // lookups carry their walk's mark back (ContainsHist::find_impl_apart);
+    // trait_contains no longer marks on entry. The probe's chain with Tr on every link
+    // checks in 1.01 / 1.27 / 1.76 G instructions at 500 / 1000 / 2000 links (lane
+    // before: 2.68 / 8.00 / 28.5), as with Discernible (1.25 / 1.72). Pin
+    // deep_nesting::a_call_passing_values_to_a_chain_of_trait_bounds_checks_in_linear_time
+    // (10000 links, 9 G budget; with the old mark it is killed at the budget). GUI
+    // --check unchanged, census unchanged.
+    /// The walk read the head of an impl with parameters
+    /// ([`find_impl_with`]): its copy took what the impl's cells hold,
+    /// none a var reaches, so from then on no verdict stands by
+    /// `probe_standing`.
     impls_read: bool,
     probe_pins: Lazy<Vec<Type>>,
     /// Verdicts that rest on assumptions still in progress, held while
@@ -642,6 +652,20 @@ impl ContainsHist {
 
     fn trial() -> Self {
         ContainsHist { trial: true, ..Self::ordered() }
+    }
+
+    /// [`find_impl`]: the impl of `tid` for `t` in a walk of its own,
+    /// whose reading an impl's cells marks this walk (`impls_read`).
+    fn find_impl_apart(
+        &mut self,
+        env: &Env,
+        tid: TraitId,
+        t: &Type,
+    ) -> Result<Option<Arc<ImplDef>>> {
+        let mut apart = Self::new();
+        let found = find_impl_with(env, tid, t, &mut apart);
+        self.impls_read |= apart.impls_read;
+        found
     }
 
     /// Whether `t` reaches no open cell, through bindings: a commit over
@@ -5246,7 +5270,6 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        hist.impls_read = true;
         ensure_sufficient(|| Self::trait_contains_inner(tid, flags, env, hist, t))
     }
 
@@ -5310,7 +5333,10 @@ impl Type {
             }
             Self::Primitive(p) if p.len() > 1 => {
                 for m in p.iter() {
-                    if env.find_impl(tid, &Self::Primitive(m.into()))?.is_none() {
+                    if hist
+                        .find_impl_apart(env, tid, &Self::Primitive(m.into()))?
+                        .is_none()
+                    {
                         return Ok(false);
                     }
                 }
@@ -5321,7 +5347,7 @@ impl Type {
                 // A constructor trait's reference is matched by name,
                 // never expanded.
                 None if env.trait_def(tid).is_some_and(|d| d.hole) => {
-                    Ok(env.find_impl(tid, t)?.is_some())
+                    Ok(hist.find_impl_apart(env, tid, t)?.is_some())
                 }
                 // A typedef met again inside its own question implements
                 // the trait if the rest of it does.
@@ -6987,6 +7013,16 @@ pub(super) fn find_impl_with(
         let head = if im.params.is_empty() {
             im.target.clone()
         } else {
+            // CR claude for claude: [test-gap/low] No test shows the hazard this mark
+            // guards: with ContainsHist::impls_read never set, graphix-types' unit tests
+            // and graphix-tests' lang::{traits, types, cast_trait, interfaces, quantified}
+            // all pass. The one write to an impl's parameter cells found is the rigid
+            // gate the compiler's Impl node holds over its whole typecheck0, never opened
+            // or closed inside one walk. A pin that changes such a cell between two probes
+            // of one walk would show the mark is needed; if no walk can, the mark goes.
+            // A trial (on_copies) carries no mark back to the walk it is made in.
+            // (impls-read-unpinned-01)
+            hist.impls_read = true;
             im.target.reset_tvars()
         };
         let (hc, tc) = (

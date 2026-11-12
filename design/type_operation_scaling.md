@@ -215,15 +215,19 @@ structure is returned SHARED, never copied.
   number stands, whatever else is written, under any flags (pin
   `typ::contains::tests::
   a_flagged_verdict_stands_while_no_cell_its_var_reaches_is_written`).
-  A walk that asked whether a
-  type implements a trait keeps and reads no such verdict from then on
-  (`ContainsHist::impls_read`): the answer read the heads of the
-  environment's impls, whose cells no var reaches. A call's argument pre-unifies
+  A walk that read the head of
+  an impl with parameters keeps and reads no such verdict from then on
+  (`ContainsHist::impls_read`, set by `find_impl_with` and carried back
+  from a lookup made in a walk of its own): the head's copy took what
+  the impl's cells hold, which no var reaches. An impl without
+  parameters has a head that holds no cell, so a walk whose trait
+  questions only such impls answer keeps its standing verdicts. A call's argument pre-unifies
   part by part under one `ContainsHist` (`Type::pre_unify_seen`), as the
   whole would, so a call passing a value for every link of a chain of
-  bounds asks each link once whether it admits the value (pin
-  `deep_nesting::
-  a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time`).
+  bounds asks each link once whether it admits the value, a trait on
+  every link included (pins `deep_nesting::
+  a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time`,
+  `a_call_passing_values_to_a_chain_of_trait_bounds_checks_in_linear_time`).
   A written test's narrowing (`Type::matching_type`) asks the probes of
   all its pairs under one `ContainsHist` too, so the parts that many of
   its pairs share are probed once, not once a pair: the pairs in progress

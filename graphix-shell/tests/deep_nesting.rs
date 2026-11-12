@@ -354,16 +354,25 @@ fn program(shape: &str, d: usize) -> String {
             format!("let f = {bounds} |x: {cells}| x;\nf(never())")
         }
         // The chain through a union with each link the next one bare, the
-        // call passing a value for every link.
-        "chainboundsvalued" => {
+        // call passing a value for every link; with each link implementing a
+        // trait too.
+        "chainboundsvalued" | "chainboundsvaluedtrait" => {
+            let (pre, conj) = match shape {
+                "chainboundsvaluedtrait" => (
+                    "trait Tr { val m: fn(self) -> i64 };\n\
+                     impl Tr for i64 { let m = |x| 1 };\n",
+                    " + Tr",
+                ),
+                _ => ("", ""),
+            };
             let bounds = (0..d)
-                .map(|i| format!("'a{i}: ['a{}, null]", i + 1))
+                .map(|i| format!("'a{i}: ['a{}, null]{conj}", i + 1))
                 .chain([format!("'a{d}: Number")])
                 .collect::<Vec<_>>()
                 .join(", ");
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             let values = vec!["1"; d + 1].join(", ");
-            format!("let f = {bounds} |x: ({cells})| x;\nf(({values}))")
+            format!("{pre}let f = {bounds} |x: ({cells})| x;\nf(({values}))")
         }
         // The chain on an impl's head, the target's parts in the chain's
         // order or against it.
@@ -788,6 +797,14 @@ fn an_impl_head_with_a_chain_of_bounds_checks_in_linear_time() {
 #[cfg(target_os = "linux")]
 fn a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time() {
     checks_within(&program("chainboundsvalued", CHAIN_DEPTH), 8 * BILLION)
+}
+
+/// The same with a trait on every link: the answer that `i64` implements
+/// it read no impl's cells, so the answers for the links below stand.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_call_passing_values_to_a_chain_of_trait_bounds_checks_in_linear_time() {
+    checks_within(&program("chainboundsvaluedtrait", CHAIN_DEPTH), 9 * BILLION)
 }
 
 /// An interface `val` carrying a chain of bounds matches its
