@@ -37,7 +37,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # its cores with far fewer: aieka does 55 runs/s at 32 and 44 at 80.
 HOSTS=(
     "katana:32:4:darwin"
-    "washu-chan:64:1:linux"
+    "washu-chan:48:1:linux"
     "aieka:32:4:linux"
     "ryouko:32:1:linux"
 )
