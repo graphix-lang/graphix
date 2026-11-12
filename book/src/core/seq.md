@@ -59,6 +59,8 @@ seq request {
 An error inside the inner `seq` aborts the inner run and, unless a
 `try` in the outer body takes it, the outer run as well. A nested
 `seq` costs two cycles more than the same statements written inline.
+One with a trigger of its own waits for that trigger in every run of the
+outer `seq`: a fire it has already run on does not start it again.
 
 ## `seq` and `seqq`
 

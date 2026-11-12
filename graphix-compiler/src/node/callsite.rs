@@ -4076,8 +4076,11 @@ impl<R: Rt> CallSite<R> {
         for id in set.drain(..) {
             ctx.event.variables.remove(&id);
         }
+        // a call born again with its step is written no function: the one
+        // it holds is born with it, and its body says what fires
+        let written = !static_callee && fnode_tag.is_fired() && (bound || !reborn);
         match res {
-            Some(tv) if returned || (!static_callee && fnode_tag.is_fired()) => {
+            Some(tv) if returned || written => {
                 let tag = tv.tag().fresh();
                 self.resident.set(tv);
                 self.resident.retag(tag)

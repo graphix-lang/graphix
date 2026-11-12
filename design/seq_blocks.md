@@ -286,7 +286,9 @@ async step.
 step runs as its own machine. Without a trigger it starts every time
 its statement is entered (its constant trigger fires at the step's
 entry, a `View::Step`, where constants fire; under a `View::Wake` they
-stand); with one it waits for that trigger. The enclosing step counts
+stand); with one it waits for that trigger, in every run: a run after
+the first is owed a fire no step read (§6.4) and nothing else. The
+enclosing step counts
 it as a call, not a level: its result cell stands from the previous
 run, and the step completes only on the production of this run. It
 costs two cycles over the same statements written inline, one for the
@@ -513,7 +515,14 @@ builtins in it are reborn, each call it issues is a fresh frame:
 §6.3), with the machine's fire tracker (`node/wake.rs::TrackedFires`:
 one fire bit per step-body input per machine, consumed by whichever step
 reads it, so a fire while a step waits its turn is re-raised at its
-entry). It completes when its
+entry). A function written in the step is one of the constants that
+fire, and that fire writes the call holding it nothing: a call born
+again takes its body's own tag unless it binds a new function
+(`CallSite::update_call`), so a builtin's callback fires as the same
+function named outside the step does. A nested seq's trigger gate,
+`filter(t, |x| x ~ idle)`, therefore passes nothing until `t` fires
+(pins: `lang::seq_steps::{a_nested_seq_waits_for_its_trigger_in_every_run,
+a_callback_born_with_its_step_fires_nothing}`). It completes when its
 value's `let` publishes a FIRED production (a fired `true` for an
 `until`); only then do its writes run. The completed step sleeps, as a
 select deselects an arm, and the next enters: in the same cycle when

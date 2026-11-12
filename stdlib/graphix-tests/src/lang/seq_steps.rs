@@ -414,6 +414,44 @@ async fn a_fire_an_awake_step_read_is_not_owed_again(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// So does a nested seq: its trigger fired once, in the first run, so the
+// second run waits for the next fire and the third is dropped.
+async fn a_nested_seq_waits_for_its_trigger_in_every_run(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 24 => n + 1, _ => never() };
+        let go = select step { 1 | 9 | 17 => step, _ => never() };
+        let t = never();
+        t <- select step { TS => step, _ => never() };
+        seq go { seq let k = t { k * 10 } }
+    }"#;
+    assert_eq!(run(&code.replace("TS", "3"), mode).await?, [30]);
+    assert_eq!(run(&code.replace("TS", "3 | 12"), mode).await?, [30, 120]);
+    assert_eq!(run(&code.replace("TS", "3 | 8"), mode).await?, [30, 80]);
+    Ok(())
+}
+
+// A function written in a step is born with it at each run, which writes
+// the call that holds it nothing: a sample in a builtin's callback fires
+// on its trigger alone, as it does in a function the step names.
+async fn a_callback_born_with_its_step_fires_nothing(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 24 => n + 1, _ => never() };
+        let go = select step { 1 | 9 | 17 => step, _ => never() };
+        let t = never();
+        t <- select step { 3 => step, _ => never() };
+        let p = |x| x ~ true;
+        seq go { live(count(CALL)) }
+    }"#;
+    for call in
+        ["filter(t, |x| x ~ true)", "filter(t, p)", "array::map([t], |x| x ~ 1)", "p(t)"]
+    {
+        assert_eq!(run(&code.replace("CALL", call), mode).await?, [1], "{call}");
+    }
+    Ok(())
+}
+
 // So does a step that read the input only through a reference whose
 // target it learned as it ran: the first step counts `x`'s 3 live, and the
 // last, which names `x`, waits for the 9.
@@ -480,6 +518,8 @@ modes!(
     a_callee_bound_at_a_step_entry_is_caught_up,
     a_fire_no_step_read_is_owed_to_the_next_run,
     a_fire_an_awake_step_read_is_not_owed_again,
+    a_nested_seq_waits_for_its_trigger_in_every_run,
+    a_callback_born_with_its_step_fires_nothing,
     a_fire_read_through_a_reference_is_spent,
     a_callee_bound_in_an_earlier_run_is_caught_up,
     a_step_asleep_with_its_machine_saw_what_came_before,
