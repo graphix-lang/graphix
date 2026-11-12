@@ -4650,6 +4650,22 @@ impl Type {
     /// covers every other position in full. Decided by probes over a
     /// cell-free scrutinee; a committing walk then commits every
     /// candidate's covering positions and the pooled one.
+    // CR claude for claude: [perf/medium] One arm that tests a recursive union of
+    // another family costs 20G instructions and more where each family has six
+    // typedefs: over `x: T0`, T0..T5 and U0..U5 unions of Errors, Arrays and tuples
+    // of each other (gen3.py seed 421's typedefs), `select x { Error<U1> as u0 => 0,
+    // _ => 999 }` checks in 20.7G (`U1 as` 22.3G, `Array<U2> as` 24.9G, the scrutinee's
+    // own family's `Error<T1> as` 8.0G, a tag arm 0.8G, an empty program 0.77G), and
+    // each further arm adds as much: seed 421's five arms take 117G, base-r23 and
+    // lane 23c alike. perf puts 86% of it under this function (ContainsHist::question
+    // of a Distribution, then normal_union and Identity::same) and 0.5% in diff. Of
+    // 800 such selects (gen3.py: gen_sel.py with up to six names a side, Errors nested
+    // to four and up to 14 arms) 64 take over 20G and the worst 125G. Not looked
+    // into: which caller asks (the profile's stacks are cut short; matching_type
+    // holds 15%), and whether one walk kept for the probes
+    // (matching-type-probe-walks-01) ends it. probes:
+    // ~/ptmp/cr29/scratch/r23/23c/dpr-rev/cover6.gx (one arm), g421.gx, gen3.py
+    // (cover-distribution-family-cost-01)
     fn set_covers_by_distribution(
         flags: BitFlags<ContainsFlags>,
         env: &Env,

@@ -1382,7 +1382,15 @@ none of its other verdicts is lost, and 13 dead arms its budget hid are
 found (a catch-all after an arm that covers the scrutinee, a test an
 earlier arm holds), for 2087G instructions where main takes 2387G on the
 files it finishes. One Error costs 2080G and loses five of main's
-dead-arm refusals, two lose six, four lose two (pins
+dead-arm refusals, two lose six, four lose two. The count is a heuristic:
+over those and 2200 selects generated after (gen_sel.py seeds 1001..1600,
+gen_rnd.py 1601..2400, 800 of a generator that nests Errors to four and
+writes up to 14 arms) three ends all 22 of main's timeouts, finds 60 dead
+arms and loses four of main's dead-arm refusals (`Et as x0 => .., Error<At>
+as x1 => ..` with `Error<At>` a member of `Et`: what the first arm leaves
+keeps an Error whole that the second test meets); four finds 53 and loses
+four, six finds 33 and loses three; none refuses a missing case in a
+select main accepts (pins
 `typ::setops::tests::a_residual_nests_few_errors_over_a_pair_met_again`,
 `residuals_over_two_families_of_recursive_unions_stay_shallow`,
 `diff_over_names_recurring_through_errors_ends`, 58 pairs for 1000;
