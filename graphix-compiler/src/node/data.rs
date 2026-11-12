@@ -1267,6 +1267,38 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
+        // CR claude for claude: [bug/medium] A build refuses an instance the check
+        // accepted where a nominal constructor inside a definition is given an undecided
+        // type and the call passes another construction of one. `type B<'p> =
+        // Abstract<'p>; let f = |a| a <- B([never()]); f(B([]))` passes `--check`, and
+        // its build fails "an instance at fn(a: B<[Array<'_1>, Array<'_2>]>) -> _ of a
+        // definition typed fn(a: B<Array<'_1>>) -> ..". GRAPHIX_DBG_BIND shows why: the
+        // constructor takes its argument as a lower bound of 'p (check_contains_lower),
+        // and in a definition's body defer_settle defers nothing, so 'p leaves the body
+        // open over the lower bound Array<'_1>. The call's argument brings its own 'p
+        // over Array<'_2>; B's parameters are invariant, so the two cells merge
+        // (LALIAS), and the settle binds the merged cell to the union of both lower
+        // bounds, which Type::union keeps as two members. The definition's signature was
+        // recorded over one, so FnType::held_at does not hold. GRAPHIX_NO_SUBST=1 checks
+        // the instance again and refuses that union by the ambiguous-member rule
+        // ("Array<'_1> could go to Array<'_1> or Array<'_2> of the union .. which
+        // nothing has decided"), so the check's answer is one its own rule refuses.
+        // These build: a decided element on either side (`f(B([1]))`, `let x:
+        // B<Array<i64>> = B([]); f(x)`), an annotated formal (`|a: B<Array<'e>>|`), the
+        // constructor behind a function (`let mk = |x: 'p| -> B<'p> B(x)`, used on both
+        // sides), a bare `B(never())`, and the same two constructions merged outside a
+        // definition (`let x = B([never()]); x <- B([])`). The write is not needed: `|a|
+        // { let c = B([never()]); select true { true => a, false => c } }` called with
+        // `B([])` is refused alike, "an instance at fn(a: B<Array<'_2>>) ->
+        // [B<Array<'_2>>, B<Array<'_1>>] of a definition typed fn(a: 'a) -> ['a,
+        // B<Array<'_1>>]". base-r22, before round 21, refuses alike. Not decided:
+        // whether two lower bounds of one constructor that meet in an invariant position
+        // are made equal when their cells merge, or the constructor's variable is
+        // settled in a definition as a function's is at its call. A sibling by another
+        // cause: (alias-instance-signature-01). Found by soak nov11b, washu-chan
+        // divergence_000000. probes:
+        // ~/ptmp/cr29/scratch/nov11b/{m1,p1,p2,p3,p4,p8,s5}.gx
+        // (construct-lower-merge-01)
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {
