@@ -4,8 +4,8 @@
 
 use anyhow::Result;
 use graphix_package_core::testing::{
-    FuseExpect, Mode, RunFixture, predicate, result_text, run_fixture,
-    run_tempdir_fixture,
+    Fixture, FuseExpect, Mode, RunFixture, eval, eval_modes, predicate, result_text,
+    run_fixture, run_tempdir_fixture,
 };
 use netidx::subscriber::Value;
 
@@ -35,6 +35,22 @@ async fn tempdir_fixture_fails_when_the_runtime_settles_without_a_value() {
         run_tempdir_fixture(NO_VALUE, crate::TEST_REGISTER, Mode::Interp, &|_| Ok(()))
             .await;
     settled_without_a_value(r)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn eval_fails_when_the_runtime_settles_without_a_value() {
+    settled_without_a_value(eval(NO_VALUE, crate::TEST_REGISTER).await.map(|_| ()))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn eval_modes_fails_when_the_runtime_settles_without_a_value() {
+    settled_without_a_value(eval_modes(NO_VALUE, crate::TEST_REGISTER).await.map(|_| ()))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn widget_fixture_fails_when_the_runtime_settles_without_a_value() {
+    let r = Fixture::new(&result_text(NO_VALUE), crate::TEST_REGISTER, |_| ()).await;
+    settled_without_a_value(r.map(|_| ()))
 }
 
 /// A value that comes 11 s of wall time after its program starts, its
