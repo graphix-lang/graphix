@@ -2621,6 +2621,49 @@ run!(
     FuseExpect::None
 );
 
+// What a formal's walk finds does not depend on the formals before it:
+// `D<'b, 'a>` reaches `A<'a>` inside `D`'s own expansion, where an earlier
+// `A<'a>` formal walks it outside, and either order of the two settles
+// `'a` alike.
+const RECURSIVE_TYPEDEFS: &str = "
+  type A<'y> = [`A(D<'y, i64>), null];
+  type D<'x, 'y> = [`D('x), `F(A<'y>), null];
+  let a: A<i64> = null;
+  let s: [i64, string] = 1;";
+
+run!(
+    widening_through_recursive_typedefs_after_their_part,
+    format!(
+        "{{ {RECURSIVE_TYPEDEFS} let d: D<string, i64> = null;
+  let f = |y: A<'a>, x: D<'b, 'a>, z: 'a| -> 'a z;
+  f(a, d, s) }}"
+    ),
+    refused(r#"'a: i64 does not contain [i64, string]"#);
+    FuseExpect::None
+);
+
+run!(
+    widening_through_recursive_typedefs_before_their_part,
+    format!(
+        "{{ {RECURSIVE_TYPEDEFS} let d: D<string, i64> = null;
+  let f = |x: D<'b, 'a>, y: A<'a>, z: 'a| -> 'a z;
+  f(d, a, s) }}"
+    ),
+    refused(r#"'a: i64 does not contain [i64, string]"#);
+    FuseExpect::None
+);
+
+run!(
+    argument_order_through_recursive_typedefs_ignores_formal_order,
+    format!(
+        "{{ {RECURSIVE_TYPEDEFS} let d: D<string, [i64, string]> = null;
+  let f = |y: A<'a>, x: D<'b, 'a>, h: fn(v: 'a) -> i64| -> i64 1;
+  let g = |x: D<'b, 'a>, y: A<'a>, h: fn(v: 'a) -> i64| -> i64 2;
+  (f(a, d, |v| 1), g(d, a, |v| 1)) }}"
+    ),
+    prints("[i64:1, i64:2]")
+);
+
 // A generalized function's reference is its own instance from compile
 // on: a call's argument types reach it through parens or a block
 // before it typechecks, and must not bind the definition's cells.

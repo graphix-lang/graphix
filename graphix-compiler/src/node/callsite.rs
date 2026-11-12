@@ -37,7 +37,7 @@ use crate::{
     typ::{
         AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
         Mutability, TVar, Type,
-        settle::{DataPositions, Held, Reaching},
+        settle::{DataPositions, Expanded, Held, Reaching, Unrolling},
         tvar::{AtLevel, BoundAt, Judgment, Level, RigidGate},
     },
     wrap,
@@ -1478,36 +1478,38 @@ pub(crate) fn carried_out(
 /// positions stay in order: an earlier argument types a callback's.
 /// `clean` holds the typedef applications found to hold none, each by its
 /// [`AppKey`], so an application the type reaches by many paths is walked
-/// once. A finding that one does may rest on a definition met inside its
-/// own expansion, which stands for every variable it holds, so it is not
-/// kept.
+/// once where [`Unrolling::passes`]. A finding that one does may rest on a
+/// definition met inside its own expansion, which stands for every
+/// variable it holds, so it is not kept.
 fn holds_invariantly(
     env: &Env,
     t: &Type,
-    expanding: &mut SmallVec<[usize; 4]>,
-    clean: &mut AHashMap<AppKey, Type>,
+    unrolling: &mut Unrolling,
+    clean: &mut AHashMap<AppKey, (Type, Expanded)>,
 ) -> bool {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
-            tv.binding().is_some_and(|b| holds_invariantly(env, &b, expanding, clean))
+            tv.binding().is_some_and(|b| holds_invariantly(env, &b, unrolling, clean))
         }
         Type::Fn(_) => false,
         Type::Ref(tr)
             if let Some(key) = tr.probe_def_key(env)
-                && !expanding.contains(&key) =>
+                && !unrolling.is_open(key) =>
         {
             let app = tr.app_key(key);
-            if clean.contains_key(&app) {
+            if let Some((_, expanded)) = clean.get(&app)
+                && unrolling.passes(expanded)
+            {
                 return false;
             }
             let Some((_, whole)) = t.lookup_ref_probe(env) else {
                 return holds_a_variable(t);
             };
-            expanding.push(key);
-            let r = holds_invariantly(env, &whole, expanding, clean);
-            expanding.pop();
+            unrolling.enter(key);
+            let r = holds_invariantly(env, &whole, unrolling, clean);
+            let expanded = unrolling.leave(tr);
             if !r {
-                clean.insert(app, t.clone());
+                clean.entry(app).or_insert((t.clone(), expanded));
             }
             r
         }
@@ -1518,7 +1520,7 @@ fn holds_invariantly(
         t => {
             let mut any = false;
             t.for_each_child(&mut |c| {
-                any = any || holds_invariantly(env, c, expanding, clean)
+                any = any || holds_invariantly(env, c, unrolling, clean)
             });
             any
         }
@@ -4760,15 +4762,15 @@ impl<R: Rt> CallSite<R> {
             }
         };
         let mut widening = Widening::new(fresh);
-        let mut expanding = SmallVec::new();
-        let mut clean: LPooled<AHashMap<AppKey, Type>> = LPooled::take();
+        let mut unrolling = Unrolling::default();
+        let mut clean: LPooled<AHashMap<AppKey, (Type, Expanded)>> = LPooled::take();
         let mut formals: SmallVec<[_; 8]> = ftype
             .args
             .iter()
             .zip(ArgKey::of_formals(&ftype.args))
             .map(|(farg, key)| {
                 let fixed =
-                    holds_invariantly(&ctx.env, &farg.typ, &mut expanding, &mut clean);
+                    holds_invariantly(&ctx.env, &farg.typ, &mut unrolling, &mut clean);
                 (!fixed, farg, key)
             })
             .collect();

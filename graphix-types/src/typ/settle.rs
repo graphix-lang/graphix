@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        AppKey, Bound, FnType, TVar, Type, Written,
+        AppKey, Bound, FnType, TVar, Type, TypeRef, Written,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
         tvar::{CellFact, Fresh, Level, would_cycle_open},
@@ -873,16 +873,17 @@ impl Held {
 // (--no-cache --check, debug, instructions:u; base-r23 first); not X'd there, as
 // the CR is lane 23c's.
 /// A walk of every type variable under a type, through bindings, with how
-/// each occurrence is held. A shared node, and a typedef application by
-/// its [`AppKey`], is walked once for each way it is held, and kept so
-/// its keys stay its own.
+/// each occurrence is held. A shared node is walked once for each way it
+/// is held, and a typedef application by its [`AppKey`] once for each
+/// way it is held where [`Unrolling::passes`]; each is kept so its keys
+/// stay its own.
 #[doc(hidden)]
 pub struct DataPositions<'a> {
     env: &'a Env,
     members: bool,
-    expanding: SmallVec<[usize; 4]>,
+    unrolling: Unrolling,
     seen: LPooled<AHashMap<(usize, Held), Type>>,
-    applied: LPooled<AHashMap<(AppKey, Held), Type>>,
+    applied: LPooled<AHashMap<(AppKey, Held), (Type, Expanded)>>,
 }
 
 impl<'a> DataPositions<'a> {
@@ -890,7 +891,7 @@ impl<'a> DataPositions<'a> {
         DataPositions {
             env,
             members: false,
-            expanding: SmallVec::new(),
+            unrolling: Unrolling::default(),
             seen: LPooled::take(),
             applied: LPooled::take(),
         }
@@ -919,21 +920,22 @@ impl<'a> DataPositions<'a> {
             t if t
                 .shared_identity()
                 .is_some_and(|n| self.seen.insert((n, held), t.clone()).is_some()) => {}
-            // an application met again is passed by: its first walk reported each
-            // position its unrolling holds a cell at, or the cell under a function
-            // type where the walk met a definition inside its own expansion
             Type::Ref(tr)
                 if let Some(key) = tr.probe_def_key(self.env)
-                    && !self.expanding.contains(&key) =>
+                    && !self.unrolling.is_open(key) =>
             {
-                if self.applied.insert((tr.app_key(key), held), t.clone()).is_some() {
+                let app = (tr.app_key(key), held);
+                if let Some((_, expanded)) = self.applied.get(&app)
+                    && self.unrolling.passes(expanded)
+                {
                     return;
                 }
                 match t.lookup_ref_probe(self.env) {
                     Some((_, whole)) => {
-                        self.expanding.push(key);
+                        self.unrolling.enter(key);
                         self.walk(&whole, held, f);
-                        self.expanding.pop();
+                        let expanded = self.unrolling.leave(tr);
+                        self.applied.entry(app).or_insert((t.clone(), expanded));
                     }
                     None => self.beneath_function(t, held, f),
                 }
@@ -955,6 +957,66 @@ impl<'a> DataPositions<'a> {
             }
             t => t.for_each_child(&mut |c| self.walk(c, held, f)),
         })
+    }
+}
+
+/// The definitions an application's walk expanded at an application
+/// holding a variable ([`Unrolling`]).
+#[doc(hidden)]
+pub type Expanded = SmallVec<[usize; 4]>;
+
+/// The typedef applications a walk is expanding, innermost last, for a
+/// walk that stops at a definition met inside its own expansion and takes
+/// the stop for whatever the variables it holds may be. Each keeps the
+/// definitions its walk has expanded at an application holding a
+/// variable: where one of those is open, a walk of the application stops
+/// there instead, so one walked before finds what it found then only
+/// where none of them is ([`Self::passes`]).
+#[doc(hidden)]
+#[derive(Default)]
+pub struct Unrolling(SmallVec<[(usize, Expanded); 4]>);
+
+impl Unrolling {
+    /// Whether the walk is inside an application of `def`.
+    pub fn is_open(&self, def: usize) -> bool {
+        self.0.iter().any(|(d, _)| *d == def)
+    }
+
+    /// Whether an application whose walk expanded `expanded` finds here
+    /// what it found then; where it does, the applications around it
+    /// count those as expanded too.
+    pub fn passes(&mut self, expanded: &Expanded) -> bool {
+        if expanded.iter().any(|d| self.is_open(*d)) {
+            return false;
+        }
+        if let Some((_, outer)) = self.0.last_mut() {
+            union_into(outer, expanded)
+        }
+        true
+    }
+
+    pub fn enter(&mut self, def: usize) {
+        self.0.push((def, SmallVec::new()))
+    }
+
+    /// Leave `tr`, the application entered last: what its walk expanded.
+    pub fn leave(&mut self, tr: &TypeRef) -> Expanded {
+        let (def, mut expanded) = self.0.pop().expect("an application was entered");
+        if !tr.params.iter().all(|p| p.tvar_free()) {
+            union_into(&mut expanded, &[def])
+        }
+        if let Some((_, outer)) = self.0.last_mut() {
+            union_into(outer, &expanded)
+        }
+        expanded
+    }
+}
+
+fn union_into(into: &mut Expanded, from: &[usize]) {
+    for d in from {
+        if !into.contains(d) {
+            into.push(*d)
+        }
     }
 }
 
