@@ -1998,6 +1998,8 @@ impl<T> CachedArgs<T> {
         T: EvalCached<R>,
     {
         let prod = cached.update_full(ctx, from);
+        // whether the arguments alone decide the value
+        let of_args = matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_));
         match prod {
             None => last_result.ride(),
             // a bottom arg bottoms the invocation without calling eval
@@ -2011,20 +2013,16 @@ impl<T> CachedArgs<T> {
                 }
             }
             Some(t) if !last_result.tag().is_bottom() => {
-                // Wake catch-up: args may have drifted while asleep. A
-                // stateless value is recomputed from the present slots,
-                // and moved when an argument did; a stateful one must
-                // not be (its last result is its state), and an event it
-                // did not take did not move it.
-                let moved = matches!(T::EFFECT, Effect::Stateless(_)) && t.moved();
-                if matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_))
-                    && (woke || moved)
-                {
+                // Args may have drifted while asleep, or moved. A value
+                // the arguments alone decide is recomputed from the
+                // present slots, and moved when one did; a stateful one
+                // must not be (its last result is its state), and an
+                // event it did not take did not move it.
+                if of_args && (woke || t.moved()) {
                     cached.evaluated = Evaluated(true);
                     match ev.quiet(ctx, cached) {
-                        Some(v) => last_result
-                            .set(TagValue::tagged(v, Tag::STALE.moved_if(moved))),
-                        None => last_result.set_bottom(false),
+                        Some(v) => last_result.set(TagValue::tagged(v, t)),
+                        None => last_result.set_bottom_as(t),
                     }
                 } else {
                     last_result.retag(Tag::STALE)
@@ -2032,12 +2030,13 @@ impl<T> CachedArgs<T> {
             }
             // a bottom eval already gave over these slots stands
             Some(_) if cached.evaluated.0 => last_result.ride(),
-            Some(_) => {
+            Some(t) => {
                 // Nothing to re-surface yet: compute the value once to
-                // establish the value channel, STALE.
+                // establish the value channel, quiet.
                 cached.evaluated = Evaluated(true);
+                let t = if of_args { t } else { Tag::STALE };
                 match ev.quiet(ctx, cached) {
-                    Some(v) => last_result.set(TagValue::stale(v)),
+                    Some(v) => last_result.set(TagValue::tagged(v, t)),
                     None => last_result.ride(),
                 }
             }

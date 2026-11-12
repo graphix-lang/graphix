@@ -1,14 +1,15 @@
 // Fixtures over builtins only a test registers: Rust that panics, a
 // function value retyped past the checker, a builtin's quantifier no
 // argument can carry a value of, and an effect queued at every walk; and
-// `test_note`, which other fixtures register to watch what runs.
+// `test_note`, which other fixtures register to watch what runs, with
+// `test_none_at` and `test_raw_stateless`, which `wake_outside` registers.
 
 use super::dense_deltas::{QUIET, run_delta_with};
 use anyhow::Result;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, Effect, ExecCtx, Node, PruneMode, Rt, Scope,
-    TagValue, expr::ExprId, image::ImageBuf, typ::FnType,
+    TagValue, TagView, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, fast_builtin,
@@ -102,6 +103,65 @@ fn fc_last(args: &[Value]) -> Option<Value> {
 }
 
 fast_builtin!(Last, LastEv, "test_last", fc_last);
+
+fn fc_none_at(args: &[Value]) -> Option<Value> {
+    (args[0] != args[1]).then(|| args[0].clone())
+}
+
+fast_builtin!(
+    /// `test_none_at(x, k)` is `x`, and bottom where `x` is `k`.
+    pub(super) NoneAt,
+    NoneAtEv,
+    "test_none_at",
+    fc_none_at
+);
+
+/// `test_raw_stateless(x)` is `x`, by a stateless builtin that is its
+/// own `Apply`: it computes from its argument at every update and tags
+/// the result fired or stale, as a package's raw builtin does.
+#[derive(Debug, Default)]
+pub(super) struct RawStateless(TagValue);
+
+impl<R: Rt> BuiltIn<R> for RawStateless {
+    const NAME: &str = "test_raw_stateless";
+    const EFFECT: Effect = Effect::Stateless(None);
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut CompileCtx<R>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R>>> {
+        Ok(Box::new(Self::default()))
+    }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<'_, R>,
+        _from: &[Node<R>],
+        _buf: &mut &[u8],
+    ) -> std::result::Result<Box<dyn Apply<R>>, PackError> {
+        Ok(Box::new(Self::default()))
+    }
+}
+
+impl<R: Rt> Apply<R> for RawStateless {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        match from[0].update(ctx).view() {
+            TagView::Fired(tv) => self.0.set(TagValue::fired(tv.value_cloned())),
+            TagView::Stale(tv) => self.0.set(TagValue::stale(tv.value_cloned())),
+            TagView::FreshBottom => self.0.set_bottom(true),
+            TagView::StaleBottom => self.0.set_bottom(false),
+        }
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> std::result::Result<(), PackError> {
+        Ok(())
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
+}
 
 /// `test_unmarked_effect(x)` is `x`, and queues a runtime call at every
 /// walk whether or not anything it reads was delivered: the shape of a

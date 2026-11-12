@@ -6,7 +6,10 @@
 // a reference that left it. No `count`, `<-` or other event consumer acts
 // on it. Each program runs in every mode.
 
-use super::dense_deltas::run_delta_with;
+use super::{
+    dense_deltas::run_delta_with,
+    test_builtins::{NoneAt, RawStateless},
+};
 use anyhow::Result;
 use graphix_package_core::testing::{Collect, Mode, TestState, data};
 use std::time::Duration;
@@ -17,7 +20,11 @@ const MODES: [Mode; 5] =
 /// `code`'s updates in `mode`, each update's data form printed without
 /// its integer type prefixes, and the regions the build fused.
 async fn updates(code: &str, mode: Mode) -> Result<(Vec<String>, usize)> {
-    let setup = |ctx: &mut TestState| ctx.control.set_prune_mode(mode.prune());
+    let setup = |ctx: &mut TestState| {
+        ctx.control.set_prune_mode(mode.prune());
+        ctx.register_builtin::<RawStateless>().unwrap();
+        ctx.register_builtin::<NoneAt>().unwrap();
+    };
     let d = run_delta_with(code, mode, setup, Collect::Quiet(Duration::from_millis(300)))
         .await?;
     let got =
@@ -1666,4 +1673,129 @@ async fn a_let_stood_again_is_owed_to_a_steps_call() -> Result<()> {
     let owed = ticks(9, |c| if c < 8 { "0" } else { "11" });
     agrees(stood_again(true, 3, rest), &owed).await?;
     agrees(stood_again(false, 3, rest), &owed).await
+}
+
+const RAW: &str = "let raw = |v: i64| -> i64 'test_raw_stateless;";
+const NONE_AT: &str = "let none_at = |v: i64, k: i64| -> i64 'test_none_at;";
+
+// A stateless builtin that is its own `Apply` tags its result fired or
+// stale and knows nothing of a move: its call passes the move on, to a
+// reader outside over a formal that moved, and out of the woken arm
+// through a formal and through a `let`, a move to bottom included.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_raw_stateless_builtin_passes_the_move() -> Result<()> {
+    agrees(closure(RAW, "raw(x)"), &formal(|x| x)).await?;
+    let expr = format!("{{ {RAW} raw(n) }}");
+    agrees(in_arm(&expr), &formal(|x| x)).await?;
+    agrees(in_let(&expr), &formal(|x| x)).await?;
+    let bottom = format!("{{ {RAW} raw(10 / (n - 3) * 0 + n) }}");
+    agrees(in_let(&bottom), &bottomed(|x| x)).await
+}
+
+// A stateless builtin that gives no value over what the arm slept
+// through moved to bottom, and the reader outside loses the value at the
+// wake, as it does where an operator bottoms.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_builtin_a_wake_leaves_bottom_moves() -> Result<()> {
+    let expr = format!("{{ {NONE_AT} none_at(n, 3) }}");
+    in_arm_agrees(&expr, &bottomed(|x| x)).await?;
+    agrees(in_let(&expr), &bottomed(|x| x)).await?;
+    agrees(closure(NONE_AT, "none_at(x, 3)"), &bottomed(|x| x)).await
+}
+
+// A stateless builtin that had no value when the arm fell asleep and has
+// one over what the arm slept through stands it at the wake, moved, as an
+// operator does: the reader outside has the value at clk 6, and no event.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_builtin_a_wake_takes_out_of_bottom_moves() -> Result<()> {
+    let ticks = [
+        "[0, 0, 0, 0, 1]",
+        "[6, 3, 0, 3, 1]",
+        "[7, 4, 0, 4, 2]",
+        "[8, 4, 0, 4, 2]",
+        "[9, 5, 0, 5, 3]",
+    ]
+    .map(String::from);
+    in_arm_agrees("10 / (n - 1) * 0 + n", &ticks).await?;
+    let expr = format!("{{ {NONE_AT} none_at(n, 1) }}");
+    in_arm_agrees(&expr, &ticks).await?;
+    agrees(in_let(&expr), &ticks).await
+}
+
+/// A clock of twelve ticks, `n` going to 7 at clk 4 and `m` to 5 at clk
+/// 2 and to 9 at clk 6.
+const PASSED: &str = "let clk = array::iter(array::init(12, |i| i));
+  let n = 0;
+  n <- select clk { 3 => 7, _ => never() };
+  let m = 0;
+  m <- select clk { 1 => 5, 5 => 9, _ => never() };";
+/// A body over `x`, 1, whose reader `*r` sits above the `z` it reads:
+/// where it does not run at clk 4, it resumes with `z` moved from 1 to 8.
+const BODY: &str = "{
+    let r: &i64 = never();
+    let cnt = count(*r);
+    let d = *r;
+    let z = n + x;
+    r <- &z;
+    (d, cnt)
+  }";
+
+// A slot its source paused, resumed with its arm, and a call's instance
+// its function left: the reader the walk passed takes the moved `z` a
+// cycle late, standing, as one in a select's arm does, and its `count`
+// does not tick.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_passed_reader_in_a_resumed_slot_or_instance_takes_it_standing() -> Result<()> {
+    let slot = format!(
+        "{{
+  {PASSED}
+  let sel = 0;
+  sel <- select clk {{ 3 => 1, 7 => 0, _ => never() }};
+  let o = select sel {{
+    0 => {{
+      let src = select m {{ 5 => never(), _ => [1] }};
+      array::map(src, |x| {BODY})
+    }},
+    _ => [(m * 0 - 5, 0)]
+  }};
+  clk ~ (clk, o)
+}}"
+    );
+    let ticks: Vec<String> = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11]
+        .into_iter()
+        .map(|c| match c {
+            0 | 1 | 8 => format!("[{c}, [[1, 1]]]"),
+            4..8 => format!("[{c}, [[-5, 0]]]"),
+            _ => format!("[{c}, [[8, 1]]]"),
+        })
+        .collect();
+    agrees(slot, &ticks).await?;
+    let instance = format!(
+        "{{
+  {PASSED}
+  let f = |x: i64| {BODY};
+  let g = select m {{ 5 => never(), _ => f }};
+  let o = g(1);
+  clk ~ (clk, o, count(o))
+}}"
+    );
+    let ticks: Vec<String> = [0, 1, 6, 7, 8, 9, 10, 11]
+        .into_iter()
+        .map(|c| match c {
+            0 | 1 => format!("[{c}, [1, 1], 1]"),
+            6 => format!("[{c}, [1, 1], 2]"),
+            _ => format!("[{c}, [8, 1], 2]"),
+        })
+        .collect();
+    agrees(instance, &ticks).await
+}
+
+// `buffer::decode` writes through its spec's references when it fires and
+// gives the bytes left over: over a buffer that moved it writes nothing,
+// and the reader outside has what is left of the new one.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_io_builtin_over_a_moved_argument_recomputes() -> Result<()> {
+    let buf = "buffer::from_array(array::init(x, |i| u8:0))";
+    let read = format!("cast<i64>(buffer::len(buffer::decode({buf}, [])$))$");
+    agrees(closure("", &read), &formal(|x| x)).await
 }

@@ -27,7 +27,11 @@ tail loop shares state across iterations); a wrong `Sync` is one too
 where it skips a wake's recompute (`CachedArgs` recomputes only a
 `Stateless` or `Io` value at a wake, through `EvalCached::quiet`, which
 for an `Io` builtin computes the value without the effect), and
-otherwise costs the loop. An async call site (`CachedArgsAsync`) runs its
+otherwise costs the loop. A `Stateless` builtin that is its own `Apply`
+computes from its arguments at every update, stale ones too, and tags
+the result fired or stale; its call site marks a quiet result moved when
+an argument moved (`design/bind_driven_bodies.md`, the moved mark), so no
+builtin handles the bit. An async call site (`CachedArgsAsync`) runs its
 invocations as its `EvalCachedAsync::CALLS` says: one at a time in
 order (`Fifo`, the default), the latest only, a new one aborting those in
 flight, though one that completed before the abort reached it still

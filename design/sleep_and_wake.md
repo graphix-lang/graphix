@@ -67,8 +67,9 @@ bottom is no write. Pins: `findings/wake-connect-target-sep2026/`.
 
 - **`CachedArgs`** (package-core): the argument slots are refreshed to the present values on every
   delivery. On the first update after a sleep with an all-stale production, and whenever an argument
-  moved, a `Stateless` builtin runs `eval` again from the slots and its result is stale and moved. A
-  stateful one retags its resident, which is its state. A configuration memo (`FastMemo`) survives
+  moved, a `Stateless` or `Io` builtin computes its value again from the slots (`EvalCached::quiet`, no
+  effect), and the result moved when an argument did. A stateful one retags its resident, which is its
+  state. A configuration memo (`FastMemo`) survives
   sleep: it is a pure function of the config argument.
 - **Restart builtins and queues keep their state** across a sleep (`once`, `take`, `skip`, `uniq`,
   `hold`, `count`). `queue` and `iterq` take back what they sent but had not received (`InFlight`) and

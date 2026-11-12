@@ -175,7 +175,11 @@ first update of a node in a select arm, a callback or a function entered
 after the program starts: the arguments' standing values arrive `Stale`,
 constants included, so `seam_value` has them and `seam_tick` is `None`
 until one fires. A builtin that advances on events does nothing there
-until an argument fires. A builtin aborts an operation in flight that
+until an argument fires. A `Stateless` builtin computes from its
+arguments at every update, whether they fired or stand, and gives the
+result `Fired` when one fired and `Stale` otherwise: a standing
+argument's value may have changed with no event while the builtin's arm
+slept. A builtin aborts an operation in flight that
 it cannot pause and keeps its last result: the wake does not issue the
 call again (a call that is not cancel-safe, a stream read for one,
 finishes instead, and nothing answers it: a reply made after a sleep is

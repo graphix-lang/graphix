@@ -2252,6 +2252,17 @@ impl<R: Rt> Callee<R> {
         }
     }
 
+    /// Whether the callee is a builtin whose result its arguments alone
+    /// decide ([`crate::Effect::Stateless`]).
+    fn stateless(&self, ctx: &ExecCtx<'_, R>) -> bool {
+        match self.apply().map(|f| f.view()) {
+            Some(ApplyView::BuiltIn(name)) => {
+                matches!(ctx.builtin_effect(name), crate::Effect::Stateless(_))
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R> + 'static)> {
         match self {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
@@ -3947,7 +3958,7 @@ impl<R: Rt> CallSite<R> {
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         let pass = Pass { keep, root };
-        let ArgsOut { fired: arg_fired, prods, mut set } =
+        let ArgsOut { fired: arg_fired, moved: arg_moved, prods, mut set } =
             update_args(ctx, self.args.as_mut_slice(), &mut self.fork, pass);
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
@@ -4085,9 +4096,12 @@ impl<R: Rt> CallSite<R> {
                 self.resident.set(tv);
                 self.resident.retag(tag)
             }
-            // a function that moved at a wake moved what its call gives
+            // a function that moved at a wake moved what its call gives,
+            // and so did an argument of a builtin its arguments alone decide
             Some(mut tv) => {
-                let tag = tv.tag().moved_if(fnode_tag.moved());
+                let moved =
+                    fnode_tag.moved() || (arg_moved && self.callee.stateless(ctx));
+                let tag = tv.tag().moved_if(moved);
                 tv.retag(tag);
                 self.resident.set(tv)
             }
@@ -5106,12 +5120,13 @@ pub(crate) enum Feeds<'a> {
     Pattern(&'a StructPatternNode),
 }
 
-/// What updating a call's arguments left: whether one fired, the
-/// productions a fresh bind replays, and the argument ids published
-/// this cycle.
+/// What updating a call's arguments left: whether one fired, whether
+/// one moved ([`crate::Tag::moved`]), the productions a fresh bind
+/// replays, and the argument ids published this cycle.
 #[derive(Default)]
 struct ArgsOut {
     fired: bool,
+    moved: bool,
     prods: SmallVec<[(BindId, TagValue); 4]>,
     set: Published,
 }
@@ -5254,6 +5269,7 @@ fn update_args<R: Rt>(
     };
     crate::branch::fork_point(ctx, args, site, in_order, |mut a, b| {
         a.fired |= b.fired;
+        a.moved |= b.moved;
         a.prods.extend(b.prods);
         a.set.extend(b.set);
         a
@@ -5276,6 +5292,7 @@ fn update_args_in_order<R: Rt>(
         let tv = timed(&mut meter, i, || node.update(ctx));
         let fired = tv.tag().triggers();
         out.fired |= fired;
+        out.moved |= tv.tag().moved();
         let kept = match keep {
             Keep::Every => true,
             Keep::Stored | Keep::Nothing => false,
