@@ -4,7 +4,7 @@ use crate::{
     typ::{
         Bound, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair,
         TVar, Type, TypeRef,
-        contains::on_copies,
+        contains::{ContainsHist, on_copies},
         fntyp::LambdaIds,
         node_addr,
         tvar::{Fresh, cell_writes},
@@ -22,9 +22,23 @@ use triomphe::Arc;
 struct MatchingTypes {
     memo: RefHist<AHashMap<RefPair, Kept<Type>>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
+    /// One containment walk for every probe the narrowing asks: a pair of
+    /// shared parts is probed once, whichever pair of the narrowing meets it.
+    contains: ContainsHist,
     /// Type a part holding a rigid cell by the written test's part
     /// ([`Type::matching_parts`]).
     inside: bool,
+}
+
+impl MatchingTypes {
+    fn new(inside: bool) -> Self {
+        MatchingTypes {
+            memo: RefHist::new(),
+            refs: LPooled::take(),
+            contains: ContainsHist::new(),
+            inside,
+        }
+    }
 }
 
 /// diff's walk state: each pair in progress with what it subtracts when
@@ -321,6 +335,14 @@ pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
     Identity::new(None, &mut NodePairs::default()).same(t0, t1)
 }
 
+/// [`union_identical`] with a name read as the definition it means in
+/// `env` ([`TypeRef::same_definition`]), filled or not: what a walk has
+/// filled so far tells no two types apart.
+pub(super) fn union_identical_in(env: &Env, t0: &Type, t1: &Type) -> bool {
+    Identity { env: Some(env), ..Identity::new(None, &mut NodePairs::default()) }
+        .same(t0, t1)
+}
+
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
@@ -431,6 +453,8 @@ struct Identity<'a> {
     by_name: bool,
     /// Where the live cells paired inside a function type go.
     live: Option<&'a mut Welds>,
+    /// Names are compared by what they mean here, else by their cells.
+    env: Option<&'a Env>,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
     /// The nodes found identical outside a function type.
@@ -449,6 +473,7 @@ impl<'a> Identity<'a> {
             sets: false,
             by_name: false,
             live,
+            env: None,
             pairs: None,
             found,
             found_in_fn: NodePairs::default(),
@@ -582,7 +607,11 @@ impl<'a> Identity<'a> {
                 Type::Abstract { id: i1, params: p1 },
             ) => i0 == i1 && self.all(p0, p1),
             (Type::Ref(r0), Type::Ref(r1)) => {
-                r0.same_filled_definition(r1) && self.all(&r0.params, &r1.params)
+                let same = match self.env {
+                    Some(env) => r0.same_definition(r1, env),
+                    None => r0.same_filled_definition(r1),
+                };
+                same && self.all(&r0.params, &r1.params)
             }
             (Type::Set(s0), Type::Set(s1)) => self.all(s0, s1),
             (Type::Error(a), Type::Error(b))
@@ -1562,18 +1591,14 @@ impl Type {
     }
 
     pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
-        let refs = LPooled::take();
-        let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: false };
-        self.matching_type_int(env, &mut walk, reaching)
+        self.matching_type_int(env, &mut MatchingTypes::new(false), reaching)
     }
 
     /// [`Self::matching_type`], where a part of `reaching` holding a rigid
     /// cell, whose values no pattern takes apart, is this test's part: the
     /// types of the binds inside it.
     pub fn matching_parts(&self, env: &Env, reaching: &Self) -> Result<Self> {
-        let refs = LPooled::take();
-        let mut walk = MatchingTypes { memo: RefHist::new(), refs, inside: true };
-        self.matching_type_int(env, &mut walk, reaching)
+        self.matching_type_int(env, &mut MatchingTypes::new(true), reaching)
     }
 
     fn matching_type_int(
@@ -1663,7 +1688,7 @@ impl Type {
                         | Self::Struct(_)
                 ) && p.shares_constructor(t);
                 let rigid_inside = walk.inside && same_shape && t.has_rigid();
-                // CR claude for claude: [perf/low] Each of the two containment probes
+                // XCR claude for claude: [perf/low] Each of the two containment probes
                 // below starts a walk of its own (contains_with_flags), so nothing a
                 // probe learned (its probe memo, its expansions, its normalize pass)
                 // serves the next pair, and a matching_type over a DAG of named error
@@ -1677,13 +1702,42 @@ impl Type {
                 // review (what an Err leaves in it, the probe memo across the pairs).
                 // probe: ~/ptmp/cr29/scratch/r19/19b/mtm/cm4.gx
                 // (matching-type-probe-walks-01)
+                // 2026-11-12 claude: MatchingTypes keeps one ContainsHist
+                // (MatchingTypes::contains) for both probes of every pair. An Err ends
+                // matching_type and each call builds its own walk, so nothing reads the
+                // hist after an Err; between two probes no pair, question, unfolding,
+                // gate or deferral is in progress (each is popped as its probe
+                // returns), so a later probe reads only kept verdicts, settled, stamped
+                // with cell_writes and pinned, as the sibling parts of one walk and
+                // could_match's MatchHist do. Shared, the probes fill fewer names'
+                // cells, and RefHist::shape_id compared names by their cells
+                // (same_filled_definition), so the narrowing's memo keyed two copies of
+                // one type apart by what an earlier walk filled:
+                // lang::select::a_capture_type_is_the_same_at_every_select failed in
+                // all four modes (the first select's bind took a wider type than the
+                // second's). Shape ids now read a name as the definition it means in
+                // the env (setops::union_identical_in). base-r23 -> lane, --no-cache
+                // --check instructions:u: cm4 1.70 -> 1.14 G (an empty program 0.77),
+                // mkerr err8 5.44 -> 1.32 G, err12 26.4 -> 1.85 G; GUI examples 41.30
+                // -> 41.32 G. Pins:
+                // typ::contains::tests::a_narrowing_over_names_recurring_through_errors_probes_each_pair_once
+                // (49674 steps at n=4 without the shared walk, bound 6400),
+                // typ::setops::tests::a_name_inside_a_type_keys_alike_filled_or_open
+                // (ids 0 and 1 without union_identical_in). Census 2962 files 0/0; 300
+                // generated selects (gen.py seed 7) print as base-r23 does; the
+                // narrowings of 320 pairs over error_families n<=6 print as base-r23's,
+                // matching_type and matching_parts. probes:
+                // ~/ptmp/cr29/scratch/r23/23f/matching-type-probe-walks/
+                let probe = BitFlags::empty();
                 if !rigid_inside
                     && !p.has_unbound()
-                    && p.contains_with_flags(BitFlags::empty(), env, t)?
+                    && p.contains_int(probe, env, &mut walk.contains, t)?
                 {
                     return Ok(t.clone());
                 }
-                if !t.has_unbound() && t.contains_with_flags(BitFlags::empty(), env, p)? {
+                if !t.has_unbound()
+                    && t.contains_int(probe, env, &mut walk.contains, p)?
+                {
                     return Ok(p.clone());
                 }
                 if !p.could_match(env, t)? {
@@ -1843,6 +1897,22 @@ pub(crate) mod tests {
             let u = Type::union(&env, &[&t0, &t1]).unwrap();
             assert_eq!(u.to_string(), "R<i64>");
             assert!(t0.diff(&env, &t1).unwrap().is_uninhabited());
+        }
+    }
+
+    // And a walk keys a type holding the name as one, whichever of its
+    // copies a walk filled first: a select's narrowing reads its memo by
+    // these keys, so its answer does not depend on what was asked before.
+    #[test]
+    fn a_name_inside_a_type_keys_alike_filled_or_open() {
+        use crate::typ::{RefHist, RefPair};
+        let (env, _) = typed(&[("U", "[`K(U), `N]")], "null");
+        let open = || parse_type("`K(U)").unwrap().scope_refs(&ModPath::root());
+        let filled = || parsed(&env, "`K(U)");
+        for (t0, t1) in [(filled(), open()), (open(), filled())] {
+            let mut hist = RefHist::<AHashMap<RefPair, usize>>::new();
+            let (k0, k1) = (hist.ref_id(&t0, &env), hist.ref_id(&t1, &env));
+            assert!(k0.is_some() && k0 == k1, "{t0} {k0:?}, {t1} {k1:?}");
         }
     }
 

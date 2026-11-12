@@ -549,7 +549,7 @@ struct RefHist<H: IsoPoolable> {
     /// Structure → id for composite non-Ref types, open cells by their
     /// cell: an expansion rebuilt at every visit meets its earlier self.
     /// A hash bucket holds the types themselves, matched by
-    /// `union_identical`.
+    /// `union_identical_in`.
     shape_ids: Lazy<IntMap<u64, SmallVec<[(Type, usize); 1]>>>,
     /// The hashes `shape_ids` takes that read no cell, kept for every
     /// later one.
@@ -728,7 +728,7 @@ impl<H: IsoPoolable> RefHist<H> {
                 (d, (**params).as_ptr().addr(), id.0 as usize)
             }
             Type::Any | Type::Bottom => (d, 0, 0),
-            t => return Some(self.shape_id(t)),
+            t => return Some(self.shape_id(t, env)),
         };
         if let Some(&id) = self.content_ids.get().and_then(|m| m.get(&k)) {
             return Some(id);
@@ -744,16 +744,19 @@ impl<H: IsoPoolable> RefHist<H> {
     fn param_id(&mut self, t: &Type, env: &Env) -> usize {
         ensure_sufficient(|| match t {
             Type::TVar(tv) if let Some(b) = tv.binding() => self.param_id(&b, env),
-            Type::Abstract { .. } => self.shape_id(t),
-            t => self.ref_id(t, env).unwrap_or_else(|| self.shape_id(t)),
+            Type::Abstract { .. } => self.shape_id(t, env),
+            t => self.ref_id(t, env).unwrap_or_else(|| self.shape_id(t, env)),
         })
     }
 
-    /// The id of `t` by its structure, open cells by their cell.
-    fn shape_id(&mut self, t: &Type) -> usize {
+    /// The id of `t` by its structure, open cells by their cell, names by
+    /// the definition they mean in `env`.
+    fn shape_id(&mut self, t: &Type, env: &Env) -> usize {
         let h = shape_hash(t, self.fixed_hashes.get_mut());
         let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
-            b.iter().find(|(s, _)| setops::union_identical(s, t)).map(|(_, id)| *id)
+            b.iter()
+                .find(|(s, _)| setops::union_identical_in(env, s, t))
+                .map(|(_, id)| *id)
         });
         if let Some(id) = found {
             return id;

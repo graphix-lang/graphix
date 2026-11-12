@@ -224,6 +224,21 @@ structure is returned SHARED, never copied.
   bounds asks each link once whether it admits the value (pin
   `deep_nesting::
   a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time`).
+  A written test's narrowing (`Type::matching_type`) asks the probes of
+  all its pairs under one `ContainsHist` too, so the parts that many of
+  its pairs share are probed once, not once a pair: the pairs in progress
+  are none between two of its probes, and its first error ends it (pin
+  `typ::contains::tests::
+  a_narrowing_over_names_recurring_through_errors_probes_each_pair_once`).
+  Its memo keys a part by `RefHist::ref_id`, whose shape ids read a name
+  as the definition it means in the env, its cell filled or not
+  (`setops::union_identical_in`): a probe kept leaves names unfilled that
+  a walk asked again would fill, and a key read by the cells would tell
+  two copies of one type apart by what an earlier walk filled, so two
+  identical selects would type their binds apart (pins
+  `typ::setops::tests::
+  a_name_inside_a_type_keys_alike_filled_or_open`,
+  `lang::select::a_capture_type_is_the_same_at_every_select`).
 
 **A select's walks over two recursive unions.** The runtime-form check
 (`cast::rep_collision`) keys the pair it is at, a side of it a named

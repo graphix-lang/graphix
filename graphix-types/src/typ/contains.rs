@@ -5868,6 +5868,31 @@ mod tests {
         }
     }
 
+    // A narrowing over the families asks the probes of all its pairs
+    // through one walk, so a pair of names its pairs share is probed once.
+    #[test]
+    fn a_narrowing_over_names_recurring_through_errors_probes_each_pair_once() {
+        for n in [4, 8, 16] {
+            let defs = error_families(n);
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+            let (env, _) = Env::typed_at_root(&defs, "X0").unwrap();
+            for (test, reaching) in
+                [("Y0", "[X0, Y0]"), ("X0", "Y0"), ("[X1, Y1]", "[X0, Y0]")]
+            {
+                let (t, r) = (at_root(&env, test), at_root(&env, reaching));
+                CONTAINS_STEPS.with(|n| n.set(0));
+                assert!(!t.matching_type(&env, &r).unwrap().is_uninhabited());
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                let bound = 400 * n * n;
+                assert!(
+                    steps <= bound,
+                    "n={n}: {test} over {reaching} took {steps} steps"
+                );
+            }
+        }
+    }
+
     /// A DAG of named unions, two names a level over both names below:
     /// `L<i> = [L<i-1>, M<i-1>]`, `M<i>` the same, to `L<n>`, over `L0`
     /// and `M0`.
