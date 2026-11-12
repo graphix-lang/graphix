@@ -349,7 +349,6 @@ pub struct RunFixture {
     pub name: &'static str,
     pub files: Vec<(&'static str, ArcStr)>,
     pub pred: Box<dyn Fn(Result<&Value>) -> bool>,
-    pub timeout: u64,
     pub expect: FuseExpect,
     pub shape: Option<graphix_compiler::node_shape::NodeShape>,
     pub register: &'static [PackageRef],
@@ -459,8 +458,7 @@ async fn fixture_mode(
                     ctx.rt.match_shape(eid, spec).await?;
                 }
             }
-            let deadline = Instant::now() + Duration::from_secs(f.timeout);
-            let v = next_update_raw(&mut rx, eid, deadline).await?;
+            let v = first_update(&ctx.rt, &mut rx, eid).await?;
             let v = observed(&ctx, &res.exprs[0].typ, v).await?;
             eprintln!("{v}");
             assert!(pred(Ok(&v)));
@@ -501,7 +499,7 @@ async fn fixture_mode(
 /// ..`, run in `mode`; its value, held to its type, goes to `expect`. The
 /// node-walk also holds the check to the build. An error the program raises
 /// and does not catch is printed, so a failing operation names itself
-/// beside a timeout.
+/// beside the wait it leaves unanswered.
 pub async fn run_tempdir_fixture(
     code: &str,
     register: &[PackageRef],
@@ -523,9 +521,7 @@ pub async fn run_tempdir_fixture(
     }
     // the fixture's expression lives as long as `built`
     let built = built?;
-    let eid = built.exprs[0].id;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let v = next_update_raw(&mut rx, eid, deadline).await?;
+    let v = first_update(&ctx.rt, &mut rx, built.exprs[0].id).await?;
     expect(observed(&ctx, &built.exprs[0].typ, v).await?)?;
     ctx.shutdown().await;
     Ok(())
@@ -583,6 +579,17 @@ pub async fn observed(ctx: &TestCtx, typ: &Type, v: Value) -> Result<Value> {
     Ok(data(v))
 }
 
+// CR claude for claude: [risk/low] Test-local waits still hand this and
+// `next_update_raw` (and `collect`, and their own `tokio::time::timeout`s) a short wall
+// deadline: 5 to 20 s in lang::fusion's `await_map_len`, lang::fusion_review,
+// lang::attributes, lang::image's `eval_on`, lib_tests::{pack, process, lift,
+// module_stmt}, tests/fusion_diagnostics and more, about 25 sites (`git grep -n
+// "Instant::now() + Duration::from_secs("` under stdlib/graphix-tests). That is the
+// exposure db-long-lists-wall-deadline-01 took out of the harness's first value: a
+// correct wait whose work is slow under load fails. None is seen to fail yet. A fix: a
+// wait for a later update races the settle as `first_update` does (a settle without the
+// update fails at once), with `HANG_GUARD` its only wall limit, and the deadline
+// parameter goes. (test-local-wall-deadlines-01)
 /// The next update of `id`, as [`data`].
 pub async fn next_update(
     rx: &mut Events,
@@ -603,14 +610,43 @@ pub async fn next_update_raw(
             .await
             .map_err(|_| anyhow::anyhow!("timeout waiting for an update of {id:?}"))?
             .context("the runtime died")?;
-        for e in batch.drain(..) {
-            if let GXEvent::Updated(eid, v) = e
-                && eid == id
-            {
-                return Ok(v);
-            }
+        if let Some(v) = update_of(&mut batch, id) {
+            return Ok(v);
         }
     }
+}
+
+/// The first update of `id` as the runtime delivered it. A runtime that
+/// settles without one fails at once, since nothing outstanding can bring
+/// it; otherwise the wait lasts as long as the fixture's work does under
+/// the box's load, up to [`HANG_GUARD`].
+pub async fn first_update(
+    rt: &GXHandle<NoExt>,
+    rx: &mut Events,
+    id: ExprId,
+) -> Result<Value> {
+    let settled = rt.wait_settled();
+    tokio::pin!(settled);
+    tokio::select! {
+        v = next_update_raw(rx, id, Instant::now() + HANG_GUARD) => v,
+        r = &mut settled => {
+            r.context("the runtime died")?;
+            // every update is in the stream before the settle answers
+            while let Ok(mut batch) = rx.try_recv() {
+                if let Some(v) = update_of(&mut batch, id) {
+                    return Ok(v);
+                }
+            }
+            bail!("the runtime settled without an update of {id:?}")
+        }
+    }
+}
+
+fn update_of(batch: &mut GPooled<Vec<GXEvent>>, id: ExprId) -> Option<Value> {
+    batch.drain(..).find_map(|e| match e {
+        GXEvent::Updated(eid, v) if eid == id => Some(v),
+        _ => None,
+    })
 }
 
 /// Every update of `id` until the runtime settles (idle with nothing
@@ -850,8 +886,7 @@ impl Fixture {
             .compile(arcstr::literal!("{ mod test; test::result }"))
             .await
             .context("compile graphix code")?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let initial = next_update_raw(&mut rx, compiled.exprs[0].id, deadline).await?;
+        let initial = first_update(&ctx.rt, &mut rx, compiled.exprs[0].id).await?;
         let f = Self {
             _ctx: ctx,
             gx,
@@ -1012,12 +1047,7 @@ where
 {
     let (ctx, mut rx) = fixture_runtime(files, register, Mode::Jit, setup).await?;
     let res = compile_result(&ctx).await?;
-    let v = next_update_raw(
-        &mut rx,
-        res.exprs[0].id,
-        Instant::now() + Duration::from_secs(5),
-    )
-    .await?;
+    let v = first_update(&ctx.rt, &mut rx, res.exprs[0].id).await?;
     Ok((v, ctx))
 }
 
@@ -1043,12 +1073,7 @@ pub async fn eval_modes(
                 .with_context(|| format!("{code}"))?;
         }
         let got = match built {
-            Ok(res) => Ok(next_update(
-                &mut rx,
-                res.exprs[0].id,
-                Instant::now() + Duration::from_secs(5),
-            )
-            .await?),
+            Ok(res) => Ok(data(first_update(&ctx.rt, &mut rx, res.exprs[0].id).await?)),
             Err(e) => Err(format!("{e:#}")),
         };
         ctx.shutdown().await;
@@ -1160,41 +1185,35 @@ macro_rules! run {
     // A refusal only a build makes (`#[native]`, the definition
     // assertions): no check test.
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; build_only) => {
-        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
+        $crate::run!(@impl false, cfg(all()), $name, $pred, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr; build_only) => {
-        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl false, cfg(all()), $name, $pred, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
     // The JIT alone: a program the node-walk cannot run (a native loop
     // deeper than the stack budget allows activations).
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; jit_only) => {
-        $crate::run!(@impl true, cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
+        $crate::run!(@impl true, cfg(any()), $name, $pred, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; shape: $shape:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => $crate::testing::result_text(&$code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr; shape: $shape:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => $crate::testing::result_text(&$code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
-    };
-    ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
-    };
-    ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr; $fexpect:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $fexpect, ::std::option::Option::None, "/test.gx" => $crate::testing::result_text(&$code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr) => {
-        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
-    (@impl $check:literal, $interp:meta, $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
+    (@impl $check:literal, $interp:meta, $name:ident, $pred:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
         mod $name {
             use super::*;
 
@@ -1203,7 +1222,6 @@ macro_rules! run {
                     name: module_path!(),
                     files: ::std::vec![$(($path, ::arcstr::ArcStr::from($code))),+],
                     pred: $crate::testing::predicate($pred),
-                    timeout: $timeout,
                     expect: $fexpect,
                     shape: $shape,
                     register: &crate::TEST_REGISTER,

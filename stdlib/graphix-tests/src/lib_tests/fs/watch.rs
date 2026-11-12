@@ -736,7 +736,7 @@ run!(watch_rebuilds_after_wake, r#"{
     array::group(established, |n, _| n == 2)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
-}, timeout: 3; FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A stream over a watch that sleeps mid-burst leaves the burst to every
 // other stream on the watch: the Established and the 8 creates all reach

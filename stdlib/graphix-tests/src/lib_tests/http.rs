@@ -71,7 +71,7 @@ run!(https_beside_a_silent_client, { let cd = crate::lib_tests::cert_dir(); form
     resp.body
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-}, timeout: 5; FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A #ca_cert holding no certificate is refused, never a client that
 // trusts nothing (x-security-07).

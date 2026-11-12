@@ -1320,7 +1320,7 @@ const BOTTOM_TYPED_ARM_RUNS: &str = r#"
 }
 "#;
 
-run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, is(Value::I64(5)), timeout: 5; FuseExpect::Jit);
+run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, is(Value::I64(5)); FuseExpect::Jit);
 
 // A `never(args..)` arm is a standing bottom whatever its args do, but
 // the args are consumed: the handler-ful `?` inside one delivers its
@@ -1335,7 +1335,7 @@ const NEVER_ARM_ARGS_RAISE: &str = r#"
 }
 "#;
 
-run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, is(Value::I64(1)), timeout: 5; FuseExpect::None);
+run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, is(Value::I64(1)); FuseExpect::None);
 
 // The error derives from `n`, which stands when the arm is entered:
 // nothing fires in the arm, so nothing raises and `n` stays 0, in the
@@ -1349,7 +1349,7 @@ const ARM_RAISE_STANDING_INPUT: &str = r#"
 }
 "#;
 
-run!(arm_raise_standing_input_does_not_raise, ARM_RAISE_STANDING_INPUT, is(Value::I64(0)), timeout: 5; FuseExpect::None);
+run!(arm_raise_standing_input_does_not_raise, ARM_RAISE_STANDING_INPUT, is(Value::I64(0)); FuseExpect::None);
 
 // The soak's shape: a call into a connecting body inside a never arm of
 // a collection callback. The call must reach `g` and land the write;
@@ -1363,7 +1363,7 @@ const NEVER_ARM_ARGS_EFFECT: &str = r#"
 }
 "#;
 
-run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, is(Value::I64(1)), timeout: 5; FuseExpect::Jit);
+run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, is(Value::I64(1)); FuseExpect::Jit);
 
 // A tail call whose new value for one composite formal is another
 // formal's old value: the rebind owns every new value before an old one

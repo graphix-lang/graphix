@@ -12,6 +12,7 @@ mod db;
 mod dirs;
 mod expr_types;
 mod fs;
+mod harness;
 mod hbs;
 mod http;
 mod interrupt;
