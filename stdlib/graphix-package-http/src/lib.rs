@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use compact_str::format_compact;
-use futures::{SinkExt, channel::mpsc};
+use futures::channel::mpsc;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, ExecCtx, Node,
     Rt, Scope, TagValue,
@@ -394,7 +394,8 @@ pub(crate) type HttpRequestBin = CachedArgsAsync<HttpRequestEv<Bytes>>;
 /// A request and where its answer goes.
 type Asked = (Value, oneshot::Sender<Value>);
 
-/// Requests are waiting in the server's inbox.
+/// Requests are waiting in the server's inbox, or an asker stopped
+/// waiting.
 #[derive(Debug)]
 struct HttpWake;
 
@@ -409,6 +410,35 @@ struct Post {
     tx: Batches,
     id: BindId,
     inbox: Arc<Inbox<Asked>>,
+}
+
+impl Post {
+    /// Wake the server; false when its runtime is gone. Every batch on
+    /// `tx` wakes this server, so a full channel holds a wake already.
+    fn wake(&mut self) -> bool {
+        let mut batch = CBATCH_POOL.take();
+        batch.push((self.id, Box::new(HttpWake) as Box<dyn CustomBuiltinType>));
+        self.tx.try_send(batch).map_or_else(|e| e.is_full(), |()| true)
+    }
+}
+
+/// Where a request's answer arrives. Dropped before it does (the client
+/// went away), it wakes the server, which drops the request.
+struct Awaiting {
+    rx: oneshot::Receiver<Value>,
+    post: Post,
+}
+
+impl Drop for Awaiting {
+    fn drop(&mut self) {
+        if !self.rx.is_terminated() {
+            // closed before the wake, so the cycle it starts sees the asker gone
+            self.rx.close();
+            if self.post.inbox.wake() {
+                self.post.wake();
+            }
+        }
+    }
 }
 
 fn text_response(
@@ -466,7 +496,7 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
 /// arrive whole is 400, neither dispatched.
 async fn handle_http_request(
     req: hyper::Request<hyper::body::Incoming>,
-    mut post: Post,
+    post: Post,
     max_body: usize,
     body_timeout: Duration,
 ) -> hyper::Response<Full<Bytes>> {
@@ -504,15 +534,17 @@ async fn handle_http_request(
         raw,
     }
     .into();
-    let (reply_tx, reply_rx) = oneshot::channel();
-    if post.inbox.post((request, reply_tx)) {
-        let mut batch = CBATCH_POOL.take();
-        batch.push((post.id, Box::new(HttpWake) as Box<dyn CustomBuiltinType>));
-        if post.tx.send(batch).await.is_err() {
-            return text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
-        }
+    ask(post, request).await
+}
+
+/// Post a request to the server and wait for its answer.
+async fn ask(mut post: Post, request: Value) -> hyper::Response<Full<Bytes>> {
+    let (reply_tx, rx) = oneshot::channel();
+    if post.inbox.post((request, reply_tx)) && !post.wake() {
+        return text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
     }
-    match reply_rx.await {
+    let mut awaiting = Awaiting { rx, post };
+    match (&mut awaiting.rx).await {
         Ok(resp_value) => build_hyper_response(&resp_value),
         Err(_) => {
             text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
@@ -943,6 +975,7 @@ impl<R: Rt> Apply<R> for HttpServe<R> {
             for (request, reply) in asked.drain(..) {
                 self.handler.push(request, reply);
             }
+            self.handler.drop_abandoned(ctx);
         }
         self.handler.update(ctx);
         match started {
@@ -998,4 +1031,31 @@ graphix_derive::defpackage! {
         HttpRequestBin,
         HttpServe as HttpServe<GXRt<X>>,
     ],
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use futures::FutureExt;
+
+    /// An asker that leaves after the server took its request wakes the
+    /// server, its request's reply closed by then.
+    #[test]
+    fn an_asker_leaving_wakes_the_server() {
+        let (tx, mut woken) = mpsc::channel(1);
+        let inbox: Arc<Inbox<Asked>> = Arc::default();
+        let id = BindId::new();
+        let mut asking =
+            Box::pin(ask(Post { tx, id, inbox: inbox.clone() }, Value::Null));
+        assert!(asking.as_mut().now_or_never().is_none());
+        let posted = woken.try_recv().expect("the post's wake");
+        assert_eq!(posted[0].0, id);
+        let mut asked: Vec<Asked> = Vec::new();
+        inbox.take(&mut asked);
+        let [(_, reply)] = &asked[..] else { panic!("one request, not {}", asked.len()) };
+        drop(asking);
+        assert!(reply.is_closed());
+        let left = woken.try_recv().expect("the leaving's wake");
+        assert_eq!(left[0].0, id);
+    }
 }

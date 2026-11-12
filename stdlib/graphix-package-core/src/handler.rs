@@ -27,7 +27,9 @@ pub trait Reply: Send + 'static {
         self.reply(e)
     }
 
-    /// The asker stopped waiting.
+    /// The asker stopped waiting. Read only by
+    /// [`Handler::drop_abandoned`], so an asker that can leave wakes the
+    /// builtin when it does ([`Inbox::wake`]).
     fn abandoned(&self) -> bool {
         false
     }
@@ -81,6 +83,14 @@ impl<T> Inbox<T> {
         !self.woken.swap(true, Ordering::AcqRel)
     }
 
+    /// An asker stopped waiting: true when the builtin must be woken to
+    /// drop its request. A closed inbox has dropped its requests.
+    pub fn wake(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let queue = self.queue.lock();
+        queue.is_some() && !self.woken.swap(true, Ordering::AcqRel)
+    }
+
     /// Every request posted; the next post wakes the builtin again.
     pub fn take(&self, out: &mut impl Extend<T>) {
         use std::sync::atomic::Ordering;
@@ -100,7 +110,8 @@ impl<T> Inbox<T> {
 /// a published rpc): each request gets an instance of the function of
 /// its own, answered by that instance's first fire, or by the error it
 /// raised, which also goes on to the handler covering the builtin. A
-/// request whose asker stopped waiting is dropped with its instance.
+/// request whose asker stopped waiting is dropped with its instance
+/// ([`Handler::drop_abandoned`]).
 #[derive(Debug)]
 pub struct Handler<R: Rt, Q> {
     /// The call the check types; requests run in instances like it.
@@ -253,7 +264,37 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
                 self.running.push((r, q));
             }
         }
-        // CR claude for claude: [bug/low] A request whose asker stopped waiting
+        let answers = branch::fork_instances(
+            ctx,
+            &mut self.fork,
+            &mut self.running,
+            standing,
+            call_of,
+            |ctx, (r, _)| r.update(ctx),
+        );
+        for (i, answer) in answers.into_iter().enumerate().rev() {
+            let Some(answer) = answer else { continue };
+            let (mut r, q) = self.running.swap_remove(i);
+            r.delete(ctx);
+            match answer {
+                Answer::Raised(e) => q.raised(e),
+                Answer::Fired(v) => {
+                    let v = match q.data() {
+                        None => v,
+                        Some(tag) => crate::write_data(ctx, &v)
+                            .unwrap_or_else(|e| errf!(tag, "{e:#}")),
+                    };
+                    q.reply(v)
+                }
+            }
+        }
+    }
+
+    /// Drop the requests whose askers stopped waiting, in a cycle the
+    /// builtin's wake starts: an asker's leaving changes nothing a walk
+    /// sees until it wakes the builtin.
+    pub fn drop_abandoned(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        // XCR claude for claude: [bug/low] A request whose asker stopped waiting
         // (an http client's timeout, a dropped rpc call) is polled here by
         // `q.abandoned()` and its instance deleted the next time this node is
         // walked, but nothing marks the handler's boundary when the asker gives
@@ -268,35 +309,26 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
         // A fix marks the boundary when the asker's side is dropped (the
         // sender's drop wakes the runtime with a mark for this reader), as a
         // reply's arrival does. (abandoned-request-unmarked-01)
-        // None: still running; Some(None): its asker stopped waiting
-        let answers = branch::fork_instances(
-            ctx,
-            &mut self.fork,
-            &mut self.running,
-            standing,
-            call_of,
-            |ctx, (r, q)| match q.abandoned() {
-                true => Some(None),
-                false => r.update(ctx).map(Some),
-            },
-        );
-        for (i, answer) in answers.into_iter().enumerate().rev() {
-            let Some(answer) = answer else { continue };
-            let (mut r, q) = self.running.swap_remove(i);
-            r.delete(ctx);
-            match answer {
-                None => (),
-                Some(Answer::Raised(e)) => q.raised(e),
-                Some(Answer::Fired(v)) => {
-                    let v = match q.data() {
-                        None => v,
-                        Some(tag) => crate::write_data(ctx, &v)
-                            .unwrap_or_else(|e| errf!(tag, "{e:#}")),
-                    };
-                    q.reply(v)
-                }
+        // 2026-11-12 claude: Handler::drop_abandoned now reads q.abandoned()
+        // only in a cycle the builtin's wake starts (HttpServe calls it after
+        // taking its inbox), and the http asker's side (Awaiting, which owns
+        // the reply's receiver) closes it and wakes the server through
+        // Inbox::wake when the asker's future is dropped unanswered;
+        // Handler::update no longer polls it. Pins:
+        // lib_tests::http::http_abandoned_request_dropped_when_its_client_leaves
+        // (interp and jit_par panic in the prune audit without the fix, as the
+        // CR's probe does) and graphix-package-http
+        // test::an_asker_leaving_wakes_the_server (fails without the wake).
+        // RpcReply never reports an abandoned call, so rpc is untouched: an rpc
+        // request whose caller left still runs until it answers.
+        self.pending.retain(|(_, q)| !q.abandoned());
+        self.running.retain_mut(|(r, q)| match q.abandoned() {
+            true => {
+                r.delete(ctx);
+                false
             }
-        }
+            false => true,
+        });
     }
 
     pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {

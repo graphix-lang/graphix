@@ -214,6 +214,22 @@ run!(http_abandoned_request_then_good, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "200 hi bob")
 }; FuseExpect::Jit);
 
+// A request whose client gives up is dropped in a cycle its leaving
+// starts, so a later cycle that walks the server (the audit walks every
+// boundary) finds nothing to drop.
+run!(http_abandoned_request_dropped_when_its_client_leaves, r#"{
+    let silent = never<null>();
+    let handler = |req: http::Request| silent ~ {body: "x", headers: [], status: u16:200};
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let r = http::request(#timeout: duration:200.ms, client, "http://[addr]/");
+    let out = select r { error as _ => "error", r => r.body };
+    sys::time::after_idle(duration:300.ms, out)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "error")
+}; FuseExpect::Jit);
+
 // A request whose instance raises is answered 500, and a concurrent one
 // whose instance answers gets its own page.
 run!(http_raises_answer_their_own_requests, r#"{

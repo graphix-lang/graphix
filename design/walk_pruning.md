@@ -146,7 +146,12 @@ A boundary must run in cycle `c` when:
      `SeqGuard` (`aborted_in`, `generation`) poll (`error.rs`);
    - `queuefn`: two sites share `Arc<Mutex>` queue state, and a pop at
      one releases the other's arguments (`queuefn.rs`);
-   - `ConnectDeref`: a pending write retried across cycles.
+   - `ConnectDeref`: a pending write retried across cycles;
+   - a request handler (`graphix-package-core` `handler.rs`): an asker
+     that stops waiting (an http client gone) closes its reply, which
+     `Handler::drop_abandoned` reads only in a cycle the builtin's
+     custom delivery starts; the asker's leaving sends one
+     (`Inbox::wake`).
    Rule: each such mutation marks the poller's boundary (the handler
    records its catch's and guards' `Reader`s; a queuefn site records
    its partner's), and a node that must retry next cycle holds its
