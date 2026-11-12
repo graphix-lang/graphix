@@ -6645,6 +6645,31 @@ mod tests {
         }
     }
 
+    /// Two members that print alike over two cells print once, capped or
+    /// not, where the two together pass what the cap leaves them and one
+    /// does not: a union of them, and a union holding it second.
+    #[test]
+    fn brief_of_a_union_prints_alike_members_once() {
+        let i64s = |n| {
+            Type::Tuple(Arc::from_iter((0..n).map(|_| Type::Primitive(Typ::I64.into()))))
+        };
+        let alike = |n| {
+            let member = || {
+                let cell = Type::TVar(TVar::empty_named(literal!("_7")));
+                Type::Tuple(Arc::from_iter([i64s(n), cell]))
+            };
+            Type::Set(Arc::from_iter([member(), member()]))
+        };
+        let behind =
+            Type::Set(Arc::from_iter([i64s(40), Type::Array(Arc::new(alike(50)))]));
+        let flags = PrintFlag::DerefTVars | PrintFlag::ReplacePrims;
+        for t in [alike(60), behind] {
+            let whole = format_with_flags(flags, || format!("{t}"));
+            assert!(whole.len() <= Brief::BYTES, "{whole}");
+            assert_eq!(format_compact!("{}", Brief(&t)), whole);
+        }
+    }
+
     /// `&T` and `&mut T` over one inner allocation are two types to every
     /// memo and every walk that visits a shared node once.
     #[test]

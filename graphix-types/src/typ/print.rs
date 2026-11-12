@@ -193,7 +193,7 @@ impl fmt::Display for Type {
 /// current flags, tvars dereferenced. A type that shares its parts prints
 /// as a tree, 2^depth long, and the printer stops at the first write
 /// refused; a union's members print into scratch no further than the cap
-/// ([`write_deref_set`]).
+/// needs ([`write_deref_set`]).
 pub struct Brief<'a>(pub &'a Type);
 
 impl Brief<'_> {
@@ -385,10 +385,12 @@ impl Type {
 /// A set whose cells print as what they hold: a member identical to an
 /// earlier one (two names of one cell), or printing as it does where
 /// either holds a cell (two cells bound to one type), prints once, and a
-/// lone member prints bare. The members print into scratch only as far as
-/// [`SHOWN`] reaches: a member whose text passes it is kept as far as it
-/// printed, and once the kept text passes it the next member that is not
-/// identical to one kept counts as kept unprinted, since none of it shows.
+/// lone member prints bare. A member prints into scratch only as far as
+/// the farther of what [`SHOWN`] reaches and the longest member kept,
+/// past which it prints like none of them: a member whose text passes
+/// that is kept as far as it printed, and once the kept text passes
+/// [`SHOWN`] the next member that is not identical to one kept counts as
+/// kept unprinted, since none of it shows.
 // CR claude for claude: [bug/low] A union the checker keeps as two members prints as one: in a
 // definition's body check, `[fn(p: 'a) -> .., fn(q: 'b) -> ..]` over two declared variables
 // prints its first member alone, since `union_identical` pairs their unbound cells as a renaming
@@ -420,6 +422,13 @@ impl Type {
 // merges bound cells; nothing pins this message: putting union_identical back in write_deref_set
 // fails no test in graphix-tests lang:: or graphix-types --lib, so pin p11 and s2 as run! refusals
 // naming both members.
+// CR claude for claude: [risk/low] Members that print alike over distinct cells each print
+// whole to be compared, so unions of them nested inside each other cost 2^depth for text that
+// grows by a few bytes a level, under `Brief`'s cap or not: `S = [(S', c1), (S', c2)]`, c1 and c2
+// two open cells of one generated name, takes 2.4/10/36/142 ms at depth 12/14/16/18 (291
+// bytes), `Brief` and `{}` alike. No program has shown such a chain; cells printing as one
+// lower bound are the likeliest source. probe:
+// ~/ptmp/cr29/scratch/r23/23f/review-brief/lookalike_cost.rs (print-lookalike-exp-01)
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     let cap = SHOWN.get();
     let mut text: LPooled<String> = LPooled::take();
@@ -433,12 +442,13 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
             kept.push((t, start, start));
             break;
         }
+        let longest = kept.iter().map(|(_, a, b)| b - a).max().unwrap_or(0);
+        let reach = cap.max(start + longest);
         let printed = {
-            let _shown = Restore::replace(&SHOWN, cap - start);
-            write!(Scratch { text: &mut text, cap }, "{}", SetMember(t))
+            let _shown = Restore::replace(&SHOWN, reach - start);
+            write!(Scratch { text: &mut text, cap: reach }, "{}", SetMember(t))
         };
-        let full = text.len() > cap;
-        if !full {
+        if text.len() <= reach {
             printed?;
             let printed = &text[start..];
             let again = kept.iter().any(|(k, a, b)| {
@@ -450,7 +460,7 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
             }
         }
         kept.push((t, start, text.len()));
-        if full && kept.len() > 1 {
+        if text.len() > cap && kept.len() > 1 {
             break;
         }
     }
