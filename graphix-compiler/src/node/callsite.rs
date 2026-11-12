@@ -38,7 +38,7 @@ use crate::{
         AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
         Mutability, TVar, Type,
         settle::{DataPositions, Expanded, Held, Reaching, Unrolling},
-        tvar::{AtLevel, BoundAt, Judgment, Level, RigidGate},
+        tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
     },
     wrap,
 };
@@ -778,8 +778,9 @@ fn fill_omitted<R: Rt>(args: &mut ArgMap<R>, ftype: &FnType) -> Result<()> {
 /// address of the formal's cell it copies.
 type Copies = LPooled<AHashMap<usize, TVar>>;
 
-/// A formal's cells, each with its copy in the formal's open copy.
-type Copied = LPooled<Vec<(TVar, TVar)>>;
+/// A formal's cells, each with its copy in the formal's open copy and the
+/// bounds the copy was made with: the cell's.
+type Copied = LPooled<Vec<(TVar, TVar, Bounds)>>;
 
 /// How a call's argument stands once its own check is done.
 enum ArgFit {
@@ -995,7 +996,7 @@ fn typecheck_arg<R: Rt>(
             let mut copied: Copied = LPooled::take();
             Reach::default().go(typ, &mut |_| false, &mut |tv| {
                 if let Some(copy) = copies.get(&tv.cell_addr()) {
-                    copied.push((tv.clone(), copy.clone()))
+                    copied.push((tv.clone(), copy.clone(), tv.bounds()))
                 }
                 false
             });
@@ -1010,8 +1011,8 @@ fn typecheck_arg<R: Rt>(
 /// took from the copy is then the formal's own, as the other arguments
 /// settled it.
 fn rejoin(copied: &Copied) {
-    for (cell, copy) in copied.iter() {
-        copy.rejoin(cell)
+    for (cell, copy, made) in copied.iter() {
+        copy.rejoin(cell, *made)
     }
 }
 

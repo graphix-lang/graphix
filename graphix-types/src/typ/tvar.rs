@@ -1871,6 +1871,13 @@ pub struct TVarInner {
     pub(crate) link: RwLock<TVarLink>,
 }
 
+/// How many lower bounds and conjuncts a cell holds ([`TVar::bounds`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    lower: usize,
+    conjuncts: usize,
+}
+
 #[derive(Clone)]
 pub struct TVar(ManuallyDrop<Arc<TVarInner>>);
 
@@ -2620,19 +2627,27 @@ impl TVar {
             || scons.iter().any(|c| would_cycle_inner(&o_cell, c))
     }
 
-    /// Make self, an undecided copy of `cell`, the cell it copies: its
-    /// alias where `cell` is open, bound to it where it is decided. A copy
-    /// `cell` reaches stays apart: the two as one type would be infinite.
-    /// So does a copy above a lower bound beside a decided `cell`: the
-    /// relation the caller makes next binds it, or refuses what its bounds
-    /// do not fit.
-    pub fn rejoin(&self, cell: &Self) {
+    /// How many lower bounds and conjuncts the cell holds.
+    pub fn bounds(&self) -> Bounds {
+        let cell = self.cell();
+        let c = cell.read();
+        Bounds { lower: c.lower.len(), conjuncts: c.constraints.len() }
+    }
+
+    /// Make self, an undecided copy of `cell` made with `made` bounds, the
+    /// cell it copies: its alias where `cell` is open, bound to it where it
+    /// is decided. A copy `cell` reaches stays apart: the two as one type
+    /// would be infinite. So does a copy holding a bound it was not made
+    /// with beside a decided `cell`: the argument it became one cell with
+    /// brought the bound, and the relation the caller makes next binds it,
+    /// or refuses what the bound does not fit.
+    pub fn rejoin(&self, cell: &Self, made: Bounds) {
         if self.is_bound() || self.same_cell(cell) || self.closes_cycle(cell) {
             return;
         }
         match cell.is_bound() {
-            true if self.cell_lower().is_empty() => self.bind(Type::TVar(cell.clone())),
-            true => (),
+            true if self.bounds() != made => (),
+            true => self.bind(Type::TVar(cell.clone())),
             false => self.alias(cell),
         }
     }

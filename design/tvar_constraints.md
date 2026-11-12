@@ -376,11 +376,16 @@ that the formal's cell reaches stays apart (`TVar::rejoin`): in `|y|
 h([y, 1], (y, 2))` over `|a: Array<'a>, b: ('a, i64)|` the join put `y`'s
 cell inside `'a`, and the two as one cell would be an infinite type (pin
 `lang::types::undecided_argument_inside_what_its_formals_variable_settled_to`).
-So does a copy that stands above a lower bound beside a decided cell: the
-pre-unification made it one cell with the argument's (a binding's open
-payload, `let v = x.0`), and the check that follows binds it only where
-what the join decided holds those bounds (pins
-`lang::functions::undecided_binding_above_a_lower_bound_{refused,it_holds_joins}`).
+So does a copy that holds a bound it was not made with beside a decided
+cell: the pre-unification made it one cell with the argument's, which
+brought the bound (the lower bounds of a binding's open payload, `let v =
+x.0`; the conjunct an operator left on a parameter, `p + q`, `a[p]`), and
+the check that follows binds it only where what the join decided fits
+those bounds. A copy is made with its formal's cell's own bounds (a
+declared `'a: Number`), which what the join decided already fits, so the
+count of each kind is what tells them apart (`tvar::Bounds`; pins
+`lang::functions::undecided_binding_above_a_lower_bound_{refused,it_holds_joins}`,
+`undecided_parameter_within_a_conjunct_{refused,it_fits_joins}`).
 An argument expression whose type its own check has yet to make (a seq step's
 captured argument, a field read) is not pre-unified with the copy: its
 check would commit the copy's bounds before the other arguments decide

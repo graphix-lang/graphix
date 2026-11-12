@@ -1641,6 +1641,13 @@ fn commit_cell_bounds(
 // hole: m11_m00620.gx passes [|v| [null]] at 'a2: P<'a3, 'a4> (two array members take the array), nothing
 // reaches 'a3, and its settle then fails, unsatisfiable constraints on 'a3: G<..>; the pre-unification's pick
 // by order had bound it. probe: ~/ptmp/cr29/scratch/r20/20b/x6/residual/m11_m00620.gx
+// 2026-11-12 claude: Review of open-param-let-arg-01 (lane 23b): the same hole with the undecided array a
+// binding read as an array before the call. Over `type P<'x, 'y> = [Array<'x>, Array<'y>, null]` and `let f =
+// 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0`,
+// `let v = never(); let s = array::len(v); let r = f(v, null, [1]); v <- [7]` passes --check and the build
+// refuses the instance at fn(x0: Array<i64>, x1: null, x2: Array<i64>); annotated (`let v: Array<i64> =
+// never()`) the check refuses the call. Under GRAPHIX_NO_SUBST it runs and prints `1 [7]`. base-r23 alike; 12
+// of 1584 generated programs (gen2.py, the len_*_pun3 family). probe: ~/ptmp/cr29/scratch/r23/23b/opl/z/u1.gx
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int

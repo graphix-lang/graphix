@@ -3371,6 +3371,23 @@ impl FnType {
         }
     }
 
+    // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
+    // where a function whose variable a bound names is defined inside a wrapper, takes the
+    // wrapper's parameter at the bound's holder, and the wrapper then reads the parameter
+    // as an array. `let n: [i64, null] = 1; let g = |p| { let f = 'b: Array<'a> |x: 'b, y:
+    // 'a| x; let r = f(p, n); (array::len(p), r) }; g([null])` passes `--check` and the run
+    // fails "an instance at fn(x: Array<null>, y: [i64, null]) -> Array<null> of a
+    // definition typed fn<'b: Array<'a: null>>(x: 'b: unbound within Array<'a: null> &
+    // Array<'a1: null>, y: 'a: null) -> ..": 'b stands within two conjuncts, its bound and
+    // the Array<'a1> array::len left on the parameter, and 'a is placed at what the
+    // holder's argument gives the bound, not at `y`'s own place. `g([4])` is refused the
+    // same way and `g([n])` runs; so do the wrapper without array::len (z15), with it
+    // before the call (z19), and with `f` defined outside the wrapper (z8). Under
+    // GRAPHIX_NO_SUBST the instance's own check refuses, "'a: null does not contain [i64,
+    // null]". base-r23 alike. inst-bound-order-01 closed the form where the bound is the
+    // cell's one conjunct. Found reviewing open-param-let-arg-01 (gen2.py, 1 of 1584:
+    // lam_nul_len_post_holdx). probes: ~/ptmp/cr29/scratch/r23/23b/opl/z/{z14,z20,z15,z19,z8}.gx
+    // (inst-bound-second-conjunct-01)
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
     /// the instance's own and bound to the instance's type. Where the

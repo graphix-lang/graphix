@@ -369,7 +369,17 @@ argument or omitted default whose type is still open (a `str::parse`, a
 `let` over `never()`, `[]`) takes what the others decide:
 `opt::or_default(str::parse(s)$, 0)` reads an `i64`, and
 `f(str::parse(s), 1)` over `|x: 'a, y: 'a|` is refused, "annotate it"
-(`'a` is `i64`, which holds no parse error): annotate the read.
+(`'a` is `i64`, which holds no parse error): annotate the read. What the
+others decide must also fit what the open one's other uses ask of it, an
+operator that read it or the values written where it is read from: `|p,
+q| { let s = p + q; array::push(["s"], p) }` is refused, since a string
+is no number.
+
+```graphix,cases
+no "undecided at this" |p, q| { let s = p + q; array::push(["s"], p) }
+ok |p, q| { let s = p + q; array::push([1], p) }
+no "undecided at this" { type B<'p> = Abstract<'p>; let x = B(1); x <- B("a"); let v = x.0; array::push([10], v) }
+```
 
 A variable a callback also holds does not widen: the first argument decides
 it, an open one included, so order decides between a value and a refusal.

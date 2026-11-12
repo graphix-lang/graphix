@@ -2351,6 +2351,143 @@ run!(
     prints("[i64:1, i64:1]")
 );
 
+// So does one whose cell an operator left a conjunct on: what the others
+// settle must fit it, whichever the call, and whatever stands between.
+run!(
+    undecided_parameter_within_a_conjunct_refused,
+    r#"{
+  let g = |p, q| {
+    let s = p + q;
+    let f = |a: Array<'a>, b: 'a| b;
+    (s, f(["s"], p))
+  };
+  g("a", "b")
+}"#,
+    refused(
+        "unbound within Number & Singleton: `p` is undecided at this call; annotate `p`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    undecided_parameter_within_a_conjunct_builtin_refused,
+    r#"{
+  let g = |p, q| {
+    let s = -p;
+    (s, array::push(["s"], p))
+  };
+  g("a", "b")
+}"#,
+    refused("unbound within [Real, Sint]: `p` is undecided at this call; annotate `p`");
+    FuseExpect::None
+);
+
+run!(
+    undecided_index_within_a_conjunct_refused,
+    r#"{
+  let g = |p| {
+    let a = [1, 2, 3];
+    (a[p], array::push([1.5], p))
+  };
+  g(1.5)
+}"#,
+    refused("'a: f64 does not contain");
+    FuseExpect::None
+);
+
+run!(
+    undecided_binding_within_a_conjunct_refused,
+    r#"{
+  let v = never();
+  let s = v + v;
+  let r = array::push(["s"], v);
+  v <- "x";
+  (s, r)
+}"#,
+    refused(
+        "unbound within Number & Singleton: `v` is undecided at this call; annotate `v`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    undecided_parameter_within_a_conjunct_wider_union_refused,
+    r#"{
+  let g = |p, q| {
+    let s = p + q;
+    let n: [i64, null] = null;
+    let f = |a: Array<'a>, b: 'a| b;
+    (s, f([n], p))
+  };
+  g(1, 2)
+}"#,
+    refused(
+        "'a: [i64, null] does not contain"
+    );
+    FuseExpect::None
+);
+
+run!(
+    undecided_parameter_within_a_conjunct_annotated_joins,
+    r#"{
+  let g = |p: i64, q| {
+    let s = p + q;
+    let n: [i64, null] = null;
+    let f = |a: Array<'a>, b: 'a| b;
+    (s, f([n], p))
+  };
+  g(1, 2)
+}"#,
+    prints("[i64:3, i64:1]")
+);
+
+run!(
+    undecided_parameter_within_a_conjunct_it_fits_joins,
+    r#"{
+  let h = 'a: Number |a: Array<'a>, b: 'a| b;
+  let g = |p, q| {
+    let a = [1, 2, 3];
+    let s = p + q;
+    let f = |a: Array<'a>, b: 'a| b;
+    (s, a[q]$, f([1], p), h([1], q), array::push([1], q))
+  };
+  g(1, 2)
+}"#,
+    prints("[i64:3, i64:3, i64:1, i64:2, [i64:1, i64:2]]")
+);
+
+// A copy is held to the bounds its argument brought where an undecided
+// argument before it gave the formal's cell a conjunct of its own and
+// another's parts then decided that cell.
+run!(
+    undecided_parameter_within_a_conjunct_after_two_waiters_refused,
+    r#"{
+  let g = |p, q, y| {
+    let a = [1, 2, 3];
+    let s = p + p;
+    let f = |u: 'a, v: ('a, 'b), w: 'a| w;
+    (s, a[q], f(p, (1.5, y), q))
+  };
+  g(2.5, 1.5, 0)
+}"#,
+    refused("'a: f64 does not contain");
+    FuseExpect::None
+);
+
+run!(
+    undecided_parameter_within_a_conjunct_after_two_waiters_it_fits_joins,
+    r#"{
+  let g = |p, q, y| {
+    let a = [1, 2, 3];
+    let s = p + p;
+    let f = |u: 'a, v: ('a, 'b), w: 'a| w;
+    (s, a[q]$, f(p, (1, y), q))
+  };
+  g(2, 1, 0)
+}"#,
+    prints("[i64:4, i64:2, i64:1]")
+);
+
 // A variable a callback also holds is decided by the first argument: an
 // undecided argument after it is refused naming the argument that decided
 // it, one before it runs, and so does the deciding argument annotated wide.
