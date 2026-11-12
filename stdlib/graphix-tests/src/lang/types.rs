@@ -9303,6 +9303,32 @@ run!(
     "#
 );
 
+// A bound a typedef names is read as the structure it names, as the
+// written bound is.
+run!(
+    reads_through_a_typedef_bound,
+    prints("[i64:2, i64:5, i64:8, i64:10, i64:1]"),
+    "/test.gx" => r#"
+        type Point = {x: i64, y: i64};
+        type Alias = Point;
+        type Pair = (string, i64);
+        type F = fn(x: i64) -> i64;
+        type Box<'t> = {v: 't};
+        let fld = 'a: Alias |p: 'a| p.y;
+        let upd = 'a: Point |p: 'a| {p with y: 5};
+        let call = 'a: F |g: 'a| g(4);
+        let bx = 'a: Box<i64> |b: 'a| b.v + 1;
+        let tup = 'a: Pair |t: 'a| t.1;
+        let result = [fld({x: 0, y: 2}), upd({x: 1, y: 0}).y, call(|x| x * 2), bx({v: 9}), tup(("s", 1))]
+    "#
+);
+
+run!(typedef_bound_update_is_no_type_a_call_picks, r#"{
+  type Point = {x: i64, y: i64};
+  let f = 'a: Point |p: 'a| -> 'a {p with x: 1};
+  f({x: 0, y: 2})
+}"#, refused("a call picks 'a"); FuseExpect::None);
+
 run!(
     binary_keys_keep_kinds_text_keys_refuse_collisions,
     prints(r#"["written", "refused"]"#),
