@@ -695,6 +695,16 @@ pub(super) fn eta_dispatcher<R: Rt>(
              (wrap the call in a lambda)"
         )
     }
+    // CR claude for claude: [readability/low] A trait method read as a value prints
+    // this expansion's minted names in a message: `trait T { val m: fn<'b:
+    // Number>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| { let g: string =
+    // T::m; x } }` says "type mismatch string does not contain fn(#eta0: '#eta_self:
+    // unbound within T & T, #eta1: '#eta_b: unbound within Number) -> '#eta_b:
+    // unbound within Number". The program wrote none of `#eta0`, `'#eta_self` or
+    // `'#eta_b`; the message should print the trait's own names (`'b`, `x`, the
+    // receiver as its trait). probe:
+    // ~/ptmp/cr29/scratch/r23/23h/rec-self-review/t1.gx (trait-method-value-names-01)
+
     // the signature over variables of its own, as an annotation writes
     // it; `self` would name an impl's receiver
     let mut tvs: AHashMap<ArcStr, TVar> = AHashMap::new();
