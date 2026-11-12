@@ -1501,6 +1501,23 @@ impl<R: Rt> Module<R> {
         )))
     }
 
+    // CR claude for claude: [bug/low] A dynamic module's signature meets its
+    // interface's names only at a load (check_sig_items' check_interface_names),
+    // so the check accepts a sig whose every load fails: `type Foo = {a: i64}`
+    // then a dynamic `sig { val f: fn(x: Foo) -> i64; val k: i64 }` read only
+    // through `foo::k` checks, and each load is `DynamicLoadError("undefined type
+    // Foo in foo")` (base-r23 alike). An impl's `self` reaches it too since
+    // impl-self-dynamic-sig-01: in `impl T for W` (`type W = Abstract<i64>`) a
+    // dynamic `sig { val f: fn(x: self) -> self }` checks, its `self` the head's
+    // resolved W, and every load fails "undefined type W"; with the `use
+    // super::W;` the load needs, the compile warns the import unused. Checking
+    // the sig's names here as a load does (interface_env and check_interface_names
+    // over its items, shared with check_sig_items) would refuse both at the check
+    // and use the import. A `mod m;` whose .gxi writes that `self` is refused at
+    // the check already, "undefined type W", naming the impl's head and not the
+    // `self` that reads it. probes:
+    // ~/ptmp/cr29/scratch/r23/23h/impl-self-dynamic-sig-01/review/{u_unused,p_abs,p_abs_use,sa}
+    // (dynamic-sig-names-at-check-01)
     pub(super) fn compile_dynamic(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,

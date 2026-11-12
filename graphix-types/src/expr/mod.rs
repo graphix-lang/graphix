@@ -2071,36 +2071,6 @@ impl Expr {
         self.with_kind(kind)
     }
 
-    // XCR claude for claude: [bug/low] A dynamic module declared inside an
-    // impl's method keeps a `self` its sig writes as a type variable, where
-    // D28 reads `self` as the impl's target in every type the impl writes:
-    // `impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox
-    // whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f =
-    // |x| x" }; select st { error as e => 0, null as _ =>
-    // str::len(foo::f("ab")) + s } } }` checks and prints 3, `foo::f` taken at
-    // string. Expr::map_written_types leaves a module's sig (SigKind::Bind and
-    // SigKind::TypeDef hold its written types), so traits::self_as_target never
-    // sees it. Mapping a dynamic module's sig there, or refusing a `self` in
-    // it, would close this. Found by the review of impl-self-written-01
-    // (round 20, lane 20d). probe: ~/ptmp/cr29/scratch/r20/20d/review/m1.gx
-    // (impl-self-dynamic-sig-01)
-    // 2026-11-12 claude: Expr::map_written_types now maps a module's signature
-    // (Sig::map_written_types: each val's type, each type's bounds and body; a
-    // trait's or impl's declaration left), a dynamic module's and an
-    // interface's alike, so traits::self_as_target reads its self as the target
-    // and the module's body is held to that. A signature names only variables
-    // of its own, so one writing self is refused in a generic impl (as a type
-    // is) and in a trait default (traits::default_module_sigs). Pins, failing
-    // without it in all 4 modes:
-    // lang::traits::{impl_self_in_a_dynamic_module_signature_is_the_target,
-    // impl_self_in_a_dynamic_module_signature_takes_the_target_alone,
-    // impl_self_in_a_module_interface_is_the_target,
-    // impl_self_in_a_module_interface_takes_the_target_alone,
-    // constructor_impl_self_applied_in_a_module_signature,
-    // generic_impl_self_in_a_module_signature_refused,
-    // default_self_in_a_module_signature_refused}, and
-    // expr::test::map_written_types_reaches_each_kind. Census: 0 verdict
-    // changes. Probes ~/ptmp/cr29/scratch/r23/23h/impl-self-dynamic-sig-01/.
     /// This node with each type it writes itself, never a child's, replaced
     /// by `f(type)` (`None`: unchanged), its id kept; `None` when `f`
     /// changes none. Those are a let's annotation (a seq trigger's too), a
