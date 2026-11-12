@@ -5789,6 +5789,26 @@ mod tests {
         assert_ne!(id("fn(x: 'a) -> 'a"), id("fn(x: 'a) -> 'b"));
     }
 
+    // One cell standing outside a function type and inside it is hashed
+    // by its cell outside and alike any open cell inside, so the type is
+    // keyed with its twin whose function holds another cell there.
+    #[test]
+    fn a_cell_outside_and_inside_a_function_type_is_hashed_for_each() {
+        let env = Env::default();
+        let t = parsed("('a, fn(x: 'a) -> i64)");
+        let Type::Tuple(ts) = &t else { unreachable!("a tuple") };
+        let Type::Fn(f) = &ts[1] else { unreachable!("a function type") };
+        match (&ts[0], &f.args[0].typ) {
+            (Type::TVar(a), Type::TVar(b)) => assert!(a.same_cell(b)),
+            _ => unreachable!("two vars"),
+        }
+        let twin =
+            Type::Tuple(Arc::from_iter([ts[0].clone(), parsed("fn(x: 'b) -> i64")]));
+        assert!(union_identical(&t, &twin));
+        let mut hist = ContainsHist::new();
+        assert_eq!(hist.ref_id(&t, &env), hist.ref_id(&twin, &env));
+    }
+
     // A hash that read a cell is taken again: once the cell is bound the
     // type is its binding's.
     #[test]

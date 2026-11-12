@@ -937,6 +937,24 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // 1.30/1.85 at 1000/2000). probes:
 // ~/ptmp/cr29/scratch/r23/23g/chainbounds-elab-alias-01/ (gen2.py, gencb.py,
 // meas.sh, pmpc.py: a gdb stack sampler for builds without frame pointers)
+// 2026-11-12 claude: Review: the partial fix holds. base-r23 -> lane, --expand
+// --no-cache, G instructions: fnalias 250/500 6.10/44.08 -> 0.89/1.04, written
+// chain 1000/2000 3.61/11.68 -> 1.31/1.90, fnret 2000 8.79 -> 1.87; the three pins
+// fail with their fix undone (the unit pin 1353200 identity steps, the typedef pin
+// killed at 5.1 G of 5.0, the written-chain pin at 9.0 G of 9.0); census 2962 files
+// 0/0 against base-r23, regress 580/0, GUI check 41.323 -> 41.337 G. The memo
+// shape_hash keeps apart inside a function type is pinned by
+// typ::contains::tests::a_cell_outside_and_inside_a_function_type_is_hashed_for_each
+// (fails with one memo). On (1): where fnalias's instructions go now is
+// holds_open_union::go and the seen set it fills, 52% of the samples at 2000 links
+// and 58% at 4000, under FnType::contains_int from check_contains (held_at,
+// instance_sig) through settle_deferred and bounds_hold, at positions
+// ContainsHist::closed finds open; Type::reset_memo, the copy itself, is about 10%.
+// So a copy that kept a link's positions closed would skip both walks; a memo of
+// holds_open_union would fall to the cell write at each link as IdenticalMemo does
+// in (2). The written chain at 10000 links spends 75% of the eval thread in
+// holds_open_union too, a few walks of the whole chain (linear). perf record -F
+// 2000, flat; probes ~/ptmp/cr29/scratch/r23/23g/chainbounds-elab-alias-01/review/
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
