@@ -754,16 +754,67 @@ run!(
 );
 
 // A member the slice cannot match keeps the position off the ladder: the
-// arms leave its values uncovered.
+// arms leave its values uncovered. A null, a list beside an array, and a
+// tuple holding its array at another place.
 run!(
     nested_slice_ladder_union_position_other_member_refused,
     r#"{
   let f = |x: [`A([Array<i64>, null])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
+  f(`A([1, 2]))
+}"#,
+    refused("missing match cases: no arm covers `A([null, Array<i64>])");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_ladder_union_position_other_kind_refused,
+    r#"{
   let g = |x: [`A([Array<i64>, List<i64>])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
-  f(`A([1, 2])) + g(`A([1, 2]))
+  g(`A([1, 2]))
+}"#,
+    refused("missing match cases: no arm covers `A([Array<i64>, List<i64>])");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_ladder_union_position_unfit_member_refused,
+    r#"{
+  let f = |x: [`A([(Array<i64>, i64), (i64, Array<i64>)])]| select x {
+    `A(([e, ..], _)) => 1, `A(([], _)) => 0
+  };
+  f(`A((5, [1])))
 }"#,
     refused("missing match cases: no arm covers `A(");
     FuseExpect::None
+);
+
+// The ladder at a position of several members takes any number of arms, one
+// a variant and one a nesting level, and stands under another such
+// position; an arm whose written type leaves a member out claims nothing
+// of it, and a catch-all takes the member no slice matches.
+run!(
+    nested_slice_ladder_union_position_steps,
+    r#"{
+  let a = |x| select x { `A([p, q, ..]) => p + q, `A([p]) => p, `A([]) => 0 };
+  let b = |x| select x { `A([h, ..]) => h, `A([]) => 0, `B([h, ..]) => h + 100, `B([]) => 1 };
+  let c = |x| select x { `A(`B([h, ..])) => h, `A(`B([])) => 0 };
+  let d = |x: [`A([Array<i64>, Array<string>])]| select x {
+    `A(Array<string>) as `A([e, ..]) => 1, `A([p, q, ..]) => 2, `A([p]) => 3, `A([]) => 0
+  };
+  let e = |x: [`A([([Array<i64>, Array<string>], i64), ([Array<f64>, Array<bool>], string)])]| select x {
+    `A(([h, ..], _)) => 1, `A(([], _)) => 0
+  };
+  let g = |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => h, `A([]) => 0, `A(_) => 2 };
+  [
+    a(`A([1, 2, 3])), a(`A([5])), a(`A([])), b(`A([1, 2])), b(`B([5])), b(`A([])), b(`B([])),
+    c(`A(`B([4]))), c(`A(`B([]))), d(`A(["s"])), d(`A([1, 2])), d(`A([1])), d(`A([])),
+    e(`A(([1], 1))), e(`A(([true], "s"))), e(`A(([], "s"))), g(`A([7])), g(`A([])), g(`A(null))
+  ]
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 5, 0, 1, 105, 0, 1, 4, 0, 1, 2, 3, 0, 1, 1, 0, 7, 0, 2])
+    };
+    FuseExpect::Jit
 );
 
 // Exact-length slice arms pool their elements' heads per length: `[true]`

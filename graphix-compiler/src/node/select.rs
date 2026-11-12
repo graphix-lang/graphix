@@ -960,6 +960,16 @@ impl Reach {
                     }
                 }
             } else if sp.covers(env, at, !pat.explicit_type_predicate) {
+                // CR claude for claude: [bug/low] An arm behind a names-only tuple in a
+                // variant's payload is not found dead: `|x: [`A((i64, i64))]| select x {
+                // `A((a, _)) => 0, _ => 1 }` checks and runs, and so do `A((_, b)) => 1`
+                // and `A(_) => 1` as the second arm, though the first arm alone is
+                // exhaustive and takes every value. The same behind `A(a, _)`, `A({a,
+                // ..})`, a bare `(a, _)` and `((a, _), _)` is refused, "unreachable arm:
+                // the earlier arms already cover the whole scrutinee", and so is `A((a,
+                // _))` behind `A(_)`. base-r23 and lane 23d alike. Not diagnosed. probes:
+                // ~/ptmp/cr29/scratch/r23/23d/vsc-rev/{m04,m06,m12,m13,m14,m15,m16,m17,
+                // m18}.gx (variant-tuple-payload-dead-01)
                 match wild {
                     true => self.atype = self.atype.diff(env, at)?,
                     false => self.cover(env, at.clone())?,
@@ -1621,6 +1631,19 @@ fn inner_slices(
     let found = out.len();
     let mut only = member_slices(env, sp, first, path, out)?;
     let mut other: SmallVec<[InnerSlice; 2]> = SmallVec::new();
+    // CR claude for claude: [bug/low] Slice arms at a position that also holds a
+    // member no slice matches are refused as not exhaustive even with an arm for that
+    // member: `|x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0,
+    // `A(null) => 2 }` is refused, "missing match cases: no arm covers `A([null,
+    // Array<i64>])", and so are the tuple form (`|x: ([Array<i64>, null], i64)|` with
+    // `(null, _) => 2`), an unannotated parameter with the three arms, and an array
+    // beside a list with a ladder each. The same arms check and run where the type is
+    // written one variant a member (`[`A(Array<i64>), `A(null)]`) or the last arm is a
+    // catch-all (`A(_)`). base-r23 and lane 23d alike. The position climbs no ladder,
+    // so the slice arms claim nothing; a fix has the ladder stand on the members the
+    // slice fits and its completion cover the member narrowed to them at that
+    // position. probes: ~/ptmp/cr29/scratch/r23/23d/vsc-rev/{r01,r31,s01,s02,s05,
+    // s09}.gx (slice-position-other-member-01)
     for m in rest {
         other.clear();
         only &= member_slices(env, sp, m, path, &mut other)?;
