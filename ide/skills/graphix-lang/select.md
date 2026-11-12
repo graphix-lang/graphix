@@ -81,6 +81,19 @@ select, and runtime forms. Each rule refuses and names the fix.
   takes apart all of it (`Array<'b> as [(a, b), ..]`). A written test
   that tests the undecided part is refused as a pattern is:
   `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``.
+- Over `Any` (a scrutinee, a tuple position, a field, a payload) a name
+  is `Any`, and a pattern that takes the value apart is a run-time test
+  of the types its arm decides: `((a, b), n) => a + b + n` over `(Any,
+  i64)` takes only a pair of `i64`. A slice tests every element against
+  the union of its elements' types, so with a `_` among them, or a rest
+  beside no name, it tests none and every name under it is `Any`: `[(a,
+  b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused. Write the
+  test, `Array<[(i64, i64), string]> as [(a, b), _]`. A rest beside a
+  name takes the name's type: `[h, ..] => h + 1` takes an array of `i64`
+  only. A partial struct pattern there has no struct type to complete it
+  and is refused, under a tuple, variant or slice too: `(_, {a, ..})`
+  over `(i64, Any)`. Write the test, `(i64, {a: i64, b: i64}) as (_, {a,
+  ..})`.
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
@@ -158,4 +171,13 @@ ok let b = true; let t = select b { true => (`A, |x: i64| x), false => (`B, |y: 
 no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (r, n) => r(n) }
 no "'_1 and '_2 types no binding names" let b = true; let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a, ..} => 0 }
 ok let b = true; let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => 1 }
+ok |x: (Any, i64)| -> i64 select x { ((a, b), n) => a + b + n, _ => 0 }
+no "cannot compute Any + i64" |x: Any| select x { [(a, b), _] => a + 1, _ => 2 }
+no "cannot compute Any + i64" |x: Array<Any>| select x { [(a, b), ..] => a + 1, _ => 2 }
+ok |x: Any| select x { Array<[(i64, i64), string]> as [(a, b), _] => a + 1, _ => 2 }
+no "cannot compute Any + i64" |x: Any| select x { [(a, b), ..] => a + 1, _ => 2 }
+ok |x: Any| select x { [h, ..] => h + 1, _ => 2 }
+ok |x: Any| select x { Array<(i64, i64)> as [(a, b), ..] => a + 1, _ => 2 }
+no "has no struct type to complete it" |x: (i64, Any)| select x { (_, {a, ..}) => 1, _ => 0 }
+ok |x: (i64, Any)| select x { (i64, {a: i64, b: i64}) as (_, {a, ..}) => a, _ => 0 }
 ```

@@ -425,6 +425,19 @@ impl StructurePattern {
         Ok(changed.then(|| Arc::from_iter(out)))
     }
 
+    /// The refusal of this pattern, which holds a partial struct pattern,
+    /// over `scrutinee`, which may be `Any`: the fields it leaves out are
+    /// of no type, so its test would be the exact struct of those it names.
+    pub fn no_struct_type(&self, scrutinee: &Type) -> anyhow::Error {
+        format_with_flags(PrintFlag::DerefTVars, || {
+            anyhow!(
+                "the partial struct pattern {self} over {scrutinee} has no struct type \
+                 to complete it: test the struct's type first (`{{a: i64, b: string}} \
+                 as {{a, ..}}`)"
+            )
+        })
+    }
+
     /// The completion of the one scrutinee member `complete` answers
     /// for and the pattern could match.
     fn unique_completion(
@@ -438,6 +451,9 @@ impl StructurePattern {
         match scrutinee.open_bound(env) {
             Some(bound) => union_members(env, &bound, &mut members)?,
             None => union_members(env, scrutinee, &mut members)?,
+        }
+        if members.iter().any(|m| matches!(m, Type::Any)) && self.has_partial_struct() {
+            return Err(self.no_struct_type(scrutinee));
         }
         let mut found: Option<(Type, &Type)> = None;
         for m in members.iter() {

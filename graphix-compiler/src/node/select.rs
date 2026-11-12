@@ -2996,13 +2996,8 @@ impl<R: Rt> Select<R> {
                             if spec_pat.structure_predicate.has_partial_struct()
                                 && may_be_any(&ctx.env, &scrut)? =>
                         {
-                            bailat!(
-                                self.spec,
-                                "the partial struct pattern {} over {scrut} has no \
-                                 struct type to complete it: test the struct's type \
-                                 first (`{{a: i64, b: string}} as {{a, ..}}`)",
-                                spec_pat.structure_predicate
-                            )
+                            let e = spec_pat.structure_predicate.no_struct_type(&scrut);
+                            return Err(e).at(&self.spec);
                         }
                         Ok(None) => (),
                         Ok(Some(t)) => {

@@ -1876,6 +1876,20 @@ impl Type {
                 }
                 None => false,
             },
+            // CR claude for claude: [bug/high] A cell an arm's pattern owns under an `Any`
+            // part, bounded by the arm's body and never decided, passes any value here.
+            // `|x: Any| select x { (a, b) => a + b, _ => 0 }` checks with `a` and `b` one
+            // cell `'t: Number + Singleton`; the arm's test is `('t, 't)`, so `("s", "t")`
+            // reaches `a + b` (an arith error logged, in both engines) and `(1, 2.5)`
+            // computes 3.5, two numeric types in one cell. Same under a part (`((a, b), n)`
+            // over `(Any, i64)`), a variant payload and a slice (`[a, b] => a + b`). A use
+            // that decides the cell (`a + b + 1`) is tested right. Same on base-r23. The
+            // bound cannot be the test: the cell is one type at both positions. A fix: a
+            // cell a pattern owns over `Any` that its arm leaves undecided settles to `Any`,
+            // as a bare name's does (`Type::open_over_any`), which refuses `a + b`; or the
+            // select refuses it and names the written test (`(i64, i64) as (a, b)`).
+            // probes: ~/ptmp/cr29/scratch/r23/23c/sap/z1.gx, z9.gx, z10.gx, z11.gx; right:
+            // z2.gx, h10.gx (any-cell-bound-undecided-01)
             Type::TVar(tv) => match tv.binding() {
                 None => !flags.contains(IsAFlags::Strict),
                 Some(t) => t.is_a_int(env, hist, flags, v),
@@ -1960,7 +1974,15 @@ impl Type {
 pub struct ShallowScrutinee {
     typ: Type,
     members: OnceLock<Option<SmallVec<[Type; 8]>>>,
-    facts: OnceLock<Option<Box<[(Type, MemberFacts)]>>>,
+    facts: OnceLock<Option<ScrutineeFacts>>,
+}
+
+/// The scrutinee's flattened members, and whether one holds `Any` below
+/// its top where a pattern reads ([`holds_any`]).
+#[derive(Debug)]
+struct ScrutineeFacts {
+    members: Box<[(Type, MemberFacts)]>,
+    any: bool,
 }
 
 impl ShallowScrutinee {
@@ -1978,32 +2000,32 @@ impl ShallowScrutinee {
             .as_deref()
     }
 
-    fn facts(&self, env: &Env) -> Option<&[(Type, MemberFacts)]> {
+    fn facts(&self, env: &Env) -> Option<&ScrutineeFacts> {
         self.facts
             .get_or_init(|| {
                 let mut scrut: LPooled<Vec<Type>> = LPooled::take();
                 flatten_union_members(&self.typ, env, &mut scrut)?;
-                let mut walked = ShapeSeen::default();
-                let mut below = |m: &Type| {
-                    m.try_for_each_child(&mut |c| match shapes_collide(
-                        c,
-                        env,
-                        &mut walked,
-                    ) {
-                        true => ControlFlow::Break(()),
-                        false => ControlFlow::Continue(()),
+                let below = |part: fn(&Type, &Env, &mut ShapeSeen) -> bool| {
+                    let mut walked = ShapeSeen::default();
+                    scrut.iter().any(|m| {
+                        m.try_for_each_child(&mut |c| match part(c, env, &mut walked) {
+                            true => ControlFlow::Break(()),
+                            false => ControlFlow::Continue(()),
+                        })
+                        .is_break()
                     })
-                    .is_break()
                 };
-                if scrut.iter().any(|m| below(m)) {
+                if below(shapes_collide) {
                     return None;
                 }
-                Some(scrut.iter().map(|m| (m.clone(), member_facts(m))).collect())
+                let any = below(holds_any);
+                let members = scrut.iter().map(|m| (m.clone(), member_facts(m)));
+                Some(ScrutineeFacts { members: members.collect(), any })
             })
-            .as_deref()
+            .as_ref()
     }
 
-    // CR claude for claude: [bug/high] An inferred predicate narrower than its member under
+    // XCR claude for claude: [bug/high] An inferred predicate narrower than its member under
     // an `Any` part is shallowed as if it held the member whole. Over `(Any, i64)` the arm
     // `((a, b), n) => a + b + n` checks: the body decides the cells under the `Any`, so the
     // arm is a run-time test of `((i64, i64), i64)`. But this answers `(Any, Any)` for it
@@ -2029,6 +2051,33 @@ impl ShallowScrutinee {
     // does the same, x annotated `(string, i64)` or not, as does `select W([x, 0]).0` over an
     // abstract parameter. Same on base-r20. probes:
     // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/any1.gx, u1.gx, u2.gx
+    // 2026-11-12 claude: Fixed in three places. (1) ShallowScrutinee::discriminant: where a member
+    // holds Any below its top (outside function types and references, holds_any), shallowify keeps
+    // the predicate's part at a position where the member's part holds Any and the predicate's
+    // does not hold all of it, so ((i64, i64), i64) over (Any, i64) seals ((i64, i64), Any); the
+    // CR's seven probes answer right in both engines. Pins that fail without it:
+    // lang::select::destructure_under_an_any_part_tests_the_arms_types,
+    // destructure_under_an_any_part_beside_a_typed_member,
+    // slice_rest_over_any_takes_a_names_type_or_any_value,
+    // typ::cast::tests::shallow_discriminant_keeps_a_part_narrower_than_any. (2) The note's array
+    // cases are not the shallow test: a slice's test admits any member of its element union at
+    // every position, and a _ (or a rest beside no name) makes that union Any, so the deep test
+    // passes them too. Where nothing types the elements (Any, Array<Any>, a scrutinee the arms
+    // decide) StructPatternNode::hold_untyped_elements makes such a rest Any and every cell the
+    // union leaves open Any: any1, u1, u2 are refused (cannot compute Any + i64), the written test
+    // Array<[(i64, i64), string]> as [(a, b), _] is the twin. Pins that fail without it:
+    // slice_bind_beside_a_wildcard_*_refused (5), slice_name_beside_a_wildcard_over_any_refused,
+    // list_bind_beside_a_wildcard_over_any_refused, slice_bind_beside_a_rest_over_any*_refused
+    // (2); slice_beside_a_wildcard_that_matches_nothing_is_dead fails without its gate. (3) A
+    // partial struct pattern over an Any part of a typed scrutinee passed a wider struct only
+    // through the shallow test (the old pin nested_partial_struct_under_a_typed_tuple; it missed
+    // for any field but the struct's first and inside a function, and a + 1 over {a: "s", b: 2}
+    // panicked fused): it is refused as over an Any scrutinee, in
+    // StructurePattern::unique_completion. Pins that fail without it:
+    // nested_partial_struct_over_an_any_part_refused, partial_struct_over_any_elements_refused;
+    // twin nested_partial_struct_under_a_written_test_over_an_any_part. Left open, base-r23 alike:
+    // abstract-payload-any-01, any-cell-bound-undecided-01. Probes and a 374-program differential:
+    // ~/ptmp/cr29/scratch/r23/23c/sap/ (README).
     pub fn discriminant(&self, env: &Env, predicate: &Type) -> Option<Type> {
         let mut preds: LPooled<Vec<Type>> = LPooled::take();
         flatten_union_members(predicate, env, &mut preds)?;
@@ -2046,25 +2095,15 @@ impl ShallowScrutinee {
             // the shape decides `p` only where one member has it and `p` can
             // match that member (an instance's scrutinee may be another
             // member of `p`'s shape)
-            let sole = |shaped: &dyn Fn(&MemberFacts) -> bool| {
-                let mut it = sfacts.iter().filter(|(_, mf)| shaped(mf));
-                match (it.next(), it.next()) {
-                    (Some((m, _)), None) => p.could_pass(env, m).unwrap_or(false),
-                    _ => false,
-                }
+            let mut shaped = sfacts.members.iter().filter(|(_, mf)| match &pf.arr {
+                Some(pa) => mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)),
+                None => (pf.map && mf.map) || (pf.error && mf.error),
+            });
+            let m = match (shaped.next(), shaped.next()) {
+                (Some((m, _)), None) if p.could_pass(env, m).unwrap_or(false) => m,
+                _ => return None,
             };
-            if let Some(pa) = &pf.arr
-                && !sole(&|mf| mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)))
-            {
-                return None;
-            }
-            if pf.map && !sole(&|mf| mf.map) {
-                return None;
-            }
-            if pf.error && !sole(&|mf| mf.error) {
-                return None;
-            }
-            out.push(shallowify(p));
+            out.push(shallowify(env, p, sfacts.any.then_some(m)));
         }
         Some(if out.len() == 1 {
             out.pop().unwrap()
@@ -2074,7 +2113,7 @@ impl ShallowScrutinee {
     }
 }
 
-/// What a [`shapes_collide`] search has walked: the applications, and
+/// What an [`any_part`] search has walked: the applications, and
 /// the shared nodes, each held so its address stays its own.
 #[derive(Default)]
 struct ShapeSeen {
@@ -2082,10 +2121,15 @@ struct ShapeSeen {
     nodes: LPooled<AHashMap<usize, Type>>,
 }
 
-/// Whether `t` or a part of it is a union two of whose members share a
-/// shape (`arr_overlap`). An application is walked once a search, and so
-/// is a shared node.
-fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
+/// Whether `found` holds of `t` or of a part of it below no part it rules
+/// out (`Some(false)`). An application is walked once a search, and so is
+/// a shared node.
+fn any_part(
+    t: &Type,
+    env: &Env,
+    seen: &mut ShapeSeen,
+    found: fn(&Type) -> Option<bool>,
+) -> bool {
     #[cfg(test)]
     SHAPE_STEPS.with(|n| n.set(n.get() + 1));
     if let Some(addr) = super::node_addr(t) {
@@ -2103,26 +2147,43 @@ fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
                 return false;
             }
             let Ok(x) = t.lookup_ref(env) else { return false };
-            shapes_collide(&x, env, seen)
+            any_part(&x, env, seen, found)
         }
-        Type::TVar(tv) => tv.binding().is_some_and(|b| shapes_collide(&b, env, seen)),
-        Type::Set(ts) => {
-            let shapes: LPooled<Vec<_>> = ts
-                .iter()
-                .filter_map(|m| m.with_deref(|m| m.and_then(|m| member_facts(m).arr)))
-                .collect();
-            let overlap = shapes
-                .iter()
-                .enumerate()
-                .any(|(i, a)| shapes[i + 1..].iter().any(|b| arr_overlap(a, b)));
-            overlap || ts.iter().any(|m| shapes_collide(m, env, seen))
-        }
-        t => t
-            .try_for_each_child(&mut |c| match shapes_collide(c, env, seen) {
+        Type::TVar(tv) => tv.binding().is_some_and(|b| any_part(&b, env, seen, found)),
+        t => found(t).unwrap_or_else(|| {
+            t.try_for_each_child(&mut |c| match any_part(c, env, seen, found) {
                 true => ControlFlow::Break(()),
                 false => ControlFlow::Continue(()),
             })
-            .is_break(),
+            .is_break()
+        }),
+    })
+}
+
+/// Whether `t` or a part of it is a union two of whose members share a
+/// shape (`arr_overlap`).
+fn shapes_collide(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
+    any_part(t, env, seen, |t| {
+        let Type::Set(ts) = t else { return None };
+        let shapes: LPooled<Vec<_>> = ts
+            .iter()
+            .filter_map(|m| m.with_deref(|m| m.and_then(|m| member_facts(m).arr)))
+            .collect();
+        shapes
+            .iter()
+            .enumerate()
+            .any(|(i, a)| shapes[i + 1..].iter().any(|b| arr_overlap(a, b)))
+            .then_some(true)
+    })
+}
+
+/// Whether `t` is `Any` or holds it where a pattern reads: outside every
+/// function type and reference.
+fn holds_any(t: &Type, env: &Env, seen: &mut ShapeSeen) -> bool {
+    any_part(t, env, seen, |t| match t {
+        Type::Any => Some(true),
+        Type::Fn(_) | Type::ByRef(..) => Some(false),
+        _ => None,
     })
 }
 
@@ -2203,21 +2264,55 @@ fn arr_overlap((pf, pcon): &(Form, ArrCon), (mf, mcon): &(Form, ArrCon)) -> bool
         }
 }
 
-fn shallowify(t: &Type) -> Type {
-    match t {
-        Type::Variant(tag, ps, at) => {
-            Type::Variant(tag.clone(), Arc::from_iter(ps.iter().map(|_| Type::Any)), *at)
-        }
-        Type::Tuple(ts) => Type::Tuple(Arc::from_iter(ts.iter().map(|_| Type::Any))),
-        Type::Struct(fs) => Type::Struct(Arc::from_iter(
-            fs.iter().map(|(n, _, at)| (n.clone(), Type::Any, *at)),
-        )),
-        Type::Array(_) => Type::Array(Arc::new(Type::Any)),
-        Type::List(_) => Type::List(Arc::new(Type::Any)),
-        Type::Map { .. } => Type::map(Type::Any, Type::Any),
-        Type::Error(_) => Type::Error(Arc::new(Type::Any)),
-        t => t.clone(),
+/// `p` with each payload position as `Any`: its shape alone decides it.
+/// `m` is the member it meets in a scrutinee holding `Any`: a position
+/// keeps `p`'s part where `m`'s holds `Any` and `p`'s does not hold all of
+/// `m`'s, since there the part is the arm's own, a test nothing else makes.
+fn shallowify(env: &Env, p: &Type, m: Option<&Type>) -> Type {
+    if !matches!(
+        p,
+        Type::Variant(..)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Array(_)
+            | Type::List(_)
+            | Type::Map(_)
+            | Type::Error(_)
+    ) {
+        return p.clone();
     }
+    let mut parts: SmallVec<[Type; 8]> = SmallVec::new();
+    if let Some(m) = m {
+        let aligned = match (p, m) {
+            (Type::Variant(pt, ps, _), Type::Variant(mt, ms, _)) => {
+                pt == mt && ps.len() == ms.len()
+            }
+            (Type::Tuple(ps), Type::Tuple(ms)) => ps.len() == ms.len(),
+            (Type::Struct(ps), Type::Struct(ms)) => {
+                ps.len() == ms.len() && ps.iter().zip(ms.iter()).all(|(p, m)| p.0 == m.0)
+            }
+            (p, m) => std::mem::discriminant(p) == std::mem::discriminant(m),
+        };
+        if !aligned {
+            return p.clone();
+        }
+        let _ = m.try_for_each_child(&mut |c| {
+            parts.push(c.clone());
+            ControlFlow::<()>::Continue(())
+        });
+    }
+    let mut parts = parts.iter();
+    let blank = p.cow_children(&mut |pp| {
+        let own = parts.next().is_some_and(|mp| {
+            holds_any(mp, env, &mut ShapeSeen::default())
+                && !(!mp.has_unbound()
+                    && pp
+                        .contains_with_flags(BitFlags::empty(), env, mp)
+                        .unwrap_or(false))
+        });
+        (!own).then_some(Type::Any)
+    });
+    blank.unwrap_or_else(|| p.clone())
 }
 
 /// `t`'s members, each application expanded once, in the order first
@@ -3878,6 +3973,42 @@ pub(crate) mod tests {
         assert!(t.shallow_discriminant(&Env::default(), &scrutinee).is_some());
         let steps = super::SHAPE_STEPS.with(|s| s.get());
         assert!(steps <= 4 * n, "{steps} steps over a DAG of depth {n}");
+    }
+
+    /// Where the member a predicate meets holds `Any`, the shallow test
+    /// keeps the predicate's part that does not hold the member's: the
+    /// arm's own types there, which only this test checks. A part behind
+    /// a function type or a reference is no test's to read.
+    #[test]
+    fn shallow_discriminant_keeps_a_part_narrower_than_any() {
+        let (env, _) = typed(&[("V", "Any"), ("P", "(V, i64)")], "V");
+        let shallow = |pred: &str, scrutinee: &str| {
+            let d =
+                parsed(&env, pred).shallow_discriminant(&env, &parsed(&env, scrutinee));
+            d.map(|t| t.to_string())
+        };
+        let some = |t: &str| Some(t.to_string());
+        assert_eq!(shallow("((i64, i64), i64)", "(Any, i64)"), some("((i64, i64), Any)"));
+        assert_eq!(shallow("(Any, i64)", "(Any, i64)"), some("(Any, Any)"));
+        assert_eq!(shallow("(Array<i64>, i64)", "[P, null]"), some("(Array<i64>, Any)"));
+        assert_eq!(
+            shallow("(Array<i64>, Array<i64>)", "(Array<i64>, Array<Any>)"),
+            some("(Any, Array<i64>)")
+        );
+        assert_eq!(
+            shallow("`S({a: `K(i64)}, i64)", "[`S({a: Any}, i64), `N]"),
+            some("`S({ a: `K(i64) }, Any)")
+        );
+        assert_eq!(shallow("Array<(i64, i64)>", "Array<Any>"), some("Array<(i64, i64)>"));
+        assert_eq!(
+            shallow("Map<string, (i64, i64)>", "Map<string, V>"),
+            some("Map<Any, (i64, i64)>")
+        );
+        assert_eq!(
+            shallow("(fn() -> Any, &Any, i64)", "(fn() -> Any, &Any, i64)"),
+            some("(Any, Any, Any)")
+        );
+        assert_eq!(shallow("((i64, i64), i64)", "((i64, i64), i64)"), some("(Any, Any)"));
     }
 
     /// A runtime-form walk keys the pair it is at by its sides' nodes: a

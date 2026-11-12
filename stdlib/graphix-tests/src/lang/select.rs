@@ -5995,6 +5995,175 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 0, 3, 0, 3, 0, 4, 0, 4, 0])
 );
 
+// A pattern that takes apart an `Any` part is a run-time test of the
+// types its arm decides there: no value of another type reaches the arm.
+run!(
+    destructure_under_an_any_part_tests_the_arms_types,
+    r#"{
+    let t = |x: (Any, i64)| -> i64 select x { ((a, b), n) => a + b + n, _ => 0 };
+    let s = |x: (Any, i64)| -> i64 select x { ([h, ..], n) => h + n, _ => 0 };
+    let r = |x: {a: Any}| -> i64 select x { {a: [h, ..]} => h + 1, _ => 0 };
+    let v = |x: [`S(Any), `N]| -> i64 select x { `S([h, ..]) => h + 1, _ => 0 };
+    let k = |x: (Any, i64)| -> i64 select x { (`K(a), n) => a + n, _ => 0 };
+    let m = |x: Map<string, Any>| -> i64 select x { m => map::len(m) };
+    let p: Any = (3, 4);
+    let ps: Any = ("s", "t");
+    let e: Any = [3];
+    let es: Any = ["s"];
+    let c: Any = `K(3);
+    let cs: Any = `K("s");
+    [
+      t((p, 1)), t((ps, 1)), s((e, 1)), s((es, 1)), r({a: e}), r({a: es}),
+      v(`S(e)), v(`S(es)), k((c, 1)), k((cs, 1)), m({"a" => 1})
+    ]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [8, 0, 4, 0, 4, 0, 4, 0, 4, 0, 1],
+        _ => false,
+    }
+);
+
+run!(
+    destructure_under_an_any_part_beside_a_typed_member,
+    r#"{
+    let q = |x: [(Array<i64>, i64), (Any, i64)]| -> [string, null] select x {
+      ([h, ..], n) => { let q: string = h; q },
+      _ => null
+    };
+    let e: Any = [3];
+    let es: Any = ["s"];
+    [q(([3], 1)), q((e, 2)), q((es, 2))]
+}"#,
+    prints(r#"[null, null, "s"]"#)
+);
+
+// A slice's rest nothing types takes the type of a name beside it, so
+// the test reads every element; with no name it stands over any value.
+run!(
+    slice_rest_over_any_takes_a_names_type_or_any_value,
+    r#"{
+    let f = |x: Any| select x { [(a, b), ..] => "[a]", _ => "none" };
+    let g = |x: Any| select x { [7, ..] => "seven", _ => "none" };
+    let h = |x: (Any, i64)| select x { ([h, ..], n) => "[h + n]", _ => "none" };
+    let u: Any = [(1, 2), 0];
+    let w: Any = [("s", 2), (3, 4)];
+    let k: Any = [7, "s"];
+    let e: Any = [3, "s"];
+    let i: Any = [3, 4];
+    [f(u), f(w), f(0), g(k), g(e), h((e, 1)), h((i, 1))]
+}"#,
+    prints(r#"["1", "s", "none", "seven", "none", "none", "4"]"#)
+);
+
+run!(
+    slice_bind_beside_a_rest_over_any_refused,
+    r#"{
+    let f = |x: Any| select x { [(a, b), ..] => a + 100, _ => 2 };
+    let v: Any = [("s", 2), (3, 4)];
+    f(v)
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_beside_a_rest_over_any_elements_refused,
+    r#"{
+    let f = |x: Array<Any>| select x { [(a, b), ..] => a + 100, _ => 2 };
+    f([("s", 2), 0])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+// A slice over elements nothing types, with a `_` among them, tests no
+// element's type: every name an element binds is `Any`.
+run!(
+    slice_binds_beside_a_wildcard_over_any_are_any,
+    r#"{
+    let f = |x: Any| select x { [(a, b), _] => "[a] [b]", _ => "none" };
+    let g = |x: Any| -> i64 select x {
+      Array<[(i64, i64), string]> as [(a, b), _] => a + 1,
+      _ => 2
+    };
+    let k = |x: Any| -> i64 select x { Array<(i64, i64)> as [(a, b), ..] => a + 100, _ => 2 };
+    let v: Any = [("s", 2), 0];
+    let w: Any = [(5, 2), "s"];
+    let y: Any = [(5, 2), (6, 3)];
+    (f(v), f(0), g(v), g(w), k(v), k(y))
+}"#,
+    prints(r#"["s 2", "none", i64:2, i64:6, i64:2, i64:105]"#)
+);
+
+// Only where nothing types the elements: an arm no value reaches is
+// still found dead.
+run!(
+    slice_beside_a_wildcard_that_matches_nothing_is_dead,
+    r#"{
+    let f = |x: (i64, [i64, null])| select x { (n, [(a, b), _]) => a + n, _ => 0 };
+    f((1, null))
+}"#,
+    refused("will never match")
+);
+
+run!(
+    slice_bind_beside_a_wildcard_over_any_refused,
+    r#"{
+    let f = |x: Any| select x { [(a, b), _] => a + 1, _ => 2 };
+    let v: Any = [("s", 2), 0];
+    f(v)
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_name_beside_a_wildcard_over_any_refused,
+    r#"{
+    let f = |x: Any| select x { [c, _] => c + 1, _ => 2 };
+    let v: Any = ["s", 0];
+    f(v)
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    list_bind_beside_a_wildcard_over_any_refused,
+    r#"{
+    let f = |x: Any| select x { [<(a, b), _>] => a + 1, _ => 2 };
+    let v: Any = [<("s", 2), 0>];
+    f(v)
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_beside_a_wildcard_over_any_elements_refused,
+    r#"{
+    let f = |x: Array<Any>| select x { [(a, b), _] => a + 1, _ => 2 };
+    f([("s", 2), 0])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_beside_a_wildcard_the_arms_decide_refused,
+    r#"{
+    let f = |x| select x { [(a, b), _] => a + 1, _ => 2 };
+    f([("s", 2), 0])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_beside_a_wildcard_over_a_referent_refused,
+    r#"{
+    let f = |x: (string, i64)| {
+      let r = &mut [x, 0];
+      select *r { [(a, b), _] => a + 1, _ => 2 }
+    };
+    f(("s", 2))
+}"#,
+    refused("cannot compute Any + i64")
+);
+
 // A slice over a union's array member binds its elements at that member's
 // element type, so a generic one is the definition's variable, not a cell
 // of its own the signature then settles to ⊥ (the kernel read it as bottom).
@@ -7621,15 +7790,42 @@ run!(
     "#
 );
 
-// Under a typed tuple the nested partial struct is an untyped position's
-// shape test: it matches a wider struct there.
+// So is one over an `Any` part of a typed scrutinee; the written test
+// types the fields it leaves out.
 run!(
-    nested_partial_struct_under_a_typed_tuple,
+    nested_partial_struct_over_an_any_part_refused,
     r#"{
   let x: (i64, Any) = (1, {a: 1, b: 2});
   select x { (_, {a, ..}) => "hit", _ => "miss" }
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hit") }
+    refused("has no struct type to complete it")
+);
+
+run!(
+    partial_struct_over_any_elements_refused,
+    r#"{
+  let f = |x: Array<Any>| select x { [{a, ..}, ..] => a, _ => 0 };
+  f([{a: 1, b: 2}])
+}"#,
+    refused("has no struct type to complete it")
+);
+
+run!(
+    nested_partial_struct_under_a_written_test_over_an_any_part,
+    r#"{
+  let f = |x: (i64, Any)| select x {
+    (i64, {a: i64, b: i64}) as (_, {a, ..}) => a + 1,
+    _ => 0
+  };
+  let s: Any = {a: "s", b: 2};
+  let w: Any = {a: 5, b: 2};
+  let y: Any = {a: 5};
+  [f((1, w)), f((1, y)), f((1, s))]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [6, 0, 0],
+        _ => false,
+    }
 );
 
 // The warning is for an act over constants in an arm, which fire only if

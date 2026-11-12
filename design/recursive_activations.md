@@ -539,7 +539,12 @@ a 1000-element list aborted the process. Two rules:
   member overlaps its runtime footprint. Same tag+arity twins,
   tuple-vs-array, any-length arrays beside other array members, and
   explicit `x as T` predicates keep the deep walk (the user's claim
-  stays strict). Consults drop from O(remaining) to O(arity); the list
+  stays strict). A payload position keeps the predicate's part where the
+  member holds `Any` there (outside function types and references) and
+  the part does not hold the member's: a pattern that takes an `Any`
+  apart is typed by its arm, and only this test checks it (`((a, b), n)`
+  over `(Any, i64)` seals `((i64, i64), Any)`; pins
+  `lang::select::destructure_under_an_any_part_*`). Consults drop from O(remaining) to O(arity); the list
   recursion curve went linear (release 49.4s → 0.41s at 8k). The kernel
   already tested tag+arity in O(1); this removes the engine asymmetry.
 

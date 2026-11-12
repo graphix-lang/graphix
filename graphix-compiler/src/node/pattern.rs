@@ -1060,6 +1060,21 @@ impl StructPatternNode {
         }
     }
 
+    // CR claude for claude: [bug/high] A pattern that takes apart an abstract's payload
+    // where the payload is `Any` leaves its binds the arm's own cells, and nothing tests
+    // them: an abstract's predicate tests its parameters (`W<Any>`), never the payload.
+    // `type W<'a> = Abstract<'a>; let f = |x: W<Any>| select x { W((a, b)) => a + 100, _
+    // => 0 }` over `W(("s", 2))` checks; the node-walk logs an arith error, the fused run
+    // panics "kernel param `a`: runtime String("s") does not match the compiled
+    // Scalar(I64) slot". Same over an `Any` scrutinee (`|x: Any| select x { W((a, b)) =>
+    // .. }`), under a tuple (`(W<Any>, i64)`) and where the representation holds the
+    // parameter as a part (`Abstract<('a, i64)>`, `W(((a, b), n))`). A bare name is right
+    // (`W(p) => p + 100` is refused, "cannot compute Any + i64": the `over_any` step
+    // below). Same on base-r23. A fix: where the payload's representation at an instance
+    // is or holds `Any` under a pattern that takes it apart, every name under that part
+    // is `Any`, as `hold_untyped_elements` does for a slice its test cannot type; pin
+    // both engines. probes: ~/ptmp/cr29/scratch/r23/23c/sap/r5.gx, q1.gx, q3.gx, t15.gx;
+    // right: q2.gx, q4.gx (abstract-payload-any-01)
     /// Narrow each abstract payload's own representation, which its binds
     /// and captures are typed by, to the union of its representation at
     /// every instance `members`, the scrutinee's members the arm can match,
@@ -1392,26 +1407,45 @@ impl StructPatternNode {
     /// `matched`, when not empty, is the members of what reaches this pattern
     /// that it can match, and each child takes its part of them: an array or
     /// list member's elements are its own, not the predicate's cells, which
-    /// stand for any other member (`Any`).
-    fn hold_slice_members(&self, env: &Env, typ: &Type, matched: &[Type]) -> Result<()> {
+    /// stand for any other member (`Any`). `open`: `matched` is empty
+    /// because what the pattern stands over is not decided yet.
+    fn hold_slice_members(
+        &self,
+        env: &Env,
+        typ: &Type,
+        matched: &[Type],
+        open: bool,
+    ) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
             if let Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
             | Self::SlicePrefix { .. }
             | Self::SliceSuffix { .. } = self
             {
+                let is_any = |t: &Type| matches!(expand(env, t), Some(Type::Any));
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 let mut own = matched.is_empty();
+                let mut untyped = own && open;
                 for m in matched {
                     match &expand(env, m) {
-                        Some(Type::Array(et) | Type::List(et)) => {
+                        Some(Type::Array(et) | Type::List(et)) if !is_any(et) => {
                             members_or_open(env, &et, &mut members)?
+                        }
+                        Some(Type::Any | Type::Array(_) | Type::List(_)) => {
+                            (own, untyped) = (true, true)
                         }
                         _ => own = true,
                     }
                 }
-                if own && let Some(Type::Array(et) | Type::List(et)) = &expand(env, typ) {
-                    members_or_open(env, &et, &mut members)?
+                let own = match &expand(env, typ) {
+                    Some(Type::Array(et) | Type::List(et)) if own => Some(et.clone()),
+                    _ => None,
+                };
+                if let Some(et) = &own {
+                    if untyped {
+                        self.hold_untyped_elements(env, et)?
+                    }
+                    members_or_open(env, et, &mut members)?
                 }
                 let mut leaves: SmallVec<[Leaf; 4]> = SmallVec::new();
                 let mut parts: AHashMap<BindId, SmallVec<[Type; 4]>> =
@@ -1481,10 +1515,42 @@ impl StructPatternNode {
                         reach.push(m)
                     }
                 }
-                c.hold_slice_members(env, &t, &reach)?
+                c.hold_slice_members(env, &t, &reach, open && matched.is_empty())?
             }
             Ok(())
         })
+    }
+
+    /// This slice's elements where what reaches it types none of them
+    /// (`Any`, `Array<Any>`, a cell the arms decide) and its run-time test
+    /// is `et`, its predicate's own element union, alone. A rest takes the
+    /// type of a name beside it; with none it stands over any value. Where
+    /// the union holds `Any`, as a `_` and such a rest do, the test passes
+    /// any value at every position, so the arm decides nothing of an
+    /// element: each cell the union leaves open is `Any`.
+    fn hold_untyped_elements(&self, env: &Env, et: &Type) -> Result<()> {
+        let children = self.children();
+        if let Some(ts) = set_members(et, children.len() + 1)
+            && ts[children.len()].deref_cloned().is_none()
+            && !children.iter().any(|c| matches!(c, Self::Bind(_)))
+        {
+            ts[children.len()].check_contains_ordered(env, &Type::Any)?
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        members_or_open(env, et, &mut members)?;
+        let any = |t: &Type| matches!(expand(env, t), Some(Type::Any));
+        if !children.iter().any(|c| matches!(c, Self::Ignore)) && !members.iter().any(any)
+        {
+            return Ok(());
+        }
+        while let Some(tv) = et.first_free() {
+            let cell = Type::TVar(tv);
+            cell.check_contains_ordered(env, &Type::Any)?;
+            if cell.deref_cloned().is_none() {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// The id of every [`Leaf::fresh`] name: each capture and every
@@ -2736,7 +2802,8 @@ impl<R: Rt> PatternNode<R> {
                 }
             }
             self.structure_predicate.narrow_payloads(env, &matched)?;
-            self.structure_predicate.hold_slice_members(env, narrowed, &matched)?;
+            let open = reaching.is_empty();
+            self.structure_predicate.hold_slice_members(env, narrowed, &matched, open)?;
         }
         let mut leaves = SmallVec::new();
         let out_by = match self.explicit_type_predicate {

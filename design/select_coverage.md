@@ -246,7 +246,24 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   reaching member's part at its position, so a name over the element of
   `Array<'b>` there keeps `'b`, as at the top; where a member's part is
   `Any`, the union there is `Any` and the elements are the arm's own
-  cells, as over an `Any` scrutinee. Pins:
+  cells, as over an `Any` scrutinee. Where nothing types the elements (an
+  `Any` scrutinee or part, `Array<Any>`, a scrutinee the arms decide) the
+  predicate's own element union is the whole run-time test
+  (`hold_untyped_elements`): a rest takes the type of a name beside it
+  (`[h, ..] => h + 1` reads every element as an `i64`), and with no name
+  it is `Any` (`[7, ..]` takes any array that starts with 7); and where
+  the union holds `Any` (a `_` element, such a rest, a rest over
+  `Array<Any>`) the test passes any value at every position, so the arm
+  decides nothing of an element and every cell the union leaves open is
+  `Any` (`[(a, b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused;
+  the written test `Array<[(i64, i64), string]> as [(a, b), _]` types
+  them; pins `slice_rest_over_any_takes_a_names_type_or_any_value`,
+  `slice_*_beside_a_wildcard_*`, `slice_bind_beside_a_rest_*`). A partial struct pattern over a part
+  that may be `Any`, the scrutinee or a part at any depth (`(_, {a, ..})`
+  over `(i64, Any)`), has no struct to complete it, so its test would be
+  the exact struct of the fields it names: it is refused where it is
+  completed (`StructurePattern::unique_completion`), naming the written
+  test (pins `*partial_struct_over_an*_refused`). Pins:
   `lang::select::capture_*`, `slice_elements_typed_apart`,
   `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`,
   `slice_element_bind_*`, `slice_element_or_alternative_bind_*`,
