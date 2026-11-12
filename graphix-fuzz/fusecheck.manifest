@@ -172,6 +172,7 @@
 2	foldq-reactive-size-jul2026/01_fold_over_growing_init.gx
 2	foldq-reactive-size-jul2026/02_fold_shrink_emits_held.gx
 2	fork-callee-ref-reads-all-nov2026/00_group_of_a_dereference.gx
+2	fork-opaque-callee-ref-nov2026/00_dynamic_call_beside_a_dereference.gx
 1	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
 4	formal-bottom-persists-aug2026/00_wrapper_formal_resurrection.gx
 2	frame-formal-init-view-aug2026/00_guard_flip_rec_arm.gx

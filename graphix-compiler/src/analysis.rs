@@ -1560,8 +1560,9 @@ struct Summary {
     /// It calls a site not bound yet whose bind may resolve it, a static
     /// target or a slot site's own call (opaque until it is).
     unbound: bool,
-    /// It makes a reference, which publishes its cell in the cycle it
-    /// fires, a callee's included.
+    /// It may make a reference, which publishes its cell in the cycle it
+    /// fires: its own, a callee's, or an opaque call's, whose body no
+    /// summary holds.
     makes_refs: bool,
 }
 
@@ -1576,6 +1577,7 @@ impl Summary {
         self.reads.all = true;
         self.writes.all = true;
         self.ordered = true;
+        self.makes_refs = true;
     }
 
     fn union(&mut self, other: &Summary) -> bool {

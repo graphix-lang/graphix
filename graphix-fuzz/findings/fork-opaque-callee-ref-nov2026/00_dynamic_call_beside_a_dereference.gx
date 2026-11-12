@@ -1,0 +1,7 @@
+// Found reviewing fork-callee-ref-reads-all-nov2026: forked node-walk !=
+// serial node-walk. The tuple's first field calls `via`, a call with no
+// static target, whose body makes a reference; its second reads through
+// the saved one. An opaque call was not counted as making a reference, so
+// the two fields forked and the second read the cell before the first
+// published it. Serial: -1; 10; 20; 30; 40.
+{ let n = 0; n <- select n { k if k < 4 => k + 1, _ => never() }; let mk = || -> &i64 &(n * 10); let via = once(mk); let saved: [null, &i64] = null; let pair = (via(), select saved { null as _ => -1, r => *r }); saved <- once(pair.0); pair.1 }

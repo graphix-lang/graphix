@@ -706,11 +706,47 @@ async fn callee_reference_beside_a_reader_of_everything() -> Result<()> {
     assert!(CALLEE_REF.contains(from));
     let code =
         CALLEE_REF.replace(from, "null as _ => [], r => array::group(*r, |c, _| c == 2)");
-    let serial = run_par(&code, ParMode::Off).await?;
+    forks_as_serial(&code).await
+}
+
+/// `code` forked computes what it does in order, eight runs of it.
+async fn forks_as_serial(code: &str) -> Result<()> {
+    let serial = run_par(code, ParMode::Off).await?;
     for _ in 0..8 {
-        assert_eq!(run_par(&code, ParMode::Force).await?.values, serial.values);
+        assert_eq!(run_par(code, ParMode::Force).await?.values, serial.values, "{code}");
     }
     Ok(())
+}
+
+// `mk` hands its reference out through `saved`; `{body}` is the rest of
+// the block, which calls it and reads through what it saved.
+const SAVING_CALLEE: &str = r#"{
+    let n = 0;
+    n <- select n { k if k < 4 => k + 1, _ => never() };
+    let saved: [&i64, null] = null;
+    let mk = || { let r = &(n * 10); saved <- once(r); 0 };
+    {body}
+}"#;
+
+// A statement that reads every variable reads that cell too, where the
+// statement before it publishes nothing a name reaches.
+#[tokio::test(flavor = "current_thread")]
+async fn callee_reference_before_a_statement_reading_everything() -> Result<()> {
+    let body = "{ mk(); select saved { null as _ => [], r => array::group(*r, |c, _| c == 2) } }";
+    forks_as_serial(&SAVING_CALLEE.replace("{body}", body)).await
+}
+
+// A call with no static target may make a reference: its body is in no
+// summary, so a later sibling or statement that reads through a reference
+// is not independent of it.
+#[tokio::test(flavor = "current_thread")]
+async fn opaque_call_may_make_a_reference() -> Result<()> {
+    let from = "let pair = (mk(),";
+    assert!(CALLEE_REF.contains(from));
+    let siblings = CALLEE_REF.replace(from, "let via = once(mk); let pair = (via(),");
+    forks_as_serial(&siblings).await?;
+    let body = "let via = once(mk); { via(); select saved { null as _ => -1, r => *r } }";
+    forks_as_serial(&SAVING_CALLEE.replace("{body}", body)).await
 }
 
 // A call with no static target may call something else at its next bind,

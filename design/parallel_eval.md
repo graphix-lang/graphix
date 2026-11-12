@@ -117,7 +117,8 @@ out of the earlier one's reach.
 A reference publishes its cell in the cycle it fires, one a callee's body
 makes included, so a sibling that reads through a reference, or reads
 every variable (an opaque call, a builtin handed a callback), depends on
-an earlier one whose calls make a reference.
+an earlier one whose calls make a reference. An opaque call may make one:
+its body is in no summary (`analysis::Summary::opaque`).
 
 `reads` is the dependency summary's read set
 (`dependency_summaries.md` §2), following statically resolved calls
