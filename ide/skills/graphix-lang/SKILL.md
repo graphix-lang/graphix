@@ -553,6 +553,8 @@ no "unreachable arm" let b = true; let r = select b { true => never(), false => 
 ok let b = true; let r: [i64, Error<`E>] = select b { true => never(), false => error(`E) }; select r { error as e => 1, v => 2 }
 no "unreachable arm" |x| select x { null as _ => 0, v => v }
 ok |x: Array<i64>| select (x, 0) { ([], _) => 0, ([a, ..], _) => a }
+ok let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 }; f(`A([1, 2]))
+no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0 }
 no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
 ```
 

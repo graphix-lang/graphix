@@ -341,7 +341,10 @@ A slice inside a tuple, struct or variant counts the same way, at
 its own position, when its arm tests nothing else: `([], _)` and
 `([x, ..], _)` cover `(Array<i64>, i64)`, and `([x, y, ..], _)` after
 `([x, ..], _)` is dead. An arm that also tests another position, as
-`([x, ..], 0)` does, claims no lengths.
+`([x, ..], 0)` does, claims no lengths. A position of several array
+types counts as one array, so `` `A([]) `` and `` `A([x, ..]) `` cover
+`` `A([Array<i64>, Array<string>]) ``; one that also holds a value no
+slice matches (`` `A([Array<i64>, null]) ``) needs an arm for it.
 
 ### List Patterns
 

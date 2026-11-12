@@ -678,6 +678,19 @@ impl Reach {
             // part sharing a cell over an undecided scrutinee, as the elements do. base-r22
             // refuses these too. probes: ~/ptmp/cr29/scratch/r21/21t/rev/{t9.gx,t9w.gx},
             // a5.txt (run with rc.sh) (slice-tuple-bind-cells-01)
+            // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
+            // over an unannotated parameter is refused at the call, where the same slices
+            // in arms of their own and the written parameter run: `let f = |x| select x {
+            // `A([h, ..]) | `B([h, ..]) => h, _ => 0 }; f(`A([1, 2]))` is refused, "i64
+            // could go to '_N or '_N of the union ['_N, '_N], which nothing has decided",
+            // and with `` `A([]) => 0, `B([]) => 0 `` for the wildcard "`A(Array<i64>)
+            // could go to any of 2 members of the union [`A(Array<['_a, '_b]>),
+            // `B(Array<['_a, '_b]>)]". `` `A([h, ..]) => h, `B([h, ..]) => h, `A([]) => 0,
+            // `B([]) => 0 `` prints (1, 0), and so does the or-arm under `|x: [`A(Array<i64>),
+            // `B(Array<i64>)]|`. base-r23 and lane 23d alike. Not diagnosed: the printed
+            // union keeps an alternative's element cell and its rest's cell apart, which a
+            // slice arm of its own does not. probes: ~/ptmp/cr29/scratch/r23/23d/vsc/
+            // {q01,q03,q04,q05}.gx (slice-or-arm-cells-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);
@@ -1062,7 +1075,7 @@ impl Reach {
         if self.wildcard || self.atype == empty {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] Slice arms inside a variant's payload over
+        // XCR claude for claude: [bug/medium] Slice arms inside a variant's payload over
         // an unannotated parameter are refused as not exhaustive, though they cover
         // every length: `let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 };
         // f(`A([1, 2]))` is refused at the definition, "missing match cases: no arm
@@ -1075,6 +1088,17 @@ impl Reach {
         // type (slice-param-union-01 made such members one at the pick); the cover
         // here does not join the arms' lengths through a variant's payload. probes:
         // ~/ptmp/cr29/scratch/r21/21t/kp/{v1,v2,v3,v4}.gx (variant-slice-coverage-01)
+        // 2026-11-12 claude: The payload of one variant member is a union of one array
+        // an arm, and inner_slices stopped at any position holding two members, so no
+        // nested ladder was climbed. A position's members now each give the pattern's
+        // slices (member_slices), and the position stands on the ladder where they
+        // agree: a union of arrays or lists, of tuples or structs holding one, also
+        // when written. A position holding a member the slice cannot match climbs none.
+        // Newly refused: an arm dead behind such a ladder. Census 2962 files: no
+        // change. Pins lang::select::nested_slice_ladder_union_position_exhaustive and
+        // _dead_arm_refused fail with the fix off; _gap_refused and
+        // _other_member_refused hold the rule's edge. probes:
+        // ~/ptmp/cr29/scratch/r23/23d/vsc/
         let covered: LPooled<Vec<&Type>> = self.covered.iter().collect();
         let covered = Type::union_exact(env, &covered)?;
         if !undecided.is_empty() && covered.contains_holding(env, scrut, undecided)? {
@@ -1555,6 +1579,7 @@ fn pooled_leaves(
 /// An array or list slice a composite pattern tests inside a scrutinee
 /// member: its path into the member, keyed as a [`Leaf`]'s, and the
 /// lengths it matches, `(k, exact)` as `array_len_range` gives them.
+#[derive(PartialEq)]
 struct InnerSlice {
     path: SmallVec<[u32; 4]>,
     len: (usize, bool),
@@ -1575,9 +1600,9 @@ fn nests_slice(sp: &StructPatternNode) -> bool {
 }
 
 /// The slices composite pattern `sp` tests inside `t`, found along
-/// positions of one member that fits the pattern there; true when they
-/// are all it refutes a value of `t` by: everything else is a name or
-/// `_`, and every slice's elements are too.
+/// positions whose every member fits the pattern there with the same
+/// slices; true when they are all it refutes a value of `t` by:
+/// everything else is a name or `_`, and every slice's elements are too.
 fn inner_slices(
     env: &Env,
     sp: &StructPatternNode,
@@ -1592,7 +1617,29 @@ fn inner_slices(
     if union_members_open(env, t, &mut members)? {
         return Ok(false);
     }
-    let [m] = &members[..] else { return Ok(false) };
+    let [first, rest @ ..] = &members[..] else { return Ok(false) };
+    let found = out.len();
+    let mut only = member_slices(env, sp, first, path, out)?;
+    let mut other: SmallVec<[InnerSlice; 2]> = SmallVec::new();
+    for m in rest {
+        other.clear();
+        only &= member_slices(env, sp, m, path, &mut other)?;
+        if other[..] != out[found..] {
+            out.truncate(found);
+            return Ok(false);
+        }
+    }
+    Ok(only)
+}
+
+/// [`inner_slices`] inside `m`, one member of a position's type.
+fn member_slices(
+    env: &Env,
+    sp: &StructPatternNode,
+    m: &Type,
+    path: &mut SmallVec<[u32; 4]>,
+    out: &mut SmallVec<[InnerSlice; 2]>,
+) -> Result<bool> {
     let mut children: SmallVec<[(&StructPatternNode, &Type); 8]> = SmallVec::new();
     match (sp, m) {
         (

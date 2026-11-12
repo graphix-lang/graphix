@@ -19,8 +19,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   length ladders count as coverage, one ladder per array or list member
   (a slice arm claims its lengths of each member whose element type its
   elements cover), and one per slice position inside a tuple, struct or
-  variant member, keyed by its path, along positions of one member each
-  (`select.rs::NestedLadder`): an unguarded arm claims its slice's
+  variant member, keyed by its path, along positions whose every member
+  fits the pattern with the same slices (`select.rs::NestedLadder`,
+  `inner_slices`: a variant's payload over an undecided scrutinee is one
+  array member an arm, `` `A([Array<'a>, Array<'b>]) ``; a position
+  holding a member the slice cannot match, `[Array<i64>, null]`, climbs
+  none): an unguarded arm claims its slice's
   lengths there where that slice is all it tests, its elements and every
   other position names or `_`, and its predicate holds the member; an
   arm is dead where at each member it can match one of its slices

@@ -706,6 +706,66 @@ run!(
     FuseExpect::None
 );
 
+// A position holding several members climbs one ladder where the arm's
+// pattern finds the same slice in each: a variant's payload over an
+// unannotated parameter, which is one array member an arm, a tuple or a
+// struct there, a list, and a written union of arrays.
+run!(
+    nested_slice_ladder_union_position_exhaustive,
+    r#"{
+  let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 };
+  let g = |x| select x { `A([h, t..]) => h + array::len(t), `A([]) => 0, `B => 7 };
+  let h = |x| select x { `A(([a, ..], y)) => a, `A(([], y)) => y };
+  let i = |x| select x { `A({a: [e, ..], b}) => e + b, `A({a: [], b}) => b };
+  let j = |x| select x { `A([<e, ..>]) => e, `A([<>]) => 0 };
+  let k = |x: [`A([Array<i64>, Array<string>])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
+  [
+    f(`A([1, 2])), f(`A([])), g(`A([3, 4, 5])), g(`B), h(`A(([6], 0))), h(`A(([], 8))),
+    i(`A({a: [9], b: 1})), i(`A({a: [], b: 11})), j(`A([<12>])), j(`A([<>])),
+    k(`A(["s"])), k(`A([2])), k(`A([]))
+  ]
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 5, 7, 6, 8, 10, 11, 12, 0, 1, 1, 0])
+    };
+    FuseExpect::Jit
+);
+
+run!(
+    nested_slice_ladder_union_position_dead_arm_refused,
+    r#"{
+  let f = |x: [`A([Array<i64>, Array<string>])]| select x {
+    `A([e, ..]) => 1, `A([a, b, ..]) => 2, _ => 0
+  };
+  f(`A([1, 2]))
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_ladder_union_position_gap_refused,
+    r#"{
+  let f = |x| select x { `A([a, b, ..]) => a, `A([]) => 0 };
+  f(`A([1, 2]))
+}"#,
+    refused("missing match cases: no arm covers `A(");
+    FuseExpect::None
+);
+
+// A member the slice cannot match keeps the position off the ladder: the
+// arms leave its values uncovered.
+run!(
+    nested_slice_ladder_union_position_other_member_refused,
+    r#"{
+  let f = |x: [`A([Array<i64>, null])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
+  let g = |x: [`A([Array<i64>, List<i64>])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
+  f(`A([1, 2])) + g(`A([1, 2]))
+}"#,
+    refused("missing match cases: no arm covers `A(");
+    FuseExpect::None
+);
+
 // Exact-length slice arms pool their elements' heads per length: `[true]`
 // with `[false]` claims length 1, of an array or a list, through a tuple
 // element too; a length short of a combination stays uncovered, and an arm
