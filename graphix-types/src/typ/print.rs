@@ -362,6 +362,21 @@ impl Type {
 // by identity; the text-equality branch cannot merge two distinct cells either, since bf0d9cb4f
 // numbers a second cell of one name apart. No test pins the message: a run! refusal of the probe
 // naming both members would.
+// 2026-11-12 claude: Review: NOT stale. The renaming pairing is gone, but the text branch of
+// write_deref_set still merges two distinct open cells: two instances of one inferred generic copy
+// its generated cell names (TVar::freshen, Fresh::Instantiate keeps self.name) and printed_name
+// exempts generated names from numbering apart (tv.generated()), so they print alike. base-r23:
+// let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x),
+// false => mk(y) }; let n: i64 = s; n }; f(false, 1, "s") is refused "i64 does not contain fn(p:
+// '_8371: unbound) -> ('_8360: unbound, '_8371: unbound)", one member (a debug print shows the set
+// holds two, strictly_identical false, merged by text), while the same union called, s(1), is
+// refused "this callee is one of fn(p: '_8372 ..) -> ('_8360 ..) and fn(p: '_8372 ..) -> ('_8360
+// ..)", two members under one set of names. probes:
+// ~/ptmp/cr29/scratch/r23/23h/print-set/review/{s2,s9}.gx. A fix gives two cells of one generated
+// name distinct printed names (or instantiation fresh generated names) so the text branch only
+// merges bound cells; nothing pins this message: putting union_identical back in write_deref_set
+// fails no test in graphix-tests lang:: or graphix-types --lib, so pin p11 and s2 as run! refusals
+// naming both members.
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     let mut text: LPooled<String> = LPooled::take();
     let mut kept: SmallVec<[(&Type, usize, usize); 16]> = SmallVec::new();
