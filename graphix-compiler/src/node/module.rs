@@ -2150,31 +2150,6 @@ impl<R: Rt> Update<R> for Module<R> {
                 let t = Type::Primitive(Typ::String | Typ::Error);
                 wrap!(source, t.check_contains(&ctx.env, source.typ()))?;
             }
-            // XCR claude for claude: [readability/low] In a module task (a module with an
-            // interface) two calls at different types through a one-instance function its
-            // parent left open are refused, as the rule wants, but by the val's mismatch,
-            // which names open cells and not the parent's binding to annotate: main.gx `let
-            // fs = array::map([1], |r| |x| x + x); mod m;`, m.gx `let g = super::fs[0]$; let
-            // go = (g(1), g(1.5))`, m.gxi `val go: (i64, f64)` says "val go is declared (i64,
-            // f64) but implemented ('_8670: unbound within [..] & Singleton, '_8671: unbound
-            // within [..] & Singleton): type variable usage mismatch: expected i64, got f64".
-            // Without m.gxi the second call is refused where it stands, "type mismatch i64
-            // does not contain f64" at `1.5`. A declared variable (`|r| 'a: Number |x: 'a| ->
-            // 'a x + x`) prints the same, so the kept quantifier list is not the cause
-            // (instance-quantifier-print-01's note of 11-05 guessed it was). Whether the
-            // calls should count as a decision about the parent's cell (`OwnWrites`), so
-            // the refusal below names fs, is untried. probe:
-            // ~/ptmp/cr29/scratch/r20/20h/instance-quantifier-print-01/mq2/main.gx, mq1 (the
-            // declared form), mq2n (no interface) (module-open-instance-msg-01)
-            // 2026-11-12 claude: Module::typecheck0 now tells a module check's failure first
-            // as the decision about the code around the module it tried and did not make, its
-            // own error under it, as Input::refused does for a top-level input: the CR's
-            // program says "the check decides a type the code around the module left open:
-            // annotate `fs` (line 1, column 5)" above the val's mismatch (mq1 alike). Pins
-            // lang::interfaces::calls_at_two_types_through_an_outer_instance_refused and
-            // an_error_after_an_outer_decision_refused fail in all four modes without it;
-            // calls_at_one_type_through_an_annotated_outer_instance is the annotated twin.
-            // The language server still shows the leaf alone: lsp-leaf-drops-told-first-01.
             Body::Static => {
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
