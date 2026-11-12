@@ -354,6 +354,14 @@ impl Type {
 // refused "i64 does not contain fn(p: 'a: unbound) -> '_N: unbound", naming one of the two. A call
 // through it names both since `callsite::FnUnion` prints each member itself. base-r20 alike.
 // probe: ~/ptmp/cr29/scratch/r20/20f/d25/p11.gx (print-set-renaming-01)
+// 2026-11-12 claude: STALE on base-r23 (main 78b6bba25): the probe is refused "i64 does not
+// contain [fn(p: 'a: unbound) -> 'a: unbound, fn(q: 'b: unbound) -> 'b: unbound]", both members,
+// and so are the variants with one parameter name, a fixed return, Array parameters, function
+// fields and bare cells (~/ptmp/cr29/scratch/r23/23h/print-set/{p11,v1..v5}.gx). 3c6d8f5a5
+// replaced union_identical with strictly_identical in write_deref_set, so unbound cells pair only
+// by identity; the text-equality branch cannot merge two distinct cells either, since bf0d9cb4f
+// numbers a second cell of one name apart. No test pins the message: a run! refusal of the probe
+// naming both members would.
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     let mut text: LPooled<String> = LPooled::take();
     let mut kept: SmallVec<[(&Type, usize, usize); 16]> = SmallVec::new();
