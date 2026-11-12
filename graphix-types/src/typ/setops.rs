@@ -1410,53 +1410,6 @@ impl Type {
         r
     }
 
-    // XCR claude for claude: [bug/high] A type test over two families of recursive unions
-    // still does not return where the test takes a PART of what reaches it. Of the 600
-    // generated selects of round 20's review (gen_sel.py, seeds 1..600) two are killed at
-    // 40 s with the name rule below in place (ten on r20-staging before it), probes in
-    // ~/ptmp/cr29/scratch/r20/coord/x5/: s225.gx (four mutually recursive unions through
-    // Error, Array and tuples, arms `U1 as`, `Error<U2> as`, `U3 as`: over 350 G
-    // instructions in this function under Select::typecheck0_with's `among.diff(test)`)
-    // and s99.gx (its differences end; Reach::exhausted then formats the residual for
-    // the "missing" message as a tree, print::write_deref_set). The cause in both is the
-    // residual of a partial subtraction. `Error<T> - Error<U>` keeps the Error around
-    // what is left of its payload, and a pair in progress answers its minuend, so each
-    // return through the recursion wraps what the levels below left in another Error:
-    // over s432.gx's four typedefs `Error<[T0, T3]>` less `T3` is a tower of dozens of nested
-    // Errors. Such a residual is a new type at every pair, which no key meets again, so
-    // the walk ends only at the pair budget, on a type every later walk (the next arm's
-    // difference, could_match, the form check, the message) reads as deep. What would
-    // fix it: bound the residual, answering the minuend whole (wider, sound) once a
-    // difference nests the pair's own constructor inside itself again, or keep a
-    // finished pair's difference under a name the cut answers, so the residual stays a
-    // finite graph. The message needs a printer that prints a shared node once, or a
-    // size cap, either way. (diff-partial-residual-growth-01)
-    // 2026-11-11 claude: Review of the follow-up, on fresh seeds: of gen_sel.py seeds
-    // 601..1000 one is killed at 40 s on this tree, check and run alike (s764.gx: arms `T3
-    // as`, `U1 as` over four typedefs a side through Error, tuples and Array; not traced to
-    // this function), and three on r20-staging 8203ee95b (s764, s978, s996; the last two
-    // check here). The other 397 keep staging's verdict, and a run of each that checks
-    // prints the same fused, under --no-fusion and on staging. probe:
-    // ~/ptmp/cr29/scratch/r20/coord/x5/s764.gx
-    // 2026-11-12 claude: diff tracks what the difference it builds holds
-    // (DiffHist::over_cut): a minuend answered whole (a pair met again, the budget, a
-    // collection or an Error kept whole over one) and the Errors built around it; an Error
-    // whose payload's difference holds one under setops::ERRORS_OVER_CUT (3) built Errors
-    // keeps its payload whole, and a part of which nothing is left holds nothing, so exact
-    // differences through a recursion keep their depth. s225, s99 and s764 check in 0.8 to
-    // 0.9G instructions (an empty program 0.77G); the refusals of s99 and s764 print a
-    // residual at most four Errors deep. Three by census of 2600 selects (gen_rnd.py 1..1600,
-    // gen_sel.py 1..1000): base-r23's six timeouts end, no verdict lost, 13 dead arms its
-    // budget hid are found; 1, 2 and 4 lose 5, 6 and 2 of its dead-arm refusals. Pins that
-    // fail with the rule off:
-    // typ::setops::tests::a_residual_nests_few_errors_over_a_pair_met_again,
-    // residuals_over_two_families_of_recursive_unions_stay_shallow,
-    // diff_over_names_recurring_through_errors_ends (58 pairs for 1000),
-    // diff_over_error_cycles_walks_pairs_by_their_lengths, and
-    // deep_nesting::type_tests_over_two_families_of_recursive_unions_check_in_time (over 3G).
-    // The printer the CR's last sentence asks for is not built: a residual of a recursion is
-    // small now, and the exact residual of a deep written test still prints as a tree
-    // (residual-message-tree-01). probes and census results: ~/ptmp/cr29/scratch/r23/23c/dpr/
     fn diff_inner(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
         match (self, t) {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(env, tr0, tr1) => {
