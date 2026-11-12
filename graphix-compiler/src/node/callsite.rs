@@ -2075,38 +2075,6 @@ fn decided_elsewhere(
     Ok(Some(note))
 }
 
-// XCR claude for claude: [bug/high] A value of the wrong type reaches a typed position
-// through a `let` of a read of a nominal constructor's open parameter. `type B<'p> =
-// Abstract<'p>; let x = B(1); x <- B("a"); let v = x.0; let f = |a: Array<'a>, b: 'a| b;
-// let r: i64 = f([10], v)` passes `--check`, and so does `let r: Array<i64> =
-// array::push([10], v)`. Run with the write behind a timer (u1.gx), `r` holds "a": the
-// node-walk logs an arith error where a fold sums it, and under fusion the program prints
-// `r=[10, 0] s=10`. The same call with the read written in place (`f([10], x.0)`) is
-// refused as it should be, "'a: i64 does not contain [string, i64]: `x` is undecided at
-// this call; annotate `x`", and so are `let w: i64 = v`, `v + 1` and a call with no
-// widenable variable (`|a: i64| a`). So only an argument that waits for the others
-// (Waiter::Undecided) takes it. GRAPHIX_DBG_BIND shows the call's 'a aliased to a cell
-// with the name of x's parameter at another address than the one holding the lower bounds
-// i64 and string, so the first suspect is that `let v` generalizes the constructor's open
-// parameter, which belongs to a binding something writes, and the copy a read of `v`
-// makes carries no lower bounds. The parameter is open because Construct::typecheck0_with
-// takes its argument as a lower bound (construct-lower-merge-01). base-r21 and base-r22
-// accept alike. Found by soak nov11b as a let-inline typeflip, katana typeflip_000000.
-// probes: ~/ptmp/cr29/scratch/nov11b/{k1,k2,u1,u2,u3,u4,u6,u7,u9,u11,u12}.gx
-// (open-param-let-arg-01)
-// 2026-11-12 claude: Fixed, by another cause than the suspect above: nothing is
-// generalized. The read of v pre-unifies with the open copy of 'a (Widening::opening),
-// which merges the copy with x's payload cell, the one above the lower bounds i64 and
-// string; at the end of the argument loop TVar::rejoin bound that copy to the formal's
-// cell with TVar::bind, which looks at no lower bound, so the shared cell became i64 and
-// the check that follows passed. With x.0 in place the copy is a cell of its own and the
-// check refused. rejoin now leaves a copy above a lower bound open beside a decided cell,
-// and the relation CallSite::check_waiting makes next binds it or refuses. Every probe
-// above that passed is refused with the inline form's message, naming v. Regression:
-// lang::functions::undecided_binding_above_a_lower_bound_refused and _builtin_refused
-// fail without it (the twin _it_holds_joins passes either way), and so does the corpus
-// pin findings/waiting-arg-lower-bound-nov2026. Census 2958 files: 0 verdict, 0 message
-// changes.
 /// What to annotate where the argument `n` is undecided at its call: the
 /// bindings it reads whose types are undecided, else the argument.
 fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
