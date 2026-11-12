@@ -416,41 +416,6 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
-    // XCR claude for claude: [bug/medium] A forked branch's table only grows, so
-    // once a branch has merged a nested branch that reloaded a dynamic module,
-    // the rest of its cycle still names the retired binding as the val. A
-    // function of the retired body first called there takes the val's value at
-    // its birth, the new body's, and keeps it; serial, where the retirement has
-    // dropped the join, it reads bottom. `GRAPHIX_PAR=force graphix --no-cache
-    // d1.gx` in ~/ptmp/cr29/scratch/r20/20h/x4 (a tuple whose first field reloads
-    // `d` and whose third first calls the saved `get` in that cycle) prints `11
-    // [25, 26, 27] [26, 27, 28] ..`, `GRAPHIX_PAR=off` prints nothing, fused and
-    // `--no-fusion`; main 82569fed3 differs from serial as well (there the
-    // instances go on to follow the val). The reload runs two forks deep and the
-    // calls bind in the branch that merged it, no sibling of it: a dynamic module
-    // and a call with no static target are each opaque to
-    // `analysis::independent`. Neither `GRAPHIX_PAR_AUDIT=1` nor
-    // `GRAPHIX_PRUNE=audit` reports it. d2.gx beside it (the first call in a
-    // statement after the tuple, past the root's merge) agrees with serial, as
-    // `lang::modules::a_reload_in_a_forked_branch_retires_its_binding_in_the_event`
-    // pins for a call three cycles later. To drop a join as the runtime does, a
-    // branch needs the runtime's count of the readers registered through the
-    // alias (`GXRt::alias_reads`) and the refs and unrefs its own chain logged,
-    // and every merge the sync and the event table `merge_in_order` gives the
-    // root. What a retired binding reads once its join is dropped is
-    // (escaped-closure-alias-bottom-01)'s question, and if the alias is to stay
-    // while a function value captures the binding there is nothing to drop
-    // here: decide that one first. (forked-retire-first-call-01)
-    // 2026-11-11 claude: Fixed with (escaped-closure-alias-bottom-01): there is no
-    // reader count to consult any more, so a branch that retires a binding
-    // something still names drops its alias there and then (RtView::store_own,
-    // ForkRt::left), each branch that merges it drops it too (RtView::merge), and
-    // merge_in_order gives a forked view's event its table as it does the root's.
-    // d1.gx prints '11 [6, 7, 8] [7, 8, 9] ..' in all four modes (base-r22: nothing
-    // serial, '11 [25, 26, 27] [26, 27, 28] ..' forked); d2.gx the same. Pin:
-    // lang::modules::a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding,
-    // whose par and jit_par modes fail ('[25, 26, 27]' first) with the Fork arm of
-    // store_own removed. Copies of the probes: ~/ptmp/cr29/scratch/r21/21r/x4.
     pub(crate) fn set_var_aliases(&mut self, aliases: VarAliases) {
         match self {
             Self::Root(r) => r.set_var_aliases(aliases),

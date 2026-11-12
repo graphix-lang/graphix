@@ -452,63 +452,6 @@ impl<X: GXExt> Rt for GXRt<X> {
         &self.aliases
     }
 
-    // XCR claude for claude: [bug/medium] A closure that escapes a body with an
-    // interface module reads bottom forever once the body is deleted or reloaded
-    // while no reader is registered through the alias. The implementing binding's
-    // value lives under the val's variable, and a join that went keeps its alias
-    // here only while `alias_reads` counts a reader, so a captured function not
-    // yet called holds nothing. Serial, both engines, the same on main 82569fed3.
-    // In ~/ptmp/cr29/scratch/r20/coord/par20h/alias/ifc, `GRAPHIX_PAR=off graphix
-    // --no-cache main4.gx` (`let f = |k: i64| { mod m; m::get }`; `saved` takes
-    // `fs[0]$` at ep 4, the slots go at ep 6, `saved` is first called at ep 9)
-    // prints nothing. ctl4.gx there, the same function with plain lets in place of
-    // `mod m;`, prints `ep=10 escaped=[11, 12, 13]` and two more lines, and so
-    // does ~/ptmp/cr29/scratch/r20/coord/verify-runtime/ifc/main4_nodel.gx (main4
-    // with no deletion); main3.gx (an instance of `saved` lives at the deletion)
-    // keeps its values. The dynamic form is ../esc3.gx, serial: a `get` saved
-    // before a reload and first called after it prints nothing. This contradicts
-    // "a function value keeps the bindings it captures alive". For `mod m;` in a
-    // function body that rule gives the answer, ctl4's: keep the alias, or move
-    // the value to the inner binding's own key at `StaticCallees::forget` and
-    // `unjoin`, for as long as a function value captures the binding. For a
-    // dynamic module's reload the captured binding either keeps its last value or
-    // follows the val, which is Eric's to rule before it is built;
-    // `lang::modules::a_reload_in_a_forked_branch_retires_its_binding_in_the_event`
-    // holds forked runs to today's serial answer, bottom. Pin main4.gx against
-    // ctl4.gx. (escaped-closure-alias-bottom-01)
-    // 2026-11-11 claude: Eric ruled (11-11, D33): (a). A function saved from a
-    // dynamic module and called after a reload reads the last value of the retired
-    // body's binding, the rule of a deleted slot: the capture is kept alive, its
-    // initializer no longer runs. Code that wants the new module calls through the
-    // module again.
-    // 2026-11-11 claude: Built as ruled. A binding that leaves its join, its body
-    // deleted or retired by a reload, is a variable of its own again: where a
-    // function value or a reference names it, it keeps what the val's variable held
-    // (ExecCtx::forget_binding, RtView::store_own), and the readers registered
-    // through it move to it (GXRt::set_var_aliases; alias_reads holds the readers,
-    // and no alias outlives its join, so an instance alive across a reload reads
-    // the retired binding too, where it used to follow the val). A deleted module's
-    // val bindings are deleted as a let's are (ModuleNode::delete): they were never
-    // released, which kept the escaped function, and so the binding it captures,
-    // for good. main4.gx prints what ctl4.gx prints, esc3.gx and esc5.gx print, the
-    // same in --no-fusion, fused, GRAPHIX_PAR=off and force, clean under
-    // GRAPHIX_PAR_AUDIT=1 GRAPHIX_PRUNE=audit GRAPHIX_QUIET=audit. Pins:
-    // lang::modules::a_function_escaping_a_deleted_interface_module_keeps_its_binding
-    // (its twin over plain lets:
-    // a_function_escaping_a_deleted_body_keeps_its_binding),
-    // a_function_saved_across_a_reload_reads_the_retired_binding,
-    // a_reload_in_a_forked_branch_retires_its_binding_in_the_event (rewritten to
-    // the retired binding's value),
-    // a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding, and
-    // graphix-shell retired_binding_image (cold and from an image), all failing in
-    // every mode with the store_own call in forget_binding removed;
-    // lib_tests::leaks::a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped
-    // fails (3 store entries and 3 bindings a slot) without the val delete in
-    // ModuleNode::delete;
-    // lib_tests::leaks::a_function_saved_across_reloads_keeps_nothing_once_dropped
-    // (1000 reloads, nothing grows) and graphix-rt
-    // rt::tests::readers_follow_a_binding_out_of_its_variable guard the new
-    // bookkeeping. Probes: ~/ptmp/cr29/scratch/r21/21r. Needs a soak.
     fn set_var_aliases(&mut self, aliases: VarAliases) {
         let Self { aliases: held, alias_reads, by_ref, late, var_updates, .. } = self;
         if aliases.older_than(held) {
