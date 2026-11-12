@@ -9,7 +9,7 @@ use crate::{
     profile::{self, Phase},
     typ::{FnType, Type},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use netidx_core::path::Path;
@@ -1818,6 +1818,12 @@ fn comma_listed<O: ExprItem>(
         None => return Err("a comment here has no item to describe"),
     }
     Ok((res, trailing))
+}
+
+/// Whether no two of `names` are equal.
+fn distinct<'a>(names: impl IntoIterator<Item = &'a ArcStr>) -> bool {
+    let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    names.into_iter().all(|n| seen.insert(n.clone()))
 }
 
 /// Sort `items` by name; false when a name repeats.

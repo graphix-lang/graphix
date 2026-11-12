@@ -1,5 +1,5 @@
 use super::{
-    attribute, decl_items, doc_comment, expr,
+    attribute, decl_items, distinct, doc_comment, expr,
     input::{Input, R},
     keyword, leading_comments, name, statements, trail,
     typexp::{angle_list, flatten_bounds, tvar_opt_bound, typ, typath},
@@ -12,8 +12,6 @@ use crate::{
     },
     typ::{FnArgKind, TVar, Type},
 };
-use ahash::AHashSet;
-use arcstr::ArcStr;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -72,12 +70,6 @@ fn trait_method(i: &mut Input, sig: bool) -> R<TraitMethod> {
         self_index,
         default,
     })
-}
-
-/// Whether no two of `names` are equal.
-fn distinct<'a>(names: impl IntoIterator<Item = &'a ArcStr>) -> bool {
-    let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
-    names.into_iter().all(|n| seen.insert(n.clone()))
 }
 
 /// A trait declaration; `sig` in an interface, where methods carry docs.

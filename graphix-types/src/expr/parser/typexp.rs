@@ -1,7 +1,7 @@
 use super::{
     COMMA_WHY, Commentable, Listed, ONE_TUPLE, angles,
     arithexp::mutability,
-    choice, commented, fldname, fname, fname_noting, ident_str,
+    choice, commented, distinct, fldname, fname, fname_noting, ident_str,
     input::{Input, R},
     keyword,
     lambdaexp::{LABELED_FIRST, labeled_first},
@@ -250,10 +250,7 @@ fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
         Either::Left(t) => t,
         Either::Right(_) => unreachable!(),
     }));
-    let named_before = |(n, a): (usize, &FnArgType)| {
-        a.name().is_some_and(|name| args[..n].iter().any(|b| b.name() == Some(name)))
-    };
-    if args.iter().enumerate().any(named_before) {
+    if !distinct(args.iter().filter_map(|a| a.name())) {
         const UNIQUE: &str = "arguments must have unique names";
         i.g.note_reason(end, None, || CompactString::const_new(UNIQUE));
         return Err(i.because(UNIQUE));
