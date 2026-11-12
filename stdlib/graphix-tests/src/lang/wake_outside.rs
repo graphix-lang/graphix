@@ -1348,6 +1348,45 @@ async fn a_select_a_wake_leaves_bottom_moves() -> Result<()> {
     in_arm_agrees(guard, &bottomed(|x| (10 / (x - 3) > 0) as i64)).await
 }
 
+/// [`in_arm`]'s `expr`, standing in a `let` of the arm that sleeps, which
+/// the reader outside reads through a reference.
+fn in_let(expr: &str) -> String {
+    format!(
+        "{{
+  {CLOCK}
+  let k = 0;
+  let m = 7;
+  let g = select sel {{ 0 => {{ let w = {expr}; &w }}, _ => {{ let w = n + 100; &w }} }};
+  let h = once(g);
+  let v = *h;
+  clk ~ (clk, n, sel, v, count(v))
+}}"
+    )
+}
+
+// `$` and `?` over an operand the wake leaves null or an error stand a
+// bottom that moved with the operand, raising and reporting nothing: what
+// computes from it recomputes, and the reader outside loses the value at
+// the wake.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unwrap_a_wake_leaves_bottom_moves() -> Result<()> {
+    let null = "let o: [i64, null] = select n { 3 => null, x => x };";
+    let error = "let o: [i64, Error<`E>] = select n { 3 => error(`E), x => x };";
+    for (o, read) in [
+        (null, "o$ + 0"),
+        (error, "o$ + 0"),
+        (null, "select o$ { -1 => 0, x => x }"),
+        (null, "o? + 0"),
+        (error, "o? + 0"),
+    ] {
+        for read in [read.to_string(), format!("#[native] ({read})")] {
+            let expr = format!("{{ catch(e) dbg(e); {o} {read} }}");
+            agrees(in_let(&expr), &bottomed(|x| x)).await?
+        }
+    }
+    Ok(())
+}
+
 /// `[clk, v(clk)]` for each of `n` ticks.
 fn ticks(n: i64, v: impl Fn(i64) -> &'static str) -> Vec<String> {
     (0..n).map(|c| format!("[{c}, {}]", v(c))).collect()

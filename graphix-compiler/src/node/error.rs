@@ -758,10 +758,9 @@ fn strip_production<'a>(
     if tv.tag().is_bottom() || !tv.with_value(|v| strip.strips(v)) {
         return tv;
     }
-    if !tv.tag().is_fired() {
-        return resident.ride();
+    if tv.tag().is_fired() {
+        tv.with_value(sink)
     }
-    tv.with_value(sink);
     // the bottom keeps the input's tag
     resident.set_bottom_as(tv.tag())
 }

@@ -589,7 +589,7 @@ fn emit_qop_always_bad<R: Rt>(
     emit_bottom_placeholder_of_kind(cx, kind, cv.disc)
 }
 
-// CR claude for claude: [bug/low] The engines answer `x$` apart where `x`
+// XCR claude for claude: [bug/low] The engines answer `x$` apart where `x`
 // is null or an error that stands, read under a resume: the node-walk's
 // result is a bottom that fires, a kernel's a bottom that stands (the
 // placeholder takes the operand's STALE). On main the difference reaches a
@@ -604,6 +604,20 @@ fn emit_qop_always_bad<R: Rt>(
 // through no fire of `o`). By "inside a woken arm nothing fires" the
 // kernel's answer is the intended one. Probe:
 // ~/ptmp/cr29/scratch/r20/20a/rev-engines/bq1.gx (qop-wake-bottom-01)
+// 2026-11-12 claude: On base-r23 the split had turned over. Bind-driven bodies
+// made the node-walk's bottom quiet, and strip_production rode its resident,
+// which dropped the operand's Tag::MOVED: what computes from `o$` or `o?` in a
+// woken arm kept the value from before the sleep (bq1.gx and bq4.gx print the
+// clk 6 tick node-walked and not fused). The node-walk's bottom now keeps the
+// operand's tag, as the kernel's placeholder does. Pin:
+// lang::wake_outside::an_unwrap_a_wake_leaves_bottom_moves, every case of which
+// fails in Interp without it. The last case the CR names, a wake that slept
+// through no fire of `o`, agrees: both engines stand a quiet bottom there
+// (st1.gx). The pin's first array case found a second split, fixed in the next
+// commit: a kernel loop over a source that moved to bottom ran no slot and
+// dropped the move (SlotFlags::apply; pin
+// a_loop_over_a_source_a_wake_leaves_bottom_moves, which fails in Jit without
+// it). Probes: ~/ptmp/cr29/scratch/r23/23e/qop/
 /// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`, or a `[T, null]`
 /// inner under a null sink; an inner with nothing to strip passes
 /// through. `result_typ` is the qop node's static type, which selects

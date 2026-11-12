@@ -149,12 +149,14 @@ Whether a value moved is never decided by comparing values: `x * 0` moved when `
 computes from values passes the bit on: `Tag::join` ORs it over a quiet join and drops it where the join
 fires, so an operator, a data constructor, a field read, a select's result (from its arm, its scrutinee
 and its consulted guards), a call, a collection and a `Stateless` builtin (`CachedArgs`, a kernel's fast
-call) carry it. Everything that consumes events drops it: a stateful builtin keeps its state, a sample
-whose trigger did not fire rides, an `Io` call does not act and its result moved when its trigger
-argument did. A resident never keeps the bit (`Tag::quiet`). A kernel ORs the bit into a disc wherever
-it ORs `TAINT` (`emit::abi::propagate_taint`, the slot accumulators, `emit::body::fold_consumed`) and
-tests it nowhere; it runs, and never rides, when a feeder moved. A guard's tentative binds are retracted
-and stand nowhere.
+call) carry it. A bottom made of a moved value carries it too: the bottom `$` or `?` makes of a null or
+an error that stands (`node/error.rs::strip_production`; nothing is raised or reported, since nothing
+fired). Everything that consumes events drops it: a stateful builtin keeps its state, a sample whose
+trigger did not fire rides, an `Io` call does not act and its result moved when its trigger argument
+did. A resident never keeps the bit (`Tag::quiet`). A kernel ORs the bit into a disc wherever it ORs
+`TAINT` (`emit::abi::propagate_taint`, the slot accumulators, `emit::body::fold_consumed`) and tests it
+nowhere; it runs, and never rides, when a feeder moved. A guard's tentative binds are retracted and
+stand nowhere.
 
 **Kernels.** A kernel's one source of birth is the context word its wrapper passes; a call site's first
 use, a loop slot's first iteration and a self-call's fresh block are not births, so a tail recursion that
