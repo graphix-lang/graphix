@@ -133,31 +133,6 @@ impl Repl {
     }
 }
 
-// XCR claude for claude: [test-gap/low] This test failed once under the
-// gate's load (round 20, lane 20f's second gate) and passed six times
-// alone: `"42" never showed 1 times`, stdout `before` then `-: i64`,
-// stderr empty. Nothing orders the SIGINT before the `x + 1` line: the
-// test sends the signal and writes the line at once, and the shell's
-// session loop selects over `keys.recv()` and `input.read_line`. Read
-// that way the line was taken first (its type printed), then the key
-// arrived as `Key::Leave` and `output.clear()` took the display down
-// before its value showed. Either the test derives the line from the
-// signal's having been heard (the shell shows nothing for a Ctrl-C at an
-// idle prompt, so that needs something to wait on), or it sends the
-// signal first and asserts only what holds in both orders. Whether a
-// Ctrl-C that lands just after a line should clear that line's value is
-// the shell's question, not this test's. (repl-idle-ctrl-c-race-01)
-// 2026-11-12 claude: The test now prints the value from a binding (let after =
-// println("[x + 1]")) in place of showing x + 1, so a Ctrl-C heard after the
-// line has no display to take down: 42 shows in either order, and the
-// session-kept assertions (exit 0, no reset) hold in both. No shell change: the
-// shell shows nothing for an idle piped Ctrl-C, so there is nothing to derive
-// the line from. Shown with a temporary shell patch that hears the key 150 ms
-// late and holds the loop 300 ms after a line that puts up a display (the CR's
-// schedule): the old test failed 8 of 12 runs with the CR's signature (before,
-// -: i64, no 42, stderr empty), the new one 0 of 12; the probe
-// ~/ptmp/cr29/scratch/r23/23g/race.py shows the same for both orders against a
-// binary.
 /// Ctrl-C at an idle prompt stops nothing: a binding made before it is
 /// still there after. Nothing orders the signal before the line, and a
 /// Ctrl-C heard after the line leaves its display, so the line prints its
