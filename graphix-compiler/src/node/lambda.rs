@@ -598,28 +598,6 @@ pub struct InstanceTypes {
     sig: Arc<FnType>,
 }
 
-// XCR claude for claude: [bug/medium] A build refuses an instance the check accepted where
-// a variable bounded by another is decided narrower than the bound's variable settles.
-// `let f = 'b: Array<'a> |x: 'b, y: 'a| y; let e: [i64, string] = 1; f([2], e)` passes
-// `--check`, and its build fails "an instance at fn(x: Array<i64>, y: [i64, string]) ->
-// [i64, string] of a definition typed fn<'b: Array<'a>>(x: 'b, y: 'a) -> 'a". The check's
-// answer holds: 'b is Array<i64>, 'a is [i64, string], and Array<[i64, string]> contains
-// Array<i64>; GRAPHIX_NO_SUBST=1 builds it. So FnType::held_at refuses a signature it
-// should take: the first suspect is that it binds 'a to i64 through 'b's bound when it
-// meets `x`, and then `y` does not fit. With the parameters the other way (`|y: 'a, x:
-// 'b|`, `f(e, [2])`) it builds, and so does the bound written into the formal (`|x:
-// Array<'a>, y: 'a|`). `'a: Any` beside the bound changes nothing, and neither does an
-// annotated `let a: Array<i64> = [2]` passed as `x`, nor returning `x`. base-r21 and
-// base-r22 refuse alike. A sibling: (inst-bare-union-never-01). Found by soak nov11b,
-// aieka divergence_000000. probes: ~/ptmp/cr29/scratch/nov11b/{a1,a4,a5,a6,a7,a8}.gx
-// (inst-bound-order-01)
-// 2026-11-12 claude: Fixed as suspected. FnType::held_at's placing pass bound 'b at
-// Array<i64> first, and discharging its bound decided 'a as i64 before 'a's own place was
-// read. Type::place_cells now makes two passes: the cells whose bounds hold no open cell
-// first, then the rest, so a cell a bound holds takes its own place. Probes a1, a6, a7
-// and a8 build and run. Regression: lang::functions::bound_naming_a_wider_variable_builds
-// (its interp mode fails without it, the check accepting what the build refuses) and the
-// corpus pin findings/instance-held-at-nov2026/01.
 /// The definition's signature `def` as the instance at `instance` holds
 /// it, with the copy of each open cell: each bound to the instance's type
 /// ([`FnType::held_at`]). `None` when the instance's signature does not
