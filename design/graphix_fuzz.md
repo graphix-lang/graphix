@@ -255,7 +255,10 @@ order by identity, which differs between two runs of one program
 (`book/src/stdlib/sys.md`), so a map with a handle in a key holds its
 entries in a run's order: they are numbered in the order of their forms
 with every unseen handle given one name (`Naming::Blank`), and only
-entries alike in that form keep the map's order. A program that reads
+entries alike in that form keep the map's order. Where such entries alias
+unseen handles differently (`{a => a, b => c}`) their numbers are still a
+run's, and a divergence that shows nothing else is the trace's: the exact
+form is a graph canonization. A program that reads
 handle order any other way (a sort of handles, a fold over such a map
 into an array, a print of it) differs between runs by the language's own
 rule and the trace reports it: such a finding is the program's.
