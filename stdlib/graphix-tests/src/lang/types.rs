@@ -2564,9 +2564,9 @@ run!(
 // The refusal names the first unused parameter as written.
 run!(
     typedef_unused_parameter_named_in_order,
-    refused("unused type parameter 'b in definition of D"),
+    refused("unused type parameter 'g in definition of D"),
     "/test.gx" => r#"
-        type D<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h> = [`W('a), `Z];
+        type D<'h, 'g, 'f, 'e, 'd, 'c, 'b, 'a> = [`W('h), `Z];
         let result = 0
     "#
 ; FuseExpect::None);
