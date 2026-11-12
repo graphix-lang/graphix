@@ -1656,37 +1656,6 @@ enum Receipt {
     Nothing,
     /// The error of a raise not given up.
     Taken(Value),
-    // XCR claude for claude: [risk/low] A passed-over delivery stands in the
-    // catch's binder, so the handler, awake, reads an error that changed
-    // with no fire: a bare read of `e` (a `"[e]"`, a `select e.0.error`
-    // outside a sample) shows the given-up error while everything sampled on
-    // `e` stays put. `GRAPHIX_QUIET=audit` panics on it in
-    // lang::errors::a_handler_never_hears_a_raise_given_up, every mode
-    // (`R(3)` to `R(4)`, both standing, at the handler's `e`), the one
-    // program of graphix-tests that trips the audit. By the rule of
-    // design/wake_catchup.md, What a wake stands, an awake reader sees no
-    // change without a fire: either the binder keeps the last error the
-    // handler took (the delivery is dropped, not stood), or the audit
-    // exempts a catch's binder and the rule names the exception.
-    // (passed-raise-stands-01)
-    // 2026-11-11 claude: Eric ruled (11-11) that a wake fires nothing for
-    // anyone (design/bind_driven_bodies.md replaces design/wake_catchup.md): a
-    // reader may see a value change with no fire where the change carries
-    // Tag::MOVED, which makes consumers recompute. This stand is no wake's and
-    // carries no mark, so the audit still panics here and a cached consumer of
-    // `e` keeps a result computed from the old error. The options now: drop the
-    // delivery, or stand it moved.
-    // 2026-11-12 claude: Stood moved: Receipts::take hands the handler a
-    // passed-over delivery under Tag::MOVED, so every reader of the binder
-    // recomputes from the given-up error and none takes an event (drop would
-    // need the catch to keep the last error it took and rewrite the store at a
-    // wake, since a delivery that lands while it sleeps stands anyway).
-    // base-r23 split the engines (a kernel read the new error, a node-walk
-    // select kept the old one). Pins, lang::errors, each failing with the retag
-    // undone: a_raise_given_up_stands_in_the_binder and
-    // a_raise_given_up_is_an_event_to_no_reader (all four modes),
-    // a_raise_given_up_reads_alike_fused (interp, par). lang:: passes under
-    // GRAPHIX_QUIET=audit. Rule: design/catch.md, Mechanics.
     /// A delivery no raise left to take (its raise was given up), as the
     /// handler sees it: standing, moved ([`Tag::moved`]).
     Passed(TagValue),
