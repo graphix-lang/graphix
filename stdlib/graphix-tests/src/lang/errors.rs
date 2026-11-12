@@ -1252,6 +1252,99 @@ run!(
     is(Value::I64(16))
 );
 
+// A raise given up is an event its handler missed, and its error stands in
+// the binder as a value that changed while a body slept does: 1 to 4 are
+// raised at t=1 and land one a cycle; 1 is heard; the arm sleeps at t=2,
+// where 2 lands; 3 lands at the wake and 4 the cycle after, each passed
+// over. `seen` holds what a select over the binder reads at each run of the
+// arm, a digit each: every reader computes from the error that stands.
+run!(
+    a_raise_given_up_stands_in_the_binder,
+    r#"{
+        let t = 0;
+        t <- select t { t if t < 8 => t + 1, _ => never() };
+        let heard = 0;
+        let seen = 0;
+        select t {
+            t if t != 2 => {
+                catch(e) {
+                    heard <- e ~ heard * 10 + select e.0.error { `R(k) => k };
+                    seen <- t ~ seen * 10 + select e.0.error { `R(k) => k }
+                };
+                let a = select t { 1 => error(`R(t))?, _ => 0 };
+                let b = select t { 1 => error(`R(2 * t))?, _ => 0 };
+                let c = select t { 1 => error(`R(3 * t))?, _ => 0 };
+                let d = select t { 1 => error(`R(4 * t))?, _ => 0 };
+                a + b + c + d
+            },
+            _ => never()
+        };
+        select t { 8 => t ~ heard * 1000000 + seen, _ => never() }
+    }"#,
+    is(Value::I64(1134444))
+);
+
+// The error a given-up raise leaves standing is an event to no reader: a
+// builtin that keeps its result while its arguments are stale computes from
+// it (`seen`, the sort's second element at each run of the arm), and a
+// count over it stays at the one raise heard (the last digit).
+run!(
+    a_raise_given_up_is_an_event_to_no_reader,
+    r#"{
+        let t = 0;
+        t <- select t { t if t < 8 => t + 1, _ => never() };
+        let seen = 0;
+        let events = 0;
+        select t {
+            t if t != 2 => {
+                catch(e) {
+                    let n = select e.0.error { `R(k) => k };
+                    let sorted = array::sort([n, 0]);
+                    seen <- t ~ seen * 10 + sorted[1]$;
+                    events <- count(n)
+                };
+                let a = select t { 1 => error(`R(t))?, _ => 0 };
+                let b = select t { 1 => error(`R(2 * t))?, _ => 0 };
+                let c = select t { 1 => error(`R(3 * t))?, _ => 0 };
+                let d = select t { 1 => error(`R(4 * t))?, _ => 0 };
+                a + b + c + d
+            },
+            _ => never()
+        };
+        select t { 8 => t ~ seen * 10 + events, _ => never() }
+    }"#,
+    is(Value::I64(1344441))
+);
+
+// A kernel computes a select over the binder at every run, and the
+// node-walk when the binder fires or moves: both read the error a given-up
+// raise leaves standing.
+run!(
+    a_raise_given_up_reads_alike_fused,
+    r#"{
+        let t = 0;
+        t <- select t { t if t < 8 => t + 1, _ => never() };
+        let seen = 0;
+        select t {
+            t if t != 2 => {
+                catch(e) {
+                    let cur = t * 0 + select e.0.error { `R(k) => k };
+                    seen <- t ~ seen * 10 + cur
+                };
+                let a = select t { 1 => error(`R(t))?, _ => 0 };
+                let b = select t { 1 => error(`R(2 * t))?, _ => 0 };
+                let c = select t { 1 => error(`R(3 * t))?, _ => 0 };
+                let d = select t { 1 => error(`R(4 * t))?, _ => 0 };
+                a + b + c + d
+            },
+            _ => never()
+        };
+        select t { 8 => t ~ seen, _ => never() }
+    }"#,
+    is(Value::I64(134444));
+    FuseExpect::Jit
+);
+
 // A write a declaration would admit names the type to declare as one the
 // program can write: a constructed value's open parameter shows as what
 // its payload put below it, and two payloads as the parameter's union.

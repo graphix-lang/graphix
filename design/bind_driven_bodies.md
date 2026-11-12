@@ -136,7 +136,9 @@ step's select and a step's call alone (`node/select.rs::seq_world`, `wake::Fresh
 **The moved mark.** The node-walk recomputes a node only when an input fires or the node wakes; a kernel
 computes every run. A value a resume recomputed can differ from the one a reader outside last computed
 from, so it must reach that reader as a value to recompute from. Every quiet read under `View::Wake` is
-tagged `Tag::MOVED` (`VarRead::production`, a select's stale binds, a resize under a quiet source), the
+tagged `Tag::MOVED` (`VarRead::production`, a select's stale binds, a resize under a quiet source), and so
+is the error of a raise its catch gave up, which lands in the binder with no event for the handler
+(`node/error.rs::Receipt::Passed`, `design/catch.md`); the
 bit joins over quiet computations, and a consumer that sees it recomputes and stands its own result moved
 (`dense_gate!`, `Bind::update`, `ExecCtx::stand`). The bit is an event to no one: `Tag::triggers` ignores
 it, a kernel's fire test ignores it, and the seq tracker sets no fire bit for it

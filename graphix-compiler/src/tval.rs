@@ -37,7 +37,8 @@ impl Tag {
     pub const FIRED: Tag = Tag(0);
     /// A value-channel refresh: present, valid, did not fire.
     pub const STALE: Tag = Tag(Self::STALE_BIT);
-    /// A quiet value a resume or an entry recomputed.
+    /// A quiet value its readers recompute from: one a resume or an entry
+    /// recomputed, or the error of a raise its catch gave up.
     pub const MOVED: Tag = Tag(Self::STALE_BIT | Self::MOVED_BIT);
     /// A bottom that is an event.
     pub const FRESH_BOTTOM: Tag = Tag(Self::TAINT_BIT);

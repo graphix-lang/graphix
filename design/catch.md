@@ -113,11 +113,22 @@ flow — `design/seq_blocks.md` §7).
   as arrived: the given-up deliveries owed less the writes to the variable
   still on their way (`Rt::waiting_writes`, plus one delivered this cycle),
   less the raises made since, which queue behind them. The handler hears
-  exactly what `Receipts::take` takes: a delivery it passes over (the
-  seq tracker's catch-up fire included) reaches the handler standing, not fired
-  (`Receipt::Passed`). Pins:
+  exactly what `Receipts::take` takes. A given-up raise is an event the
+  handler missed, and its error stands in the binder as a value that
+  changed while a body slept does: a delivery the catch passes over (the
+  seq tracker's catch-up fire included) reaches the handler standing and
+  moved (`Receipt::Passed`, `Tag::MOVED`), so every reader of the binder
+  in the handler recomputes from it, in the node-walk as in a kernel, and
+  none takes an event: a sample on it does not fire, a `<-` does not
+  write, a `count` keeps its count, a rethrow raises nothing. One that
+  landed while the catch slept is read at the wake, as any standing value
+  is. A reader outside the handler (a closure the handler made, called
+  elsewhere) reads the variable's own deliveries. Pins:
   `a_catch_asleep_with_raises_in_flight_lets_its_step_pass`,
-  `a_handler_never_hears_a_raise_given_up`.
+  `a_handler_never_hears_a_raise_given_up`,
+  `a_raise_given_up_stands_in_the_binder`,
+  `a_raise_given_up_is_an_event_to_no_reader`,
+  `a_raise_given_up_reads_alike_fused`.
 
 ## The rules in brief
 

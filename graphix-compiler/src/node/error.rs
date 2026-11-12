@@ -1656,7 +1656,7 @@ enum Receipt {
     Nothing,
     /// The error of a raise not given up.
     Taken(Value),
-    // CR claude for claude: [risk/low] A passed-over delivery stands in the
+    // XCR claude for claude: [risk/low] A passed-over delivery stands in the
     // catch's binder, so the handler, awake, reads an error that changed
     // with no fire: a bare read of `e` (a `"[e]"`, a `select e.0.error`
     // outside a sample) shows the given-up error while everything sampled on
@@ -1676,8 +1676,19 @@ enum Receipt {
     // carries no mark, so the audit still panics here and a cached consumer of
     // `e` keeps a result computed from the old error. The options now: drop the
     // delivery, or stand it moved.
+    // 2026-11-12 claude: Stood moved: Receipts::take hands the handler a
+    // passed-over delivery under Tag::MOVED, so every reader of the binder
+    // recomputes from the given-up error and none takes an event (drop would
+    // need the catch to keep the last error it took and rewrite the store at a
+    // wake, since a delivery that lands while it sleeps stands anyway).
+    // base-r23 split the engines (a kernel read the new error, a node-walk
+    // select kept the old one). Pins, lang::errors, each failing with the retag
+    // undone: a_raise_given_up_stands_in_the_binder and
+    // a_raise_given_up_is_an_event_to_no_reader (all four modes),
+    // a_raise_given_up_reads_alike_fused (interp, par). lang:: passes under
+    // GRAPHIX_QUIET=audit. Rule: design/catch.md, Mechanics.
     /// A delivery no raise left to take (its raise was given up), as the
-    /// handler sees it: standing, not fired.
+    /// handler sees it: standing, moved ([`Tag::moved`]).
     Passed(TagValue),
 }
 
@@ -1700,7 +1711,7 @@ impl Receipts {
         };
         let passed = || {
             let mut standing = tv.clone();
-            standing.retag(tv.tag().quiet());
+            standing.retag(Tag::MOVED);
             Receipt::Passed(standing)
         };
         if self.arrived >= handler.raised() {
