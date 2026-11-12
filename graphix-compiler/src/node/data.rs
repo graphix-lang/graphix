@@ -1267,7 +1267,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A build refuses an instance the check
+        // CR claude for eric: [bug/medium] A build refuses an instance the check
         // accepted where a nominal constructor inside a definition is given an undecided
         // type and the call passes another construction of one. `type B<'p> =
         // Abstract<'p>; let f = |a| a <- B([never()]); f(B([]))` passes `--check`, and
@@ -1314,6 +1314,9 @@ impl<R: Rt> Construct<R> {
         // the witness of two lower bounds that differ only in undecided cells should be
         // one member (the cells welded) in place of this union, which would close both
         // forms and make GRAPHIX_NO_SUBST agree.
+        // 2026-11-12 claude: Readdressed to eric: whether the witness welds such cells
+        // is a rule of the check, asked as D35 in ~/ptmp/cr-discuss.md (recommendation:
+        // weld).
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         if let Type::Abstract { params, .. } = &self.typ {
