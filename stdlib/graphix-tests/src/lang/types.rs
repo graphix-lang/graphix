@@ -2080,6 +2080,19 @@ run!(
     FuseExpect::None
 );
 run!(
+    a_callbacks_result_held_at_its_bound_returns_the_bound,
+    "{ let m = 'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> [i64, null] \
+     { let r: [i64, null] = f(s); r }; (m(1, |x| x), m(1, |x| null)) }",
+    prints("[i64:1, null]")
+);
+// A declared variable standing in a callback's throws is each call's too.
+run!(
+    a_declared_variable_in_a_callbacks_throws_is_each_calls,
+    "{ let m = 'e: Error<ErrChain<[`A, `B]>> |f: fn() -> i64 throws 'e| -> i64 throws 'e f(); \
+     let c: Error<ErrChain<`A>> = never(); catch(e) c <- e; m(|| error(`A)?); c.0.error }",
+    prints(r#""A""#)
+);
+run!(
     a_callbacks_declared_result_is_not_the_bodys_value,
     "{ let m = 'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> 'b { let r = f(s); 3 }; \
      m(1, |x| x) }",
