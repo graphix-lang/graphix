@@ -1681,7 +1681,8 @@ const NONE_AT: &str = "let none_at = |v: i64, k: i64| -> i64 'test_none_at;";
 // A stateless builtin that is its own `Apply` tags its result fired or
 // stale and knows nothing of a move: its call passes the move on, to a
 // reader outside over a formal that moved, and out of the woken arm
-// through a formal and through a `let`, a move to bottom included.
+// through a formal and through a `let`, a move to bottom included;
+// called by name, as the function a select chose and as a callback.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_raw_stateless_builtin_passes_the_move() -> Result<()> {
     agrees(closure(RAW, "raw(x)"), &formal(|x| x)).await?;
@@ -1689,7 +1690,14 @@ async fn a_raw_stateless_builtin_passes_the_move() -> Result<()> {
     agrees(in_arm(&expr), &formal(|x| x)).await?;
     agrees(in_let(&expr), &formal(|x| x)).await?;
     let bottom = format!("{{ {RAW} raw(10 / (n - 3) * 0 + n) }}");
-    agrees(in_let(&bottom), &bottomed(|x| x)).await
+    agrees(in_let(&bottom), &bottomed(|x| x)).await?;
+    let defs = format!("{RAW} let other = |v: i64| -> i64 v + 0;");
+    let dynamic = "{ let f = select z { 1 => raw, _ => other }; f(x) }";
+    agrees(closure(&defs, dynamic), &formal(|x| x)).await?;
+    let slots: Vec<String> = (0..10)
+        .map(|i| format!("[{i}, {}, {}, [{}], {}]", N[i], SEL[i], X[i], FIRES[i]))
+        .collect();
+    agrees(closure(RAW, "array::map([x], raw)"), &slots).await
 }
 
 // A stateless builtin that gives no value over what the arm slept
@@ -1706,6 +1714,8 @@ async fn a_stateless_builtin_a_wake_leaves_bottom_moves() -> Result<()> {
 // A stateless builtin that had no value when the arm fell asleep and has
 // one over what the arm slept through stands it at the wake, moved, as an
 // operator does: the reader outside has the value at clk 6, and no event.
+// So does one outside the arm over a formal that moved out of bottom, and
+// `buffer::decode`, whose value its arguments decide too.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stateless_builtin_a_wake_takes_out_of_bottom_moves() -> Result<()> {
     let ticks = [
@@ -1719,7 +1729,11 @@ async fn a_stateless_builtin_a_wake_takes_out_of_bottom_moves() -> Result<()> {
     in_arm_agrees("10 / (n - 1) * 0 + n", &ticks).await?;
     let expr = format!("{{ {NONE_AT} none_at(n, 1) }}");
     in_arm_agrees(&expr, &ticks).await?;
-    agrees(in_let(&expr), &ticks).await
+    agrees(in_let(&expr), &ticks).await?;
+    agrees(closure(NONE_AT, "none_at(x, 1)"), &ticks).await?;
+    let buf = "buffer::from_array(array::init(10 / (x - 1) * 0 + x, |i| u8:0))";
+    let io = format!("cast<i64>(buffer::len(buffer::decode({buf}, [])$))$");
+    agrees(closure("", &io), &ticks).await
 }
 
 /// A clock of twelve ticks, `n` going to 7 at clk 4 and `m` to 5 at clk
@@ -1792,10 +1806,31 @@ async fn a_passed_reader_in_a_resumed_slot_or_instance_takes_it_standing() -> Re
 
 // `buffer::decode` writes through its spec's references when it fires and
 // gives the bytes left over: over a buffer that moved it writes nothing,
-// and the reader outside has what is left of the new one.
+// and the reader outside has what is left of the new one. `count(o)`
+// counts the writes: the wake at clk 6 leaves it at 3 under a length
+// that went from 1 to 3.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_io_builtin_over_a_moved_argument_recomputes() -> Result<()> {
     let buf = "buffer::from_array(array::init(x, |i| u8:0))";
     let read = format!("cast<i64>(buffer::len(buffer::decode({buf}, [])$))$");
-    agrees(closure("", &read), &formal(|x| x)).await
+    agrees(closure("", &read), &formal(|x| x)).await?;
+    let wrote = "{
+      let o = u8:0;
+      let b = buffer::from_array(array::init(x + 1, |i| u8:7));
+      let rest = buffer::decode(b, [`U8(&mut o)])$;
+      cast<i64>(buffer::len(rest))$ * 100 + count(o)
+    }";
+    let ticks = [
+        "[0, 0, 0, 2, 2]",
+        "[1, 1, 0, 102, 3]",
+        "[2, 1, 1, 103, 4]",
+        "[3, 2, 1, 103, 4]",
+        "[4, 2, 1, 103, 4]",
+        "[5, 3, 1, 103, 4]",
+        "[6, 3, 0, 303, 4]",
+        "[7, 4, 0, 403, 5]",
+        "[8, 4, 0, 404, 6]",
+        "[9, 5, 0, 504, 7]",
+    ];
+    agrees(closure("", wrote), &ticks).await
 }

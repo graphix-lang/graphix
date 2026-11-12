@@ -152,10 +152,11 @@ computes from values passes the bit on: `Tag::join` ORs it over a quiet join and
 fires, so an operator, a data constructor, a field read, a select's result (from its arm, its scrutinee
 and its consulted guards), a call, a collection and a `Stateless` builtin carry it. A `Stateless` builtin's
 call site marks its quiet result moved when an argument moved, whatever its `Apply` made of the tag
-(`CallSite::update_call`): `CachedArgs` computes the value again from the slots, for an `Io` builtin too
-(`EvalCached::quiet`), a builtin that is its own `Apply` computes from its arguments at every update, and a
-kernel's fast call ORs the bit as an operator does. A bottom made of a moved value carries it too: the bottom `$` or `?` makes of a null or
-an error that stands (`node/error.rs::strip_production`; nothing is raised or reported, since nothing
+(`CallSite::update_call`): `CachedArgs` computes the value again from the slots and tags it with its
+arguments' join, for an `Io` builtin too (`EvalCached::quiet`), a builtin that is its own `Apply` computes
+from its arguments at every update, and a kernel's fast call ORs the bit as an operator does. A bottom made
+of a moved value carries it too: the bottom `$` or `?` makes of a null or an error that stands
+(`node/error.rs::strip_production`; nothing is raised or reported, since nothing
 fired), and a loop's bottom over a bottom source, which ran no slot to carry it
 (`fusion/emit/scaffold.rs::SlotFlags::apply`). Everything that consumes events drops it: a stateful
 builtin keeps its state, a sample whose trigger did not fire rides, an `Io` call does not act and its
