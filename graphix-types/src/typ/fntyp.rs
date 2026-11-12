@@ -1407,7 +1407,7 @@ impl FnType {
     pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         self.for_each_part(&mut |t, _| {
-            t.quantifiers_seen(&mut seen, &mut |_, tv| {
+            t.quantifiers_seen(true, &mut seen, &mut |_, tv| {
                 if let Some(open) = tv.open_cell() {
                     out.insert(open.cell_addr(), open);
                 }

@@ -2731,28 +2731,32 @@ impl Type {
     /// Each own quantifier ([`FnType::each_quantifier`]) of every function
     /// type under this one, itself included, bindings followed.
     pub fn each_quantifier(&self, f: &mut impl FnMut(&ArcStr, &TVar)) {
-        self.quantifiers_seen(&mut LPooled::take(), f)
+        self.quantifiers_seen(false, &mut LPooled::take(), f)
     }
 
+    /// [`Self::each_quantifier`]; with `open_only`, a cell proved ground
+    /// is passed by: its binding holds no quantifier whose cell is open.
     pub(crate) fn quantifiers_seen(
         &self,
+        open_only: bool,
         seen: &mut AHashSet<usize>,
         f: &mut impl FnMut(&ArcStr, &TVar),
     ) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 if seen.insert(tv.cell_addr())
+                    && !(open_only && tv.ground_now())
                     && let Some(b) = tv.binding()
                 {
-                    b.quantifiers_seen(seen, f)
+                    b.quantifiers_seen(open_only, seen, f)
                 }
             }
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
             Type::Fn(ft) => {
                 ft.each_quantifier(|name, tv| f(name, tv));
-                ft.for_each_part(&mut |t, _| t.quantifiers_seen(seen, f))
+                ft.for_each_part(&mut |t, _| t.quantifiers_seen(open_only, seen, f))
             }
-            t => t.for_each_child(&mut |c| c.quantifiers_seen(seen, f)),
+            t => t.for_each_child(&mut |c| c.quantifiers_seen(open_only, seen, f)),
         })
     }
 

@@ -11,6 +11,7 @@ use crate::{
         Unfolded,
         setops::union_identical,
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
+        tvar::Judgment,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -424,10 +425,16 @@ struct Verdicts<T> {
     /// The shallowest application being decided that the decision in
     /// progress read.
     read: usize,
-    /// What a search found under the shared nodes it walked, so a type
-    /// that shares them (a DAG) is searched once: each node is held, so
-    /// its address stays its own while the walk lasts.
-    walked: LPooled<AHashMap<usize, (Type, bool)>>,
+    /// What a search found under the shared nodes it walked, and whether
+    /// it looked a type reference up there, so a type that shares them (a
+    /// DAG) is searched once: each node is held, so its address stays its
+    /// own while the walk lasts.
+    walked: LPooled<AHashMap<usize, (Type, bool, bool)>>,
+    /// The judgment a ground cell keeps of this walk's finding beneath it.
+    judgment: Option<Judgment>,
+    /// Whether the walk looked a type reference up, whose expansion the
+    /// env decides.
+    looked_up: bool,
 }
 
 impl<T> Verdicts<T> {
@@ -438,7 +445,14 @@ impl<T> Verdicts<T> {
             depth: 0,
             read: usize::MAX,
             walked: LPooled::take(),
+            judgment: None,
+            looked_up: false,
         }
+    }
+
+    /// A walk whose finding beneath a ground cell the cell keeps as `j`.
+    fn judging(j: Judgment) -> Self {
+        Self { judgment: Some(j), ..Self::new() }
     }
 
     /// `search` beneath `t`, once a walk where it is a shared node. What
@@ -449,14 +463,18 @@ impl<T> Verdicts<T> {
     /// meeting, and the composites there are the definition's own.
     fn search_once(&mut self, t: &Type, search: impl FnOnce(&mut Self) -> bool) -> bool {
         let Some(node) = super::node_addr(t) else { return search(self) };
-        if let Some((_, found)) = self.walked.get(&node) {
+        if let Some((_, found, looked_up)) = self.walked.get(&node) {
+            self.looked_up |= *looked_up;
             return *found;
         }
         let outer = mem::replace(&mut self.read, usize::MAX);
+        let looked_outer = mem::replace(&mut self.looked_up, false);
         let found = search(self);
+        let looked_up = self.looked_up;
+        self.looked_up |= looked_outer;
         let kept = self.depth == 0 || matches!(t, Type::Ref(_));
         if kept && (found || self.read >= self.depth) {
-            self.walked.insert(node, (t.clone(), found));
+            self.walked.insert(node, (t.clone(), found, looked_up));
         }
         self.read = self.read.min(outer);
         found
@@ -707,7 +725,7 @@ impl Type {
     /// value-level predicate cannot be decided of.
     #[doc(hidden)]
     pub fn holds_unknown(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::new(), &|t| match t {
+        self.holds(env, &mut Verdicts::judging(Judgment::HoldsUnknown), &|t| match t {
             Type::Any => Some(true),
             Type::TVar(tv) if tv.binding().is_none() => Some(true),
             _ => None,
@@ -719,7 +737,7 @@ impl Type {
     /// but not one signature from another.
     #[doc(hidden)]
     pub fn holds_fn(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::new(), &|t| match t {
+        self.holds(env, &mut Verdicts::judging(Judgment::HoldsFn), &|t| match t {
             Type::Fn(_) => Some(true),
             Type::Abstract { .. } => Some(false),
             _ => None,
@@ -741,7 +759,7 @@ impl Type {
     /// runs.
     #[doc(hidden)]
     pub fn holds_abstract(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::new(), &|t| match t {
+        self.holds(env, &mut Verdicts::judging(Judgment::HoldsAbstract), &|t| match t {
             Type::Abstract { .. } | Type::Any => Some(true),
             _ => None,
         })
@@ -829,6 +847,21 @@ impl Type {
                 return v;
             }
             match self {
+                // with no application in progress, what a ground cell's
+                // binding holds rests on nothing the walk assumed
+                Type::TVar(tv)
+                    if seen.depth == 0
+                        && let Some(j) = seen.judgment
+                        && let Some(found) = tv.ground_holds(j, |b| {
+                            let outer = mem::replace(&mut seen.looked_up, false);
+                            let found = b.holds(env, seen, leaf);
+                            let keep = !seen.looked_up;
+                            seen.looked_up |= outer;
+                            (found, keep)
+                        }) =>
+                {
+                    found
+                }
                 // an open cell will hold what bounds it from below
                 Type::TVar(_) => match self.deref_cloned() {
                     Some(t) => t.holds(env, seen, leaf),
@@ -841,6 +874,7 @@ impl Type {
                     None => a.holds(env, seen, leaf),
                 },
                 Type::Ref(tr) => seen.search_once(self, |seen| {
+                    seen.looked_up = true;
                     let Ok(t) = self.lookup_ref(env) else { return false };
                     let shape =
                         tr.params.iter().map(|p| p.holds(env, seen, leaf)).collect();
@@ -2754,7 +2788,11 @@ fn rep_ambiguity(
         if !keys_only
             && seen.depth == 0
             && let Type::TVar(tv) = t
-            && let Some(r) = tv.ground_verdict(refs as usize, |b| {
+            && let judgment = match refs {
+                true => Judgment::Ordered,
+                false => Judgment::Compared,
+            }
+            && let Some(r) = tv.ground_verdict(judgment, |b| {
                 let r = rep_ambiguity(env, seen, open, keys_only, refs, b);
                 (r, !seen.env_read)
             })
@@ -3604,7 +3642,7 @@ pub(crate) mod tests {
     use crate::{
         env::Env,
         expr::{ModPath, parser::parse_type},
-        typ::Type,
+        typ::{TVar, Type},
     };
     use ahash::AHashMap;
     use arcstr::literal;
@@ -3663,6 +3701,25 @@ pub(crate) mod tests {
             let steps = super::HOLDS_STEPS.with(|s| s.get());
             assert!(steps <= 32 * LINKS, "{top} over {leaf}: {steps} steps");
         }
+    }
+
+    // A ground cell keeps what a search found under its binding while the
+    // binding stands: once it is replaced, a search walks it again, and a
+    // proof at the later epoch keeps nothing found under the old one.
+    #[test]
+    fn a_ground_cell_forgets_its_findings_when_its_binding_changes() {
+        let (env, _) = typed(&[], "i64");
+        let cell = TVar::empty_named(literal!("c"));
+        cell.bind(parsed(&env, "(i64, i64)"));
+        let pair = Type::Tuple(Arc::from_iter([
+            Type::TVar(cell.clone()),
+            Type::TVar(cell.clone()),
+        ]));
+        assert!(pair.prove_ground());
+        assert!(!pair.holds_fn(&env));
+        cell.bind(parsed(&env, "(fn(x: i64) -> i64, i64)"));
+        assert!(pair.prove_ground());
+        assert!(pair.holds_fn(&env));
     }
 
     // A search that finds nothing under an application while a definition

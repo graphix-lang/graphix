@@ -129,8 +129,35 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
     }
     for cell in cells.drain(..) {
         let mut c = cell.0.write();
-        if c.binding.is_some() {
-            c.ground = c.ground.max(epoch);
+        if c.binding.is_some() && c.ground < epoch {
+            c.ground = epoch;
+            c.kept = Kept::default();
+        }
+    }
+}
+
+/// What [`TVar::ground_judgment`] found of a cell.
+enum Ground {
+    /// Not proved ground now.
+    Unproved,
+    /// Ground, and judged: whether the judgment found something. A
+    /// [`TVar::ground_verdict`] keeps only what found nothing.
+    Kept(bool),
+    /// Ground, its binding not judged so.
+    Unjudged { cell: CellRef, binding: Type, epoch: u64 },
+}
+
+/// Keep judgment `j` of `cell`'s ground binding, made at `epoch`, while
+/// that proof stands.
+fn keep_judgment(cell: &CellLock, epoch: u64, j: Judgment, found: bool) {
+    if ground_epoch() != epoch {
+        return;
+    }
+    let mut c = cell.0.write();
+    if c.ground == epoch {
+        match found {
+            true => c.kept.found |= j,
+            false => c.kept.clear |= j,
         }
     }
 }
@@ -279,6 +306,24 @@ impl Standing {
                 .as_ref()
                 .is_some_and(|p| Arc::ptr_eq(&p.by, &place.by) && p.n == place.n)
             && place.by.stands(place.n)
+    }
+}
+
+impl Type {
+    /// Whether no open cell is reachable from this type through bindings,
+    /// conjuncts and lower bounds. When none is, every bound cell it
+    /// reaches is proved ground ([`TVar::ground_now`]) until a bound cell
+    /// changes, so a walk looking for open cells passes it by; a cell
+    /// proved already is not walked again.
+    #[doc(hidden)]
+    pub fn prove_ground(&self) -> bool {
+        let epoch = ground_epoch();
+        let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
+        let ground = reaches_no_open_cell(self, epoch, &mut LPooled::take(), &mut walked);
+        if ground {
+            mark_ground(&mut walked, epoch)
+        }
+        ground
     }
 }
 
@@ -1419,9 +1464,9 @@ pub struct TCell {
     /// The latest [`GROUND_EPOCH`] at which the cell, bound, was proved to
     /// reach no open cell; 0, never.
     pub(crate) ground: u64,
-    /// The [`GROUND_EPOCH`] at which a judgment of the ground binding
-    /// found nothing, per judgment ([`TVar::ground_verdict`]); 0, never.
-    pub(crate) judged: [u64; 2],
+    /// The judgments of the ground binding the cell keeps while the proof
+    /// at `ground` stands.
+    pub(crate) kept: Kept,
     /// The cell's number by what it reaches, until its next write: boxed,
     /// so a cell no walk numbers pays one word for it.
     pub(crate) place: Option<Box<Place>>,
@@ -1488,6 +1533,35 @@ impl Occurrences {
     }
 }
 
+/// A judgment of a ground cell's binding the cell keeps
+/// ([`TVar::ground_verdict`], [`TVar::ground_holds`]).
+#[doc(hidden)]
+#[bitflags]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Judgment {
+    /// Whether a comparison of a value of it is ambiguous.
+    Compared,
+    /// Whether an ordering of a value of it is ambiguous.
+    Ordered,
+    /// [`Type::holds_fn`].
+    HoldsFn,
+    /// [`Type::holds_unknown`].
+    HoldsUnknown,
+    /// [`Type::holds_abstract`].
+    HoldsAbstract,
+    /// Whether a function or a type reference stands in it.
+    MayHoldFn,
+}
+
+/// What a ground cell keeps of the judgments of its binding: those that
+/// found nothing and those that found something.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Kept {
+    clear: BitFlags<Judgment>,
+    found: BitFlags<Judgment>,
+}
+
 /// A fact about a cell, beside its binding and constraints.
 #[bitflags]
 #[repr(u8)]
@@ -1524,7 +1598,7 @@ impl Default for TCell {
             level: current_level(),
             task: TASK.get(),
             ground: 0,
-            judged: [0; 2],
+            kept: Kept::default(),
             place: None,
         }
     }
@@ -2133,37 +2207,66 @@ impl TVar {
         self.read().cell.read().binding.is_some()
     }
 
+    fn ground_judgment(&self, j: Judgment) -> Ground {
+        let epoch = ground_epoch();
+        let link = self.read();
+        let c = link.cell.read();
+        match &c.binding {
+            Some(_) if c.ground == epoch && c.kept.clear.contains(j) => {
+                Ground::Kept(false)
+            }
+            Some(_) if c.ground == epoch && c.kept.found.contains(j) => {
+                Ground::Kept(true)
+            }
+            Some(b) if c.ground == epoch => {
+                Ground::Unjudged { cell: link.cell.clone(), binding: b.clone(), epoch }
+            }
+            _ => Ground::Unproved,
+        }
+    }
+
     /// `judge` of the cell's binding when it reaches no open cell
-    /// ([`Self::ground_now`]), else `None`. A judgment that found nothing
-    /// at the current [`GROUND_EPOCH`], and says it rests on the binding
-    /// alone (`judge`'s flag), finds nothing again while the epoch stands,
-    /// so the cell keeps it, one slot per judgment, and is not judged
-    /// again.
+    /// ([`Self::ground_now`]), else `None`. A judgment that found nothing,
+    /// and says it rests on the binding alone (`judge`'s flag), finds
+    /// nothing again while the proof stands, so the cell keeps it and is
+    /// not judged `j` again.
     pub(super) fn ground_verdict<R>(
         &self,
-        slot: usize,
+        j: Judgment,
         judge: impl FnOnce(&Type) -> (Option<R>, bool),
     ) -> Option<Option<R>> {
-        let epoch = ground_epoch();
-        let (cell, binding) = {
-            let link = self.read();
-            let c = link.cell.read();
-            match &c.binding {
-                Some(_) if c.ground == epoch && c.judged[slot] == epoch => {
-                    return Some(None);
+        match self.ground_judgment(j) {
+            Ground::Kept(false) => Some(None),
+            Ground::Unproved | Ground::Kept(true) => None,
+            Ground::Unjudged { cell, binding, epoch } => {
+                let (r, keep) = judge(&binding);
+                if keep && r.is_none() {
+                    keep_judgment(&cell, epoch, j, false)
                 }
-                Some(b) if c.ground == epoch => (link.cell.clone(), b.clone()),
-                _ => return None,
-            }
-        };
-        let (r, keep) = judge(&binding);
-        if r.is_none() && keep && ground_epoch() == epoch {
-            let mut c = cell.0.write();
-            if c.ground == epoch {
-                c.judged[slot] = epoch
+                Some(r)
             }
         }
-        Some(r)
+    }
+
+    /// [`Self::ground_verdict`] of a judgment that finds a yes or a no:
+    /// the cell keeps either.
+    #[doc(hidden)]
+    pub fn ground_holds(
+        &self,
+        j: Judgment,
+        judge: impl FnOnce(&Type) -> (bool, bool),
+    ) -> Option<bool> {
+        match self.ground_judgment(j) {
+            Ground::Unproved => None,
+            Ground::Kept(found) => Some(found),
+            Ground::Unjudged { cell, binding, epoch } => {
+                let (found, keep) = judge(&binding);
+                if keep {
+                    keep_judgment(&cell, epoch, j, found)
+                }
+                Some(found)
+            }
+        }
     }
 
     /// Whether the cell is bound and proved, at the current
@@ -4290,6 +4393,7 @@ impl Type {
             ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
                     seen.insert(tv.cell_addr())
+                        && !tv.ground_now()
                         && match tv.binding() {
                             Some(b) => go(&b, data, counts, seen),
                             None => counts(tv),

@@ -319,7 +319,8 @@ impl Type {
 
 /// Record which settle-set members `t` references, descending through
 /// non-member cells' bindings and constraints but stopping at members
-/// (their reach is their own edge list).
+/// (their reach is their own edge list) and at cells proved ground, which
+/// reach no open member.
 fn settle_refs(
     t: &Type,
     index: &AHashMap<usize, usize>,
@@ -331,7 +332,7 @@ fn settle_refs(
             let addr = tv.cell_addr();
             if let Some(&i) = index.get(&addr) {
                 out.push(i);
-            } else if visited.insert(addr) {
+            } else if !tv.ground_now() && visited.insert(addr) {
                 let (bound, cons, below) = {
                     let cell = tv.cell();
                     let cell = cell.read();
@@ -365,11 +366,16 @@ impl FnType {
     ) -> Result<()> {
         let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut tvs);
-        // the cells a binding holds are positions this site reads too
+        // the cells a binding holds are positions this site reads too; a
+        // cell proved ground holds no open one, so it is passed by
         let mut positional: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let mut nodes: LPooled<AHashSet<usize>> = LPooled::take();
         self.for_each_part(&mut |t, constraint| {
             if !constraint {
-                position_cells(t, &mut positional)
+                walk_positions(t, &mut nodes, &mut |tv| {
+                    !tv.ground_now()
+                        && positional.insert(tv.cell_addr(), tv.clone()).is_none()
+                })
             }
         });
         let mut seen: LPooled<AHashSet<usize>> =
@@ -383,12 +389,12 @@ impl FnType {
         let mut todo: LPooled<Vec<TVar>> = LPooled::take();
         todo.extend(tvs.values().chain(more.iter()).cloned());
         let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
-        let mut nodes: LPooled<AHashSet<usize>> = LPooled::take();
+        nodes.clear();
         while let Some(tv) = todo.pop() {
             for c in tv.cell_constraints().iter() {
                 walk_positions(c, &mut nodes, &mut |tv| {
                     let addr = tv.cell_addr();
-                    let first = walked.insert(addr);
+                    let first = !tv.ground_now() && walked.insert(addr);
                     if first && seen.insert(addr) {
                         todo.push(tv.clone());
                         more.push(tv.clone());
@@ -507,7 +513,7 @@ pub fn settle_input(
     let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
     for (i, t) in types.iter().enumerate() {
         reach_new(t, i, &mut seen, &mut nodes, &mut reached);
-        t.quantifiers_seen(&mut walked, &mut |_, tv| {
+        t.quantifiers_seen(true, &mut walked, &mut |_, tv| {
             if let Some(open) = tv.open_cell() {
                 quantifiers.insert(open.cell_addr(), open);
             }
@@ -955,6 +961,52 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
         Type::Fn(ft) => ft.for_each_type(&mut |t| reached(t, out, nodes)),
         t => t.for_each_child(&mut |c| reached(c, out, nodes)),
     })
+}
+
+/// Which of some cells a set of types reaches, as [`Type::reached_cells`]
+/// reaches cells: breadth first, each cell and shared node once, until
+/// every one is found.
+#[doc(hidden)]
+pub struct Reaching(LPooled<AHashSet<usize>>);
+
+impl Reaching {
+    /// Which of `cells`, by address, `types` reach.
+    pub fn of<'a>(
+        cells: impl IntoIterator<Item = usize>,
+        types: impl IntoIterator<Item = &'a Type>,
+    ) -> Self {
+        let mut left: LPooled<AHashSet<usize>> = cells.into_iter().collect();
+        let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut nodes: LPooled<AddrSet> = LPooled::take();
+        let mut next: LPooled<Vec<Type>> = types.into_iter().cloned().collect();
+        let mut i = 0;
+        while i < next.len() && !left.is_empty() {
+            let t = next[i].clone();
+            i += 1;
+            match &t {
+                Type::TVar(tv) => {
+                    let addr = tv.cell_addr();
+                    if walked.insert(addr) {
+                        left.remove(&addr);
+                        let cell = tv.cell();
+                        let cell = cell.read();
+                        next.extend(cell.binding.iter().cloned());
+                        next.extend(cell.constraints.iter().cloned());
+                        next.extend(cell.lower.iter().cloned());
+                    }
+                }
+                t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
+                Type::Fn(ft) => ft.for_each_type(&mut |t| next.push(t.clone())),
+                t => t.for_each_child(&mut |c| next.push(c.clone())),
+            }
+        }
+        Self(left)
+    }
+
+    /// Whether the types reach the cell at `addr`, one of those asked.
+    pub fn reached(&self, addr: usize) -> bool {
+        !self.0.contains(&addr)
+    }
 }
 
 /// The cells `t` holds as positions, through bindings, never through

@@ -1285,6 +1285,34 @@ fn written_holder_chains_check_in_linear_time() {
 // walks again that an earlier call already walked, and pin --check and --expand of the
 // chain at 320 links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc/ (xu0-*, xd0-*)
 // (call-dag-arg-walk-01)
+// 2026-11-12 claude: PARTIAL (lane 23g). Done: a call proves its formals ground once
+// its arguments are checked (Type::prove_ground in CallSite::typecheck0), and the
+// call's walks pass a ground cell by or read what it keeps: FnType::settle_terminal's
+// positions and settle_refs, the open quantifiers of inner_quantifiers and
+// settle_input, open_beneath_in and ContainsHist::closure pass it by; holds_fn,
+// holds_unknown, holds_abstract and may_hold_fn keep their finding in it
+// (TVar::ground_holds, TCell::kept); CallSite::for_each_unread reaches toward the
+// signature's own cells breadth first and stops once it has met them
+// (settle::Reaching). base-r23 -> lane, debug, instructions:u, `let x{i} = mk(x{i-1})`
+// over `x0 = 1`: --check 0.85/1.02/1.68/4.30/15.14 -> 0.80/0.84/0.92/1.04/1.30 G at
+// 80/160/320/640/1280 links (empty 0.76); --expand 1.13/1.65/3.52/10.82/40.48 ->
+// 1.05/1.31/2.15/5.12/16.50 G. Pin
+// deep_nesting::generic_pair_call_chains_check_in_linear_time (--check at 1280 within
+// 3 G, base 15.1; --expand at 320 within 2.8 G, base 3.5). Remains, each still
+// quadratic: (a) --expand: each instance's elaboration resolves its signature anew
+// (CallSite::bind_instance, setup_static_bind and refresh_static_ftype through
+// FnType::resolve_tvars) and the contains walks then take the resolved, cell-free DAG
+// (ContainsHist::closure and probe_put, FnType::held_at's holds_open_union), and
+// fusion asks lowering::meets_abstract, TypeMemo's identity and unfolds_past::size of
+// each node's resolved type; --no-fusion --expand 1.50/3.31/10.68 G at 320/640/1280. A
+// fix needs a ground cell's resolved form shared across calls and a memo of a resolved
+// node that outlives one walk. (b) a pair holding a generic function value (`x0 = (|x|
+// x, 1)`, also as a `V(f, f) payload): the function's quantifiers are open cells, so
+// nothing above them is proved ground; --check 1.65 -> 1.61 G at 320, 14.6 -> 13.9 G
+// at 1280. (c) a written chain (`x{i} <- mk(x{i-1})` over `(1, 1)`):
+// CompileCtx::monomorphic rebuilds each link's type and the connect's contains walks
+// it; --check 3.29 -> 1.69 G at 320, 41.5 -> 13.2 G at 1280. probes:
+// ~/ptmp/cr29/scratch/r23/23g/call-dag-arg-walk-01/ (xu0-*, fn-*, w-*, m.sh)
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,
@@ -1312,6 +1340,29 @@ fn generic_pair_call_chains_build_in_time() {
     }
     let run = chain(&head("(f, f)", "(|x| x, 1)"), LINKS, &called, "sys::exit(0)\n");
     completes_within(&["--no-cache"], &run, 4 * BILLION)
+}
+
+/// A chain of calls of a generic pair constructor over data, each link
+/// the pair of the last, checks in time linear in its length: a call
+/// proves its formals ground once its arguments are checked, and the
+/// walks of the call and of its settle pass a ground cell by or read what
+/// it keeps of its binding, where each walked the argument's whole DAG.
+/// Its build at 320 links is held where it stands: an instance's
+/// elaboration and fusion still walk its resolved signature
+/// (call-dag-arg-walk-01).
+#[test]
+#[cfg(target_os = "linux")]
+fn generic_pair_call_chains_check_in_linear_time() {
+    let program = |links| {
+        chain(
+            "let mk = |f| (f, f);\nlet x0 = 1;\n",
+            links,
+            &|i| format!("let x{i} = mk(x{p});\n", p = i - 1),
+            "0\n",
+        )
+    };
+    checks_within(&program(1280), 3 * BILLION);
+    completes_within(&["--expand", "--no-cache"], &program(320), 28 * BILLION / 10)
 }
 
 /// `head`, then `link(i)` for each `i` from 1 to `links`, then `tail`.

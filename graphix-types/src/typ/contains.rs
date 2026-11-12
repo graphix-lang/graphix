@@ -721,6 +721,7 @@ impl ContainsHist {
                 self.closed.get_mut().insert(k, (Closure::Open, writes));
             }
             let c = match t {
+                Type::TVar(tv) if tv.ground_now() => Closure::Closed,
                 Type::TVar(tv) => match tv.binding() {
                     Some(b) => self.closure(&b, now).min(Closure::Closed),
                     None => Closure::Open,

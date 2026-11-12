@@ -37,8 +37,8 @@ use crate::{
     typ::{
         AmbiguousMember, Brief, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability,
         TVar, Type,
-        settle::{DataPositions, Held},
-        tvar::{AtLevel, BoundAt, Level, RigidGate},
+        settle::{DataPositions, Held, Reaching},
+        tvar::{AtLevel, BoundAt, Judgment, Level, RigidGate},
     },
     wrap,
 };
@@ -481,7 +481,9 @@ fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
     ensure_sufficient(|| match t {
         _ if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
         Type::Fn(_) | Type::Ref(_) => true,
-        Type::TVar(tv) => tv.binding().is_some_and(|b| may_hold_fn(&b, seen)),
+        Type::TVar(tv) => tv
+            .ground_holds(Judgment::MayHoldFn, |b| (may_hold_fn(b, seen), true))
+            .unwrap_or_else(|| tv.binding().is_some_and(|b| may_hold_fn(&b, seen))),
         t => {
             let mut any = false;
             t.for_each_child(&mut |c| any = any || may_hold_fn(c, seen));
@@ -2969,12 +2971,12 @@ impl<R: Rt> CallSite<R> {
         carriers: &[ArcStr],
         mut f: impl FnMut(&ArcStr, &TVar),
     ) {
-        let mut read: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        ftype.rtype.reached_cells(&mut read);
-        ftype.throws.reached_cells(&mut read);
-        if let Some(t) = &ftype.vargs {
-            t.reached_cells(&mut read)
-        }
+        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ftype.collect_tvars(&mut tvs);
+        let mut roots: SmallVec<[&Type; 8]> = SmallVec::new();
+        roots.push(&ftype.rtype);
+        roots.push(&ftype.throws);
+        roots.extend(ftype.vargs.as_ref());
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             let carried = match self.args.get(&key) {
                 Some(a) if a.stage.is_default() => {
@@ -2984,13 +2986,12 @@ impl<R: Rt> CallSite<R> {
                 None => true,
             };
             if carried {
-                farg.typ.reached_cells(&mut read)
+                roots.push(&farg.typ)
             }
         }
-        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ftype.collect_tvars(&mut tvs);
+        let read = Reaching::of(tvs.values().map(|tv| tv.cell_addr()), roots);
         for (name, tv) in tvs.iter() {
-            if !read.contains_key(&tv.cell_addr()) {
+            if !read.reached(tv.cell_addr()) {
                 f(name, tv)
             }
         }
@@ -4793,6 +4794,14 @@ impl<R: Rt> CallSite<R> {
                 }
             }
         }
+        // what the arguments decided, the judgments below and the site's
+        // settle walk past where it holds no open cell
+        for farg in ftype.args.iter() {
+            farg.typ.prove_ground();
+        }
+        if let Some(typ) = &ftype.vargs {
+            typ.prove_ground();
+        }
         let mut carriers = SmallVec::new();
         // a recursive call shares its definition's cells, which the
         // defaults it omits narrow as a fresh instance's
@@ -4811,15 +4820,20 @@ impl<R: Rt> CallSite<R> {
                     }
                 });
             } else {
-                let mut callbacks: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                for arg in ftype.args.iter().filter(|a| a.typ.holds_fn(&ctx.env)) {
-                    arg.typ.reached_cells(&mut callbacks);
-                }
+                let callbacks: SmallVec<[&Type; 4]> = ftype
+                    .args
+                    .iter()
+                    .filter(|a| a.typ.holds_fn(&ctx.env))
+                    .map(|a| &a.typ)
+                    .collect();
+                let mut unread: LPooled<Vec<TVar>> = LPooled::take();
                 self.for_each_unread(&ctx.env, ftype, &carriers, |_, tv| {
-                    if callbacks.contains_key(&tv.cell_addr()) {
-                        unread_callbacks.push(tv.clone());
-                    }
+                    unread.push(tv.clone())
                 });
+                let called =
+                    Reaching::of(unread.iter().map(|tv| tv.cell_addr()), callbacks);
+                unread_callbacks
+                    .extend(unread.drain(..).filter(|tv| called.reached(tv.cell_addr())));
             }
         }
         // A constrained cell reachable from the rtype/throws but no arg is

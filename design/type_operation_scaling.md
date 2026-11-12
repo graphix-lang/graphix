@@ -127,16 +127,47 @@ structure is returned SHARED, never copied.
   bound and proved ground). Handing a `Discernible` or `Ordered` bound to
   a binding's open cells (`require_everywhere`) stops at a cell marked
   ground now: it reaches none. The comparison's judgment of a binding
-  (`cast::rep_ambiguity`) keeps, in the ground cell, the epoch at which a
-  judgment of its binding found nothing (`TCell::judged`, one slot each
-  for `Discernible` and `Ordered`), read and written only where no
-  application or abstract representation is in progress on the walk's
-  path, so the verdict rests on nothing the walk assumed. A walk that
-  read the environment's word on a type (an abstract's `Eq`/`Ord`
-  implementation or representation, a head it could not resolve) keeps
-  none from then on: environments are not ordered (a REPL input that
-  fails takes its impls with it), so such a verdict is not the
-  binding's alone. A key judgment (`map_key_failure`) keeps none.
+  (`cast::rep_ambiguity`) keeps, in the ground cell, that a judgment of
+  its binding found nothing (`TCell::kept`, one `tvar::Judgment` each for
+  `Discernible` and `Ordered`) while the proof stands, read and written
+  only where no application or abstract representation is in progress
+  on the walk's path, so the verdict rests on nothing the walk assumed.
+  A walk that read the environment's word on a type (an abstract's
+  `Eq`/`Ord` implementation or representation, a head it could not
+  resolve) keeps none from then on: environments are not ordered (a REPL
+  input that fails takes its impls with it), so such a verdict is not
+  the binding's alone. A key judgment (`map_key_failure`) keeps none.
+- A call proves its formals ground once its arguments are checked
+  (`Type::prove_ground` in `CallSite::typecheck0`), so a chain of calls
+  that each take the last one's result (`let x{i} = mk(x{i-1})`) walks
+  each link's cells once, however many calls reach them. The walks of
+  the call and of its settle pass a cell proved ground now: the terminal
+  settle's positions and dependency edges (`FnType::settle_terminal`,
+  `settle_refs`), the open quantifiers a signature holds
+  (`Type::quantifiers_seen` with `open_only`, for `inner_quantifiers`
+  and `settle_input`), `open_beneath_in` (`has_free_in_data`) and
+  `ContainsHist::closure`, each of which looks only for open cells. A
+  search for a part that does not look for open cells keeps its finding
+  in the ground cell instead, yes or no (`TVar::ground_holds`:
+  `holds_fn`, `holds_unknown`, `holds_abstract`, the call's
+  `may_hold_fn`), read and written only where no application is in
+  progress and kept only where the search looked no type reference up
+  (`Verdicts::looked_up`, kept per walked node too), and a re-proof at a
+  later epoch drops what the cell kept. The cells of a site that no read
+  reaches (`CallSite::for_each_unread`) are found by a breadth-first
+  reach toward the signature's own cells (`settle::Reaching`) that stops
+  once it has met them all. Pins: `deep_nesting::
+  generic_pair_call_chains_check_in_linear_time`,
+  `typ::cast::tests::a_ground_cell_forgets_its_findings_when_its_binding_changes`.
+  What the proof does not reach stays quadratic in such a chain: a pair
+  that holds a generic function value holds the function's quantifiers
+  open, so nothing above it is ground; a written binding's
+  `CompileCtx::monomorphic` rebuilds the chain's type at each link; and
+  each instance's elaboration resolves its signature anew
+  (`resolve_tvars`, then the contains walks over the resolved,
+  cell-free DAG) and fusion asks of each node's resolved type
+  (`meets_abstract`, `TypeMemo`), so `--expand` grows quadratically
+  (call-dag-arg-walk-01).
 
 - A chain of OPEN cells (a signature's bounds, each naming the next
   variable) has no ground mark to stop at, and every bind or merge of
