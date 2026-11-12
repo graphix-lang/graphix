@@ -70,22 +70,22 @@ Members of two constructors stand, and a member written twice is one.
 
 The same holds for a union nothing wrote: a value that two undecided
 members of a union could take goes to neither, and the check names what
-to annotate. It shows up three ways. A `let` over `never()` that took a
+to annotate. It shows up two ways. A `let` over `never()` that took a
 select of two undecided values (`u <- select c { true => x, false => y
 }`) and is then written a value: declare `u` (`let u: [i64, string] =
-never()`), or `x` and `y`. A typedef that unions its parameters (`type
-E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: an
+never()`), or `x` and `y`. And a typedef that unions its parameters
+(`type E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: an
 argument either variable could take is refused, unless an earlier
-parameter decided one of them, so write one variable (`E<'a, 'a>`). And
-an unannotated parameter a select takes apart with slice patterns, where
-an arm binds the rest (`[h, t..]`) or two arms bind elements: each such
-arm types the parameter as an array of its own, so write the parameter
-(`|x: Array<'e>|`). One arm that binds elements beside `[]` or `_` needs
-nothing. An impl's target may not union two of its head's variables
-either (`impl<'a, 'b> T for Array<['a, 'b]>`). An argument still undecided
-(`[]`) goes to no member either: it waits for the other parameters to
-decide the members, and is refused where none does. A callback is given
-to the member its result fits.
+parameter decided one of them, so write one variable (`E<'a, 'a>`).
+Members that are one type are one member and need nothing: an
+unannotated parameter a select takes apart with slice patterns (`[h,
+t..]`, two arms that bind elements, a recursive `len(t)`) is typed as one
+array an arm, all over one element type, and takes an array as `|x:
+Array<'e>|` does. An impl's target may not union two of its head's
+variables either (`impl<'a, 'b> T for Array<['a, 'b]>`). An argument still
+undecided (`[]`) goes to no member either: it waits for the other
+parameters to decide the members, and is refused where none does. A
+callback is given to the member its result fits.
 
 ```graphix,cases
 no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
@@ -96,11 +96,14 @@ no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>| 0; f(
 ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'a>| 0; f(1)
 ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: E<'a, 'b>| 0; f(1, 2)
 no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
-no "write the type of the parameter" let f = |x| select x { [h, t..] => h, [] => 0 }; f([4, 5])
+ok let f = |x| select x { [h, t..] => h, [] => 0 }; (f([4, 5]), f(["a"]))
 ok let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5])
-ok let f = |x| select x { [h, ..] => h, [] => 0 }; f([4, 5])
-no "write the type of the parameter" let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
-ok let f = |x: Array<'e>| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
+ok let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
+ok let rec len = |x| select x { [h, t..] => 1 + len(t), [] => 0 }; len([1, 2])
+ok let f = |x| select x { [h, t..] => array::push(t, h), [] => [] }; f([1, 2])
+ok let rec len = |x| select x { [<h, t..>] => 1 + len(t), [<>] => 0 }; len([<1, 2>])
+ok let k = |x| select x { [h, t..] => h, [] => 0 }; let f = |g: fn(x: Array<i64>) -> i64, y| g(y); f(k, [1, 2])
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")

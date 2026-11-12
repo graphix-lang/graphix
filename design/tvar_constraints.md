@@ -527,6 +527,17 @@ one member, chosen by rules that read the union alone:
   share it. An undecided member reaches an open cell no declaration holds
   rigid (`undecided`); a decided member that holds the type takes it
   before any undecided one.
+- members that are one type are one member (Eric 11-11, D34): the same
+  cells throughout, a union read as the set of its members, so neither
+  their order, a member that stands twice, a nested union nor a cell bound
+  to another tells two apart (`contains::one_member`, `setops::one_type`).
+  `[Array<['a, 'a]>, Array<'a>] ⊇ Array<i64>` goes through the first and
+  decides the one cell, as the other would; two open cells are two
+  members, however alike (`[Array<'a>, Array<'b>]`,
+  `[Array<['a, 'b]>, Array<'a>]`). The same count says whether a union has
+  two undecided members for an undecided type to take whole
+  (`place_members`) and whether a signature's position waits for the
+  others (`fntyp::holds_open_union`), so `['a, 'a]` is `'a` to each.
 
 A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
 ⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`
@@ -595,11 +606,13 @@ narrowing walk in `tvar.rs`, `pattern.rs`, `Select`'s predicate against
 its scrutinee), whose arms are consulted top down. What a pattern leaves
 in a binding's or a parameter's type is judged where a value next meets
 it: `|x| select x { [h, t..] => h, [] => 0 }` types `x` as a union of
-one array member an arm, so `f([4, 5])` is refused until the parameter is
-written (`|x: Array<'e>|`), and so are two arms that bind elements (`[a,
-b, ..] => a, [c] => c, [] => 0`); where one arm alone binds elements and
-none the rest (`[h, ..] => h, [] => 0`) the members are one and the call
-runs.
+one array member an arm, `[Array<['e, 'e]>, Array<'e>]`. Its members hold
+one element cell, so they are one type, and `f([4, 5])` gives the array
+to them as one member, as the parameter written (`|x: Array<'e>|`) takes
+it: no annotation. Two arms that bind elements (`[a, b, ..] => a, [c] =>
+c, [] => 0`), a recursive function (`1 + len(t)`), a rest passed on
+(`array::push(t, h)`), a list's `[<h, t..>]` and a slice inside a tuple or
+a struct alike.
 
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
@@ -615,8 +628,9 @@ and `module::check_val`): `val f: fn(x: 'a) -> i64` implemented `|x: E<'a,
 instance (below, An instance holds its signature cell by cell), so an
 implementation whose variables stand at the declaration's places passes
 (`val f: fn(x: E<'a, 'a>, ..)` implemented `|x: E<'a, 'b>, ..|`). Pins:
-`lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,slice_arms_over_an_unannotated_parameter}_refused*`
-and their twins, `slice_arms_binding_no_rest_over_an_unannotated_parameter`, `slice_elements_bound_in_two_arms_over_an_unannotated_parameter_refused_at_the_call`, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
+`lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,decided_array_into_a_typedef_union_of_two_undecided_arrays}_refused*`
+and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
+members that are one type by `lang::types::{slice_arms,slice_elements_bound_in_two_arms,slice_arms_of_a_recursive_function,slice_rest_passed_on,slice_arms_inside_a_tuple_and_a_struct,list_arms}_over_an_unannotated_parameter*`, each beside its written twin, and the unit test `members_that_are_one_type_take_a_type_as_one`,
 `lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
 `lang::interfaces::{open_union_call_refused,val_implementation_that_would_choose_a_member_refused,val_in_data_implementation_that_would_choose_a_member_refused,val_at_one_variable_implemented_at_two}`.
 
@@ -1514,7 +1528,11 @@ definition's by `FnType` containment, which decides a parameter or a
 result typed by a union of two open cells only after every other position
 (`fntyp::holds_open_union`): the positions that hold each member alone
 decide it, a parameter's or the result's, and the union then holds what
-they left. A written function type holds no such union (below, A union of
+they left. One cell standing twice is no such union: `Array<['a, 'a]>`,
+what a slice arm binding two elements leaves an unannotated parameter, is
+decided where it stands, before the result (pin
+`lang::types::slice_arm_returning_two_elements_over_an_unannotated_parameter`).
+A written function type holds no such union (below, A union of
 variables in a signature), so only an inferred one meets that order (`|c,
 a, b| select c { true => a, false => b }`), and a type that either member
 could take is refused by both orders alike (A union's member takes a type

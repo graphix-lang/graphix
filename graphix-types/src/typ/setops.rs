@@ -328,6 +328,19 @@ pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
         .same(t0, t1)
 }
 
+/// [`strictly_identical`] with a union read as the set of its members,
+/// through its bindings and nested unions: neither their order nor a
+/// member that stands twice tells two types apart, so `Array<['a, 'a]>`
+/// is `Array<'a>`. Two open cells are still two.
+pub(super) fn one_type(t0: &Type, t1: &Type) -> bool {
+    Identity {
+        strict: true,
+        sets: true,
+        ..Identity::new(None, &mut NodePairs::default())
+    }
+    .same(t0, t1)
+}
+
 /// The pairs of live cells union collapses have met: each pair is one
 /// cell once [`apply_welds`] runs.
 pub(super) type Welds = SmallVec<[(TVar, TVar); 2]>;
@@ -410,6 +423,9 @@ impl IdenticalMemo {
 /// Identity of `t0` and `t1`.
 struct Identity<'a> {
     strict: bool,
+    /// A union is the set of its members ([`one_type`]); with `strict`
+    /// alone, since a failed search for a member must pair no cells.
+    sets: bool,
     /// Two open cells of one name are identical, whatever holds them
     /// (`pairs` holds those met, never `None`).
     by_name: bool,
@@ -430,6 +446,7 @@ impl<'a> Identity<'a> {
     fn new(live: Option<&'a mut Welds>, found: &'a mut NodePairs) -> Self {
         Self {
             strict: false,
+            sets: false,
             by_name: false,
             live,
             pairs: None,
@@ -465,6 +482,30 @@ impl<'a> Identity<'a> {
 
     fn all(&mut self, a: &[Type], b: &[Type]) -> bool {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
+    }
+
+    /// Whether each member of the union `a` is one of the union `b`,
+    /// a member that is a union as its members.
+    fn within(&mut self, a: &[Type], b: &[Type]) -> bool {
+        a.iter().all(|m| match members_of(m) {
+            Some(ms) => self.within(&ms, b),
+            None => self.member(b, m),
+        })
+    }
+
+    /// Whether the union `s` is `t` alone, standing once or more.
+    fn repeats(&mut self, s: &[Type], t: &Type) -> bool {
+        !s.is_empty()
+            && s.iter().all(|m| match members_of(m) {
+                Some(ms) => self.repeats(&ms, t),
+                None => self.same(m, t),
+            })
+    }
+
+    fn member(&mut self, s: &[Type], m: &Type) -> bool {
+        s.iter().any(|n| {
+            self.same(m, n) || members_of(n).is_some_and(|ns| self.member(&ns, m))
+        })
     }
 
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
@@ -508,6 +549,16 @@ impl<'a> Identity<'a> {
 
     #[inline(never)]
     fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
+        if self.sets {
+            match (members_of(t0), members_of(t1)) {
+                (Some(s0), Some(s1)) => {
+                    return self.within(&s0, &s1) && self.within(&s1, &s0);
+                }
+                (Some(s), None) => return self.repeats(&s, t1),
+                (None, Some(s)) => return self.repeats(&s, t0),
+                (None, None) => (),
+            }
+        }
         match (t0, t1) {
             (Type::TVar(a), Type::TVar(b)) => match (a.binding(), b.binding()) {
                 (Some(x), Some(y)) => a.same_cell(b) || self.same(&x, &y),

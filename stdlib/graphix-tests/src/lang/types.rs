@@ -7169,21 +7169,21 @@ run!(
 }"#,
     prints("i64:2")
 );
-// A select's patterns stay ordered, as its arms are consulted top down; the
-// union of an array member an arm that a function's parameter keeps is
-// refused at the call, and the parameter written takes it: an arm that
-// binds the rest, two arms that bind elements. With one arm alone binding
-// elements and none the rest the arms' members are one, and the call runs.
+// A select's patterns stay ordered, as its arms are consulted top down, and
+// type an unannotated parameter as a union of one array member an arm. The
+// members hold one element cell, so they are one type and take an argument
+// as one member, as the parameter written does: an arm that binds the rest,
+// two arms that bind elements, a recursive function, a slice inside a tuple
+// or a struct, a list, a function passed where a function type is written.
 run!(
-    slice_arms_over_an_unannotated_parameter_refused_at_the_call,
-    r#"{ let f = |x| select x { [h, t..] => h, [] => 0 }; f([4, 5]) }"#,
-    refused("write the type of the parameter this argument is passed to");
-    FuseExpect::None
+    slice_arms_over_an_unannotated_parameter,
+    r#"{ let f = |x| select x { [h, t..] => h, [] => 0 }; (f([4, 5]), f(["a"])) }"#,
+    prints(r#"[i64:4, "a"]"#)
 );
 run!(
     slice_arms_over_a_written_parameter,
-    r#"{ let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5]) }"#,
-    prints("i64:4")
+    r#"{ let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; (f([4, 5]), f(["a"])) }"#,
+    prints(r#"[i64:4, "a"]"#)
 );
 run!(
     slice_arms_binding_no_rest_over_an_unannotated_parameter,
@@ -7191,15 +7191,151 @@ run!(
     prints(r#"[i64:4, "a"]"#)
 );
 run!(
-    slice_elements_bound_in_two_arms_over_an_unannotated_parameter_refused_at_the_call,
-    r#"{ let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5]) }"#,
-    refused("write the type of the parameter this argument is passed to");
-    FuseExpect::None
+    slice_elements_bound_in_two_arms_over_an_unannotated_parameter,
+    r#"{ let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; (f([4, 5]), f(["a"])) }"#,
+    prints(r#"[i64:4, "a"]"#)
 );
 run!(
     slice_elements_bound_in_two_arms_over_a_written_parameter,
     r#"{ let f = |x: Array<'e>| select x { [a, b, ..] => a, [c] => c, [] => 0 }; (f([4, 5]), f(["a"])) }"#,
     prints(r#"[i64:4, "a"]"#)
+);
+run!(
+    slice_arms_of_a_recursive_function_over_an_unannotated_parameter,
+    r#"{
+  let rec len = |x| select x { [h, t..] => 1 + len(t), [] => 0 };
+  let rec last = |x| select x { [h] => h, [h, t..] => last(t), [] => never() };
+  let rec rev = |x| select x { [h, t..] => array::push(rev(t), h), [] => [] };
+  (len([1, 2]), len(["a"]), last([1, 2]), last(["a"]), rev([1, 2, 3]))
+}"#,
+    prints(r#"[i64:2, i64:1, i64:2, "a", [i64:3, i64:2, i64:1]]"#)
+);
+run!(
+    slice_arms_of_a_recursive_function_over_a_written_parameter,
+    r#"{
+  let rec len = |x: Array<'e>| select x { [h, t..] => 1 + len(t), [] => 0 };
+  (len([1, 2]), len(["a"]))
+}"#,
+    prints("[i64:2, i64:1]")
+);
+run!(
+    slice_rest_passed_on_over_an_unannotated_parameter,
+    r#"{
+  let f = |x| select x { [h, t..] => array::push(t, h), [] => [] };
+  let g = |x| select x { [h, t..] => (h, t), [] => (0, []) };
+  let k = |x| select x { [init.., l] => l, [] => 0 };
+  (f([1, 2]), f(["a", "b"]), g([4, 5]), k([4, 5]))
+}"#,
+    prints(r#"[[i64:2, i64:1], ["b", "a"], [i64:4, [i64:5]], i64:5]"#)
+);
+run!(
+    slice_arms_inside_a_tuple_and_a_struct_over_an_unannotated_parameter,
+    r#"{
+  let f = |p| select p { (x, [h, t..]) => h, (x, []) => x };
+  let g = |s| select s { {a: [h, t..]} => h, {a: []} => 0 };
+  (f((1, [2])), f((1, [])), g({a: [3, 4]}))
+}"#,
+    prints("[i64:2, i64:1, i64:3]")
+);
+run!(
+    list_arms_over_an_unannotated_parameter,
+    r#"{
+  let rec len = |x| select x { [<h, t..>] => 1 + len(t), [<>] => 0 };
+  let f = |x| select x { [<h, t..>] => list::cons(h, t), [<>] => [<>] };
+  (len([<1, 2>]), list::to_array(f([<1, 2>])), list::to_array(f([<"a">])))
+}"#,
+    prints(r#"[i64:2, [i64:1, i64:2], ["a"]]"#)
+);
+run!(
+    slice_arms_over_an_unannotated_parameter_passed_as_a_written_function,
+    r#"{
+  let k = |x| select x { [h, t..] => h, [] => 0 };
+  let f = |g: fn(x: Array<i64>) -> i64, y| g(y);
+  (f(k, [1, 2]), array::map([[4, 5], [6]], k))
+}"#,
+    prints("[i64:1, [i64:4, i64:6]]")
+);
+// An undecided array of two cells goes to the one member whole, and the
+// instance holds the parameter where it stands, before the result, whatever
+// the order of the arms: one cell standing twice is no union of two.
+run!(
+    array_of_two_undecided_into_slice_arms_over_an_unannotated_parameter,
+    r#"{
+  let f = |x| select x { [h, t..] => t, [] => [] };
+  let g = |a, b| f([a, b]);
+  g(1, "s")
+}"#,
+    prints(r#"["s"]"#)
+);
+run!(
+    array_of_two_undecided_into_slice_arms_over_a_written_parameter,
+    r#"{
+  let f = |x: Array<'e>| select x { [h, t..] => t, [] => [] };
+  let g = |a, b| f([a, b]);
+  g(1, "s")
+}"#,
+    prints(r#"["s"]"#)
+);
+run!(
+    slice_arms_after_an_empty_arm_over_an_unannotated_parameter,
+    r#"{
+  let f = |x| select x { [] => [], [h, t..] => t };
+  let g = |x| select x { [h] => [h], [h, t..] => array::push(t, h), [] => [] };
+  (f([1, 2]), f(["a", "b"]), g([1, 2]))
+}"#,
+    prints(r#"[[i64:2], ["b"], [i64:2, i64:1]]"#)
+);
+run!(
+    slice_arm_returning_two_elements_over_an_unannotated_parameter,
+    r#"{
+  let f = |x| select x { [a, b, ..] => (a, b), _ => (0, 0) };
+  let g = |x| select x { [a, b] => (b, a), _ => (0, 0) };
+  (f(["b", "a"]), f([4, "a"]), g(["x", 1.5]), f([4]))
+}"#,
+    prints(r#"[["b", "a"], [i64:4, "a"], [f64:1.5, "x"], [i64:0, i64:0]]"#)
+);
+// What an argument decides for such a parameter is what it decides for the
+// parameter written: the one element cell.
+run!(
+    slice_arms_over_an_unannotated_parameter_take_one_element_type,
+    r#"{
+  let f = |x| select x { [h, t..] => t, [] => [] };
+  let g = |a, b| f(select true { true => a, false => b });
+  g([1], ["a"])
+}"#,
+    refused("type mismatch Array<i64> does not contain Array<string>");
+    FuseExpect::None
+);
+run!(
+    slice_arms_over_a_written_parameter_take_one_element_type,
+    r#"{
+  let f = |x: Array<'e>| select x { [h, t..] => t, [] => [] };
+  let g = |a, b| f(select true { true => a, false => b });
+  g([1], ["a"])
+}"#,
+    refused("type mismatch Array<i64> does not contain Array<string>");
+    FuseExpect::None
+);
+// Members that hold two cells are two: an array either could take goes to
+// neither.
+run!(
+    decided_array_into_a_typedef_union_of_two_undecided_arrays_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>| -> i64 0;
+  f([1])
+}"#,
+    refused("Array<i64> could go to Array<'a: unbound> or Array<'b: unbound> of the union");
+    FuseExpect::None
+);
+run!(
+    decided_array_into_a_typedef_union_of_one_variable,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'a>| -> i64 0;
+  f([1])
+}"#,
+    prints("i64:0")
 );
 
 // An instance holds its definition's signature at the call's types cell by

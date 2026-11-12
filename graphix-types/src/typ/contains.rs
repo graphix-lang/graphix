@@ -11,7 +11,9 @@ use crate::{
         TypeRef, Unfolded, node_addr,
         normalize::NormCx,
         probe_key,
-        setops::{Identical, IdenticalMemo, strictly_identical, union_identical},
+        setops::{
+            Identical, IdenticalMemo, one_type, strictly_identical, union_identical,
+        },
         tvar::{
             CellFact, CellLock, Cycle, Fresh, RigidGate, Standing, Toward, bare_path,
             cell_writes, cycle_toward, settled_cause_note, would_cycle_inner,
@@ -1259,11 +1261,12 @@ fn one_variable(t0: &TVar, t1: &TVar) -> bool {
 }
 
 /// Whether two members of a union are one member: the same variable, or
-/// identical with every cell by identity.
+/// one type with every cell by identity ([`one_type`]), which either
+/// decides alike.
 fn one_member(m0: &Type, m1: &Type) -> bool {
     match (m0, m1) {
-        (Type::TVar(t0), Type::TVar(t1)) => one_variable(t0, t1),
-        _ => strictly_identical(m0, m1),
+        (Type::TVar(t0), Type::TVar(t1)) if one_variable(t0, t1) => true,
+        _ => one_type(m0, m1),
     }
 }
 
@@ -4903,8 +4906,12 @@ impl Type {
         // ~/ptmp/cr29/scratch/r19/19g/{s3,s4}.gx (union-nosubst-order-01)
         // an undecided rhs member takes a union of undecided members whole,
         // as it would alone: no one member is picked for it
-        let undecided_free = |(m, free): (&Type, &bool)| *free && undecided(m);
-        if s0.iter().zip(&free).filter(|p| undecided_free(*p)).nth(1).is_some() {
+        let mut undecided_free = s0
+            .iter()
+            .zip(&free)
+            .filter_map(|(m, free)| (*free && undecided(m)).then_some(m));
+        let first = undecided_free.next();
+        if first.is_some_and(|first| undecided_free.any(|m| !one_member(first, m))) {
             let mut i = 0;
             while i < residue.len() {
                 if !is_unbound_tvar(&residue[i]) || !undecided(&residue[i]) {
@@ -6569,6 +6576,80 @@ mod tests {
         let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
         assert!(held.contains(&env, &parsed("null")).unwrap());
         assert!(held.has_unbound());
+    }
+
+    // members that are one type, cell for cell, are one member at the
+    // pick, which takes the type: a union's repeats and order and a cell
+    // bound to another tell no two apart; two open cells do
+    #[test]
+    fn members_that_are_one_type_take_a_type_as_one() {
+        let env = Env::default();
+        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
+        let array = |t: &Type| Type::Array(Arc::new(t.clone()));
+        let fresh = || {
+            let (a, b, c) = (var("a"), var("b"), var("c"));
+            c.bind(Type::TVar(a.clone()));
+            (Type::TVar(a), Type::TVar(b), Type::TVar(c))
+        };
+        let (a, b, c) = fresh();
+        let null = prim(Typ::Null);
+        for (m0, m1) in [
+            (set(&[&a, &a]), a.clone()),
+            (array(&set(&[&a, &a])), array(&a)),
+            (c.clone(), a.clone()),
+            (array(&set(&[&c, &a])), array(&a)),
+            (set(&[&a, &null]), set(&[&null, &a, &a])),
+            (set(&[&set(&[&a, &b]), &null]), set(&[&b, &null, &a])),
+        ] {
+            assert!(one_type(&m0, &m1) && one_type(&m1, &m0), "{m0} is {m1}");
+        }
+        assert!(!strictly_identical(&array(&set(&[&a, &a])), &array(&a)));
+        for (m0, m1) in [
+            (a.clone(), b.clone()),
+            (set(&[&a, &b]), a.clone()),
+            (array(&set(&[&a, &b])), array(&a)),
+            (array(&set(&[&a, &null])), array(&a)),
+            (set(&[&a, &null]), set(&[&a, &b, &null])),
+            (Type::Set(Arc::from_iter([])), a.clone()),
+        ] {
+            assert!(!one_type(&m0, &m1) && !one_type(&m1, &m0), "{m0} is not {m1}");
+        }
+        let i64s = parsed("Array<i64>");
+        for elements in [0, 1] {
+            let (a, _, c) = fresh();
+            let element = [set(&[&a, &a]), set(&[&c, &a])][elements].clone();
+            let union = set(&[&array(&element), &array(&a)]);
+            assert!(union.contains(&env, &i64s).unwrap(), "{union}");
+            assert_eq!(a.deref_cloned(), Some(prim(Typ::I64)), "{union}");
+        }
+        let (a, _, c) = fresh();
+        let union = set(&[&c, &a]);
+        assert!(union.contains(&env, &prim(Typ::I64)).unwrap(), "{union}");
+        assert_eq!(a.deref_cloned(), Some(prim(Typ::I64)), "{union}");
+        let (a, b, _) = fresh();
+        let union = set(&[&array(&set(&[&a, &b])), &array(&a)]);
+        let e = union.contains(&env, &i64s).unwrap_err();
+        assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{union}: {e}");
+        assert!(a.has_unbound() && b.has_unbound(), "{union}");
+    }
+
+    // one cell standing twice is no union of two undecided members: an
+    // undecided union goes to the cell whole, its members left as they
+    // are, and a signature's position holding it does not wait
+    #[test]
+    fn a_cell_standing_twice_is_one_undecided_member() {
+        let env = Env::default();
+        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
+        let (a, x, y) = (var("a"), var("x"), var("y"));
+        let c = var("c");
+        c.bind(Type::TVar(a.clone()));
+        let (ta, tc) = (Type::TVar(a.clone()), Type::TVar(c));
+        let (tx, ty) = (Type::TVar(x.clone()), Type::TVar(y.clone()));
+        assert!(!set(&[&ta, &ta]).holds_open_union());
+        assert!(!set(&[&tc, &ta]).holds_open_union());
+        assert!(set(&[&ta, &tx]).holds_open_union());
+        assert!(set(&[&ta, &ta]).contains(&env, &set(&[&tx, &ty])).unwrap());
+        assert!(!x.is_bound() && !y.is_bound() && !x.same_cell(&y), "{tx} {ty}");
     }
 
     // a member bound to an open cell is as free as that cell: the other

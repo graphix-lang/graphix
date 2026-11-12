@@ -639,7 +639,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [bug/medium] A function over an unannotated parameter
+            // XCR claude for claude: [bug/medium] A function over an unannotated parameter
             // whose one slice arm binds two elements and returns both passes --check, and
             // its instance is refused at the build unless the elements are i64: `let f =
             // |x| select x { [a, b, ..] => (a, b), _ => (0, 0) }; f(["b", "a"])` runs to
@@ -655,7 +655,16 @@ impl Reach {
             // slice it proposes would likely close this too. probes:
             // ~/ptmp/cr29/scratch/r20/20b/merge-review/sl/{d1..d6}.gx
             // (slice-pair-instance-split-01)
-            // CR claude for claude: [readability/low] An undecided scrutinee takes the
+            // 2026-11-11 claude: Closed by the fix of slice-param-union-01: Array<['a, 'b]>
+            // over one cell counted as a union of two open cells (fntyp::holds_open_union),
+            // so the instance's signature held the result before the parameter and the
+            // result's first decided member, (i64, i64), took the pair. One cell standing
+            // twice is no such union now, and the parameter is decided where it stands. The
+            // probes d1..d6 run in every mode, GRAPHIX_NO_SUBST=1 alike. Pin:
+            // lang::types::slice_arm_returning_two_elements_over_an_unannotated_parameter,
+            // which fails with the count undone (unit:
+            // a_cell_standing_twice_is_one_undecided_member).
+            // XCR claude for claude: [readability/low] An undecided scrutinee takes the
             // union of its arms' predicates, and a slice pattern's predicate gives every
             // element a cell of its own (`[h, ..]` is `Array<['h, 'rest]>`), so an
             // unannotated parameter a select takes apart with slice patterns is typed by a
@@ -709,11 +718,58 @@ impl Reach {
             // ~/ptmp/cr29/scratch/r20/20b/finisher/s/{s1,s2,s3,p1,p1a,p2}.gx.
             // 2026-11-11 claude: Eric ruled (11-11, D34): (a) fix. Members that are one type are
             // one member at the pick; no annotation. Build with a census.
+            // 2026-11-11 claude: Members that are one type are one member at the pick
+            // (contains::one_member, by setops::one_type: every cell by identity, a union read
+            // as the set of its members through bindings and nesting, so Array<['a, 'a]> is
+            // Array<'a> and a cell bound to another is that one); two open cells stay two. Two
+            // counts beside the pick read such a union the same way, or the newly accepted
+            // programs split or lose to their written twins: place_members (an undecided union
+            // goes to the one cell whole: g = |a, b| f([a, b])) and fntyp::holds_open_union (the
+            // instance's signature decides such a parameter where it stands: the arms in the
+            // other order, '[] => [], [h, t..] => t', were refused at the build). Every shape
+            // the notes list runs, as its written twin does; no annotation. Pins that fail
+            // without the pick's change:
+            // lang::types::{slice_arms,slice_elements_bound_in_two_arms,slice_arms_of_a_recursive_function,slice_rest_passed_on,slice_arms_inside_a_tuple_and_a_struct,list_arms}_over_an_unannotated_parameter,
+            // slice_arms_over_an_unannotated_parameter_{passed_as_a_written_function,take_one_element_type},
+            // lang::select::generic_slice_arms_check, unit
+            // typ::contains::tests::members_that_are_one_type_take_a_type_as_one; without
+            // place_members' count:
+            // lang::types::array_of_two_undecided_into_slice_arms_over_an_unannotated_parameter;
+            // without holds_open_union's:
+            // slice_arms_after_an_empty_arm_over_an_unannotated_parameter,
+            // slice_arm_returning_two_elements_over_an_unannotated_parameter; both: unit
+            // a_cell_standing_twice_is_one_undecided_member. Stays refused:
+            // lang::types::decided_array_into_a_typedef_union_of_two_undecided_arrays_refused.
+            // Census base-r22 against the lane, 2955 files: one verdict change,
+            // design/review-2026-10-19/repro/c-pattern-generic-slice-refused.gx accepted again,
+            // no message change. Differentials:
+            // ~/ptmp/cr29/scratch/r21/21t/{gen.py,gen2.py,rungen.sh,bl.sh}. Needs a soak.
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);
                 }
                 false => {
+                    // CR claude for claude: [bug/high] A function over a parameter written
+                    // with two variables, taken apart by slice arms that return a bind
+                    // of the other variable in two shapes, panics the runtime: `let f =
+                    // |s: (Array<'e>, 'a)| select s { ([h, ..], b) => b, ([], b) => (b,
+                    // b) }; f(([1], 3))` dies with "kernel param `result`: runtime
+                    // I64(3) does not match the compiled Tuple { elems: [I64, I64] }
+                    // slot" (fusion/kernel.rs), the struct form (`|s: {a: Array<'e>,
+                    // b: 'a}|` over `{a: [h, t..], b} => b, {a: [], b} => (b, b)`) and
+                    // `[b]` for `(b, b)` alike. --check passes, --no-fusion prints 3,
+                    // and GRAPHIX_NO_SUBST=1 refuses the instance, "type mismatch [_,
+                    // (i64, i64)] does not contain [i64, (i64, i64)]" at the select: the
+                    // instance types the first arm's `b` as bottom. It runs with a
+                    // bool test in place of the slice (`{a: true, b} => b`), with the
+                    // two as separate parameters (`|a: Array<'e>, b: 'a|`), with the
+                    // parameter written closed (`{a: Array<i64>, b: i64}`), with the
+                    // result written (`-> ['a, ('a, 'a)]`), with `[]` as the argument
+                    // (the second arm), and with the parameter unannotated. base-r22
+                    // and lane 21t alike; found by the twin differential of
+                    // slice-param-union-01, not caused by it. probes:
+                    // ~/ptmp/cr29/scratch/r21/21t/kp/{k1..k12}.gx
+                    // (slice-arm-bind-bottom-panic-01)
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     for p in preds.iter().filter(|p| p.explicit_type_predicate) {
                         p.type_predicate.reached_cells(&mut written)
@@ -1093,6 +1149,19 @@ impl Reach {
         if self.wildcard || self.atype == empty {
             return Ok(());
         }
+        // CR claude for claude: [bug/medium] Slice arms inside a variant's payload over
+        // an unannotated parameter are refused as not exhaustive, though they cover
+        // every length: `let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 };
+        // f(`A([1, 2]))` is refused at the definition, "missing match cases: no arm
+        // covers `A(Array<'_a>)", and with the rest bound (`A([h, t..])`) "no arm
+        // covers `A([Array<'_a>, Array<'_b>])". The same arms in a tuple or a struct
+        // (`(x, [h, ..]) => h, (x, []) => x`, `{a: [h, t..]} => h, {a: []} => 0`) and
+        // bare check and run, a catch-all second arm (`A(_) => 0`) checks, and so does
+        // the parameter written (`|x: [`A(Array<'e>)]|`). base-r22 and lane 21t alike.
+        // The payload is typed by a union of one array member an arm, which are one
+        // type (slice-param-union-01 made such members one at the pick); the cover
+        // here does not join the arms' lengths through a variant's payload. probes:
+        // ~/ptmp/cr29/scratch/r21/21t/kp/{v1,v2,v3,v4}.gx (variant-slice-coverage-01)
         let covered: LPooled<Vec<&Type>> = self.covered.iter().collect();
         let covered = Type::union_exact(env, &covered)?;
         if !undecided.is_empty() && covered.contains_holding(env, scrut, undecided)? {

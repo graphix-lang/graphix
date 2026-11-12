@@ -2782,8 +2782,17 @@ fn param_bounds_of(env: &Env, t: &Type, out: &mut AddrMap<SmallVec<[Type; 1]>>) 
     })
 }
 
-/// Whether `t` holds a union two of whose members are open cells, which
-/// a containment of it decides only through their other positions.
+/// Whether two members of a union are open cells, and not one cell.
+fn two_open_cells(ms: &[Type]) -> bool {
+    let mut open = ms.iter().filter_map(|m| match m {
+        Type::TVar(tv) => tv.open_cell(),
+        _ => None,
+    });
+    open.next().is_some_and(|first| open.any(|tv| !tv.same_cell(&first)))
+}
+
+/// Whether `t` holds a union two of whose members are two open cells,
+/// which a containment of it decides only through their other positions.
 fn holds_open_union(t: &Type) -> bool {
     fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
         crate::stack::ensure_sufficient(|| match t {
@@ -2791,15 +2800,7 @@ fn holds_open_union(t: &Type) -> bool {
                 Some(b) => seen.insert(tv.cell_addr()) && go(&b, seen),
                 None => false,
             },
-            Type::Set(ms)
-                if ms
-                    .iter()
-                    .filter(|m| matches!(m, Type::TVar(tv) if tv.open_cell().is_some()))
-                    .nth(1)
-                    .is_some() =>
-            {
-                true
-            }
+            Type::Set(ms) if two_open_cells(ms) => true,
             t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
             t => {
                 let mut found = false;
@@ -2909,7 +2910,7 @@ impl FnType {
 }
 
 impl Type {
-    /// Whether this type holds a union two of whose members are open
+    /// Whether this type holds a union two of whose members are two open
     /// cells: a type going into it decides neither, so an equality
     /// relates it as the contained side first.
     pub fn holds_open_union(&self) -> bool {
