@@ -3382,6 +3382,24 @@ impl Deciding {
         )
     }
 
+    // CR claude for claude: [bug/low] A holder's binding rewritten outside the steps
+    // that record it is read as rewritten. `decided` runs after each arm's pattern step
+    // and coverage step; the arms' bodies and the select's result union
+    // (Type::union_of_alternatives) run between and after them, and a normalization
+    // there that drops the member holding the decided cell leaves nothing in
+    // Decisions::held, so check_undecided walks the binding without that member. `let z
+    // = never(); let k: [i64, null] = 1; let u = select k { i64 as n => {a: n}, _ =>
+    // {a: z} }; select u { {a: 7} => u, v => u }` checks and decides `z` i64 (a later
+    // `z <- "s"` says "z is i64, inferred from an earlier use"); with `1` for either
+    // arm's body, or `{a: 1}` for `{a: n}`, it is refused "{ a: 7 } tests a value of
+    // 'z, a type not decided at this select". `(7, _)` over `(n, 0)` and `(z, 0)`, and
+    // an unannotated parameter for `z`, alike. No wrong value: the cell is bound. Same
+    // on base-r23. Tried: recording each holder that differs from its binding before
+    // the arms once more where the last check_undecided is called (the holders alone,
+    // never the cells, since a cell a body decided is not the patterns' decision)
+    // refuses all three and leaves a body's decision (`(a, 1) => { z <- a; a }`)
+    // accepted; not censused. probes: ~/ptmp/cr29/scratch/r23/23c/crash-rev/s1.gx,
+    // t4.gx, t5.gx, twins s2.gx, s4.gx (held-rewrite-after-steps-01)
     /// Add to `decided` each cell the step decided, and each binding it
     /// rewrote as it was.
     fn decided(&self, decided: &mut Decisions) {

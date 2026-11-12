@@ -941,6 +941,26 @@ run!(tag_deciding_an_undecided_parameter_beside_a_bind_refused, r#"{
     f(3, 1)
 }"#, refused("(42, v) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
 
+// A written test over the whole union decides the undecided member beside
+// the bind, as it decides one beside a plain type.
+run!(written_test_over_a_whole_union_beside_a_bind_decides_the_member, r#"{
+    let z = never();
+    let k: [i64, null] = null;
+    let u = select k { null as _ => z, i64 as n => n };
+    let r = select u { i64 as a => a };
+    z <- 2;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+run!(written_test_over_a_whole_union_beside_a_bind_then_written_apart_refused, r#"{
+    let z = never();
+    let k: [i64, null] = null;
+    let u = select k { null as _ => z, i64 as n => n };
+    let r = select u { i64 as a => a };
+    z <- "s";
+    r
+}"#, refused("z is i64, inferred from an earlier use, and cannot hold string"); FuseExpect::None);
+
 // A later arm's pattern decides the part before an earlier arm's body is
 // checked: the body's error is the select's.
 run!(an_earlier_body_over_a_part_a_later_arm_decides_is_its_error, r#"{
