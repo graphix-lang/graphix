@@ -202,7 +202,16 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   one member per element and a cell for the rest, so each element
   narrows on its own; its run-time test admits any member at any
   position, so a name an element binds holds its part of every member
-  the element's structure admits (`hold_slice_members`). A slice inside a
+  the element's structure admits (`hold_slice_members`). The structure
+  admits a member where a value of it may pass every test the pattern
+  makes (`StructPatternNode::admits`): a tag, a literal, an arity, a
+  struct's fields and width, an abstract's type, at any depth, and a
+  part that is `Any` or undecided passes any of them. A member one of
+  them rules out gives the binds nothing (`` [(`A, h), ..] `` over
+  `` Array<[(`A, i64), (`B, string)]> `` binds `h: i64`), whether it is
+  a member of the element type, of a union inside one, or of a written
+  test's union (`StructPatternNode::leaves`: `` P as (`A, h) ``). A
+  slice inside a
   tuple, struct, variant or or-pattern takes those members from each
   reaching member's part at its position, so a name over the element of
   `Array<'b>` there keeps `'b`, as at the top; where a member's part is
@@ -210,4 +219,5 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   cells, as over an `Any` scrutinee. Pins:
   `lang::select::capture_*`, `slice_elements_typed_apart`,
   `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`,
+  `slice_element_bind_*`, `written_union_bind_beside_a_tag_*`,
   `nested_slice_*`, `let_partial_struct_capture_is_the_whole_value`.

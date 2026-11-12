@@ -250,6 +250,29 @@ fn expand(env: &Env, typ: &Type) -> Option<Type> {
     Some(t)
 }
 
+/// Whether `typ`'s head is a constructor every value of it has, or a union
+/// of such: an open cell, `Any` or ⊥, alone or in a union, may yet hold a
+/// value of any shape.
+fn decided_head(env: &Env, typ: &Type) -> bool {
+    crate::stack::ensure_sufficient(|| match &expand(env, typ) {
+        Some(Type::Set(ts)) => ts.iter().all(|t| decided_head(env, t)),
+        Some(
+            Type::Primitive(_)
+            | Type::Error(_)
+            | Type::Array(_)
+            | Type::List(_)
+            | Type::Map(_)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Variant(..)
+            | Type::ByRef(..)
+            | Type::Fn(_)
+            | Type::Abstract { .. },
+        ) => true,
+        _ => false,
+    })
+}
+
 fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)]>> {
     typ.with_deref(|t| match t {
         Some(t @ Type::Ref(_)) => match &t.lookup_ref(env) {
@@ -1064,7 +1087,8 @@ impl StructPatternNode {
     }
 
     /// Every leaf name with the part of `typ` it stands over, `typ`
-    /// being a type of this pattern's shape. An or-pattern's
+    /// being a type of this pattern's shape; over a union, its part of
+    /// each member the structure admits ([`Self::admits`]). An or-pattern's
     /// alternatives share their names: each is reported once, at the
     /// union of the alternatives' parts; with `checking`, alternatives a
     /// run-time test cannot tell apart are refused, as separate arms
@@ -1103,8 +1127,12 @@ impl StructPatternNode {
         }
         let Self::Or { alts } = self else {
             let members = self.member_parts(env, typ, inferred);
+            let union = matches!(expand(env, typ), Some(Type::Set(_)));
             let mut all: SmallVec<[Leaf; 4]> = SmallVec::new();
             for (m, ts) in members.iter() {
+                if union && !self.admits(env, m, inferred)? {
+                    continue;
+                }
                 for id in self.whole_binds() {
                     all.push(Leaf { id, typ: m.normalize(), fresh: true })
                 }
@@ -1126,7 +1154,7 @@ impl StructPatternNode {
         let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
         if checking {
             for (i, a) in alts.iter().enumerate() {
-                let fp = a.footprint(env, &ts[i], sub);
+                let Some(fp) = a.footprint(env, &ts[i], sub) else { continue };
                 for (j, b) in ts.iter().enumerate() {
                     if i != j && fp.rep_collision(env, b).is_some() {
                         let (a, b) = (ts[i].resolve_tvars(), b.resolve_tvars());
@@ -1187,7 +1215,7 @@ impl StructPatternNode {
         })
     }
 
-    // CR claude for claude: [bug/low] A slice element that tests a tag beside a bind
+    // XCR claude for claude: [bug/low] A slice element that tests a tag beside a bind
     // holds the bind's part of members its tag cannot match: `|x: Array<[(`A, i64), (`B,
     // string)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 }` is refused "type
     // mismatch i64 does not contain [i64, string]", and so are the struct form (`[{t: `A,
@@ -1201,67 +1229,140 @@ impl StructPatternNode {
     // footprint's other callers (or-alternatives) and the census were not checked. Same on
     // base-r20. probes: ~/ptmp/cr29/scratch/r20/20e/review/pp16.gx, pp13.gx, pp17.gx,
     // pp19.gx, pp20.gx; working twins pp15.gx, pp22.gx (slice-footprint-tag-01)
-    /// What this pattern's structure test admits over `typ`: `typ` with
-    /// every position the structure does not test as `Any`. An
-    /// or-alternative is taken by its structure alone, so a value of
-    /// another alternative's type this admits would bind through it.
-    fn footprint(&self, env: &Env, typ: &Type, inferred: bool) -> Type {
+    // 2026-11-12 claude: StructPatternNode::footprint is None where the structure admits no
+    // value of the type (a tag, an arity, a struct's fields or width, an abstract's type or
+    // payload that a decided member rules out) and takes a union as the members it admits; a
+    // type whose head is undecided (an open cell, Any, bottom, alone or in a union) is
+    // admitted whole, as before. hold_slice_members asks StructPatternNode::admits, and
+    // leaves skips a union's member the structure does not admit, so a union inside one
+    // member, an or-alternative in an element and a bind under a written test (P as (`A, h))
+    // are typed the same way. The five probes print [4, 0]. Pins in lang::select that fail
+    // with the change undone, in all four modes:
+    // slice_element_bind_beside_a_tag_holds_the_members_the_tag_admits,
+    // slice_element_bind_holds_no_member_of_another_shape,
+    // slice_element_bind_under_a_union_inside_a_member,
+    // written_union_bind_beside_a_tag_holds_the_members_the_tag_admits; the *_refused twins
+    // beside them pin what must still be held
+    // (slice_element_bind_beside_a_union_holding_any_refused is the one a narrower rule for
+    // undecided members would lose). Census of 2962 files: no verdict or message change;
+    // 2079 generated element and written-test patterns (gen.py): none newly refused, no
+    // bound value outside its bind's type. Probes ~/ptmp/cr29/scratch/r23/23d/sft/.
+    /// What this pattern's structure test admits of `typ`: `typ` with
+    /// every position the structure does not test as `Any`, and a union
+    /// as the members it admits a value of; `None` where it admits no
+    /// value of `typ`. An or-alternative is taken by its structure alone,
+    /// so a value of another alternative's type this admits would bind
+    /// through it.
+    fn footprint(&self, env: &Env, typ: &Type, inferred: bool) -> Option<Type> {
+        fn union(mut ts: SmallVec<[Type; 4]>) -> Option<Type> {
+            match ts.len() {
+                0 => None,
+                1 => ts.pop(),
+                _ => Some(Type::Set(Arc::from_iter(ts))),
+            }
+        }
         crate::stack::ensure_sufficient(|| {
             let sub = self.children_inferred(inferred);
-            let parts = |ts: Option<SmallVec<[Option<(Type, usize)>; 8]>>| {
-                let ts = ts?;
-                let fps = self.children().into_iter().zip(ts).map(|(c, t)| match t {
-                    Some((t, _)) => c.footprint(env, &t, sub),
-                    None => Type::Any,
-                });
-                Some(fps.collect::<SmallVec<[Type; 8]>>())
-            };
             match self {
-                Self::Ignore | Self::Bind(_) => Type::Any,
-                Self::Literal(v) => Type::of_literal(v).unwrap_or_else(|_| typ.clone()),
-                Self::Abstract { .. } => typ.clone(),
+                Self::Ignore | Self::Bind(_) => Some(Type::Any),
+                Self::Literal(v) => {
+                    Some(Type::of_literal(v).unwrap_or_else(|_| typ.clone()))
+                }
                 Self::Slice { kind: SliceKind::List, .. }
-                | Self::SlicePrefix { list: true, .. } => Type::List(Arc::new(Type::Any)),
+                | Self::SlicePrefix { list: true, .. } => {
+                    Some(Type::List(Arc::new(Type::Any)))
+                }
                 Self::Slice { kind: SliceKind::Array, .. }
                 | Self::SlicePrefix { .. }
-                | Self::SliceSuffix { .. } => Type::Array(Arc::new(Type::Any)),
-                Self::Slice { kind: SliceKind::Tuple, .. } => {
-                    match parts(self.child_types(env, typ, inferred)) {
-                        Some(ps) => Type::Tuple(Arc::from_iter(ps)),
-                        None => typ.clone(),
-                    }
-                }
-                Self::Variant { tag, .. } => {
-                    match parts(self.child_types(env, typ, inferred)) {
-                        Some(ps) => Type::Variant(
-                            tag.clone(),
-                            Arc::from_iter(ps),
-                            WrittenAt::NOWHERE,
-                        ),
-                        None => typ.clone(),
-                    }
-                }
-                Self::Or { .. } => match parts(self.child_types(env, typ, inferred)) {
-                    Some(ps) => Type::Set(Arc::from_iter(ps)),
-                    None => typ.clone(),
+                | Self::SliceSuffix { .. } => Some(Type::Array(Arc::new(Type::Any))),
+                Self::Or { alts } => match self.child_types(env, typ, inferred) {
+                    None => Some(typ.clone()),
+                    Some(ts) => union(
+                        alts.iter()
+                            .zip(ts)
+                            .filter_map(|(a, t)| a.footprint(env, &t?.0, sub))
+                            .collect(),
+                    ),
                 },
-                Self::Struct { binds, .. } => {
-                    let Some(fields) = struct_fields(env, typ) else {
-                        return typ.clone();
-                    };
-                    let fields = fields.iter().map(|(n, t, at)| {
-                        let t = match binds.iter().find(|(bn, _, _)| bn == n) {
-                            Some((_, _, p)) => p.footprint(env, t, sub),
-                            None => Type::Any,
-                        };
-                        (n.clone(), t, *at)
-                    });
-                    Type::Struct(Arc::from_iter(fields))
+                Self::Slice { kind: SliceKind::Tuple, .. }
+                | Self::Variant { .. }
+                | Self::Struct { .. }
+                | Self::Abstract { .. } => {
+                    if !decided_head(env, typ) {
+                        return Some(typ.clone());
+                    }
+                    let members = self.member_parts(env, typ, inferred);
+                    union(
+                        members
+                            .iter()
+                            .filter_map(|(m, ts)| self.member_footprint(env, m, ts, sub))
+                            .collect(),
+                    )
                 }
             }
         })
     }
 
+    /// [`Self::footprint`] of a constructor pattern over `m`, a type its
+    /// head matches, `ts` its children's parts of it.
+    fn member_footprint(
+        &self,
+        env: &Env,
+        m: &Type,
+        ts: &[Option<(Type, usize)>],
+        sub: bool,
+    ) -> Option<Type> {
+        let parts = || {
+            let ps = self.children().into_iter().zip(ts);
+            ps.map(|(c, t)| c.footprint(env, &t.as_ref()?.0, sub))
+                .collect::<Option<SmallVec<[Type; 8]>>>()
+        };
+        match self {
+            Self::Slice { kind: SliceKind::Tuple, .. } => {
+                Some(Type::Tuple(Arc::from_iter(parts()?)))
+            }
+            Self::Variant { tag, .. } => Some(Type::Variant(
+                tag.clone(),
+                Arc::from_iter(parts()?),
+                WrittenAt::NOWHERE,
+            )),
+            Self::Struct { binds, width, .. } => {
+                let fields = struct_fields(env, m)?;
+                (width.admits(fields.len()) && ts.iter().all(Option::is_some))
+                    .then_some(())?;
+                let fields = fields.iter().map(|(n, t, at)| {
+                    let t = match binds.iter().find(|(bn, _, _)| bn == n) {
+                        Some((_, _, p)) => p.footprint(env, t, sub)?,
+                        None => Type::Any,
+                    };
+                    Some((n.clone(), t, *at))
+                });
+                let fields = fields.collect::<Option<SmallVec<[_; 8]>>>()?;
+                Some(Type::Struct(Arc::from_iter(fields)))
+            }
+            _ => parts().map(|_| m.clone()),
+        }
+    }
+
+    /// Whether a value of `typ` may pass this pattern's structure test.
+    fn admits(&self, env: &Env, typ: &Type, inferred: bool) -> Result<bool> {
+        match self.footprint(env, typ, inferred) {
+            Some(fp) => fp.could_match(env, typ),
+            None => Ok(false),
+        }
+    }
+
+    // CR claude for claude: [bug/low] A slice arm whose element admits no member of the
+    // scrutinee's element type is not reported dead: `|x: Array<[`A, `B]>| select x {
+    // [`C, ..] => 1, _ => 0 }`, `[`C(h), ..]` over `Array<[`A(i64), `B(string)]>` and
+    // `[(`C, h), ..]` over `Array<[(`A, i64), (`B, string)]>` check, where the same
+    // pattern outside a slice, `(`C, h)` over `[(`A, i64), (`B, string)]`, is refused
+    // "will never match". The arm's binds hold no member there and are left to its body
+    // to decide. hold_slice_members sees the case (no member passes
+    // StructPatternNode::admits for the element); why select.rs::Reach's dead-arm test
+    // lets the arm stand was not traced. Same on base-r23. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/sft/n1.gx, n6.gx, n7.gx; refused twin n2.gx
+    // (slice-element-dead-arm-01)
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
@@ -1296,7 +1397,7 @@ impl StructPatternNode {
                 for c in self.children() {
                     parts.clear();
                     for m in members.iter() {
-                        if !c.footprint(env, m, false).could_match(env, m)? {
+                        if !c.admits(env, m, false)? {
                             continue;
                         }
                         leaves.clear();
@@ -1585,7 +1686,9 @@ impl StructPatternNode {
             }
             let env = &ctx.env;
             if let Ok(rest) = type_predicate.diff(env, &shape)
-                && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
+                && node
+                    .footprint(env, &shape, false)
+                    .is_some_and(|fp| fp.rep_collision(env, &rest).is_some())
             {
                 let (a, b) = (shape.resolve_tvars(), rest.resolve_tvars());
                 return format_with_flags(PrintFlag::DerefTVars, || {

@@ -5460,6 +5460,148 @@ run!(
     }
 );
 
+// A member the element's structure rules out, by a tag, an arity, a field
+// or a payload it tests, gives the element's binds nothing.
+run!(
+    slice_element_bind_beside_a_tag_holds_the_members_the_tag_admits,
+    r#"{
+    let a = |x: Array<[(`A, i64), (`B, string)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 };
+    let b = |x: Array<[(`A, Array<i64>), (`B, Array<string>)]>| -> i64 select x { [(`A, [h, ..]), ..] => h + 1, _ => 0 };
+    let c = |x: (Array<[(`A, i64), (`B, string)]>, i64)| -> i64 select x { ([(`A, h), ..], n) => h + n, _ => 0 };
+    let d = |x: (Array<[{t: `A, v: i64}, {t: `B, v: string}]>, i64)| -> i64 select x { ([{t: `A, v}, ..], n) => v + n, _ => 0 };
+    let e = |x: Array<[{t: `A, v: i64}, {t: `B, v: string}]>| -> i64 select x { [{t: `A, v}, ..] => v + 1, _ => 0 };
+    let f = |x: Array<[(`A, i64), (`B, string)]>| -> i64 select x { [.., (`A, h)] => h + 1, _ => 0 };
+    let g = |x: List<[(`A, i64), (`B, string)]>| -> i64 select x { [<(`A, h), ..>] => h + 1, _ => 0 };
+    [
+        a([(`A, 3)]), a([(`B, "abc")]), b([(`A, [3])]), b([(`B, ["abc"])]),
+        c(([(`A, 3)], 1)), c(([(`B, "abc")], 1)), d(([{t: `A, v: 3}], 1)), d(([{t: `B, v: "abc"}], 1)),
+        e([{t: `A, v: 3}]), e([{t: `B, v: "abc"}]), f([(`A, 3)]), f([(`B, "abc")]),
+        g([<(`A, 3)>]), g([<(`B, "abc")>])
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0])
+);
+
+run!(
+    slice_element_bind_holds_no_member_of_another_shape,
+    r#"{
+    type W = Abstract<i64>;
+    let a = |x: Array<[((i64, i64), i64), (string, string)]>| -> i64 select x { [((p, q), h), ..] => p + q + h, _ => 0 };
+    let b = |x: Array<[{a: i64, v: i64}, {b: i64, v: string}]>| -> i64 select x { [{a, v}, ..] => a + v, _ => 0 };
+    let c = |x: Array<[{t: {a: i64}, v: i64}, {t: {b: i64}, v: string}]>| -> i64 select x { [{t: {a}, v}, ..] => a + v, _ => 0 };
+    let d = |x: Array<[(`A(i64), i64), (`A(i64, i64), string)]>| -> i64 select x { [(`A(n), h), ..] => h + n, _ => 0 };
+    let e = |x: Array<[([`A, `C], i64), ([`B, `D], string)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 };
+    let f = |x: Array<[(W, i64), (string, string)]>| -> i64 select x { [(W(n), h), ..] => h + n, _ => 0 };
+    let g = |x: Array<[{a: i64, v: i64}, {a: i64, v: string, w: i64}]>| -> i64 select x { [{a, v}, ..] => a + v, _ => 0 };
+    [
+        a([((1, 2), 3)]), a([("a", "b")]), b([{a: 1, v: 3}]), b([{b: 1, v: "abc"}]),
+        c([{t: {a: 1}, v: 3}]), c([{t: {b: 1}, v: "abc"}]), d([(`A(1), 3)]), d([(`A(1, 2), "abc")]),
+        e([(`A, 3)]), e([(`B, "abc")]), e([(`C, 3)]), f([(W(3), 1)]), f([("a", "abc")]),
+        g([{a: 1, v: 3}]), g([{a: 1, v: "abc", w: 2}])
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 0, 4, 0, 4, 0, 4, 0, 4, 0, 0, 4, 0, 4, 0])
+);
+
+// A union inside one member is told apart the same way, and so is a
+// member an or-alternative or a whole capture stands over.
+run!(
+    slice_element_bind_under_a_union_inside_a_member,
+    r#"{
+    let a = |x: Array<`W([(`A, i64), (`B, string)])>| -> i64 select x { [`W((`A, h)), ..] => h + 1, _ => 0 };
+    let b = |x: Array<[`W([`B(string), {b: string}], `C), `V(i64)]>| -> i64 select x { [`W({b: h}, `A) | `V(h), ..] => h + 1, _ => 0 };
+    let c = |x: Array<[(`A, i64), (`B, string)]>| -> i64 select x { [v@ (`A, _), w@ (`B, _)] => v.1 + str::len(w.1), _ => 0 };
+    let d = |x: Array<[(`C, i64), (`B, string), `W(i64)]>| -> i64 select x { [(`C, h) | `W(h), ..] => h + 1, _ => 0 };
+    [
+        a([`W((`A, 3))]), a([`W((`B, "abc"))]), b([`V(3)]), b([`W({b: "abc"}, `C)]),
+        c([(`A, 3), (`B, "abc")]), c([(`B, "abc"), (`A, 3)]), d([(`C, 3)]), d([(`B, "abc")]), d([`W(5)])
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 4, 0, 6, 0, 4, 0, 6])
+);
+
+run!(
+    slice_element_bind_beside_a_tag_two_members_share_refused,
+    r#"{
+    let f = |x: Array<[(`A, i64), (`A, string)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 };
+    f([(`A, 3)])
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+run!(
+    slice_element_bind_beside_a_tag_an_any_part_may_hold_refused,
+    r#"{
+    let f = |x: Array<[(Any, string), (`B, i64)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 };
+    f([(`A, "s")])
+}"#,
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+run!(
+    slice_element_bind_beside_a_union_holding_any_refused,
+    r#"{
+    let f = |x: Array<[([Any, (`B, string)], string), (`C, i64)]>| -> i64 select x { [((`A, h), k), ..] => k + 1, _ => 0 };
+    f([((`A, 3), "s")])
+}"#,
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+
+run!(
+    slice_element_bind_under_a_union_inside_a_member_both_admitted_refused,
+    r#"{
+    let f = |x: Array<`W([i64, string], [`A, `C])>| -> i64 select x { [`W(h, `A), ..] => h + 1, _ => 0 };
+    f([`W(3, `A)])
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+run!(
+    slice_element_bind_in_a_partial_struct_of_two_widths_refused,
+    r#"{
+    let f = |x: Array<[{a: `A, v: i64}, {a: `A, v: string, w: i64}]>| -> i64 select x { [{a: `A, v, ..}, ..] => v + 1, _ => 0 };
+    f([{a: `A, v: 3}])
+}"#,
+    refused("matches more than one member");
+    FuseExpect::None
+);
+
+// Under a written union a bind takes its part of the members the
+// structure admits, as an element's does.
+run!(
+    written_union_bind_beside_a_tag_holds_the_members_the_tag_admits,
+    r#"{
+    type P = [(`A, i64), (`B, string)];
+    type S = [{t: `A, v: i64}, {t: `B, v: string}];
+    type N = `W([(`A, i64), (`B, string)]);
+    let a = |x: [P, null]| -> i64 select x { P as (`A, h) => h + 1, _ => 0 };
+    let b = |x: [S, null]| -> i64 select x { S as {t: `A, v} => v + 1, _ => 0 };
+    let c = |x: [N, null]| -> i64 select x { N as `W((`A, h)) => h + 1, _ => 0 };
+    let d = |x: Array<P>| -> i64 select x { Array<P> as [(`A, h), ..] => h + 1, _ => 0 };
+    let e = |x: [P, null]| -> i64 select x { P as v@ (`A, _) => v.1 + 1, _ => 0 };
+    [
+        a((`A, 3)), a((`B, "abc")), a(null), b({t: `A, v: 3}), b({t: `B, v: "abc"}),
+        c(`W((`A, 3))), c(`W((`B, "abc"))), d([(`A, 3)]), d([(`B, "abc")]), e((`A, 3)), e((`B, "abc"))
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 0, 4, 0, 4, 0, 4, 0, 4, 0])
+);
+
+run!(
+    written_union_bind_beside_a_tag_two_members_share_refused,
+    r#"{
+    type P = [(`A, i64), (`A, string)];
+    let f = |x: [P, null]| -> i64 select x { P as (`A, h) => h + 1, _ => 0 };
+    f((`A, 3))
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
 // A slice over a union's array member binds its elements at that member's
 // element type, so a generic one is the definition's variable, not a cell
 // of its own the signature then settles to ⊥ (the kernel read it as bottom).

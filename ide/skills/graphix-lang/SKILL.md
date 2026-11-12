@@ -516,6 +516,10 @@ across a bottom cycle).
 - A written type test narrows its binds to the values reaching it:
   `Number as n` over `[i64, string]` gives `n: i64`; `Array<Number> as ns`
   over `Array<[i64, string]>` gives `ns: Array<i64>`.
+- A bind beside a tag, a literal or a shape the pattern tests holds only
+  the members that test admits, in a slice element and under a written
+  test too: `` [(`A, h), ..] `` over `` Array<[(`A, i64), (`B, string)]> ``
+  gives `h: i64`; two members it admits give their union.
 - A pattern that tests inside a declared type variable needs a written
   type test (`{a: i64, b: string} as {a, ..}`), and one over a type not yet
   decided at the select is refused until the binding it names is annotated;
@@ -559,6 +563,9 @@ no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) =>
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(_) => 2 }
 ok |x: [`A(Array<i64>), `A(null)]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
 no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
+ok |x: Array<[(`A, i64), (`B, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
+no "cannot compute" |x: Array<[(`A, i64), (`A, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
+ok |x: [(`A, i64), (`B, string), null]| select x { [(`A, i64), (`B, string)] as (`A, h) => h + 1, _ => 0 }
 ```
 
 ## Connect
