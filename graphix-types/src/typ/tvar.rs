@@ -3816,6 +3816,20 @@ impl Type {
     // graphix fmt prints both as base-r23 does, and only fmt parses them
     // (QUANTIFIED_FN). A walk that reaches every bound of a reached cell closes
     // these with this CR.
+    // 2026-11-12 claude: Reviewing rank2-open-nest-01: a dump of each parsed
+    // type's cells (review/dumptest_fn2.rs, bindings to a variable followed)
+    // over 23095 generated types finds 47 whose cells differ from base-r23, all
+    // nests of quantified signatures: 45 of 4000 from gen2.py (q mode, seed 7;
+    // it also writes labeled and optional arguments, vargs, structs, unions,
+    // refs and variants) and the two of gennest.py's noted above, none of 15491
+    // whose nested signatures are unquantified. Some are this class, e.g.
+    // `fn(@args: `V(List<'d>)) -> fn<'z: Number + Array<'d>, 'd: 'a>(x0:
+    // `V('z), qz: 'z) -> 'a`, whose two `'a` base-r23 makes one cell; others
+    // are the captures moved by that change, noted on
+    // (nested-quantifier-capture-01). Two parse refusals change message, both
+    // toward this signature's own names: a quantifier base-r23 counted held
+    // only through a captured bound is now refused as not held. probes:
+    // ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/review/partition_diffs.tsv
     // CR claude for claude: [bug/low] An enclosing declaration's alias walk
     // captures a variable across signatures. Walking a nested quantified
     // signature, it passes the conjuncts of every cell that signature's
@@ -3857,6 +3871,21 @@ impl Type {
     // captured bounds (an inner header printed `'c: Number + Array<'z>` where
     // the source writes `'c: Number`) and the reparse captures again (`'z:
     // fn<..> + fn<..> + 'c`). cap_open.gx prints as on base-r23.
+    // 2026-11-12 claude: Reviewing rank2-open-nest-01: that change moves which
+    // nests this capture reaches, since a nested declaration no longer joins the
+    // free names of its own bounds to its other occurrences before the outermost
+    // walk passes those bounds under a nested signature's scope. graphix fmt
+    // --stdout of capture_moved.gx (`let y: fn<'b: Any>(qb: 'b) -> fn<'d:
+    // Array<'b>>(x: 'b, qd: 'd) -> fn<'b: Number>(qb: 'b) -> 'd = never()`)
+    // prints `'b: Any` on base-r23 and `'b: Any + Number` after it; without `x:
+    // 'b` both print `'b: Any + Number`. Over 6000 nests from gen2.py (q mode,
+    // seeds 101 and 202; canon.py compares the canonical text of the source with
+    // fmt's output) base-r23 rewrites 414 and the lane 423: the lane rewrites 14
+    // that base-r23 prints right (8) or refuses as a formatter bug (6), base-r23
+    // rewrites 5 that the lane prints right (3) or refuses (2). gennest.py's
+    // 3604 q-mode nests have the same outcome on both (393 rewritten by both). A
+    // fix here should pin capture_moved.gx and fmt_regress/*.gx. probes:
+    // ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/review/ (README)
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
