@@ -3932,10 +3932,11 @@ run!(
 /// recursion without end aborts the runtime at the budget, where it would
 /// otherwise fill memory, and the count follows the program.
 /// `code` under a 2000-activation budget, built with `flags`: the runtime
-/// stops it there.
+/// stops it there, holding `live` activations.
 async fn budget_stops(
     flags: enumflags2::BitFlags<graphix_compiler::CFlag>,
     code: &str,
+    live: std::ops::Range<u64>,
 ) -> anyhow::Result<()> {
     use graphix_package_core::testing::{TestCtx, config};
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
@@ -3949,8 +3950,8 @@ async fn budget_stops(
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(ctx.rt.budget_aborted(), "the runaway recursion was not stopped");
-    let live = ctx.rt.control().live_activations();
-    assert!((2000..10_000).contains(&live), "{live} live activations");
+    let held = ctx.rt.control().live_activations();
+    assert!(live.contains(&held), "{held} live activations");
     ctx.shutdown().await;
     Ok(())
 }
@@ -3964,6 +3965,7 @@ async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
             let rec go = |n: i64, acc: string| -> string select n { 0 => acc, _ => go(n - 1, "x") };
             go(-1, "x")
         }"#,
+        2000..10_000,
     )
     .await
 }
@@ -3977,6 +3979,30 @@ async fn activation_budget_stops_a_fused_runaway_recursion() -> anyhow::Result<(
             let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
             #[native] f(-1)
         }"#,
+        2000..10_000,
+    )
+    .await
+}
+
+/// A native tail loop holds one activation and queues what it raises: the
+/// queue counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_budget_stops_a_fused_runaway_loop_that_raises() -> anyhow::Result<()>
+{
+    budget_stops(
+        Default::default(),
+        r#"{
+            let e: Result<i64, `E> = error(`E);
+            let caught = 0;
+            catch(x) caught <- x ~ 1;
+            #[tail_recursive]
+            let rec f = |n: i64, acc: i64| -> i64 {
+                let k = e?;
+                select n { 0 => acc + k, _ => f(n * 1, acc + n) }
+            };
+            f(3, 0)
+        }"#,
+        0..100,
     )
     .await
 }

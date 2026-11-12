@@ -162,12 +162,11 @@ are masked by its arm's shape, and under an unguarded arm by the type that arm n
 empty, or passed through); a resize under a quiet source is a quiet result that moved. A core trait hook's
 first call is an entry too (`node/coretraits.rs`).
 
-**An effect in an arm fuses; one in a guard may not.** An Io call or a raise to a handler in an arm's
-body performs or raises on a live fire of its trigger or operand in both engines, so it fuses. A kernel
-computes every guard ahead of the arm chain, its arm's binds read as bottom where the scrutinee is bottom
-or the pattern does not admit the value, so a guard holding a raise to a handler or a performing call
-that does not fire with its arm's binds is refused (`fusion/lowering.rs`: `guard_blocker`,
-`unfollowed_guard`).
+**An effect in an arm or a guard fuses.** An Io call or a raise to a handler in an arm's body performs
+or raises on a live fire of its trigger or operand in both engines, so it fuses. A kernel computes a guard
+ahead of the arm chain, and only where the scrutinee is present and the guard's arm admits the value: it
+branches around the guard otherwise, so a guard that does not run performs, raises and loops in neither
+engine (`fusion/emit/select.rs::emit_select_arms`; pin `findings/guard-sleeps-unadmitted-nov2026/`).
 
 ## 6. Pins
 

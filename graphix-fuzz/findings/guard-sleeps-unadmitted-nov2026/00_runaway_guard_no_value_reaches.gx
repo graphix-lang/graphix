@@ -1,0 +1,4 @@
+// A guard runs only where its arm's pattern admits the value. No value
+// reaches this one, whose recursion never ends: a kernel that computes
+// it anyway never returns.
+{ let x = 3; let m = 1 % 2; let sel = select 1 { 0 if -100 == { let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n / 1, acc + n) }; f(10, 0) } => -9223372036854775808, _ => -1 }; let c = count(sel); select count(x) { 4 => c, _ => "b" } }

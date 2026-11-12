@@ -190,6 +190,7 @@
 1	guard-bind-store-tag-aug2026/00_refwrite_guard_livelock.gx
 6	guard-bind-unmatched-arm-sep2026/00_guard_after_null_arm.gx
 2	guard-bottom-ride-aug2026/00_bottom_guard_phantom_flip.gx
+2	guard-sleeps-unadmitted-nov2026/00_runaway_guard_no_value_reaches.gx
 1	hof-composite-return-jul2026/01_findmap_captured_array.gx
 1	hof-composite-return-jul2026/02_filtermap_fresh_array.gx
 2	hof-composite-return-jul2026/03_list_findmap_tuple.gx
@@ -257,6 +258,7 @@
 1	narrow-int-abi-jul2026/01_float_cmp_false_in_struct.gx
 1	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
 1	narrow-int-abi-jul2026/03_bool_in_string_interp.gx
+2	native-loop-queue-budget-nov2026/00_runaway_loop_that_raises.gx
 2	neg-standing-bottom-aug2026/00_byref_write_stomped.gx
 3	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
 0	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx

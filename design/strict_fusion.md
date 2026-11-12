@@ -29,14 +29,12 @@ builtin's, or a function's that reaches one) fuses in a select arm's
 body as it does anywhere: both engines perform only on a live fire of
 its trigger in a cycle the arm runs, since nothing is delivered at an
 arm's entry or its wake and a constant never fires there
-(`bind_driven_bodies.md`). In a guard it fuses only when its trigger
-fires with the arm's binds (a read of one, or a part that reads one: a
-nested select through its scrutinee only, never a function's result; a
-performing function is called with arguments that each do and performs
-only on its own formals, recursively, `analysis::io_follows`), as a
-guard's raise does (`lowering::guard_blocker`, below). A tail recursion
-that performs is one native loop, each pass performing as each
-activation would: a new depth is entered, not born.
+(`bind_driven_bodies.md`). In a guard it fuses too, as a guard's raise
+does: a kernel runs a guard only where its arm's pattern admits the
+value (below). A tail recursion that performs is one native loop, each
+pass performing as each activation would: a new depth is entered, not
+born; what its passes queue counts against the activation budget
+(`atomic_recursion.md`).
 
 Swallowed-failure diagnostics (`$` and `?` without a covering handler)
 follow a fired error operand inside a kernel. They carry neither a
@@ -44,9 +42,8 @@ report-count nor an at-least-once guarantee across the two engines, and
 remain eligible for fusion. A guard reports wherever its arm's pattern
 admits the value, whichever arm takes it, in both engines; a kernel's
 bind masks keep the binds of an arm whose pattern fails from becoming
-values. A kernel computes every guard, so a fused guard whose error
-operand does not read its arm's binds also reports where the pattern
-does not admit the value. A constant error in an arm entered after its root's first cycle
+values, and the kernel branches around a guard whose pattern does not
+admit the value. A constant error in an arm entered after its root's first cycle
 never fires and never reports, in either engine, and one in a callee of
 a recursion reports in the activations the birth reaches, not in a depth
 grown later. Native tail depths may share one report.
@@ -174,20 +171,15 @@ raises only on a live fire of its operand in a cycle the arm runs, with
 the arm's binds or a capture that fires then. Entering the arm or waking
 it raises nothing, and a raise whose error derives from a constant
 (`error(`E)?`, `cast<i64>("x")?`) fires only where the arm is taken in
-a birth (`design/bind_driven_bodies.md`). The one blocker under a
-select is `lowering::guard_blocker`: it refuses a region holding a guard
-`lowering::unfollowed_guard` finds, one with a raise to a handler whose
-operand, or a performing call whose trigger, does not fire with its
-arm's binds ("a guard that may raise or perform on what its arm's binds
-do not carry — a kernel computes every guard, the node-walk only one
-whose arm's pattern admits the value"). A kernel computes every guard
-ahead of the arm chain, its arm's binds read as bottom where the
-scrutinee is bottom or the arm's pattern does not admit the value: the
-binds are masked by the arm's shape and, for an inferred predicate, by
-the type the arms above narrow the arm to
-(`emit::select::emit_narrowed_test`). The node-walk runs a guard only
-where the pattern admits the value, so an effect not gated on the binds
-would act in the kernel alone. A bottom-typed arm that can raise
+a birth (`design/bind_driven_bodies.md`). Nothing under a select blocks
+a region. A kernel computes a guard that can be bottom or act ahead of
+the arm chain, as the node-walk runs it whichever arm takes the value,
+and only where the node-walk runs it: where the scrutinee is present and
+the arm's pattern admits the value, by the arm's shape and, for an
+inferred predicate, by the type the arms above narrow the arm to
+(`emit::select::emit_narrowed_test`). Elsewhere the kernel branches
+around the guard, which stands a stale bottom nothing consults, so a
+guard that does not run neither acts nor loops. A bottom-typed arm that can raise
 runs its body for the delivery instead of the bare `never()`
 placeholder, and a `?` or `$` over an inner that is always what it
 strips has its own emission (`emit_qop_always_bad`: raise when fresh,
@@ -257,16 +249,10 @@ engine-independent.
   one native loop like any other (a new depth is entered, not born, so a
   pass performs and raises as an activation does); `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
-  `Qop` uses), in a select arm's body as anywhere; the one refusal under
-  a select is a guard whose handler-ful raise or performing call does
-  not fire with its arm's binds (through a nested select's scrutinee
-  only and never a function's result; a performing callee performs only
-  on its formals, `analysis::io_follows`; `lowering::guard_blocker`,
-  `unfollowed_guard`): a kernel computes every guard ahead of the arm
-  chain, with those binds bottom where the scrutinee is bottom or the
-  arm's pattern, or the type the arms above narrow it to, does not admit
-  the value; the node-walk runs a guard only where its arm's pattern
-  admits the value; only a
+  `Qop` uses), in a select arm's body and in a guard as anywhere: a
+  kernel computes a guard ahead of the arm chain only where the
+  scrutinee is present and the arm's pattern, and the type the arms
+  above narrow it to, admit the value, as the node-walk does; only a
   `never(..)` arm is a
   standing bottom (its args are still emitted and consumed), any other
   bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,

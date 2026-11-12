@@ -108,12 +108,10 @@ when it happens — we have to bottom."
   does, and its next run is an entry: it keeps no memory and is
   delivered nothing but its binds (`LazyArmFacts::guard_ran`,
   `bind_driven_bodies.md`). So `n if check(n)?` and `_ if check(x)?`
-  under a `-1 =>` arm both run `check(-1)`. A kernel computes every
-  guard ahead of the arm chain, its binds read as bottom where the
-  scrutinee is bottom or its arm's pattern does not admit the value, so
-  a guard whose raise to a handler or performing call does not fire with
-  those binds node-walks (`lowering::guard_blocker`,
-  `unfollowed_guard`). Pins:
+  under a `-1 =>` arm both run `check(-1)`. A kernel computes such a
+  guard ahead of the arm chain and branches around it where the
+  scrutinee is bottom or its arm's pattern does not admit the value.
+  Pins: `findings/guard-sleeps-unadmitted-nov2026/`,
   `lang::select::guard_below_the_claim_*`,
   `guard_sleeps_where_its_pattern_refuses_the_value`,
   `native_guard_prologue_follows_the_chain`.

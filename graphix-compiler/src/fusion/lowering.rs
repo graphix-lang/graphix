@@ -177,7 +177,6 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt>(
     out: &mut BuiltinCallDiscovery,
 ) -> Result<(), FusionBlocker> {
     let mut failure = None;
-    let mut selects: LPooled<Vec<&Node<R>>> = LPooled::take();
     fusion::for_each_emitted_node(node, &mut |n| {
         if failure.is_some() {
             return;
@@ -191,93 +190,16 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt>(
                 failure = try_register_cast(tc, out).err();
                 return;
             }
-            NodeView::Select(_) => {
-                selects.push(n);
-                return;
-            }
             _ => fusion::effect_blocker(n)
                 .or_else(|| std::ptr::eq(n, node).then(|| root_blocker(n)).flatten()),
         };
         let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
-    match failure.or_else(|| guard_blocker(&selects, ctx)) {
+    match failure {
         Some(failure) => Err(failure),
         None => Ok(()),
     }
-}
-
-/// The guard among the region's `selects` that [`unfollowed_guard`] finds.
-fn guard_blocker<R: Rt>(
-    selects: &[&Node<R>],
-    ctx: &CompileCtx<R>,
-) -> Option<FusionBlocker> {
-    selects.iter().find_map(|s| {
-        let NodeView::Select(sel) = s.view() else { return None };
-        let g = sel.arms.iter().find_map(|(pat, _)| unfollowed_guard(pat, ctx))?;
-        Some(FusionBlocker {
-            spec: g.spec().clone(),
-            reason: "a guard that may raise or perform on what its arm's binds do not \
-                     carry — a kernel computes every guard, the node-walk only one \
-                     whose arm's pattern admits the value"
-                .into(),
-        })
-    })
-}
-
-/// A guard whose run a program could see where the node-walk does not run
-/// it: a kernel computes every guard, its arm's binds read as bottom where
-/// the scrutinee is bottom or the arm's pattern does not admit the value,
-/// and the node-walk runs a guard only where the pattern admits it. So a
-/// raise to a handler whose operand, or a performing call whose trigger,
-/// does not fire with those binds (and is not bottom with them) makes the
-/// guard node-walk.
-fn unfollowed_guard<'a, R: Rt>(
-    pat: &'a crate::node::pattern::PatternNode<R>,
-    ctx: &CompileCtx<R>,
-) -> Option<&'a Node<R>> {
-    let g = &pat.guard.as_ref()?.node;
-    let mut binds: LPooled<IntSet<BindId>> = LPooled::take();
-    pat.structure_predicate.ids(&mut |id| {
-        binds.insert(id);
-    });
-    let mut raises = false;
-    fusion::for_each_reachable_node(g, &mut |n| {
-        raises |= matches!(n.view(), NodeView::Qop(q)
-            if q.handler().is_some() && !crate::analysis::fires_with(&q.n, &binds));
-    });
-    let performs = !crate::analysis::io_follows(g, &binds, ctx, &mut IntSet::default());
-    (raises || performs).then_some(g)
-}
-
-/// When `cs` performs, the arguments whose fire can make it perform:
-/// an `Effect::Io` builtin's trigger, or every argument of a function
-/// that reaches one.
-pub(crate) fn performing_args<'a, R: Rt>(
-    cs: &'a CallSite<R>,
-    ctx: &CompileCtx<R>,
-) -> Option<SmallVec<[&'a Node<R>; 4]>> {
-    let builtin = match cs.fnode().view() {
-        NodeView::Ref(r) => ctx.builtin_bindings.get(&r.id),
-        _ => None,
-    };
-    if let Some(info) = builtin {
-        let crate::Effect::Io(Some(io)) = ctx.builtin_effect(&info.name) else {
-            return None;
-        };
-        let args = &info.typ.args;
-        let node = match &args.get(io.trigger)?.kind {
-            FnArgKind::Positional { .. } => cs.arg_positional(
-                args[..io.trigger]
-                    .iter()
-                    .filter(|a| matches!(a.kind, FnArgKind::Positional { .. }))
-                    .count(),
-            ),
-            FnArgKind::Labeled { name, .. } => cs.arg_named(name),
-        };
-        return Some(node.into_iter().collect());
-    }
-    crate::analysis::call_facts(cs, ctx).io.then(|| cs.arg_nodes().collect())
 }
 
 /// A root that can never emit a value. Nested, the same node may sit

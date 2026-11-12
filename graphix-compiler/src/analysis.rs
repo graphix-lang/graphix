@@ -1021,11 +1021,6 @@ fn node_facts<R: Rt>(
     }
 }
 
-/// A call's facts, its callee's joined with every function argument's.
-pub(crate) fn call_facts<R: Rt>(cs: &CallSite<R>, ctx: &CompileCtx<R>) -> LambdaFacts {
-    callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
-}
-
 /// The facts a call contributes: a callee instance of `graph` is still
 /// being inferred, so it goes to `pending` and contributes nothing here;
 /// an instance outside the analysis contributes its definition's stored
@@ -2092,56 +2087,6 @@ impl<'g, 'a, R: Rt> ForkCx<'g, 'a, R> {
         self.shallow.insert(key, s);
         s
     }
-}
-
-/// Whether every Io call `body` reaches fires whenever one of `formals`
-/// fires: an Io builtin's trigger fires with them, and a function called
-/// with arguments that each do performs only Io that follows its own
-/// formals.
-pub(crate) fn io_follows<R: Rt>(
-    body: &Node<R>,
-    formals: &IntSet<BindId>,
-    ctx: &CompileCtx<R>,
-    seen: &mut IntSet<LambdaInstanceId>,
-) -> bool {
-    let mut all = true;
-    fusion::for_each_emitted_node(body, &mut |n| {
-        let NodeView::CallSite(cs) = n.view() else { return };
-        if !all {
-            return;
-        }
-        let Some(triggers) = lowering::performing_args(cs, ctx) else { return };
-        let follows = triggers.iter().all(|t| fires_with(t, formals))
-            && match cs.resolved_apply() {
-                Some(ApplyView::Lambda(g)) => {
-                    !seen.insert(g.instance_id())
-                        || io_follows(g.body(), &g.formal_ids(), ctx, seen)
-                }
-                _ => true,
-            };
-        all = follows;
-    });
-    all
-}
-
-/// Whether `n` fires whenever one of `ids` does: a read of one of them,
-/// or a part that reads one, a select through its scrutinee only. A
-/// constant does not, and neither, here, does a function's result.
-pub(crate) fn fires_with<R: Rt>(n: &Node<R>, ids: &IntSet<BindId>) -> bool {
-    crate::stack::ensure_sufficient(|| match n.view() {
-        NodeView::Ref(r) => ids.contains(&r.id),
-        NodeView::Constant(_) => false,
-        NodeView::Select(s) => fires_with(&s.arg.node, ids),
-        NodeView::CallSite(cs) => {
-            !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
-                && cs.arg_nodes().any(|a| fires_with(a, ids))
-        }
-        _ => {
-            let mut fires = false;
-            n.for_each_child(&mut |c| fires = fires || fires_with(c, ids));
-            fires
-        }
-    })
 }
 
 /// What a statement or sibling publishes for later ones to read: the

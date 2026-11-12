@@ -1,0 +1,6 @@
+// A tail recursion that raises to a handler is one native loop, which
+// queues a raise a pass. One without end is stopped by the activation
+// budget its queue counts against, as its activations are in the node-walk.
+{ let e: Result<i64, `E> = error(`E); let caught = 0; catch(x) caught <- x ~ 1; 
+#[tail_recursive]
+let rec f = |n: i64, acc: i64| -> i64 { let k = e?; select n { 0 => acc + k, _ => f(n * 1, acc + n) } }; let r = f(3, 0); select count(caught) { 4 => 4, _ => never() } }

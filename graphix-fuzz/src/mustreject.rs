@@ -100,6 +100,7 @@ impl Family {
                 "expected struct not",
                 "the members' fields differ",
                 "not decided at this select",
+                "matches more than one member",
             ],
             Family::VariantWiden => &["missing match cases"],
             Family::Retype => &[
@@ -1583,15 +1584,16 @@ fn widen_consumer(
     // than refuses. A call is a consumer only through a package's module
     // path (never the subject's own modules), a builtin the body does not
     // rebind, or a let-bound lambda literal whose every parameter is
-    // annotated; any other name the body binds, by any form, may be such
-    // a lambda (an alias, a destructured element, an import).
+    // annotated with no type variable (a call widens a variable too); any
+    // other name the body binds, by any form, may be such a lambda (an
+    // alias, a destructured element, an import).
     let mut untyped: AHashSet<&str> = AHashSet::default();
     let mut binds_any = false;
     for e in pre {
         if let ExprKind::Bind(b) = &e.kind
             && let StructurePattern::Bind(_) = &b.pattern
             && let ExprKind::Lambda(l) = &typemorph::unparen(&b.value).kind
-            && l.args.iter().all(|a| a.constraint.is_some())
+            && l.args.iter().all(|a| a.constraint.as_ref().is_some_and(Type::tvar_free))
         {
             continue;
         }

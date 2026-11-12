@@ -1207,11 +1207,36 @@ pub(super) fn emit_select_arms<R: Rt>(
         g.node.refs(&mut reads);
         retain_read(&mut binds, &reads);
         install_arm_binds(cx, &binds, scrut, Some(bind_mask))?;
+        // the guard sleeps where its arm's pattern does not admit the value:
+        // it stands a stale bottom nothing consults
+        let clean = is_untainted(cx.b, sdisc);
+        let admitted = cx.b.ins().band(bind_mask, clean);
+        let (run, ran) = (cx.b.create_block(), cx.b.create_block());
+        let eff = cx.b.append_block_param(ran, types::I8);
+        let gbot = cx.b.append_block_param(ran, types::I8);
+        let disc = cx.b.append_block_param(ran, types::I64);
+        let asleep = [
+            BlockArg::Value(cx.b.ins().iconst(types::I8, 0)),
+            BlockArg::Value(cx.b.ins().iconst(types::I8, 1)),
+            BlockArg::Value(cx.b.ins().iconst(types::I64, TAINT | STALE)),
+        ];
+        cx.b.ins().brif(admitted, run, &[], ran, &asleep);
+        cx.b.switch_to_block(run);
+        cx.b.seal_block(run);
+        let gmark = cx.env.mark();
         let gcv = g.node.emit_clif(cx)?;
-        let gbot = is_tainted(cx.b, gcv.disc);
-        let valid = is_untainted(cx.b, gcv.disc);
-        let eff = cx.b.ins().band(gcv.payload, valid);
-        guard_vals[i] = Some(GuardPlanes { eff, gbot, disc: gcv.disc });
+        let awake = {
+            let gbot = is_tainted(cx.b, gcv.disc);
+            let valid = is_untainted(cx.b, gcv.disc);
+            let eff = cx.b.ins().band(gcv.payload, valid);
+            [BlockArg::Value(eff), BlockArg::Value(gbot), BlockArg::Value(gcv.disc)]
+        };
+        emit_scope_drops(cx, gmark)?;
+        cx.env.truncate(gmark);
+        cx.b.ins().jump(ran, &awake);
+        cx.b.switch_to_block(ran);
+        cx.b.seal_block(ran);
+        guard_vals[i] = Some(GuardPlanes { eff, gbot, disc });
         // the chain stops at this arm when it takes it or its guard is bottom
         let stops = cx.b.ins().bor(eff, gbot);
         let claims = cx.b.ins().band(mask, stops);

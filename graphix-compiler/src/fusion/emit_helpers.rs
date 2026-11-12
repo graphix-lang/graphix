@@ -604,7 +604,7 @@ fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     let v = tv.value_cloned();
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const QopSite) };
-    DEFERRED.with(|q| q.borrow_mut().raises.push((site, v)));
+    DEFERRED.with(|q| q.borrow_mut().raise((site, v)));
 }
 
 /// Raise a `?` site's `NullError` for a fresh null operand onto the
@@ -613,7 +613,7 @@ fn graphix_qop_raise_null(site: u64) {
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const QopSite) };
     let e = Value::Error(site.values.null_error(&site.spec).into());
-    DEFERRED.with(|q| q.borrow_mut().raises.push((site, e)));
+    DEFERRED.with(|q| q.borrow_mut().raise((site, e)));
 }
 
 /// A handler-less `?` site meeting a fresh null: the same diagnostic
@@ -696,7 +696,7 @@ fn graphix_iocall(
         // SAFETY: the call site's buffer holds `n` clean Values for the call.
         let args = unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
         let call = (site as *const crate::IoSite, args.iter().cloned().collect());
-        DEFERRED.with(|q| q.borrow_mut().io.push(call));
+        DEFERRED.with(|q| q.borrow_mut().perform(call));
     }
     tv
 }
@@ -2063,6 +2063,22 @@ pub(crate) struct Deferred {
 impl Deferred {
     pub(crate) fn new() -> Self {
         Self { raises: LPooled::take(), io: LPooled::take() }
+    }
+
+    fn raise(&mut self, raise: QopRaise) {
+        self.raises.push(raise);
+        self.charge()
+    }
+
+    fn perform(&mut self, call: IoQueued) {
+        self.io.push(call);
+        self.charge()
+    }
+
+    /// A queue grows with its run, so it counts against the runtime's
+    /// activation budget.
+    fn charge(&self) {
+        crate::stack::effects_queued(self.raises.len() + self.io.len())
     }
 }
 

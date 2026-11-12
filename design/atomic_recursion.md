@@ -17,7 +17,8 @@ Therefore a program may spin forever inside one cycle, and the engine
 does not bound it. A tail call is an activation like any other call
 (`tail_calls_are_calls.md`), so an infinite recursion, tail or not,
 grows stack and memory with its depth; only a stateless tail recursion
-the JIT runs as one native loop is constant-stack and bounded-memory.
+the JIT runs as one native loop is constant-stack, and bounded-memory
+where its passes queue nothing.
 What contains the rest is the activation budget, the stack budget
 (`GRAPHIX_STACK_BUDGET`) and the interrupt (`recursive_activations.md`
 §4).
@@ -136,4 +137,8 @@ bytes follow the thread and the fork schedule; past the budget the
 runtime stops the same way (`CtlFlag::ActivationBudget` beside
 `Abort`). The fuzzer's children
 run at 50,000, below where their 1 GiB stack budget would trip. A JIT
-tail loop binds nothing and is not counted; the interrupt stops it.
+tail loop binds nothing and is not counted; the interrupt stops it. What
+a kernel's run queues for after it, a raise to a handler or an `Io` call,
+is counted beside the live activations (`stack::effects_queued`): a loop
+that queues one a pass grows its queue as a recursion grows activations.
+Pin: `lang::functions::activation_budget_stops_a_fused_runaway_loop_that_raises`.

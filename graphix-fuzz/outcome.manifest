@@ -190,6 +190,7 @@ reject	N: type mismatch string does not contain iN	fusion-mutates-tvars-aug2026/
 trace	guard-bind-store-tag-aug2026/00_refwrite_guard_livelock.gx
 trace	guard-bind-unmatched-arm-sep2026/00_guard_after_null_arm.gx
 trace	guard-bottom-ride-aug2026/00_bottom_guard_phantom_flip.gx
+trace	guard-sleeps-unadmitted-nov2026/00_runaway_guard_no_value_reaches.gx
 trace	hof-composite-return-jul2026/01_findmap_captured_array.gx
 trace	hof-composite-return-jul2026/02_filtermap_fresh_array.gx
 trace	hof-composite-return-jul2026/03_list_findmap_tuple.gx
@@ -257,6 +258,7 @@ trace	narrow-index-operand-verifier-aug2026/00_u8_slice_bound_verifier_error.gx
 trace	narrow-int-abi-jul2026/01_float_cmp_false_in_struct.gx
 trace	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
 trace	narrow-int-abi-jul2026/03_bool_in_string_interp.gx
+contained	native-loop-queue-budget-nov2026/00_runaway_loop_that_raises.gx
 trace	neg-standing-bottom-aug2026/00_byref_write_stomped.gx
 trace	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx

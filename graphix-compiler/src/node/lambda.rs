@@ -1237,17 +1237,6 @@ impl<R: Rt> GXLambda<R> {
         self.id
     }
 
-    /// The ids this instance's formals bind.
-    pub(crate) fn formal_ids(&self) -> LPooled<IntSet<BindId>> {
-        let mut ids: LPooled<IntSet<BindId>> = LPooled::take();
-        for pat in self.args.iter() {
-            pat.ids(&mut |id| {
-                ids.insert(id);
-            })
-        }
-        ids
-    }
-
     pub fn instance_id(&self) -> LambdaInstanceId {
         self.instance_id
     }

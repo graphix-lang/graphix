@@ -47,9 +47,10 @@ node-walked their loop with fusion on, for these reasons:
 | rule | a reference read, a `?` under a handler, a `<-` to an outer variable, a stateless builtin with no fast call (`is_err`, `opt::*`, `product`) | 2 |
 
 G1–G4 are fusion gaps and are closed as part of this work (below). The
-rule row is what stays: a recursive loop whose body reads a reference,
-raises to a handler, writes an outer variable or calls a builtin with
-no fast call runs as activations, one per level. That, a fusion-off
+rule row is what stays, less the `?` under a handler, which fuses
+(`strict_fusion.md`): a recursive loop whose body reads a reference,
+writes an outer variable or calls a builtin with no fast call runs as
+activations, one per level. That, a fusion-off
 embedder, and the fuzzer's interp engine are the whole cost.
 
 ## As built

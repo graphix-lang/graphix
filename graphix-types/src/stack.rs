@@ -147,15 +147,21 @@ pub fn activation_born() -> Option<usize> {
     let p = current_control()?;
     // SAFETY: see `current_control`.
     let c = unsafe { &*p };
-    let live = c.activations.fetch_add(1, Ordering::Relaxed) + 1;
-    if live > c.activation_budget() && c.stop(StopCause::Activations) {
-        log::error!(
-            "activation budget ({}) exceeded by a recursion — aborting the runtime \
-             (raise via GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget)",
-            c.activation_budget()
-        );
-    }
+    c.holds(c.activations.fetch_add(1, Ordering::Relaxed) + 1);
     Some(p as usize)
+}
+
+/// Count the `queued` effects a kernel's run holds for its wrapper beside
+/// the live activations of the runtime it runs in: a native loop without
+/// end grows its queue as a recursion without end grows activations, and
+/// stops at the same budget.
+#[doc(hidden)]
+pub fn effects_queued(queued: usize) {
+    if let Some(p) = current_control() {
+        // SAFETY: see `current_control`.
+        let c = unsafe { &*p };
+        c.holds(c.activations.load(Ordering::Relaxed).saturating_add(queued as u64))
+    }
 }
 
 /// Abort the running runtime because a recursion exceeded its budget;
@@ -694,6 +700,17 @@ impl Control {
 
     pub fn set_activation_budget(&self, activations: u64) {
         self.activation_budget.store(activations, Ordering::Relaxed)
+    }
+
+    /// Abort the runtime where it holds more than its activation budget.
+    fn holds(&self, held: u64) {
+        if held > self.activation_budget() && self.stop(StopCause::Activations) {
+            log::error!(
+                "activation budget ({}) exceeded by a recursion — aborting the runtime \
+                 (raise via GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget)",
+                self.activation_budget()
+            );
+        }
     }
 
     /// The activations this runtime's cycles hold now.
