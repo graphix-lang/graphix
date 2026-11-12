@@ -294,33 +294,6 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
     /// builtin's wake starts: an asker's leaving changes nothing a walk
     /// sees until it wakes the builtin.
     pub fn drop_abandoned(&mut self, ctx: &mut ExecCtx<'_, R>) {
-        // XCR claude for claude: [bug/low] A request whose asker stopped waiting
-        // (an http client's timeout, a dropped rpc call) is polled here by
-        // `q.abandoned()` and its instance deleted the next time this node is
-        // walked, but nothing marks the handler's boundary when the asker gives
-        // up, so under walk pruning the instance of an abandoned request lives
-        // until something else marks the boundary, and `GRAPHIX_PRUNE=audit`
-        // panics ("a boundary nothing marked changed in a cycle", queued
-        // forget_writes and cancel_timer) when the audit's walk deletes it.
-        // The same on main fdd75a6b9, both engines. probe:
-        // ~/ptmp/cr29/scratch/bd/pins/4/p/http/abandoned.gx (a handler that
-        // never replies, a client `#timeout` of 200 ms, then one unrelated
-        // cycle); without the audit it prints `request: error` and the cycle.
-        // A fix marks the boundary when the asker's side is dropped (the
-        // sender's drop wakes the runtime with a mark for this reader), as a
-        // reply's arrival does. (abandoned-request-unmarked-01)
-        // 2026-11-12 claude: Handler::drop_abandoned now reads q.abandoned()
-        // only in a cycle the builtin's wake starts (HttpServe calls it after
-        // taking its inbox), and the http asker's side (Awaiting, which owns
-        // the reply's receiver) closes it and wakes the server through
-        // Inbox::wake when the asker's future is dropped unanswered;
-        // Handler::update no longer polls it. Pins:
-        // lib_tests::http::http_abandoned_request_dropped_when_its_client_leaves
-        // (interp and jit_par panic in the prune audit without the fix, as the
-        // CR's probe does) and graphix-package-http
-        // test::an_asker_leaving_wakes_the_server (fails without the wake).
-        // RpcReply never reports an abandoned call, so rpc is untouched: an rpc
-        // request whose caller left still runs until it answers.
         self.pending.retain(|(_, q)| !q.abandoned());
         self.running.retain_mut(|(r, q)| match q.abandoned() {
             true => {
