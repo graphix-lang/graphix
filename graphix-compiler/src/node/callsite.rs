@@ -822,7 +822,7 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-// XCR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
+// CR claude for claude: [bug/low] Under GRAPHIX_NO_SUBST=1 an instance's own check
 // refuses a call its definition's check accepted where an argument was undecided at
 // the definition and is decided at the instance: `let g = |y0, y1, y4, y5, y6| f(y0,
 // y1, y4, y5, y6); g([[]], null, [[1]], [1], 1)` over `'a0: O<P<'a1, 'a2>>, 'a1:
@@ -898,6 +898,49 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 // the member the others decided), choice-within-arg-order-01 (the parts of one argument),
 // wrapper-widen-order-01 (no union; an inferred wrapper). Differential (gend.py,
 // rund.sh): ~/ptmp/cr29/scratch/r21/21t/d32/{g1,g2,g3}.summary, {g1,g2,g3}/all.txt
+// 2026-11-11 claude: Review of the D32 build (lane 21t): the wait is kept, sound as built,
+// and the CR stays open, since the refusal still depends on argument order inside the
+// ruling's own case. Checked with an oracle that reads the decided TYPE of each call
+// (perm.py, gen2.py: one REPL input for every order of a call's parameters; 4000 generated
+// families, 48668 programs; unions nested in tuples, structs, arrays, maps, callbacks and
+// references, three members, arguments that are calls, selects and field reads, omitted
+// defaults, eight call shapes), base-r22 against the lane: 12769 newly accepted, none newly
+// refused, no type change among the programs both accept; each of the 11653 newly accepted
+// outside the function-in-data shape has a decided type that holds its arguments when
+// written as an annotation (annot.py); the 31857 programs the lane accepts agree under
+// --no-fusion and GRAPHIX_PAR=force; GRAPHIX_ELAB_AUDIT reports one class only,
+// runtime-bind-fn-union-01 (base-r22 alike; 65 newly accepted programs reach it);
+// GRAPHIX_NO_SUBST differs on 322 (147 newly accepted), all in the two classes
+// union-nosubst-order-01 names. No member is picked by position. With Joined::Choice turned
+// back into the refusal 15 fixtures of lang::types and lang::interfaces fail (60 with
+// modes); restored, they pass. Pins added by the review, each refused on base-r22:
+// lang::types::{decided_argument_into_a_three_member_typedef_union,
+// three_decided_arguments_into_typedef_unions_join_in_rounds,
+// decided_argument_into_a_typedef_union_result_members,
+// _decides_the_open_member_for_the_result,
+// recursive_call_decided_argument_into_a_typedef_union} and their refused twins. What
+// remains of D32 (the refusal must not depend on argument order): 76 of the 4000 families
+// still do, against 1683 on base-r22. (1) Within the ruling, no widening involved: an
+// argument its own check types (a call, a block) at a formal the call does not open is
+// pre-unified with the formal (typecheck_arg), so its check meets the choice before the
+// other arguments. `f(id([1.5]), "s", |v| v, |v| v)` over `|x: Array<E<'a, 'b>>, y: 'a, k:
+// fn(v: 'a) -> 'a, l: fn(v: 'b) -> 'b|` (`type E<'p, 'q> = ['p, 'q]`) is refused, and runs
+// with `x` last, with the literal, or with the argument bound first; the same through an
+// inferred wrapper (`g(id({c: [1.5]}), "s")` over `|x: {c: P<'a, 'b>}, y: 'a|`) and at a
+// callback's result (`f(id(|q: i64| 1.5), "s")` over `|x: fn(q: i64) -> E<'a, 'b>, y: 'a|`).
+// (2) Where a widening or a single open member meets the choice the order still decides, the
+// waiting arguments among themselves included: choice-widen-order-01, readdressed to eric,
+// since every way of closing it changes what base-r22 accepts. (3) 32 of the 76 are
+// undecided-into-two-decided-01, another rule. Also found: literal-element-open-copy-01
+// (refused in every order), let-rec-union-result-01, and a call base-r22 refused at the
+// choice can now reach bound-holds-own-cell-01 and exhaust memory (noted there). Corrected
+// in the review: the skill's generics.md (a struct's parts are met by field name; the calls
+// still refused and their remedies, as cases), design/tvar_constraints.md (what the wait
+// does not cover), design/must_reject.md family 15, the doc comment of
+// CallSite::join_choosing. guicheck base-r22 41.367 / 41.455 G, lane 41.427 / 41.478 G;
+// typemorph-scan 1500 918273: 0 flips. probes:
+// ~/ptmp/cr29/scratch/r21/21t/rev/{f1e,f1,ctx,pins,parts}.txt, h2.py, h2.out, perm.py,
+// gen2.py, sound.py, annot.py
 /// Check a call's argument node, whose formal's type is `typ`,
 /// answering how it stands. Where the call opens the formal
 /// ([`Widening::opening`]) the argument pre-unifies with the open copy,
@@ -931,6 +974,22 @@ fn typecheck_arg<R: Rt>(
         Some(note) => e.context(note.clone()),
         None => e,
     };
+    // CR claude for claude: [bug/low] A literal argument whose element meets a union of
+    // two of the callee's variables is refused whatever the call's other arguments
+    // decide: `f("s", {"k" => 1.5})` over `|y: 'a, x: Map<string, E<'a, 'b>>|` (`type
+    // E<'p, 'q> = ['p, 'q]`) is refused, "f64 could go to 'a: unbound or 'b: unbound ..
+    // which nothing has decided", in both orders of the parameters, though `y` decided
+    // 'a; so are `[[1.5]]` at `Array<Array<E<'a, 'b>>>`, `[(1.5, 1)]` at `Array<(E<'a,
+    // 'b>, i64)>` and `({"k" => 1.5}, 1)` at `(Map<string, E<'a, 'b>>, i64)`. The same
+    // value bound first runs in both orders (`let m = {"k" => 1.5}; f(m, "s")`), and so
+    // does `[1.5]` at `Array<E<'a, 'b>>`. The literal's type (Map<'k, 'v>,
+    // Array<Array<'e>>) is pre-unified below with the formal's open copy
+    // (Widening::opening), whose widenable variables are unbound whatever the arguments
+    // before it decided, and the literal's own check then meets the choice at the copy,
+    // where the wait of decided-arg-waits-01 (Widening::join) never sees it. base-r22
+    // alike. The skill's generics.md states it with the `let` remedy. Found reviewing
+    // decided-arg-waits-01. probes: ~/ptmp/cr29/scratch/r21/21t/rev/f1.txt (REPL inputs 8
+    // to 16) (literal-element-open-copy-01)
     let unchecked = !named && n.typ().with_deref(|t| t.is_none());
     if opening.is_none() || !unchecked {
         Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
@@ -1657,7 +1716,7 @@ impl Widening {
         Some((open, copies))
     }
 
-    // CR claude for claude: [bug/low] A decided argument wider than the member the
+    // CR claude for eric: [bug/low] A decided argument wider than the member the
     // other arguments decide still meets its formal's union by the order of the
     // parameters. Over `type P<'p, 'q> = [Array<'p>, Array<'q>]` and `n: [i64, null]`,
     // `f(1.5, [n], 1)` over `|z: 'b, x: P<'a, 'b>, y: 'a|` runs (`[n]` met 'a undecided
@@ -1694,6 +1753,41 @@ impl Widening {
     // ~/ptmp/cr29/scratch/r21/21t/d32/res/{r1,r2,r3,r4,s1,s2,s3,s4}.gx,
     // g1/f0075_ann_p0.gx, g1/f0306_direct_p{0,1,2}.gx, g2/f0324_lab_p{0,1}.gx
     // (choice-widen-order-01)
+    // 2026-11-11 claude: Review of decided-arg-waits-01: two more forms of this order,
+    // and the question, which is Eric's. (a) No widening is needed. An argument written
+    // where ONE member is still open beside a decided one is placed there at once, and
+    // an argument after it that decides that member otherwise is then a mismatch, where
+    // the same argument written first (it waits) or last runs: over `type R<'p, 'q, 'r>
+    // = [Array<'p>, Array<'q>, 'r]`, `f([1], "s", "t")` over `|x: R<'a, 'b, 'c>, y: 'a,
+    // z: 'b|` runs ('c: Array<i64>), and so does `|y, z, x|`, and `|y, x, z|` is
+    // refused, "'b: i64 does not contain string"; base-r22 runs `|y, z, x|` alone. (b)
+    // A waiting argument one of whose other parts needs a widening is refused with the
+    // choice's message though the others decided its members: `f(([1], n), 1, "s", 1)`
+    // over `|x: (P<'a, 'b>, 'c), y: 'a, z: 'b, w: 'c|` says "Array<i64> could go to
+    // Array<'a: unbound> or Array<'b: unbound> .. which nothing has decided" ('a is i64
+    // and holds it; the probe of Widening::widen opened it), and runs with `x` between
+    // `y` and `w`. The message is as false wherever the probe raises the choice:
+    // `f([1], "s", 2.5)` over `|x: P<'a, 'b>, y: 'a, z: 'b|`, where no member holds the
+    // argument, says the same (pin
+    // decided_argument_into_a_typedef_union_no_member_holds_it_refused; base-r22 alike
+    // with `x` last). The question: D32 made the choice between two undecided members
+    // wait. Should every decided argument at a union that still has an undecided
+    // member, or that no member holds as it stands, wait the same way, and then be
+    // placed by one rule that reads no order: a member that holds it takes it; else the
+    // one undecided member that could; else the one decided member whose variable it is
+    // wider than, widened; else it is refused, naming the parameter? By that rule
+    // `f([n], 1, 1.5)` over `|x: P<'a, 'b>, y: 'a, z: 'b|` runs in all six orders at
+    // 'a: [i64, null] (today one order runs, at that type), the R call above runs in
+    // every order, `f([n], 1)` stays at 'b: [i64, null] as both orders have it today,
+    // one order of `f(1, [n], n)` over `|y: 'a, x: P<'a, 'b>, w: 'a|` changes from 'b:
+    // [i64, null] to 'b undecided (what the other five orders have), and `f([n], 1,
+    // null)`, which two orders run today at two different types, is refused in all six
+    // (two decided members it is wider than). It needs the differential and a census
+    // before it is built; the alternative is to leave the order as it stands, with the
+    // skill's remedy (give the other argument the wide type). Recommendation: the one
+    // rule. probes: ~/ptmp/cr29/scratch/r21/21t/rev/h2.py, h2.out (families
+    // open_member_at_once_*, waited_other_part_wider, waited_member_wider,
+    // two_waiting_widen), h1.py (wide_one, wide_two, wide_f64, wide_null)
     /// A decided argument or omitted default of type `typ` meets `formal`:
     /// it fits as the formal stands or widens the variables it holds
     /// wider, waits to be either, or meets a choice the other arguments
@@ -2701,8 +2795,9 @@ impl<R: Rt> CallSite<R> {
     // probes: ~/ptmp/cr29/scratch/r21/21t/d32/{t1,t2}.gx (choice-within-arg-order-01)
     /// Join the decided arguments that met a choice, once the written
     /// arguments and the omitted defaults have joined: each as one written
-    /// after them would, again while another of them joins, so the order
-    /// they stand in decides nothing. One that two undecided members
+    /// after them would, in the order they stand, again while another of
+    /// them joins, so one whose member another of them decides by holding
+    /// it joins whichever stands first. One that two undecided members
     /// could still take is refused.
     fn join_choosing(
         &self,
@@ -2901,6 +2996,27 @@ impl<R: Rt> CallSite<R> {
         self.prepare_bind(ctx, scope, flags, f, &mut refs)?;
         let mut defaults = SmallVec::new();
         refs.with_external_refs(|id| defaults.push(id));
+        // CR claude for claude: [bug/medium] A function held in data whose parameter is a
+        // typedef union of two function types over its variables checks at a wrong type
+        // and fails to build: `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+        // let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)}; s.fld(1, "s", |q: i64|
+        // 0)` passes --check, typed `(fn(q: 'b: string) -> i64, 'a: i64, 'b: string)`
+        // (the argument is fn(q: i64) -> i64: the union's two members stand as one, of
+        // the other variable), and the run fails "binding the callee failed: a run-time
+        // bind at s.fld(..) did not type: an instance at fn(y: i64, z: string, x: F2<i64,
+        // string>) -> (fn(q: string) -> i64, i64, string) of a definition typed .. ->
+        // ([fn(q: 'a) -> i64, fn(q: 'b) -> i64], 'a, 'b)"; GRAPHIX_ELAB_AUDIT reports
+        // instance-signature. The same function bound by a `let` and called directly is
+        // typed `[fn(q: 'a: i64) -> i64, fn(q: 'b: string) -> i64]` and runs, and so does
+        // the field with the union written out (`x: [fn(q: i64) -> i64, fn(q: string) ->
+        // i64]`), with one variable (`F2<'a, string>`) or returning `y` alone. base-r22
+        // alike with the union's parameter last; since decided-arg-waits-01 the call with
+        // it first passes the check too and fails the same way (65 of the 12769 newly
+        // accepted programs of that CR's review differential, all of this shape; 95
+        // programs base-r22 accepts split alike). Not looked into: the first suspect is
+        // the call's copy of a signature read through a field, where the result's union
+        // becomes one member. probes: ~/ptmp/cr29/scratch/r21/21t/rev/rb.txt (REPL inputs
+        // 1, 2, 5, 7, 8) (runtime-bind-fn-union-01)
         let context =
             |spec: &Expr| format_compact!("a run-time bind at {spec} did not type");
         // a site its check never typed sees the callee as a call would
@@ -4538,6 +4654,19 @@ impl<R: Rt> CallSite<R> {
                 // the def's own cells (`ExecCtx::rec_defs`).
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
+                // CR claude for claude: [bug/low] A recursive function that returns its
+                // parameter of a union of two arrays is refused where it is defined: `let
+                // rec f = |x: [Array<i64>, Array<string>], n: i64| select n { 0 => x, _
+                // => f(x, n - 1) }` fails at the select, "type mismatch Array<i64> does
+                // not contain [Array<i64>, Array<string>]"; with `-> [Array<i64>,
+                // Array<string>]` written it runs, and so does the same function over
+                // `[i64, string]` with nothing written. With declared variables (`x:
+                // P<'a, 'b>` over `type P<'p, 'q> = [Array<'p>, Array<'q>]`) the message
+                // is "Array<'a: unbound> does not contain [Array<'a: unbound>, Array<'b:
+                // unbound>]". The result cell the self-call reads seems to take the first
+                // member of the other arm's union. base-r22 alike; not looked into. Found
+                // reviewing decided-arg-waits-01. probe:
+                // ~/ptmp/cr29/scratch/r21/21t/rev/rec.txt (let-rec-union-result-01)
                 let identity = self.fn_arg_identity(ctx);
                 let active_ftype = ftype
                     .lambda_ids

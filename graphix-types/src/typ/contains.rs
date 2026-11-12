@@ -1724,6 +1724,15 @@ fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 // 1958 generated programs, killed on both sides). probes:
 // ~/ptmp/cr29/scratch/r21/21t/d32/oom/{j1,j11,m3}.gx (killed), {j8,j9,j10,j12,j4,j5}.gx
 // (check)
+// 2026-11-11 claude: Review of decided-arg-waits-01: since that CR's wait a call
+// base-r22 refused before the bound is reached exhausts memory too. `type P<'p, 'q> =
+// [Array<'p>, Array<'q>]; type E<'p, 'q> = ['p, 'q]; let f = 'tx1: Array<E<'b, 'a>> |x0:
+// P<'b, 'a>, x1: 'tx1, y1: 'b| 0; f([1], ["s"], "s")` is refused on base-r22 at `[1]`
+// (the choice between two undecided members) and on lane 21t --check is killed past 2 G
+// (exit 137): the first argument waits now, and the second meets the bound. Without `x0`
+// both are killed. 4 of 1378 generated calls through declared bounds are killed on the
+// lane alone, 40 on both (bound.py, seed 8101). probes:
+// ~/ptmp/cr29/scratch/r21/21t/rev/oom/{k1,k4}.gx (lane alone), k2.gx (both)
 /// True iff every conjunct of the cell's constraints contains `t`. A
 /// pure probe.
 fn conjuncts_admit(
@@ -4350,6 +4359,24 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Type,
     ) -> Result<Option<bool>> {
+        // CR claude for claude: [bug/medium] An undecided type that two DECIDED members of a
+        // union could take is given to the first, so a member is picked by order and a call's
+        // verdict follows the order of its parameters. Over `type P<'p, 'q> = [Array<'p>,
+        // Array<'q>]`, `let f = |k: fn(q: P<'a, 'b>) -> i64| -> ('a, 'b) never(); f(|q:
+        // [Array<i64>, Array<bool>]| 0)` is typed ('a: i64, 'b: i64): the lambda's parameter
+        // must hold Array<'a> and Array<'b>, and each undecided variable takes the first
+        // member. So `f(|q: [Array<i64>, Array<bool>]| 0, 1, true)` over `|k: fn(q: P<'a, 'b>)
+        // -> i64, y: 'a, z: 'b|` is refused, "'b: i64 does not contain bool", and runs with `k`
+        // last. The other direction does the same: `let v = never(); let r = f([v], 1, "s"); v
+        // <- "t"` over `|x: P<'a, 'b>, y: 'a, z: 'b|` is refused, "v is i64, inferred from an
+        // earlier use", where Array<'b: string> holds [v] as well. Ruling (c) of D8 follow-up 2
+        // refuses the choice between two undecided members; this is the same choice with the
+        // members decided and the type open (union-bound-two-takers-01 has it at a declared
+        // bound). base-r22 alike. 32 of the 76 families of decided-arg-waits-01's review
+        // differential whose verdict still depends on the parameters' order are this (a
+        // callback whose parameter holds the union). A fix refuses where two decided members
+        // could take a type that holds a cell to decide, naming the annotation; census first.
+        // probes: ~/ptmp/cr29/scratch/r21/21t/rev/fp.txt (undecided-into-two-decided-01)
         let Some(last) = tiers.iter().rev().find_map(|tier| tier.last()) else {
             return Ok(None);
         };

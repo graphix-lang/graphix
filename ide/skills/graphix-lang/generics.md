@@ -90,9 +90,17 @@ not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
 either: it waits for the other parameters to decide the members, and is
 refused where none does. The wait is one call's arguments': the parts of
-a single argument are met in their order (`|x: (P<'a, 'b>, 'a, 'b)|`
-refuses `([1], 1, "s")`; write the deciding parts first, or as
-parameters). A callback is given to the member its result
+a single argument are met in order, a tuple's as written and a struct's
+fields by name (`|x: (P<'a, 'b>, 'a, 'b)|` refuses `([1], 1, "s")`), so
+put the deciding parts first or make them parameters. Three more calls
+are still refused though another argument decides the members. A
+literal whose element meets the union (a map literal, an array of
+arrays or of tuples) and a call or block passed where a callback's
+result is the union: bind the argument with a `let` first. And an
+argument that needs a variable wider than another argument gives it
+(`[n]` over `n: [i64, null]` beside `1`), where the order of the
+parameters still decides: give the other argument the wide type (`let
+one: [i64, null] = 1`). A callback is given to the member its result
 fits.
 
 ```graphix,cases
@@ -123,6 +131,14 @@ no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w); h([1], 1, "s")
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, 'a, 'b)| x; f(([1], 1, "s"))
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: ('a, 'b, P<'a, 'b>)| x; f((1, "s", [1]))
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {p: P<'a, 'b>, a: 'a, b: 'b}| 0; f({p: [1], a: 1, b: "s"})
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {y: 'a, z: 'b, a: P<'a, 'b>}| 0; f({y: 1, z: "s", a: [1]})
+no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: Map<string, E<'a, 'b>>| 0; f("s", {"k" => 1.5})
+ok type E<'p, 'q> = ['p, 'q]; let f = |x: Map<string, E<'a, 'b>>, y: 'a| 0; let m = {"k" => 1.5}; f(m, "s")
+no "picks none by order" type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |x: fn(q: i64) -> E<'a, 'b>, y: 'a| 0; f(id(|q: i64| 1.5), "s")
+ok type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |x: fn(q: i64) -> E<'a, 'b>, y: 'a| 0; let k = id(|q: i64| 1.5); f(k, "s")
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([n], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let one: [i64, null] = 1; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([n], one, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; let g = |u, v, w| f(u, v, w); g([], 1, "s")

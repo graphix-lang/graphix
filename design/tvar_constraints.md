@@ -358,9 +358,10 @@ joins again once the written arguments and the omitted defaults have
 (`CallSite::join_choosing`), as an argument written after them would,
 before the undecided arguments are checked: a member the others decided
 takes it, or the one member still open does, or it widens a variable.
-Several such arguments join in rounds, while one of them joins, so one
-whose member another of them decides does not depend on which stands
-first (`f([1], 5, "s")` over `|x: P<'a, 'b>, y: E<'a, 'c>, z: 'c|`). One
+Several such arguments join in rounds, while one of them joins, in the
+order they stand, so one whose member another of them decides by
+holding it does not depend on which stands first (`f([1], 5, "s")` over
+`|x: P<'a, 'b>, y: E<'a, 'c>, z: 'c|`). One
 that two members could still take when a round places none is refused,
 with the choice's message, naming the parameter to write. So `f([1], 1,
 "s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|` (`type P<'p, 'q> = [Array<'p>,
@@ -377,9 +378,42 @@ definition's check did; `f([1], never(), never())` and `f([1])` over
 `no_subst::an_instance_checked_again_waits_for_the_arguments_that_decide_a_union`).
 A part of the argument before the choice has met its formal by then (in
 `(1, [1])` over `('c, P<'a, 'b>)` the `1` decided `'c` where the argument
-is written), and the parts of one argument are still met in their order.
-An omitted default that meets the choice is checked with the waiting
-defaults, after every argument.
+is written), and the parts of one argument are still met in their order,
+a tuple's as written and a struct's fields by name
+(`choice-within-arg-order-01`). An omitted default that meets the choice
+is checked with the waiting defaults, after every argument.
+
+The wait covers the argument whose own check ends at a decided type and
+whose choice the others decide by holding it. Four calls are outside it,
+and there the order of the parameters, or the form of the argument,
+still decides (the skill's `generics.md` holds a `graphix,cases` line
+for the first, third and fourth):
+
+- An argument that needs a decided member's variable wider (`f([n], 1,
+  "s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|`, `n: [i64, null]`): the
+  widening probe (`Widening::widen`) opens every widenable variable of
+  the formal, so the members the others decided are a choice again, and
+  the refusal says "which nothing has decided" of members that are.
+  Written between the deciders the same argument meets one open member
+  and is placed (`choice-widen-order-01`). Two waiting arguments meet it
+  among themselves: `f([1], [n], "s", "t")` over `|x1: P<'a, 'b>, x2:
+  P<'b, 'c>, y: 'a, z: 'c|` is refused and runs with `x2` before `x1`.
+- An argument written where one member is still open beside a decided
+  one is placed there at once, no choice, and a later argument that
+  decides that member otherwise is a mismatch, where the same argument
+  written first or last waits and runs (`f("s", [1], "t")` over `|y: 'a,
+  x: R<'a, 'b, 'c>, z: 'b|`, `type R<'p, 'q, 'r> = [Array<'p>, Array<'q>,
+  'r]`; noted on `choice-widen-order-01`).
+- An argument whose own check meets the formal: an expression that is
+  pre-unified with a formal the call did not open (a call or a block at
+  a callback parameter, `f(id(|q: i64| 1.5), "s")` over `|x: fn(q: i64)
+  -> E<'a, 'b>, y: 'a|`) meets the choice inside its check, before `y`
+  (`decided-arg-waits-01`).
+- A literal whose element meets the open copy of the formal (a map
+  literal's value, an array of arrays or of tuples): refused in every
+  order, the other arguments deciding or not
+  (`literal-element-open-copy-01`). Bound with a `let` first, each of
+  the last two runs.
 
 Order can then decide only between a
 value and a refusal, never between two types: where the join does not

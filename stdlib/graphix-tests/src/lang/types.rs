@@ -7730,6 +7730,102 @@ run!(
 }"#,
     prints("[[null], [null], [null]]")
 );
+// Of three members the one the other arguments leave open takes the
+// argument, or the one they decided that holds it; two left open are
+// the choice still, wherever the parameter stands.
+run!(
+    decided_argument_into_a_three_member_typedef_union,
+    r#"{
+  type P3<'p, 'q, 'r> = [Array<'p>, Array<'q>, Array<'r>];
+  let f = |x: P3<'a, 'b, 'c>, y: 'a, z: 'b| x;
+  let l = |y: 'a, x: P3<'a, 'b, 'c>, z: 'b| x;
+  (f([1], "s", 1.5), l("s", [1], 1.5), f([1], "s", 1))
+}"#,
+    prints("[[i64:1], [i64:1], [i64:1]]")
+);
+run!(
+    decided_argument_into_a_three_member_typedef_union_two_left_open_refused,
+    r#"{
+  type P3<'p, 'q, 'r> = [Array<'p>, Array<'q>, Array<'r>];
+  let f = |x: P3<'a, 'b, 'c>, y: 'a| x;
+  f([1], "s")
+}"#,
+    refused("Array<i64> could go to Array<'b: unbound> or Array<'c: unbound> of the union");
+    FuseExpect::None
+);
+// Three arguments that each meet a choice, in a ring, join in rounds
+// once one written argument decides a member of one of them; none
+// decided, each is refused.
+run!(
+    three_decided_arguments_into_typedef_unions_join_in_rounds,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x1: P<'a, 'b>, x2: E<'b, 'c>, x3: E<'c, 'a>, y: 'c| (x1, x2, x3);
+  let l = |x3: E<'c, 'a>, x2: E<'b, 'c>, x1: P<'a, 'b>, y: 'c| (x1, x2, x3);
+  (f([1], "s", 2, 1.5), l(2, "s", [1], 1.5))
+}"#,
+    prints(r#"[[[i64:1], "s", i64:2], [[i64:1], "s", i64:2]]"#)
+);
+run!(
+    three_decided_arguments_into_typedef_unions_none_decided_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x1: P<'a, 'b>, x2: E<'b, 'c>, x3: E<'c, 'a>| (x1, x2, x3);
+  f([1], "s", 2)
+}"#,
+    refused(AMBIGUOUS_MEMBER);
+    FuseExpect::None
+);
+// The member the wait gives the argument is the one the result reads:
+// a test of the result's members, and a result typed by the variable of
+// the member left open.
+run!(
+    decided_argument_into_a_typedef_union_result_members,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
+  let r = f([1], 1, "s");
+  select r { Array<i64> as a => a[0]$ + 1, Array<string> as s => 0 }
+}"#,
+    prints("i64:2")
+);
+run!(
+    decided_argument_into_a_typedef_union_decides_the_open_member_for_the_result,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a| -> Array<'b> [];
+  let r: Array<i64> = f([1], "s");
+  let q: Array<string> = f([1], 1);
+  (r, q)
+}"#,
+    prints("[[], []]")
+);
+run!(
+    decided_argument_into_a_typedef_union_open_member_result_mismatch_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<'a, 'b>, y: 'a| -> Array<'b> [];
+  let r: Array<string> = f([1], "s");
+  r
+}"#,
+    refused("type mismatch Array<string> does not contain Array<'b: i64>");
+    FuseExpect::None
+);
+// A recursive call shares its definition's cells and waits the same.
+run!(
+    recursive_call_decided_argument_into_a_typedef_union,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let rec f = |x: P<'a, 'b>, y: 'a, z: 'b, n: i64| -> i64 select n {
+    0 => 0,
+    _ => f([y], y, z, n - 1) + 1
+  };
+  f([1], 1, "s", 3)
+}"#,
+    prints("i64:3")
+);
 
 // A wrapper's parameter passed at a formal that holds a variable the
 // other arguments settle takes the formal's shape where it is passed, so
