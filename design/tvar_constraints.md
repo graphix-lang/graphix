@@ -1850,10 +1850,18 @@ only bounds name, are first settled to their bounds, the deepest first
 did not decide; the members are then decided and the containment has no
 choice to make (pins
 `lang::types::instance_{cells_only_bounds_hold_settle_to_their_bounds,cell_at_a_bottom_place_is_bottom}`).
-The placing takes the cells whose bounds hold no open cell first, so a
-variable a bound names takes its own place, not what the bound's holder
-is placed at (`'b: Array<'a> |x: 'b, y: 'a|` at `Array<i64>` and `[i64,
-string]`; pin `lang::functions::bound_naming_a_wider_variable_builds`).
+Such a cell's bound holds the copy's own cells, never copies of them: in
+`'a0: ['a1, null], 'a1: ['a2, null], 'a2: ['a3, null], 'a3: ['a4, bool],
+'a4: Number |x: ('a0, 'a2)|` the cell of `'a1` is `[null, 'a2]` over the
+`'a2` that then takes its place, so `'a0`'s bound is decided when `'a0`
+is placed (pin
+`lang::types::instance_cell_only_bounds_hold_names_a_placed_cell`).
+The placing takes a cell after the open cells its bounds hold, through
+any number of bounds (`fntyp::place_in_order`), so a variable a bound
+names takes its own place, not what the bound's holder is placed at
+(`'b: Array<'a> |x: 'b, y: 'a|` at `Array<i64>` and `[i64, string]`; pins
+`lang::functions::bound_naming_a_wider_variable_builds`,
+`lang::types::instance_cells_of_a_chain_of_bounds_are_placed_deepest_first`).
 A variable a bound names that stands only among a union's members has no
 place (`'b: Array<'a> |x: 'b, y: ['a, null]|`), and the holder's bound
 would decide it narrower than the union stands. Where the containment

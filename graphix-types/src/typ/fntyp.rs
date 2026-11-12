@@ -3272,14 +3272,6 @@ fn holds_open_union(t: &Type) -> bool {
     go(t, &mut LPooled::take())
 }
 
-/// The open cells a pass of [`Type::place_cells`] binds.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Placed {
-    /// Those whose bounds hold no open cell: binding one decides no other.
-    Free,
-    All,
-}
-
 /// Whether a bound of the open cell `tv` holds an open cell: binding `tv`
 /// decides another cell.
 fn decides_others(tv: &TVar) -> bool {
@@ -3288,47 +3280,94 @@ fn decides_others(tv: &TVar) -> bool {
     tv.cell_constraints().iter().any(open)
 }
 
+/// Bind the open cell `tv` to `at`, what stands at its place, ⊥ included.
+fn place_cell(env: &Env, tv: &TVar, at: &Type) {
+    if tv.is_bound() {
+        return;
+    }
+    match at.with_deref(|a| matches!(a, Some(Type::Bottom))) {
+        true => tv.bind(Type::Bottom),
+        false => {
+            let _ = Type::TVar(tv.clone()).contains(env, at);
+        }
+    }
+}
+
+/// Bind each open cell `places` gives to what stands at its place, each
+/// after the open cells its bounds hold, at any depth: a cell a bound
+/// holds takes its own place, not what the bound's holder is placed at.
+fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(&TVar, &Type))) {
+    struct Order<'a> {
+        env: &'a Env,
+        at: LPooled<AddrMap<SmallVec<[Type; 1]>>>,
+        seen: LPooled<AddrSet>,
+    }
+    impl Order<'_> {
+        fn place(&mut self, tv: &TVar) {
+            if tv.is_bound() || !self.seen.insert(tv.cell_addr()) {
+                return;
+            }
+            crate::stack::ensure_sufficient(|| {
+                for c in tv.cell_constraints().iter() {
+                    super::contains::find_open_cell(c, true, &mut |held| {
+                        self.place(held);
+                        false
+                    });
+                }
+            });
+            for at in self.at.remove(&tv.cell_addr()).iter().flatten() {
+                place_cell(self.env, tv, at)
+            }
+        }
+    }
+    let mut order = Order { env, at: LPooled::take(), seen: LPooled::take() };
+    let mut cells: LPooled<Vec<TVar>> = LPooled::take();
+    places(&mut |tv, at| {
+        let ats = order.at.entry(tv.cell_addr()).or_default();
+        if ats.is_empty() {
+            cells.push(tv.clone())
+        }
+        ats.push(at.clone())
+    });
+    for tv in cells.iter() {
+        order.place(tv)
+    }
+}
+
 impl Type {
     /// Bind each open cell of `self` to what stands at its place in `at`,
-    /// ⊥ included, wherever the two types are built alike: first the cells
-    /// whose bounds hold no other, so a cell a bound holds takes its own
-    /// place, not what the bound's holder is placed at. A union's members
-    /// have no places: a cell they alone hold is left open.
+    /// ⊥ included, wherever the two types are built alike
+    /// ([`place_in_order`]). A union's members have no places: a cell they
+    /// alone hold is left open.
     pub fn place_cells(&self, env: &Env, at: &Self) {
-        self.place(env, at, Placed::Free);
-        self.place(env, at, Placed::All)
+        place_in_order(env, |f| self.for_each_place(env, at, f))
     }
 
-    /// One pass of [`Self::place_cells`], over the cells `placed` names.
-    fn place(&self, env: &Env, at: &Self, placed: Placed) {
+    /// Each open cell of `self` with what stands at its place in `at`,
+    /// wherever the two types are built alike.
+    fn for_each_place(&self, env: &Env, at: &Self, f: &mut dyn FnMut(&TVar, &Self)) {
         crate::stack::ensure_sufficient(|| match (self, at) {
             (Self::TVar(tv), _) => match tv.binding() {
-                Some(b) => b.place(env, at, placed),
-                None if placed == Placed::Free && decides_others(tv) => (),
-                None if at.with_deref(|a| matches!(a, Some(Self::Bottom))) => {
-                    tv.bind(Self::Bottom)
-                }
-                None => {
-                    let _ = self.contains(env, at);
-                }
+                Some(b) => b.for_each_place(env, at, f),
+                None => f(tv, at),
             },
             (_, Self::TVar(tv)) => {
                 if let Some(b) = tv.binding() {
-                    self.place(env, &b, placed)
+                    self.for_each_place(env, &b, f)
                 }
             }
             (Self::Set(_), _) | (_, Self::Set(_)) => (),
-            (Self::Fn(f0), Self::Fn(f1)) => f0.place(env, f1, placed),
+            (Self::Fn(f0), Self::Fn(f1)) => f0.for_each_place(env, f1, f),
             (Self::Ref(r0), Self::Ref(r1)) => {
                 if r0.same_definition(r1, env) && r0.params.len() == r1.params.len() {
                     for (own, at) in r0.params.iter().zip(r1.params.iter()) {
-                        own.place(env, at, placed)
+                        own.for_each_place(env, at, f)
                     }
                 }
             }
             (own, at) => {
                 any_part_pair(own, at, &mut |own, at| {
-                    own.place(env, at, placed);
+                    own.for_each_place(env, at, f);
                     false
                 });
             }
@@ -3337,23 +3376,31 @@ impl Type {
 }
 
 impl FnType {
-    /// [`Type::place_cells`] over two signatures, position by position.
-    fn place(&self, env: &Env, at: &Self, placed: Placed) {
+    /// [`Type::for_each_place`] over two signatures, position by position.
+    fn for_each_place(&self, env: &Env, at: &Self, f: &mut dyn FnMut(&TVar, &Type)) {
         for (own, at) in self.align(at).0 {
-            own.typ.place(env, &at.typ, placed)
+            own.typ.for_each_place(env, &at.typ, f)
         }
         if let (Some(own), Some(at)) = (&self.vargs, &at.vargs) {
-            own.place(env, at, placed)
+            own.for_each_place(env, at, f)
         }
-        self.rtype.place(env, &at.rtype, placed);
-        self.throws.place(env, &at.throws, placed)
+        self.rtype.for_each_place(env, &at.rtype, f);
+        self.throws.for_each_place(env, &at.throws, f)
     }
 
-    /// [`Type::place_cells`] over two signatures: both passes over every
-    /// position.
+    /// [`Type::place_cells`] over two signatures.
     pub fn place_cells(&self, env: &Env, at: &Self) {
-        self.place(env, at, Placed::Free);
-        self.place(env, at, Placed::All)
+        place_in_order(env, |f| self.for_each_place(env, at, f))
+    }
+
+    /// Place the cells whose bounds hold no open cell
+    /// ([`decides_others`]), which decide no other.
+    fn place_free_cells(&self, env: &Env, at: &Self) {
+        self.for_each_place(env, at, &mut |tv, at| {
+            if !decides_others(tv) {
+                place_cell(env, tv, at)
+            }
+        })
     }
 
     /// Contain, at its place in `at`, each formal that holds no open cell
@@ -3393,10 +3440,12 @@ impl FnType {
     /// the instance's own and bound to the instance's type. Where the
     /// containment would have to choose a union's member before the
     /// positions that decide it, each cell takes what stands at its own
-    /// place first ([`Type::place_cells`]); where it would still have to
-    /// choose, a cell only bounds hold, which has no place, is first what
-    /// its bounds settle it to ([`TVar::settle_bounds_first`]), as a
-    /// call's check leaves one it did not decide. Where a bound still
+    /// place first, after the cells its bounds hold
+    /// ([`Type::place_cells`]); where it would still have to choose, a
+    /// cell only bounds hold, which has no place, is first what its bounds
+    /// settle it to over the copy's own cells
+    /// ([`TVar::settle_bounds_first`]), as a call's check leaves one it
+    /// did not decide. Where a bound still
     /// decides a cell only a union's members hold narrower than the union
     /// stands, the formals decide it before the bound's holder is placed
     /// ([`Self::contain_free_formals`]).
@@ -3437,9 +3486,9 @@ impl FnType {
             .or_else(|_| {
                 held(&|own, known| {
                     settle_unplaced(own, known);
-                    own.place(env, instance, Placed::Free);
+                    own.place_free_cells(env, instance);
                     own.contain_free_formals(env, instance);
-                    own.place(env, instance, Placed::All)
+                    own.place_cells(env, instance)
                 })
             })?;
         Ok((own, known))

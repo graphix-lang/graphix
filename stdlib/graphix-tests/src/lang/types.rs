@@ -8730,6 +8730,33 @@ run!(
     prints("[]")
 );
 
+// A cell only bounds hold settles to a bound naming a cell that has a
+// place as that cell, which is then what stands at its place.
+run!(
+    instance_cell_only_bounds_hold_names_a_placed_cell,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, null], 'a2: ['a3, null], 'a3: ['a4, bool], 'a4: Number |x: ('a0, 'a2)| 7;
+  let g = 'a0: ['a1, null], 'a1: ['a2, null], 'a2: ['a3, null], 'a3: Number |x: ('a0, 'a1, 'a2)| 8;
+  f(never()) + g(never())
+}"#,
+    is(Value::I64(15));
+    FuseExpect::None
+);
+
+// A cell is placed after every cell its bounds hold, however long the
+// chain of bounds between them.
+run!(
+    instance_cells_of_a_chain_of_bounds_are_placed_deepest_first,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, string], 'a2: ['a3, bool], 'a3: ['a4, datetime], 'a4: ['a5, duration], 'a5: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| 7;
+  let g = 'a0: ['a1, null], 'a1: ['a2, string], 'a2: ['a3, bool], 'a3: ['a4, datetime], 'a4: ['a5, duration], 'a5: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| x.0;
+  let r = g(never());
+  f(never())
+}"#,
+    is(Value::I64(7));
+    FuseExpect::Jit
+);
+
 // A callback whose formal is a variable bounded by a union of function
 // types is given to no member before its result is known, and takes its
 // parameter's type from the member that then admits it.

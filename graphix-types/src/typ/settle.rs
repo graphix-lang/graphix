@@ -88,16 +88,34 @@ fn joined_lower<'a>(
     Ok(kept)
 }
 
+/// What an open cell settles to ([`TVar::own_witness`]).
+enum Witness {
+    /// The union of its lower bounds.
+    Lower(Type),
+    /// A conjunct every other conjunct contains.
+    Conjunct(Type),
+}
+
 impl TVar {
-    /// The union of the cell's lower bounds, else the narrowest conjunct
-    /// every other conjunct contains, its generic cells copied (a stored
+    /// [`Self::own_witness`], a conjunct's generic cells copied (a stored
     /// scheme's cells must not join live inference) and its live cells
-    /// shared, so it keeps its relations. `Err(true)` when there is none,
-    /// `Err(false)` when no conjunct could be one (all traits or
-    /// self-referential, or a set only `Singleton` refuses: a member would
-    /// do, and no walk here can choose it). Bound and unbounded cells have
-    /// none.
+    /// shared, so it keeps its relations.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
+        Ok(self.own_witness(env)?.map(|w| match w {
+            Witness::Lower(w) => w,
+            Witness::Conjunct(c) => {
+                c.reset_tvars_int(&mut LPooled::take(), Fresh::Generic).unwrap_or(c)
+            }
+        }))
+    }
+
+    /// The union of the cell's lower bounds, else the narrowest conjunct
+    /// every other conjunct contains, its cells its own. `Err(true)` when
+    /// there is none, `Err(false)` when no conjunct could be one (all
+    /// traits or self-referential, or a set only `Singleton` refuses: a
+    /// member would do, and no walk here can choose it). Bound and
+    /// unbounded cells have none.
+    fn own_witness(&self, env: &Env) -> Result<std::result::Result<Witness, bool>> {
         let (cons, below) = {
             let cell = self.cell();
             let cell = cell.read();
@@ -121,7 +139,7 @@ impl TVar {
                     return Ok(Err(true));
                 }
             }
-            return Ok(Ok(w));
+            return Ok(Ok(Witness::Lower(w)));
         }
         let mut hist = ContainsHist::new();
         let mut candidates = false;
@@ -139,9 +157,7 @@ impl TVar {
                     continue 'cand;
                 }
             }
-            return Ok(Ok(c
-                .reset_tvars_int(&mut LPooled::take(), Fresh::Generic)
-                .unwrap_or_else(|| c.clone())));
+            return Ok(Ok(Witness::Conjunct(c.clone())));
         }
         Ok(Err(candidates))
     }
@@ -197,13 +213,7 @@ impl TVar {
         }
         self.weld_lower();
         match self.witness(env)? {
-            Ok(w) => {
-                if graphix_dbg_bind() {
-                    eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
-                }
-                self.bind(w);
-                Ok(())
-            }
+            Ok(w) => Ok(self.bind_witness(w)),
             Err(false) => Ok(()),
             // CR claude for claude: [bug/medium] A call over a declared chain of
             // bounds whose first link is a union typedef with two members of one
@@ -248,9 +258,12 @@ impl TVar {
         }
     }
 
-    /// [`Self::settle_witness`], after the open cells its conjuncts hold
-    /// that `seen` does not, so its witness is decided where theirs are;
-    /// a cell with no witness stays open.
+    /// Bind the cell to its [own witness], after the open cells its
+    /// conjuncts hold that `seen` does not, so its witness is decided
+    /// where theirs are, and a cell `seen` holds is in it as itself; a cell
+    /// with no witness stays open.
+    ///
+    /// [own witness]: Self::own_witness
     pub(super) fn settle_bounds_first(&self, env: &Env, seen: &mut AddrSet) {
         if self.is_bound() || !seen.insert(self.cell_addr()) {
             return;
@@ -263,7 +276,20 @@ impl TVar {
                 });
             }
         });
-        let _ = self.settle_witness(env);
+        if self.earlier_task() {
+            return;
+        }
+        self.weld_lower();
+        if let Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) = self.own_witness(env) {
+            self.bind_witness(w)
+        }
+    }
+
+    fn bind_witness(&self, w: Type) {
+        if graphix_dbg_bind() {
+            eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
+        }
+        self.bind(w)
     }
 
     /// [`Self::settle`], but a cell still unbound binds to ⊥: nothing was
