@@ -2290,6 +2290,19 @@ run!(
     prints("[i64:1, [i64:2]]")
 );
 
+// The variable the bound names stands among a union's members, where it has
+// no place: its formal decides it before the bound's holder is placed.
+run!(
+    bound_naming_a_wider_variable_in_a_union_builds,
+    r#"{
+  let f = 'b: Array<'a> |x: 'b, y: ['a, null]| y;
+  let g = 'b: Array<'a> |x: ['b, null], y: Array<['a, Error<`E>]>| (x, y);
+  let e: [i64, string] = 1;
+  (f([2], e), g([2], [e]), f([e], 2))
+}"#,
+    prints("[i64:1, [[i64:2], [i64:1]], i64:2]")
+);
+
 // A waiting argument whose cell stands above lower bounds takes what the
 // others settle only where that holds them.
 run!(

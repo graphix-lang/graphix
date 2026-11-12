@@ -3280,6 +3280,14 @@ enum Placed {
     All,
 }
 
+/// Whether a bound of the open cell `tv` holds an open cell: binding `tv`
+/// decides another cell.
+fn decides_others(tv: &TVar) -> bool {
+    let open =
+        |c: &Type| super::contains::find_open_cell(c, true, &mut |_| true).is_some();
+    tv.cell_constraints().iter().any(open)
+}
+
 impl Type {
     /// Bind each open cell of `self` to what stands at its place in `at`,
     /// ⊥ included, wherever the two types are built alike: first the cells
@@ -3293,12 +3301,6 @@ impl Type {
 
     /// One pass of [`Self::place_cells`], over the cells `placed` names.
     fn place(&self, env: &Env, at: &Self, placed: Placed) {
-        let decides_others = |tv: &TVar| {
-            let open = |c: &Type| {
-                super::contains::find_open_cell(c, true, &mut |_| true).is_some()
-            };
-            tv.cell_constraints().iter().any(open)
-        };
         crate::stack::ensure_sufficient(|| match (self, at) {
             (Self::TVar(tv), _) => match tv.binding() {
                 Some(b) => b.place(env, at, placed),
@@ -3354,6 +3356,21 @@ impl FnType {
         self.place(env, at, Placed::All)
     }
 
+    /// Contain, at its place in `at`, each formal that holds no open cell
+    /// whose bounds hold another ([`decides_others`]): that decides a cell
+    /// only a union's members hold, which has no place.
+    fn contain_free_formals(&self, env: &Env, at: &Self) {
+        let free = |t: &Type| {
+            super::contains::find_open_cell(t, true, &mut decides_others).is_none()
+        };
+        let formals = self.align(at).0.into_iter().map(|(own, at)| (&own.typ, &at.typ));
+        for (own, at) in formals.chain(self.vargs.as_ref().zip(at.vargs.as_ref())) {
+            if free(own) {
+                let _ = own.contains(env, at);
+            }
+        }
+    }
+
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
     /// the instance's own and bound to the instance's type. Where the
@@ -3362,39 +3379,52 @@ impl FnType {
     /// place first ([`Type::place_cells`]); where it would still have to
     /// choose, a cell only bounds hold, which has no place, is first what
     /// its bounds settle it to ([`TVar::settle_bounds_first`]), as a
-    /// call's check leaves one it did not decide.
+    /// call's check leaves one it did not decide. Where a bound still
+    /// decides a cell only a union's members hold narrower than the union
+    /// stands, the formals decide it before the bound's holder is placed
+    /// ([`Self::contain_free_formals`]).
     pub fn held_at(
         &self,
         env: &Env,
         instance: &Self,
     ) -> Result<(Self, AHashMap<usize, TVar>)> {
         let mut known = AHashMap::default();
-        let own = self.instantiate_owned(&mut known);
-        if instance.check_contains(env, &own).is_ok() {
-            return Ok((own, known));
-        }
-        known.clear();
-        let own = self.instantiate_owned(&mut known);
-        own.place_cells(env, instance);
-        if instance.check_contains(env, &own).is_ok() {
-            return Ok((own, known));
-        }
-        known.clear();
-        let own = self.instantiate_owned(&mut known);
-        let mut placed: LPooled<AddrSet> = LPooled::take();
-        own.for_each_type(&mut |t| {
-            super::contains::find_open_cell(t, true, &mut |tv| {
-                placed.insert(tv.cell_addr());
-                false
+        let mut held = |prepare: &dyn Fn(&Self, &AHashMap<usize, TVar>)| {
+            known.clear();
+            let own = self.instantiate_owned(&mut known);
+            prepare(&own, &known);
+            instance.check_contains(env, &own).map(|()| own)
+        };
+        let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
+            let mut placed: LPooled<AddrSet> = LPooled::take();
+            own.for_each_type(&mut |t| {
+                super::contains::find_open_cell(t, true, &mut |tv| {
+                    placed.insert(tv.cell_addr());
+                    false
+                });
             });
-        });
-        let unplaced = known.values().filter(|tv| !placed.contains(&tv.cell_addr()));
-        let unplaced = sorted_tvars(unplaced.map(|tv| (tv.name.clone(), tv.clone())));
-        for (_, tv) in unplaced.iter() {
-            tv.settle_bounds_first(env, &mut placed)
-        }
-        own.place_cells(env, instance);
-        instance.check_contains(env, &own)?;
+            let unplaced = known.values().filter(|tv| !placed.contains(&tv.cell_addr()));
+            let unplaced = sorted_tvars(unplaced.map(|tv| (tv.name.clone(), tv.clone())));
+            for (_, tv) in unplaced.iter() {
+                tv.settle_bounds_first(env, &mut placed)
+            }
+        };
+        let own = held(&|_, _| ())
+            .or_else(|_| held(&|own, _| own.place_cells(env, instance)))
+            .or_else(|_| {
+                held(&|own, known| {
+                    settle_unplaced(own, known);
+                    own.place_cells(env, instance)
+                })
+            })
+            .or_else(|_| {
+                held(&|own, known| {
+                    settle_unplaced(own, known);
+                    own.place(env, instance, Placed::Free);
+                    own.contain_free_formals(env, instance);
+                    own.place(env, instance, Placed::All)
+                })
+            })?;
         Ok((own, known))
     }
 }

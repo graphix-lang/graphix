@@ -1849,6 +1849,15 @@ The placing takes the cells whose bounds hold no open cell first, so a
 variable a bound names takes its own place, not what the bound's holder
 is placed at (`'b: Array<'a> |x: 'b, y: 'a|` at `Array<i64>` and `[i64,
 string]`; pin `lang::functions::bound_naming_a_wider_variable_builds`).
+A variable a bound names that stands only among a union's members has no
+place (`'b: Array<'a> |x: 'b, y: ['a, null]|`), and the holder's bound
+would decide it narrower than the union stands. Where the containment
+still fails, the formals that hold no bound's holder are contained before
+the holders are placed, so the union decides its member
+(`FnType::contain_free_formals`; pin
+`lang::functions::bound_naming_a_wider_variable_in_a_union_builds`). That
+order is tried last, so an instance an earlier order holds is held as it
+was.
 The containment picks no member of a union by order. The instance of
 `|a| a <- B([never()])` at `B([])` holds one array: the settle made one
 bound of the two that differ only in cells nothing has decided, and the
