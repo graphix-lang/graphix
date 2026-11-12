@@ -639,6 +639,45 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
+            // CR claude for claude: [perf/medium] The check of a select over an unannotated
+            // parameter costs about four times as much for each slice arm more that binds
+            // elements and the rest, at the definition, with no call: `|x| select x { [a0,
+            // .., a11, t..] => t, [a0, .., a10, t..] => t, .., [a0, t..] => t, [] => [] }`
+            // (12 such arms) takes 33.6 G user instructions of `--no-cache --check` in a
+            // debug build, 11 arms 8.7 G, 10 arms 2.8 G, 9 arms 1.36 G, 8 arms 0.96 G,
+            // beside 0.77 G for the same select over `|x: Array<'e>|` whatever the count; 50
+            // arms did not finish in four minutes. Arms of fixed lengths (`[a0] => .., [a0,
+            // a1] => ..`) grow slower: 8 arms 0.84 G, 12 arms 1.35 G, 16 arms 3.5 G.
+            // base-r22 and lane 21t alike, so slice-param-union-01's fix did not cause it,
+            // but it made these selects the form to write (no annotation). A profile of
+            // the 11 arm case has
+            // 66% of the samples in tvar::CycleWalk::parts under Type::contains_tvars: the
+            // cycle walk of each bind crosses the chain of cells the earlier arms' element
+            // unions left. Arms with a literal beside the binds (`["add", a, b] => ..`, 14
+            // arms 0.83 G) and the same arms in separate selects or in one or-pattern (200
+            // of them 3.5 G to 10 G) do not show it. What would likely fix it: one element
+            // cell a slice pattern over an undecided scrutinee, as slice-param-union-01's
+            // text proposed. probes: ~/ptmp/cr29/scratch/r21/21t/rev/perf/{gen.py,m.sh}
+            // (`gen.py 12 rest u def`), rest12u_def.gx, fixed16u_def.gx
+            // (slice-arms-check-cost-01)
+            // CR claude for claude: [bug/low] Three slice arms inside a tuple or a struct
+            // that each bind another part are still refused at the call, where two such
+            // arms and the written parameter run: `let f = |s| select s { ([a, c, ..], b)
+            // => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))` is
+            // refused, "(Array<i64>, string) could go to any of 3 members of the union
+            // (Array<'_N: unbound>, '_N: unbound) .. write the type of the parameter", and
+            // `|s: (Array<'e>, 'b)|` prints (1, "q"). The struct form (`{a: [x, y, ..], b}
+            // => b, {a: [z], b} => b, {a: [], b} => b`) and three arms that all bind a rest
+            // alike; it runs with `_` for `b` in one arm or `(_, b)` as the last arm.
+            // GRAPHIX_DBG_BIND shows the union the pick meets: `[(Array<['e, 'e, 'e]>,
+            // 'b0), (Array<'e>, 'b1), (Array<'e>, 'b2)]`, 'b0 bound to `['b1, 'b2]`: the
+            // arms' binds of the second part are three cells (printed under one name, so
+            // the message shows one member), where the slices' elements are one. The
+            // members are not one type, so setops::one_type is right to tell them apart
+            // and the refusal follows the rule; what would run it is the arms' binds of one
+            // part sharing a cell over an undecided scrutinee, as the elements do. base-r22
+            // refuses these too. probes: ~/ptmp/cr29/scratch/r21/21t/rev/{t9.gx,t9w.gx},
+            // a5.txt (run with rc.sh) (slice-tuple-bind-cells-01)
             // XCR claude for claude: [bug/medium] A function over an unannotated parameter
             // whose one slice arm binds two elements and returns both passes --check, and
             // its instance is refused at the build unless the elements are i64: `let f =

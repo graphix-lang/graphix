@@ -612,7 +612,13 @@ to them as one member, as the parameter written (`|x: Array<'e>|`) takes
 it: no annotation. Two arms that bind elements (`[a, b, ..] => a, [c] =>
 c, [] => 0`), a recursive function (`1 + len(t)`), a rest passed on
 (`array::push(t, h)`), a list's `[<h, t..>]` and a slice inside a tuple or
-a struct alike.
+a struct alike. The members are one type only where every cell is one:
+the elements of the arms' slices share a cell, a bind of another part of
+a tuple or a struct is a cell an arm, the first arm's holding the others'.
+Two such arms are still one type (`(x, [h, t..]) => h, (x, []) => x`);
+three are not, and the call is refused until the parameter is written
+(`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..` over `|s:
+(Array<'e>, 'b)|`).
 
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
@@ -1530,8 +1536,12 @@ result typed by a union of two open cells only after every other position
 decide it, a parameter's or the result's, and the union then holds what
 they left. One cell standing twice is no such union: `Array<['a, 'a]>`,
 what a slice arm binding two elements leaves an unannotated parameter, is
-decided where it stands, before the result (pin
-`lang::types::slice_arm_returning_two_elements_over_an_unannotated_parameter`).
+decided where it stands, before the result (pins
+`lang::types::slice_arm_returning_two_elements_over_an_unannotated_parameter`,
+`slice_arm_returning_two_elements_takes_an_array_of_two_undecided`, and
+`slice_arms_over_an_unannotated_parameter_{read_from_a_field,closing_over_an_outer_one}`:
+a function a field holds is bound at run time, where an instance that does
+not type gives its call no value).
 A written function type holds no such union (below, A union of
 variables in a signature), so only an inferred one meets that order (`|c,
 a, b| select c { true => a, false => b }`), and a type that either member

@@ -484,6 +484,21 @@ impl<'a> Identity<'a> {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
+    // CR claude for claude: [perf/low] The search for each member of one union among
+    // another's is linear, so one_type costs the product of two unions' widths where
+    // strictly_identical cost their length, and nothing keeps a pair found apart. A
+    // pick among n undecided members that are pairwise not one type, each an array of
+    // a union of n - 1 of n open cells, takes 12.7 M steps (1.8 s in a debug unit
+    // test) at n = 100 and 202 M steps (29 s) at n = 200, against 177 k steps (4 ms)
+    // and 1.4 M steps (29 ms) by strictly_identical; 200 members that are one type,
+    // the 200 cells in a different order each, take 16 M steps (2.3 s). Members of
+    // nested unions of one cell cost their size (pin
+    // one_type_walks_members_of_one_cell_in_their_size), and the GUI suite's check is
+    // within 0.1% (41.39 G base-r22, 41.43 G lane 21t), so this needs a program holding
+    // a union of hundreds of members, each a union of hundreds of open cells, and
+    // the pick over the first kind ends in a refusal anyway: contains.rs's take and
+    // residue_member could stop comparing at the second distinct member. measure:
+    // ~/ptmp/cr29/scratch/r21/21t/rev/one_type_measure.rs (one-type-search-cost-01)
     /// Whether each member of the union `a` is one of the union `b`,
     /// a member that is a union as its members.
     fn within(&mut self, a: &[Type], b: &[Type]) -> bool {
@@ -1779,7 +1794,7 @@ pub(crate) mod tests {
             Bound, NodePairs, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
-            setops::{Identical, IdenticalMemo, WALK_PAIRS, union_identical},
+            setops::{Identical, IdenticalMemo, WALK_PAIRS, one_type, union_identical},
         },
     };
     use ahash::AHashMap;
@@ -2678,5 +2693,89 @@ pub(crate) mod tests {
         assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Same);
         b.bind(Type::Primitive(Typ::String.into()));
         assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Apart);
+    }
+
+    /// The steps [`one_type`] takes to find each of `ms` one type with
+    /// the first, as the pick asks of a union's members.
+    fn one_type_steps(ms: &[Type]) -> usize {
+        super::IDENTITY_STEPS.with(|s| s.set(0));
+        for m in ms {
+            assert!(one_type(&ms[0], m) && one_type(m, &ms[0]), "{} is {m}", ms[0]);
+        }
+        super::IDENTITY_STEPS.with(|s| s.get())
+    }
+
+    /// `n` arrays of eight nested unions of the one cell `a`, no two
+    /// nested alike.
+    fn arrays_of_one_cell(n: usize, a: &Type) -> Vec<Type> {
+        let set = |ts: Vec<Type>| Type::Set(Arc::from_iter(ts));
+        let nested = |i: usize| match i % 3 {
+            0 => a.clone(),
+            1 => set(vec![a.clone(), a.clone()]),
+            _ => set(vec![set(vec![a.clone()]), a.clone()]),
+        };
+        (0..n)
+            .map(|k| Type::Array(Arc::new(set((0..8).map(|i| nested(i + k)).collect()))))
+            .collect()
+    }
+
+    // Members that are one type are found one in a walk of their size,
+    // however many the union holds.
+    #[test]
+    fn one_type_walks_members_of_one_cell_in_their_size() {
+        let a = Type::TVar(TVar::empty_named(literal!("a")));
+        let steps = [100, 200, 400].map(|n| one_type_steps(&arrays_of_one_cell(n, &a)));
+        assert_eq!(steps, [9044, 18196, 36444]);
+    }
+
+    // Cells bound to one cell are that cell, in a function type too; two
+    // open cells are two wherever they stand, and so are two types that
+    // differ under a union.
+    #[test]
+    fn one_type_holds_every_cell_by_identity() {
+        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
+        let array = |t: &Type| Type::Array(Arc::new(t.clone()));
+        let var = |n: &'static str| TVar::empty_named(arcstr::ArcStr::from(n));
+        let (a, b, x, y) = (var("a"), var("b"), var("x"), var("y"));
+        x.bind(Type::TVar(a.clone()));
+        y.bind(Type::TVar(a.clone()));
+        let [a, b, x, y] = [a, b, x, y].map(Type::TVar);
+        let f = |arg: &Type, ret: &Type| {
+            let t = parse_type("fn(v: i64) -> i64").unwrap();
+            let Type::Fn(f) = &t else { unreachable!() };
+            let mut f = (**f).clone();
+            let mut args = f.args.to_vec();
+            args[0].typ = arg.clone();
+            f.args = Arc::from(args);
+            f.rtype = ret.clone();
+            Type::Fn(Arc::new(f))
+        };
+        let i64s = Type::Primitive(Typ::I64.into());
+        for (m0, m1) in [
+            (x.clone(), y.clone()),
+            (array(&set(&[&x, &y])), array(&a)),
+            (f(&set(&[&a, &x]), &a), f(&a, &set(&[&y, &y]))),
+            (set(&[&array(&x), &array(&set(&[&a, &a]))]), array(&y)),
+            (
+                Type::Tuple(Arc::from_iter([set(&[&a, &b]), a.clone()])),
+                Type::Tuple(Arc::from_iter([set(&[&b, &x, &b]), y.clone()])),
+            ),
+        ] {
+            assert!(one_type(&m0, &m1) && one_type(&m1, &m0), "{m0} is {m1}");
+        }
+        for (m0, m1) in [
+            (x.clone(), b.clone()),
+            (f(&a, &a), f(&b, &b)),
+            (f(&a, &b), f(&b, &a)),
+            (f(&set(&[&a, &b]), &a), f(&a, &a)),
+            (array(&set(&[&x, &i64s])), array(&a)),
+            (set(&[&array(&a), &array(&b)]), array(&a)),
+            (
+                Type::Tuple(Arc::from_iter([set(&[&a, &b]), a.clone()])),
+                Type::Tuple(Arc::from_iter([set(&[&b, &x, &b]), b.clone()])),
+            ),
+        ] {
+            assert!(!one_type(&m0, &m1) && !one_type(&m1, &m0), "{m0} is not {m1}");
+        }
     }
 }

@@ -7337,6 +7337,49 @@ run!(
 }"#,
     prints("i64:0")
 );
+// Such a function reached another way is decided the same: through a
+// function that passes it an array of two undecided values, read from a
+// field, closing over an outer parameter, and with a bind beside the slice
+// returned in two shapes.
+run!(
+    slice_arm_returning_two_elements_takes_an_array_of_two_undecided,
+    r#"{
+  let f = |x| select x { [a, b, ..] => (a, b), _ => (0, 0) };
+  let g = |a, b| f([a, b]);
+  (g(1, "s"), g(1.5, 2))
+}"#,
+    prints(r#"[[i64:1, "s"], [f64:1.5, i64:2]]"#)
+);
+run!(
+    slice_arms_over_an_unannotated_parameter_read_from_a_field,
+    r#"{
+  let s = {f: |x| select x { [] => [], [h, t..] => t }};
+  let f = s.f;
+  (f([1, 2, 3]), f(["a", "b"]))
+}"#,
+    prints(r#"[[i64:2, i64:3], ["b"]]"#);
+    FuseExpect::None
+);
+run!(
+    slice_arms_over_an_unannotated_parameter_closing_over_an_outer_one,
+    r#"{
+  let outer = |y| {
+    let f = |x| select x { [h, t..] => [h, y], [] => [y] };
+    (f([2]), f([]))
+  };
+  (outer(1), outer("s"))
+}"#,
+    prints(r#"[[[i64:2, i64:1], [i64:1]], [[i64:2, "s"], ["s"]]]"#)
+);
+run!(
+    slice_arms_beside_a_bind_returned_in_two_shapes_over_an_unannotated_parameter,
+    r#"{
+  let f = |s| select s { ([h, t..], b) => b, ([], b) => (b, b) };
+  let g = |s| select s { {a: [h, t..], b} => b, {a: [], b} => [b] };
+  (f(([1], 3)), f(([], "z")), g({a: [1, 2], b: 3}), g({a: [], b: "x"}))
+}"#,
+    prints(r#"[i64:3, ["z", "z"], i64:3, ["x"]]"#)
+);
 
 // An instance holds its definition's signature at the call's types cell by
 // cell, each from its own place: a union the call left for its other
