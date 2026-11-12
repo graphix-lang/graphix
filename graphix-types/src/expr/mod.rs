@@ -2071,7 +2071,7 @@ impl Expr {
         self.with_kind(kind)
     }
 
-    // CR claude for claude: [bug/low] A dynamic module declared inside an
+    // XCR claude for claude: [bug/low] A dynamic module declared inside an
     // impl's method keeps a `self` its sig writes as a type variable, where
     // D28 reads `self` as the impl's target in every type the impl writes:
     // `impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox
@@ -2084,13 +2084,31 @@ impl Expr {
     // it, would close this. Found by the review of impl-self-written-01
     // (round 20, lane 20d). probe: ~/ptmp/cr29/scratch/r20/20d/review/m1.gx
     // (impl-self-dynamic-sig-01)
+    // 2026-11-12 claude: Expr::map_written_types now maps a module's signature
+    // (Sig::map_written_types: each val's type, each type's bounds and body; a
+    // trait's or impl's declaration left), a dynamic module's and an
+    // interface's alike, so traits::self_as_target reads its self as the target
+    // and the module's body is held to that. A signature names only variables
+    // of its own, so one writing self is refused in a generic impl (as a type
+    // is) and in a trait default (traits::default_module_sigs). Pins, failing
+    // without it in all 4 modes:
+    // lang::traits::{impl_self_in_a_dynamic_module_signature_is_the_target,
+    // impl_self_in_a_dynamic_module_signature_takes_the_target_alone,
+    // impl_self_in_a_module_interface_is_the_target,
+    // impl_self_in_a_module_interface_takes_the_target_alone,
+    // constructor_impl_self_applied_in_a_module_signature,
+    // generic_impl_self_in_a_module_signature_refused,
+    // default_self_in_a_module_signature_refused}, and
+    // expr::test::map_written_types_reaches_each_kind. Census: 0 verdict
+    // changes. Probes ~/ptmp/cr29/scratch/r23/23h/impl-self-dynamic-sig-01/.
     /// This node with each type it writes itself, never a child's, replaced
     /// by `f(type)` (`None`: unchanged), its id kept; `None` when `f`
     /// changes none. Those are a let's annotation (a seq trigger's too), a
     /// lambda's parameters, rest, result, bounds and throws, a cast's
     /// target, `never<T>`'s, a select arm's type test, a catch's or a
-    /// `with`'s binder, a `type` definition's bounds and body. A trait's,
-    /// an impl's and a module's declarations are left.
+    /// `with`'s binder, a `type` definition's bounds and body, and a
+    /// module's signature's ([`Sig::map_written_types`]). A trait's and an
+    /// impl's declarations are left.
     pub fn map_written_types(
         &self,
         f: &mut impl FnMut(&Type) -> Option<Type>,
@@ -2102,7 +2120,6 @@ impl Expr {
         let kind = match &self.kind {
             NoOp
             | Constant(_)
-            | Module { .. }
             | ExplicitParens(_)
             | Block { .. }
             | Use { .. }
@@ -2203,27 +2220,82 @@ impl Expr {
                 constraint: Some(f(t.constraint.as_ref()?)?),
                 ..(**t).clone()
             })),
-            TypeDef(td) => {
-                let params = Type::cow_slice(&td.params, |(tv, b)| {
-                    Some((tv.clone(), Some(f(b.as_ref()?)?)))
-                });
-                let body = match &td.body {
-                    TypeDefBody::Alias(t) => f(t).map(TypeDefBody::Alias),
-                    TypeDefBody::Abstract(Some(t)) => {
-                        f(t).map(|t| TypeDefBody::Abstract(Some(t)))
+            TypeDef(td) => TypeDef(Arc::new(td.map_written_types(f)?)),
+            Module { name, value } => {
+                let value = match &**value {
+                    ModuleKind::Dynamic { sandbox, sig, source } => ModuleKind::Dynamic {
+                        sandbox: sandbox.clone(),
+                        sig: sig.map_written_types(f)?,
+                        source: source.clone(),
+                    },
+                    ModuleKind::Resolved { exprs, sig: Some(sig), from_interface } => {
+                        ModuleKind::Resolved {
+                            exprs: exprs.clone(),
+                            sig: Some(sig.map_written_types(f)?),
+                            from_interface: *from_interface,
+                        }
                     }
-                    TypeDefBody::Abstract(None) => None,
+                    ModuleKind::Resolved { sig: None, .. }
+                    | ModuleKind::Unresolved { .. } => {
+                        return None;
+                    }
                 };
-                if params.is_none() && body.is_none() {
-                    return None;
-                }
-                TypeDef(Arc::new(TypeDefExpr {
-                    params: params.unwrap_or_else(|| td.params.clone()),
-                    body: body.unwrap_or_else(|| td.body.clone()),
-                    ..(**td).clone()
-                }))
+                Module { name: name.clone(), value: Arc::new(value) }
             }
         };
         Some(self.rekind(kind))
+    }
+}
+
+impl TypeDefExpr {
+    /// This definition with its parameters' bounds and its body replaced
+    /// by `f(type)` (`None`: unchanged); `None` when `f` changes none.
+    pub fn map_written_types(
+        &self,
+        f: &mut impl FnMut(&Type) -> Option<Type>,
+    ) -> Option<TypeDefExpr> {
+        let params = Type::cow_slice(&self.params, |(tv, b)| {
+            Some((tv.clone(), Some(f(b.as_ref()?)?)))
+        });
+        let body = match &self.body {
+            TypeDefBody::Alias(t) => f(t).map(TypeDefBody::Alias),
+            TypeDefBody::Abstract(Some(t)) => {
+                f(t).map(|t| TypeDefBody::Abstract(Some(t)))
+            }
+            TypeDefBody::Abstract(None) => None,
+        };
+        if params.is_none() && body.is_none() {
+            return None;
+        }
+        Some(TypeDefExpr {
+            params: params.unwrap_or_else(|| self.params.clone()),
+            body: body.unwrap_or_else(|| self.body.clone()),
+            ..self.clone()
+        })
+    }
+}
+
+impl Sig {
+    /// This signature with each type its `val`s and `type`s write replaced
+    /// by `f(type)` (`None`: unchanged); `None` when `f` changes none. A
+    /// trait's and an impl's declarations are left.
+    pub fn map_written_types(
+        &self,
+        f: &mut impl FnMut(&Type) -> Option<Type>,
+    ) -> Option<Sig> {
+        let items = Type::cow_slice(&self.items, |si| {
+            let kind = match &si.kind {
+                SigKind::Bind(b) => {
+                    SigKind::Bind(BindSig { name: b.name.clone(), typ: f(&b.typ)? })
+                }
+                SigKind::TypeDef(td) => SigKind::TypeDef(td.map_written_types(f)?),
+                SigKind::Trait(_)
+                | SigKind::Impl(_)
+                | SigKind::Module(_)
+                | SigKind::Use { .. } => return None,
+            };
+            Some(SigItem { kind, ..si.clone() })
+        })?;
+        Some(Sig { items, toplevel: self.toplevel, below: self.below.clone() })
     }
 }

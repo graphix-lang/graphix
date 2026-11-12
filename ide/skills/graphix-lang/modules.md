@@ -57,12 +57,14 @@ whose TYPE is their kind (`sys::fs::File`, `sys::tcp::TcpStream`, …).
 
 In an impl, `self` is the impl's target in every type the impl writes (a
 method's `let` annotation, its lambda's parameters and result, anything
-inside it), as in a default it is the trait's: `|s: self, x|` in `impl T
-for i64` is `|s: i64, x|`, and `[self, 'c]` there is `[i64, 'c]`. A
-written `self` the trait does not declare there is refused, and so is
-a `self` in a `type` definition inside a generic impl's method (the
-target holds the impl's variables, which a definition cannot name: give
-it a parameter). A bound the trait declares over `self` is over the
+inside it, a module's signature there included), as in a default it is
+the trait's: `|s: self, x|` in `impl T for i64` is `|s: i64, x|`, and
+`[self, 'c]` there is `[i64, 'c]`. A written `self` the trait does not
+declare there is refused, and so is a `self` in a `type` definition
+inside a generic impl's method (the target holds the impl's variables,
+which a definition cannot name: give it a parameter), and a `self` in a
+module's signature inside a generic impl's method or a default (a
+signature names only variables of its own: write one). A bound the trait declares over `self` is over the
 target in an impl too: the method writes it with `self` or with the
 target, or leaves it out.
 
@@ -78,6 +80,10 @@ no "T::m takes `self` beyond it" trait T { val m: fn<'b: [self, null]>(self, x: 
 ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; select v { i64 as i => T::m(i, null), string as s => T::m(s, null) }
 no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P = self; let p: P = s; array::len(p) } }; T::m([1])
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
+no "i64 does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
+no "the signature of module foo writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => array::len(s) } } }; T::m([1])
+no "which in a default is the trait's type variable" trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => 1 } } }; impl T for i64 {}; T::m(1)
+ok trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: 'q) -> 'q }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) } } }; impl T for i64 {}; T::m(1)
 ```
 
 A method, an impl's or a default, is generic where a `let` of its value

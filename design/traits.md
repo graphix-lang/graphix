@@ -385,7 +385,8 @@ and names the lambda, which takes the declared type
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,
-type test or `type` anywhere in its value
+type test or `type` anywhere in its value, and the `val`s and `type`s of
+a module's signature there, a dynamic module's or an interface's
 (`traits::self_as_target` substitutes it before the method compiles; a
 generic impl's target keeps the head's variables). So `|s: self, x|` in
 `impl T for i64` is `|s: i64, x|`, `[self, 'c]` is `[i64, 'c]`, and a
@@ -413,7 +414,12 @@ the substitution, so a block in the method that declares a `type` of
 one of those names does not take `self` (nor is the reader warned of
 it). A `type` names only its own parameters, so one that writes `self`
 in a generic impl, whose target holds the impl's variables, is refused
-(`type P<'b> = ..` applied as `P<'a>` is the form).
+(`type P<'b> = ..` applied as `P<'a>` is the form). A module's signature
+names only variables of its own (each `val`'s are its quantifiers), so
+one that writes `self` is refused in a generic impl, and in a default,
+where `self` is the trait's variable (`traits::default_module_sigs`);
+it writes a variable of its own (pins
+`lang::traits::{generic_impl,default}_self_in_a_module_signature_refused`).
 
 **Constraint discharge** (`typ/contains.rs`): a trait `Ref` on the
 left of `contains` is the predicate `trait_contains`: ⊥ yes, `Any` no,

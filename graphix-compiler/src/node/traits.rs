@@ -298,22 +298,54 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
+/// Whether a type `e` writes itself, never a child's, mentions `self`.
+fn writes_self_itself(e: &Expr) -> bool {
+    let mut found = false;
+    e.map_written_types(&mut |t| {
+        found |= t.mentions_self();
+        None
+    });
+    found
+}
+
+/// Refuse a module inside a trait's default `e` whose signature writes
+/// `self`, past a trait or impl (each has a `self` of its own): there
+/// `self` is the trait's variable, which a signature cannot name.
+fn default_module_sigs(e: &Expr) -> Result<()> {
+    ensure_sufficient(|| match &e.kind {
+        ExprKind::Trait(_) | ExprKind::Impl(_) => Ok(()),
+        ExprKind::Module { name, .. } if writes_self_itself(e) => bailat!(
+            e,
+            "the signature of module {name} writes `self`, which in a default is the \
+             trait's type variable; a signature names only variables of its own: give \
+             it one"
+        ),
+        _ => {
+            let mut res = Ok(());
+            e.for_each_child(&mut |c| {
+                if res.is_ok() {
+                    res = default_module_sigs(c)
+                }
+            });
+            res
+        }
+    })
+}
+
 /// An impl's method `e` with `self` read as the impl's `target` in every
 /// type it writes, at every depth: in an impl `self` is its target, as in a
 /// trait's default it is the trait's. A trait or impl nested inside has a
 /// `self` of its own. The target's names are resolved first, as the head
 /// reads them: a block inside the method that declares a type of one of
-/// those names does not take it. A `type` names only its own parameters, so
-/// one that writes `self` is refused where the target holds the impl's.
+/// those names does not take it. A `type` names only its own parameters,
+/// and a module's signature only its own variables, so one that writes
+/// `self` is refused where the target holds the impl's.
 fn self_as_target(e: &Expr, target: &Type, generic: bool, env: &Env) -> Result<Expr> {
     fn writes_self(e: &Expr) -> bool {
         ensure_sufficient(|| {
             let mut found = false;
             if !matches!(e.kind, ExprKind::Trait(_) | ExprKind::Impl(_)) {
-                e.map_written_types(&mut |t| {
-                    found |= t.mentions_self();
-                    None
-                });
+                found = writes_self_itself(e);
                 e.for_each_child(&mut |c| found = found || writes_self(c));
             }
             found
@@ -333,18 +365,29 @@ fn self_as_target(e: &Expr, target: &Type, generic: bool, env: &Env) -> Result<E
             m.id = e.id;
             let mut sub = |t: &Type| t.mentions_self().then(|| t.replace_tvars(known));
             let Some(written) = m.map_written_types(&mut sub) else { return m };
-            if generic
-                && res.is_ok()
-                && let ExprKind::TypeDef(td) = &e.kind
-            {
-                *res = Err(anyhow!(
-                    "type {} writes `self`, which here is {}, over the impl's type \
-                     variables; a type definition names only its own parameters: \
-                     give it one and apply it",
-                    td.name.name,
-                    known["self"]
-                ))
-                .at(e)
+            if generic && res.is_ok() {
+                let target = &known["self"];
+                match &e.kind {
+                    ExprKind::TypeDef(td) => {
+                        *res = Err(anyhow!(
+                            "type {} writes `self`, which here is {target}, over the \
+                             impl's type variables; a type definition names only its \
+                             own parameters: give it one and apply it",
+                            td.name.name,
+                        ))
+                        .at(e)
+                    }
+                    ExprKind::Module { name, .. } => {
+                        *res = Err(anyhow!(
+                            "the signature of module {name} writes `self`, which here \
+                             is {target}, over the impl's type variables; a signature \
+                             names only variables of its own: write the type out over \
+                             its own variables",
+                        ))
+                        .at(e)
+                    }
+                    _ => (),
+                }
             }
             written
         })
@@ -532,6 +575,7 @@ impl<R: Rt> Trait<R> {
             // bare `show` in a sibling default is the dispatcher
             if let Some(body) = &m.default {
                 written_method_unions(None, body, &|tv| &*tv.name != "self").at(body)?;
+                default_module_sigs(body)?;
                 // CR claude for claude: [bug/medium] A default whose parameter is written
                 // at its variable's bound over `self` is refused on r20-staging and ran on
                 // base-r20 and on the round before lane 20b's commits: `trait T { val m:

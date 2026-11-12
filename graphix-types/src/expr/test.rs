@@ -3383,7 +3383,12 @@ fn map_written_types_reaches_each_kind() {
         type Y = 'z;
         select a { 'z as b => b, _ => 0 };
         catch(e: 'z) 1;
-        seq let t: 'z = a { try { 1 } with(e: 'z) { 2 } }
+        seq let t: 'z = a { try { 1 } with(e: 'z) { 2 } };
+        mod d dynamic {
+            sandbox unrestricted;
+            sig { type S<'p: 'z> = 'z; val v: 'z; trait Q { val q: fn(self) -> i64 } };
+            source ""
+        }
     }"#,
     )
     .unwrap();
@@ -3405,7 +3410,7 @@ fn map_written_types_reaches_each_kind() {
         }
         written += own;
     });
-    assert_eq!((written, rebuilt), (13, 9));
+    assert_eq!((written, rebuilt), (16, 10));
 }
 
 /// An image shares an expression only with a clone of the same tree: a

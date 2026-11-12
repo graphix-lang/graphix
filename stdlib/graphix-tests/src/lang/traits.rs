@@ -4180,6 +4180,189 @@ run!(
     "#
 );
 
+// A module's signature inside a method is written by the impl too: its
+// `val`s and `type`s read `self` as the target, a dynamic module's and an
+// interface's alike, and the module's body is held to that.
+run!(
+    impl_self_in_a_dynamic_module_signature_is_the_target,
+    is(Value::I64(12)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl T for i64 {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { type X = self; val f: fn(x: X) -> X; val k: self };
+                    source "let f = |x| x + 1; let k = 10"
+                };
+                select status { error as e => 0, null as _ => foo::f(s) + foo::k }
+            }
+        };
+        let result = T::m(1)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_self_in_a_dynamic_module_signature_takes_the_target_alone,
+    refused("i64 does not contain string"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl T for i64 {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: self) -> self };
+                    source "let f = |x| x"
+                };
+                select status { error as e => 0, null as _ => str::len(foo::f("ab")) + s }
+            }
+        };
+        let result = T::m(1)
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_self_in_a_module_interface_is_the_target,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl T for i64 { let m = |s| { mod m; m::f(s) + 1 } };
+        let result = T::m(1)
+    "#,
+    "/test/m.gxi" => r#"
+val f: fn(x: self) -> self
+"#,
+    "/test/m.gx" => r#"
+let f = |x: self| -> self x + 1
+"#
+);
+
+run!(
+    impl_self_in_a_module_interface_takes_the_target_alone,
+    refused("i64 does not contain string"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl T for i64 { let m = |s| { mod m; str::len(m::f("ab")) + s } };
+        let result = T::m(1)
+    "#,
+    "/test/m.gxi" => r#"
+val f: fn(x: self) -> self
+"#,
+    "/test/m.gx" => r#"
+let f = |x| x
+"#
+; FuseExpect::None);
+
+run!(
+    constructor_impl_self_applied_in_a_module_signature,
+    is(Value::I64(5)),
+    "/test.gx" => r#"
+        trait C { val f: fn(self<'a>, x: 'a) -> i64 };
+        impl C for Array<'_> {
+            let f = |s, x| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core, array];
+                    sig { val g: fn(x: self<'e>) -> i64 };
+                    source "let g = |x| array::len(x)"
+                };
+                select status { error as e => 0, null as _ => foo::g(s) + foo::g(["a", "b"]) }
+            }
+        };
+        let result = C::f([1, 2, 3], 4)
+    "#
+; FuseExpect::None);
+
+// A signature names only variables of its own: a `self` that holds the
+// impl's variables, or a default's `self`, which is the trait's variable,
+// is refused there; the signature writes a variable of its own.
+run!(
+    generic_impl_self_in_a_module_signature_refused,
+    refused(
+        "the signature of module foo writes `self`, which here is Array<'a>, over the \
+         impl's type variables"
+    ),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a> T for Array<'a> {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: self) -> self };
+                    source "let f = |x| x"
+                };
+                select status {
+                    error as e => 0,
+                    null as _ => array::len(foo::f(["ab"])) + array::len(s)
+                }
+            }
+        };
+        let result = T::m([1, 2])
+    "#
+; FuseExpect::None);
+
+run!(
+    generic_impl_module_signature_over_its_own_variable,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl<'a> T for Array<'a> {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: Array<'b>) -> Array<'b> };
+                    source "let f = |x| x"
+                };
+                select status {
+                    error as e => 0,
+                    null as _ => array::len(foo::f(["ab"])) + array::len(s)
+                }
+            }
+        };
+        let result = T::m([1, 2])
+    "#
+; FuseExpect::None);
+
+run!(
+    default_self_in_a_module_signature_refused,
+    refused(
+        "the signature of module foo writes `self`, which in a default is the trait's \
+         type variable"
+    ),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn(self) -> i64 = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: self) -> self };
+                    source "let f = |x| x"
+                };
+                select status { error as e => 0, null as _ => str::len(foo::f("ab")) }
+            }
+        };
+        impl T for i64 {};
+        let result = T::m(1)
+    "#
+; FuseExpect::None);
+
+run!(
+    default_module_signature_over_its_own_variable,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn(self) -> i64 = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: 'q) -> 'q };
+                    source "let f = |x| x"
+                };
+                select status { error as e => 0, null as _ => str::len(foo::f("ab")) }
+            }
+        };
+        impl T for i64 {};
+        let result = T::m(1)
+    "#
+; FuseExpect::None);
+
 run!(
     impl_method_self_beside_a_written_type,
     is(Value::I64(0)),
