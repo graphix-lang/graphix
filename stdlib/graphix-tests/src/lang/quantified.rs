@@ -1395,6 +1395,23 @@ run!(
     FuseExpect::None
 );
 
+// One message prints a cell under one name in each type it shows.
+run!(
+    one_message_names_a_cell_alike_in_each_type_it_prints,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = k(1.5); let y = never(); y <- (h, k); y <- k; y }",
+    refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold fn(x: 'a1: f64) -> 'a1: f64");
+    FuseExpect::None
+);
+
+// A name numbered apart is none the printed type declares: `m`'s `'a1`
+// stays its own.
+run!(
+    a_name_numbered_apart_takes_no_name_the_type_declares,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let mk1 = |z: i64| 'a1: Number |x: 'a1| -> 'a1 x; let m = mk1(0); let y = never(); y <- (h, k, m); y <- 1; y }",
+    refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number) and cannot hold i64");
+    FuseExpect::None
+);
+
 // One instance held twice is one cell, under one name.
 run!(
     one_instance_twice_in_one_printed_type_keeps_one_name,
@@ -1424,12 +1441,24 @@ run!(
     "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let p = (h, 'a: Number |x: 'a| (x, h))"
 );
 
+// A header keeps the name it declares where an instance's variable would
+// number apart to it.
 run!(
-    a_header_prints_apart_from_a_name_numbered_before_it,
-    refused("fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn<'a11: Number>(x: 'a11: unbound within Number) -> ('a11: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)):"),
+    a_header_keeps_its_name_beside_a_name_numbered_apart,
+    refused("fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> ('a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number)):"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val p: i64;",
     "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let p = (h, k, 'a1: Number |x: 'a1| (x, k))"
+);
+
+// A name a header listed stays the header's once its signature ends: a
+// later cell numbered apart takes another.
+run!(
+    a_later_cell_takes_no_name_a_header_listed,
+    refused("but implemented (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number):"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val p: i64;",
+    "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let p = (h, 'a: Number |x: 'a| -> 'a x, mk(1))"
 );
 
 const NO_HEADER: &str =

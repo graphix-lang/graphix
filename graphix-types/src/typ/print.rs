@@ -181,7 +181,7 @@ impl fmt::Display for SetMember<'_> {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _printing = Printing::enter();
+        let _printing = Printing::enter(|| self.clone());
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
     }
 }
@@ -453,7 +453,7 @@ fn pretty_lone_arg(
 
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let _printing = Printing::enter();
+        let _printing = Printing::enter(|| self.clone());
         self.pretty(buf, None)
     }
 }

@@ -98,6 +98,27 @@ let hs = array::map([1], |r| h);
     hover_is(&mut c, "let |hs", "hs: Array<fn(x: 'a) -> 'a>");
 }
 
+/// A hover is one message: a name a header listed stays the header's once
+/// its signature ends, so a later instance's variable numbers apart past it.
+#[test]
+fn a_hover_numbers_an_instance_past_a_header_name() {
+    const SRC: &str = "\
+let h = 'a: Number |x: 'a| -> 'a x;
+let mk = |z: i64| 'a: Number |x: 'a| -> 'a x;
+let k = mk(0);
+let trio = (k, h, mk(1));
+0
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(
+        &mut c,
+        "let |trio",
+        "trio: (fn(x: 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1, fn(x: 'a2) -> 'a2)",
+    );
+}
+
 #[test]
 fn hover_never_answers_for_another_name() {
     let mut c = two_files();

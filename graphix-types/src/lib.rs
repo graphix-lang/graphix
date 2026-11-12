@@ -226,12 +226,15 @@ pub(crate) fn print_standing() -> bool {
     PRINT_FLAGS.get().intersects(PrintFlag::DerefTVars | PrintFlag::StandingHeaders)
 }
 
-/// Run `f` with the given type-formatting flags on this thread.
+/// Run `f` with the given type-formatting flags on this thread, as one
+/// message: where cells print as they stand, each named cell keeps one
+/// name through the outermost of these ([`typ::tvar::Message`]).
 pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
     flags: G,
     f: F,
 ) -> R {
     let _restore = Restore::replace(&PRINT_FLAGS, flags.into());
+    let _message = typ::tvar::Message::enter();
     f()
 }
 

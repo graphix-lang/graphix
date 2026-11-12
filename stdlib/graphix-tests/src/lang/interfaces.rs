@@ -2547,7 +2547,7 @@ run!(
 
 run!(
     write_through_a_struct_of_functions_val_refused,
-    refused("a generic binding, so what is written to it must be as general, and { f: fn(x: 'a: unbound) -> 'a: unbound } is not"),
+    refused("test::m::c is { f: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general, and { f: fn(x: 'a1: unbound) -> 'a1: unbound } is not"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::c <- x; x };

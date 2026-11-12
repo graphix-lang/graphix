@@ -198,8 +198,8 @@ The shell and the compiler's messages show which one you have. The
 `fn<>` header lists a declared variable only while the function is
 generic, each call still picking it. One instance prints without the
 header, its variable where it occurs, as an inferred one does. Two
-instances are two variables, so where one type holds both the second
-prints numbered apart, `'a1`:
+instances are two variables, so where one message shows both the second
+prints numbered apart, `'a1`, in every type the message prints:
 
 ```graphix
 〉let mk = |z: i64| 'a: Number |x: 'a| -> 'a x

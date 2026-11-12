@@ -1972,14 +1972,21 @@ former consumer derives from the cells:
   is one instance, its variables held by the open definition, and prints
   no header, though the definition's close has generalized the cells by
   the time the message prints. With no header to scope it, a named cell
-  keeps one name through one printed type and a second cell of that name
-  prints numbered apart (`'a1`; `tvar::printed_name`, one table per
-  outermost print, `tvar::Shown`, looked up by cell so a type of many
-  variables prints in linear time), so two instances side by side read
-  as two variables; a cell a header lists is that header's until the
-  signature ends (`tvar::quantifiers_apart`), under whatever name a
-  binding reaches it by, and its header takes no name the type already
-  shows another cell under, so no two cells showing share one. A message
+  keeps one name through one message, in every type the message prints,
+  and a second cell of that name prints numbered apart (`'a1`;
+  `tvar::printed_name`, one table per message, `tvar::Shown`, owned by
+  the outermost `format_with_flags`, `tvar::Message`, a hover's
+  `display_type` included, looked up by cell so a type of many variables
+  prints in linear time), so two instances side by side read as two
+  variables; a cell a header lists is that header's until the signature
+  ends (`tvar::quantifiers_apart`), under whatever name a binding reaches
+  it by, and its header takes no name the message already shows another
+  cell under, so no two cells showing share one. A name numbered apart is
+  new to the message: no cell or header showed it, and no type the
+  message printed holds it, so a name the program declared never moves
+  for it and a name a header listed stays that header's once its
+  signature ends (the printed types' names are walked only when a name
+  numbers apart, `Type::names_held`). A message
   about a generic binding itself prints its scheme
   (`Type::scheme_read`), never the one instance a comparison held rigid:
   the refused write to a generic binding (`Connect::typecheck0_with`)
@@ -1989,10 +1996,14 @@ former consumer derives from the cells:
   `a_printed_quantifier_names_its_cell_inside_a_binding_too`,
   `two_generic_functions_in_one_printed_type_keep_their_headers`,
   `a_header_prints_apart_from_an_instance_shown_before_it`,
-  `a_header_prints_apart_from_a_name_numbered_before_it`,
+  `one_message_names_a_cell_alike_in_each_type_it_prints`,
+  `a_name_numbered_apart_takes_no_name_the_type_declares`,
+  `a_header_keeps_its_name_beside_a_name_numbered_apart`,
+  `a_later_cell_takes_no_name_a_header_listed`,
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
   `a_refused_write_to_a_generic_binding_prints_its_header`; the hover's:
-  `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`.
+  `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`,
+  `a_hover_numbers_an_instance_past_a_header_name`.
   A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and

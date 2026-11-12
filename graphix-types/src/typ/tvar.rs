@@ -1792,7 +1792,7 @@ impl fmt::Display for TVar {
             thread_local! {
                 static PRINTING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
             }
-            let _printing = Printing::enter();
+            let _printing = Printing::enter(|| Type::TVar(self.clone()));
             let addr = self.cell_addr();
             let name = printed_name(self);
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
@@ -3120,6 +3120,7 @@ pub(super) fn keep_quantifiers(
 
 thread_local! {
     static PRINT_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static MESSAGE_DEPTH: Cell<u32> = const { Cell::new(0) };
     static SHOWN: RefCell<Shown> = RefCell::new(Shown::default());
     /// The cells of the [`HeldQuantifiers`] being printed.
     static HELD: RefCell<SmallVec<[usize; 4]>> = RefCell::new(SmallVec::new());
@@ -3167,24 +3168,32 @@ impl HeldQuantifiers {
     }
 }
 
-/// The names the type being printed gave its named cells where cells
-/// print as they stand ([`crate::print_standing`]): a cell a printing
-/// signature's header lists until that signature ends
-/// ([`quantifiers_apart`]), any other until the outermost print does
+/// The names one message gave its named cells where cells print as they
+/// stand ([`crate::print_standing`]), from its outermost
+/// [`crate::format_with_flags`] to that one's end ([`Message`]): a cell a
+/// printing signature's header lists until that signature ends
+/// ([`quantifiers_apart`]), any other until the message does
 /// ([`printed_name`]).
 #[derive(Default)]
 struct Shown {
     names: AHashMap<usize, ArcStr>,
     /// The names of `names`, each one cell's.
     taken: AHashSet<ArcStr>,
+    /// Every name the message showed a cell under, and every name a type
+    /// it printed holds once `unwalked` is walked: a name numbered apart
+    /// is none of them.
+    used: AHashSet<ArcStr>,
+    /// The types the message printed whose names `used` lacks.
+    unwalked: SmallVec<[Type; 2]>,
 }
 
 impl Shown {
-    /// The capacity the tables keep from one print to the next.
+    /// The capacity the tables keep from one message to the next.
     const KEPT: usize = 64;
 
     fn show(&mut self, addr: usize, name: ArcStr) {
         self.taken.insert(name.clone());
+        self.used.insert(name.clone());
         self.names.insert(addr, name);
     }
 
@@ -3195,48 +3204,85 @@ impl Shown {
     }
 
     /// `name` unless a cell prints under it, then numbered apart.
-    fn free_name(&self, name: &ArcStr) -> ArcStr {
+    fn free_name(&mut self, name: &ArcStr) -> ArcStr {
         match self.taken.contains(name) {
             false => name.clone(),
-            true => name_apart(name, |n| self.taken.contains(n)),
+            true => self.numbered_apart(name),
         }
+    }
+
+    /// `name` numbered apart from every name the message uses.
+    fn numbered_apart(&mut self, name: &ArcStr) -> ArcStr {
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        for t in self.unwalked.drain(..) {
+            t.names_held(&mut self.used, &mut seen)
+        }
+        name_apart(name, |n| self.used.contains(n))
     }
 
     fn clear(&mut self) {
-        if self.names.capacity() > Self::KEPT {
+        if self.names.capacity() > Self::KEPT
+            || self.used.capacity() > Self::KEPT
+            || self.unwalked.capacity() > Self::KEPT
+        {
             *self = Self::default()
         } else {
             self.names.clear();
-            self.taken.clear()
+            self.taken.clear();
+            self.used.clear();
+            self.unwalked.clear()
         }
     }
 }
 
-/// A type being printed as its cells stand. Until the outermost one
-/// ends, each named cell it shows that no header lists keeps one name
-/// ([`printed_name`]).
-pub(super) struct Printing;
+/// A message being formatted ([`crate::format_with_flags`]). Until the
+/// outermost one ends, each named cell its types show that no header
+/// lists keeps one name ([`printed_name`]).
+pub(crate) struct Message;
 
-impl Printing {
-    pub(super) fn enter() -> Option<Self> {
-        crate::print_standing().then(|| {
-            PRINT_DEPTH.set(PRINT_DEPTH.get() + 1);
-            Printing
-        })
+impl Message {
+    pub(crate) fn enter() -> Self {
+        MESSAGE_DEPTH.set(MESSAGE_DEPTH.get() + 1);
+        Message
     }
 }
 
-impl Drop for Printing {
+impl Drop for Message {
     fn drop(&mut self) {
-        let depth = PRINT_DEPTH.get() - 1;
-        PRINT_DEPTH.set(depth);
+        let depth = MESSAGE_DEPTH.get() - 1;
+        MESSAGE_DEPTH.set(depth);
         if depth == 0 {
             SHOWN.with_borrow_mut(|s| s.clear())
         }
     }
 }
 
-// CR claude for claude: [readability/low] The names are one printed type's, so
+/// A type being printed as its cells stand ([`crate::print_standing`]).
+pub(super) struct Printing;
+
+impl Printing {
+    /// `top` is the type being printed where no print encloses this one,
+    /// walked for the names it holds only when a name numbers apart.
+    pub(super) fn enter(top: impl FnOnce() -> Type) -> Option<Self> {
+        if !crate::print_standing() {
+            return None;
+        }
+        let depth = PRINT_DEPTH.get();
+        if depth == 0 {
+            SHOWN.with_borrow_mut(|s| s.unwalked.push(top()))
+        }
+        PRINT_DEPTH.set(depth + 1);
+        Some(Printing)
+    }
+}
+
+impl Drop for Printing {
+    fn drop(&mut self) {
+        PRINT_DEPTH.set(PRINT_DEPTH.get() - 1)
+    }
+}
+
+// XCR claude for claude: [readability/low] The names are one printed type's, so
 // a message that prints two types can show one cell under two names. `graphix
 // --no-cache --check ~/ptmp/cr29/scratch/r20/20h/x4/s2.gx` (`y <- (h, k); y <- k`
 // over two instances of one maker) says "y is (fn(x: 'a: unbound within Number)
@@ -3267,10 +3313,31 @@ impl Drop for Printing {
 // the same with bounds in a .gxi mismatch on base-r23
 // (~/ptmp/cr29/scratch/r23/23h/hover-review/gxi1/test.gx): two cells under 'a1,
 // lexically apart.
+// 2026-11-12 claude: The outermost format_with_flags owns the table now
+// (tvar::Message; Printing only tracks depth and records each top-level type
+// printed). A name numbered apart is new to the message: no cell or header showed
+// it and no type the message printed holds it (Shown::used, the printed types
+// walked by Type::names_held only when a name numbers apart), so q5.gx prints (h
+// 'a, k 'a2, m 'a1), the hover-review gxi1 probe and the hover print (.., fn<'a1:
+// Number>(..), fn(x: 'a2) -> 'a2), and s2.gx says 'a1 in both types.
+// quantifiers_apart's own avoid walk is gone (the message's covers it). What
+// moved: write_through_a_struct_of_functions_val_refused (the written instance's
+// variable is now 'a1 beside the scheme's 'a: two cells; the .gxi signature and
+// implementation pins did not move), and
+// a_header_prints_apart_from_a_name_numbered_before_it, now
+// a_header_keeps_its_name_beside_a_name_numbered_apart (k 'a2, header keeps its
+// declared 'a1). Pins that fail without it:
+// lang::quantified::{one_message_names_a_cell_alike_in_each_type_it_prints,
+// a_name_numbered_apart_takes_no_name_the_type_declares,
+// a_header_keeps_its_name_beside_a_name_numbered_apart,
+// a_later_cell_takes_no_name_a_header_listed},
+// lang::interfaces::write_through_a_struct_of_functions_val_refused,
+// graphix-shell lsp a_hover_numbers_an_instance_past_a_header_name; two
+// generic-skill cases lines.
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for a cell
-/// a program named that no header lists, its own unless the type being
+/// a program named that no header lists, its own unless the message being
 /// printed showed another cell under it, then numbered apart, so two
 /// instances' cells of one declared name read as two.
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
@@ -3300,11 +3367,13 @@ impl Drop for Listed {
 
 /// `f`, printing `ft`, with each quantifier `ft`'s header lists
 /// ([`TVar::heads_a_printed_signature`]) printing under a name apart from
-/// the other cells of its name `ft` holds and from every name the type
+/// the other cells of its name `ft` holds and from every name the message
 /// being printed shows another cell under, where cells print as they
 /// stand ([`crate::print_standing`]).
 pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
-    let Some(_printing) = Printing::enter() else { return f() };
+    let Some(_printing) = Printing::enter(|| Type::Fn(Arc::new(ft.clone()))) else {
+        return f();
+    };
     if ft.quantifiers.is_empty() {
         return f();
     }
@@ -3318,7 +3387,6 @@ pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
         return f();
     }
     let mut listed = Listed(LPooled::take());
-    let mut avoid: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for (q, tv) in own {
         let addr = tv.cell_addr();
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
@@ -3331,17 +3399,7 @@ pub(super) fn quantifiers_apart<R>(ft: &FnType, f: impl FnOnce() -> R) -> R {
             }
             let name = match alone && !s.taken.contains(&q) {
                 true => q,
-                false => {
-                    if avoid.is_empty() {
-                        seen.clear();
-                        ft.for_each_type(&mut |t| t.names_held(&mut avoid, &mut seen));
-                        avoid.extend(ft.quantifiers.iter().cloned());
-                    }
-                    let name =
-                        name_apart(&q, |n| avoid.contains(n) || s.taken.contains(n));
-                    avoid.insert(name.clone());
-                    name
-                }
+                false => s.numbered_apart(&q),
             };
             s.show(addr, name);
             listed.0.push(addr)
