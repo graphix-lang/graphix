@@ -3224,7 +3224,7 @@ impl<R: Rt> Select<R> {
         let ExprKind::Select(se) = &self.spec.kind else { return Ok(()) };
         let open = |tv: &TVar| undecided.contains_key(&tv.cell_addr());
         let was_open = |tv: &TVar| decided.cells.contains_key(&tv.stands_for());
-        let held = |tv: &TVar| decided.held.get(&tv.stands_for()).cloned();
+        let held = |tv: &TVar| decided.held(tv);
         let was = Decided { cell: &was_open, held: &held };
         let mut own = Decisions::default();
         written.decided(&mut own);
@@ -3391,7 +3391,7 @@ impl Deciding {
                     decided.cells.insert(tv.stands_for(), tv.clone());
                 }
                 Kept::Holder(b) if tv.binding().as_ref() != Some(b) => {
-                    decided.held.entry(tv.stands_for()).or_insert_with(|| b.clone());
+                    decided.held.entry(tv.cell_addr()).or_insert_with(|| b.clone());
                 }
                 Kept::Open | Kept::Below | Kept::Holder(_) => (),
             }
@@ -3625,13 +3625,31 @@ fn still_open(outer: &AHashMap<usize, TVar>) -> LPooled<AHashMap<usize, TVar>> {
     open
 }
 
-/// What a select's arms decided: the cells open before them, and the
-/// bindings their decisions rewrote, as they were, each by the cell it
-/// stands for.
+/// What a select's arms decided: the cells open before them, each by the
+/// cell it stands for, and the bindings their decisions rewrote, as they
+/// were, each by its own cell: a rewrite may leave a holder standing for a
+/// cell its binding held.
 #[derive(Default)]
 struct Decisions {
     cells: AHashMap<usize, TVar>,
     held: AHashMap<usize, Type>,
+}
+
+impl Decisions {
+    /// The binding `tv` read before the arms, where a decision rewrote it:
+    /// that of the first rewritten cell along its forward links.
+    fn held(&self, tv: &TVar) -> Option<Type> {
+        let mut tv = tv.clone();
+        loop {
+            if let Some(b) = self.held.get(&tv.cell_addr()) {
+                return Some(b.clone());
+            }
+            tv = match &tv.binding() {
+                Some(Type::TVar(next)) => next.clone(),
+                _ => return None,
+            };
+        }
+    }
 }
 
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
@@ -3741,11 +3759,7 @@ fn written_tests_decided(
                     Some(Type::TVar(c.clone()))
                 }
                 None => {
-                    let b = decided
-                        .held
-                        .get(&tv.stands_for())
-                        .cloned()
-                        .or_else(|| tv.binding())?;
+                    let b = decided.held(tv).or_else(|| tv.binding())?;
                     Some(reopen(&b, decided, fresh).unwrap_or(b))
                 }
             },

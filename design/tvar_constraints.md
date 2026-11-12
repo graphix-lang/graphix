@@ -1241,7 +1241,11 @@ A decision may rewrite a binding that held the cell: `y` bound to `['x,
 `J]` becomes `` `J `` once `(`J, _)` decides `'x`. So a bound cell of
 the scrutinee whose binding holds an open cell is noted with that binding,
 and one a step rewrote is walked as it was (`Decisions::held`), where the
-decided `'x` stands beside the member that holds the literal's type.
+decided `'x` stands beside the member that holds the literal's type. The
+binding is kept under the holder's own cell, never the cell the holder
+stands for after the rewrite: `['x, 'n]`, `'n` a bind's cell, becomes
+`'n`, a member of the binding it replaces, and a walk that read `'n` as
+that binding would not end.
 Coverage (`Reach::arm`) is a pattern step too.
 
 An arm that only takes a decided part apart is no test of it

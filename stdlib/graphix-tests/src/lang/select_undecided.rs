@@ -894,6 +894,53 @@ run!(or_alternative_over_an_annotated_part, r#"{
     r
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "j1"); FuseExpect::Jit);
 
+// A union of an undecided part and a bind: deciding the part leaves the
+// union's holder standing for the bind's cell, which is still judged as
+// the union it was.
+run!(tag_deciding_an_undecided_part_beside_a_bind_refused, r#"{
+    let z = never();
+    let k: [i64, null] = 1;
+    let u = select k { null as _ => z, n => n };
+    let r = select (u, 0) { (42, v) => v, (a, b) => a };
+    z <- 2;
+    r
+}"#, refused("(42, v) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(tag_over_an_annotated_part_beside_a_bind, r#"{
+    let z: i64 = never();
+    let k: [i64, null] = 1;
+    let u = select k { null as _ => z, n => n };
+    let r = select (u, 0) { (42, v) => v, (a, b) => a };
+    z <- 2;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+run!(written_test_deciding_an_undecided_part_beside_a_bind_refused, r#"{
+    let z = never();
+    let k: [i64, null] = 1;
+    let u = select k { null as _ => z, i64 as n => n };
+    let r = select (u, 0) { (i64, i64) as (a, b) => a };
+    z <- 2;
+    r
+}"#, refused("(i64, i64) as (a, b) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(written_test_over_an_annotated_part_beside_a_bind, r#"{
+    let z: i64 = never();
+    let k: [i64, null] = 1;
+    let u = select k { null as _ => z, i64 as n => n };
+    let r = select (u, 0) { (i64, i64) as (a, b) => a };
+    z <- 2;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+run!(tag_deciding_an_undecided_parameter_beside_a_bind_refused, r#"{
+    let f = |z, k: [i64, null]| {
+        let u = select k { null as _ => z, i64 as n => n };
+        select (u, 0) { (42, v) => v, (a, b) => a }
+    };
+    f(3, 1)
+}"#, refused("(42, v) tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
 // A later arm's pattern decides the part before an earlier arm's body is
 // checked: the body's error is the select's.
 run!(an_earlier_body_over_a_part_a_later_arm_decides_is_its_error, r#"{

@@ -284,6 +284,8 @@
 2	nov06f-nov2026/01_lowered_name_in_a_printed_function.gx
 2	nov06h-nov2026/01_a_pattern_over_a_union_of_one_type.gx
 0	nov06i-nov2026/01_a_return_over_a_union_of_one_type.gx
+0	nov12a-crash-nov2026/00_union_holder_stands_for_a_bind.gx
+0	nov12a-crash-nov2026/01_written_test_over_the_union.gx
 1	nov12a-image-handles-nov2026/00_map_keyed_by_handles.gx
 0	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 1	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx

@@ -284,6 +284,8 @@ trace	nov06e-nov2026/01_a_returned_generic_function_over_a_result.gx
 trace	nov06f-nov2026/01_lowered_name_in_a_printed_function.gx
 trace	nov06h-nov2026/01_a_pattern_over_a_union_of_one_type.gx
 trace	nov06i-nov2026/01_a_return_over_a_union_of_one_type.gx
+reject	N: (N, vN) | (vN, N) tests a value whose type is not decided at this select, which a later use could decide apart from what the arms test: annotate the scrutinee's type where it is built	nov12a-crash-nov2026/00_union_holder_stands_for_a_bind.gx
+reject	N: (iN, iN) as (vN, vN) tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line N, column N)	nov12a-crash-nov2026/01_written_test_over_the_union.gx
 trace	nov12a-image-handles-nov2026/00_map_keyed_by_handles.gx
 trace	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 trace	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
