@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        Bound, FnType, TVar, Type, Written,
+        AppKey, Bound, FnType, TVar, Type, Written,
         contains::{ContainsHist, InfiniteType},
         setops::strictly_identical,
         tvar::{CellFact, Fresh, Level, would_cycle_open},
@@ -867,15 +867,22 @@ impl Held {
 // expansion its lookup_ref_probe arm), shared with FnType::order_free_cells; the
 // walk and its keys are unchanged, so the cost stands; a written function type
 // holding a function now runs the walk too (not measured there).
+// 2026-11-12 claude: Lane 23g's call-param-dag-exp-01 keys this walk's typedef
+// applications by AppKey and how they are held (DataPositions::applied), passing
+// one met again by. On that lane dp3..dp6 go 0.84/1.17/3.36/12.12 -> 0.76 G each
+// (--no-cache --check, debug, instructions:u; base-r23 first); not X'd there, as
+// the CR is lane 23c's.
 /// A walk of every type variable under a type, through bindings, with how
-/// each occurrence is held. A shared node is walked once for each way it
-/// is held, and kept so an expansion's node keeps its address.
+/// each occurrence is held. A shared node, and a typedef application by
+/// its [`AppKey`], is walked once for each way it is held, and kept so
+/// its keys stay its own.
 #[doc(hidden)]
 pub struct DataPositions<'a> {
     env: &'a Env,
     members: bool,
     expanding: SmallVec<[usize; 4]>,
     seen: LPooled<AHashMap<(usize, Held), Type>>,
+    applied: LPooled<AHashMap<(AppKey, Held), Type>>,
 }
 
 impl<'a> DataPositions<'a> {
@@ -885,12 +892,18 @@ impl<'a> DataPositions<'a> {
             members: false,
             expanding: SmallVec::new(),
             seen: LPooled::take(),
+            applied: LPooled::take(),
         }
     }
 
     /// Tell [`Held::member`] too.
     pub fn telling_members(self) -> Self {
         DataPositions { members: true, ..self }
+    }
+
+    fn beneath_function(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
+        let held = Held { function: true, ..held };
+        t.for_each_child(&mut |c| self.walk(c, held, f))
     }
 
     pub fn walk(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
@@ -906,19 +919,26 @@ impl<'a> DataPositions<'a> {
             t if t
                 .shared_identity()
                 .is_some_and(|n| self.seen.insert((n, held), t.clone()).is_some()) => {}
-            Type::Ref(_)
-                if let Some((key, whole)) = t
-                    .lookup_ref_probe(self.env)
-                    .filter(|(key, _)| !self.expanding.contains(key)) =>
+            // an application met again is passed by: its first walk reported each
+            // position its unrolling holds a cell at, or the cell under a function
+            // type where the walk met a definition inside its own expansion
+            Type::Ref(tr)
+                if let Some(key) = tr.probe_def_key(self.env)
+                    && !self.expanding.contains(&key) =>
             {
-                self.expanding.push(key);
-                self.walk(&whole, held, f);
-                self.expanding.pop();
+                if self.applied.insert((tr.app_key(key), held), t.clone()).is_some() {
+                    return;
+                }
+                match t.lookup_ref_probe(self.env) {
+                    Some((_, whole)) => {
+                        self.expanding.push(key);
+                        self.walk(&whole, held, f);
+                        self.expanding.pop();
+                    }
+                    None => self.beneath_function(t, held, f),
+                }
             }
-            Type::Fn(_) | Type::Ref(_) => {
-                let held = Held { function: true, ..held };
-                t.for_each_child(&mut |c| self.walk(c, held, f))
-            }
+            Type::Fn(_) | Type::Ref(_) => self.beneath_function(t, held, f),
             Type::ByRef(super::Mutability::Mut, _)
             | Type::Abstract { .. }
             | Type::App(..) => {

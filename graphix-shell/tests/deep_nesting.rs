@@ -1599,6 +1599,47 @@ fn a_refusal_against_a_dag_of_named_unions_is_linear() {
     }
 }
 
+/// A call whose parameter or result is a DAG of parametrized named unions
+/// (`L<i><'t> = [L<i-1><'t>, M<i-1><'t>]`, `M<i>` the same), and a declared
+/// variable refused against one, check and elaborate in time polynomial in
+/// the DAG's depth, where its paths are 2^depth: the walks of a signature's
+/// positions and of a union's members take each application once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_dag_of_parametrized_named_unions_checks_in_polynomial_time() {
+    const DEPTH: usize = 40;
+    let mut types =
+        String::from("type L0<'t> = ['t, null, `A];\ntype M0<'t> = [Array<'t>, `B];\n");
+    for i in 1..=DEPTH {
+        let p = i - 1;
+        types.push_str(&format!(
+            "type L{i}<'t> = [L{p}<'t>, M{p}<'t>];\ntype M{i}<'t> = [L{p}<'t>, M{p}<'t>];\n"
+        ));
+    }
+    for call in [
+        format!("let f = |x0: L{DEPTH}<string>| 1;\nf(null)\n"),
+        format!("let f = |x0: i64| -> L{DEPTH}<string> null;\nf(1)\n"),
+    ] {
+        completes_within(
+            &["--expand", "--no-cache"],
+            &format!("{types}{call}"),
+            3 * BILLION,
+        )
+    }
+    let refused = format!(
+        "{types}let f = |x0: 'a, y0: 'b| {{ let x: L{DEPTH}<'b> = x0; x }};\nf(1, 2)\n"
+    );
+    let out = exits_within(
+        &["--check", "--no-cache"],
+        &[("program.gx", &refused)],
+        3 * BILLION,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let refusal =
+        format!("type mismatch L{DEPTH}<'b: unbound> does not contain 'a: unbound");
+    assert!(!out.status.success() && stderr.contains(&refusal), "{stderr}");
+}
+
 /// A type test for one recursive union over a value of another, each
 /// returning to itself through `Error` or `Array`, checks in the time of
 /// a program without it: the difference the arm leaves is built of the

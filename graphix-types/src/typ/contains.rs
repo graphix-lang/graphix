@@ -4254,8 +4254,8 @@ impl Type {
     /// The members of the union `s`, each that `names` holds
     /// ([`names_members`], [`names_union`]) replaced by what it names, a
     /// union's members in its place, until none does; a named type's
-    /// parameter bounds are committed where `commit`. A cell met again
-    /// under its own binding adds nothing.
+    /// parameter bounds are committed where `commit`. A cell, or a named
+    /// type applied to the same parameters, met again adds nothing.
     fn unfolded_members(
         env: &Env,
         s: &[Type],
@@ -4266,7 +4266,7 @@ impl Type {
             env: &Env,
             m: &Type,
             (commit, names): (bool, fn(&Env, &Type) -> bool),
-            cells: &mut AddrSet,
+            (cells, applied): (&mut AddrSet, &mut Expanded),
             depth: usize,
             out: &mut SmallVec<[Type; 8]>,
         ) -> Result<()> {
@@ -4276,10 +4276,15 @@ impl Type {
             if depth > HEAD_CHAIN_LIMIT {
                 bail!("a union's member names itself")
             }
-            if let Type::TVar(tv) = m
-                && !cells.insert(tv.cell_addr())
-            {
-                return Ok(());
+            match m {
+                Type::TVar(tv) if !cells.insert(tv.cell_addr()) => return Ok(()),
+                Type::Ref(tr)
+                    if let Some(def) = tr.probe_def_key(env)
+                        && !first_expansion(applied, def, &tr.params) =>
+                {
+                    return Ok(());
+                }
+                _ => (),
             }
             let mut head = m.clone();
             for _ in 0..HEAD_CHAIN_LIMIT {
@@ -4298,15 +4303,16 @@ impl Type {
             }
             ensure_sufficient(|| match &head {
                 Type::Set(ms) => ms.iter().try_for_each(|m| {
-                    unfold(env, m, (commit, names), cells, depth + 1, out)
+                    unfold(env, m, (commit, names), (cells, applied), depth + 1, out)
                 }),
                 _ => Ok(out.push(head.clone())),
             })
         }
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         let mut cells: LPooled<AddrSet> = LPooled::take();
+        let mut applied: LPooled<Expanded> = LPooled::take();
         for m in s.iter() {
-            unfold(env, m, (commit, names), &mut cells, 0, &mut members)?
+            unfold(env, m, (commit, names), (&mut cells, &mut applied), 0, &mut members)?
         }
         Ok(members)
     }

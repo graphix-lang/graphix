@@ -1420,6 +1420,13 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
+    /// The key of the definition [`Type::lookup_ref_probe`] expands this
+    /// by, found without expanding it; fills nothing.
+    #[doc(hidden)]
+    pub fn probe_def_key(&self, env: &Env) -> Option<usize> {
+        self.resolve_peek(env).map(|r| r.def_key())
+    }
+
     /// Whether two references name one definition: an open cell names
     /// what its name means in `env`, so the answer does not depend on
     /// which cells a walk filled; two that name nothing, by the written

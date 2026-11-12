@@ -35,8 +35,8 @@ use crate::{
     prune::BoundaryRef,
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, Brief, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability,
-        TVar, Type,
+        AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
+        Mutability, TVar, Type,
         settle::{DataPositions, Held, Reaching},
         tvar::{AtLevel, BoundAt, Judgment, Level, RigidGate},
     },
@@ -676,14 +676,6 @@ fn compile_apply_args<R: Rt>(
         }
     }
     Ok(res)
-}
-
-/// `t`, a typedef reference, expanded, with its definition's key; `None`
-/// where it does not resolve (its check reports that) or `expanding`
-/// holds its definition already (a recursive typedef met inside its own
-/// expansion).
-fn expansion(env: &Env, t: &Type, expanding: &[usize]) -> Option<(usize, Type)> {
-    t.lookup_ref_probe(env).filter(|(key, _)| !expanding.contains(key))
 }
 
 #[cfg(test)]
@@ -1441,7 +1433,7 @@ pub(crate) fn carried_out(
     })
 }
 
-// CR claude for claude: [perf/medium] A call whose signature holds a DAG of
+// XCR claude for claude: [perf/medium] A call whose signature holds a DAG of
 // parametrized named unions checks in time exponential in the DAG's depth: `type
 // L0<'t> = ['t, null, `A]; type M0<'t> = [Array<'t>, `B]; type L<i><'t> =
 // [L<i-1><'t>, M<i-1><'t>]`, `M<i>` the same, then `let f = |x0: L<n><string>| 1;
@@ -1461,45 +1453,68 @@ pub(crate) fn carried_out(
 // each. Found by the review of union-dag-rigid-cell-01. probes:
 // ~/ptmp/cr29/scratch/r20/20g/review/{pc,pr,pv}{10,12,14,16,18}.gx
 // (call-param-dag-exp-01)
+// 2026-11-12 claude: settle::DataPositions keys a typedef application by its AppKey
+// (definition and parameters, TypeRef::app_key) and how it is held, and passes one met
+// again by; holds_invariantly keeps by AppKey every application found to hold no
+// variable invariantly (was: parameterless typedefs only), never one found to hold one,
+// since a definition met inside its own expansion stands for its variables;
+// Type::unfolded_members passes a named member already unfolded over the same parameters
+// (first_expansion), so the contains side (pv) is linear too. --no-cache --check, debug,
+// instructions:u, base-r23 -> lane: pc at 10/12/14/16/18 0.83/1.05/1.90/5.30/- ->
+// 0.76/0.76/0.77/0.77/0.77 G; pr at 10/14/16/18 0.80/1.32/2.99/- -> 0.76/0.76/0.77/0.77
+// G; pv at 10/12/14/16/18 0.84/1.07/1.97/5.57/- -> 0.76/0.77/0.77/0.78/0.78 G (empty
+// program 0.75); --expand pc16 5.33 -> 0.79 G. At depth 24 with one memo undone: pc
+// killed at 200 s (DataPositions), pc 675 G (holds_invariantly), pv 1231 G
+// (unfolded_members). Pin
+// deep_nesting::a_dag_of_parametrized_named_unions_checks_in_polynomial_time (depth 40,
+// --expand 0.9/1.0 G and the refusal 0.9 G of 3 G) fails with each of the three undone.
+// Census 2962 files 0 verdict / 0 message; regress 580/0; guicheck base 41.32/41.26 G,
+// lane 40.78/40.73 G. data-positions-paths-01's probes dp3..dp6 go 0.84/1.17/3.36/12.12
+// -> 0.76 G each. probes: ~/ptmp/cr29/scratch/r23/23g/call-param-dag-exp-01/
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the
 /// order a call writes its arguments in decides nothing. A function's
 /// positions stay in order: an earlier argument types a callback's.
-/// `clean` holds the parameterless typedefs whose expansion holds none, so
-/// a typedef the type reaches by many paths is walked once.
+/// `clean` holds the typedef applications found to hold none, each by its
+/// [`AppKey`], so an application the type reaches by many paths is walked
+/// once. A finding that one does may rest on a definition met inside its
+/// own expansion, which stands for every variable it holds, so it is not
+/// kept.
 fn holds_invariantly(
     env: &Env,
     t: &Type,
     expanding: &mut SmallVec<[usize; 4]>,
-    clean: &mut AHashSet<usize>,
+    clean: &mut AHashMap<AppKey, Type>,
 ) -> bool {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             tv.binding().is_some_and(|b| holds_invariantly(env, &b, expanding, clean))
         }
         Type::Fn(_) => false,
-        Type::Ref(tr) if let Some((key, whole)) = expansion(env, t, expanding) => {
-            let bare = tr.params.is_empty();
-            if bare && clean.contains(&key) {
+        Type::Ref(tr)
+            if let Some(key) = tr.probe_def_key(env)
+                && !expanding.contains(&key) =>
+        {
+            let app = tr.app_key(key);
+            if clean.contains_key(&app) {
                 return false;
             }
+            let Some((_, whole)) = t.lookup_ref_probe(env) else {
+                return holds_a_variable(t);
+            };
             expanding.push(key);
             let r = holds_invariantly(env, &whole, expanding, clean);
             expanding.pop();
-            if bare && !r {
-                clean.insert(key);
+            if !r {
+                clean.insert(app, t.clone());
             }
             r
         }
         Type::Abstract { .. }
         | Type::App(..)
         | Type::Ref(_)
-        | Type::ByRef(Mutability::Mut, _) => {
-            let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            t.collect_tvars(&mut tvars);
-            !tvars.is_empty()
-        }
+        | Type::ByRef(Mutability::Mut, _) => holds_a_variable(t),
         t => {
             let mut any = false;
             t.for_each_child(&mut |c| {
@@ -1508,6 +1523,12 @@ fn holds_invariantly(
             any
         }
     })
+}
+
+fn holds_a_variable(t: &Type) -> bool {
+    let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    t.collect_tvars(&mut tvars);
+    !tvars.is_empty()
 }
 
 // CR claude for claude: [bug/low] A variable a declared bound holds is decided
@@ -4740,7 +4761,7 @@ impl<R: Rt> CallSite<R> {
         };
         let mut widening = Widening::new(fresh);
         let mut expanding = SmallVec::new();
-        let mut clean: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut clean: LPooled<AHashMap<AppKey, Type>> = LPooled::take();
         let mut formals: SmallVec<[_; 8]> = ftype
             .args
             .iter()
