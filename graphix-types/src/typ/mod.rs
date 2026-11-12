@@ -3813,6 +3813,19 @@ impl Type {
         ensure_sufficient(|| self.rewrite_trait_args_inner(env, scheme))
     }
 
+    // CR claude for claude: [perf/low] The check's refusal of a nest of
+    // quantified function types costs time quadratic in its depth: each
+    // signature's constraint_view walks the whole nest below it
+    // (FnType::collect_tvars) before the walk recurses into it, and only then
+    // is QUANTIFIED_FN refused. `graphix --no-cache --check` of gen.py fnqo N
+    // (the probe of rank2-open-nest-01) costs 0.99 / 1.58 / 3.95 G instructions
+    // at N = 160 / 320 / 640, about 0.77 G of it the stdlib's. Refusing
+    // QUANTIFIED_FN before constraint_view where `!scheme &&
+    // !ft.quantifiers.is_empty()` makes it 0.79 / 0.81 / 0.84 G, but then
+    // QUANTIFIED_FN is reported ahead of a bound's or a nested type's own
+    // refusal, which a pin may name. Only a refused program holds such a nest.
+    // probe: ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/fnqo_640.gx
+    // (rank2-refusal-walk-01)
     fn rewrite_trait_args_inner(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(

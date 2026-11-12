@@ -2058,15 +2058,28 @@ former consumer derives from the cells:
   cell write on the thread (`tvar::cell_writes`). Only an answer no
   reentrancy guard cut is kept, and one that names a cell is used only
   where no guard is held: an empty one is empty under every guard. The
-  parser keeps a stronger fact for the length of the outermost
-  signature's parse (`ParseDepth`): a signature whose declaration met
-  no name but its own quantifiers is closed (`FnType::declaring`), no
-  enclosing declaration aliases or seeds a cell of it, and the
-  enclosing signatures' alias walks, held checks and position cells
-  skip it, so a closed signature inside another is the signature it
-  is alone. A nest where every signature names an outer variable is
-  still aliased once per enclosing signature. Pins:
-  `typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps`,
+  parser does more for the length of the outermost signature's parse
+  (`ParseDepth`). A declaration inside another signature's
+  (`FnType::declaring`) aliases its own quantifiers alone
+  (`fntyp::Aliasing::Known`): each name it does not declare is left to
+  the enclosing declaration that does, or to the outermost, which
+  aliases every name left. It then records the cells it names from
+  outside itself, and the parse's walks read that record instead of
+  walking the signature again: an alias walk enters it only where it
+  names a name the walk aliases, a held check or a bound's walk takes
+  its cells from the record, and position cells are kept for the
+  whole parse. A signature that names nothing outside itself (closed)
+  is skipped by every walk, so it is the signature it is alone. Each
+  occurrence is aliased once, by the declaration of its name, which
+  walks down through the signatures between it and the occurrence: a
+  nest whose signatures name, beside their own variables, only ones
+  the outermost declares or none does parses in time linear in its
+  size. An occurrence no enclosing walk
+  reaches (in a bound of a quantifier no position names) is aliased by
+  none of them.
+  Pins: `typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps`,
+  `nested_open_signatures_parse_in_linear_steps`,
+  `an_open_nest_names_its_declarers_cells`,
   `nested_quantified_types_compare_in_linear_steps`,
   `a_cell_write_drops_the_free_cells_read_before_it`,
   `a_closed_signature_nests_as_it_stands_alone`.

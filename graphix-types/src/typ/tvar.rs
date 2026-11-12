@@ -7,7 +7,8 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
-        TVarsSeen, Type, contains::ContainsHist, node_addr, setops::union_identical,
+        TVarsSeen, Type, contains::ContainsHist, fntyp::Aliasing, node_addr,
+        setops::union_identical,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -3785,7 +3786,7 @@ impl Type {
 
     /// Alias type variables with the same name to each other.
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_tvars_in(known, &ConjunctsPassed::take())
+        self.alias_tvars_in(known, &ConjunctsPassed::take(), Aliasing::Every)
     }
 
     // CR claude for claude: [risk/low] The alias walk passes the conjuncts of
@@ -3801,6 +3802,20 @@ impl Type {
     // prints names, parses it. Found fixing rank2-print-01, whose closed test
     // counts such a signature open (seed_conjuncts puts `'z` in `known`).
     // (nested-bound-alias-01)
+    // 2026-11-12 claude: Since rank2-open-nest-01 a declaration inside another
+    // signature's parse aliases only its own quantifiers (Aliasing::Known),
+    // every other name left to the enclosing declarations' walks, so an
+    // occurrence those walks do not reach (a bound of a quantifier no position
+    // names) now stays apart in two more cases: a name from outside the nested
+    // signature that it writes both there and in its positions (the two were
+    // one cell, linked by the nested declaration's seed_conjuncts), and an
+    // unquantified signature written there, whose own occurrences of such a
+    // name are no longer one cell. Of 3396 generated nests of quantified
+    // signatures two differ in their cells, bound_of_bound_1.gx and
+    // bound_of_bound_2.gx in ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/;
+    // graphix fmt prints both as base-r23 does, and only fmt parses them
+    // (QUANTIFIED_FN). A walk that reaches every bound of a reached cell closes
+    // these with this CR.
     // CR claude for claude: [bug/low] An enclosing declaration's alias walk
     // captures a variable across signatures. Walking a nested quantified
     // signature, it passes the conjuncts of every cell that signature's
@@ -3832,10 +3847,21 @@ impl Type {
     // ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/review/cap_open.gx,
     // cap_closed.gx, cap_alone.gx, bounds_order.gx
     // (nested-quantifier-capture-01)
+    // 2026-11-12 claude: Since rank2-open-nest-01 a declaration inside another
+    // signature's parse aliases only its own quantifiers (Aliasing::Known), so
+    // only the outermost signature's walk aliases every name and can capture.
+    // parse_hang.gx of (nested-signature-hang-01), which base-r23 does not
+    // finish parsing (fmt --stdout and --check killed by a 6 GB cap after 9 s),
+    // now parses in under a second: --check refuses it (QUANTIFIED_FN) and fmt
+    // --stdout refuses it as a formatter bug, since the parse already holds
+    // captured bounds (an inner header printed `'c: Number + Array<'z>` where
+    // the source writes `'c: Number`) and the reparse captures again (`'z:
+    // fn<..> + fn<..> + 'c`). cap_open.gx prints as on base-r23.
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
         passed: &ConjunctsPassed,
+        how: Aliasing,
     ) {
         #[cfg(test)]
         super::fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
@@ -3847,16 +3873,18 @@ impl Type {
                     tv.alias_enclosing(v);
                 }
                 Entry::Vacant(e) => {
-                    e.insert(tv.clone());
+                    if how == Aliasing::Every {
+                        e.insert(tv.clone());
+                    }
                 }
             },
-            Type::Fn(ft) if super::fntyp::closed(ft) => (),
+            Type::Fn(ft) if !super::fntyp::aliases_into(ft, known, how) => (),
             // a nested fn type's own quantifiers are its own, whatever an
             // enclosing signature names alike
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
-                ft.alias_tvars_in(known, &ConjunctsPassed::take());
+                ft.alias_tvars_in(known, &ConjunctsPassed::take(), how);
                 for (q, tv) in outer {
                     known.remove(&q);
                     if let Some(tv) = tv {
@@ -3864,8 +3892,8 @@ impl Type {
                     }
                 }
             }
-            Type::Fn(ft) => ft.alias_tvars_in(known, passed),
-            t => t.for_each_child(&mut |c| c.alias_tvars_in(known, passed)),
+            Type::Fn(ft) => ft.alias_tvars_in(known, passed, how),
+            t => t.for_each_child(&mut |c| c.alias_tvars_in(known, passed, how)),
         })
     }
 
@@ -3960,7 +3988,7 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
-            Type::Fn(ft) if super::fntyp::closed(ft) => (),
+            Type::Fn(ft) if super::fntyp::declared_free(ft, known) => (),
             // a nested fn type's own quantifiers are its own, whatever an
             // enclosing signature names alike; a node it shares with the
             // outside names them there, so it is walked apart

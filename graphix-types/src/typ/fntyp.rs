@@ -314,9 +314,11 @@ thread_local! {
     static CONJUNCTS: RefCell<AddrSet> = RefCell::new(AddrSet::default());
     /// How deep `for_each_part` calls nest on this thread.
     static PARTS_DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// For the outermost `for_each_part` call: each nested signature's
-    /// position cells, keyed by the signature it pins, so a walk collects
-    /// each signature's once rather than once per signature above it.
+    /// For the outermost `for_each_part` call, or a signature's whole
+    /// parse: each nested signature's position cells, keyed by the
+    /// signature it pins, so a walk collects each signature's once rather
+    /// than once per signature above it. A cell's handle follows its
+    /// aliases, so an entry stands while the parse aliases.
     static POSITIONS: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
         RefCell::new(AddrMap::default());
     /// For the outermost `for_each_part` call: what each nested quantified
@@ -327,10 +329,11 @@ thread_local! {
     static CUTS: Cell<u64> = const { Cell::new(0) };
     /// How deep signature parses nest on this thread.
     static PARSE_DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// For the outermost signature's parse: the signatures inside it that
-    /// name no variable from outside themselves, so no enclosing
-    /// signature's declaration aliases or seeds a cell of theirs.
-    static CLOSED: RefCell<AddrMap<Arc<FnType>>> = RefCell::new(AddrMap::default());
+    /// For the outermost signature's parse: each signature declared inside
+    /// it, with the cells it names from outside itself as its declaration
+    /// left them, which the parse's walks read rather than walk it again.
+    static DECLARED: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
+        RefCell::new(AddrMap::default());
 }
 
 #[derive(Default)]
@@ -375,11 +378,14 @@ impl Drop for PartsDepth {
             d.get() == 0
         });
         if outermost {
-            POSITIONS.with_borrow_mut(|m| {
-                if !m.is_empty() {
-                    m.clear()
-                }
-            });
+            // a signature's parse keeps the positions memo to its end
+            if PARSE_DEPTH.with(|d| d.get()) == 0 {
+                POSITIONS.with_borrow_mut(|m| {
+                    if !m.is_empty() {
+                        m.clear()
+                    }
+                });
+            }
             FREE.with_borrow_mut(|m| {
                 if !m.of.is_empty() {
                     m.of.clear()
@@ -390,8 +396,8 @@ impl Drop for PartsDepth {
 }
 
 /// One signature's parse, which the signatures it holds are parsed
-/// inside; the outermost forgets the closed signatures on its way out,
-/// unwind too.
+/// inside; the outermost forgets the declared signatures and the
+/// positions memo on its way out, unwind too.
 pub struct ParseDepth;
 
 impl ParseDepth {
@@ -408,17 +414,67 @@ impl Drop for ParseDepth {
             d.get() == 0
         });
         if outermost {
-            CLOSED.with_borrow_mut(|m| m.clear());
+            DECLARED.with_borrow_mut(|m| m.clear());
+            if PARTS_DEPTH.with(|d| d.get()) == 0 {
+                POSITIONS.with_borrow_mut(|m| m.clear());
+            }
         }
     }
 }
 
-/// Whether `ft` is a signature the parse in progress found to name no
+/// Which names an alias walk aliases: every name it meets, or only those
+/// its map holds as it starts. A declaration inside another signature's
+/// parse aliases its own quantifiers alone; the enclosing declarations
+/// alias the rest, the outermost every name left.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Aliasing {
+    Every,
+    Known,
+}
+
+/// `f` of the cells `ft` names from outside itself, where it is a
+/// signature declared inside the parse in progress; `None` for any other.
+fn declared<R>(ft: &Arc<FnType>, f: impl FnOnce(&[(ArcStr, TVar)]) -> R) -> Option<R> {
+    if PARSE_DEPTH.with(|d| d.get()) == 0 {
+        return None;
+    }
+    DECLARED.with_borrow(|m| m.get(&(Arc::as_ptr(ft) as usize)).map(|(_, free)| f(free)))
+}
+
+/// Whether `ft` is a signature the parse in progress declared naming no
 /// variable from outside itself: a walk for an enclosing signature's
 /// variables finds none in it.
 pub(super) fn closed(ft: &Arc<FnType>) -> bool {
-    PARSE_DEPTH.with(|d| d.get()) > 0
-        && CLOSED.with_borrow(|m| m.contains_key(&(Arc::as_ptr(ft) as usize)))
+    declared(ft, <[_]>::is_empty).unwrap_or(false)
+}
+
+/// Where `ft` is a signature the parse in progress declared, the cells it
+/// names from outside itself into `known`, and true.
+pub(super) fn declared_free(
+    ft: &Arc<FnType>,
+    known: &mut AHashMap<ArcStr, TVar>,
+) -> bool {
+    declared(ft, |free| {
+        for (name, tv) in free {
+            known.entry(name.clone()).or_insert_with(|| tv.clone());
+        }
+    })
+    .is_some()
+}
+
+/// Whether an alias walk over `known` aliasing `how` enters `ft`: a
+/// signature the parse in progress declared only where it names, from
+/// outside itself, a name the walk aliases.
+pub(super) fn aliases_into(
+    ft: &Arc<FnType>,
+    known: &AHashMap<ArcStr, TVar>,
+    how: Aliasing,
+) -> bool {
+    declared(ft, |free| match how {
+        Aliasing::Every => !free.is_empty(),
+        Aliasing::Known => free.iter().any(|(name, _)| known.contains_key(name)),
+    })
+    .unwrap_or(true)
 }
 
 /// The cells the quantified signature `ft` names from outside itself, its
@@ -637,9 +693,18 @@ pub fn seed_conjuncts<'a>(
     known: &mut AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
 ) {
+    seed_conjuncts_aliasing(known, constraints, Aliasing::Every)
+}
+
+/// [`seed_conjuncts`], the conjuncts' variables aliased `how`.
+fn seed_conjuncts_aliasing<'a>(
+    known: &mut AHashMap<ArcStr, TVar>,
+    constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
+    how: Aliasing,
+) {
     let constraints: LPooled<Vec<(&TVar, Type)>> = constraints.into_iter().collect();
     for (_, tc) in constraints.iter() {
-        tc.alias_tvars(known);
+        tc.alias_tvars_in(known, &tvar::ConjunctsPassed::take(), how);
     }
     for (tv, tc) in constraints.iter() {
         known[&tv.name].add_cell_constraint(tc.normalize());
@@ -680,7 +745,7 @@ fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
 }
 
 impl FnType {
-    // CR claude for claude: [perf/low] A nest of signatures in which every
+    // XCR claude for claude: [perf/low] A nest of signatures in which every
     // level names a variable of an enclosing one still parses in time quadratic
     // in its depth: none is closed, so each enclosing declaration's alias walk
     // (and the position cells its conjunct pass collects) covers the whole nest
@@ -702,12 +767,31 @@ impl FnType {
     // types (QUANTIFIED_FN); the unquantified shape checks. probe:
     // ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/gen.py, fnqo_160.gx,
     // fnv_160.gx (rank2-open-nest-01)
+    // 2026-11-12 claude: A declaration inside another signature's parse aliases
+    // only its own quantifiers (FnType::declaring, Aliasing::Known), every
+    // other name left to the enclosing declarations, and records the cells it
+    // names from outside itself (DECLARED); the parse's walks read that record
+    // rather than walk the signature again (aliases_into, declared_free,
+    // closed), and the positions memo lasts the whole parse. fmt --stdout
+    // instructions base-r23 -> this: fnqo 160 / 640: 0.832 / 12.47 -> 0.124 /
+    // 1.05 G; fnv 160 / 640: 0.279 / 4.07 -> 0.064 / 0.52 G; what remains grows
+    // with the printed text, whose indentation is quadratic in the depth (4.1
+    // MB for fnqo 640). --no-cache --check of fnv 640: 2.60 -> 0.82 G (0.77 G
+    // of it startup); the check's refusal of the quantified shape is still
+    // quadratic, filed as (rank2-refusal-walk-01). fmt and --check of 9000
+    // generated nests and of every .gx/.gxi in both repos print the same as
+    // base-r23. Pins:
+    // typ::fntyp::tests::nested_open_signatures_parse_in_linear_steps (without
+    // the fix: naming outer 21932 -> 337292 steps at 40 -> 160 deep),
+    // an_open_nest_names_its_declarers_cells.
     /// `self` declaring `constraints`: its quantifiers are their names
     /// in source order (a `+`-bound variable is one quantifier), and every
     /// same-named tvar of the signature and of a conjunct is the
-    /// quantifier's, whose cell holds the conjuncts. Inside a signature's
-    /// parse ([`ParseDepth`]), one that names no other variable is
-    /// remembered closed.
+    /// quantifier's, whose cell holds the conjuncts. Inside another
+    /// signature's parse ([`ParseDepth`]) only its own quantifiers are
+    /// aliased, every other name by the enclosing declarations
+    /// ([`Aliasing`]), and the cells it names from outside itself are
+    /// recorded for the parse's walks.
     pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Arc<Self> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -719,11 +803,17 @@ impl FnType {
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
         let ft = Arc::new(self);
-        ft.alias_tvars(&mut known);
-        seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
-        // every name the signature or a bound holds is in `known`
-        if known.len() == ft.quantifiers.len() && PARSE_DEPTH.with(|d| d.get()) > 0 {
-            CLOSED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, ft.clone()));
+        let nested = PARSE_DEPTH.with(|d| d.get()) > 1;
+        let how = if nested { Aliasing::Known } else { Aliasing::Every };
+        ft.alias_tvars_in(&mut known, &tvar::ConjunctsPassed::take(), how);
+        let constraints = constraints.iter().map(|(tv, tc)| (tv, tc.clone()));
+        seed_conjuncts_aliasing(&mut known, constraints, how);
+        if nested {
+            known.clear();
+            ft.collect_tvars(&mut known);
+            let free = known.drain().filter(|(name, _)| !ft.quantifiers.contains(name));
+            let free = (ft.clone(), free.collect());
+            DECLARED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, free));
         }
         ft
     }
@@ -1214,16 +1304,17 @@ impl FnType {
     }
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_tvars_in(known, &tvar::ConjunctsPassed::take())
+        self.alias_tvars_in(known, &tvar::ConjunctsPassed::take(), Aliasing::Every)
     }
 
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
         passed: &tvar::ConjunctsPassed,
+        how: Aliasing,
     ) {
         self.for_each_part_passing(&mut |tv| passed.first(tv), &mut |t, _| {
-            t.alias_tvars_in(known, passed)
+            t.alias_tvars_in(known, passed, how)
         })
     }
 
@@ -2494,21 +2585,29 @@ mod tests {
         format!("fn<'z: Any>(x: {inner}) -> 'z")
     }
 
+    /// Each signature the bound of the next one's variable, every one
+    /// naming the outermost's `'z`.
+    fn nested_by_bound_naming_outer(n: usize) -> String {
+        let inner = nested(n, "fn<'a: Any>(x: 'a, y: 'z) -> 'a", |s| {
+            format!("fn<'a: {s}>(x: 'a, y: 'z) -> 'a")
+        });
+        format!("fn<'z: Any>(x: {inner}) -> 'z")
+    }
+
+    /// No signature declares a variable; every one names `'a`.
+    fn nested_naming_a_variable(n: usize) -> String {
+        nested(n, "fn(x: 'a) -> 'a", |s| format!("fn(x: {s}) -> 'a"))
+    }
+
     fn walk_steps(f: impl FnOnce()) -> usize {
         super::TVAR_WALK_STEPS.with(|c| c.set(0));
         f();
         super::TVAR_WALK_STEPS.with(|c| c.get())
     }
 
-    // Parsing a nest of signatures that name nothing outside themselves
-    // walks each a bounded number of times, however they nest.
-    #[test]
-    fn nested_closed_signatures_parse_in_linear_steps() {
-        let shapes: [(&str, fn(usize) -> String); 3] = [
-            ("argument", nested_quantified),
-            ("bound", nested_by_bound),
-            ("unquantified", nested_unquantified),
-        ];
+    /// Parsing each shape 160 deep takes under six times the steps 40 deep
+    /// does.
+    fn assert_parse_in_linear_steps(shapes: [(&str, fn(usize) -> String); 3]) {
         for (name, shape) in shapes {
             let parse = |n| {
                 let src = shape(n);
@@ -2516,6 +2615,88 @@ mod tests {
             };
             let (a, b) = (parse(40), parse(160));
             assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
+        }
+    }
+
+    // Parsing a nest of signatures that name nothing outside themselves
+    // walks each a bounded number of times, however they nest.
+    #[test]
+    fn nested_closed_signatures_parse_in_linear_steps() {
+        assert_parse_in_linear_steps([
+            ("argument", nested_quantified),
+            ("bound", nested_by_bound),
+            ("unquantified", nested_unquantified),
+        ])
+    }
+
+    // Parsing a nest of signatures each naming a variable no signature
+    // inside it declares walks each a bounded number of times: only the
+    // declaration of a name walks down to it.
+    #[test]
+    fn nested_open_signatures_parse_in_linear_steps() {
+        assert_parse_in_linear_steps([
+            ("naming outer", nested_naming_outer),
+            ("bound naming outer", nested_by_bound_naming_outer),
+            ("unquantified", nested_naming_a_variable),
+        ])
+    }
+
+    /// `(name, depth, cell)` of every variable `t` holds, by position and
+    /// through each cell's conjuncts, a signature's one deeper than the
+    /// signature holding it.
+    fn cells_by_depth(t: &crate::typ::Type) -> Vec<(String, usize, usize)> {
+        use crate::typ::Type;
+        fn go(
+            t: &Type,
+            depth: usize,
+            seen: &mut ahash::AHashSet<usize>,
+            out: &mut Vec<(String, usize, usize)>,
+        ) {
+            match t {
+                Type::TVar(tv) => {
+                    out.push((tv.name.to_string(), depth, tv.cell_addr()));
+                    if seen.insert(tv.cell_addr()) {
+                        for c in tv.cell_constraints() {
+                            go(&c, depth, seen, out)
+                        }
+                    }
+                }
+                Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, depth + 1, seen, out)),
+                t => t.for_each_child(&mut |c| go(c, depth, seen, out)),
+            }
+        }
+        let mut out = vec![];
+        go(t, 0, &mut ahash::AHashSet::default(), &mut out);
+        out
+    }
+
+    // In a nest whose signatures name a variable declared outside them,
+    // every occurrence is the declaring signature's cell, and each
+    // signature's own variable is a cell of its own.
+    #[test]
+    fn an_open_nest_names_its_declarers_cells() {
+        use crate::typ::Type;
+        let shapes: [(&str, fn(usize) -> String, &str); 3] = [
+            ("naming outer", nested_naming_outer, "z"),
+            ("bound naming outer", nested_by_bound_naming_outer, "z"),
+            ("unquantified", nested_naming_a_variable, "a"),
+        ];
+        for (name, shape, outer) in shapes {
+            let t = Type::Fn(triomphe::Arc::new(parse_fn_type(&shape(6)).unwrap()));
+            let cells = cells_by_depth(&t);
+            let of = |n: &'static str| cells.iter().filter(move |(m, _, _)| m == n);
+            let mut outer_cells = of(outer).map(|(_, _, c)| *c).collect::<Vec<_>>();
+            outer_cells.sort();
+            outer_cells.dedup();
+            assert_eq!(outer_cells.len(), 1, "{name}: {t}");
+            if outer == "z" {
+                let mut own = of("a").map(|(_, d, c)| (*d, *c)).collect::<Vec<_>>();
+                own.sort();
+                own.dedup();
+                let distinct =
+                    own.iter().map(|(_, c)| *c).collect::<ahash::AHashSet<_>>();
+                assert!(own.len() == 6 && distinct.len() == 6, "{name}: {own:?}: {t}");
+            }
         }
     }
 
