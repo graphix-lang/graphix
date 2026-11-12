@@ -180,50 +180,6 @@ pub(crate) fn owed<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
         && scope.owes(id)
 }
 
-// XCR claude for claude: [risk/medium] Three places where what a wake
-// stands moved is judged by an approximation of "outside the woken arm"
-// (design/wake_catchup.md, What a wake stands, "Judged in the build"), none
-// reached by a pin. (1) A paused collection's slots wake with no region
-// recorded (`collection::woken_slots` passes no boundary), so a reader
-// inside one that the walk passed takes a moved stand FIRED a cycle late
-// where a select arm's takes it stale; and `standing_arm_view` runs only a
-// select's arm as a resume again, so what such a reader in an absent
-// call's instance recomputes stands as a fire inside the instance too.
-// (2) A `Stateless` builtin that is not a `CachedArgs` (a custom `Apply`)
-// drops the bit, so a `let` over it in a woken arm stands unmoved and a
-// reader outside sees the change with no fire, as before the rule;
-// `GRAPHIX_QUIET=audit` panics there. Passing the bit on belongs in the
-// call site, which sees neither the builtin's effect nor its arguments'
-// tags today. (3) A reader whose own arm resumes in the stand's cycle
-// reads it stale through a function value and FIRED where its select
-// tracks the binding: Eric's ruling says fired for every reader outside
-// the woken arm, and telling a co-waking arm from the woken one needs the
-// region on the stand, not a cycle stamp on the boundary
-// (`Boundary::resumed_in`). Decide (3) with Eric if a program shows it.
-// (wake-outside-regions-01)
-// 2026-11-11 claude: Eric ruled (11-11): a wake fires nothing for anyone. What
-// a wake stands moved is now read stale by every reader and only tells a
-// consumer to recompute, so (1) and (3) no longer arise: no reader judges where
-// it stands. (2) stands: a custom Apply that drops the bit leaves a reader
-// outside holding a result computed from the old value.
-// 2026-11-12 claude: (1) and (3) are stale on base-r23: no reader judges where
-// a moved stand stands, a reader the walk passed takes it quiet in a resumed
-// slot and in an absent call's instance
-// (lang::wake_outside::a_passed_reader_in_a_resumed_slot_or_instance_takes_it_standing,
-// which passes on base-r23 too; (3) is
-// a_reader_waking_in_the_same_cycle_reads_it_standing). (2) is fixed at the
-// call site: CallSite::update_call marks a Stateless builtin's quiet result
-// moved when an argument moved (ArgsOut::moved, Callee::stateless), whatever
-// its Apply did with the tag. CachedArgs had the same hole three ways, fixed
-// with it: an Io builtin over a moved argument was not recomputed, a Stateless
-// eval giving no value over a moved argument stood an unmoved bottom, and a
-// value computed out of a bottom result stood unmoved. Pins that fail without
-// the fix (node-walk modes):
-// lang::wake_outside::{a_raw_stateless_builtin_passes_the_move,
-// a_stateless_builtin_a_wake_leaves_bottom_moves,
-// a_stateless_builtin_a_wake_takes_out_of_bottom_moves,
-// an_io_builtin_over_a_moved_argument_recomputes}. Probes:
-// ~/ptmp/cr29/scratch/r23/23e/wake-outside/.
 /// Whether the evaluation resumes or enters a body: what it reads that
 /// stands may have changed since the body last ran, so what it computes
 /// from it moved ([`crate::Tag::moved`]).
