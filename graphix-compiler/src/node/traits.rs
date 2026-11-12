@@ -432,37 +432,6 @@ fn reads_binding(value: &Expr) -> bool {
     }
 }
 
-// XCR claude for claude: [bug/medium] A method whose signature bounds a variable that
-// stands in a callback's result cannot be implemented with the bound in force: under
-// `trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b }`, `impl T
-// for i64 { let m = |s, f| f(s) }` is refused ("fn<'b: [i64, null]>(self: i64, f:
-// fn(x: i64) -> 'b: unbound within [i64, null]) -> 'b: unbound within [i64, null] does
-// not contain fn(s: i64, f: fn(x: i64) -> 'b: [i64, null]) -> 'b: [i64, null]": the
-// lambda's variable stands bound to its bound when the `let`'s annotation is held to
-// it), and so is the lambda that writes the bound (`'q: [i64, null] |s, f: fn(x: i64)
-// -> 'q| -> 'q f(s)`); only the variable written with no bound (`|s, f: fn(x: i64) ->
-// 'b| -> 'b f(s)`) and a signature with no bound run. The same lambda as a plain `let`
-// runs, and so does the bounded variable as a parameter's own type (`x: 'b`) or a
-// callback's parameter. base-r20 and r20-staging alike; with `'b: [self, null]` the
-// same. probes: ~/ptmp/cr29/scratch/r20/20d/x2/cb/{p1,p7,p4}.gx (refused), {p5,n1c,p3,
-// p8}.gx (run); `graphix --no-cache <file>` (method-bound-callback-result-01)
-// 2026-11-12 claude: CallSite::typecheck0's eager settle of a result cell no argument
-// reaches skipped the callee's declared quantifiers but not a cell rigid at the site:
-// inside a definition, a callback parameter's result 'b (f: fn(x: i64) -> 'b) is the
-// definition's own declared variable, and f(s) settled it to its bound's witness,
-// binding the definition's 'b to [i64, null] (the trait method's annotation then saw
-// the lambda's 'b bound; a plain let returned the bound at every call: base refuses
-// let r: i64 = m(3, |x| x + 1) and 'b: Number .. let r: f64 = m(3, |x| 1.5)). The
-// settle now skips a rigid cell (tv.is_rigid()). Pins (36 runs, every one fails with
-// the skip undone):
-// lang::traits::impl_method_bound_in_a_callback_s_result{,_holds_the_call,_is_not_its_bound},
-// impl_method_written_bound_in_a_callback_s_result,
-// impl_method_bound_holding_self_in_a_callback_s_result;
-// lang::types::a_declared_variable_in_a_callbacks_result_{is_each_calls,computes_at_each_calls_type},
-// a_callbacks_result_is_not_its_declared_variables_bound,
-// a_callbacks_declared_result_is_not_the_bodys_value; generics.md cases. Newly
-// refused: a body returning the callback's result held at the bound under -> 'b (base
-// accepted it, as 'b was bound). Census 0/0.
 /// The annotation a method's `let` takes from the declared signature
 /// where the method wrote none: `sig`, but for a `value` that reads a
 /// binding ([`reads_binding`]). That one is typed as a `let` of the read

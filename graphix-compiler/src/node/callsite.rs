@@ -4855,6 +4855,13 @@ impl<R: Rt> CallSite<R> {
         // fn(x: 'b) -> 'b`. The cell is 'b's; the message should say so. probes:
         // ~/ptmp/cr29/scratch/r23/23h/method-bound-callback-result-01/{s1,s2,s4}.gx
         // (call-result-rigid-name-01)
+        // 2026-11-12 claude: Another refusal over the same merged cell: an operator
+        // over the call's result,
+        // ~/ptmp/cr29/scratch/r23/23h/method-bound-callback-result-01/review/v7.gx
+        // ('b: Number |f: fn(x: i64) -> 'b| -> 'b f(1) + 1), reads "cannot compute
+        // '_8369: unbound within Number + i64" where the parameter's twin names 'b;
+        // so the fix belongs where the call's result is shown, not only at this
+        // check.
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
