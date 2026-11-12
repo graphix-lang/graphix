@@ -538,6 +538,122 @@ async fn a_step_asleep_with_its_machine_saw_what_came_before(mode: Mode) -> Resu
     Ok(())
 }
 
+// So does a step that read the input only through a callee it bound: the
+// callee counted `ev`'s fires, so the last step, which names `ev`, waits
+// for the next one, whether the first step completed in the cycle of the
+// fire or in a later one.
+async fn a_fire_read_through_a_bound_callee_is_spent(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let k = 1;
+        let f = select k { 1 => |u: i64| count(ev), _ => |u: i64| 0 };
+        seq go { STEPS; live(uniq(ev)) }
+    }"#;
+    let run = |ev: &str, steps: &str| {
+        let code = code.replace("EV", ev).replace("STEPS", steps);
+        async move { run(&code, mode).await }
+    };
+    let completes_at_once = "let a = live(f(0)); until live(step) >= 6";
+    assert_eq!(run("3 | 9", completes_at_once).await?, [9]);
+    assert_eq!(run("3 | 9 | 12", "until live(f(0)) >= 2").await?, [12]);
+    Ok(())
+}
+
+// A fire from before a step's entry is not one its callee read: the 2 came
+// while the first step waited, the second step bound the callee that
+// holds `ev` after its own entry, and the last step is still owed it.
+async fn a_fire_before_a_steps_entry_is_not_its_callees(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 2 | 13 => step, _ => never() };
+        let k = 1;
+        k <- select step { 6 => 2, _ => never() };
+        let f = select k { 1 => |u: i64| -> i64 u, _ => |u: i64| { ev; u } };
+        seq go { until live(step) >= 4; until live(f(0) + step) >= 9; live(uniq(ev)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [2]);
+    Ok(())
+}
+
+// An arm of a step's select spends what its bound callee read as a step
+// does: the first arm's callee counted the 3, so the last arm waits for
+// the 9.
+async fn a_fire_an_arms_bound_callee_read_is_spent(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 14 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 3 | 9 => step, _ => never() };
+        let k = 1;
+        let f = select k { 1 => |u: i64| count(ev), _ => |u: i64| 0 };
+        seq go {
+            live(select live(step) < 6 {
+                true => filter(f(0), |c| c < 0),
+                false => uniq(ev)
+            })
+        }
+    }"#;
+    assert_eq!(run(code, mode).await?, [9]);
+    Ok(())
+}
+
+// A fire in the cycle an arm is deselected is one the arm did not read:
+// the 6 lands as the first arm falls asleep, no arm that names `ev` runs
+// in that cycle, and the last arm is owed it.
+async fn a_fire_as_an_arm_falls_asleep_stays_owed(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 14 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 3 | 6 | 11 => step, _ => never() };
+        let k = 1;
+        let f = select k { 1 => |u: i64| count(ev), _ => |u: i64| 0 };
+        seq go {
+            live(select live(step) {
+                n if n < 7 => filter(f(0), |c| c < 0),
+                7 => never(),
+                _ => uniq(ev)
+            })
+        }
+    }"#;
+    assert_eq!(run(code, mode).await?, [6]);
+    Ok(())
+}
+
+// A passed step is asleep from the cycle it is passed, whatever its
+// machine does after: the callee it binds in the next run is owed the 5
+// `ev` took after the step completed, though the machine slept and woke
+// in between.
+async fn a_passed_step_is_asleep_before_its_machine_sleeps(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 30 => n + 1, _ => never() };
+        let go = select step { 1 | 14 => step, _ => never() };
+        let on = true;
+        on <- select step { 9 => false, 11 => true, _ => never() };
+        let ev = never();
+        ev <- select step { 5 | 22 => step, _ => never() };
+        let k = 1;
+        k <- select step { 12 => 2, _ => never() };
+        let f = select k { 1 => |u: i64| -> i64 u, _ => |u: i64| uniq(ev) };
+        filter(
+            select on { true => seq go { live(f(0)) }, false => never() },
+            |v| v > 0
+        )
+    }"#;
+    assert_eq!(run(code, mode).await?, [5]);
+    Ok(())
+}
+
 modes!(
     a_fire_while_a_step_waits_reaches_live,
     a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
@@ -551,4 +667,9 @@ modes!(
     a_fire_read_through_a_reference_is_spent,
     a_callee_bound_in_an_earlier_run_is_caught_up,
     a_step_asleep_with_its_machine_saw_what_came_before,
+    a_fire_read_through_a_bound_callee_is_spent,
+    a_fire_before_a_steps_entry_is_not_its_callees,
+    a_fire_an_arms_bound_callee_read_is_spent,
+    a_fire_as_an_arm_falls_asleep_stays_owed,
+    a_passed_step_is_asleep_before_its_machine_sleeps,
 );

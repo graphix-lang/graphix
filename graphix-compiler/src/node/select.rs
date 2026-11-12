@@ -1242,7 +1242,9 @@ impl Ladder {
 
 /// Deselect arm `j`: sleep it unless it is pure. Under
 /// [`super::deselecting_arm`] a recursive-edge callee inside the arm is
-/// deleted (`CallSite::sleep`).
+/// deleted (`CallSite::sleep`). The arm did not run this cycle, so the
+/// cycle's fires are observed again once the tracker has spent what
+/// joined the arm.
 fn deselect<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     tracked: &mut Option<TrackedFires>,
@@ -1254,8 +1256,8 @@ fn deselect<R: Rt>(
         super::deselecting_arm(true, || arm.1.sleep(ctx))
     }
     let Some(tracked) = tracked else { return };
-    tracked.fell_asleep(j, ctx.rt.cycle());
-    tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
+    tracked.deselect(ctx, j, |r| arm_refs(arm, r));
+    tracked.observe(ctx);
     tracked
         .observe_late(ctx, |i, b| i == j && BoundaryRef::held_by(arm_boundary(arm), b));
 }

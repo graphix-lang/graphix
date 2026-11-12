@@ -557,11 +557,22 @@ its input until one does, so one made before the run, or in the last
 run after its readers passed, is caught up too. The step awake when an
 input fires
 spends the fire, also where it reads the input only through a reference
-whose target it learned as it ran (`TrackedFires::evaluated`); a callee
-it bound joins its inputs when it is deselected (`refresh`), so a fire
-of what the callee captures between two runs is owed to the step's next
-entry. A step selected when its machine falls asleep saw every write
-until then, walked or not (`all_fell_asleep`). A step's own `let` fire
+whose target it learned as it ran (`TrackedFires::evaluated`), or
+through a callee it bound. What a callee captures joins the step's
+inputs when the step is deselected (`TrackedFires::deselect`), and one
+written since the step woke is one the callee read: its fire is spent,
+so a later step that names the input waits for the next one, and a fire
+of it between two runs is owed to the step's next entry. A fire from
+before the step woke stays owed where the callee was bound after the
+entry, in an ordinary cycle: a body is delivered nothing. The tracker
+knows when the step woke, not when the callee was bound, so a fire
+between the two is spent though the callee read it only as it stood.
+An arm of a step's select does the same; it did not run in the cycle it
+is deselected, so the select observes that cycle's fires again. A
+passed step is asleep from the cycle it is passed, whatever
+its machine does after; a step selected when its machine falls asleep
+saw every write until then, walked or not (`all_fell_asleep`). A step's
+own `let` fire
 is carried to the first step entered in a later cycle that reads it,
 though a step of its own cycle read it live (`TrackedFires::enter`).
 Pins: `lang::seq_steps::{a_fire_while_a_step_waits_reaches_live,
@@ -573,6 +584,11 @@ a_fire_an_awake_step_read_is_not_owed_again,
 a_fire_read_through_a_reference_is_spent,
 a_callee_bound_in_an_earlier_run_is_caught_up,
 a_step_asleep_with_its_machine_saw_what_came_before,
+a_fire_read_through_a_bound_callee_is_spent,
+a_fire_before_a_steps_entry_is_not_its_callees,
+a_fire_an_arms_bound_callee_read_is_spent,
+a_fire_as_an_arm_falls_asleep_stays_owed,
+a_passed_step_is_asleep_before_its_machine_sleeps,
 let_fire_reaches_a_later_cycle}`.
 
 #### The fire tracker (`node/wake.rs`)
@@ -590,16 +606,20 @@ what it reads nothing (`wake::in_body`, `design/bind_driven_bodies.md`).
 - `per_arm`: each consumer's free refs, what it references minus what is
   bound within it and minus pattern binds. Collected when the tracker is
   built (a machine's and a select's on their first update) and again at
-  each deselect (`refresh`): compile-time refs cannot see through a
+  each deselect (`deselect`): compile-time refs cannot see through a
   lambda literal into an instantiated body, deselect-time refs can. After a consumer's
   first evaluation its own nodes add what they name only once they ran
-  (a `Deref`'s target, `evaluated`).
+  (a `Deref`'s target, `evaluated`). An input that joins either way is
+  one the consumer read: `evaluated` clears its bit, `deselect` clears
+  it where the input was written since the consumer woke.
 - `consumes`: per consumer, the inputs the pattern binds it reads are
   facets of (`Env::pattern_inputs`). Reading a pattern bind consumes
   those inputs' bits; the bind itself is never delivered.
 - `pending`: the fires no evaluation has consumed, one bit per input, so
-  N fires conflate to one catch-up at the standing value. `observe`
-  records a cycle's fires of the tracked inputs before any routing;
+  N fires conflate to one catch-up at the standing value. A select's
+  `observe` records a cycle's fires of the tracked inputs before any
+  routing, and again after a deselect; the machine records them once its
+  steps ran, but for those an evaluated step reads (`observe_except`);
   `observe_late` records a late fire (`Event::late`) to a reader inside
   a consumer that does not run this cycle. `deliver` injects, for the
   step or arm body about to run, each pending input it reads as a FIRED
@@ -611,7 +631,7 @@ what it reads nothing (`wake::in_body`, `design/bind_driven_bodies.md`).
 - `clock` (`ArmClock`): per consumer, the first cycle whose writes it
   did not see: the cycle after its last run while it is awake, the cycle
   it fell asleep in otherwise, the tracker's build cycle if it never
-  ran. A body with nothing to pause is slept late and fell asleep in the
+  ran; and, while it is awake, the cycle it woke in. A body with nothing to pause is slept late and fell asleep in the
   cycle it stopped running (`wake::asleep_since`, `wake::stopped`).
 
 **Inputs learned as a consumer runs.** The bits cover the inputs a

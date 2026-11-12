@@ -359,8 +359,8 @@ impl Inputs {
 /// An arm's place in time, as the arm stands.
 #[derive(Debug, Clone, Copy)]
 enum ArmClock {
-    /// It ran in this cycle and has not fallen asleep since.
-    Awake(u64),
+    /// It woke in `since`, last ran in `ran` and has not fallen asleep.
+    Awake { since: u64, ran: u64 },
     /// Asleep, it saw no write from this cycle on: the tracker's build
     /// cycle if it never ran.
     Asleep(u64),
@@ -370,15 +370,23 @@ impl ArmClock {
     /// The first cycle whose writes the arm did not see.
     fn unseen(self) -> u64 {
         match self {
-            ArmClock::Awake(c) => c + 1,
+            ArmClock::Awake { ran, .. } => ran + 1,
             ArmClock::Asleep(c) => c,
+        }
+    }
+
+    /// Ran in `cycle`, which wakes it if it was asleep.
+    fn ran(&mut self, cycle: u64) {
+        *self = match *self {
+            ArmClock::Awake { since, .. } => ArmClock::Awake { since, ran: cycle },
+            ArmClock::Asleep(_) => ArmClock::Awake { since: cycle, ran: cycle },
         }
     }
 
     /// Stopped running in `cycle`: it stood selected, walked or not,
     /// until the cycle before.
     fn fell_asleep(&mut self, cycle: u64) {
-        if let ArmClock::Awake(ran) = *self {
+        if let ArmClock::Awake { ran, .. } = *self {
             *self = ArmClock::Asleep((ran + 1).max(cycle))
         }
     }
@@ -438,17 +446,46 @@ impl TrackedFires {
         t
     }
 
-    /// Re-collect arm `i`'s refs, at a deselect, when its subtree is
-    /// fully materialized.
-    pub(crate) fn refresh(&mut self, env: &Env, i: usize, fill: impl FnOnce(&mut Refs)) {
-        let Self { per_arm, consumes, all, pending, carried, .. } = self;
+    /// Arm `i` is deselected: it falls asleep this cycle, and its refs
+    /// are collected again, its subtree being fully materialized. An
+    /// input that joins them, written since the arm woke, the arm read
+    /// as it ran (a callee it bound captures it): it consumes its fire.
+    pub(crate) fn deselect<R: Rt>(
+        &mut self,
+        ctx: &ExecCtx<'_, R>,
+        i: usize,
+        fill: impl FnOnce(&mut Refs),
+    ) {
+        let Self { per_arm, consumes, all, pending, carried, clock, .. } = self;
+        let woke = match clock[i] {
+            ArmClock::Awake { since, .. } => Some(since),
+            ArmClock::Asleep(_) => None,
+        };
+        clock[i].fell_asleep(ctx.rt.cycle());
         let mut r = Refs::default();
         fill(&mut r);
         let old = mem::take(&mut per_arm[i]);
-        Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
+        Self::arm_refs(&ctx.env, &r, &mut per_arm[i], &mut consumes[i]);
         for id in per_arm[i].iter() {
             if !old.contains(id) {
                 all.add(*id);
+                // CR claude for claude: [bug/low] A fire between a step's entry and the
+                // cycle the step binds a callee that captures the input is spent here,
+                // though the callee, bound in an ordinary cycle, read the input only as
+                // it stood: a later step that names the input is not caught up on it.
+                // The tracker knows when the arm woke, not when the callee was bound.
+                // Probe ~/ptmp/cr29/scratch/r23/23e/seq-catchup-02/e2.gx prints `15 13`,
+                // the fire of 5 lost (e1.gx there, the fire before the entry, is owed:
+                // `11 2`). A fix needs the bind's cycle: the call site telling the
+                // tracker of a bind in an ordinary cycle, or the capture joining then
+                // without being consumed. design/seq_blocks.md 6.4 states the limit.
+                // (seq-callee-bind-01)
+                if pending.contains(id)
+                    && let Some(woke) = woke
+                    && ctx.rt.store_get(id).is_some_and(|(_, stamp)| *stamp >= woke)
+                {
+                    Arc::make_mut(pending).remove(id);
+                }
             }
         }
         for id in old.iter() {
@@ -608,7 +645,7 @@ impl TrackedFires {
                 }
             }
         }
-        self.clock[i] = ArmClock::Awake(ctx.rt.cycle());
+        self.clock[i].ran(ctx.rt.cycle());
     }
 
     /// The first cycle whose writes arm `i` did not see.
@@ -616,9 +653,9 @@ impl TrackedFires {
         self.clock[i].unseen()
     }
 
-    /// Arm `i` stops running in `cycle` (deselected, or put to sleep
-    /// while selected): it was awake until the cycle before. An arm
-    /// already asleep stays asleep since it fell.
+    /// Arm `i` stops running in `cycle` (a guard its select no longer
+    /// reaches): it was awake until the cycle before. An arm already
+    /// asleep stays asleep since it fell.
     pub(crate) fn fell_asleep(&mut self, i: usize, cycle: u64) {
         self.clock[i].fell_asleep(cycle)
     }
