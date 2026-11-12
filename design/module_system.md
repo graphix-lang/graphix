@@ -325,8 +325,9 @@ data; of several alike the nearest, then the one the program writes
 first, so its annotation lifts the refusal, `module::Holder::of`). The
 lambdas a binding holds are its own, those its data's function types
 carry, and those behind a generic binding's read of a function (`let f =
-s.g`); a function a call returns is one instance whatever its lambdas
-capture, so it is not followed. An implementation that is no lambda and
+s.g`); a binding whose value is any other function (a call's result,
+`let g = mk()`) is one instance whatever its lambdas capture, so it is
+not followed. An implementation that is no lambda and
 whose lambdas capture nothing holding the cell (a call's result in a
 struct update, `{base with h: mk()}`) is told the lambda or the literal
 of lambdas, never a binding to annotate; paired with

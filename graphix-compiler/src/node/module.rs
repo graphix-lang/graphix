@@ -581,6 +581,19 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
+    // CR claude for claude: [bug/low] A binding ranked Holds::InLambdas whose lambdas
+    // lead to no holder (they are a call's result, capturing nothing) is still named,
+    // and its annotation lifts the refusal only where the cell stands in argument
+    // positions: under `val f: fn(x: 'a) -> 'a`, `let mk = || |x| x; let s0 = {g: |x|
+    // x, h: mk()}; let f = |x| s0.h(x)` is told "give s0 a type that holds every 'a",
+    // and with s0 annotated `{g: fn(x: Any) -> Any, h: fn(x: Any) -> Any}` it is refused
+    // "in return type: signature has type variable 'a where implementation has Any";
+    // `let j = s0.h; let f = |x| j(x)` names j the same way. A lambda in place of
+    // `mk()` runs; under `val f: fn(x: 'a) -> i64` with `|x| { s0.h(x); 1 }` the
+    // annotation does lift it. A fix: where a holder's lambdas lead nowhere, name the
+    // call's result as one instance (a lambda in its place) beside or instead of the
+    // binding. probes: ~/ptmp/cr29/scratch/r23/23h/val-call-result-remedy-01/review/
+    // {p1,p1b,p2,p2b,p2d,p2e} (lambda-holder-dead-end-01)
     /// What holds `tv` for the implementation's binding `id`: a binding the
     /// lambdas it holds capture, or the lambdas those capture, whose type
     /// reaches the cell, the binding an annotation can widen. One whose own
