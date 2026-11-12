@@ -1333,6 +1333,15 @@ impl TypeRef {
         }
     }
 
+    /// [`Self::resolved`] of a cell that is not open; `None` while it is.
+    fn held(&self) -> Option<Option<sync::Arc<ResolvedRef>>> {
+        match &*self.resolved.lock() {
+            Resolution::Open => None,
+            Resolution::Def(w) => Some(w.upgrade()),
+            Resolution::Trait(_) => Some(None),
+        }
+    }
+
     /// The trait the cell holds: a bound resolved once, where its name
     /// was visible.
     pub(crate) fn trait_id(&self) -> Option<TraitId> {
@@ -1395,7 +1404,22 @@ impl TypeRef {
     /// [`Self::same_definition`] by what the cells hold, for a walk with
     /// no env: a filled cell and an open one are two definitions.
     pub(crate) fn same_filled_definition(&self, other: &Self) -> bool {
-        match (self.resolved(), other.resolved()) {
+        self.same_held(self.resolved(), other, other.resolved())
+    }
+
+    /// [`Self::same_filled_definition`] where neither cell is open; `None`
+    /// where one is, whose fill may change the answer.
+    pub(crate) fn same_settled_definition(&self, other: &Self) -> Option<bool> {
+        Some(self.same_held(self.held()?, other, other.held()?))
+    }
+
+    fn same_held(
+        &self,
+        def: Option<sync::Arc<ResolvedRef>>,
+        other: &Self,
+        other_def: Option<sync::Arc<ResolvedRef>>,
+    ) -> bool {
+        match (def, other_def) {
             (Some(a), Some(b)) => a.def_key() == b.def_key(),
             (None, None) => self.scope == other.scope && self.name == other.name,
             _ => false,

@@ -410,14 +410,19 @@ pub(super) enum Identical {
     Renamed,
 }
 
-/// [`union_identical`] over the questions of one walk: the node pairs
+/// [`union_identical`] over the questions of one walk: the verdict of a
+/// node pair whose walk read no cell stands for good, and the node pairs
 /// found identical, with no two distinct cells paired, stand while this
 /// thread writes no cell, so a chain asked about at every link is walked
-/// once.
+/// once. A question keys its node pairs past `NodePairs::EAGER` steps,
+/// and its pairs of applications from its first: an application is
+/// what a DAG through typedefs shares, which the questions meet at
+/// every link.
 #[derive(Default)]
 pub(super) struct IdenticalMemo {
     writes: u64,
     found: NodePairs,
+    settled: Settled,
 }
 
 impl IdenticalMemo {
@@ -427,8 +432,14 @@ impl IdenticalMemo {
             self.found.clear();
             self.writes = writes;
         }
+        if !memo_on() {
+            self.settled.clear()
+        }
         self.found.restart();
-        let mut id = Identity::new(None, &mut self.found);
+        let mut id = Identity {
+            settled: Some(&mut self.settled),
+            ..Identity::new(None, &mut self.found)
+        };
         let same = id.same(t0, t1);
         let renamed = id.renamed;
         if renamed {
@@ -438,6 +449,31 @@ impl IdenticalMemo {
             (false, _) => Identical::Apart,
             (true, false) => Identical::Same,
             (true, true) => Identical::Renamed,
+        }
+    }
+}
+
+/// The verdicts of node pairs whose walk read no cell: no variable, and
+/// no name whose resolution cell is open. Neither side can change, so a
+/// verdict stands through any write. Each pair is held, so an address
+/// stays its node's.
+#[derive(Default)]
+struct Settled(Option<LPooled<AHashMap<(NodeKey, NodeKey), (Type, Type, bool)>>>);
+
+impl Settled {
+    fn get(&self, key: (NodeKey, NodeKey)) -> Option<bool> {
+        self.0.as_ref().and_then(|m| m.get(&key)).map(|(_, _, same)| *same)
+    }
+
+    fn insert(&mut self, key: (NodeKey, NodeKey), t0: &Type, t1: &Type, same: bool) {
+        self.0
+            .get_or_insert_with(LPooled::take)
+            .insert(key, (t0.clone(), t1.clone(), same));
+    }
+
+    fn clear(&mut self) {
+        if let Some(m) = &mut self.0 {
+            m.clear()
         }
     }
 }
@@ -464,6 +500,12 @@ struct Identity<'a> {
     found_in_fn: NodePairs,
     /// Two distinct cells were paired.
     renamed: bool,
+    /// Where the verdicts of pairs whose walk read no cell go: a plain
+    /// walk's alone ([`IdenticalMemo`]), whose every cell read is a
+    /// [`Self::same_inner`] of a variable or of a name.
+    settled: Option<&'a mut Settled>,
+    /// The pair being walked has read a cell so far.
+    read_cell: bool,
 }
 
 impl<'a> Identity<'a> {
@@ -478,6 +520,8 @@ impl<'a> Identity<'a> {
             found,
             found_in_fn: NodePairs::default(),
             renamed: false,
+            settled: None,
+            read_cell: false,
         }
     }
 
@@ -488,18 +532,37 @@ impl<'a> Identity<'a> {
         if t0.node_key().is_some_and(|a| t1.node_key() == Some(a)) {
             return true;
         }
-        let pair = self.found.key(t0, t1);
-        if let Some(pair) = pair
-            && (self.found.contains(pair)
-                || (self.pairs.is_some() && self.found_in_fn.contains(pair)))
-        {
-            return true;
+        let pair = match (t0, t1) {
+            (Type::Ref(r0), Type::Ref(r1))
+                if self.settled.is_some()
+                    && !r0.params.is_empty()
+                    && !r1.params.is_empty() =>
+            {
+                t0.node_key().zip(t1.node_key())
+            }
+            _ => self.found.key(t0, t1),
+        };
+        if let Some(pair) = pair {
+            if let Some(same) = self.settled.as_ref().and_then(|s| s.get(pair)) {
+                return same;
+            }
+            if self.found.contains(pair)
+                || (self.pairs.is_some() && self.found_in_fn.contains(pair))
+            {
+                self.read_cell = true;
+                return true;
+            }
         }
+        let above = mem::replace(&mut self.read_cell, false);
         let same = ensure_sufficient(|| self.same_inner(t0, t1));
-        if let Some(pair) = pair.filter(|_| same) {
-            match self.pairs {
-                None => self.found.insert(pair, t0, t1),
-                Some(_) => self.found_in_fn.insert(pair, t0, t1),
+        let read_cell = self.read_cell;
+        self.read_cell |= above;
+        if let Some(pair) = pair {
+            match (&mut self.settled, self.pairs.is_some()) {
+                (Some(settled), _) if !read_cell => settled.insert(pair, t0, t1, same),
+                _ if !same => (),
+                (_, false) => self.found.insert(pair, t0, t1),
+                (_, true) => self.found_in_fn.insert(pair, t0, t1),
             }
         }
         same
@@ -565,6 +628,7 @@ impl<'a> Identity<'a> {
 
     #[inline(never)]
     fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
+        self.read_cell |= matches!(t0, Type::TVar(_)) || matches!(t1, Type::TVar(_));
         if self.sets {
             match (members_of(t0), members_of(t1)) {
                 (None, None) => (),
@@ -609,7 +673,10 @@ impl<'a> Identity<'a> {
             (Type::Ref(r0), Type::Ref(r1)) => {
                 let same = match self.env {
                     Some(env) => r0.same_definition(r1, env),
-                    None => r0.same_filled_definition(r1),
+                    None => r0.same_settled_definition(r1).unwrap_or_else(|| {
+                        self.read_cell = true;
+                        r0.same_filled_definition(r1)
+                    }),
                 };
                 same && self.all(&r0.params, &r1.params)
             }
@@ -2730,6 +2797,97 @@ pub(crate) mod tests {
         assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Same);
         b.bind(Type::Primitive(Typ::String.into()));
         assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Apart);
+    }
+
+    // A walk that takes a kept agreement over cells reads those cells: its
+    // verdict is not kept past a write either.
+    #[test]
+    fn identical_memo_keeps_nothing_built_on_an_agreement_over_cells() {
+        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
+        a.bind(Type::Primitive(Typ::I64.into()));
+        b.bind(Type::Primitive(Typ::I64.into()));
+        let (x, y) = (
+            Type::Array(Arc::new(Type::TVar(a))),
+            Type::Array(Arc::new(Type::TVar(b.clone()))),
+        );
+        let list = |t: &Type| past_eager(&Type::List(Arc::new(t.clone())));
+        let (xs, ys) = (list(&x), list(&y));
+        let mut m = IdenticalMemo::default();
+        assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Same);
+        assert_eq!(m.identical(&xs, &ys), Identical::Same);
+        b.bind(Type::Primitive(Typ::String.into()));
+        assert_eq!(m.identical(&xs, &ys), Identical::Apart);
+    }
+
+    /// An env defining `P<'x, 'y>` as `[Array<'x>, Array<'y>, null]`.
+    fn links_env() -> Env {
+        typed(&[("P<'x, 'y>", "[Array<'x>, Array<'y>, null]")], "null").0
+    }
+
+    /// `n` links over i64, the links from the top, each but the last two
+    /// `P` applied to the two below it: a DAG that holds no cell, as an
+    /// instance's signature over a chain of bounds through `P` is.
+    fn application_links(env: &Env, n: usize) -> Vec<Type> {
+        let mut links = vec![parsed(env, "i64"), parsed(env, "[Array<i64>, null]")];
+        while links.len() < n {
+            let [y, x] = links.last_chunk().unwrap().clone();
+            let params = AHashMap::from_iter([(literal!("x"), x), (literal!("y"), y)]);
+            links.push(parsed(env, "P<'x, 'y>").replace_tvars(&params));
+        }
+        links.reverse();
+        links
+    }
+
+    /// The steps [`IdenticalMemo`] takes to ask every link of one of two
+    /// twin DAGs of `n` links whether it is each link of the other, a cell
+    /// written before each question, as a walk placing a union's members
+    /// asks of them.
+    fn identical_links_steps(n: usize, memo: bool) -> usize {
+        let env = links_env();
+        let (l, r) = (application_links(&env, n), application_links(&env, n));
+        super::NO_MEMO.with(|m| m.set(!memo));
+        super::IDENTITY_STEPS.with(|s| s.set(0));
+        let mut m = IdenticalMemo::default();
+        for (i, a) in l.iter().enumerate() {
+            for (j, b) in r.iter().enumerate() {
+                let writes = super::cell_writes();
+                TVar::empty_named(literal!("w")).bind(Type::Primitive(Typ::I64.into()));
+                assert!(super::cell_writes() > writes);
+                let found = if i == j { Identical::Same } else { Identical::Apart };
+                assert_eq!(m.identical(a, b), found);
+            }
+        }
+        super::NO_MEMO.with(|m| m.set(false));
+        super::IDENTITY_STEPS.with(|s| s.get())
+    }
+
+    // A verdict over two nodes that hold no cell stands through cell
+    // writes, apart or identical, so each pair is walked once.
+    #[test]
+    fn identical_memo_walks_each_pair_of_cell_free_links_once() {
+        let steps = [16, 32, 64].map(|n| identical_links_steps(n, true));
+        assert_eq!(steps, [475, 1963, 8011]);
+        let without = [16, 32, 64].map(|n| identical_links_steps(n, false));
+        assert_eq!(without, [1460, 11124, 87796]);
+    }
+
+    // A difference found at a name whose resolution cell is open is not
+    // kept: filled, the cell names the other side's definition.
+    #[test]
+    fn identical_memo_keeps_no_difference_read_at_an_open_name() {
+        let env = links_env();
+        let filled = parsed(&env, "P<i64, i64>");
+        let open = parse_type("P<i64, i64>").unwrap().scope_refs(&ModPath::root());
+        let mut m = IdenticalMemo::default();
+        assert_eq!(
+            m.identical(&past_eager(&filled), &past_eager(&open)),
+            Identical::Apart
+        );
+        open.seed_refs(&env);
+        assert_eq!(
+            m.identical(&past_eager(&filled), &past_eager(&open)),
+            Identical::Same
+        );
     }
 
     /// The steps [`one_type`] takes to find each of `ms` one type with
