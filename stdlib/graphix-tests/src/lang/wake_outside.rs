@@ -1387,6 +1387,35 @@ async fn an_unwrap_a_wake_leaves_bottom_moves() -> Result<()> {
     Ok(())
 }
 
+// The null or the error a wake leaves under a `?` fired for no one, so
+// the handler hears nothing at the wake: it hears the one that fires at
+// clk 7, and counts it at clk 8.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unwrap_a_wake_leaves_bottom_raises_nothing() -> Result<()> {
+    let null = "let o: [i64, null] = select n { 3 => null, 4 => null, x => x };";
+    let error =
+        "let o: [i64, Error<`E>] = select n { 3 => error(`E), 4 => error(`E), x => x };";
+    let heard: Vec<String> = (0..10).map(|c| format!("[{c}, {}]", c / 8)).collect();
+    for o in [null, error] {
+        for read in ["o? + 0", "#[native] (o? + 0)"] {
+            let code = format!(
+                "{{
+  {CLOCK}
+  let errs = 0;
+  let g = select sel {{
+    0 => {{ let w = {{ catch(e) errs <- e ~ errs + 1; {o} {read} }}; &w }},
+    _ => {{ let w = n + 100; &w }}
+  }};
+  let h = once(g);
+  clk ~ (clk, errs)
+}}"
+            );
+            agrees(code, &heard).await?
+        }
+    }
+    Ok(())
+}
+
 // A loop over a source the wake leaves bottom ran no slot to carry the
 // move: its result is the source's bottom, moved with the source.
 #[tokio::test(flavor = "multi_thread")]
