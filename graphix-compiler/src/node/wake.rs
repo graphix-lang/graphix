@@ -480,6 +480,13 @@ impl TrackedFires {
                 // tracker of a bind in an ordinary cycle, or the capture joining then
                 // without being consumed. design/seq_blocks.md 6.4 states the limit.
                 // (seq-callee-bind-01)
+                // 2026-11-12 claude: A reference is the same hole: a fire between a
+                // step's entry and the ordinary cycle a reference the step reads through
+                // takes the input as its target is spent at the deselect too. Probe
+                // ~/ptmp/cr29/scratch/r23/23e/seq-catchup-02/review/q1.gx prints `15 13`
+                // (base-r23 `8 5`), in both engines and forked. A fix that tells the
+                // tracker of a bind covers it if Deref::address tells it of a new target
+                // the same way.
                 if pending.contains(id)
                     && let Some(woke) = woke
                     && ctx.rt.store_get(id).is_some_and(|(_, stamp)| *stamp >= woke)

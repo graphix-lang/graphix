@@ -654,6 +654,45 @@ async fn a_passed_step_is_asleep_before_its_machine_sleeps(mode: Mode) -> Result
     Ok(())
 }
 
+// A step an abort passes spends what its callee read, and no more. The 5
+// its callee counted is not owed to the next run, whose count reaches 2 at
+// the 14: its last step waits for the 17. The 6 lands in the cycle the
+// abort passes the step, which did not run then: the next run is owed it,
+// its count reaches 2 at the 12 and its last step waits for the 14.
+async fn a_fire_as_a_step_is_aborted_stays_owed(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 30 => n + 1, _ => never() };
+        let go = select step { 1 | 10 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV | 12 | 14 | 17 => step, _ => never() };
+        let cancel = select step { 6 => step, _ => never() };
+        let k = 1;
+        let f = select k { 1 => |u: i64| count(ev), _ => |u: i64| 0 };
+        seq go; abort(cancel) { until live(f(0)) >= 2; live(uniq(ev)) }
+    }"#;
+    assert_eq!(run(&code.replace("EV", "5"), mode).await?, [17]);
+    assert_eq!(run(&code.replace("EV", "6"), mode).await?, [14]);
+    Ok(())
+}
+
+// A step entered in the cycle of a fire reads it live, whoever read it
+// before: the callee the compiler resolves lets the last step start in
+// the cycle the 9 ends the `until`, and it answers the 9.
+async fn a_step_entered_in_the_cycle_of_a_fire_reads_it_live(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 3 | 9 | 12 => step, _ => never() };
+        let f = |u: i64| count(ev);
+        seq go { until live(f(0)) >= 2; live(uniq(ev)) }
+    }"#;
+    assert_eq!(run(code, mode).await?, [9]);
+    Ok(())
+}
+
 modes!(
     a_fire_while_a_step_waits_reaches_live,
     a_trigger_fired_while_its_step_waited_starts_a_nested_seq,
@@ -672,4 +711,6 @@ modes!(
     a_fire_an_arms_bound_callee_read_is_spent,
     a_fire_as_an_arm_falls_asleep_stays_owed,
     a_passed_step_is_asleep_before_its_machine_sleeps,
+    a_fire_as_a_step_is_aborted_stays_owed,
+    a_step_entered_in_the_cycle_of_a_fire_reads_it_live,
 );

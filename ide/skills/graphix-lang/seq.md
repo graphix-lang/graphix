@@ -107,7 +107,9 @@ level as a step, `let c = cfg`.
 A builtin under `live` is owed missed fires too: `until live(ready);
 live(count(ev))` counts an `ev` that fired while the `until` waited.
 A fire the step awake at the time read, by name or in a function it
-called, is not a missed one: `until live(wait(0)); live(count(ev))`
-with `ev` read inside `wait` counts only what fires after the `until`.
+called, is not a missed one: after `until live(wait(0))`, with `ev` read
+inside `wait`, `live(count(ev))` is owed none of the fires `wait` saw.
+It counts the fire that ended the `until` only where it starts in that
+same cycle and reads the fire live, as it would reading `ev` by name.
 `graphix --expand` shows the machine.
 `range(i, j)` is the integer sequence builtin (throws `` `RangeError ``).

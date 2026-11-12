@@ -566,7 +566,9 @@ of it between two runs is owed to the step's next entry. A fire from
 before the step woke stays owed where the callee was bound after the
 entry, in an ordinary cycle: a body is delivered nothing. The tracker
 knows when the step woke, not when the callee was bound, so a fire
-between the two is spent though the callee read it only as it stood.
+between the two is spent though the callee read it only as it stood;
+so is one made before a reference the step reads through took the
+input as its target, in an ordinary cycle after the entry.
 An arm of a step's select does the same; it did not run in the cycle it
 is deselected, so the select observes that cycle's fires again. A
 passed step is asleep from the cycle it is passed, whatever
@@ -589,6 +591,8 @@ a_fire_before_a_steps_entry_is_not_its_callees,
 a_fire_an_arms_bound_callee_read_is_spent,
 a_fire_as_an_arm_falls_asleep_stays_owed,
 a_passed_step_is_asleep_before_its_machine_sleeps,
+a_fire_as_a_step_is_aborted_stays_owed,
+a_step_entered_in_the_cycle_of_a_fire_reads_it_live,
 let_fire_reaches_a_later_cycle}`.
 
 #### The fire tracker (`node/wake.rs`)
