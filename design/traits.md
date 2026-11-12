@@ -385,10 +385,11 @@ and names the lambda, which takes the declared type
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,
-type test or `type` anywhere in its value, and the `val`s and `type`s of
-a module's signature there, a dynamic module's or an interface's
-(`traits::self_as_target` substitutes it before the method compiles; a
-generic impl's target keeps the head's variables). So `|s: self, x|` in
+type test or `type` anywhere in its value, and the `val`s (the bounds
+their headers declare included) and `type`s of a module's signature
+there, a dynamic module's or an interface's (`traits::self_as_target`
+substitutes it before the method compiles; a generic impl's target keeps
+the head's variables). So `|s: self, x|` in
 `impl T for i64` is `|s: i64, x|`, `[self, 'c]` is `[i64, 'c]`, and a
 written `self` that disagrees with the trait (`x: self` where the trait
 declares `x: string`) is an impl that does not implement it.

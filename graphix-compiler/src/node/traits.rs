@@ -298,11 +298,17 @@ fn method_scope_lambdas(e: &Expr) -> Result<()> {
     })
 }
 
+/// Whether `t` mentions `self`, in a bound its function type's header
+/// declares too: a signature's `val` holds its quantifiers' bounds.
+fn mentions_self(t: &Type) -> bool {
+    t.mentions_self() || matches!(t, Type::Fn(ft) if ft.bound_mentions_self())
+}
+
 /// Whether a type `e` writes itself, never a child's, mentions `self`.
 fn writes_self_itself(e: &Expr) -> bool {
     let mut found = false;
     e.map_written_types(&mut |t| {
-        found |= t.mentions_self();
+        found |= mentions_self(t);
         None
     });
     found
@@ -363,7 +369,7 @@ fn self_as_target(e: &Expr, target: &Type, generic: bool, env: &Env) -> Result<E
                 false => c.clone(),
             });
             m.id = e.id;
-            let mut sub = |t: &Type| t.mentions_self().then(|| t.replace_tvars(known));
+            let mut sub = |t: &Type| mentions_self(t).then(|| t.replace_tvars(known));
             let Some(written) = m.map_written_types(&mut sub) else { return m };
             if generic && res.is_ok() {
                 let target = &known["self"];
