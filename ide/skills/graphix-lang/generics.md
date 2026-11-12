@@ -197,6 +197,23 @@ ok |x: [Array<'c>, Array<string>], y: 'c| y
 ok |x: [Array<'c>, Map<string, 'd>], y: 'c| y
 ```
 
+Two constructions of one nominal type over payloads nothing has decided
+(`B([never()])` and `B([])` over `type B<'p> = Abstract<'p>`) that meet
+in one value are one payload type, not a union of two: what later
+decides one decides the other. Two undecided bindings that meet that way
+(`B([e])` written where `B([g])` stands) become one type at the first
+call that returns the payload, and a writer of one that the other's does
+not fit is refused: declare the binding it names, or a function's
+parameters (`|a: 'a, b: 'b|`).
+
+```graphix,cases
+ok type B<'p> = Abstract<'p>; let f = |a| { a <- B([never()]); a.0 }; let r = f(B([])); r <- [1]; r
+no "declare g: [i64, string] where it is bound" type B<'p> = Abstract<'p>; let e = never(); let g = never(); let x = B([e]); x <- B([g]); let h = |u| u ~ x.0; let r = h(1); e <- 1; g <- "s"; r
+ok type B<'p> = Abstract<'p>; let e = never(); let g: [i64, string] = never(); let x = B([e]); x <- B([g]); let h = |u| u ~ x.0; let r = h(1); e <- 1; g <- "s"; r
+no "i64 does not contain string" type B<'p> = Abstract<'p>; let f = |a, b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) }; f(1, "s")
+ok type B<'p> = Abstract<'p>; let f = |a: 'a, b: 'b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) }; f(1, "s")
+```
+
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
 `fn(c: Collection) -> i64`) stands only as a definition's signature: a

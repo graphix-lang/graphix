@@ -5129,6 +5129,73 @@ run!(
     prints("[i64:1, i64:2]")
 );
 
+// Cells a settle made one are decided together: a call whose result holds
+// the payload settles it while `e` and `g` are undecided, so a writer of
+// one that the other's does not fit is refused, naming the binding to
+// declare.
+run!(
+    payload_cells_made_one_are_decided_together,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let e = never();
+    let g = never();
+    let x = B([e]);
+    x <- B([g]);
+    let h = |u| u ~ x.0;
+    let r = h(1);
+    e <- 1;
+    g <- "s";
+    r
+}"#,
+    refused(
+        "g is i64, inferred from an earlier use, and cannot hold string; declare g: [i64, \
+         string] where it is bound"
+    );
+    FuseExpect::None
+);
+
+// A declared cell is no cell nothing bounds: the two payloads stay two
+// members.
+run!(
+    declared_payload_cell_stays_apart,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let e = never();
+    let g: [i64, string] = never();
+    let x = B([e]);
+    x <- B([g]);
+    let h = |u| u ~ x.0;
+    let r = h(1);
+    e <- 1;
+    g <- "s";
+    r
+}"#,
+    prints("[i64:1]")
+);
+
+// Two parameters whose payloads a settle in the body made one are one
+// type to a call; declared apart, they stay two.
+run!(
+    parameters_made_one_by_a_payload_take_one_type,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a, b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) };
+    f(1, "s")
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    declared_parameters_keep_two_payloads,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a: 'a, b: 'b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) };
+    f(1, "s")
+}"#,
+    prints("[i64:1]")
+);
+
 // A bound's cell below a union with a decided member is bound to the
 // union where that holds every bound: `x` may hold either member.
 run!(

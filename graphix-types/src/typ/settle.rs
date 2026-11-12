@@ -117,10 +117,15 @@ impl TVar {
     ///
     /// [witness]: Self::witness
     pub(super) fn weld_lower(&self) {
+        if self.is_bound() {
+            return;
+        }
         let below = self.cell_lower();
+        let undecided: LPooled<Vec<&Type>> =
+            below.iter().filter(|l| l.has_unbound()).collect();
         let mut welds = Welds::new();
-        for (i, l) in below.iter().enumerate().skip(1) {
-            if below[..i].iter().any(|k| lower_collapses(k, l, &mut welds)) {
+        for (i, l) in undecided.iter().enumerate().skip(1) {
+            if undecided[..i].iter().any(|k| lower_collapses(k, l, &mut welds)) {
                 apply_welds(&mut welds)
             }
         }
@@ -1266,6 +1271,33 @@ mod test {
             assert!(matches!(&bound, Type::Set(ms) if ms.len() == 2), "{bound}");
             assert!(!a.is_bound(), "{other}");
         }
+    }
+
+    /// A settle of a bound cell compares none of its lower bounds, and one
+    /// of an open cell only those that hold an open cell.
+    #[test]
+    fn a_settle_compares_only_undecided_lower_bounds_of_an_open_cell() {
+        use crate::typ::setops::IDENTITY_STEPS;
+        let steps = |f: &dyn Fn()| {
+            IDENTITY_STEPS.with(|s| s.set(0));
+            f();
+            IDENTITY_STEPS.with(|s| s.get())
+        };
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
+        let (_, string_t) = Env::typed_at_root(&[], "string").unwrap();
+        let array = |t: &Type| Type::Array(triomphe::Arc::new(t.clone()));
+        let (p, a) = (open("p"), open("a"));
+        p.add_lower(array_of(&a));
+        p.add_lower(array(&i64_t));
+        p.add_lower(array(&string_t));
+        assert_eq!(steps(&|| p.weld_lower()), 0);
+        p.add_lower(array(&array_of(&open("b"))));
+        assert!(steps(&|| p.weld_lower()) > 0);
+        p.settle_witness(&env).unwrap();
+        assert!(p.is_bound());
+        assert_eq!(steps(&|| p.settle_witness(&env).unwrap()), 0);
+        assert_eq!(steps(&|| p.weld_lower()), 0);
     }
 
     /// A call's terminal settle decides the cell a lower bound of its

@@ -136,6 +136,18 @@ is a decision of both. Two cells earlier compile tasks left open stay
 two, and a probe of the witness welds nothing (Eric 11-12; pins
 `lang::types::payload_bounds_apart_by_undecided_cells_are_one`,
 `typ::settle::test::a_settle_{welds_lower_bounds_apart_by_unbounded_cells,keeps_lower_bounds_apart_by_more_than_unbounded_cells}`).
+So where a settle comes before the writers of two bindings whose cells
+it made one (a call whose result holds the payload and whose arguments
+do not settles it at the call), a writer of one that the other's does
+not fit is refused, naming the binding to declare, and two parameters
+made one in a body take one type at a call, as the writers of a `let`
+over `never()` do. A declared binding or parameter stays apart
+(pins `lang::types::{payload_cells_made_one_are_decided_together,declared_payload_cell_stays_apart,parameters_made_one_by_a_payload_take_one_type,declared_parameters_keep_two_payloads}`).
+A bound cell welds nothing, and of an open cell's lower bounds only
+those that hold an open cell are compared: a cell many writers bound
+from below is settled once for each, and decided bounds have nothing to
+weld (pin
+`typ::settle::test::a_settle_compares_only_undecided_lower_bounds_of_an_open_cell`).
 A cell binds only to a type that holds each of its lower bounds, so one
 above `[i64, string]` does not bind to `i64`. A call's argument that
 misfits such a variable of its formal settles it first, at the union of
