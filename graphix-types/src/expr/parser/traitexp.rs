@@ -95,21 +95,6 @@ pub(super) fn trait_decl(i: &mut Input, sig: bool) -> R<TraitExpr> {
         decl_items(i, &|i| trait_method(i, sig), &|i| i.token('}').map(drop), sig)?;
     i.sptoken('}')?;
     let end = i.pos();
-    // XCR claude for claude: [perf/low] The duplicate check of a trait's methods
-    // compares each with every one before it, quadratic in the methods of one trait,
-    // as impl_head's check of its type variables was (1.8 G instructions of a 10000
-    // variable head's 5.0). `trait T { val m0: fn(self) -> i64; .. }` checks in 1.6 /
-    // 3.4 / 8.0 G at 5000 / 10000 / 20000 methods (empty 0.76; not profiled apart). A
-    // set of the names, as impl_head keeps, makes this check one pass. probe:
-    // ~/ptmp/cr29/scratch/r20/20g/cnb/trm_5000.gx (trait-method-dup-01)
-    // 2026-11-12 claude: trait_decl and impl_head share one set-based check,
-    // traitexp.rs::distinct, so the check is one pass. --no-cache --check
-    // instructions of the trm probe (base-r23 / r23-f): 0.765/0.769 empty,
-    // 1.605/1.201 at 5000 methods, 3.416/1.636 at 10000, 7.991/2.499 at 20000; linear
-    // after (about 86k instructions a method). Pin of both refusals: parser test
-    // a_trait_method_or_impl_variable_is_named_once (a perf fix: it fails when the
-    // check is broken, not when it is quadratic; the probe's counts are the perf
-    // evidence; probes in ~/ptmp/cr29/scratch/r23/23f/).
     if !distinct(methods.iter().map(|m| &m.name.name)) {
         return Err(i.refuse(end, "duplicate trait method"));
     }
