@@ -1,5 +1,5 @@
 use crate::{
-    PRINT_FLAGS, PrintFlag, SourcePosition,
+    PRINT_FLAGS, PrintFlag, Restore, SourcePosition,
     expr::{
         TypeNote, TypeNotes, WrittenAt,
         print::{PrettyBuf, PrettyDisplay, item_end, item_sep, write_comments},
@@ -13,7 +13,10 @@ use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::fmt::{self, Write};
+use std::{
+    cell::Cell,
+    fmt::{self, Write},
+};
 
 /// A set's members in print order: canonical, or under `AsWritten` the
 /// members nobody wrote first and then the written ones as written.
@@ -189,7 +192,8 @@ impl fmt::Display for Type {
 /// A type in a diagnostic: its first [`Brief::BYTES`] as printed under the
 /// current flags, tvars dereferenced. A type that shares its parts prints
 /// as a tree, 2^depth long, and the printer stops at the first write
-/// refused.
+/// refused; a union's members print into scratch no further than the cap
+/// ([`write_deref_set`]).
 pub struct Brief<'a>(pub &'a Type);
 
 impl Brief<'_> {
@@ -218,12 +222,36 @@ impl fmt::Display for Brief<'_> {
             }
         }
         let mut capped = Capped { f, left: Self::BYTES };
+        let _shown = Restore::replace(&SHOWN, SHOWN.get().min(Self::BYTES));
         let typ = self.0;
         let flags = PRINT_FLAGS.get() | PrintFlag::DerefTVars;
         match crate::format_with_flags(flags, || write!(capped, "{typ}")) {
             Err(_) if capped.left == 0 => capped.f.write_str("…"),
             r => r,
         }
+    }
+}
+
+thread_local! {
+    /// No less than what the capped print being written ([`Brief`]) still
+    /// shows; unbounded outside one.
+    static SHOWN: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+/// A union's scratch: it takes writes while its text is no longer than
+/// `cap`, the write that passes it whole, and refuses every one after.
+struct Scratch<'a> {
+    text: &'a mut String,
+    cap: usize,
+}
+
+impl Write for Scratch<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.text.len() > self.cap {
+            return Err(fmt::Error);
+        }
+        self.text.push_str(s);
+        Ok(())
     }
 }
 
@@ -327,7 +355,7 @@ impl Type {
     }
 }
 
-// CR claude for claude: [perf/medium] `Brief` does not bound a union: each member
+// XCR claude for claude: [perf/medium] `Brief` does not bound a union: each member
 // is printed whole into `text` before anything reaches the capped writer, so a member
 // that shares its parts prints as a tree, 2^depth, for a 512-byte diagnostic. Fusion
 // formats one for each region it refuses (try_fuse, "a region of type {} has no kernel
@@ -342,10 +370,25 @@ impl Type {
 // cap has left, and pin `Brief` of a union over a shared DAG and --expand of the
 // chain at 40 links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc-review/{mkn,mkn2}-*.gx
 // (brief-union-unbounded-01)
+// 2026-11-12 claude: write_deref_set prints each member into a Scratch no further than
+// SHOWN, which Brief sets to its cap and each member's print lowers to what is left: a
+// member that passes it is kept as printed, and once the kept text passes it the next
+// member not strictly identical counts as kept unprinted (only the bracket shows).
+// --expand, instructions:u: mkn2 0.82/0.83/0.84/0.93G at 12/16/20/40 links (base
+// 1.02/4.04/-/-), mkn 0.83/0.83/0.94/1.26G at 12/16/40/80 (base 17.99G at 12); --check
+// of `let n: i64 = x16` over mkn-16 597G on base, 0.79G here. Pins that hang without
+// it: contains::tests::brief_is_bounded (unions [(t, t), null], [`A(t, t), `B(t)],
+// [`A(t, t), `A(t, i64)] and a lone member, 60 deep) and
+// fusion::refused_regions_of_shared_unions (both 40-link chains; jit and jit_par hang).
+// contains::tests::brief_of_a_union_is_its_print_cut pins that a capped union prints
+// the uncapped print's prefix.
 /// A set whose cells print as what they hold: a member identical to an
 /// earlier one (two names of one cell), or printing as it does where
 /// either holds a cell (two cells bound to one type), prints once, and a
-/// lone member prints bare.
+/// lone member prints bare. The members print into scratch only as far as
+/// [`SHOWN`] reaches: a member whose text passes it is kept as far as it
+/// printed, and once the kept text passes it the next member that is not
+/// identical to one kept counts as kept unprinted, since none of it shows.
 // CR claude for claude: [bug/low] A union the checker keeps as two members prints as one: in a
 // definition's body check, `[fn(p: 'a) -> .., fn(q: 'b) -> ..]` over two declared variables
 // prints its first member alone, since `union_identical` pairs their unbound cells as a renaming
@@ -378,23 +421,42 @@ impl Type {
 // fails no test in graphix-tests lang:: or graphix-types --lib, so pin p11 and s2 as run! refusals
 // naming both members.
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
+    let cap = SHOWN.get();
     let mut text: LPooled<String> = LPooled::take();
     let mut kept: SmallVec<[(&Type, usize, usize); 16]> = SmallVec::new();
     for t in set_members(s) {
+        if kept.iter().any(|(k, _, _)| strictly_identical(k, t)) {
+            continue;
+        }
         let start = text.len();
-        write!(text, "{}", SetMember(t))?;
-        let printed = &text[start..];
-        let again = kept.iter().any(|(k, a, b)| {
-            strictly_identical(k, t)
-                || (&text[*a..*b] == printed && !(k.tvar_free() && t.tvar_free()))
-        });
-        match again {
-            true => text.truncate(start),
-            false => kept.push((t, start, text.len())),
+        if start > cap {
+            kept.push((t, start, start));
+            break;
+        }
+        let printed = {
+            let _shown = Restore::replace(&SHOWN, cap - start);
+            write!(Scratch { text: &mut text, cap }, "{}", SetMember(t))
+        };
+        let full = text.len() > cap;
+        if !full {
+            printed?;
+            let printed = &text[start..];
+            let again = kept.iter().any(|(k, a, b)| {
+                &text[*a..*b] == printed && !(k.tvar_free() && t.tvar_free())
+            });
+            if again {
+                text.truncate(start);
+                continue;
+            }
+        }
+        kept.push((t, start, text.len()));
+        if full && kept.len() > 1 {
+            break;
         }
     }
     match &kept[..] {
-        [(t, _, _)] => write!(f, "{t}"),
+        [(t @ Type::Primitive(_), _, _)] => write!(f, "{t}"),
+        [(_, a, b)] => f.write_str(&text[*a..*b]),
         kept => {
             write!(f, "[")?;
             write_list(f, kept.iter().map(|(_, a, b)| &text[*a..*b]))?;

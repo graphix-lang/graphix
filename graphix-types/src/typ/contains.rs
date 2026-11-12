@@ -6583,16 +6583,66 @@ mod tests {
         t
     }
 
+    /// Unions `depth` deep whose members share their parts, a tree of
+    /// 2^depth nodes each: `[(t, t), null]`, `` [`A(t, t), `B(t)] `` and
+    /// `` [`A(t, t), `A(t, i64)] ``, whose members print alike past the cap.
+    fn shared_unions(depth: usize) -> [Type; 3] {
+        let leaf = || Type::Primitive(Typ::I64.into());
+        let variant = |tag, ts: &[Type]| {
+            Type::Variant(tag, Arc::from_iter(ts.iter().cloned()), Default::default())
+        };
+        let mut ts = [leaf(), leaf(), leaf()];
+        for _ in 0..depth {
+            let [pair, tags, alike] = &ts;
+            ts = [
+                [
+                    Type::Tuple(Arc::from_iter([pair.clone(), pair.clone()])),
+                    Type::Primitive(Typ::Null.into()),
+                ],
+                [
+                    variant(literal!("A"), &[tags.clone(), tags.clone()]),
+                    variant(literal!("B"), &[tags.clone()]),
+                ],
+                [
+                    variant(literal!("A"), &[alike.clone(), alike.clone()]),
+                    variant(literal!("A"), &[alike.clone(), leaf()]),
+                ],
+            ]
+            .map(|members| Type::Set(Arc::from_iter(members)));
+        }
+        ts
+    }
+
     /// A diagnostic renders a type that shares its parts in time bounded
-    /// by its prefix, not 2^depth.
+    /// by its prefix, not 2^depth, a union's members included.
     #[test]
     fn brief_is_bounded() {
-        for t in [shared(true), shared(false)] {
+        let [pair, tags, alike] = shared_unions(60);
+        let twin = Type::Set(Arc::from_iter([shared(true), shared(true)]));
+        for t in [shared(true), shared(false), pair, tags, alike, twin] {
             let s = format_compact!("{}", Brief(&t));
             assert!(s.len() <= Brief::BYTES + '…'.len_utf8() && s.ends_with('…'), "{s}");
         }
         let small = Type::Primitive(Typ::I64.into());
         assert_eq!(format_compact!("{}", Brief(&small)), "i64");
+    }
+
+    /// A capped union prints as far as the uncapped print does.
+    #[test]
+    fn brief_of_a_union_is_its_print_cut() {
+        for depth in [2, 7] {
+            for t in shared_unions(depth) {
+                let flags = PrintFlag::DerefTVars | PrintFlag::ReplacePrims;
+                let whole = format_with_flags(flags, || format!("{t}"));
+                let brief = format_compact!("{}", Brief(&t));
+                match whole.len() > Brief::BYTES {
+                    true => {
+                        assert_eq!(Some(&whole[..Brief::BYTES]), brief.strip_suffix('…'))
+                    }
+                    false => assert_eq!(whole, brief),
+                }
+            }
+        }
     }
 
     /// `&T` and `&mut T` over one inner allocation are two types to every

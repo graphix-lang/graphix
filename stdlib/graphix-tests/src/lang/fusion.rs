@@ -2798,3 +2798,24 @@ async fn nested_sample_argument_kernel_runs_in_each_slot() -> Result<()> {
     assert_eq!(fused, 3);
     Ok(())
 }
+
+/// Two 40-link chains of a constructor whose result is a union over its
+/// argument: each link's type is a tree of 2^link nodes over shared
+/// parts, and every region of one is refused, the refusal naming it.
+fn shared_union_chains() -> String {
+    let mut code = String::from(
+        "{\n    let pair = |f| select 0 { 0 => (f, f), _ => null };\n    \
+         let tags = |f| select 0 { 0 => `A(f, f), _ => `B(f) };\n    \
+         let x0 = (|x| x, 1);\n    let y0 = x0;\n",
+    );
+    for i in 1..=40 {
+        let j = i - 1;
+        code.push_str(&format!(
+            "    let x{i} = pair(x{j});\n    let y{i} = tags(y{j});\n"
+        ));
+    }
+    code.push_str("    0\n}");
+    code
+}
+
+run!(refused_regions_of_shared_unions, &shared_union_chains(), is(Value::I64(0)); FuseExpect::None);
