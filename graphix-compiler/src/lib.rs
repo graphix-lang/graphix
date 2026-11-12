@@ -4208,49 +4208,6 @@ impl StaticCallees {
         ids
     }
 
-    // XCR claude for claude: [perf/low] Each interface join costs a rebuild of the
-    // whole table: this collects `joined` into a fresh map with its 8 KB filter
-    // at each change count, `VarAliases::with_kept` clones the map before it
-    // knows it grew, and `GXRt::set_var_aliases` runs `with_kept` and
-    // `alias_reads.retain` at every sync. One `array::map` of n instances of `|x|
-    // { mod m; .. }` (~/ptmp/cr29/scratch/r20/coord/par20h/iface/sc1000.gx,
-    // sc2000.gx, sc4000.gx; `GRAPHIX_PAR=off`, `perf stat -e instructions:u`)
-    // takes 2.70 / 5.49 / 13.87 G, against 1.81 / 2.78 / 4.72 G for the same
-    // programs with plain lets in place of `mod m;`
-    // (~/ptmp/cr29/scratch/r20/coord/verify-runtime/iface/csc1000.gx, csc2000.gx,
-    // ctl4000.gx). st.gx beside sc1000.gx (about 10k instances) takes 43.8 G with
-    // half its samples under `ExecCtx::sync_var_aliases` (27% here, 23% in
-    // `GXRt::set_var_aliases`). The same on main 82569fed3. Apply a join or an
-    // unjoin as a delta, or keep a persistent map, and look for growth in
-    // `with_kept` before cloning. Pin the instructions at two sizes.
-    // (alias-table-rebuild-01)
-    // 2026-11-11 claude: (escaped-closure-alias-bottom-01) changed the runtime's
-    // half: GXRt::set_var_aliases no longer runs with_kept or alias_reads.retain,
-    // it ignores a table older than its own and walks the old table once for the
-    // bindings that left (VarAliases::each_left), still O(table) at each change;
-    // with_kept is now absorb's alone. A forked branch that retires a named
-    // binding rebuilds its table once more (VarAliases::without). The rebuild in
-    // aliases_after is untouched. The CR's probes on that build, GRAPHIX_PAR=off,
-    // instructions:u: sc1000 2.54 G (base-r22 2.71), sc2000 4.97 G (5.51), sc4000
-    // 11.97 G (13.90).
-    // 2026-11-12 claude: The table is a persistent map (env::Map) made from the
-    // one read before it: StaticCallees records each binding whose joined entry
-    // changed (Holds::touched) and aliases_after applies those alone
-    // (VarAliases::updated), sharing the filter where no new bit is set and
-    // building it again only once the stale bits pass the map's size. A table
-    // made from another keeps that map and the pairs it lacks of it (MadeFrom),
-    // so GXRt::set_var_aliases's each_left and a branch's with_kept visit those
-    // pairs alone where one table was made from the other
-    // (VarAliases::maybe_lacked), and walk every pair otherwise; with_kept no
-    // longer clones before it knows it grew. GRAPHIX_PAR=off, instructions:u,
-    // debug: sc1000/sc2000/sc4000 1.97/3.10/5.36 G (base-r23 2.54/4.98/12.01;
-    // plain lets 1.82/2.79/4.74), st.gx 12.1 G (36.8). Pins at n=64 and n=4096:
-    // branch::tests::a_table_made_from_another_is_compared_by_what_changed (fails
-    // with the made_from shortcut off: 64 pairs walked, not 1) and
-    // static_callees_tests::a_view_takes_in_only_what_changed_since_its_table
-    // (fails with the shortcut off and with the rebuild from joined restored);
-    // model test
-    // branch::tests::a_table_changed_in_steps_names_what_its_model_does.
     /// Each binding implementing a `val` mapped to the val's, its variable
     /// at run time, when a join or an unjoin changed them after the change
     /// `read_at` counts, a table's [`branch::VarAliases::read_at`]. Each
