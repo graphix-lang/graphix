@@ -53,9 +53,14 @@ decides them another way. Parts that are one function up to the names
 of their cells collapse to one and weld those cells
 (`setops::union_collapses`); a var that shared a welded cell stands for
 the surviving one through the forward link the weld leaves, and
-`setops::Identity` reads through it. Pins:
+`setops::Identity` reads through it. A part that is the bind's own
+cell (the arms' patterns typed the scrutinee, so a member is the arm's
+predicate) is no part to join: the bind holds the other parts as that
+member does, so an open cell among them merges with it, and the arms'
+binds of one part end as one cell. Pins:
 `lang::select::arm_bind_over_members_*`,
-`or_arm_bind_over_members_calls_their_lambdas`.
+`or_arm_bind_over_members_calls_their_lambdas`,
+`lang::types::part_bound_in_three_*`.
 
 ### `reset_tvars` — the legal deep copies
 

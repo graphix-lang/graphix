@@ -707,13 +707,20 @@ to them as one member, as the parameter written (`|x: Array<'e>|`) takes
 it: no annotation. Two arms that bind elements (`[a, b, ..] => a, [c] =>
 c, [] => 0`), a recursive function (`1 + len(t)`), a rest passed on
 (`array::push(t, h)`), a list's `[<h, t..>]` and a slice inside a tuple or
-a struct alike. The members are one type only where every cell is one:
-the elements of the arms' slices share a cell, a bind of another part of
-a tuple or a struct is a cell an arm, the first arm's holding the others'.
-Two such arms are still one type (`(x, [h, t..]) => h, (x, []) => x`);
-three are not, and the call is refused until the parameter is written
-(`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..` over `|s:
-(Array<'e>, 'b)|`).
+a struct alike. The members are one type only where every cell is one,
+and the arms' narrowing makes them one. An arm's bind holds its part of
+every member the arm can match (`Type::narrow_per_member`); where one of
+those parts is the bind's own cell, a member the arm's pattern gave the
+scrutinee, the bind holds the others as that member's part does, so each
+open cell among them is that cell and what is left binds it. The
+elements of the arms' slices share a cell that way, and so do the arms'
+binds of another part of a tuple or a struct, however many arms bind it
+(`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..`), literal arms'
+(`(1, b) => .., (2, b) => .., (3, b) => .., (_, b) => ..`) and those of a
+slice in each alternative of an or-arm (`` `A([h, ..]) | `B([h, ..]) => h
+``). One cell is one type: no test of one part narrows another, so arms
+that use the part as two types (`(2, b) => b + 1, (3, b) => str::len(b)`)
+are refused where the function is defined.
 
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
@@ -732,6 +739,7 @@ implementation whose variables stand at the declaration's places passes
 `lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,decided_array_into_a_typedef_union_of_two_undecided_arrays}_refused*`
 and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
 members that are one type by `lang::types::{slice_arms,slice_elements_bound_in_two_arms,slice_arms_of_a_recursive_function,slice_rest_passed_on,slice_arms_inside_a_tuple_and_a_struct,list_arms}_over_an_unannotated_parameter*`, each beside its written twin, and the unit test `members_that_are_one_type_take_a_type_as_one`,
+a part several arms bind by `lang::types::{part_bound_in_three_slice_arms,part_bound_in_three_literal_arms,slice_in_each_alternative_of_an_or_arm}_over_an_unannotated_parameter`, `part_bound_in_three_{literal,slice}_arms_used_as_two_types_refused` and the unit test `narrowing_a_members_own_cell_makes_the_open_parts_one`,
 `lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
 `lang::interfaces::{open_union_call_refused,val_implementation_that_would_choose_a_member_refused,val_in_data_implementation_that_would_choose_a_member_refused,val_at_one_variable_implemented_at_two}`.
 

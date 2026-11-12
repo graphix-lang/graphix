@@ -7496,6 +7496,72 @@ run!(
 }"#,
     prints("[i64:2, i64:1, i64:3]")
 );
+// A part of an unannotated parameter that three arms or more bind is one
+// cell, as its slices' elements are: each arm's bind holds its part of
+// every member the arm can match, the other arms' own among them. The
+// members are one type and take an argument as one: slice arms in a tuple
+// and a struct, arms that bind a rest, a later arm deciding the part,
+// literal arms, a slice in each alternative of an or-arm.
+run!(
+    part_bound_in_three_slice_arms_over_an_unannotated_parameter,
+    r#"{
+  let f = |s| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) };
+  let g = |s| select s { {a: [x, y, ..], b} => b, {a: [z], b} => b, {a: [], b} => b };
+  let h = |s| select s { ([a, c, t..], b) => 2, ([d, u..], b) => 1, ([], b) => 0 };
+  let k = |s| select s {
+    ([a, c, e, ..], b) => b, ([a, c], b) => b, ([d], b) => b + 1, ([], b) => b
+  };
+  (f(([1, 2], "q")), f(([3], "r")), g({a: [1], b: "q"}), h(([1, 2], "q")), k(([1], 5)))
+}"#,
+    prints(r#"[[i64:1, "q"], ["r", i64:3], "q", i64:2, i64:6]"#)
+);
+run!(
+    part_bound_in_three_slice_arms_over_a_written_parameter,
+    r#"{
+  let f = |s: (Array<'e>, 'b)| select s {
+    ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b)
+  };
+  (f(([1, 2], "q")), f(([3], "r")))
+}"#,
+    prints(r#"[[i64:1, "q"], ["r", i64:3]]"#)
+);
+run!(
+    part_bound_in_three_literal_arms_over_an_unannotated_parameter,
+    r#"{
+  let f = |s| select s { (1, b) => (b, 1), (2, b) => (b, 2), (3, b) => (b, 3), (_, b) => (b, 0) };
+  (f((1, "q")), f((9, 4)))
+}"#,
+    prints(r#"[["q", i64:1], [i64:4, i64:0]]"#)
+);
+run!(
+    slice_in_each_alternative_of_an_or_arm_over_an_unannotated_parameter,
+    r#"{
+  let f = |x| select x { `A([h, ..]) | `B([h, ..]) => h, _ => 0 };
+  let g = |x| select x { `A([h, ..]) | `B([h, ..]) => h, `A([]) => 0, `B([]) => 0 };
+  (f(`A([1, 2])), f(`B([])), g(`B([3])), g(`A([])))
+}"#,
+    prints("[i64:1, i64:0, i64:3, i64:0]")
+);
+// One cell is one type: arms that use the part as two types are refused
+// where the function is defined, whichever arm a call would take.
+run!(
+    part_bound_in_three_literal_arms_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s { (1, b) => 0, (2, b) => b + 1, (3, b) => str::len(b), _ => 0 };
+  f((2, "q"))
+}"#,
+    refused("type mismatch string does not contain i64");
+    FuseExpect::None
+);
+run!(
+    part_bound_in_three_slice_arms_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s { ([a, c, ..], b) => 0, ([d], b) => b + 1, ([], b) => str::len(b) };
+  f(([], "q"))
+}"#,
+    refused("type mismatch string does not contain i64");
+    FuseExpect::None
+);
 // Over a parameter written with two variables, a slice arm's element cells
 // are the declared element, so the arm's other binds take their parts of
 // the parameter: the result is of the second variable in both shapes.

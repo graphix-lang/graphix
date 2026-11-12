@@ -864,6 +864,29 @@ mod tests {
         s.narrow_per_member(&Env::default(), &[]).unwrap();
     }
 
+    /// A cell of an arm's predicate that is a member's own part is one
+    /// cell with the open parts of the other members; a cell of the arm's
+    /// own takes their union and leaves them apart.
+    #[test]
+    fn narrowing_a_members_own_cell_makes_the_open_parts_one() {
+        let env = Env::default();
+        let cell = |n: &str| TVar::empty_named(n.into());
+        let member = |tv: &TVar| {
+            let parts = [Type::Primitive(Typ::I64.into()), Type::TVar(tv.clone())];
+            Type::Tuple(Arc::from_iter(parts))
+        };
+        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+        let members = [member(&a), member(&b), member(&c)];
+        member(&a).narrow_per_member(&env, &members).unwrap();
+        assert!(a.open_cell().is_some());
+        assert!(a.stands_for() == b.stands_for() && a.stands_for() == c.stands_for());
+        let (u, v, p) = (cell("u"), cell("v"), cell("p"));
+        member(&p).narrow_per_member(&env, &[member(&u), member(&v)]).unwrap();
+        assert!(p.open_cell().is_none());
+        assert!(u.open_cell().is_some() && v.open_cell().is_some());
+        assert!(u.stands_for() != v.stands_for());
+    }
+
     /// A union of named or abstract members normalizes in linear time:
     /// each is tried only against members it could merge with.
     #[test]

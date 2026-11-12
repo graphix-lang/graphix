@@ -660,7 +660,14 @@ impl Reach {
             // text proposed. probes: ~/ptmp/cr29/scratch/r21/21t/rev/perf/{gen.py,m.sh}
             // (`gen.py 12 rest u def`), rest12u_def.gx, fixed16u_def.gx
             // (slice-arms-check-cost-01)
-            // CR claude for claude: [bug/low] Three slice arms inside a tuple or a struct
+            // 2026-11-12 claude: After slice-tuple-bind-cells-01's fix the fixed-length
+            // probe is cheaper, the rest probes are not: fixed16u_def.gx 3.55 G -> 1.03 G
+            // user instructions, rest11u_def.gx 8.70 G -> 8.71 G, rest12u_def.gx 33.5 G ->
+            // 33.6 G (m.sh, base-r23 against lane 23d). A first form of that fix, which
+            // bound the cell to the union of its other parts where it now merges the open
+            // ones, took both def probes past 700 G: the nested unions of cells are the
+            // cost.
+            // XCR claude for claude: [bug/low] Three slice arms inside a tuple or a struct
             // that each bind another part are still refused at the call, where two such
             // arms and the written parameter run: `let f = |s| select s { ([a, c, ..], b)
             // => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))` is
@@ -678,6 +685,27 @@ impl Reach {
             // part sharing a cell over an undecided scrutinee, as the elements do. base-r22
             // refuses these too. probes: ~/ptmp/cr29/scratch/r21/21t/rev/{t9.gx,t9w.gx},
             // a5.txt (run with rc.sh) (slice-tuple-bind-cells-01)
+            // 2026-11-12 claude: Fixed in Type::narrow_per_member (tvar.rs): a cell of an
+            // arm's predicate whose part of some member is the cell itself (the arms typed
+            // the scrutinee, so a member is the arm's predicate) used to count itself in
+            // the join, which then held it and bound nothing, so only the first arm's bind
+            // took the others; now each open cell among its other parts is merged with it
+            // and what is left binds it, and the cell's copy is looked up before the
+            // narrowing can move the cell. t9.gx, the struct and rest forms, four and five
+            // arms, three literal arms and a wildcard, and slice-or-arm-cells-01's q01/q05
+            // run as their written twins. base-r23 was also unsound here: `(1, b) => 0, (2,
+            // b) => b + 1, (3, b) => str::len(b), _ => 0` checked and f((2, "q")) printed a
+            // pointer plus one (f((3, "q")) dumped core); it is refused now, "type mismatch
+            // string does not contain i64". Pins that fail with the fix undone (all modes):
+            // lang::types::{part_bound_in_three_slice_arms,part_bound_in_three_literal_arms,slice_in_each_alternative_of_an_or_arm}_over_an_unannotated_parameter,
+            // part_bound_in_three_{literal,slice}_arms_used_as_two_types_refused, and the
+            // unit test
+            // typ::normalize::tests::narrowing_a_members_own_cell_makes_the_open_parts_one.
+            // 1200 generated selects against their written twins
+            // (~/ptmp/cr29/scratch/r23/23d/stb/gen.py, seeds 4201 and 977): lane accepts
+            // nothing the twin refuses (base 10) and prints what the twin prints; the 111
+            // still refused where the twin runs all hold a `_` slot
+            // (wildcard-slot-any-part-01).
             // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
             // over an unannotated parameter is refused at the call, where the same slices
             // in arms of their own and the written parameter run: `let f = |x| select x {
@@ -691,6 +719,25 @@ impl Reach {
             // union keeps an alternative's element cell and its rest's cell apart, which a
             // slice arm of its own does not. probes: ~/ptmp/cr29/scratch/r23/23d/vsc/
             // {q01,q03,q04,q05}.gx (slice-or-arm-cells-01)
+            // 2026-11-12 claude: slice-tuple-bind-cells-01's fix (Type::narrow_per_member: an
+            // open cell among the other parts of a cell that is a member's own part is merged
+            // with it) makes q01.gx and q05.gx print (1, 0), as q04.gx does; pin
+            // lang::types::slice_in_each_alternative_of_an_or_arm_over_an_unannotated_parameter
+            // fails in every mode with that fix undone. Not looked at beyond the four probes.
+            // CR claude for claude: [bug/low] A `_` in one arm at a part another arm
+            // binds types that part `Any` over an unannotated parameter, and the bind's
+            // uses are refused by a message that names no annotation: `let f = |s| select
+            // s { (1, _) => 0, (_, b) => b + 1 }; f((2, 5))` says "cannot compute Any +
+            // i64", `([], _) => 0, ([x, ..], b) => str::len(b)` "type mismatch string
+            // does not contain Any", and `([], _) => 0, ([x, ..], b) => b` checks as
+            // `fn(s: (Array<'e>, Any)) -> Any`. With `b` for the `_`, or the parameter
+            // written (`|s: (i64, i64)|`), each runs. The settle below takes the arms'
+            // predicates as written, where a `_` slot is `Any`, so the parameter's part
+            // is `Any` before the arm that binds it is narrowed. Of 1200 generated
+            // selects whose arms test one part and bind another, the 111 that are
+            // refused where the written twin runs each hold such a `_`. base-r23 alike.
+            // probes: ~/ptmp/cr29/scratch/r23/23d/stb/{s4.txt,s5.txt} (run with rb.sh),
+            // gen.py (seeds 4201 and 977), rungen.sh (wildcard-slot-any-part-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);

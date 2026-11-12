@@ -4791,7 +4791,10 @@ impl Type {
     /// the union commits it to the first member, and is `Any` where that
     /// union is ([`Self::open_over_any`]). A cell a matching alternative
     /// leaves open stays open. A part is the member's own, never a copy:
-    /// what the arm decides of its bind decides the member's cells.
+    /// what the arm decides of its bind decides the member's cells. A cell
+    /// of self that is itself a member's part (self typed the scrutinee)
+    /// holds the other parts as that member's part: each open cell among
+    /// them is that cell, and it takes the union of the rest.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
@@ -4816,6 +4819,39 @@ impl Type {
                 t => t.for_each_child(&mut |c| open(c, seen, out)),
             })
         }
+        // the members of the union `t`, through its bindings and nested
+        // unions, less the open cell `c`, the open cells among them apart:
+        // whether `c` stood among them
+        fn members_beside(
+            c: &TVar,
+            t: &Type,
+            seen: &mut AddrSet,
+            (open, rest): (&mut SmallVec<[TVar; 4]>, &mut SmallVec<[Type; 4]>),
+        ) -> bool {
+            ensure_sufficient(|| {
+                if let Type::TVar(tv) = t {
+                    if let Some(o) = tv.open_cell() {
+                        let own = o.same_cell(c);
+                        if !own && seen.insert(o.cell_addr()) {
+                            open.push(o)
+                        }
+                        return own;
+                    }
+                    if !seen.insert(tv.cell_addr()) {
+                        return false;
+                    }
+                }
+                match &t.deref_cloned() {
+                    Some(Type::Set(ms)) => ms.iter().fold(false, |own, m| {
+                        members_beside(c, m, seen, (&mut *open, &mut *rest)) | own
+                    }),
+                    _ => {
+                        rest.push(t.clone());
+                        false
+                    }
+                }
+            })
+        }
         let mut cells: SmallVec<[TVar; 8]> = SmallVec::new();
         open(self, &mut LPooled::take(), &mut cells);
         let mut parts: SmallVec<[Option<SmallVec<[Type; 4]>>; 8]> =
@@ -4834,6 +4870,10 @@ impl Type {
                 let copy = alt
                     .reset_tvars_int(&mut known, Fresh::Copy)
                     .unwrap_or_else(|| alt.clone());
+                // read before the narrowing, which may move a cell of self the
+                // member holds into its copy's
+                let copies: SmallVec<[Option<TVar>; 8]> =
+                    cells.iter().map(|c| known.get(&c.cell_addr()).cloned()).collect();
                 if !m.narrow_member(env, &copy, walk)? {
                     continue;
                 }
@@ -4841,8 +4881,8 @@ impl Type {
                 // whose values reach the arm as the member's others do
                 let mut taken: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                 super::settle::position_cells(m, &mut taken);
-                for (c, p) in cells.iter().zip(parts.iter_mut()) {
-                    let Some(f) = known.get(&c.cell_addr()) else { continue };
+                for (f, p) in copies.iter().zip(parts.iter_mut()) {
+                    let Some(f) = f else { continue };
                     match (f.binding(), p.as_mut()) {
                         (Some(t), Some(p)) => p.push(t),
                         (None, Some(p)) if taken.contains_key(&f.cell_addr()) => {
@@ -4858,7 +4898,30 @@ impl Type {
             if let Some(p) = p
                 && !p.is_empty()
             {
-                let p: LPooled<Vec<&Type>> = p.iter().collect();
+                let cell = Type::TVar(c.clone());
+                // a part that is the cell itself is a member's own part, which
+                // holds the others as the arm's bind does: the open cells among
+                // them are the cell, and what is left binds it
+                let mut open: SmallVec<[TVar; 4]> = SmallVec::new();
+                let mut rest: SmallVec<[Type; 4]> = SmallVec::new();
+                let own = c.open_cell().is_some_and(|c| {
+                    let mut seen: LPooled<AddrSet> = LPooled::take();
+                    p.iter().fold(false, |own, t| {
+                        members_beside(&c, t, &mut seen, (&mut open, &mut rest)) | own
+                    })
+                });
+                let p: LPooled<Vec<&Type>> = match own {
+                    true => {
+                        for o in open.drain(..) {
+                            cell.contains_ordered(env, &Type::TVar(o))?;
+                        }
+                        rest.iter().collect()
+                    }
+                    false => p.iter().collect(),
+                };
+                if p.is_empty() {
+                    continue;
+                }
                 // CR claude for claude: [bug/low] An or-arm's name over members of
                 // two shapes whose functions differ only in how far they are decided
                 // is a union of two functions, and a call through it is refused:
@@ -4881,7 +4944,6 @@ impl Type {
                 // is whether the or-arm should meet its function members as the field
                 // read does.
                 let joined = Type::union_exact(env, &p)?;
-                let cell = Type::TVar(c.clone());
                 if joined.contains_ordered(env, &cell)? && c.binding().is_none() {
                     joined.open_over_any(env, &cell)?
                 }

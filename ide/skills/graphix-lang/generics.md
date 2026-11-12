@@ -116,9 +116,10 @@ Members that are one type are one member and need nothing: an
 unannotated parameter a select takes apart with slice patterns (`[h,
 t..]`, two arms that bind elements, a recursive `len(t)`) is typed as one
 array an arm, all over one element type, and takes an array as `|x:
-Array<'e>|` does. Three such arms inside a tuple or a struct that each
-bind another part (`([a, c, ..], b)`, `([d], b)`, `([], b)`) are not one
-type: write the parameter (`|s: (Array<'e>, 'b)|`). An impl's target may
+Array<'e>|` does. Another part the arms bind (`([a, c, ..], b)`, `([d],
+b)`, `([], b)`; `(1, b)`, `(2, b)`, `(_, b)`) is one type in every arm,
+whichever arm a value takes: arms that use it as two (`b + 1` in one,
+`str::len(b)` in another) are refused. An impl's target may
 not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
 either: it waits for the other parameters to decide the members, and is
@@ -153,7 +154,9 @@ ok let f = |x| select x { [h, t..] => array::push(t, h), [] => [] }; f([1, 2])
 ok let rec len = |x| select x { [<h, t..>] => 1 + len(t), [<>] => 0 }; len([<1, 2>])
 ok let k = |x| select x { [h, t..] => h, [] => 0 }; let f = |g: fn(x: Array<i64>) -> i64, y| g(y); f(k, [1, 2])
 ok let f = |p| select p { (x, [h, t..]) => h, (x, []) => x }; f((1, [2]))
-no "write the type of the parameter" let f = |s| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
+ok let f = |s| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
+ok let f = |s| select s { (1, b) => (b, 1), (2, b) => (b, 2), (3, b) => (b, 3), (_, b) => (b, 0) }; f((1, "q"))
+no "string does not contain i64" let f = |s| select s { (1, b) => 0, (2, b) => b + 1, (3, b) => str::len(b), _ => 0 }; f((2, 5))
 ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
