@@ -546,31 +546,6 @@ fn desugar_plain(
     run_events(&mut exprs, spec, &idle, &aborted, abort, flush, queue, &visible);
     // the trigger is outside the machine's handler: a busy machine drops
     // a trigger, and an error the trigger raises is not the run's
-    // XCR claude for claude: [bug/medium] A triggered seq nested in a step runs again at
-    // every later entry of its step once it has run, on its trigger's last value, with no
-    // new fire: d01.gx (`seq go { seq let k = t { k * 10 } }`, `t` fires once, `go` three
-    // times) answers 30 three times, and f7.gx prints "inner 3" in each run.
-    // design/seq_blocks.md says a nested seq with a trigger waits for it, and where the
-    // trigger never fired while the nested step was awake it does wait, in every run
-    // (g9.gx). What fires is this gate: a sample in a builtin's callback that fired once
-    // fires again at each rebirth of its step (h4.gx: `live(count(filter(t, |x| x ~
-    // true)))` counts 1 in each of three runs over one fire of `t`; h6.gx the same through
-    // array::map), where the bare sample (h1.gx) and the same lambda called directly
-    // (h3.gx) do not, and a callback sample that never fired does not (g7.gx). The same on
-    // base-r20, with --no-fusion, with GRAPHIX_PAR=force, and with the machine's catch-up
-    // delivery stubbed out, so the tracker is not the cause. The skill's seq.md warns of
-    // it in one sentence, to delete with the fix. Probes:
-    // ~/ptmp/cr29/scratch/r20/20a/review/ (nested-seq-rerun-01)
-    // 2026-11-12 claude: The fire was the callback's function: a lambda written in a step
-    // is a constant born with the step, Filter feeds it to its callback's call, and
-    // CallSite::update_call gave the call's standing result a fresh tag for any fired
-    // function. A call born again that binds no new function now takes its body's own tag
-    // (callsite.rs, written). d01/f7/h4/h6 answer once, fused, unfused, forked and from a
-    // cached image; a new fire (q1) and a fire between runs (q2) still start the nested
-    // seq. Pins, failing with the condition removed:
-    // lang::seq_steps::{a_nested_seq_waits_for_its_trigger_in_every_run,
-    // a_callback_born_with_its_step_fires_nothing}. seq.md's warning is gone. Probes:
-    // ~/ptmp/cr29/scratch/r23/23e/nested-seq-rerun/. Needs a soak.
     let filter = apply_filter(pos, trig_expr, lambda_sampling(pos, &idle));
     exprs.push(let_bind(pos, &go, None, filter));
     exprs.push(catch_node);
