@@ -131,27 +131,6 @@ pub(super) struct ContainsHist {
     /// and a chain of open cells is probed once however many of its
     /// links a call binds.
     probe_standing: Lazy<AHashMap<MemoKey, Standing>>,
-    // XCR claude for claude: [perf/low] A call passing a value for every link of a
-    // chain of bounds whose links carry a trait conjunct ('a{i}: ['a{i+1}, null] + Tr,
-    // impl Tr for i64, f((1, 1, ..))) still checks in quadratic time: 3.2 / 10.0 / 37.0
-    // G instructions at 500 / 1000 / 2000 links (base-r20 3.1 / 9.7 / 35.6), where the
-    // same chain with Discernible or Ordered for Tr takes 1.2 / 1.7 G at 1000 / 2000.
-    // The first trait question sets ContainsHist::impls_read, and from then on no probe
-    // verdict stands by its var's place, so each link bound probes the links below
-    // again. Only an impl with parameters has a head that holds cells (find_impl_with
-    // copies it): setting the mark there alone, and at trait_contains's two calls of
-    // Env::find_impl, whose walks are their own, would keep the standing verdicts of a
-    // walk that met no such impl. probe: ~/ptmp/cr29/scratch/r20/20g/cnb/genvt.py tr N
-    // OUT, meas.sh (chainbounds-valued-trait-01)
-    // 2026-11-12 claude: Only a head with parameters marks the walk now
-    // (find_impl_with, as reset_tvars copies it), and trait_contains's two separate
-    // lookups carry their walk's mark back (ContainsHist::find_impl_apart);
-    // trait_contains no longer marks on entry. The probe's chain with Tr on every link
-    // checks in 1.01 / 1.27 / 1.76 G instructions at 500 / 1000 / 2000 links (lane
-    // before: 2.68 / 8.00 / 28.5), as with Discernible (1.25 / 1.72). Pin
-    // deep_nesting::a_call_passing_values_to_a_chain_of_trait_bounds_checks_in_linear_time
-    // (10000 links, 9 G budget; with the old mark it is killed at the budget). GUI
-    // --check unchanged, census unchanged.
     /// The walk read the head of an impl with parameters
     /// ([`find_impl_with`]): its copy took what the impl's cells hold,
     /// none a var reaches, so from then on no verdict stands by
