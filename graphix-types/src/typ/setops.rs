@@ -1688,46 +1688,6 @@ impl Type {
                         | Self::Struct(_)
                 ) && p.shares_constructor(t);
                 let rigid_inside = walk.inside && same_shape && t.has_rigid();
-                // XCR claude for claude: [perf/low] Each of the two containment probes
-                // below starts a walk of its own (contains_with_flags), so nothing a
-                // probe learned (its probe memo, its expansions, its normalize pass)
-                // serves the next pair, and a matching_type over a DAG of named error
-                // unions asks the same distributions once per pair: cm4.gx makes about
-                // 1400 such walks asking 44000 distributions. One ContainsHist kept in
-                // MatchingTypes and passed to contains_int, as MatchHist keeps one for
-                // could_match, takes cm4 --no-cache --check from 5.83G to 3.22G
-                // instructions on lane 20g after contains-normalize-repeat-01 (an empty
-                // program 0.76G); the GUI examples' check is unchanged (40.7G). Not
-                // done there: a walk kept across top-level questions needs its own
-                // review (what an Err leaves in it, the probe memo across the pairs).
-                // probe: ~/ptmp/cr29/scratch/r19/19b/mtm/cm4.gx
-                // (matching-type-probe-walks-01)
-                // 2026-11-12 claude: MatchingTypes keeps one ContainsHist
-                // (MatchingTypes::contains) for both probes of every pair. An Err ends
-                // matching_type and each call builds its own walk, so nothing reads the
-                // hist after an Err; between two probes no pair, question, unfolding,
-                // gate or deferral is in progress (each is popped as its probe
-                // returns), so a later probe reads only kept verdicts, settled, stamped
-                // with cell_writes and pinned, as the sibling parts of one walk and
-                // could_match's MatchHist do. Shared, the probes fill fewer names'
-                // cells, and RefHist::shape_id compared names by their cells
-                // (same_filled_definition), so the narrowing's memo keyed two copies of
-                // one type apart by what an earlier walk filled:
-                // lang::select::a_capture_type_is_the_same_at_every_select failed in
-                // all four modes (the first select's bind took a wider type than the
-                // second's). Shape ids now read a name as the definition it means in
-                // the env (setops::union_identical_in). base-r23 -> lane, --no-cache
-                // --check instructions:u: cm4 1.70 -> 1.14 G (an empty program 0.77),
-                // mkerr err8 5.44 -> 1.32 G, err12 26.4 -> 1.85 G; GUI examples 41.30
-                // -> 41.32 G. Pins:
-                // typ::contains::tests::a_narrowing_over_names_recurring_through_errors_probes_each_pair_once
-                // (49674 steps at n=4 without the shared walk, bound 6400),
-                // typ::setops::tests::a_name_inside_a_type_keys_alike_filled_or_open
-                // (ids 0 and 1 without union_identical_in). Census 2962 files 0/0; 300
-                // generated selects (gen.py seed 7) print as base-r23 does; the
-                // narrowings of 320 pairs over error_families n<=6 print as base-r23's,
-                // matching_type and matching_parts. probes:
-                // ~/ptmp/cr29/scratch/r23/23f/matching-type-probe-walks/
                 let probe = BitFlags::empty();
                 if !rigid_inside
                     && !p.has_unbound()
