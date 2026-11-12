@@ -987,7 +987,15 @@ An image carries each cell's level and each definition's depth.
   arguments enforce the narrowing. So do the cells of the callee's
   own declared quantifiers (`'b: Any |s| -> Array<'b> []`): its check
   held them rigid, so its body produced nothing into them, and the
-  caller's annotation or the terminal settle decides them.
+  caller's annotation or the terminal settle decides them. So does a
+  cell rigid at the site: an enclosing definition's variable, which
+  its own callers pick. A callback parameter's result is one
+  (`'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> 'b f(s)`): settled
+  there it would bind the definition's variable to its bound, every
+  call would return `[i64, null]`, and a trait method declaring the
+  variable could not be implemented. Pins
+  `lang::types::a_declared_variable_in_a_callbacks_result_*`,
+  `lang::traits::impl_method_bound_in_a_callback_s_result*`.
 - An OMITTED labeled default is checked at its site by the check
   (`CallSite::check_omitted_defaults`): the default of every definition
   the callee's `lambda_ids` names is compiled as the site sees it,

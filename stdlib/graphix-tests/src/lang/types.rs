@@ -2053,6 +2053,42 @@ run!(
     is(Value::I64(2));
     FuseExpect::Jit
 );
+// A declared variable standing in a callback's result is each call's to
+// pick, as a parameter's is, through a nested function too.
+run!(
+    a_declared_variable_in_a_callbacks_result_is_each_calls,
+    "{ let m = 'b: Number |s: i64, f: fn(x: i64) -> 'b| -> 'b f(s); \
+     let n = 'b: Number |s: i64, f: fn(x: i64) -> 'b| -> 'b { let g = |y| f(y); g(s) }; \
+     let a: f64 = m(3, |x| 1.5); let b: i64 = m(3, |x| x); let c: f64 = n(3, |x| 2.5); \
+     (a, b, c) }",
+    prints("[f64:1.5, i64:3, f64:2.5]")
+);
+run!(
+    a_declared_variable_in_a_callbacks_result_computes_at_each_calls_type,
+    "{ let m = 'b: Number |s: i64, f: fn(x: i64) -> 'b| -> 'b { let h = f(s); h + h }; \
+     let a: f64 = m(3, |x| 1.5); (a, m(3, |x| x)) }",
+    prints("[f64:3., i64:6]")
+);
+run!(
+    a_callbacks_result_is_not_its_declared_variables_bound,
+    "{ let m = 'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> 'b \
+     { let r: [i64, null] = f(s); r }; m(1, |x| x) }",
+    refused(
+        "a call picks 'b, and the body's value need not be of the type it picks; \
+         drop `-> 'b`, or write the body's type, `-> [i64, null]`"
+    );
+    FuseExpect::None
+);
+run!(
+    a_callbacks_declared_result_is_not_the_bodys_value,
+    "{ let m = 'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> 'b { let r = f(s); 3 }; \
+     m(1, |x| x) }",
+    refused(
+        "a call picks 'b, and the body's value need not be of the type it picks; \
+         drop `-> 'b`, or write the body's type, `-> i64`"
+    );
+    FuseExpect::None
+);
 run!(
     a_return_no_bound_holds_names_no_picked_variable,
     |v: Result<&Value>| matches!(v, Err(e)

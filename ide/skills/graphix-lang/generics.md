@@ -45,6 +45,16 @@ no "drop `-> 'a`, or write the body's type, `-> 'b`" |x: 'a, y: 'b| -> 'a y
 ok |x: 'a, y: 'b| -> 'b y
 ```
 
+A callback whose result writes the variable returns a value of it, each
+call's own, in a definition and a trait method alike; held in a binding
+of the bound's type it is a value of the bound.
+
+```graphix,cases
+ok let m = 'b: Number |s: i64, f: fn(x: i64) -> 'b| -> 'b f(s); let r: f64 = m(3, |x| 1.5); r
+ok trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b }; impl T for i64 { let m = |s, f| f(s) }; let r: i64 = T::m(3, |x| x + 1); r
+no "drop `-> 'b`, or write the body's type, `-> [i64, null]`" 'b: [i64, null] |s: i64, f: fn(x: i64) -> 'b| -> 'b { let r: [i64, null] = f(s); r }
+```
+
 A signature may not write a union of two of its type variables, `|x:
 ['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
 trait method's alike, nor a function type a `let` annotation writes: no

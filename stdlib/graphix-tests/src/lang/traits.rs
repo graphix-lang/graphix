@@ -3794,6 +3794,63 @@ run!(
     "#
 ; FuseExpect::None);
 
+// A bounded variable standing in a callback's result is each call's to
+// pick, as a parameter's is: the bound left to the signature, written, or
+// holding `self` in a generic impl.
+run!(
+    impl_method_bound_in_a_callback_s_result,
+    prints("[i64:4, null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b };
+        impl T for i64 { let m = |s, f| f(s) };
+        let a: i64 = T::m(3, |x| x + 1);
+        let b: null = T::m(3, |x| null);
+        let result = (a, b)
+    "#
+);
+
+run!(
+    impl_method_written_bound_in_a_callback_s_result,
+    is(Value::I64(4)),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b };
+        impl T for i64 { let m = 'q: [i64, null] |s, f: fn(x: i64) -> 'q| -> 'q f(s) };
+        let result: i64 = T::m(3, |x| x + 1)
+    "#
+);
+
+run!(
+    impl_method_bound_holding_self_in_a_callback_s_result,
+    prints("[i64:4, null, [i64:1]]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, f: fn(x: self) -> 'b) -> 'b };
+        impl T for i64 { let m = 'q: [self, null] |s, f: fn(x: self) -> 'q| -> 'q f(s) };
+        impl<'a> T for Array<'a> { let m = |s, f| f(s) };
+        let result = (T::m(3, |x| x + 1), T::m(3, |x| null), T::m([1], |x| x))
+    "#
+);
+
+run!(
+    impl_method_bound_in_a_callback_s_result_holds_the_call,
+    refused("does not contain fn(x: i64) -> string"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b };
+        impl T for i64 { let m = |s, f| f(s) };
+        let result = T::m(3, |x| "s")
+    "#
+; FuseExpect::None);
+
+// The body's value is the callback's, not its bound's.
+run!(
+    impl_method_bound_in_a_callback_s_result_is_not_its_bound,
+    refused("'b: unbound within [i64, null] does not contain [i64, null]"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b };
+        impl T for i64 { let m = |s, f| { let r: [i64, null] = f(s); r } };
+        let result = T::m(3, |x| x + 1)
+    "#
+; FuseExpect::None);
+
 // A generic impl's target holds the impl's variables, and a variable of
 // the trait named like one of them is renamed apart in the bounds too.
 run!(

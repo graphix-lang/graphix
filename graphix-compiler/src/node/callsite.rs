@@ -4811,8 +4811,10 @@ impl<R: Rt> CallSite<R> {
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an
         // annotation could narrow it unsoundly. Its writers are not checked
-        // yet, so a ⊥-fed cell is not ⊥ here. A quantifier, the callee's own
-        // or of a function type the signature holds, is its callers' to pick.
+        // yet, so a ⊥-fed cell is not ⊥ here. A quantifier, the callee's own,
+        // of a function type the signature holds, or an enclosing
+        // definition's (rigid in its body: a callback parameter's result), is
+        // its callers' to pick.
         {
             let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
             ftype.inner_quantifiers(&mut quantifiers);
@@ -4836,12 +4838,23 @@ impl<R: Rt> CallSite<R> {
                 if !arg_cells.contains(&addr)
                     && !quantifiers.contains_key(&addr)
                     && !declared
+                    && !tv.is_rigid()
                 {
                     wrap!(self, tv.settle_witness(&ctx.env))?;
                 }
             }
         }
         self.raise_throws(ctx, ftype, true)?;
+        // CR claude for claude: [readability/low] A refusal of a call's result
+        // names the call's own cell where it is an enclosing definition's
+        // declared variable: in `'b: Number |f: fn() -> 'b| -> i64 { let r: i64 =
+        // f(); r }` the check below merges `self.rtype` ('_N) into the rigid 'b
+        // (GRAPHIX_DBG_BIND: CELL-MERGE), and the refusal reads "i64 does not
+        // contain '_8365: unbound within Number", where `|x: 'b| .. let r: i64 =
+        // x` says "'b: unbound within Number". base-r23 prints the same for `f:
+        // fn(x: 'b) -> 'b`. The cell is 'b's; the message should say so. probes:
+        // ~/ptmp/cr29/scratch/r23/23h/method-bound-callback-result-01/{s1,s2,s4}.gx
+        // (call-result-rigid-name-01)
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
