@@ -74,6 +74,12 @@ fn trait_method(i: &mut Input, sig: bool) -> R<TraitMethod> {
     })
 }
 
+/// Whether no two of `names` are equal.
+fn distinct<'a>(names: impl IntoIterator<Item = &'a ArcStr>) -> bool {
+    let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    names.into_iter().all(|n| seen.insert(n.clone()))
+}
+
 /// A trait declaration; `sig` in an interface, where methods carry docs.
 pub(super) fn trait_decl(i: &mut Input, sig: bool) -> R<TraitExpr> {
     i.attempt(|i| {
@@ -89,17 +95,22 @@ pub(super) fn trait_decl(i: &mut Input, sig: bool) -> R<TraitExpr> {
         decl_items(i, &|i| trait_method(i, sig), &|i| i.token('}').map(drop), sig)?;
     i.sptoken('}')?;
     let end = i.pos();
-    // CR claude for claude: [perf/low] The duplicate check of a trait's methods
+    // XCR claude for claude: [perf/low] The duplicate check of a trait's methods
     // compares each with every one before it, quadratic in the methods of one trait,
     // as impl_head's check of its type variables was (1.8 G instructions of a 10000
     // variable head's 5.0). `trait T { val m0: fn(self) -> i64; .. }` checks in 1.6 /
     // 3.4 / 8.0 G at 5000 / 10000 / 20000 methods (empty 0.76; not profiled apart). A
     // set of the names, as impl_head keeps, makes this check one pass. probe:
     // ~/ptmp/cr29/scratch/r20/20g/cnb/trm_5000.gx (trait-method-dup-01)
-    let dup = |(n, m): (usize, &TraitMethod)| {
-        methods[..n].iter().any(|p| p.name.name == m.name.name)
-    };
-    if methods.iter().enumerate().any(dup) {
+    // 2026-11-12 claude: trait_decl and impl_head share one set-based check,
+    // traitexp.rs::distinct, so the check is one pass. --no-cache --check
+    // instructions of the trm probe (base-r23 / r23-f): 0.765/0.769 empty,
+    // 1.605/1.201 at 5000 methods, 3.416/1.636 at 10000, 7.991/2.499 at 20000; linear
+    // after (about 86k instructions a method). Pin of both refusals: parser test
+    // a_trait_method_or_impl_variable_is_named_once (a perf fix: it fails when the
+    // check is broken, not when it is quadratic; the probe's counts are the perf
+    // evidence; probes in ~/ptmp/cr29/scratch/r23/23f/).
+    if !distinct(methods.iter().map(|m| &m.name.name)) {
         return Err(i.refuse(end, "duplicate trait method"));
     }
     Ok(TraitExpr { name, methods: Arc::from_iter(methods.drain(..)), below })
@@ -119,8 +130,7 @@ fn impl_head(i: &mut Input) -> R<ImplHead> {
     let target = typ(i)?;
     let mut params = params.unwrap_or_else(LPooled::take);
     let tvs: Arc<[TVar]> = Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
-    let mut names: LPooled<AHashSet<ArcStr>> = LPooled::take();
-    if !tvs.iter().all(|tv| names.insert(tv.name.clone())) {
+    if !distinct(tvs.iter().map(|tv| &tv.name)) {
         return Err(i.refuse(at_params, "duplicate impl type variable"));
     }
     let mut constraints =

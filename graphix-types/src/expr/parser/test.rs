@@ -3121,6 +3121,30 @@ fn an_interface_impl_is_its_head_alone() {
     assert_eq!(h.to_string(), "impl<'a: C> T for Array<'a>");
 }
 
+#[test]
+fn a_trait_method_or_impl_variable_is_named_once() {
+    let tr = |ns: &[&str]| {
+        let ms: Vec<_> = ns.iter().map(|n| format!("val {n}: fn(self) -> i64")).collect();
+        format!("trait T {{ {} }}", ms.join("; "))
+    };
+    for ns in [&["a", "b", "a"][..], &["a", "a"], &["a", "b", "c", "b"]] {
+        let src = tr(ns);
+        let msg = parse_program(&src);
+        assert!(msg.contains("duplicate trait method"), "{src}: {msg}");
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(&src)).unwrap_err());
+        assert!(msg.contains("duplicate trait method"), "{src}: {msg}");
+    }
+    let e = parse_one(&tr(&["a", "b", "c"])).unwrap();
+    let ExprKind::Trait(t) = &e.kind else { panic!("{e:?}") };
+    let names: Vec<_> = t.methods.iter().map(|m| m.name.name.as_str()).collect();
+    assert_eq!(names, ["a", "b", "c"]);
+    for src in ["impl<'a, 'b, 'a> T for X", "impl<'a: C, 'a> T for X"] {
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
+        assert!(msg.contains("duplicate impl type variable"), "{src}: {msg}");
+    }
+    parse_sig(Origin::unspecified("impl<'a, 'b> T for ('a, 'b)")).unwrap();
+}
+
 // one level of `(1 + …)` costs four of the limit
 #[test]
 fn a_parenthesized_sum_costs_four_levels() {
