@@ -4694,31 +4694,6 @@ impl<R: Rt> CallSite<R> {
                 // the def's own cells (`ExecCtx::rec_defs`).
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-                // XCR claude for claude: [bug/low] A recursive function that returns its
-                // parameter of a union of two arrays is refused where it is defined: `let
-                // rec f = |x: [Array<i64>, Array<string>], n: i64| select n { 0 => x, _
-                // => f(x, n - 1) }` fails at the select, "type mismatch Array<i64> does
-                // not contain [Array<i64>, Array<string>]"; with `-> [Array<i64>,
-                // Array<string>]` written it runs, and so does the same function over
-                // `[i64, string]` with nothing written. With declared variables (`x:
-                // P<'a, 'b>` over `type P<'p, 'q> = [Array<'p>, Array<'q>]`) the message
-                // is "Array<'a: unbound> does not contain [Array<'a: unbound>, Array<'b:
-                // unbound>]". The result cell the self-call reads seems to take the first
-                // member of the other arm's union. base-r22 alike; not looked into. Found
-                // reviewing decided-arg-waits-01. probe:
-                // ~/ptmp/cr29/scratch/r21/21t/rev/rec.txt (let-rec-union-result-01)
-                // 2026-11-12 claude: Type::contains_int over an open cell and a union
-                // holding that cell (`'r ⊇ [T.., 'r]`, a self-call's result beside other
-                // arms) took each member in turn (holds_each), so the first constructor
-                // member bound the cell and the next was refused. A new arm drops the
-                // cell's own member, takes each open member as one type with it (as
-                // before), and holds the rest together: `'r := [Array<i64>,
-                // Array<string>]`, what the non-recursive twin returns. Pins
-                // lang::types::rec_union_result_{of_a_param,of_arms,of_declared_variables}
-                // fail in 4 modes each without it; rec_union_result_infinite_rejects pins
-                // the bound (a member holding the cell under a constructor is still
-                // refused); the slice_arms_* pins fail if open members are held in the
-                // union instead of merged. Census 2962: 0 verdict, 0 message changes.
                 let identity = self.fn_arg_identity(ctx);
                 let active_ftype = ftype
                     .lambda_ids
