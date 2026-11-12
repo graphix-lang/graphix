@@ -13,6 +13,7 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use indexmap::IndexMap;
 use netidx_value::Typ;
@@ -241,6 +242,13 @@ fn next_permutation(v: &mut [usize]) -> bool {
     v.swap(i - 1, j);
     v[i..].reverse();
     true
+}
+
+/// One side of a signature match printed as its cells stand, a message of
+/// its own: each side names its own variables, so a name both write prints
+/// alike on both, and the implementation's as the val's refusal prints it.
+fn side(t: &Type) -> CompactString {
+    format_with_flags(PrintFlag::DerefTVars, || format_compact!("{t}"))
 }
 
 /// Whether a union member is a variable still open: its pairing is
@@ -826,9 +834,11 @@ impl Type {
                 let r = e0.sig_matches_int(env, &e1, tvar_map, hist);
                 hist.remove(&key);
                 r.map_err(|e| {
-                    format_with_flags(PrintFlag::DerefTVars, || {
-                        e.context(format!("signature has {t0}, implementation has {t1}"))
-                    })
+                    e.context(format_compact!(
+                        "signature has {}, implementation has {}",
+                        side(t0),
+                        side(t1)
+                    ))
                 })
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
@@ -849,11 +859,11 @@ impl Type {
                 {
                     Ok(())
                 } else {
-                    format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!(
-                            "type mismatch: signature has {self}, implementation has {impl_type}"
-                        )
-                    })
+                    bail!(
+                        "type mismatch: signature has {}, implementation has {}",
+                        side(self),
+                        side(impl_type)
+                    )
                 }
             }
 
@@ -984,11 +994,11 @@ impl Type {
                     )
                 })
             }
-            (sig_type, impl_type) => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "type mismatch: signature has {sig_type}, implementation has {impl_type}"
-                )
-            }),
+            (sig_type, impl_type) => bail!(
+                "type mismatch: signature has {}, implementation has {}",
+                side(sig_type),
+                side(impl_type)
+            ),
         }
     }
 }

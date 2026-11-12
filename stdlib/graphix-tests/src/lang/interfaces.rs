@@ -1492,6 +1492,25 @@ run!(
     "/test/m.gx" => "let add = |x| x + 1."
 ; FuseExpect::None);
 
+// A signature and its implementation each name their own variables: a
+// name both write prints alike on both sides, the implementation's cell
+// under the name the refusal's `implemented` gives it.
+run!(
+    a_signature_and_its_implementation_print_a_name_both_write_alike,
+    refused("val f is declared fn(x: Array<'a>) -> 'a but implemented fn(x: Map<'a: unbound, i64>) -> 'a: unbound: in argument 0: type mismatch: signature has Array<'a: unbound>, implementation has Map<'a: unbound, i64>"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "val f: fn(x: Array<'a>) -> 'a;",
+    "/test/m.gx" => "let f = |x: Map<'a, i64>| -> 'a never()"
+; FuseExpect::None);
+
+run!(
+    a_signature_through_a_type_reference_prints_a_name_both_write_alike,
+    refused("val f is declared fn(x: T<'a>) -> 'a but implemented fn(x: { w: 'a: unbound }) -> 'a: unbound: in argument 0: signature has T<'a: unbound>, implementation has { w: 'a: unbound }: struct field name mismatch: v vs w"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "type T<'a> = { v: 'a };\nval f: fn(x: T<'a>) -> 'a;",
+    "/test/m.gx" => "let f = |x: { w: 'a }| -> 'a never()"
+; FuseExpect::None);
+
 // An argument whose kinds differ is named in Graphix syntax.
 run!(
     arg_default_mismatch_is_named,

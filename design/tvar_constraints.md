@@ -1983,10 +1983,16 @@ former consumer derives from the cells:
   it by, and its header takes no name the message already shows another
   cell under, so no two cells showing share one. A name numbered apart is
   new to the message: no cell or header showed it, and no type the
-  message printed holds it, so a name the program declared never moves
-  for it and a name a header listed stays that header's once its
-  signature ends (the printed types' names are walked only when a name
-  numbers apart, `Type::names_held`). A message
+  message has printed, the one printing included, holds it, so a name
+  those types declare never moves for it and a name a header listed stays
+  that header's once its signature ends (the printed types' names are
+  walked only when a name numbers apart, `Type::names_held`). A type the
+  message prints later is not known yet: a cell there that declares a
+  name numbered apart before it numbers apart in turn (`'a11`). A
+  signature match prints its signature and its implementation as two
+  messages (`matches.rs::side`): each side names its own variables, so a
+  name both write prints alike on both, and the implementation's cell
+  prints as the val's refusal around it prints the implementation. A message
   about a generic binding itself prints its scheme
   (`Type::scheme_read`), never the one instance a comparison held rigid:
   the refused write to a generic binding (`Connect::typecheck0_with`)
@@ -2000,6 +2006,9 @@ former consumer derives from the cells:
   `a_name_numbered_apart_takes_no_name_the_type_declares`,
   `a_header_keeps_its_name_beside_a_name_numbered_apart`,
   `a_later_cell_takes_no_name_a_header_listed`,
+  `a_type_mismatch_prints_two_definitions_cells_apart`,
+  `lang::interfaces::a_signature_and_its_implementation_print_a_name_both_write_alike`,
+  `a_signature_through_a_type_reference_prints_a_name_both_write_alike`,
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
   `a_refused_write_to_a_generic_binding_prints_its_header`; the hover's:
   `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`,

@@ -1403,6 +1403,15 @@ run!(
     FuseExpect::None
 );
 
+// Both sides of a type mismatch are one message: two definitions' cells of
+// one declared name print apart.
+run!(
+    a_type_mismatch_prints_two_definitions_cells_apart,
+    "{ let f = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a| -> 'a g(x); let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let r = h(1); f(1.5, h) }",
+    refused("type mismatch fn(y: 'a: f64) -> 'a: f64 does not contain fn(x: 'a1: i64) -> 'a1: i64");
+    FuseExpect::None
+);
+
 // A name numbered apart is none the printed type declares: `m`'s `'a1`
 // stays its own.
 run!(

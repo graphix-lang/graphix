@@ -232,8 +232,8 @@ picking them. One instance prints without it, each variable where it
 occurs with its state: the next use that decides `'a` decides it
 wherever that instance holds it. Two instances are two variables, and
 in one message the second prints numbered apart (`'a1`), under that
-name in every type the message prints; a name numbered apart is none the
-program declared.
+name in every type the message prints; a name numbered apart is none
+that type, or one the message printed before it, declares.
 
 ```graphix,cases
 no "y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number>" let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1
