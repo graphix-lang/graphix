@@ -2150,7 +2150,7 @@ impl<R: Rt> Update<R> for Module<R> {
                 let t = Type::Primitive(Typ::String | Typ::Error);
                 wrap!(source, t.check_contains(&ctx.env, source.typ()))?;
             }
-            // CR claude for claude: [readability/low] In a module task (a module with an
+            // XCR claude for claude: [readability/low] In a module task (a module with an
             // interface) two calls at different types through a one-instance function its
             // parent left open are refused, as the rule wants, but by the val's mismatch,
             // which names open cells and not the parent's binding to annotate: main.gx `let
@@ -2166,18 +2166,33 @@ impl<R: Rt> Update<R> for Module<R> {
             // the refusal below names fs, is untried. probe:
             // ~/ptmp/cr29/scratch/r20/20h/instance-quantifier-print-01/mq2/main.gx, mq1 (the
             // declared form), mq2n (no interface) (module-open-instance-msg-01)
+            // 2026-11-12 claude: Module::typecheck0 now tells a module check's failure first
+            // as the decision about the code around the module it tried and did not make, its
+            // own error under it, as Input::refused does for a top-level input: the CR's
+            // program says "the check decides a type the code around the module left open:
+            // annotate `fs` (line 1, column 5)" above the val's mismatch (mq1 alike). Pins
+            // lang::interfaces::calls_at_two_types_through_an_outer_instance_refused and
+            // an_error_after_an_outer_decision_refused fail in all four modes without it;
+            // calls_at_one_type_through_an_annotated_outer_instance is the annotated twin.
+            // The language server still shows the leaf alone: lsp-leaf-drops-told-first-01.
             Body::Static => {
                 let _task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
-                let res = self.check_body(ctx).and_then(|()| match writes.foreign() {
-                    Some(w) => bail!(
-                        "the check decides a type the code around the module \
-                         left open: {}",
-                        decided_binds(ctx, &self.scope.lexical, &self.spec.ori, &w)
-                    ),
-                    None => Ok(()),
-                });
+                let res = match (self.check_body(ctx), writes.foreign()) {
+                    (res, None) => res,
+                    (res, Some(w)) => {
+                        let m = format_compact!(
+                            "the check decides a type the code around the module \
+                             left open: {}",
+                            decided_binds(ctx, &self.scope.lexical, &self.spec.ori, &w)
+                        );
+                        match res {
+                            Ok(()) => Err(anyhow!("{m}")),
+                            Err(e) => Err(e.context(m)),
+                        }
+                    }
+                };
                 res.with_context(|| {
                     format_compact!("compiling module {}", self.scope.lexical)
                 })?;

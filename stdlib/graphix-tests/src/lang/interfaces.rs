@@ -2246,6 +2246,56 @@ run!(
     "/test/m.gx" => "let e = super::z"
 ; FuseExpect::None);
 
+/// A refusal whose message holds each of `phrases`, in order.
+fn told_in_order(phrases: &'static [&'static str]) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| {
+        let Err(e) = v else { return false };
+        let e = format!("{e:#}");
+        let mut at = 0;
+        phrases.iter().all(|p| match e[at..].find(p) {
+            Some(i) => {
+                at += i + p.len();
+                true
+            }
+            None => false,
+        })
+    }
+}
+
+// Calls at two types through a function the code around the module left
+// one instance try to decide its type there: the refusal names the binding
+// holding it before the val's mismatch that followed.
+run!(
+    calls_at_two_types_through_an_outer_instance_refused,
+    told_in_order(&[
+        "the check decides a type the code around the module left open: annotate `fs`",
+        "type variable usage mismatch: expected i64, got f64",
+    ]),
+    "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
+    "/test/m.gxi" => "val go: (i64, f64)",
+    "/test/m.gx" => "let g = super::fs[0]$; let go = (g(1), g(1.5))"
+);
+
+// A check that fails for its own reason after such a decision tells both.
+run!(
+    an_error_after_an_outer_decision_refused,
+    told_in_order(&[
+        "the check decides a type the code around the module left open: annotate `fs`",
+        "cannot compute string + i64",
+    ]),
+    "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
+    "/test/m.gxi" => "val go: i64",
+    "/test/m.gx" => "let g = super::fs[0]$; let a = g(1); let go = \"x\" + 1"
+);
+
+run!(
+    calls_at_one_type_through_an_annotated_outer_instance,
+    prints("[i64:2, i64:4]"),
+    "/test.gx" => "let fs: Array<fn(x: i64) -> i64> = array::map([1], |r| |x| x + x); mod m; let result = m::go",
+    "/test/m.gxi" => "val go: (i64, i64)",
+    "/test/m.gx" => "let g = super::fs[0]$; let go = (g(1), g(2))"
+; FuseExpect::None);
+
 // A function type in a val quantifies its own variables: one standing
 // whole where the implementation has a cell no use copies is decided there.
 run!(

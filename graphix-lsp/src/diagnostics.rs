@@ -44,6 +44,21 @@ fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocati
     ErrorLocation { position: Some(zero_based(pos)), end, file }
 }
 
+// CR claude for claude: [readability/low] A refusal the check tells first as
+// a context above the error it explains reaches the editor without it: the
+// diagnostic is the chain's leaf alone. A module task's decision about a
+// cell the code around it left open (`Module::typecheck0`) and a top-level
+// input's decision about an earlier input's (`Input::refused`) both wrap
+// the check's own error, so with main.gx `let fs = array::map([1], |r| |x|
+// x + x); mod m; m::go`, m.gxi `val go: (i64, f64)`, m.gx `let g =
+// super::fs[0]$; let go = (g(1), g(1.5))` `--check` says "the check decides
+// a type the code around the module left open: annotate `fs`" above the
+// val's mismatch, and the server puts only "val go is declared (i64, f64)
+// but implemented ('_8356: .., '_8357: ..): type variable usage mismatch"
+// on m.gx, naming no binding to annotate. One way: a typed context for a
+// refusal told first, which the leaf message leads with. probe:
+// ~/ptmp/cr29/scratch/r23/23h/module-open-instance-msg-01/mq2/main.gx
+// (lsp-leaf-drops-told-first-01)
 /// The chain's leaf is the human-readable failure text; a parse
 /// failure's without the position and source line its squiggle shows.
 pub fn error_leaf_message(err: &anyhow::Error) -> String {
