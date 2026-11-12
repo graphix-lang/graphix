@@ -1825,66 +1825,6 @@ fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     guide(flags) | ContainsFlags::Lower
 }
 
-// XCR claude for claude: [bug/high] A check never returns, and takes memory until it is
-// killed, where a generic function passes a union over its own variable to a parameter
-// whose variable is bounded by a union over another of the callee's variables: `let g =
-// 'b: ['c, null] |s: 'c, x: 'b| -> i64 0; let f = |v: 'a, w: ['a, null]| g(v, w); f(1,
-// 2)` under `--check` passes 6 G in seconds (exit 137 under MemoryMax), and so does the
-// trait form, `'a: T |v: 'a, w: ['a, null]| T::m(v, w)` over `val m: fn<'b: [self,
-// null]>(self, x: 'b) -> i64`. The definitions alone check; the instance (`f(1, 2)`,
-// `f(1, null)`) does not come back. GRAPHIX_DBG_BIND=1 prints `SET-T [null, 'c] >= i64`
-// without end: the cell asked is `'c`, its own conjunct is `[null, 'c]`, and the stack
-// repeats contains_dispatch -> cell_constraints_ok -> conjuncts_admit -> contains_int ->
-// set_commit -> contains_dispatch (stack.txt), so a cell has come to stand in its own
-// bound (`'b` and `'c` made one, or `'c` given `'b`'s bound), which a written signature
-// is refused for ("a bound may not reach its own variable").
-// With `w: 'a`, `w: Array<'a>` under `'b: Array<'c>`, concrete parameters, or the
-// caller's own `'c: ['a, null] |v: 'a, w: 'c|` it checks and runs. base-r20, the round
-// at 8203ee95b and r20-staging alike. A fix finds where the two cells merge and refuses
-// the merge that puts a cell in its own bound, or answers a conjunct that is a union
-// over the cell asked by its other members. probes:
-// ~/ptmp/cr29/scratch/r20/coord/x2rev/recursion/{r1,r2,r3_trait}.gx (killed), ok_*.gx
-// (check); `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 timeout -s
-// KILL 60 graphix --no-cache --check r1.gx` (bound-holds-own-cell-01)
-// 2026-11-11 claude: A plain call reaches it, with no wrapper and no trait: `let f = 'x:
-// Array<['a, null]> |y: 'x| y; f([1])` under --check passes 2 G in about a second and is
-// killed (exit 137), base-r22 and lane 21t alike, and GRAPHIX_DBG_BIND=1 prints `SET-T
-// [null, 'a] >= i64` without end, as above. `'x: Array<['a, string]>` the same;
-// `f([null])`, `'x: ['a, null]` called `f(1)`, `'x: (['a, null], i64)`, `'x: Array<'a>`
-// and a bound over one variable twice or a written member (`Array<E<'a, 'a>>`,
-// `Array<E<'a, i64>>`) check. Found by the differential of decided-arg-waits-01 (3 of
-// 1958 generated programs, killed on both sides). probes:
-// ~/ptmp/cr29/scratch/r21/21t/d32/oom/{j1,j11,m3}.gx (killed), {j8,j9,j10,j12,j4,j5}.gx
-// (check)
-// 2026-11-11 claude: Review of decided-arg-waits-01: since that CR's wait a call
-// base-r22 refused before the bound is reached exhausts memory too. `type P<'p, 'q> =
-// [Array<'p>, Array<'q>]; type E<'p, 'q> = ['p, 'q]; let f = 'tx1: Array<E<'b, 'a>> |x0:
-// P<'b, 'a>, x1: 'tx1, y1: 'b| 0; f([1], ["s"], "s")` is refused on base-r22 at `[1]`
-// (the choice between two undecided members) and on lane 21t --check is killed past 2 G
-// (exit 137): the first argument waits now, and the second meets the bound. Without `x0`
-// both are killed. 4 of 1378 generated calls through declared bounds are killed on the
-// lane alone, 40 on both (bound.py, seed 8101). probes:
-// ~/ptmp/cr29/scratch/r21/21t/rev/oom/{k1,k4}.gx (lane alone), k2.gx (both)
-// 2026-11-12 claude: TVar::narrow_cell adds no conjunct that holds the cell it would
-// narrow (contains::holds_cell: the cell, a union member through names and bound cells,
-// a lower bound of a member), which is how commit_parts put 'a in [null, 'a] in every
-// probe of this CR; and conjuncts_admit skips a conjunct that came to hold its cell
-// later (a member took the cell as a lower bound after the conjunct was added: the
-// unit-level witness, no program found that reaches it). r1, r2, r3_trait, j1, j11 check
-// and run; k1, k2, k4, m3 are refused as the choice between two undecided members
-// (AmbiguousMember), k3 runs. bound.py seed 8101 against base-r23: 791 families, 490
-// programs base kills (318 refused now, 172 run), none killed, none newly refused, no
-// type changed. Census 2962 files, no verdict or message changed. Fail without it
-// (killed at a memory cap, or the first assert):
-// lang::types::wrapper_passing_a_union_over_its_variable_to_a_bound_over_the_callees,
-// .._to_a_bound_holds_the_variable, .._to_a_trait_methods_bound,
-// undecided_element_takes_the_union_of_a_bound_over_another_variable,
-// undecided_elements_under_two_bounds_that_name_each_others_variable,
-// undecided_element_into_a_named_union_of_a_bound_over_two_open_variables,
-// contains::tests::a_bound_that_holds_its_own_cell_narrows_nothing,
-// a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type. Two neighbours found and
-// left as CRs: rigid-narrowed-by-callee-bound-01, bound-union-binds-argument-early-01.
-// probes: ~/ptmp/cr29/scratch/r23/23c/
 /// True iff every conjunct of the cell's constraints contains `t`; one
 /// that holds the cell itself ([`holds_cell`]) contains whatever the cell
 /// takes. A pure probe.
