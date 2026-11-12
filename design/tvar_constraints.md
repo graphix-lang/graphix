@@ -1485,12 +1485,16 @@ parameter take every edge. Where two cells meet (`contains_tvars`):
 - An open cell holding a union it is a member of drops that member
   (`'r ⊇ [T, 'r]` binds `'r := T`), and so does an open cell meeting a
   bound cell whose binding reaches it, which walks the binding. The
-  union's open members are one type with the cell, as each would be
-  alone; the others are held together, as the union without the cell
-  would be: `'r ⊇ [Array<i64>, Array<string>, 'r]` binds `'r :=
-  [Array<i64>, Array<string>]`, never its first member, so a recursive
-  function's result is its non-recursive twin's (pins
-  `lang::types::rec_block_*_collapses`, `rec_union_result_*`).
+  union's open members that are not rigid are one type with the cell,
+  as each would be alone; the others, a declared variable under its
+  definition's check among them, are held together, as the union
+  without the cell would be: `'r ⊇ [Array<i64>, Array<string>, 'r]`
+  binds `'r := [Array<i64>, Array<string>]`, never its first member,
+  and `'r ⊇ ['a, Array<i64>, 'r]` binds `'r := ['a, Array<i64>]`. So a
+  recursive function returns the union its non-recursive twin does,
+  except that an arm whose type is an undecided variable is one type
+  with the result (pins `lang::types::rec_block_*_collapses`,
+  `rec_union_result_*`).
 - A path through cells and unions alone otherwise (`'p` above `'q`
   above `'p`): every cell on it is one type (`merge_bare_cycle`, the
   paths' vars from `tvar::bare_path`; every path, so a cycle through

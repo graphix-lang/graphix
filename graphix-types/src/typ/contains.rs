@@ -1287,6 +1287,12 @@ fn is_own_cell(m: &Type, tv: &TVar) -> bool {
     matches!(m, Type::TVar(m) if m.open_cell().is_some_and(|c| c.same_cell(tv)))
 }
 
+/// Whether `m` is a var whose chain ends at an open cell that is not
+/// rigid.
+fn is_flexible_var(m: &Type) -> bool {
+    matches!(m, Type::TVar(m) if m.open_cell().is_some_and(|c| !c.is_rigid()))
+}
+
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
 /// A rigid cell never unifies, so it makes no cycle.
 fn open_cell_reaches(a: &Type, b: &Type) -> bool {
@@ -3734,8 +3740,9 @@ impl Type {
                 )
             }
             // `'r ⊇ [T.., 'r]` is `'r ⊇ [T..]`: the cell's own member asks
-            // nothing of it, an open member is one type with it, and the
-            // rest are held together, as a union without it would be
+            // nothing of it, an open member that is not rigid is one type
+            // with it, and the rest are held together, as a union without
+            // it would be
             (Self::TVar(t0), Self::Set(s))
                 if !t0.is_rigid() && s.iter().any(|m| is_own_cell(m, t0)) =>
             {
@@ -3744,7 +3751,7 @@ impl Type {
                     if is_own_cell(m, t0) {
                         continue;
                     }
-                    if is_unbound_tvar(m) {
+                    if is_flexible_var(m) {
                         if !self.contains_int(flags, env, hist, m)? {
                             return Ok(false);
                         }

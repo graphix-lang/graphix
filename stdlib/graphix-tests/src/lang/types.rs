@@ -1392,6 +1392,24 @@ run!(
     FuseExpect::Jit
 );
 
+// A declared variable beside the cell is held with the other members, as
+// it would be without the cell: `'r := ['a, Array<i64>]`.
+const REC_UNION_RESULT_OF_A_DECLARED_MEMBER: &str = r#"
+{
+  let rec f = |x: 'a, n: i64| select n { 0 => x, 1 => [1], _ => f(x, n - 1) };
+  let a = f("z", 0);
+  let b = f(2, 3);
+  "[a] [b]"
+}
+"#;
+
+run!(
+    rec_union_result_of_a_declared_member,
+    REC_UNION_RESULT_OF_A_DECLARED_MEMBER,
+    prints(r#""z [1]""#);
+    FuseExpect::Jit
+);
+
 // The members held together still may not hold the cell.
 const REC_UNION_RESULT_INFINITE_REJECTS: &str = r#"
 {
