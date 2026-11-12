@@ -1433,44 +1433,6 @@ pub(crate) fn carried_out(
     })
 }
 
-// XCR claude for claude: [perf/medium] A call whose signature holds a DAG of
-// parametrized named unions checks in time exponential in the DAG's depth: `type
-// L0<'t> = ['t, null, `A]; type M0<'t> = [Array<'t>, `B]; type L<i><'t> =
-// [L<i-1><'t>, M<i-1><'t>]`, `M<i>` the same, then `let f = |x0: L<n><string>| 1;
-// f(null)`. --no-cache --check, debug, instructions: n = 10 / 12 / 14 / 16 / 18 0.82 /
-// 1.03 / 1.89 / 5.29 / 18.9 G (an empty program 0.75 G); as the return type (`|x0: i64|
-// -> L<n><string> null`, `f(1)`) 0.79 / 0.89 / 1.31 / 2.98 / 9.68 G. The uncalled
-// definition, `let x: L<n><string> = null` and the parameterless DAG are flat. perf at
-// 16: Widening::cells -> widenable -> data_positions (35%) and holds_invariantly (30%),
-// each through expansion -> Type::lookup_ref_probe. `clean` remembers only parameterless
-// typedefs and DataSeen keys a node by its address, where an application's expansion is
-// built anew at every visit, so each path is walked. Key an application by its
-// definition and its parameters' ids, as RefHist::ref_id and ContainsHist::pair_key do,
-// and pin the shape in deep_nesting. The contains side of the same DAG, a declared var
-// refused against `L<n><'b>` (`|x0: 'a, y0: 'b| { let x: L<n><'b> = x0; x }`, 12.0 G at
-// 18, and 1.7x main's peak memory since the probe memo keys a var), is
-// typedef-open-expansion-01's walk. Main 82569fed3 retires the same instructions on
-// each. Found by the review of union-dag-rigid-cell-01. probes:
-// ~/ptmp/cr29/scratch/r20/20g/review/{pc,pr,pv}{10,12,14,16,18}.gx
-// (call-param-dag-exp-01)
-// 2026-11-12 claude: settle::DataPositions keys a typedef application by its AppKey
-// (definition and parameters, TypeRef::app_key) and how it is held, and passes one met
-// again by; holds_invariantly keeps by AppKey every application found to hold no
-// variable invariantly (was: parameterless typedefs only), never one found to hold one,
-// since a definition met inside its own expansion stands for its variables;
-// Type::unfolded_members passes a named member already unfolded over the same parameters
-// (first_expansion), so the contains side (pv) is linear too. --no-cache --check, debug,
-// instructions:u, base-r23 -> lane: pc at 10/12/14/16/18 0.83/1.05/1.90/5.30/- ->
-// 0.76/0.76/0.77/0.77/0.77 G; pr at 10/14/16/18 0.80/1.32/2.99/- -> 0.76/0.76/0.77/0.77
-// G; pv at 10/12/14/16/18 0.84/1.07/1.97/5.57/- -> 0.76/0.77/0.77/0.78/0.78 G (empty
-// program 0.75); --expand pc16 5.33 -> 0.79 G. At depth 24 with one memo undone: pc
-// killed at 200 s (DataPositions), pc 675 G (holds_invariantly), pv 1231 G
-// (unfolded_members). Pin
-// deep_nesting::a_dag_of_parametrized_named_unions_checks_in_polynomial_time (depth 40,
-// --expand 0.9/1.0 G and the refusal 0.9 G of 3 G) fails with each of the three undone.
-// Census 2962 files 0 verdict / 0 message; regress 580/0; guicheck base 41.32/41.26 G,
-// lane 40.78/40.73 G. data-positions-paths-01's probes dp3..dp6 go 0.84/1.17/3.36/12.12
-// -> 0.76 G each. probes: ~/ptmp/cr29/scratch/r23/23g/call-param-dag-exp-01/
 /// Whether `t` holds a type variable under an abstract type, a type
 /// application or a writable reference, outside any function type: such a position
 /// fixes the variable exactly, so its argument is checked first and the

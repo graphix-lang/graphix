@@ -872,6 +872,11 @@ impl Held {
 // one met again by. On that lane dp3..dp6 go 0.84/1.17/3.36/12.12 -> 0.76 G each
 // (--no-cache --check, debug, instructions:u; base-r23 first); not X'd there, as
 // the CR is lane 23c's.
+// 2026-11-12 claude: The review of call-param-dag-exp-01 (lane 23g) passes a
+// memoized application by only where no definition its first walk expanded at an
+// application holding a variable is open (settle::Unrolling::passes), so the walk
+// finds what base's does whatever the formals before it; dp5/dp6 stay 0.76/0.77 G
+// on that build.
 /// A walk of every type variable under a type, through bindings, with how
 /// each occurrence is held. A shared node is walked once for each way it
 /// is held, and a typedef application by its [`AppKey`] once for each
