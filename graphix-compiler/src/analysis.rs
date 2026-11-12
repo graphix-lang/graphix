@@ -2208,6 +2208,26 @@ fn read_before<R: Rt>(
     (reached || hands_out_callee_binds(n)).then_some(None)
 }
 
+// CR claude for claude: [bug/high] Siblings that depend through a reference are forked
+// where the reader hands the dereference to `array::group`. `let n = 0; n <- select n { k
+// if k < 4 => k + 1, _ => never() }; let mk = || -> &i64 &(n * 10); let saved: [null,
+// &i64] = null; let pair = (mk(), select saved { null as _ => [], r => array::group(*r,
+// |c, _| c == 2) }); saved <- once(pair.0); pair.1` yields [], [10, 20], [30, 40]
+// serially; under GRAPHIX_PAR=force the node-walk yields [] alone, or [] and then one of
+// [0, 20], [0, 30], [0, 40], run to run. GRAPHIX_PAR_AUDIT=1 panics "a forked branch read
+// BindId(..), which its left sibling published in the same cycle": the tuple's fields are
+// judged independent, where the second reads through `*r` the cell the first's callee
+// publishes. The same tuple runs in order (the audit is quiet, the output the serial one)
+// with `*r` alone in the arm, with `count(*r)`, with `array::map([*r], |x| x + 1)`, with
+// the group behind a function (`let g = |v: i64| array::group(v, ..)`, `g(*r)`), with the
+// reference made in place (`(&(n * 10), ..)`), and as two statements (`let a = mk(); let
+// b = select ..`). So what differs is a builtin with a callback of its own
+// (genn::Callback) taking the dereference as its argument. Not looked into further; a
+// first suspect is that the callback's call, not bound when the tuple first decides,
+// answers `None`, and the decision made again once it is bound drops the read through the
+// reference. GRAPHIX_PAR=auto does not fork a program this small. base-r21 and base-r22
+// race alike. Found by soak nov11b, ryouko divergence_000000. probes:
+// ~/ptmp/cr29/scratch/nov11b/{r1,r2,r4,r6,r10,r11,r12,r14}.gx (fork-group-deref-01)
 /// Whether siblings forked at a fork point other than a block's (a
 /// constructor's fields, a call's arguments, an operator's operands, a
 /// collection's slots) compute in parallel what they do in order: none

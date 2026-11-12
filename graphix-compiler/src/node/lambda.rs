@@ -598,6 +598,21 @@ pub struct InstanceTypes {
     sig: Arc<FnType>,
 }
 
+// CR claude for claude: [bug/medium] A build refuses an instance the check accepted where
+// a variable bounded by another is decided narrower than the bound's variable settles.
+// `let f = 'b: Array<'a> |x: 'b, y: 'a| y; let e: [i64, string] = 1; f([2], e)` passes
+// `--check`, and its build fails "an instance at fn(x: Array<i64>, y: [i64, string]) ->
+// [i64, string] of a definition typed fn<'b: Array<'a>>(x: 'b, y: 'a) -> 'a". The check's
+// answer holds: 'b is Array<i64>, 'a is [i64, string], and Array<[i64, string]> contains
+// Array<i64>; GRAPHIX_NO_SUBST=1 builds it. So FnType::held_at refuses a signature it
+// should take: the first suspect is that it binds 'a to i64 through 'b's bound when it
+// meets `x`, and then `y` does not fit. With the parameters the other way (`|y: 'a, x:
+// 'b|`, `f(e, [2])`) it builds, and so does the bound written into the formal (`|x:
+// Array<'a>, y: 'a|`). `'a: Any` beside the bound changes nothing, and neither does an
+// annotated `let a: Array<i64> = [2]` passed as `x`, nor returning `x`. base-r21 and
+// base-r22 refuse alike. A sibling: (inst-bare-union-never-01). Found by soak nov11b,
+// aieka divergence_000000. probes: ~/ptmp/cr29/scratch/nov11b/{a1,a4,a5,a6,a7,a8}.gx
+// (inst-bound-order-01)
 /// The definition's signature `def` as the instance at `instance` holds
 /// it, with the copy of each open cell: each bound to the instance's type
 /// ([`FnType::held_at`]). `None` when the instance's signature does not
