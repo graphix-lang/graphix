@@ -237,6 +237,16 @@ event its table (`branch::merge_in_order`). Pins: `lang::modules::
 a_write_through_a_binding_retired_beside_syncing_siblings_misses_the_val`
 and `a_reload_in_a_forked_branch_retires_its_binding_in_the_event`.
 
+A join costs its change, not the table. The table is a persistent map,
+and each reading is made from the one before it by the bindings whose
+joins changed since (`StaticCallees::aliases_after`,
+`VarAliases::updated`); a table made from another keeps the pairs it
+lacks of it, so the runtime's walk of the bindings that left and a
+branch's absorb visit those alone where one table was made from the
+other, and every pair otherwise (`VarAliases::maybe_lacked`). Pins:
+`branch::tests::a_table_made_from_another_is_compared_by_what_changed`
+and `static_callees_tests::a_view_takes_in_only_what_changed_since_its_table`.
+
 A reload joins its new body's binding before the body it replaces
 retires; while the new source compiles, the replaced body's bindings
 are no names of the variable (`StaticCallees::set_aside`), so a write

@@ -8,6 +8,7 @@
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue,
     cost::{self, ForkSite, Meter, Parts, Plan, SlotPlan, SlotSite},
+    env::Map,
     expr::{Expr, ExprId},
     node::{
         callsite::CallNode,
@@ -67,7 +68,7 @@ pub struct VarAliases {
     hi: u64,
     /// The filter of `aliases`, else [`NO_FILTER`], so an id between `lo`
     /// and `hi` that is none is answered by one load.
-    filter: &'static [u64; FILTER_WORDS],
+    filter: &'static Filter,
     aliases: Option<Arc<Aliases>>,
     /// The count of the compile's joins and unjoins these hold
     /// ([`crate::StaticCallees::aliases_after`]): each view of the
@@ -75,7 +76,7 @@ pub struct VarAliases {
     read_at: u64,
 }
 
-static NO_FILTER: [u64; FILTER_WORDS] = [0; FILTER_WORDS];
+static NO_FILTER: Filter = [0; FILTER_WORDS];
 
 impl Default for VarAliases {
     fn default() -> Self {
@@ -102,14 +103,30 @@ impl Var {
     }
 }
 
-/// The aliases, and a filter of their ids that answers most ids that are
-/// none without a probe of the map.
+/// The aliases, a filter of their ids that answers most ids that are
+/// none without a probe of the map, and the table they were made from.
 struct Aliases {
-    filter: Box<[u64; FILTER_WORDS]>,
-    map: IntMap<BindId, BindId>,
+    /// Shared with the table these were made from where they set no new
+    /// bit.
+    filter: Arc<Filter>,
+    /// How many ids the filter has whose aliases went; past the map's
+    /// size the filter is built again.
+    stale: usize,
+    /// Never empty: a table with no aliases has no `Aliases`.
+    map: Map<BindId, BindId>,
+    made_from: Option<MadeFrom>,
+}
+
+/// The map of the table a table was made from, and the pairs of it the
+/// table lacks.
+struct MadeFrom {
+    map: Map<BindId, BindId>,
+    lacked: Box<[(BindId, BindId)]>,
 }
 
 const FILTER_WORDS: usize = 1024;
+
+type Filter = [u64; FILTER_WORDS];
 
 #[inline]
 fn filter_bit(id: BindId) -> (usize, u64) {
@@ -120,20 +137,35 @@ fn filter_bit(id: BindId) -> (usize, u64) {
 impl VarAliases {
     #[doc(hidden)]
     pub fn new(map: IntMap<BindId, BindId>, read_at: u64) -> Self {
-        let (Some(lo), Some(hi)) =
-            (map.keys().map(BindId::inner).min(), map.keys().map(BindId::inner).max())
-        else {
+        Self::built(map.into_iter().collect(), None, read_at)
+    }
+
+    /// The table of `map`, its filter built for it.
+    fn built(
+        map: Map<BindId, BindId>,
+        made_from: Option<MadeFrom>,
+        read_at: u64,
+    ) -> Self {
+        if map.is_empty() {
             return Self { read_at, ..Self::default() };
-        };
-        let mut filter = Box::new([0u64; FILTER_WORDS]);
-        for id in map.keys() {
-            let (w, b) = filter_bit(*id);
-            filter[w] |= b
         }
-        let aliases = Arc::new(Aliases { filter, map });
-        // SAFETY: the filter lives in a box `aliases` holds for as long
-        // as `Self` does, and nothing writes it once built
-        let filter = unsafe { &*(&*aliases.filter as *const [u64; FILTER_WORDS]) };
+        let (mut lo, mut hi) = (u64::MAX, 0);
+        let mut filter = Arc::new([0u64; FILTER_WORDS]);
+        let words = Arc::get_mut(&mut filter).expect("a new filter");
+        for (id, _) in map.iter() {
+            lo = lo.min(id.inner());
+            hi = hi.max(id.inner());
+            let (w, b) = filter_bit(*id);
+            words[w] |= b
+        }
+        Self::of(Aliases { filter, stale: 0, map, made_from }, lo, hi, read_at)
+    }
+
+    fn of(aliases: Aliases, lo: u64, hi: u64, read_at: u64) -> Self {
+        let aliases = Arc::new(aliases);
+        // SAFETY: the filter lives in an `Arc` that `aliases` holds for as
+        // long as `Self` does, and nothing writes a shared filter
+        let filter = unsafe { &*(&*aliases.filter as *const Filter) };
         Self { lo, hi, filter, aliases: Some(aliases), read_at }
     }
 
@@ -163,21 +195,85 @@ impl VarAliases {
         Var(self.aliases.as_ref().and_then(|a| a.map.get(&id).copied()).unwrap_or(id))
     }
 
+    /// Whether `id` is another's variable.
+    fn lists(&self, id: BindId) -> bool {
+        self.aliases.as_ref().is_some_and(|a| a.map.contains_key(&id))
+    }
+
+    /// These with each id of `changes` another's variable or, given
+    /// `None`, none, read at `read_at`. An id comes once, unless each of
+    /// its changes is to none.
+    pub(crate) fn updated(
+        &self,
+        changes: impl IntoIterator<Item = (BindId, Option<BindId>)>,
+        read_at: u64,
+    ) -> Self {
+        let from = self.aliases.as_deref();
+        let prev = from.map_or_else(Map::default, |a| a.map.clone());
+        let mut map = prev.clone();
+        let mut added: LPooled<Vec<BindId>> = LPooled::take();
+        let mut left: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
+        for (id, to) in changes {
+            match to {
+                Some(to) if map.get(&id) != Some(&to) => {
+                    map.insert_cow(id, to);
+                    added.push(id)
+                }
+                Some(_) => (),
+                None => left.extend(map.remove_cow(&id).map(|was| (id, was))),
+            }
+        }
+        if added.is_empty() && left.is_empty() {
+            return Self { read_at, ..self.clone() };
+        }
+        let stale = from.map_or(0, |a| a.stale) + left.len();
+        let made_from = Some(MadeFrom { map: prev, lacked: Box::from(&left[..]) });
+        let Some(from) = from.filter(|_| stale <= map.len()) else {
+            return Self::built(map, made_from, read_at);
+        };
+        let (mut lo, mut hi) = (self.lo, self.hi);
+        let mut filter = from.filter.clone();
+        for id in added.iter() {
+            lo = lo.min(id.inner());
+            hi = hi.max(id.inner());
+            let (w, b) = filter_bit(*id);
+            if filter[w] & b == 0 {
+                Arc::make_mut(&mut filter)[w] |= b
+            }
+        }
+        Self::of(Aliases { filter, stale, map, made_from }, lo, hi, read_at)
+    }
+
+    /// The pairs of these that `later` may lack: where `later` was made
+    /// from these, the pairs it lacks of them, else all of them.
+    pub(crate) fn maybe_lacked<'a>(
+        &'a self,
+        later: &'a Self,
+    ) -> impl Iterator<Item = (BindId, BindId)> + 'a {
+        let mine = self.aliases.as_deref();
+        let step = later
+            .aliases
+            .as_deref()
+            .and_then(|l| l.made_from.as_ref())
+            .filter(|from| mine.is_some_and(|m| from.map.ptr_eq(&m.map)));
+        let (step, all) = match step {
+            Some(from) => (Some(from.lacked.iter().copied()), None),
+            None => (None, mine.map(|m| m.map.iter().map(|(i, o)| (*i, *o)))),
+        };
+        step.into_iter().flatten().chain(all.into_iter().flatten())
+    }
+
     /// These with every alias of `kept` they lack.
     fn with_kept(&self, kept: &Self) -> Self {
-        let Some(old) = &kept.aliases else { return self.clone() };
         if self.same(kept) {
             return self.clone();
         }
-        let mut m = self.aliases.as_ref().map(|a| a.map.clone()).unwrap_or_default();
-        let mut grew = false;
-        for (inner, outer) in old.map.iter() {
-            if !m.contains_key(inner) {
-                m.insert(*inner, *outer);
-                grew = true
-            }
-        }
-        if grew { Self::new(m, self.read_at) } else { self.clone() }
+        let lacked: LPooled<Vec<(BindId, BindId)>> =
+            kept.maybe_lacked(self).filter(|(inner, _)| !self.lists(*inner)).collect();
+        self.updated(
+            lacked.iter().map(|(inner, outer)| (*inner, Some(*outer))),
+            self.read_at,
+        )
     }
 
     /// Take in the table of a branch forked from these: its aliases, and
@@ -192,15 +288,7 @@ impl VarAliases {
 
     /// These without `ids`.
     fn without(&self, ids: &[BindId]) -> Self {
-        let Some(a) = &self.aliases else { return self.clone() };
-        if !ids.iter().any(|id| a.map.contains_key(id)) {
-            return self.clone();
-        }
-        let mut m = a.map.clone();
-        for id in ids {
-            m.remove(id);
-        }
-        Self::new(m, self.read_at)
+        self.updated(ids.iter().map(|id| (*id, None)), self.read_at)
     }
 
     /// Whether these were read before `other` was: the runtime keeps the
@@ -212,13 +300,12 @@ impl VarAliases {
     /// Each binding these name another's variable that `later` does not,
     /// with that variable: its join went.
     pub fn each_left(&self, later: &Self, mut f: impl FnMut(BindId, BindId)) {
-        let Some(old) = &self.aliases else { return };
         if self.same(later) {
             return;
         }
-        for (inner, outer) in old.map.iter() {
-            if later.var(*inner) == *inner {
-                f(*inner, *outer)
+        for (inner, outer) in self.maybe_lacked(later) {
+            if later.var(inner) == inner {
+                f(inner, outer)
             }
         }
     }
@@ -1868,5 +1955,89 @@ mod tests {
         let mut empty = VarAliases::default();
         empty.absorb(&VarAliases::new(IntMap::default(), 2));
         assert_eq!(empty.read_at(), 2);
+    }
+
+    /// `n` bindings, each another's variable, joined one at a time.
+    fn grown(n: usize) -> (VarAliases, Vec<(BindId, BindId)>) {
+        let pairs: Vec<_> = (0..n).map(|_| (BindId::new(), BindId::new())).collect();
+        let mut table = VarAliases::default();
+        for (i, (inner, outer)) in pairs.iter().enumerate() {
+            table = table.updated([(*inner, Some(*outer))], i as u64 + 1)
+        }
+        (table, pairs)
+    }
+
+    #[test]
+    fn a_table_made_from_another_is_compared_by_what_changed() {
+        for n in [64, 4096] {
+            let (old, pairs) = grown(n);
+            let (gone, outer) = pairs[n / 2];
+            let (joined, to) = (BindId::new(), BindId::new());
+            let later = old.updated([(gone, None), (joined, Some(to))], n as u64 + 1);
+            assert_eq!(old.maybe_lacked(&later).count(), 1);
+            let mut left = vec![];
+            old.each_left(&later, |inner, outer| left.push((inner, outer)));
+            assert_eq!(left, [(gone, outer)]);
+            let kept = later.with_kept(&old);
+            assert_eq!(
+                (kept.var(gone), kept.var(joined), kept.len()),
+                (outer, to, n + 1)
+            );
+            let rebuilt = VarAliases::new(pairs.iter().copied().collect(), 0);
+            assert_eq!(rebuilt.maybe_lacked(&later).count(), n);
+            assert_eq!(later.maybe_lacked(&old).count(), n);
+        }
+    }
+
+    #[test]
+    fn a_table_changed_in_steps_names_what_its_model_does() {
+        let ids: Vec<BindId> = (0..300).map(|_| BindId::new()).collect();
+        let outers: Vec<BindId> = (0..8).map(|_| BindId::new()).collect();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut below = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut model: IntMap<BindId, BindId> = IntMap::default();
+        let mut table = VarAliases::default();
+        let mut rebuilt = 0;
+        for step in 1..600u64 {
+            let mut changes: IntMap<BindId, Option<BindId>> = IntMap::default();
+            for _ in 0..=below(6) {
+                let id = ids[below(ids.len())];
+                let removal = below(3) == 0 || (step > 300 && below(2) == 0);
+                changes.insert(id, (!removal).then(|| outers[below(outers.len())]));
+            }
+            let later = table.updated(changes.iter().map(|(id, to)| (*id, *to)), step);
+            let mut want: Vec<(BindId, BindId)> = changes
+                .iter()
+                .filter_map(|(id, to)| match (model.get(id), to) {
+                    (Some(outer), None) => Some((*id, *outer)),
+                    _ => None,
+                })
+                .collect();
+            for (id, to) in changes.iter() {
+                match to {
+                    Some(outer) => model.insert(*id, *outer),
+                    None => model.remove(id),
+                };
+            }
+            let mut left = vec![];
+            table.each_left(&later, |inner, outer| left.push((inner, outer)));
+            left.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(left, want);
+            for id in ids.iter().chain(outers.iter()) {
+                assert_eq!(later.var(*id), model.get(id).copied().unwrap_or(*id));
+            }
+            assert_eq!(later.len(), model.len());
+            if !left.is_empty() && later.aliases.as_ref().is_some_and(|a| a.stale == 0) {
+                rebuilt += 1
+            }
+            table = later
+        }
+        assert!(rebuilt > 0, "no filter was built again");
     }
 }

@@ -4057,6 +4057,9 @@ pub(crate) struct StaticCallees(Mutex<Holds>, AtomicU64);
 struct Holds {
     calls: AHashMap<BindId, SmallVec<[(Arc<expr::Expr>, u32); 1]>>,
     joined: AHashMap<BindId, Side>,
+    /// Every binding whose entry in `joined` changed since `aliases` was
+    /// read.
+    touched: Vec<BindId>,
     /// The holds of a body being replaced, which a write its replacement
     /// makes does not see ([`StaticCallees::set_aside`]).
     aside: AHashMap<(BindId, ExprId), u32>,
@@ -4134,6 +4137,7 @@ impl StaticCallees {
     pub(crate) fn join(&self, inner: BindId, outer: BindId) {
         let mut held = self.0.lock();
         self.1.fetch_add(1, Ordering::Relaxed);
+        held.touched.extend([inner, outer]);
         held.joined.insert(inner, Side::Inner(outer));
         let side =
             held.joined.entry(outer).or_insert_with(|| Side::Outer(SmallVec::new()));
@@ -4204,7 +4208,7 @@ impl StaticCallees {
         ids
     }
 
-    // CR claude for claude: [perf/low] Each interface join costs a rebuild of the
+    // XCR claude for claude: [perf/low] Each interface join costs a rebuild of the
     // whole table: this collects `joined` into a fresh map with its 8 KB filter
     // at each change count, `VarAliases::with_kept` clones the map before it
     // knows it grew, and `GXRt::set_var_aliases` runs `with_kept` and
@@ -4229,6 +4233,24 @@ impl StaticCallees {
     // aliases_after is untouched. The CR's probes on that build, GRAPHIX_PAR=off,
     // instructions:u: sc1000 2.54 G (base-r22 2.71), sc2000 4.97 G (5.51), sc4000
     // 11.97 G (13.90).
+    // 2026-11-12 claude: The table is a persistent map (env::Map) made from the
+    // one read before it: StaticCallees records each binding whose joined entry
+    // changed (Holds::touched) and aliases_after applies those alone
+    // (VarAliases::updated), sharing the filter where no new bit is set and
+    // building it again only once the stale bits pass the map's size. A table
+    // made from another keeps that map and the pairs it lacks of it (MadeFrom),
+    // so GXRt::set_var_aliases's each_left and a branch's with_kept visit those
+    // pairs alone where one table was made from the other
+    // (VarAliases::maybe_lacked), and walk every pair otherwise; with_kept no
+    // longer clones before it knows it grew. GRAPHIX_PAR=off, instructions:u,
+    // debug: sc1000/sc2000/sc4000 1.97/3.10/5.36 G (base-r23 2.54/4.98/12.01;
+    // plain lets 1.82/2.79/4.74), st.gx 12.1 G (36.8). Pins at n=64 and n=4096:
+    // branch::tests::a_table_made_from_another_is_compared_by_what_changed (fails
+    // with the made_from shortcut off: 64 pairs walked, not 1) and
+    // static_callees_tests::a_view_takes_in_only_what_changed_since_its_table
+    // (fails with the shortcut off and with the rebuild from joined restored);
+    // model test
+    // branch::tests::a_table_changed_in_steps_names_what_its_model_does.
     /// Each binding implementing a `val` mapped to the val's, its variable
     /// at run time, when a join or an unjoin changed them after the change
     /// `read_at` counts, a table's [`branch::VarAliases::read_at`]. Each
@@ -4241,15 +4263,14 @@ impl StaticCallees {
         let mut held = self.0.lock();
         let now = self.1.load(Ordering::Relaxed);
         if held.aliases.read_at() != now {
-            let m = held
-                .joined
-                .iter()
-                .filter_map(|(id, side)| match side {
-                    Side::Inner(outer) => Some((*id, *outer)),
-                    Side::Outer(_) => None,
-                })
-                .collect();
-            held.aliases = branch::VarAliases::new(m, now)
+            let Holds { joined, touched, aliases, .. } = &mut *held;
+            touched.sort_unstable();
+            touched.dedup();
+            let changes = touched.drain(..).map(|id| match joined.get(&id) {
+                Some(Side::Inner(outer)) => (id, Some(*outer)),
+                Some(Side::Outer(_)) | None => (id, None),
+            });
+            *aliases = aliases.updated(changes, now)
         }
         Some(held.aliases.clone())
     }
@@ -4298,6 +4319,8 @@ impl StaticCallees {
         }
         let Some(side) = held.joined.remove(&id) else { return };
         self.1.fetch_add(1, Ordering::Relaxed);
+        held.touched.push(id);
+        held.touched.extend_from_slice(side.with());
         for with in side.with() {
             match held.joined.get_mut(with) {
                 Some(Side::Outer(inners)) => {
@@ -4381,6 +4404,7 @@ impl Holds {
     }
 
     fn unjoin(&mut self, inner: BindId, outer: BindId) {
+        self.touched.extend([inner, outer]);
         if matches!(self.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
             self.joined.remove(&inner);
         }
@@ -4849,5 +4873,30 @@ mod static_callees_tests {
         index.forget(b);
         let last = index.aliases_after(later.read_at()).expect("the forgotten join");
         assert_eq!(last.var(b), b);
+    }
+
+    #[test]
+    fn a_view_takes_in_only_what_changed_since_its_table() {
+        for n in [64, 4096] {
+            let index = StaticCallees::default();
+            let pairs: Vec<_> = (0..n).map(|_| (BindId::new(), BindId::new())).collect();
+            for (inner, outer) in pairs.iter() {
+                index.join(*inner, *outer)
+            }
+            let old = index.aliases_after(0).expect("the joins");
+            let (gone, outer) = pairs[0];
+            let joined = BindId::new();
+            index.unjoin(gone, outer);
+            index.join(joined, outer);
+            let later = index.aliases_after(old.read_at()).expect("the changes since");
+            assert_eq!(old.maybe_lacked(&later).count(), 1);
+            let mut left = vec![];
+            old.each_left(&later, |inner, outer| left.push((inner, outer)));
+            assert_eq!(left, [(gone, outer)]);
+            assert_eq!(
+                (later.var(gone), later.var(joined), later.len()),
+                (gone, outer, n)
+            );
+        }
     }
 }
