@@ -133,7 +133,7 @@ impl Repl {
     }
 }
 
-// CR claude for claude: [test-gap/low] This test failed once under the
+// XCR claude for claude: [test-gap/low] This test failed once under the
 // gate's load (round 20, lane 20f's second gate) and passed six times
 // alone: `"42" never showed 1 times`, stdout `before` then `-: i64`,
 // stderr empty. Nothing orders the SIGINT before the `x + 1` line: the
@@ -147,8 +147,21 @@ impl Repl {
 // signal first and asserts only what holds in both orders. Whether a
 // Ctrl-C that lands just after a line should clear that line's value is
 // the shell's question, not this test's. (repl-idle-ctrl-c-race-01)
+// 2026-11-12 claude: The test now prints the value from a binding (let after =
+// println("[x + 1]")) in place of showing x + 1, so a Ctrl-C heard after the
+// line has no display to take down: 42 shows in either order, and the
+// session-kept assertions (exit 0, no reset) hold in both. No shell change: the
+// shell shows nothing for an idle piped Ctrl-C, so there is nothing to derive
+// the line from. Shown with a temporary shell patch that hears the key 150 ms
+// late and holds the loop 300 ms after a line that puts up a display (the CR's
+// schedule): the old test failed 8 of 12 runs with the CR's signature (before,
+// -: i64, no 42, stderr empty), the new one 0 of 12; the probe
+// ~/ptmp/cr29/scratch/r23/23g/race.py shows the same for both orders against a
+// binary.
 /// Ctrl-C at an idle prompt stops nothing: a binding made before it is
-/// still there after.
+/// still there after. Nothing orders the signal before the line, and a
+/// Ctrl-C heard after the line leaves its display, so the line prints its
+/// value instead of showing it.
 #[test]
 fn ctrl_c_at_an_idle_prompt_keeps_the_session() {
     let mut repl = Repl::start();
@@ -156,7 +169,7 @@ fn ctrl_c_at_an_idle_prompt_keeps_the_session() {
     repl.line(r#"let ready = println("before")"#);
     repl.wait_for(&repl.stdout, "before", 1);
     signal(&repl.child, libc::SIGINT);
-    repl.line("x + 1");
+    repl.line(r#"let after = println("[x + 1]")"#);
     repl.wait_for(&repl.stdout, "42", 1);
     let (status, stdout, stderr) = repl.end();
     assert_eq!(status.code(), Some(0), "stdout:\n{stdout}\nstderr:\n{stderr}");
