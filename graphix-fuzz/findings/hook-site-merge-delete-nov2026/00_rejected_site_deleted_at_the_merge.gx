@@ -1,0 +1,52 @@
+// A core trait hook's call site is built and registered under no boundary.
+// One a forked branch ran is handed back at the branch's merge, and where the
+// registry no longer takes it (a dynamic module's load changed the impls
+// meanwhile) it is deleted there: under the merging walk's boundary its reads
+// were unregistered by another reader than registered them, and the runtime
+// aborted ("unref_var of an unregistered BindId"). nov10a, 39 crashes in 11
+// minutes on ryouko, all this one. The site is deleted under no boundary.
+{ let v0 = m0::mk((i64:2 - i64:2)); use m1::f1 as v1; let v2 = v1(({ let l: [`A, `B(string), `B(u64, u8), `Some(u32, z64)] = `A; l } >= { let r: [`A, `B(string), `B(u64, u8), `Some(u32, z64)] = `B("xyz"); r }), "[i16:1000]-[{ let mt: [bytes, duration, string] = "hello"; mt }]"); let v3 = &mut m1::k1; *v3 <- true; use m2::f0 as v4; let v5 = v4((f64:3.14 * f64:1.0)); let v6 = mod d0 dynamic { sandbox whitelist [core, array, str, map, list, re]; sig { val g0: fn(a0: f64, a1: string) -> string; val g1: fn(a0: z64, a1: bool) -> u8 }; source r#"let v6 = (i64:1 * i64:7);
+let g0 = |v7: f64, v8: string| -> string "xyz";
+let g1 = |v9: z64, v10: bool| -> u8 ((u8:0 * u8:255) - u8:0)"# }; let v7 = select v6 { error as _ => (u8:255 - u8:0), null as _ => d0::g1((z64:-1000000 / z64:0), m2::f0(f64:3.14)) }; let v8 = mod d1 dynamic { sandbox whitelist [core]; sig { val g0: fn(a0: bool, a1: u8) -> string; val g1: fn(a0: f64) -> z32 }; source r#"let g0 = |v8: bool, v9: u8| -> string "a";
+let g1 = |v10: f64| -> z32 { catch(e) (z32:7 * z32:1); ((z32:2147483647 * z32:7) -? cast<z32>(u16:0)$)? }"# }; let v9 = select v8 { error as _ => (-(z32:1)), null as _ => d1::g1(f64:3.14) }; println("[v0]"); println("[v2]"); println("[*v3]"); println("[v5]"); println("[v7]"); println("[v9]"); duration:1.s }
+// file-v1: m0.gxi
+val f0: fn(a0: &f64) -> List<Array<i64>>;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+impl Eq for T;
+impl Ord for T;
+impl Display for T;
+val teq: fn(a: T, b: T) -> bool;
+val teqa: fn(a: T, b: T) -> bool;
+val tshow: fn(t: T) -> string;
+val tmap: fn(a: T, b: T) -> i64;
+// file-v1: m0.gx
+let f0 = |v0: &f64| -> List<Array<i64>> [<{ let mt: Array<i64> = []; mt }, [i64:42, i64:9223372036854775807, i64:7]>];
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0;
+impl Eq for T { let eq = |a, b| un(a) % i64:2 == un(b) % i64:2 };
+impl Ord for T { let cmp = |a, b| select (un(a) % i64:2, un(b) % i64:2) { (x, y) if x < y => `Less, (x, y) if x > y => `Greater, _ => `Equal } };
+impl Display for T { let fmt = |t| "T<[un(t)]>" };
+let teq = |a: T, b: T| -> bool a == b && (a <= b || a > b);
+let teqa = |a: T, b: T| -> bool [a, a] == [b, a];
+let tshow = |t: T| -> string "[t]|[(t, i64:1)]";
+let tmap = |a: T, b: T| -> i64 { let m = {a => i64:1, b => i64:2}; map::len(m) + map::len(map::insert(m, a, i64:3)) };
+false
+// file-v1: m1.gxi
+val k1: bool;
+val f0: fn(a0: string) -> List<Array<i64>>;
+val f1: fn(a0: bool, a1: string) -> Array<List<bool>>;
+// file-v1: m1.gx
+let k1: bool = super::m0::teq(super::m0::mk(i64:9223372036854775807), super::m0::mk(i64:7));
+let f0 = |v1: string| -> List<Array<i64>> super::m0::f0(&(f64:1.0));
+let f1 = |v2: bool, v3: string| -> Array<List<bool>> [[<v2>], [<k1>], [<true, true, false>]];
+// file-v1: m2.gxi
+use super::{m0};
+val k2: bool;
+val f0: fn(a0: f64) -> bool;
+// file-v1: m2.gx
+let k2: bool = (u8:255 > u8:100);
+let h2 = |v4: u8| -> u8 ((v4 + v4) + (u8:2 + u8:1));
+let f0 = |v5: f64| m0::teq(m0::mk(i64:100), m0::mk(i64:0));

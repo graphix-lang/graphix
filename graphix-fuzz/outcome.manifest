@@ -207,6 +207,7 @@ excluded	hold-async-clock-aug2026/00_hold_stderr_clock.gx
 trace	hold-relatch-jul2026/01_hold_relatch_per_clock.gx
 reject	N: cannot compute iN * fN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	homogeneous-arith-jul2026/01_mixed_acc_map_instance.gx
 reject	N: cannot compute 'a: unbound within Number + fN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	homogeneous-arith-jul2026/02_dual_mono_def_rejects.gx
+trace	hook-site-merge-delete-nov2026/00_rejected_site_deleted_at_the_merge.gx
 trace	image-builtin-replay-sep2026/00_intrinsic_value_to_builtin.gx
 trace	image-builtin-replay-sep2026/01_list_intrinsic_to_group.gx
 reject	N: cannot infer a finite type here: unification requires a type that contains itself (e.g. a function that returns itself); declare a named recursive type and annotate the binding	infinite-type-jul2026/00_self_returning_rec.gx

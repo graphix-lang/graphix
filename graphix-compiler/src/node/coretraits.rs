@@ -403,9 +403,13 @@ impl<R: Rt> BranchSites<R> {
 /// Return the sites the merged branch ran to `ctx`, the view it forked
 /// from, which now holds their readers.
 pub(crate) fn adopt<R: Rt>(ctx: &mut ExecCtx<'_, R>, sites: BranchSites<R>) {
+    // a site registered under no boundary ([`call_hook`]), so one the
+    // registry no longer takes is deleted under none
+    let boundary = ctx.boundary.take();
     for loan in sites.0 {
         return_site(ctx, loan)
     }
+    ctx.boundary = boundary;
 }
 
 /// The site loaned out of the registry for one dispatch: its slot, so

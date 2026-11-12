@@ -207,6 +207,7 @@
 0	hold-relatch-jul2026/01_hold_relatch_per_clock.gx
 0	homogeneous-arith-jul2026/01_mixed_acc_map_instance.gx
 0	homogeneous-arith-jul2026/02_dual_mono_def_rejects.gx
+13	hook-site-merge-delete-nov2026/00_rejected_site_deleted_at_the_merge.gx
 0	image-builtin-replay-sep2026/00_intrinsic_value_to_builtin.gx
 0	image-builtin-replay-sep2026/01_list_intrinsic_to_group.gx
 0	infinite-type-jul2026/00_self_returning_rec.gx
