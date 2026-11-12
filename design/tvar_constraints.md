@@ -148,6 +148,16 @@ those that hold an open cell are compared: a cell many writers bound
 from below is settled once for each, and decided bounds have nothing to
 weld (pin
 `typ::settle::test::a_settle_compares_only_undecided_lower_bounds_of_an_open_cell`).
+A decided lower bound that holds ⊥ in a part, and that another decided
+lower bound contains, is no member of the witness: it adds no value to it
+(`settle.rs::joined_lower`). `B([])` met by a definition's `B([z])` at a
+call that decides `z` as `i64` settles the payload to `Array<i64>`, the
+call's settle having bound the empty array's element to ⊥ first; the
+union `[Array<_>, Array<i64>]` is a type the definition's `B<Array<'z>>`
+is no instance of, so the build refused what the check accepted. A bound
+that holds an open cell stays a member, and so does one nothing contains
+(pins `lang::types::undecided_payload_met_by_a_decided_one_at_a_call_builds`,
+`typ::settle::test::a_witness_leaves_out_a_bound_holding_bottom_that_another_contains`).
 A cell binds only to a type that holds each of its lower bounds, so one
 above `[i64, string]` does not bind to `i64`. A call's argument that
 misfits such a variable of its formal settles it first, at the union of

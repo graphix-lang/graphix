@@ -5196,6 +5196,25 @@ run!(
     prints("[i64:1]")
 );
 
+// A payload nothing has decided met by one the call decides is that one
+// payload type: the empty array's bound is held by the decided array, so
+// the call's settle leaves no union and the build holds the definition at
+// the instance.
+run!(
+    undecided_payload_met_by_a_decided_one_at_a_call_builds,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a, z| a <- B([z]);
+    let g = |z, a| a <- B((z, [z]));
+    let x = B([]);
+    f(x, 1);
+    g("s", B((never(), [])));
+    f(B([never()]), 2);
+    x.0
+}"#,
+    prints("[]")
+);
+
 // A bound's cell below a union with a decided member is bound to the
 // union where that holds every bound: `x` may hold either member.
 run!(

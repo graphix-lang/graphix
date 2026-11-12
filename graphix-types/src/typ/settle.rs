@@ -52,6 +52,42 @@ impl ConcreteRequired {
     }
 }
 
+/// `below` less each decided bound holding ⊥ in a part that another decided
+/// bound contains: it adds no value to a witness (`Array<_>` beside
+/// `Array<i64>`). Of two that contain each other the first stays.
+fn joined_lower<'a>(
+    env: &Env,
+    hist: &mut ContainsHist,
+    below: &'a [Type],
+) -> Result<LPooled<Vec<&'a Type>>> {
+    let holds_bottom = |l: &Type| {
+        l.has_bottom()
+            && !l.with_deref(|l| matches!(l, Some(Type::Bottom)))
+            && !l.has_unbound()
+    };
+    let mut kept: LPooled<Vec<&Type>> = LPooled::take();
+    let empty = BitFlags::empty();
+    for (i, l) in below.iter().enumerate() {
+        let mut contained = false;
+        if below.len() > 1 && holds_bottom(l) {
+            for (j, k) in below.iter().enumerate() {
+                if j != i
+                    && !k.has_unbound()
+                    && k.contains_int(empty, env, hist, l)?
+                    && (j < i || !l.contains_int(empty, env, hist, k)?)
+                {
+                    contained = true;
+                    break;
+                }
+            }
+        }
+        if !contained {
+            kept.push(l)
+        }
+    }
+    Ok(kept)
+}
+
 impl TVar {
     /// The union of the cell's lower bounds, else the narrowest conjunct
     /// every other conjunct contains, its generic cells copied (a stored
@@ -77,9 +113,9 @@ impl TVar {
             if below.iter().any(|l| would_cycle_open(&cell, l)) {
                 return Ok(Err(false));
             }
-            let below: LPooled<Vec<&Type>> = below.iter().collect();
-            let w = Type::union(env, &below)?;
             let mut hist = ContainsHist::new();
+            let below = joined_lower(env, &mut hist, &below)?;
+            let w = Type::union(env, &below)?;
             for c in cons.iter() {
                 if !c.contains_int(BitFlags::empty(), env, &mut hist, &w)? {
                     return Ok(Err(true));
@@ -1298,6 +1334,36 @@ mod test {
         assert!(p.is_bound());
         assert_eq!(steps(&|| p.settle_witness(&env).unwrap()), 0);
         assert_eq!(steps(&|| p.weld_lower()), 0);
+    }
+
+    /// A decided lower bound holding ⊥ in a part is no member of the
+    /// witness where another decided bound contains it; one nothing
+    /// contains, and one that holds an open cell, stay members.
+    #[test]
+    fn a_witness_leaves_out_a_bound_holding_bottom_that_another_contains() {
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
+        let array = |t: &Type| Type::Array(triomphe::Arc::new(t.clone()));
+        let witness = |below: &[Type]| {
+            let p = open("p");
+            below.iter().for_each(|l| p.add_lower(l.clone()));
+            p.witness(&env).unwrap().unwrap()
+        };
+        let settled = open("a");
+        settled.settle_unread();
+        for empty in [array(&Type::Bottom), array_of(&settled)] {
+            for below in [[empty.clone(), array(&i64_t)], [array(&i64_t), empty.clone()]]
+            {
+                let w = witness(&below);
+                assert!(strictly_identical(&w, &array(&i64_t)), "{w}");
+            }
+            let w = witness(&[empty.clone(), array(&array(&Type::Bottom))]);
+            assert!(strictly_identical(&w, &array(&array(&Type::Bottom))), "{w}");
+            let w = witness(&[empty, i64_t.clone()]);
+            assert!(matches!(&w, Type::Set(ms) if ms.len() == 2), "{w}");
+        }
+        let w = witness(&[array_of(&open("b")), array(&i64_t)]);
+        assert!(matches!(&w, Type::Set(ms) if ms.len() == 2), "{w}");
     }
 
     /// A call's terminal settle decides the cell a lower bound of its
