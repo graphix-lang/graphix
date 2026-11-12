@@ -3250,7 +3250,8 @@ run!(
 );
 
 // A cell of the scheme that a binding outside holds is one type, which no
-// call copies.
+// call copies: the read is followed to the lambda behind it, and what that
+// lambda writes is named.
 run!(
     method_value_read_over_an_outer_binding_is_refused,
     r#"{
@@ -3263,8 +3264,53 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "the implementation has one type all uses share, that of a binding outside its let: give that binding a type that holds every 'a"
+        "the implementation has one type all uses share, that of y, a binding outside its let: give y a type that holds every 'a"
     )
+);
+
+run!(
+    method_value_read_over_an_outer_binding_of_every_type,
+    r#"{
+    type C = Abstract<i64>;
+    let y: Any = never();
+    let s = {g: |s, x| { y <- x; x }};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.g };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    prints("[i64:1, \"s\"]")
+);
+
+// A generic binding's read of a call's result is that result's one
+// instance: no binding holds it, and a lambda in its place lifts it.
+run!(
+    method_value_read_of_a_call_result_names_a_lambda,
+    r#"{
+    type C = Abstract<i64>;
+    let mk = || |s, x| x;
+    let s = {g: |s, x| x, h: mk()};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.h };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "the implementation has one type all uses share: make the method a lambda over variables of its own"
+    )
+);
+
+run!(
+    method_value_read_of_a_lambda_in_place_of_the_call,
+    r#"{
+    type C = Abstract<i64>;
+    let s = {g: |s, x| x, h: |s, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = s.h };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    prints("[i64:1, \"s\"]")
 );
 
 // An annotated `let` of a generic binding's read is one instance, a

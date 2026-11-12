@@ -123,10 +123,13 @@ fn implements<R: Rt>(
                 ", that of {b}, a binding outside its let: give {b} a type that holds \
                  every {v}"
             ),
-            (Holder::Lambda, _) | (Holder::NoLambda, true) => format_compact!(
+            (Holder::Lambda, _) => format_compact!(
                 ", that of a binding outside its let: give that binding a type that \
                  holds every {v}"
             ),
+            (Holder::NoLambda, true) => {
+                format_compact!(": make the method a lambda over variables of its own")
+            }
             (Holder::NoLambda, false) => format_compact!(
                 ": its value is neither a lambda nor, with no annotation, a generic \
                  binding's read, so no call copies its types; make the method a \

@@ -505,7 +505,30 @@ fn check_val(
             ", that of {b}, a binding outside its let: declare the val at one type, or \
              give {b} a type that holds every {v}"
         ),
-        // CR claude for claude: [bug/low] A generic implementation whose shared cell is a
+        // CR claude for claude: [bug/low] A generic lambda implementation whose shared cell
+        // a written lambda binding it captures holds is told "that of a binding outside its
+        // let: declare the val at one type, or give that binding a type that holds every
+        // 'a", and no type on that binding lifts it: `let k = |x| x; k <- |x| x; let f =
+        // |x| k(x)` under `val f: fn(x: 'a) -> 'a` gets it, `let k: fn(x: Any) -> Any`
+        // there is refused for f's result, and only `k` unwritten checks. Holder::of follows
+        // a captured lambda binding to the lambda it is (capturing nothing here) and never
+        // ranks it, so nothing is named; the trait arm in traits::implements says the same
+        // for `impl Put for C { let put = |s, x| k(s, x) }`. A fix: name the written binding
+        // and say it is written (one instance), not that its type should widen. probes:
+        // ~/ptmp/cr29/scratch/r23/23h/val-call-result-remedy-01/{v1,v1b,v1c,t/t7.gx}
+        // (written-capture-remedy-01)
+        (true, Holder::Lambda) => format_compact!(
+            ", that of a binding outside its let: declare the val at one type, or give \
+             that binding a type that holds every {v}"
+        ),
+        (false, Holder::Captured(b)) => format_compact!(
+            ", that of {b}, a binding outside its let: declare the val at one type"
+        ),
+        (false, Holder::Lambda) => format_compact!(
+            ": declare the val at one type, or annotate the implementation's let with \
+             a quantified type (fn<{v}: ..>)"
+        ),
+        // XCR claude for claude: [bug/low] A generic implementation whose shared cell is a
         // call's result held in data, not a binding's, is told "that of a binding outside
         // its let: declare the val at one type, or give that binding a type that holds
         // every 'a", and there is no binding to annotate: `let mk = || |x| x; let base =
@@ -517,22 +540,27 @@ fn check_val(
         // value holds the cell, else the literal-of-lambdas remedy. probes:
         // ~/ptmp/cr29/scratch/r20/20d/holder-call-result-01/{m4,m4nov,m4any,m6}
         // (val-call-result-remedy-01)
-        (true, _) => format_compact!(
-            ", that of a binding outside its let: declare the val at one type, or give \
-             that binding a type that holds every {v}"
-        ),
-        (false, Holder::Captured(b)) => format_compact!(
-            ", that of {b}, a binding outside its let: declare the val at one type"
-        ),
-        (false, Holder::Lambda) => format_compact!(
-            ": declare the val at one type, or annotate the implementation's let with \
-             a quantified type (fn<{v}: ..>)"
-        ),
-        (false, Holder::NoLambda) if is_function => format_compact!(
+        // 2026-11-12 claude: check_val's generalized arm now names a binding only where
+        // Holder::of finds one, else the Holder::NoLambda remedies (a lambda, or a
+        // literal of lambdas); held_lambdas follows a generalized binding's read of a
+        // function (let f = s0.g) to the lambdas behind it, so what they capture is named
+        // (y, whose Any annotation runs), while a function a call returns stays
+        // unfollowed; the trait arm in traits::implements gets the same split. Pins
+        // failing without it (all 4 modes):
+        // lang::interfaces::{val_struct_update_holding_a_call_result_refused,
+        // val_struct_update_holding_a_read_of_a_call_result_names_a_lambda,
+        // val_generic_read_names_the_binding_its_lambda_writes,
+        // val_names_what_a_captured_generic_read_writes,
+        // val_generic_read_of_a_call_result_names_a_lambda},
+        // lang::traits::{method_value_read_over_an_outer_binding_is_refused,
+        // method_value_read_of_a_call_result_names_a_lambda}; twins run. Wording only, no
+        // verdict change. The (true, Holder::Lambda) arm keeps the unnamed binding:
+        // (written-capture-remedy-01).
+        (_, Holder::NoLambda) if is_function => format_compact!(
             ": declare the val at one type, or make the implementation a lambda over \
              variables of its own"
         ),
-        (false, Holder::NoLambda) => format_compact!(
+        (_, Holder::NoLambda) => format_compact!(
             ": declare the val at one type, or make the implementation a literal of \
              lambdas over variables of their own"
         ),
@@ -542,11 +570,13 @@ fn check_val(
 
 /// What holds a cell of an implementation's binding outside its value.
 pub(crate) enum Holder {
-    /// A binding the lambda the implementation holds captures, by name.
+    /// A binding the lambdas the implementation holds capture, by name.
     Captured(CompactString),
-    /// No binding the lambda the implementation holds captures.
+    /// The implementation is a lambda, and no binding it captures holds
+    /// the cell.
     Lambda,
-    /// The implementation holds no lambda.
+    /// The implementation is no lambda, and no binding the lambdas it
+    /// holds capture holds the cell.
     NoLambda,
 }
 
@@ -677,8 +707,10 @@ fn free_variable(t: &Type) -> Option<TVar> {
 }
 
 /// The lambdas the binding `id` holds: its own when it is a lambda, else,
-/// where its value is data and not a function, those its type's function
-/// types carry, in the order the program writes them.
+/// where its value is data or a generic binding's read of a function, those
+/// its type's function types carry, in the order the program writes them.
+/// Any other function (a call's result) is one instance whatever the
+/// lambdas behind it capture.
 fn held_lambdas<'a, R: Rt>(
     ctx: &'a CompileCtx<R>,
     id: BindId,
@@ -688,7 +720,8 @@ fn held_lambdas<'a, R: Rt>(
         return out.push(def);
     }
     let Some(b) = ctx.env.by_id.get(&id) else { return };
-    if b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+    if b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) && !generalized_impl(ctx, id)
+    {
         return;
     }
     let start = out.len();

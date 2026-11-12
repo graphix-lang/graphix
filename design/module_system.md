@@ -318,11 +318,18 @@ type: paired with a type holding a variable a use picks it is refused,
 naming the way out (the outer binding's type, the val at one type, a
 quantified annotation on the `let`, or, for an implementation that is no
 lambda, a lambda, or a literal of lambdas for a val that is no function;
-the binding named is one the implementation's lambda reaches through
-the lambdas it captures: one whose own type is the cell, else one that
-holds it in data, else one that holds it in lambdas it holds as data;
-of several alike the nearest, then the one the program writes first,
-so its annotation lifts the refusal, `module::Holder::of`); paired with
+the binding named is one the lambdas the implementation holds reach
+through the lambdas they capture: one whose own type is the cell, else
+one that holds it in data, else one that holds it in lambdas it holds as
+data; of several alike the nearest, then the one the program writes
+first, so its annotation lifts the refusal, `module::Holder::of`). The
+lambdas a binding holds are its own, those its data's function types
+carry, and those behind a generic binding's read of a function (`let f =
+s.g`); a function a call returns is one instance whatever its lambdas
+capture, so it is not followed. An implementation that is no lambda and
+whose lambdas capture nothing holding the cell (a call's result in a
+struct update, `{base with h: mk()}`) is told the lambda or the literal
+of lambdas, never a binding to annotate; paired with
 a type holding none, a
 concrete type or a whole quantified function type, the declaration
 decides it (`module.rs::hold_paired`), so `val e: B<i64>` over `let e =

@@ -2076,14 +2076,82 @@ run!(
 );
 
 // A struct update holding a call's result is generic in the parts it takes
-// from a generic binding alone: the result is one instance.
+// from a generic binding alone: the result is one instance, which no
+// binding's annotation widens, so the refusal names a lambda in its place.
 run!(
     val_struct_update_holding_a_call_result_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share: declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
     "/test.gx" => "mod m; let result = (m::s.h(1), m::s.h(\"s\"))",
     "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let mk = || { let v = never(); |x| { v <- x; x } }; let base = {g: |x| x, h: |x| x}; let s = {base with h: mk()}"
 );
+
+run!(
+    val_struct_update_holding_a_read_of_a_call_result_names_a_lambda,
+    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    "/test.gx" => "mod m; let result = (m::s.h(1), m::s.h(\"s\"))",
+    "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let mk = || |x| x; let g0 = mk(); let base = {g: |x| x, h: |x| x}; let s = {base with h: g0}"
+);
+
+run!(
+    val_struct_update_holding_a_lambda_in_place_of_the_call,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::s.h(1), m::s.h(\"s\"))",
+    "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a}",
+    "/test/m.gx" => "let base = {g: |x| x, h: |x| x}; let s = {base with h: |x| x}"
+; FuseExpect::None);
+
+// A generic binding's read of a function is followed to the lambdas behind
+// it: what they capture is named, and a call's result behind it is a
+// lambda to write in its place.
+run!(
+    val_generic_read_names_the_binding_its_lambda_writes,
+    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let s0 = {g: |x| { y <- x; x }}; let f = s0.g"
+);
+
+run!(
+    val_generic_read_over_a_binding_of_every_type,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y: Any = never(); let s0 = {g: |x| { y <- x; x }}; let f = s0.g"
+; FuseExpect::None);
+
+run!(
+    val_names_what_a_captured_generic_read_writes,
+    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let s0 = {g: |x| { y <- x; x }}; let j = s0.g; let f = |x| j(x)"
+);
+
+run!(
+    val_captured_generic_read_over_a_binding_of_every_type,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y: Any = never(); let s0 = {g: |x| { y <- x; x }}; let j = s0.g; let f = |x| j(x)"
+; FuseExpect::None);
+
+run!(
+    val_generic_read_of_a_call_result_names_a_lambda,
+    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a lambda over variables of its own"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = s0.h"
+);
+
+run!(
+    val_generic_read_of_a_lambda_in_place_of_the_call,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let s0 = {g: |x| x, h: |x| x}; let f = s0.h"
+; FuseExpect::None);
 
 run!(
     val_struct_update_holding_a_call_result_at_one_type,
