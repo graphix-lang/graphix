@@ -2635,6 +2635,15 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         }
     }
 
+    /// [`Self::stand`] of the unmoved production every reader that can
+    /// read `id` before the entry is next replaced took at its last walk:
+    /// no reader is marked.
+    pub(crate) fn restand(&mut self, id: BindId, tv: TagValue) {
+        let var = self.rt.var_of(id);
+        self.rt.store_restand_var(var, tv.clone());
+        self.event.variables.insert(id, tv);
+    }
+
     /// Store what a wake stood moved as a fire is stored, stamped this
     /// cycle under its own tag, a fire to no reader: every reader's
     /// boundary is marked, and the readers the walk has passed take it

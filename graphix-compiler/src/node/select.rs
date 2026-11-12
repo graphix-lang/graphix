@@ -2379,7 +2379,8 @@ impl<R: Rt> Update<R> for Select<R> {
                 continue;
             };
             guard_ran.set(i);
-            let saved = pat.bind_tentative(ctx, v, arg_prod);
+            let held = ran && !woke && !arg_prod.triggers() && !arg_prod.moved();
+            let saved = pat.bind_tentative(ctx, v, arg_prod, held);
             let mut run = |ctx: &mut ExecCtx<'_, R>| match tracked {
                 None => wake::in_body(ctx, |ctx| pat.update(ctx)),
                 Some(tracked) => {

@@ -190,7 +190,15 @@ fire (`read_var_by`, `design/dense_delivery.md`). A select arm's binds,
 delivered when the chain takes the arm after its guard ran, pass no
 reader inside the guard's boundary: the guard read them through its own
 consult this cycle (`PatternNode::bind_event`, `RtView::store_fire`'s
-`took`).
+`took`). A guard consulted again while its scrutinee stands unmoved
+(the select ran for another input, the guard ran at the select's last
+run, no wake between) is bound the leaves its readers took then, so
+that bind marks none (`PatternNode::bind_tentative`'s `held`,
+`RtView::store_restand_var`): a guard, or a statement of one, that
+reads only its binds is skipped where one reading the scrutinee is.
+Readers outside the guard read what the retract puts back, which only
+a marking bind replaces. Pin:
+`lang::prune::a_guard_holding_its_bind_skips_as_its_scrutinee_twin`.
 
 ## Parallel evaluation
 
@@ -393,7 +401,8 @@ traversal (`CompileCtx`/`ExecCtx::boundary`, set by every `Prune` method,
 copied into the compile view by `ExecCtx`'s `deref_mut`; a discard and a
 pending reference keep theirs). Every this-cycle write marks its readers'
 boundaries and their ancestors: a stamped `store_insert` or a standing
-`store_insert_standing`, `notify_set`,
+`store_insert_standing` (but a guard's bind of the leaves it held at
+the select's last run, `store_restand_var`), `notify_set`,
 `ExecCtx::publish`/`try_publish` (never `event.variables.insert` from a
 node), the cycle's deliveries; state a node polls without a variable
 marks its pollers (error handlers: `ErrorHandler::polled_by`). A map traversal may skip an awake standing lambda slot before its call

@@ -2815,14 +2815,18 @@ impl<R: Rt> PatternNode<R> {
     }
 
     /// [`Self::bind_event`] for a guard's tick, returning the store
-    /// entries it replaced for [`Self::retract`].
+    /// entries it replaced for [`Self::retract`]. `held`: the guard ran on
+    /// these leaves at its last consult, which was the select's last run,
+    /// so its readers hold them and none is marked; a reader outside the
+    /// guard reads what the retract puts back.
     pub(super) fn bind_tentative(
         &self,
         ctx: &mut ExecCtx<'_, R>,
         v: &Value,
         tag: crate::Tag,
+        held: bool,
     ) -> SmallVec<[(BindId, Option<(TagValue, u64)>); 4]> {
-        // CR claude for claude: [perf/low] A guard consulted while its scrutinee stands (another
+        // XCR claude for claude: [perf/low] A guard consulted while its scrutinee stands (another
         // input of the guard fired, or the select was walked for any other reason) binds
         // quietly, and the standing insert marks every reader of the bind
         // (RtView::store_insert_standing_var), so each block statement of the guard that
@@ -2836,12 +2840,28 @@ impl<R: Rt> PatternNode<R> {
         // under an unmoved stale scrutinee read the same leaves then, and needs no mark.
         // lang::prune::a_guard_reading_its_moved_bind_is_not_passed_by_its_arm asserts only
         // the statement's reaches for this reason. (guard-bind-stand-mark-01)
+        // 2026-11-12 claude: Still real on r23-e (the probe: 670 walks and 4 skips against
+        // 666 and 8). A guard consulted again while its scrutinee stands unmoved, having run at
+        // the select's last run with no wake between (Select::update's held), is bound through
+        // ExecCtx::restand, the standing entry without the mark (RtView::store_restand_var): its
+        // readers took these leaves then, and a reader outside the guard reads what the retract
+        // puts back. The probe and its twin now both walk 666 and skip 8, and a guard reading
+        // only its bind is skipped whole (657 and 8, was 661 and 4). Pins, failing with held
+        // forced false: lang::prune::a_guard_holding_its_bind_skips_as_its_scrutinee_twin and
+        // a_guard_reading_its_moved_bind_is_not_passed_by_its_arm, which now asserts the block
+        // statement's walks and skips equal its twin's. Rule in design/walk_pruning.md, Order
+        // within a cycle.
         let mut saved = SmallVec::new();
         self.structure_predicate
             .ids(&mut |id| saved.push((id, ctx.rt.store_get(&id).cloned())));
         // retracted, so never a stand an outside reader takes as a fire
         let tag = if tag.triggers() { tag } else { tag.quiet() };
-        self.bind_event(ctx, v, tag);
+        if held {
+            self.structure_predicate
+                .bind(v, &mut |id, v| ctx.restand(id, TagValue::tagged(v, tag)))
+        } else {
+            self.bind_event(ctx, v, tag)
+        }
         saved
     }
 

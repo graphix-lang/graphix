@@ -4,7 +4,6 @@
 
 use super::dense_deltas::run_delta_with;
 use anyhow::Result;
-use graphix_compiler::PruneMode;
 use graphix_package_core::testing::{Collect, Mode, TestState, data};
 use netidx::publisher::Value;
 use std::time::Duration;
@@ -368,9 +367,7 @@ async fn a_guard_statement_counts_each_fire_of_its_bind_once() -> Result<()> {
 // A bind its arm stands moved, at a flip of the guard after a fire of the
 // scrutinee the arm was not taken for, passes no reader inside the guard
 // either: a guard reading it runs in the cycles a guard reading the
-// scrutinee does. A block statement of the guard is reached as often as
-// its twin; the quiet consult marks it, so it is walked where the twin's
-// is skipped.
+// scrutinee does, and so does a block statement of the guard.
 #[tokio::test(flavor = "current_thread")]
 async fn a_guard_reading_its_moved_bind_is_not_passed_by_its_arm() -> Result<()> {
     let program = |guard: &str| {
@@ -387,19 +384,55 @@ async fn a_guard_reading_its_moved_bind_is_not_passed_by_its_arm() -> Result<()>
     for mode in [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar] {
         let (bv, bind) = walks(&program("x >= 0"), mode).await?;
         let (sv, scrutinee) = walks(&program("t >= 0"), mode).await?;
-        let (bbv, (b_walks, b_skips)) =
-            walks(&program("{ let y = x; y >= 0 }"), mode).await?;
-        let (sbv, (s_walks, s_skips)) =
+        let (bbv, block_bind) = walks(&program("{ let y = x; y >= 0 }"), mode).await?;
+        let (sbv, block_scrutinee) =
             walks(&program("{ let y = t; y >= 0 }"), mode).await?;
         for v in [bv, sv, bbv, sbv] {
             assert_eq!(v, expected, "{mode:?}");
         }
-        // an audited skip of the select consults the guard, and the walk
-        // the quiet bind's mark makes of it is counted where no skip is
-        if matches!(mode.prune(), PruneMode::On) {
-            assert_eq!(bind, scrutinee, "{mode:?}");
-            assert_eq!(b_walks + b_skips, s_walks + s_skips, "{mode:?}");
+        assert_eq!(bind, scrutinee, "{mode:?}");
+        assert_eq!(block_bind, block_scrutinee, "{mode:?}");
+    }
+    Ok(())
+}
+
+// A guard consulted again over a scrutinee that stands holds its binds: a
+// run of the select another input makes (the guard's own, or the taken
+// arm's) walks what reads a bind where it walks what reads the scrutinee,
+// a statement of the guard and the guard whole.
+#[tokio::test(flavor = "current_thread")]
+async fn a_guard_holding_its_bind_skips_as_its_scrutinee_twin() -> Result<()> {
+    let statement = |read: &str| {
+        format!(
+            "{{
+  let t = once(3);
+  let lim = array::iter([5, 1, 5, 1]);
+  select t {{ x if {{ let y = {read}; y > lim }} => x, _ => 0 }}
+}}"
+        )
+    };
+    let whole = |read: &str| {
+        format!(
+            "{{
+  let t = once(3);
+  let clk = array::iter([5, 1, 5, 1]);
+  select t {{ x if {read} > 0 => x + clk, _ => 0 }}
+}}"
+        )
+    };
+    for mode in [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar] {
+        let (bv, bind) = walks(&statement("x"), mode).await?;
+        let (sv, scrutinee) = walks(&statement("t"), mode).await?;
+        for v in [bv, sv] {
+            assert_eq!(v, [0, 3, 0, 3].map(Value::I64), "{mode:?}");
         }
+        assert_eq!(bind, scrutinee, "{mode:?}");
+        let (bv, bind) = walks(&whole("x"), mode).await?;
+        let (sv, scrutinee) = walks(&whole("t"), mode).await?;
+        for v in [bv, sv] {
+            assert_eq!(v, [8, 4, 8, 4].map(Value::I64), "{mode:?}");
+        }
+        assert_eq!(bind, scrutinee, "{mode:?}");
     }
     Ok(())
 }

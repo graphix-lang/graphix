@@ -773,9 +773,16 @@ impl<'a, R: Rt> RtView<'a, R> {
         self.store_insert_standing_var(self.var_of(id), tv)
     }
 
+    pub fn store_insert_standing_var(&mut self, var: Var, tv: TagValue) {
+        self.store_restand_var(var, tv);
+        self.mark_readers_var(var)
+    }
+
+    /// [`Self::store_insert_standing_var`] of the value every reader of
+    /// `var` that can read the entry took at its last walk: none is marked.
     /// A standing entry over what a wake stood moved keeps that mark with
     /// the stamp it keeps, which is the stand's ([`crate::node::wake::owed`]).
-    pub fn store_insert_standing_var(&mut self, var: Var, mut tv: TagValue) {
+    pub fn store_restand_var(&mut self, var: Var, mut tv: TagValue) {
         let last = self.store_get_var(var);
         let stamp = standing_stamp(last, self.cycle());
         if last.is_some_and(|(e, s)| e.tag().moved() && *s == stamp) {
@@ -783,7 +790,6 @@ impl<'a, R: Rt> RtView<'a, R> {
             tv.retag(tag);
         }
         self.store_put_var(var, Some((tv, stamp)));
-        self.mark_readers_var(var)
     }
 
     /// See [`Rt::store_put`].
