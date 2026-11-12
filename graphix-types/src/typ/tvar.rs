@@ -7,7 +7,10 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
-        TVarsSeen, Type, contains::ContainsHist, fntyp::Aliasing, node_addr,
+        TVarsSeen, Type,
+        contains::{ContainsHist, holds_cell},
+        fntyp::Aliasing,
+        node_addr,
         setops::union_identical,
     },
 };
@@ -2438,9 +2441,13 @@ impl TVar {
     }
 
     /// Narrow the cell by `c` unless a conjunct already is at least
-    /// that narrow (a probe in `env`: `c` contains it).
+    /// that narrow (a probe in `env`: `c` contains it), or `c` holds the
+    /// cell itself ([`holds_cell`]): no cell stands in its own bound.
     #[doc(hidden)]
     pub fn narrow_cell(&self, env: &Env, c: Type) -> Result<()> {
+        if holds_cell(env, &c, self.cell_addr()) {
+            return Ok(());
+        }
         for e in self.cell_constraints().iter() {
             if c.contains_with_flags(BitFlags::empty(), env, e)? {
                 return Ok(());

@@ -11213,3 +11213,113 @@ run!(
     prints(r#"[i64:2, "u"]"#);
     FuseExpect::None
 );
+
+// A declared bound that is a union over another of the function's
+// variables, met by a type that holds that variable, says nothing of the
+// variable (`'c` is in `['c, null]` whatever it is), so the check
+// returns: through a generic wrapper, through a trait method, and where
+// an argument's undecided element takes the bound's union.
+run!(
+    wrapper_passing_a_union_over_its_variable_to_a_bound_over_the_callees,
+    r#"{
+  let g = 'b: ['c, null] |s: 'c, x: 'b| -> 'b x;
+  let f = |v: 'a, w: ['a, null]| g(v, w);
+  (f(1, 2), f(1, null), f("a", "b"))
+}"#,
+    prints(r#"[i64:2, null, "b"]"#)
+);
+run!(
+    wrapper_passing_a_union_over_its_variable_to_a_bound_holds_the_variable,
+    r#"{
+  let g = 'b: ['c, null] |s: 'c, x: 'b| -> 'b x;
+  let f = |v: 'a, w: ['a, null]| g(v, w);
+  f(1, "s")
+}"#,
+    refused("[null, 'a: i64] does not contain string");
+    FuseExpect::None
+);
+run!(
+    wrapper_passing_a_union_over_its_variable_to_a_trait_methods_bound,
+    r#"{
+  trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 };
+  impl T for i64 { let m = |s, x| s };
+  let f = 'a: T |v: 'a, w: ['a, null]| T::m(v, w);
+  (f(1, null), f(3, 4))
+}"#,
+    prints("[i64:1, i64:3]")
+);
+run!(
+    undecided_element_takes_the_union_of_a_bound_over_another_variable,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x| y;
+  let g = 'x: Array<['a, string]> |y: 'x| y;
+  let h = 'x: Array<['a, Array<'a>]> |y: 'x| y;
+  let u = never();
+  let r = f([u]);
+  u <- 1;
+  let n = select f([1])[0]$ { null as _ => 0, i64 as i => i };
+  (n, g([2]), h([[3]]), r)
+}"#,
+    prints("[i64:1, [i64:2], [[i64:3]], [i64:1]]")
+);
+run!(
+    undecided_elements_under_two_bounds_that_name_each_others_variable,
+    r#"{
+  let g = 'x: Array<['a, null]>, 'y: Array<['b, string]> |p: 'a, q: 'b, x: 'x, y: 'y| (x, y);
+  let u = never();
+  let v = never();
+  let r = g(u, v, [v], [u]);
+  u <- 1;
+  v <- 2;
+  r
+}"#,
+    prints("[[i64:2], [i64:1]]")
+);
+
+// Behind a typedef the bound's union is over two of the function's
+// variables: an element another argument decided goes to its member, and
+// one nothing decided is the choice between two undecided members.
+run!(
+    undecided_element_takes_a_named_union_of_a_bound_over_a_decided_variable,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = 'tx: Array<E<'b, 'a>> |y: 'b, x: 'tx| x;
+  f("s", ["t"])
+}"#,
+    prints(r#"["t"]"#)
+);
+run!(
+    undecided_element_into_a_named_union_of_a_bound_over_two_open_variables,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = 'tx: Array<E<'b, 'a>> |x: 'tx, y: 'b| x;
+  f(["t"], "s")
+}"#,
+    refused("string could go to 'b: unbound or 'a: unbound of the union");
+    FuseExpect::None
+);
+run!(
+    written_element_into_a_named_union_of_a_bound_over_two_open_variables,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let f = 'tx: Array<E<'b, 'a>> |x: 'tx, y: 'b| x;
+  let x: Array<[string, i64]> = ["t"];
+  f(x, "s")
+}"#,
+    prints(r#"["t"]"#)
+);
+
+// The union such a bound passes down to an undecided parameter is not
+// kept as a bound on its own variable: the wrapper's signature is the one
+// the union written in the callee's parameter gives.
+run!(
+    wrapper_of_a_bound_over_another_variable_infers_no_bound_on_that_variable,
+    r#"{
+  let f = 'x: {v: ['a, null]} |y: 'x| y;
+  let g = |u| f({v: u});
+  let k: bool = g;
+  k
+}"#,
+    refused("bool does not contain fn(u: [null, 'a: unbound]) -> { v: [null, 'a: unbound] }");
+    FuseExpect::None
+);

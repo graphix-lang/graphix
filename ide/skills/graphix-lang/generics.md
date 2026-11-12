@@ -10,7 +10,8 @@ is refused (no call could choose `'a`), and so is a written
 `fn<'a: Number>(x: i64) -> i64`. A bound may not name its own variable,
 directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
 'b: 'a`): bound it by a recursive type, `type T = [i64, Array<T>]` and
-`'a: T`. Each call picks a declared variable anew, so a value of it
+`'a: T`. It may name another declared variable, inside a union too
+(`'x: Array<['a, null]>`). Each call picks a declared variable anew, so a value of it
 may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
 { y <- x; x }` is refused. Give `y` a type that holds every `'a` (the
 bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
@@ -21,6 +22,8 @@ no "declared but the signature does not hold" 'a: Number |x: i64| -> i64 { let v
 no "declared but the signature does not hold" let f: fn<'a: Number>(x: i64) -> i64 = |x| x; f(1)
 no "bound names" 'a: [i64, Array<'a>] |x: 'a| x
 no "bound reaches" 'a: 'b, 'b: 'a |x: 'a, y: 'b| x
+ok let f = 'x: Array<['a, null]> |y: 'x| y; f([1])
+ok let g = 'b: ['c, null] |s: 'c, x: 'b| -> 'b x; let f = |v: 'a, w: ['a, null]| g(v, w); f(1, 2)
 no "escapes the definition" let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f(1)
 ok let y = never(); let f = |x: 'a| -> 'a { y <- x; x }; f(1)
 no "write its return type, `-> 'a`" let t = 'a: Number |x: 'a| x; let r = &mut t; t(1)

@@ -1480,6 +1480,16 @@ fn commit_cell_bounds(
         if c.is_predicate() {
             continue;
         }
+        // CR claude for claude: [bug/low] An argument's undecided part that meets a union
+        // of a declared bound is bound to that union at the pre-unification, before the
+        // argument's own expression is checked: `let f = 'x: (['a, null], i64) |y: 'x| y;
+        // let g = |u| f((u, u + 1)); g(1)` is refused, "cannot compute [null, 'a: unbound] +
+        // i64", where the same union written in the parameter, `|y: (['a, null], i64)|`,
+        // and `|u: i64|` print (1, 2). base-r23 does not return (bound-holds-own-cell-01).
+        // The commit of the conjunct below binds u's cell to `[null, 'a]` (`BIND rhs` under
+        // GRAPHIX_DBG_BIND); the union written in the parameter leaves u open until `u + 1`
+        // is checked. probes: ~/ptmp/cr29/scratch/r23/23c/early_bind{,_ok_unbounded}.gx
+        // (bound-union-binds-argument-early-01)
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, c, t)?,
@@ -1569,6 +1579,27 @@ fn commit_parts(
         };
         match (c, t) {
             (Type::Any, _) => Ok(true),
+            // CR claude for claude: [bug/medium] A declared variable of the definition under
+            // check that meets a callee's bound here is narrowed for good, by a union over a
+            // cell of the callee's signature that the call then decides: `let g = 'b:
+            // Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v);
+            // f(1, [2])` is refused, "'a: unbound within null does not contain i64", with g's
+            // parameters in either order, and `let k: bool = f` prints f as `fn(v: 'a: unbound
+            // within null, w: Array<'a: unbound within null>) -> ..`. The call is valid for
+            // every 'a ('c is 'a, and Array<'a> is in Array<['a, null]>): the unbounded `|x:
+            // Array<['c, null]>, s: 'c|`, the unannotated `|v, w|` and `|v: i64, w:
+            // Array<i64>|` print [2]. base-r23 alike. GRAPHIX_DBG_BIND shows the rigid 'a
+            // taking the conjunct `[null, 'c]` from pre_unify_arg, after Widening::opening
+            // copied the formal, so that 'c is not the one `s: 'c` merged with 'a
+            // (TVar::narrow_cell adds it, contains::holds_cell finds no 'a in it), and 'a
+            // ends bounded by `null` alone. A rigid cell's requirement is one to prove
+            // against the callee's cells, as `(rigid || commit) && t1.is_rigid()` does in
+            // contains_dispatch, not a bound to record on it; where the bound holds no open
+            // cell the narrowing is how `'b: Array<[i64, null]>` reaches a wrapper's 'a
+            // today, so that case needs its own answer (refuse at the definition, naming the
+            // bound to declare). Found fixing bound-holds-own-cell-01. probes:
+            // ~/ptmp/cr29/scratch/r23/23c/rigid_narrow{,_s_first,_ok_unbounded}.gx
+            // (rigid-narrowed-by-callee-bound-01)
             (_, Type::TVar(t)) => match t.open_cell() {
                 Some(cell) if cell.cell_addr() != tv.cell_addr() => {
                     cell.narrow_cell(env, c.clone())?;
@@ -1784,7 +1815,7 @@ fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     guide(flags) | ContainsFlags::Lower
 }
 
-// CR claude for claude: [bug/high] A check never returns, and takes memory until it is
+// XCR claude for claude: [bug/high] A check never returns, and takes memory until it is
 // killed, where a generic function passes a union over its own variable to a parameter
 // whose variable is bounded by a union over another of the callee's variables: `let g =
 // 'b: ['c, null] |s: 'c, x: 'b| -> i64 0; let f = |v: 'a, w: ['a, null]| g(v, w); f(1,
@@ -1824,8 +1855,29 @@ fn below(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 // both are killed. 4 of 1378 generated calls through declared bounds are killed on the
 // lane alone, 40 on both (bound.py, seed 8101). probes:
 // ~/ptmp/cr29/scratch/r21/21t/rev/oom/{k1,k4}.gx (lane alone), k2.gx (both)
-/// True iff every conjunct of the cell's constraints contains `t`. A
-/// pure probe.
+// 2026-11-12 claude: TVar::narrow_cell adds no conjunct that holds the cell it would
+// narrow (contains::holds_cell: the cell, a union member through names and bound cells,
+// a lower bound of a member), which is how commit_parts put 'a in [null, 'a] in every
+// probe of this CR; and conjuncts_admit skips a conjunct that came to hold its cell
+// later (a member took the cell as a lower bound after the conjunct was added: the
+// unit-level witness, no program found that reaches it). r1, r2, r3_trait, j1, j11 check
+// and run; k1, k2, k4, m3 are refused as the choice between two undecided members
+// (AmbiguousMember), k3 runs. bound.py seed 8101 against base-r23: 791 families, 490
+// programs base kills (318 refused now, 172 run), none killed, none newly refused, no
+// type changed. Census 2962 files, no verdict or message changed. Fail without it
+// (killed at a memory cap, or the first assert):
+// lang::types::wrapper_passing_a_union_over_its_variable_to_a_bound_over_the_callees,
+// .._to_a_bound_holds_the_variable, .._to_a_trait_methods_bound,
+// undecided_element_takes_the_union_of_a_bound_over_another_variable,
+// undecided_elements_under_two_bounds_that_name_each_others_variable,
+// undecided_element_into_a_named_union_of_a_bound_over_two_open_variables,
+// contains::tests::a_bound_that_holds_its_own_cell_narrows_nothing,
+// a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type. Two neighbours found and
+// left as CRs: rigid-narrowed-by-callee-bound-01, bound-union-binds-argument-early-01.
+// probes: ~/ptmp/cr29/scratch/r23/23c/
+/// True iff every conjunct of the cell's constraints contains `t`; one
+/// that holds the cell itself ([`holds_cell`]) contains whatever the cell
+/// takes. A pure probe.
 fn conjuncts_admit(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
@@ -1835,7 +1887,7 @@ fn conjuncts_admit(
 ) -> Result<bool> {
     let probe = guide(flags) & !ContainsFlags::Lower;
     for c in tv.cell_constraints().iter() {
-        if !c.contains_int(probe, env, hist, t)? {
+        if !holds_cell(env, c, tv.cell_addr()) && !c.contains_int(probe, env, hist, t)? {
             return Ok(false);
         }
     }
@@ -2338,6 +2390,44 @@ fn named_head(env: &Env, t: &Type, seen: &mut Expanded) -> Option<Type> {
         t = x.with_deref(|d| d.cloned()).unwrap_or(x);
     }
     Some(t)
+}
+
+/// Whether `c` holds the open cell at `addr` as it stands, so that every
+/// type the cell takes is in `c`: `c` is the cell, a union one of whose
+/// members holds it, through names and bound cells, or an open cell above
+/// a lower bound that holds it.
+pub(super) fn holds_cell(env: &Env, c: &Type, addr: usize) -> bool {
+    // a name holds no cell but its parameters'
+    let may_hold = |t: &Type| match t {
+        Type::TVar(_) | Type::Set(_) | Type::App(..) => true,
+        Type::Ref(tr) => !tr.params.is_empty(),
+        _ => false,
+    };
+    if !may_hold(c) {
+        return false;
+    }
+    let mut seen: LPooled<Expanded> = LPooled::take();
+    let mut cells: LPooled<AddrSet> = LPooled::take();
+    let mut todo: SmallVec<[Type; 4]> = SmallVec::new();
+    todo.push(c.clone());
+    while let Some(t) = todo.pop() {
+        match &named_head(env, &t, &mut seen) {
+            Some(Type::Set(ms)) => {
+                todo.extend(ms.iter().filter(|m| may_hold(m)).cloned())
+            }
+            Some(Type::TVar(tv)) => {
+                let Some(open) = tv.open_cell() else { continue };
+                if open.cell_addr() == addr {
+                    return true;
+                }
+                if cells.insert(open.cell_addr()) {
+                    todo.extend(open.cell_lower().into_iter().filter(may_hold))
+                }
+            }
+            _ => (),
+        }
+    }
+    false
 }
 
 /// Whether `expected` is, or returns, `` [`Keep(T), null] `` and `actual`
@@ -7230,6 +7320,58 @@ mod tests {
         check(&mut index, 6);
         vars[4].alias_cells(&vars[8]);
         check(&mut index, 6);
+    }
+
+    // a bound that holds the cell it would narrow says nothing of it: the
+    // cell, a union over it, over a cell bound to it, over a cell above
+    // it, a name for such a union; so a probe of the cell returns
+    #[test]
+    fn a_bound_that_holds_its_own_cell_narrows_nothing() {
+        let (env, named) =
+            Env::typed_at_root(&[("E<'p, 'q>", "['p, 'q]")], "E<i64, null>").unwrap();
+        let Type::Ref(named) = &named else { unreachable!() };
+        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
+        let null = prim(Typ::Null);
+        let (a, b, link, above) = (var("a"), var("b"), var("link"), var("above"));
+        let (ta, tb) = (Type::TVar(a.clone()), Type::TVar(b.clone()));
+        link.bind(ta.clone());
+        above.add_lower(set(&[&ta, &prim(Typ::String)]));
+        let name = named.with_params(Arc::from_iter([null.clone(), ta.clone()]));
+        for own in [
+            ta.clone(),
+            set(&[&null, &ta]),
+            set(&[&null, &Type::TVar(link)]),
+            set(&[&null, &Type::TVar(above)]),
+            set(&[&null, &set(&[&tb, &ta])]),
+            Type::Ref(Arc::new(name)),
+        ] {
+            a.narrow_cell(&env, own.clone()).unwrap();
+            assert!(a.cell_constraints().is_empty(), "{own}");
+        }
+        assert!(ta.contains(&env, &prim(Typ::I64)).unwrap());
+        for other in [set(&[&null, &tb]), Type::Array(Arc::new(ta.clone()))] {
+            let a = var("a");
+            a.narrow_cell(&env, other.clone()).unwrap();
+            assert_eq!(a.cell_constraints().len(), 1, "{other}");
+        }
+    }
+
+    // a conjunct that comes to hold its own cell, by a lower bound a
+    // member takes after it, admits what the cell takes
+    #[test]
+    fn a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type() {
+        let env = Env::default();
+        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
+        let (int, null) = (prim(Typ::I64), prim(Typ::Null));
+        let (u, e) = (var("u"), var("e"));
+        let (tu, te) = (Type::TVar(u.clone()), Type::TVar(e.clone()));
+        u.narrow_cell(&env, set(&[&te, &null])).unwrap();
+        te.check_contains_lower(&env, &tu).unwrap();
+        assert_eq!(u.cell_constraints().len(), 1);
+        assert!(!e.same_cell(&u) && !e.cell_lower().is_empty(), "{tu} {te}");
+        assert!(tu.contains_with_flags(BitFlags::empty(), &env, &int).unwrap());
+        assert!(tu.contains(&env, &int).unwrap());
+        assert!(te.contains(&env, &prim(Typ::String)).is_ok_and(|held| !held), "{te}");
     }
 }
 

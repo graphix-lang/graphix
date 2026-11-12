@@ -1583,6 +1583,24 @@ bound's merge of a union's open members was not, and the mark leaves
 such a program refused later, at the settle or by the bound (pins
 `lang::types::merge_under_a_constructor*`).
 
+A conjunct that holds its own cell says nothing of it: `'c ⊆ ['c,
+null]` whatever `'c` is. It holds the cell where it is the cell, a
+union one of whose members holds it (through names and bound cells), or
+an open cell above a lower bound that holds it (`contains::holds_cell`).
+A bound's part passed down to a value's open cell
+(`contains::commit_parts`, through `TVar::narrow_cell`) is not added
+where it holds that cell: `'x: Array<['a, null]>` taking `[1]` binds the
+element to `['a, null]`, whose own part for `'a` is that union, and
+`'b: ['c, null]` taking a caller's `['a, null]` beside `'c ⊇ 'a` meets
+`'a` the same way. Kept as a conjunct it sends each probe of the cell
+(`conjuncts_admit`) back to the cell, a check without end, so the probe
+skips one that came to hold its cell later too (a member took the cell
+as a lower bound after the conjunct was added). Pins:
+`lang::types::wrapper_passing_a_union_over_its_variable_*`,
+`undecided_element*_bound_*`,
+`contains::tests::a_bound_that_holds_its_own_cell_narrows_nothing`,
+`a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type`.
+
 ### `Concrete`: a conjunct that is a predicate
 
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever
