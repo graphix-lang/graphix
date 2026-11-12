@@ -192,12 +192,16 @@ impl VarAliases {
 
     #[inline(never)]
     fn var_listed(&self, id: BindId) -> Var {
-        Var(self.aliases.as_ref().and_then(|a| a.map.get(&id).copied()).unwrap_or(id))
+        Var(self.listed(id).unwrap_or(id))
     }
 
-    /// Whether `id` is another's variable.
-    fn lists(&self, id: BindId) -> bool {
-        self.aliases.as_ref().is_some_and(|a| a.map.contains_key(&id))
+    /// The variable `id` names, where it is another's.
+    fn listed(&self, id: BindId) -> Option<BindId> {
+        self.aliases.as_ref().and_then(|a| a.map.get(&id).copied())
+    }
+
+    fn pairs(&self) -> impl Iterator<Item = (BindId, BindId)> + '_ {
+        self.aliases.iter().flat_map(|a| a.map.iter().map(|(i, o)| (*i, *o)))
     }
 
     /// These with each id of `changes` another's variable or, given
@@ -244,34 +248,58 @@ impl VarAliases {
         Self::of(Aliases { filter, stale, map, made_from }, lo, hi, read_at)
     }
 
+    /// How `later` was made from these, where it was.
+    fn step_to<'a>(&self, later: &'a Self) -> Option<&'a MadeFrom> {
+        let mine = self.aliases.as_deref()?;
+        let from = later.aliases.as_deref()?.made_from.as_ref()?;
+        from.map.ptr_eq(&mine.map).then_some(from)
+    }
+
     /// The pairs of these that `later` may lack: where `later` was made
     /// from these, the pairs it lacks of them, else all of them.
     pub(crate) fn maybe_lacked<'a>(
         &'a self,
         later: &'a Self,
     ) -> impl Iterator<Item = (BindId, BindId)> + 'a {
-        let mine = self.aliases.as_deref();
-        let step = later
-            .aliases
-            .as_deref()
-            .and_then(|l| l.made_from.as_ref())
-            .filter(|from| mine.is_some_and(|m| from.map.ptr_eq(&m.map)));
-        let (step, all) = match step {
+        let (step, all) = match self.step_to(later) {
             Some(from) => (Some(from.lacked.iter().copied()), None),
-            None => (None, mine.map(|m| m.map.iter().map(|(i, o)| (*i, *o)))),
+            None => (None, Some(self.pairs())),
         };
         step.into_iter().flatten().chain(all.into_iter().flatten())
     }
 
-    /// These with every alias of `kept` they lack.
+    // CR claude for claude: [perf/low] A forked branch's sync still walks a
+    // whole table. Two tables compare by their change alone only where one
+    // was made from the other in one step (VarAliases::step_to), and a
+    // sibling's sync between a branch's fork and its own breaks that, so
+    // this walks every pair of the smaller table, and GXRt::set_var_aliases's
+    // each_left walks every pair of the runtime's where the reading it is
+    // handed was made from another. st.gx (~/ptmp/cr29/scratch/r23/23g/alias/,
+    // with m.gx, m.gxi), debug, instructions:u: GRAPHIX_PAR=off 12.1 G, auto
+    // 22.0 G, force 18.0 G; under auto the branches' syncs walk 38 M pairs in
+    // 4620 walks and each_left 6.7 M in 795, about a third of the run in the
+    // persistent map's lookups and iteration. A delta here needs the changes
+    // between two readings: a log of them in StaticCallees by read_at, or a
+    // diff of the two maps that skips the subtrees they share.
+    // (alias-branch-walk-01)
+    /// These with every alias of `kept` they lack: these over `kept`,
+    /// built on whichever of the two has the fewer pairs to visit.
     fn with_kept(&self, kept: &Self) -> Self {
         if self.same(kept) {
             return self.clone();
         }
-        let lacked: LPooled<Vec<(BindId, BindId)>> =
-            kept.maybe_lacked(self).filter(|(inner, _)| !self.lists(*inner)).collect();
-        self.updated(
-            lacked.iter().map(|(inner, outer)| (*inner, Some(*outer))),
+        let (base, over) = if kept.step_to(self).is_none() && self.len() < kept.len() {
+            let over =
+                self.pairs().filter(|(inner, outer)| kept.listed(*inner) != Some(*outer));
+            (kept, over.collect::<LPooled<Vec<_>>>())
+        } else {
+            let lacked = kept
+                .maybe_lacked(self)
+                .filter(|(inner, _)| self.listed(*inner).is_none());
+            (self, lacked.collect())
+        };
+        base.updated(
+            over.iter().map(|(inner, outer)| (*inner, Some(*outer))),
             self.read_at,
         )
     }
@@ -1990,6 +2018,28 @@ mod tests {
     }
 
     #[test]
+    fn a_table_that_lacks_pairs_of_the_kept_one_is_built_on_it() {
+        for n in [64, 4096] {
+            let (kept, pairs) = grown(n);
+            let few: IntMap<BindId, BindId> = pairs[..4].iter().copied().collect();
+            let fewer = VarAliases::new(few.clone(), n as u64 + 1);
+            assert!(fewer.with_kept(&kept).same(&kept));
+            let (joined, to) = (BindId::new(), BindId::new());
+            let more = VarAliases::new(
+                few.into_iter().chain([(joined, to)]).collect(),
+                n as u64 + 2,
+            );
+            let taken = more.with_kept(&kept);
+            assert_eq!(kept.maybe_lacked(&taken).count(), 0);
+            let (inner, outer) = pairs[n - 1];
+            assert_eq!(
+                (taken.var(joined), taken.var(inner), taken.len(), taken.read_at()),
+                (to, outer, n + 1, n as u64 + 2)
+            );
+        }
+    }
+
+    #[test]
     fn a_table_changed_in_steps_names_what_its_model_does() {
         let ids: Vec<BindId> = (0..300).map(|_| BindId::new()).collect();
         let outers: Vec<BindId> = (0..8).map(|_| BindId::new()).collect();
@@ -2033,6 +2083,17 @@ mod tests {
                 assert_eq!(later.var(*id), model.get(id).copied().unwrap_or(*id));
             }
             assert_eq!(later.len(), model.len());
+            let fresh = VarAliases::new(model.clone(), step);
+            for (top, under) in [(&later, &table), (&table, &later), (&fresh, &table)] {
+                let kept = top.with_kept(under);
+                let mut len = 0;
+                for id in ids.iter().chain(outers.iter()) {
+                    let want = top.listed(*id).or(under.listed(*id));
+                    len += want.is_some() as usize;
+                    assert_eq!(kept.var(*id), want.unwrap_or(*id));
+                }
+                assert_eq!(kept.len(), len);
+            }
             if !left.is_empty() && later.aliases.as_ref().is_some_and(|a| a.stale == 0) {
                 rebuilt += 1
             }

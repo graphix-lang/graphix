@@ -243,9 +243,13 @@ joins changed since (`StaticCallees::aliases_after`,
 `VarAliases::updated`); a table made from another keeps the pairs it
 lacks of it, so the runtime's walk of the bindings that left and a
 branch's absorb visit those alone where one table was made from the
-other, and every pair otherwise (`VarAliases::maybe_lacked`). Pins:
-`branch::tests::a_table_made_from_another_is_compared_by_what_changed`
-and `static_callees_tests::a_view_takes_in_only_what_changed_since_its_table`.
+other, and every pair otherwise (`VarAliases::maybe_lacked`). An absorb
+that walks builds on the larger of the two tables and visits the
+smaller's pairs (`VarAliases::with_kept`), so a branch whose reading
+lost pairs to retirements does not put each back one at a time. Pins:
+`branch::tests::a_table_made_from_another_is_compared_by_what_changed`,
+`a_table_that_lacks_pairs_of_the_kept_one_is_built_on_it` and
+`static_callees_tests::a_view_takes_in_only_what_changed_since_its_table`.
 
 A reload joins its new body's binding before the body it replaces
 retires; while the new source compiles, the replaced body's bindings
