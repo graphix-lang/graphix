@@ -288,22 +288,6 @@ macro_rules! bailat {
 /// Read `$typ` through the first of the patterns that matches. A union no
 /// pattern reads is refused with the error `$union(env, union)` (optional,
 /// after `;`) gives for it, or else as "expected `$name` not" the union.
-// XCR claude for claude: [bug/low] A declared variable bounded by a typedef
-// is not read through its bound: `type Point = {x: f64, y: f64}; let f = 'a:
-// Point |p: 'a| p.x` is refused, "reading a struct needs its type known here:
-// annotate the binding", though `p` is annotated, and so is `{p with x: 1.0}`;
-// the written bound `'a: {x: f64, y: f64}` runs both. deref_typ! takes a
-// cell's one bound only when it is a Struct, Tuple or Fn, never a Ref its loop
-// would expand. Base-r20 alike (found fixing bounded-with-refused-01). probes:
-// ~/ptmp/cr29/scratch/r20/20f/bwr/{q3,q5,q6,q7}.gx (bound-typedef-read-01)
-// 2026-11-12 claude: deref_typ! takes a cell's one bound whatever it is and,
-// when it reads through it, expands a typedef chain (lookup_ref) before asking
-// for a Struct, Tuple or Fn, so 'a: Point reads as 'a: {x: f64, y: f64} does:
-// q5 prints 0.0, q6 {x: 1.0, y: 2.0}, q3 gets the written bound's 'a call picks
-// 'a' refusal. A typedef of a union or a primitive is refused as its written
-// form is. Pins (fail without it): lang::types::reads_through_a_typedef_bound
-// (alias chain, tuple, fn, parameterized typedef, struct update) and
-// lang::types::typedef_bound_update_is_no_type_a_call_picks.
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
