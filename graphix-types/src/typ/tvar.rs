@@ -3257,6 +3257,16 @@ impl Drop for Printing {
 // Whoever owns the table per message can walk the names it will show first
 // (`Type::names_held`) and number around them, as `quantifiers_apart` does within
 // one signature.
+// 2026-11-12 claude: The language server prints under this table too
+// (PrintFlag::StandingHeaders, hover-instance-header-01): whoever moves its owner
+// moves graphix_lsp::query::display_type's format_with_flags with it, and
+// graphix-shell/tests/lsp/main.rs one_instance_hovers_with_no_header pins the
+// hover's numbering. A name a header listed is free once its signature ends, so a
+// later cell takes it: (kk, h, mk(1)), kk = mk(0) and h generic, prints (fn(x:
+// 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1, fn(x: 'a1) -> 'a1) in a hover and
+// the same with bounds in a .gxi mismatch on base-r23
+// (~/ptmp/cr29/scratch/r23/23h/hover-review/gxi1/test.gx): two cells under 'a1,
+// lexically apart.
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for a cell

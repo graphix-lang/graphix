@@ -66,6 +66,15 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
     ModPath(NPath::from(ArcStr::from(s)))
 }
 
+// CR claude for claude: [readability/low] A hover on a `let rec`'s read of itself
+// in its own body lists the header: `let rec rf = 'a: Number |x: 'a| -> 'a { let w
+// = rf; x }` hovers `w: fn<'a: Number>(x: 'a) -> 'a`, where a type mismatch over
+// `w` prints `fn(x: 'a: unbound within Number) -> 'a: unbound within Number`, no
+// header (the message holds the quantifiers as they stood at the refusal,
+// `tvar::HeldQuantifiers`). The hover reads the binding after the definition's
+// close generalized its cells, so nothing tells it `w` is one instance. probe:
+// ~/ptmp/cr29/scratch/r23/23h/hover-review/gx/w1.gx (the message), probe_test.rs
+// beside it (`let |w = rf`) (hover-rec-self-read-header-01)
 /// A binding's type for display. `replace_auto_constrained` folds a
 /// function's constraint-table tvars into the surface and must run
 /// before `resolve_tvars`, which empties the table. A header lists only

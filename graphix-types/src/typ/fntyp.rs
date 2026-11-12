@@ -1168,6 +1168,18 @@ impl FnType {
         self.cow_walk(|t| t.replace_tvars_int(s, fresh))
     }
 
+    // CR claude for claude: [bug/medium] A hover shows a decided variable as its
+    // bound: `let h = 'a: Number |x: 'a| -> 'a x; let n = |q: i64| h(q)` hovers (and
+    // outlines) `n: fn(q: i64) -> Number`, where the check says `fn(q: i64) -> i64`
+    // (`let z: string = n` prints it). This replaces every `'_N` the signature holds
+    // that carries one conjunct by that conjunct, a cell already bound to `i64`
+    // included: with `'a: Number + Singleton` (two conjuncts) the hover reads `->
+    // i64`. Base-r23 alike. The shell's REPL completion (`graphix-shell/src/
+    // completion.rs`) folds through this too, and prints canonically rather than
+    // through `graphix_lsp::query::display_type`, so by reading it also lists one
+    // instance's header (hover-instance-header-01). probe:
+    // ~/ptmp/cr29/scratch/r23/23h/hover-review/probe_test.rs (`nested`, `nested3`,
+    // `nested4`; outputs in lane-final.txt beside it) (display-auto-bound-01)
     /// Replace auto type variables (`'_23`) that carry one constraint
     /// with that constraint, for display. Call before
     /// `Type::resolve_tvars`, which discards the cells.
