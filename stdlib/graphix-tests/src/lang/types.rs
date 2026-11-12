@@ -7562,6 +7562,48 @@ run!(
     refused("type mismatch string does not contain i64");
     FuseExpect::None
 );
+// The arms' one cell holds what an undecided payload gives it once, however
+// many arms bind the part: the check ends, and the part is one type.
+run!(
+    part_bound_in_four_literal_arms_over_an_undecided_payload,
+    r#"{
+  type B<'p> = Abstract<'p>;
+  let t = sys::time::timer(duration:10.ms, false);
+  let x = never();
+  let b = B((2, x));
+  let v = select b.0 { (1, h) => 0, (2, h) => h + 1, (3, h) => h, (4, h) => h, (_, h) => h };
+  x <- t ~ 7;
+  v
+}"#,
+    prints("i64:8")
+);
+run!(
+    part_bound_in_four_literal_arms_over_an_undecided_payload_used_as_two_types_refused,
+    r#"{
+  type B<'p> = Abstract<'p>;
+  let t = sys::time::timer(duration:10.ms, false);
+  let x = never();
+  let b = B((2, x));
+  let v = select b.0 {
+    (1, h) => 0, (2, h) => h + 1, (3, h) => str::len(h), (4, h) => h, (_, h) => h
+  };
+  x <- t ~ 7;
+  v
+}"#,
+    refused("type mismatch string does not contain i64");
+    FuseExpect::None
+);
+// Arms whose binds made their members one type are named once by the
+// refusal of what they leave uncovered.
+run!(
+    missing_cases_name_members_that_are_one_type_once,
+    r#"{
+  let f = |s| select s { ([a], [b], c) => 0, ([a, ..], [], c) => 1, ([], [b, ..], c) => 2 };
+  f(([1], [2], 3))
+}"#,
+    refused("no arm covers (Array<'_");
+    FuseExpect::None
+);
 // Over a parameter written with two variables, a slice arm's element cells
 // are the declared element, so the arm's other binds take their parts of
 // the parameter: the result is of the second variable in both shapes.

@@ -887,6 +887,30 @@ mod tests {
         assert!(u.stands_for() != v.stands_for());
     }
 
+    /// A cell a member holds where the arm's predicate does is its own
+    /// part of that member, never a copy merged back into it: each arm's
+    /// narrowing leaves the cell the lower bounds it had.
+    #[test]
+    fn narrowing_a_members_own_cell_keeps_its_lower_bounds() {
+        let env = Env::default();
+        let x = TVar::empty_named("x".into());
+        let cells: [TVar; 3] = std::array::from_fn(|_| {
+            let c = TVar::empty_named("c".into());
+            c.add_lower(Type::TVar(x.clone()));
+            c
+        });
+        let members = cells.each_ref().map(|c| {
+            let parts = [Type::Primitive(Typ::I64.into()), Type::TVar(c.clone())];
+            Type::Tuple(Arc::from_iter(parts))
+        });
+        for m in members.iter() {
+            m.narrow_per_member(&env, &members).unwrap();
+        }
+        let one = cells[0].open_cell().unwrap();
+        assert!(cells.iter().all(|c| c.stands_for() == one.cell_addr()));
+        assert!(one.cell_lower().len() <= cells.len());
+    }
+
     /// A union of named or abstract members normalizes in linear time:
     /// each is tried only against members it could merge with.
     #[test]

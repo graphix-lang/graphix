@@ -712,7 +712,13 @@ and the arms' narrowing makes them one. An arm's bind holds its part of
 every member the arm can match (`Type::narrow_per_member`); where one of
 those parts is the bind's own cell, a member the arm's pattern gave the
 scrutinee, the bind holds the others as that member's part does, so each
-open cell among them is that cell and what is left binds it. The
+open cell among them is that cell and what is left binds it. A member is
+read through a copy of the arm's predicate, but a cell the member holds
+at the same part as the predicate, outside any union, is not copied: it
+is its own part of that member, and a copy, which carries the cell's
+lower bounds, would merge back into it and leave them there twice, at
+every arm and member (a part four arms bind over an undecided payload,
+`B((2, x))`). The
 elements of the arms' slices share a cell that way, and so do the arms'
 binds of another part of a tuple or a struct, however many arms bind it
 (`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..`), literal arms'
@@ -739,7 +745,7 @@ implementation whose variables stand at the declaration's places passes
 `lang::types::{write_into_a_union_of_two_undecided,argument_into_a_later_typedef_union,argument_into_an_identity_argument_union,argument_into_an_identity_body_union,decided_array_into_a_typedef_union_of_two_undecided_arrays}_refused*`
 and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
 members that are one type by `lang::types::{slice_arms,slice_elements_bound_in_two_arms,slice_arms_of_a_recursive_function,slice_rest_passed_on,slice_arms_inside_a_tuple_and_a_struct,list_arms}_over_an_unannotated_parameter*`, each beside its written twin, and the unit test `members_that_are_one_type_take_a_type_as_one`,
-a part several arms bind by `lang::types::{part_bound_in_three_slice_arms,part_bound_in_three_literal_arms,slice_in_each_alternative_of_an_or_arm}_over_an_unannotated_parameter`, `part_bound_in_three_{literal,slice}_arms_used_as_two_types_refused` and the unit test `narrowing_a_members_own_cell_makes_the_open_parts_one`,
+a part several arms bind by `lang::types::{part_bound_in_three_slice_arms,part_bound_in_three_literal_arms,slice_in_each_alternative_of_an_or_arm}_over_an_unannotated_parameter`, `part_bound_in_three_{literal,slice}_arms_used_as_two_types_refused`, `part_bound_in_four_literal_arms_over_an_undecided_payload*` and the unit tests `narrowing_a_members_own_cell_{makes_the_open_parts_one,keeps_its_lower_bounds}`,
 `lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
 `lang::interfaces::{open_union_call_refused,val_implementation_that_would_choose_a_member_refused,val_in_data_implementation_that_would_choose_a_member_refused,val_at_one_variable_implemented_at_two}`.
 

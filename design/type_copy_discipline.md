@@ -57,10 +57,14 @@ the surviving one through the forward link the weld leaves, and
 cell (the arms' patterns typed the scrutinee, so a member is the arm's
 predicate) is no part to join: the bind holds the other parts as that
 member does, so an open cell among them merges with it, and the arms'
-binds of one part end as one cell. Pins:
+binds of one part end as one cell. Such a cell is not copied for the
+member that holds it at the same part (`own_parts` in
+`Type::narrow_per_member`): the copy would carry its lower bounds back
+into it. Pins:
 `lang::select::arm_bind_over_members_*`,
 `or_arm_bind_over_members_calls_their_lambdas`,
-`lang::types::part_bound_in_three_*`.
+`lang::types::part_bound_in_three_*`,
+`part_bound_in_four_literal_arms_over_an_undecided_payload`.
 
 ### `reset_tvars` — the legal deep copies
 

@@ -4663,6 +4663,36 @@ impl Type {
     ) -> Result<bool> {
         #[cfg(test)]
         SPLIT_STEPS.with(|n| n.set(n.get() + 1));
+        // CR claude for claude: [bug/high] Arms that bind a payload of one variant tag
+        // keep a cell each, and the check accepts a use of the bind at two types: `let f
+        // = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 }; f(`A(1,
+        // "q"))` checks as `fn(s: `A(i64, [i64, string])) -> i64` and runs `a + 1` over a
+        // string (it prints 1; with a `` `B(a) => a `` arm beside them the runtime dies,
+        // "runtime did not respond"). `` `A(a) if a > 0 => a + 1, `A(a) if a != "" =>
+        // str::len(a), _ => 0 `` and `` `A(1, `B(a)) => a + 1, `A(2, `B(a)) =>
+        // str::len(a), _ => 0 `` alike. GRAPHIX_NO_SUBST=1 refuses the call ("cannot
+        // compute [i64, string] + i64"), and so does the parameter written (`|s: `A(i64,
+        // [i64, string])|`); the tuple and struct forms (`(1, a) => a + 1, (2, a) =>
+        // str::len(a)`) are refused where the function is defined. The arms' predicates
+        // join as one variant whose payload is the union of the arms' cells, `` `A(i64,
+        // ['a0, 'a1]) ``, where tuples stay members of the scrutinee; an arm's `` `A(i64,
+        // 'a0) `` needs no split here (its part is an open cell), so narrow_member
+        // contains it whole, `['a0, 'a1] ⊇ 'a0` holds by `'a0` itself, and nothing makes
+        // the cells one as Type::narrow_per_member does for members. Tried in review:
+        // this function true where pred's part is an open cell the union standing there
+        // holds as a member, and narrow_pattern_inner narrowing that cell over the
+        // union's members, its open cells among them (union_members drops them). It
+        // refuses every probe here and types `` `A(1, a) => a, `A(2, a) => a, _ =>
+        // never() `` as `fn(s: `A(i64, 'a)) -> 'a`, but it also fires where the union is
+        // not the arms' own (a payload cell's two bounds, `B([[x]])` then `B([x])`; a
+        // slice element beside `` `Keep(r) ``) and fails
+        // lang::types::{payload_cell_bound_to_an_element_set,select_element_of_two_payload_bounds_takes_no_arithmetic,select_type_test_over_two_payload_bounds*},
+        // lang::select::unannotated_slice_element_telling_rest_from_keep_refused and
+        // lang::select_undecided::destructure_under_a_slice_element_is_no_undecided_test.
+        // What it needs is to know the union is the arms' own: Reach::new does (the
+        // scrutinee was an open cell with no lower bound). base-r23 alike. probes:
+        // ~/ptmp/cr29/scratch/r23/23d/stb-rev/{a5,a6,a7,a9}.txt (run with rb.sh),
+        // rev2.patch (the attempt) (variant-payload-bind-cells-01)
         let Some(p) = pred.deref_cloned() else { return Ok(false) };
         if let Type::Set(qs) = &p {
             for q in qs.iter() {
@@ -4794,7 +4824,8 @@ impl Type {
     /// what the arm decides of its bind decides the member's cells. A cell
     /// of self that is itself a member's part (self typed the scrutinee)
     /// holds the other parts as that member's part: each open cell among
-    /// them is that cell, and it takes the union of the rest.
+    /// them is that cell, and it takes the union of the rest. Such a cell
+    /// is not copied for the member that holds it at the same part.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
@@ -4852,6 +4883,57 @@ impl Type {
                 }
             })
         }
+        // maps to itself each open cell of `alt` that `m` holds at the same
+        // part, outside any union: it is its own part of `m`, where a copy
+        // would merge back into it and leave it its lower bounds twice
+        fn own_parts(
+            env: &Env,
+            m: &Type,
+            alt: &Type,
+            seen: &mut AddrSet,
+            known: &mut AHashMap<usize, TVar>,
+        ) -> Result<()> {
+            ensure_sufficient(|| {
+                if let Type::TVar(a) = alt
+                    && let Some(a) = a.open_cell()
+                {
+                    if let Type::TVar(t) = m
+                        && t.open_cell().is_some_and(|t| t.same_cell(&a))
+                    {
+                        known.insert(a.cell_addr(), a);
+                    }
+                    return Ok(());
+                }
+                let Some(p) = alt.deref_cloned() else { return Ok(()) };
+                if node_addr(&p).is_some_and(|n| !seen.insert(n)) {
+                    return Ok(());
+                }
+                let Some(t) = m.shape_under(env, &p)? else { return Ok(()) };
+                let mut each = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
+                    for (t, p) in parts {
+                        own_parts(env, t, p, seen, known)?
+                    }
+                    Ok(())
+                };
+                match (&t, &p) {
+                    (Type::Tuple(ts), Type::Tuple(ps))
+                    | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
+                        each(&mut ts.iter().zip(ps.iter()))
+                    }
+                    (Type::Struct(fs), Type::Struct(pfs)) => each(
+                        &mut fs
+                            .iter()
+                            .zip(pfs.iter())
+                            .map(|((_, t, _), (_, p, _))| (t, p)),
+                    ),
+                    (Type::Array(e), Type::Array(pe))
+                    | (Type::List(e), Type::List(pe)) => {
+                        own_parts(env, e, pe, seen, known)
+                    }
+                    _ => Ok(()),
+                }
+            })
+        }
         let mut cells: SmallVec<[TVar; 8]> = SmallVec::new();
         open(self, &mut LPooled::take(), &mut cells);
         let mut parts: SmallVec<[Option<SmallVec<[Type; 4]>>; 8]> =
@@ -4867,6 +4949,7 @@ impl Type {
                     continue;
                 }
                 let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                own_parts(env, m, alt, &mut LPooled::take(), &mut known)?;
                 let copy = alt
                     .reset_tvars_int(&mut known, Fresh::Copy)
                     .unwrap_or_else(|| alt.clone());

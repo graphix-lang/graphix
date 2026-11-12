@@ -667,6 +667,19 @@ impl Reach {
             // bound the cell to the union of its other parts where it now merges the open
             // ones, took both def probes past 700 G: the nested unions of cells are the
             // cost.
+            // 2026-11-12 claude: The review of slice-tuple-bind-cells-01 added own_parts to
+            // Type::narrow_per_member: a cell of the arm's predicate that a member holds at
+            // the same part, outside any union, is not copied for that member. A wider form,
+            // every cell the member holds anywhere (settle::position_cells(m)), a slice's
+            // element union included, took rest11u_def.gx from 8.7 G to 0.81 G user
+            // instructions, so the copies of an arm's element and rest cells that merge back
+            // through the element union are this CR's cost. It was not kept: the copy of a
+            // rest cell lands on the union's first member, which is what makes a slice's
+            // element and rest one cell, and
+            // lang::types::slice_in_each_alternative_of_an_or_arm_over_an_unannotated_parameter
+            // fails without that (the wider form is in
+            // ~/ptmp/cr29/scratch/r23/23d/stb-rev/rev3.patch). With own_parts as kept:
+            // fixed16u_def.gx 1.03 G, rest11u_def.gx 8.8 G, rest12u_def.gx 34.3 G.
             // XCR claude for claude: [bug/low] Three slice arms inside a tuple or a struct
             // that each bind another part are still refused at the call, where two such
             // arms and the written parameter run: `let f = |s| select s { ([a, c, ..], b)
@@ -738,6 +751,33 @@ impl Reach {
             // refused where the written twin runs each hold such a `_`. base-r23 alike.
             // probes: ~/ptmp/cr29/scratch/r23/23d/stb/{s4.txt,s5.txt} (run with rb.sh),
             // gen.py (seeds 4201 and 977), rungen.sh (wildcard-slot-any-part-01)
+            // CR claude for claude: [bug/low] An arm that binds a part whole beside arms that
+            // take that part apart in two shapes is refused at the call, where the written
+            // parameter runs: `let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3,
+            // `B(y)) => str::len(y), (_, b) => 0 }; f((1, `A(5)))` says "(i64, `A(i64))
+            // could go to (i64, [`A('_N), `B(string)]) or (i64, `A('_N)) of the union [(i64,
+            // [`A('_N), `B(string)]), (i64, `A('_N)), (i64, `B(string))] .. write the type
+            // of the parameter", and `|s: (i64, [`A(i64), `B(string)])|` prints 0. `(2, (x,
+            // y))` beside `(3, (x, y, z))` and `(2, [x, ..])` beside `(3, {a, c})` alike.
+            // One shape (`(1, b) => 0, (2, `A(x)) => x, (3, `A(y)) => y, (_, b) => 0`)
+            // runs, and so does the select without the `(1, b)` arm. The bind's member
+            // holds the union of the other arms' shapes, which is no one type with the
+            // member of each shape (setops::one_type), so the argument meets three
+            // members. base-r23 alike. probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/d2.txt
+            // (run with rb.sh) (bind-beside-shapes-01)
+            // CR claude for claude: [bug/low] The check accepts and the build refuses a
+            // select of three literal arms and a wildcard that bind a part of an abstract's
+            // payload built at two shapes, one holding the other's cell: `type B<'p> =
+            // Abstract<'p>; let x = never(); let b = B((1, [x])); b <- B((2, x)); let v =
+            // select b.0 { (1, h) => h, (2, h) => h, (3, h) => h, (_, h) => h }; x <- t ~
+            // 1; println(v)` passes `--check`, and a run is refused at `println(v)`, "i64
+            // could go to any of 2 members of the union ['_N, i64, Array<'_N>, Array<i64>]
+            // .. write the type of what holds that union". GRAPHIX_ELAB_AUDIT=1 reports
+            // nothing. With one literal arm (`(1, h) => h, (_, h) => h`) or a bind alone
+            // (`(n, h) => h`) it prints [1] and then 1. base-r23 alike (its union reads
+            // "[['_N, i64, Array<'_N>, Array<i64>], ['_N, Array<'_N>]]"). Not diagnosed.
+            // probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/{sp1,sp2,sp3}.gx
+            // (payload-bound-arms-split-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);
@@ -1183,7 +1223,7 @@ impl Reach {
             };
             Err(anyhow!(
                 "missing match cases: no arm covers {}{gap}{refutable}{guarded}{settled}",
-                self.atype
+                self.atype.normalize()
             ))
         })
     }
