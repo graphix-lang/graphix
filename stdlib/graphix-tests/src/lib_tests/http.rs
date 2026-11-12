@@ -230,6 +230,27 @@ run!(http_abandoned_request_dropped_when_its_client_leaves, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "error")
 }; FuseExpect::Jit);
 
+// The instance of a request whose client gave up is deleted: its timer
+// stops ticking, so the program goes idle and answers. One left running
+// ticks forever and the program never answers.
+run!(http_abandoned_request_instance_stops, r#"{
+    let ticks = 0;
+    let silent = never<null>();
+    let handler = |req: http::Request| {
+        let t = sys::time::timer(req ~ duration:20.ms, true);
+        ticks <- t ~ ticks + 1;
+        silent ~ {body: "x", headers: [], status: u16:200}
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let r = http::request(#timeout: duration:200.ms, client, "http://[addr]/");
+    let out = select r { error as _ => "error", r => r.body };
+    sys::time::after_idle(duration:300.ms, (out, ticks)).0
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "error")
+}; FuseExpect::Jit);
+
 // A request whose instance raises is answered 500, and a concurrent one
 // whose instance answers gets its own page.
 run!(http_raises_answer_their_own_requests, r#"{
