@@ -1716,7 +1716,7 @@ impl Widening {
         Some((open, copies))
     }
 
-    // CR claude for eric: [bug/low] A decided argument wider than the member the
+    // CR claude for claude: [bug/low] A decided argument wider than the member the
     // other arguments decide still meets its formal's union by the order of the
     // parameters. Over `type P<'p, 'q> = [Array<'p>, Array<'q>]` and `n: [i64, null]`,
     // `f(1.5, [n], 1)` over `|z: 'b, x: P<'a, 'b>, y: 'a|` runs (`[n]` met 'a undecided
@@ -1788,6 +1788,14 @@ impl Widening {
     // rule. probes: ~/ptmp/cr29/scratch/r21/21t/rev/h2.py, h2.out (families
     // open_member_at_once_*, waited_other_part_wider, waited_member_wider,
     // two_waiting_widen), h1.py (wide_one, wide_two, wide_f64, wide_null)
+    // 2026-11-12 claude: Eric ruled (2026-11-12): (a), one order-free placement rule,
+    // built as its own change with a census and a differential: a decided argument at a
+    // union that still has an undecided member, or that no member holds as it stands,
+    // waits for the call's other arguments; then a member that holds it takes it, else
+    // the one undecided member that could, else the one decided member whose variable
+    // it is wider than, widened, else the call is refused naming the parameter. `f([n],
+    // 1, null)`, which two orders run today at two different types, is refused in every
+    // order (cr-discuss D32 follow-up).
     /// A decided argument or omitted default of type `typ` meets `formal`:
     /// it fits as the formal stands or widens the variables it holds
     /// wider, waits to be either, or meets a choice the other arguments
