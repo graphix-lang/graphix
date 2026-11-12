@@ -5,13 +5,31 @@ Pins: `stdlib/graphix-tests/src/lang/organic_deltas.rs` (one fixture per ruled d
 
 ## The rule
 
-**A node fires iff a consumed input fires.** Sources fire when they
-produce. Constants fire only in a birth: a root's first cycle, a seq
-step's run. Entering a body (a select arm, a guard, a collection slot, a
-function activation) is no birth and neither is waking one
-(`design/bind_driven_bodies.md`). Cadence is shaped explicitly —
-`uniq`, `filter`, `~`, `once`/`take`/`skip` — and the compiler never
-stores a previous value or a previous selection to decide a tag.
+**A node fires iff a consumed input fires, and a value that leaves
+bottom fires.** Sources fire when they produce. The rule has three parts:
+
+1. **Before a program's first cycle every value is bottom.** A program
+   is a root: a script, a REPL input, a dynamic module's load. A seq
+   step's run starts the same way.
+2. **A value that leaves bottom fires.** A constant leaves bottom once,
+   in its program's first cycle, and stands stale ever after. A value
+   that comes back from bottom (`10 / y` when `y` leaves zero) fires
+   because the input that brought it back fired.
+3. **A body that does not run misses what fires meanwhile**, a value
+   leaving bottom included. Entering a body (a select arm, a guard, a
+   collection slot, a function activation) starts nothing from bottom,
+   and neither does waking one (`design/bind_driven_bodies.md`): what it
+   reads stands.
+
+There is no init rule beside these. A "birth" in these docs and in the
+code (`View::Birth`, `View::Step`, `View::born`) is the name of a cycle
+in which values leave bottom, a root's first and a step's run, and that
+one fact about the cycle is all the state the rule needs: nothing is
+kept for an argument, a call, an arm or a kernel. Cadence is shaped
+explicitly — `uniq`, `filter`, `~`, `once`/`take`/`skip` — and the
+compiler never stores a previous value or a previous selection to decide
+a tag. The right side of a sample is a value, not an event: `e ~ v` does
+not fire when `v` leaves bottom, beyond the one banked payment.
 
 Consequences:
 
@@ -103,9 +121,10 @@ what `organic_deltas.rs` cites.
   arm's own production; same-arm re-matches emit the arm's current
   value. A delivery to a function-valued callee fires its current result
   even for the same definition, keeping that call's instance and state.
-  A constant fires in a birth (`View::born`: a root's first cycle, a
-  seq step's run) and stands stale everywhere else, a body entered or
-  woken later included (`design/bind_driven_bodies.md`); every
+  A constant fires in the cycle it leaves bottom (`View::born`: a
+  root's first cycle, a seq step's run) and stands stale everywhere
+  else, a body entered or woken later included
+  (`design/bind_driven_bodies.md`); every
   argument-less literal (`` `Tag ``, `[]`,
   `{}`) is a constant (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on

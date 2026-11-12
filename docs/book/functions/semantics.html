@@ -186,6 +186,15 @@ n + 1 + 1
 <p>Here we've essentially inlined out <code>f</code> so that we can see the
 execution flow of the graph, these two programs output will be
 identical.</p>
+<p>What about the <code>1</code>? Before a program's first cycle every value is
+bottom, it has no value yet, and a value that leaves bottom updates
+whatever reads it. A constant leaves bottom once, in the program's first
+cycle, and never updates again. That is the whole of how a program
+starts: in its first cycle every constant arrives, so everything that
+can be computed from constants alone is computed once, and after that
+only real events move the graph. The same rule covers an expression that
+loses its value, such as <code>10 / y</code> while <code>y</code> is zero: it updates when it
+has a value again, because <code>y</code> did.</p>
 <h2 id="functions-cycles-and-connect"><a class="header" href="#functions-cycles-and-connect">Functions, Cycles, and Connect</a></h2>
 <p>Lets revisit an earlier example where we used select and connect to find the
 length of an array. Suppose we want to generalize that into a function,</p>

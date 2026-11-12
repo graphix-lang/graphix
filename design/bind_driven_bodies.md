@@ -18,7 +18,7 @@ tag its producer gives it in this cycle. Entry and resume add nothing to it.
 | A fold's accumulator | what feeds it fires: the init for slot 0, the slot before it |
 | A formal | its argument fires |
 | A capture | it fires in a cycle the body runs |
-| A constant | only in a birth |
+| A constant | in the cycle it leaves bottom: a birth |
 
 An omitted default is its expression, evaluated in the callee: a constant default is a constant, and
 `#d = c` is a read of the capture `c`.
@@ -27,11 +27,13 @@ What follows:
 
 1. **No memory.** Nothing is recorded for a body while it does not run. No fire is kept for an arm, a
    guard, a paused slot or an absent call. A shrink deletes the callee.
-2. **Births.** A birth is a root's first cycle (a script, each REPL input, a dynamic module's load) and a
-   seq step's run. In a birth everything reached fires, in every body entered in that same update. A body
-   entered at any other time is entered into a world that stands: its constants never fire and what it
-   reads stands stale. A new activation, a regrown recursion depth included, has fresh state and is
-   entered, not born.
+2. **Births.** Every value is bottom before its program's first cycle, and a value that leaves bottom
+   fires (`organic_firing.md`). A birth is a cycle in which that happens: a root's first cycle (a script,
+   each REPL input, a dynamic module's load) and a seq step's run. In a birth everything reached fires, in
+   every body entered in that same update, since its constants are leaving bottom then. A body entered at
+   any other time is entered into a world that stands: its constants left bottom when its program started,
+   so they never fire, and what it reads stands stale. A new activation, a regrown recursion depth
+   included, has fresh state and is entered, not born.
 3. **A resume recomputes.** A body that ran before and runs again recomputes from what stands. Its state
    survived the sleep.
 4. **A wake fires nothing for anyone.** What a resume or an entry recomputes is stale to every reader:

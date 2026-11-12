@@ -7,7 +7,10 @@ description: Writing, reading or fixing Graphix code — any .gx or .gxi file, G
 
 Graphix is a reactive dataflow language. Every expression is a node in a
 graph; a node fires when a consumed input fires; nothing runs "again"
-unless an input does. Read the book (`book/src/`) and the examples
+unless an input does. Every value is bottom before the program starts, and
+a value that leaves bottom fires: a constant fires once, in the program's
+first cycle, and an expression that was bottom (`10 / y` while `y` is 0)
+fires when it has a value again. Read the book (`book/src/`) and the examples
 (`book/src/examples/`) when this reference is not enough.
 
 ## More of this skill, read when you need it

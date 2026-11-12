@@ -138,7 +138,8 @@ bottom-resident ∨ woke`. `node::gather` is the per-child join
 accumulator every composite uses.
 
 **R2 — read-side init.** There are no FIRED backfills. One rule at the
-store read: a reader under a birth (`event.view`, `View::Birth`)
+store read: a reader under a birth (`event.view`, `View::Birth`), the
+cycle in which a program's values leave bottom (`organic_firing.md`),
 interprets a standing entry as Fired; otherwise as Stale. A wake or a
 step (`View::wake`: `Wake`, `Step`) is NOT a birth: standing entries
 read Stale under it, though constants fire in a step (`View::born`). A

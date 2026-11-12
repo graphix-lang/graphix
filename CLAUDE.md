@@ -282,9 +282,11 @@ node graph IS the IR — there is no parallel typed IR
   ORs over consumed productions.
 - **Organic firing** (`design/organic_firing.md`): a node fires iff a
   consumed input fires; nothing stores a previous value or selection to
-  decide a tag; `uniq`/`filter`/`~` are the cadence tools. A constant fires
-  in a birth (a root's first cycle, a seq step's run) and stands stale
-  everywhere else.
+  decide a tag; `uniq`/`filter`/`~` are the cadence tools. Every value is
+  bottom before its program's first cycle and a value that leaves bottom
+  fires, so a constant fires once, in a birth (a root's first cycle, a seq
+  step's run), and stands stale everywhere else. There is no init rule
+  beside that, and no state for it but the cycle's view.
 - **Bodies are bind-driven** (`design/bind_driven_bodies.md`): entering a
   select arm, a guard, a collection slot or a function activation is not an
   event, and neither is waking one. Nothing fires in a body but its binds

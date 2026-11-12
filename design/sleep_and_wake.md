@@ -30,14 +30,16 @@ its own `sleep()` sets and its next update takes: the `dense_gate!` structs (the
 bits hide in struct padding. Nodes that recompute unconditionally need none. `~` rides: it is edge
 state. `Any` rides too, except that it stands bottom at a wake where the child its resident came from is
 bottom now. `uniq` is bottom while its input is, and a value back from bottom is new to it. A `Constant`
-fires where it is born and stands at a resume.
+fires in the cycle it leaves bottom, its program's first or its step's run, and stands at a resume.
 
 A woken `Select` re-matches against the present scrutinee: the selection it held was made against a
 value that may have changed while it slept.
 
 ## Views
 
-`View` says how an evaluation reads what stands (`View::join` nests them):
+`View` says how an evaluation reads what stands (`View::join` nests them). `Birth` and `Step` are the
+cycles in which values leave bottom (`organic_firing.md`); that a cycle is one is the only state the
+firing rule keeps:
 
 | View | Standing values | Constants | Where |
 |---|---|---|---|

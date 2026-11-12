@@ -41,6 +41,16 @@ Here we've essentially inlined out `f` so that we can see the
 execution flow of the graph, these two programs output will be
 identical.
 
+What about the `1`? Before a program's first cycle every value is
+bottom, it has no value yet, and a value that leaves bottom updates
+whatever reads it. A constant leaves bottom once, in the program's first
+cycle, and never updates again. That is the whole of how a program
+starts: in its first cycle every constant arrives, so everything that
+can be computed from constants alone is computed once, and after that
+only real events move the graph. The same rule covers an expression that
+loses its value, such as `10 / y` while `y` is zero: it updates when it
+has a value again, because `y` did.
+
 ## Functions, Cycles, and Connect
 
 Lets revisit an earlier example where we used select and connect to find the
