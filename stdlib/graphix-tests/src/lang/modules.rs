@@ -2346,6 +2346,110 @@ run!(
     FuseExpect::Jit
 );
 
+/// A slot born at `ep` 3 runs `body`, which declares `v`, a `get` and a
+/// `set` over it, and returns them with a reader and a writer of `v`
+/// made outside its declaration: `get0`, `set0`, `out0` and `wr0` from
+/// `ep` 5. The slot is deleted at 6, and `rest` goes on with the four.
+fn both_sides_escaping_a_deleted_slot(body: &str, rest: &str) -> String {
+    format!(
+        r#"
+let f = |k: i64| {{ {body} }};
+let ep = 0;
+ep <- select ep {{ n if n < 12 => n + 1, _ => never() }};
+let xs: Array<i64> = never();
+xs <- select ep {{ 2 => [1], 5 => [], _ => never() }};
+let fs = array::map(xs, |x| f(x));
+let get0: fn(x: i64) -> i64 = never();
+let set0: fn(x: i64) -> null = never();
+let out0: fn(x: i64) -> i64 = never();
+let wr0: fn(x: i64) -> null = never();
+get0 <- select ep {{ 4 => ep ~ (fs[0]$).0, _ => never() }};
+set0 <- select ep {{ 4 => ep ~ (fs[0]$).1, _ => never() }};
+out0 <- select ep {{ 4 => ep ~ (fs[0]$).2, _ => never() }};
+wr0 <- select ep {{ 4 => ep ~ (fs[0]$).3, _ => never() }};
+{rest};
+let seen = "";
+seen <- both ~ "[seen] [both]";
+let result = select ep {{ 12 => ep ~ seen, _ => never() }}
+"#
+    )
+}
+
+const BOTH_SIDES_MODULE: &str =
+    "mod m; (m::get, m::set, |x: i64| x + m::v, |x: i64| -> null { m::v <- x; null })";
+const BOTH_SIDES_LETS: &str = "let v = 1; let get = |x: i64| x + v; \
+    let set = |x: i64| -> null { v <- x; null }; \
+    (get, set, |x: i64| x + v, |x: i64| -> null { v <- x; null })";
+const BOTH_SIDES_GXI: &str =
+    "val v: i64; val get: fn(x: i64) -> i64; val set: fn(x: i64) -> null";
+const BOTH_SIDES_GX: &str =
+    "let v = 1; let get = |x: i64| x + v; let set = |x: i64| -> null { v <- x; null }";
+
+/// Both sides go on: a write through the binding (`ep` 7) and one
+/// through the val (`ep` 9) reach the readers of each, alive and first
+/// called after the deletion (`late`).
+const BOTH_SIDES_NAMED: &str = r#"
+set0(select ep { 7 => 70, _ => never() });
+wr0(select ep { 9 => 900, _ => never() });
+let ys: Array<i64> = never();
+ys <- select ep { 7 => [0], _ => never() };
+let late = array::map(ys, |y| (get0(y), out0(y)));
+let both = (get0(0), out0(0), late)"#;
+
+// A val and the binding implementing it, each named by a function that
+// escapes their body's deletion, stay one variable, as the one binding a
+// plain `let` makes is.
+run!(
+    both_sides_of_a_deleted_interface_module_stay_one_variable,
+    is(Value::String(" (70, 70, [(70, 70)]) (900, 900, [(900, 900)])".into())),
+    "/test.gx" => both_sides_escaping_a_deleted_slot(BOTH_SIDES_MODULE, BOTH_SIDES_NAMED),
+    "/test/m.gxi" => BOTH_SIDES_GXI,
+    "/test/m.gx" => BOTH_SIDES_GX;
+    FuseExpect::Jit
+);
+
+run!(
+    both_readers_of_a_deleted_bodys_binding_read_one_variable,
+    is(Value::String(" (70, 70, [(70, 70)]) (900, 900, [(900, 900)])".into())),
+    "/test.gx" => both_sides_escaping_a_deleted_slot(BOTH_SIDES_LETS, BOTH_SIDES_NAMED);
+    FuseExpect::Jit
+);
+
+/// `set0` writes twice at `ep` 5, the cycle before its slot is deleted:
+/// the second write is still waiting at the deletion.
+const A_WRITE_WAITING_AT_THE_DELETION: &str = r#"
+let t = select ep { 5 => 50, _ => never() };
+set0(t);
+set0(t + 10);
+let both = get0(ep)"#;
+
+// A write a deleted body's function made through its binding and that
+// has not landed at the deletion lands on the binding the function
+// keeps, as it does on a plain `let`'s. (A reload drops it:
+// `a_reload_drops_the_replaced_bodys_pending_writes`.)
+run!(
+    a_write_waiting_at_an_interface_modules_deletion_lands,
+    is(Value::String(" 6 56 67 68 69 70 71".into())),
+    "/test.gx" => both_sides_escaping_a_deleted_slot(
+        "mod m; (m::get, m::set, |x: i64| x, |x: i64| -> null null)",
+        A_WRITE_WAITING_AT_THE_DELETION
+    ),
+    "/test/m.gxi" => BOTH_SIDES_GXI,
+    "/test/m.gx" => BOTH_SIDES_GX;
+    FuseExpect::Jit
+);
+
+run!(
+    a_write_waiting_at_a_bodys_deletion_lands,
+    is(Value::String(" 6 56 67 68 69 70 71".into())),
+    "/test.gx" => both_sides_escaping_a_deleted_slot(
+        "let v = 1; let get = |x: i64| x + v; let set = |x: i64| -> null { v <- x; null }; \
+         (get, set, |x: i64| x, |x: i64| -> null null)",
+        A_WRITE_WAITING_AT_THE_DELETION
+    );
+    FuseExpect::Jit
+);
+
 /// A tuple whose first field loads the dynamic module `d` and whose
 /// second is collections that each compile a slot of their own size in
 /// the cycles `d` reloads (every third `ep`). `saved` is the running

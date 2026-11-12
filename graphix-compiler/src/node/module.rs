@@ -1819,7 +1819,7 @@ impl<R: Rt> Module<R> {
 
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<'_, R>) {
         let set_aside = self.set_aside();
-        self.retire(ctx, set_aside)
+        self.retire(ctx, set_aside, false)
     }
 
     /// Take the compiled body out of the module and start its env again
@@ -1850,13 +1850,38 @@ impl<R: Rt> Module<R> {
         self.runs = runs;
     }
 
-    /// Release a set-aside body. Its references go to the runtime, so
-    /// what still holds one keeps it.
-    fn retire(&self, ctx: &mut ExecCtx<'_, R>, body: SetAside<R>) {
+    // CR claude for claude: [bug/medium] A function saved from a dynamic module
+    // whose body dispatches a trait method cannot be first called after a
+    // reload. Ruling D33 (a) makes it a closure over the body it was made in
+    // (escaped-closure-alias-bottom-01), but the retired body's trait went with
+    // it (`Trait::unregister` and `delete` give the definition of record back),
+    // so the late bind logs "binding the callee failed: a run-time bind at
+    // saved(x + ep) did not type: .. T::d not defined" and the call is bottom.
+    // ~/ptmp/cr29/scratch/r21/21r/rev/t/t1.gx (trait and impl in the body),
+    // t2.gx and t3.gx (both declared by the sig), `graphix --no-cache`, all four
+    // modes, base-r22 alike. An instance alive across the reload runs on, and
+    // where the sig declares the impl it dispatches to the NEW body's method
+    // (t2.gx prints `alive=2007` at ep 7: the first body's `make` over the second
+    // body's `d`; t3.gx the same through a trait default), since a body's call
+    // resolves to the declared entry's binding, the val's side, which the new
+    // body joins. That is the answer ruling (a) refused for a `val`. A body-local
+    // type alone is fine (t4.gx). To fix: keep a retired body's trait
+    // definitions and impl entries while a value names its functions, as its
+    // bindings are kept, and bind its dispatch to its own body's methods.
+    // (retired-body-trait-dispatch-01)
+    /// Release a set-aside body, one a `reload` replaced or one deleted
+    /// with its module. Its references go to the runtime, so what still
+    /// holds one keeps it.
+    fn retire(&self, ctx: &mut ExecCtx<'_, R>, body: SetAside<R>, reload: bool) {
         let SetAside { mut env, nodes, proxy, .. } = body;
         for Proxy { inner, outer, .. } in proxy.iter() {
             ctx.unref_var(*inner, self.top_id);
             ctx.unref_var(*outer, self.top_id);
+        }
+        if !reload {
+            for p in proxy.iter().filter(|p| p.private_inner) {
+                ctx.static_callees.keep(p.inner, p.outer)
+            }
         }
         // the body's nodes let go of the variables their bindings are
         // while those still are
@@ -1866,11 +1891,16 @@ impl<R: Rt> Module<R> {
             }
         });
         for Proxy { inner, outer, private_inner } in proxy {
-            if private_inner {
+            if !private_inner {
+                continue;
+            }
+            if reload {
                 // what the body wrote through its binding and has not
                 // landed goes with it, a reference to it alive or not
                 ctx.rt.forget_writes(inner);
                 ctx.static_callees.unjoin(inner, outer)
+            } else {
+                ctx.part_deleted_pair(inner, outer)
             }
         }
         ctx.sync_var_aliases()
@@ -1997,7 +2027,7 @@ impl<R: Rt> Update<R> for Module<R> {
                             failed = Some(errf!(ERR_TAG, "compile error {e:?}"))
                         }
                         Ok(()) => {
-                            self.retire(ctx, set_aside);
+                            self.retire(ctx, set_aside, true);
                             compiled = true
                         }
                     }
@@ -2067,6 +2097,26 @@ impl<R: Rt> Update<R> for Module<R> {
             source.delete(ctx);
         }
         self.clear_compiled(ctx);
+        // CR claude for claude: [bug/medium] A deleted module's interface `impl`s
+        // stay. The loop below deletes the bindings its `val`s declared, but not
+        // the method bindings `bind_sig_item` made for a `SigKind::Impl` (at the
+        // module's `impl` block scope) nor the declared `ImplDef` it registered.
+        // Only an embedder reaches it, by dropping a compiled expression (an
+        // `impl` in a function body is refused, so no slot deletes one). With a
+        // dynamic module's `sig { type C; impl Cast for C; val make: fn(x: i64)
+        // -> C }` the same expression compiled again after the drop is refused,
+        // "conflicting implementation: Cast is already implemented for C"; with
+        // a trait the sig declares itself (`sig { trait Sh { val sh: fn(self) ->
+        // i64 }; type C; impl Sh for C; .. }`) each compile and drop leaves 1
+        // store entry and 2 `by_id` entries (`EnvStats` store_len 481 -> 531,
+        // by_id_len 998 -> 1098 over 50 rounds). The same before
+        // (escaped-closure-alias-bottom-01) deleted the vals. Tests to paste
+        // into lib_tests/leaks.rs: `rev_drop_dynamic_impl_cast` and
+        // `rev_drop_dynamic_impl_trait` in
+        // ~/ptmp/cr29/scratch/r21/21r/rev/leaks_temp.rs. To fix: delete each
+        // declared impl's method bindings here as the vals are and unregister
+        // its entry (`Env::unregister_impl`), then see what a sig's `trait` and
+        // `type` leave. (deleted-module-impl-leak-01)
         for (_, val) in self.sig_binds.iter() {
             ctx.forget_binding(*val);
             ctx.delete_binding(*val)

@@ -245,36 +245,53 @@ the replaced body made through its binding and had not landed, a
 reference to that binding alive or not, while a write made through the
 val waiting across the reload lands on the new body.
 
-**A binding that leaves its join is a variable of its own again**, at
-its body's deletion (a slot of a function whose body declares the
-module) and at its retirement by a reload alike. Where a function value
-or a reference still names it (`Lives::pinned`), it keeps what the
-val's variable held at that moment as its own, that cycle's fire
-included (`ExecCtx::forget_binding`, `RtView::store_own`), and the
-readers registered through it go with it, with the fires they are owed,
-while the writes made through it that had not landed go
+**A binding that leaves its join is a variable of its own again.** It
+leaves at its retirement by a reload, and at its body's deletion (a slot
+of a function whose body declares the module) unless values name both
+it and its val. Where a function value or a reference still names it
+(`Lives::pinned`), it keeps what the val's variable held at that moment
+as its own, that cycle's fire included (`RtView::store_own`), and the
+readers registered through it go with it, with the fires they are owed
 (`GXRt::set_var_aliases`, `alias_reads`). This is the rule of a deleted
 slot (`design/activation_state.md`, Closure lifetimes): the capture is
-kept alive, its initializer no longer runs. So a function saved from a
-module is a closure over the bindings of the body it was made in,
-whenever it is first called. After a reload it reads what that body's
-bindings last held; a write through the val reaches the new body alone,
-and a write through the saved function the retired binding alone. Code
-that wants the new body calls through the module again. A forked branch
-that retires a binding stops naming it the val's there and then, and so
-does each branch that merges it, so a first call later in the reload's
-own cycle reads the retired binding too. The kept value goes with the
-last function value or reference that names the binding
-(`ExecCtx::release_references`), and a deleted module's `val` bindings
-are deleted as a `let`'s are (`ExecCtx::delete_binding`): nothing of a
-module outlives it but what a value still names. Pins: `lang::modules::
+kept alive, its initializer no longer runs.
+
+At a reload (`ExecCtx::forget_binding`) the val goes on as the new
+body's. So a function saved from a module is a closure over the
+bindings of the body it was made in, whenever it is first called, and
+an instance of it alive at the reload is too. After a reload it reads
+what that body's bindings last held; a write through the val reaches
+the new body alone, and a write through the saved function the retired
+binding alone. Code that wants the new body calls through the module
+again. A forked branch that retires a binding stops naming it the val's
+there and then, and so does each branch that merges it, so a first call
+later in the reload's own cycle reads the retired binding too.
+
+At a deletion the val's binding is deleted with the body's, as a
+`let`'s is (`ExecCtx::delete_binding`), and the pair is what one plain
+`let` would be. Where values name each of the two (a function the body
+made and one made outside it over `m::v`), they stay one variable
+(`StaticCallees::keep`, `ExecCtx::part_deleted_pair`): a write through
+either reaches the readers of both. When the last value naming one of
+them goes, the other keeps the variable's value
+(`ExecCtx::release_kept`); until then the orphan collection walks that
+value once, as the val's. Where values name the body's binding alone it
+leaves with the value, and a write made through it that has not landed
+lands on it (`Waiting::move_from`); a reload drops such a write, above.
+
+The kept value goes with the last function value or reference that
+names the binding (`ExecCtx::release_references`): nothing of a module
+outlives it but what a value still names. Pins: `lang::modules::
 a_function_saved_across_a_reload_reads_the_retired_binding`,
 `a_function_first_called_in_its_reloads_cycle_reads_the_retired_binding`,
-`a_function_escaping_a_deleted_interface_module_keeps_its_binding`
-(against `a_function_escaping_a_deleted_body_keeps_its_binding`, the
-same program over plain lets), `lib_tests::leaks::
+`a_function_escaping_a_deleted_interface_module_keeps_its_binding`,
+`both_sides_of_a_deleted_interface_module_stay_one_variable` and
+`a_write_waiting_at_an_interface_modules_deletion_lands` (each against
+the same program over plain lets), `lib_tests::leaks::
 a_function_saved_across_reloads_keeps_nothing_once_dropped`,
-`a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped`
+`a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped`,
+`both_sides_of_deleted_interface_modules_keep_nothing_once_dropped`,
+`a_held_function_outlives_a_collected_reader_of_its_val`
 and graphix-shell's `retired_binding_image` (cold and from an image).
 
 ### A `val`'s type variables

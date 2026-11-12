@@ -164,6 +164,29 @@ impl<T> Waiting<T> {
         }
     }
 
+    /// The writes waiting for the variable `id` that were made through
+    /// the binding `from` wait for `from`, a variable of its own again,
+    /// each alone.
+    pub(super) fn move_from(&mut self, id: &BindId, from: &BindId) {
+        let Some(q) = self.by_id.get_mut(id) else { return };
+        let (mut moved, mut kept): (SmallVec<[_; 1]>, SmallVec<[_; 1]>) =
+            q.q.drain(q.head..)
+                .partition(|w| w.as_ref().is_some_and(|(_, _, by)| by == from));
+        q.q.clear();
+        q.q.append(&mut kept);
+        q.head = 0;
+        if q.is_empty() {
+            self.by_id.remove(id);
+        }
+        for (t, via, _) in moved.drain(..).flatten() {
+            let via = match via {
+                Via::Set(_) => Via::Write,
+                via => via,
+            };
+            self.push(*from, t, via)
+        }
+    }
+
     /// The writes waiting for `id`.
     pub(super) fn waiting(&self, id: &BindId) -> usize {
         self.by_id.get(id).map_or(0, |q| q.q.len() - q.head)
@@ -492,7 +515,7 @@ impl<X: GXExt> Rt for GXRt<X> {
             return;
         }
         held.each_left(&aliases, |inner, outer| {
-            var_updates.forget_from(&outer, &inner);
+            var_updates.move_from(&outer, &inner);
             let Some(moved) = alias_reads.remove(&inner) else { return };
             if let Some(readers) = by_ref.get_mut(&outer) {
                 for (r, n) in moved.iter() {
@@ -746,6 +769,8 @@ mod tests {
         assert_eq!(rt.waiting_writes(&outer), 2);
         rt.set_var_aliases(joined(&[], 2));
         assert_eq!(rt.var_of(inner).id(), inner);
+        assert_eq!((rt.waiting_writes(&outer), rt.waiting_writes(&inner)), (1, 1));
+        rt.forget_writes(inner);
         assert_eq!((rt.waiting_writes(&outer), rt.waiting_writes(&inner)), (1, 0));
         assert_eq!(reads(&rt, inner), [(through.clone(), 2)]);
         assert_eq!(reads(&rt, outer), [(direct.clone(), 1)]);

@@ -25,6 +25,15 @@ async fn await_update(
     eid: ExprId,
     done: impl Fn(&Value) -> bool,
 ) -> Result<()> {
+    await_value(rx, eid, done).await.map(drop)
+}
+
+/// [`await_update`], with the value that satisfied `done`.
+async fn await_value(
+    rx: &mut Events,
+    eid: ExprId,
+    done: impl Fn(&Value) -> bool,
+) -> Result<Value> {
     let timeout = tokio::time::sleep(Duration::from_secs(5));
     tokio::pin!(timeout);
     let mut last = None;
@@ -37,7 +46,7 @@ async fn await_update(
                     if let GXEvent::Updated(id, v) = e && id == eid {
                         let v = graphix_package_core::testing::data(v);
                         if done(&v) {
-                            return Ok(());
+                            return Ok(v);
                         }
                         last = Some(v);
                     }
@@ -353,7 +362,195 @@ async fn a_function_escaping_deleted_interface_modules_keeps_nothing_once_droppe
     Ok(())
 }
 
+/// `ROUNDS` slots of a function whose body declares an interface module
+/// and returns a reader and a writer of each side of its `v`: the
+/// module's own `get` and `set`, and two made outside it over `m::v`.
+/// The test holds each slot's four in root bindings past the slot's
+/// deletion, where the two sides read and write one variable, then drops
+/// one side, the val's and the binding's by turns: the other goes on from
+/// the value they shared, in a call born after the drop.
+async fn both_sides_of_deleted_interface_modules_keep_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    const ROUNDS: i64 = 40;
+    let files = [
+        (
+            "/m.gxi",
+            VfsEntry::from(literal!(
+                "val v: i64; val get: fn(x: i64) -> i64; val set: fn(x: i64) -> null"
+            )),
+        ),
+        (
+            "/m.gx",
+            VfsEntry::from(literal!(
+                "let v = 1; let get = |x: i64| x + v; let set = |x: i64| -> null { v <- x; null }"
+            )),
+        ),
+    ];
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _roots = ctx
+        .rt
+        .compile(literal!(
+            r#"
+            let tick: i64 = 0;
+            let ys: Array<i64> = [];
+            let wv: i64 = never();
+            let sv: i64 = never();
+            let g: fn(x: i64) -> i64 = never();
+            let o: fn(x: i64) -> i64 = never();
+            let s: fn(x: i64) -> null = never();
+            let w: fn(x: i64) -> null = never();
+            let f = |k: i64| {
+                mod m;
+                (m::get, m::set, |x: i64| x + m::v, |x: i64| -> null { m::v <- x; null })
+            };
+            s(sv);
+            w(wv)
+            "#
+        ))
+        .await?;
+    let (e_gone, _gone) =
+        compile_one(&ctx, "(|x: i64| x, |x: i64| -> null null)").await?;
+    let gone = match await_value(&mut rx, e_gone, |_| true).await? {
+        Value::Array(gone) => gone,
+        v => bail!("expected two functions, got {v:?}"),
+    };
+    let (e_slots, _slots) = compile_one(
+        &ctx,
+        "array::map(select tick % 2 { 1 => [tick], _ => [] }, |x| f(x))",
+    )
+    .await?;
+    let (e_probe, _probe) = compile_one(&ctx, "(g(1), o(1))").await?;
+    let (e_late, _late) = compile_one(&ctx, "array::map(ys, |y| (g(y), o(y)))").await?;
+    let mut ids = [BindId::new(); 8];
+    for (id, name) in ids.iter_mut().zip(["tick", "ys", "wv", "sv", "g", "s", "o", "w"]) {
+        *id = root_bind(&ctx, name).await?
+    }
+    let [tick, ys, wv, sv, g, s, o, w] = ids;
+    let empty = |v: &Value| matches!(v, Value::Array(a) if a.is_empty());
+    let late = |a: i64, b: i64| move |v: &Value| matches!(v, Value::Array(s) if s.len() == 1 && is_pair(a, b)(&s[0]));
+    let one = Value::Array([Value::I64(0)].into_iter().collect());
+    let none = Value::Array([].into_iter().collect());
+    let mut early = None;
+    for r in 1..=ROUNDS {
+        ctx.rt.set(tick, 2 * r - 1)?;
+        let born = |v: &Value| matches!(v, Value::Array(a) if a.len() == 1);
+        match await_value(&mut rx, e_slots, born).await? {
+            Value::Array(slots) => match &slots[0] {
+                Value::Array(four) => {
+                    for (id, f) in [g, s, o, w].into_iter().zip(four.iter()) {
+                        ctx.rt.set(id, f.clone())?
+                    }
+                }
+                v => bail!("expected four functions, got {v:?}"),
+            },
+            v => bail!("expected a slot, got {v:?}"),
+        }
+        ctx.rt.set(tick, 2 * r)?;
+        await_update(&mut rx, e_slots, empty).await?;
+        ctx.rt.set(wv, 700 + r)?;
+        ctx.rt.set(ys, one.clone())?;
+        await_update(&mut rx, e_late, late(700 + r, 700 + r)).await?;
+        ctx.rt.set(ys, none.clone())?;
+        await_update(&mut rx, e_late, empty).await?;
+        let val_first = r % 2 == 0;
+        let (first, second) = if val_first { ([o, w], [g, s]) } else { ([g, s], [o, w]) };
+        for (id, f) in first.into_iter().zip(gone.iter()) {
+            ctx.rt.set(id, f.clone())?
+        }
+        let dropped = move |v: &Value| match v {
+            Value::Array(p) => p[val_first as usize] == Value::I64(1),
+            _ => false,
+        };
+        await_update(&mut rx, e_probe, dropped).await?;
+        ctx.rt.set(ys, one.clone())?;
+        let kept = |n: i64| if val_first { late(n, 0) } else { late(0, n) };
+        await_update(&mut rx, e_late, kept(700 + r)).await?;
+        ctx.rt.set(if val_first { sv } else { wv }, 5000 + r)?;
+        await_update(&mut rx, e_late, kept(5000 + r)).await?;
+        ctx.rt.set(ys, none.clone())?;
+        await_update(&mut rx, e_late, empty).await?;
+        for (id, f) in second.into_iter().zip(gone.iter()) {
+            ctx.rt.set(id, f.clone())?
+        }
+        await_update(&mut rx, e_probe, is_pair(1, 1)).await?;
+        if r == 4 {
+            early = Some(held(&ctx).await?)
+        }
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, Some(late), "{mode:?}: grew over {ROUNDS} slots");
+    Ok(())
+}
+
+/// A slot's module holds a recursive `get` over its `v`; the slot's body
+/// holds a recursive `h` over `m::get`, which nothing else names. The
+/// test alone holds `get` past the slot's deletion: `h` is collected, and
+/// `get`, called for the first time cycles later, still reads `v`.
+async fn a_held_function_outlives_a_collected_reader_of_its_val(
+    mode: Mode,
+) -> Result<()> {
+    let files = [
+        ("/m.gxi", VfsEntry::from(literal!("val get: fn(x: i64) -> i64"))),
+        (
+            "/m.gx",
+            VfsEntry::from(literal!(
+                "let v = 1; let rec get = |x: i64| -> i64 select x { n if n > 0 => get(n - 1) + v, _ => 0 }"
+            )),
+        ),
+    ];
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _roots = ctx
+        .rt
+        .compile(literal!(
+            r#"
+            let tick: i64 = 0;
+            let ys: Array<i64> = [];
+            let g: fn(x: i64) -> i64 = never();
+            let f = |k: i64| {
+                mod m;
+                let rec h = |x: i64| -> i64 select x { n if n > 0 => h(n - 1) + m::get(1), _ => 0 };
+                m::get
+            }
+            "#
+        ))
+        .await?;
+    let (e_slots, _slots) = compile_one(
+        &ctx,
+        "array::map(select tick % 2 { 1 => [tick], _ => [] }, |x| f(x))",
+    )
+    .await?;
+    let (e_late, _late) = compile_one(&ctx, "array::map(ys, |y| g(y))").await?;
+    let (tick, ys, g) = (
+        root_bind(&ctx, "tick").await?,
+        root_bind(&ctx, "ys").await?,
+        root_bind(&ctx, "g").await?,
+    );
+    let empty = |v: &Value| matches!(v, Value::Array(a) if a.is_empty());
+    ctx.rt.set(tick, 1i64)?;
+    let born = |v: &Value| matches!(v, Value::Array(a) if a.len() == 1);
+    let get = match await_value(&mut rx, e_slots, born).await? {
+        Value::Array(slots) => slots[0].clone(),
+        v => bail!("expected a slot, got {v:?}"),
+    };
+    for n in 1..=8i64 {
+        ctx.rt.set(tick, 2 * n)?;
+        await_update(&mut rx, e_slots, empty).await?;
+    }
+    ctx.rt.set(g, get)?;
+    ctx.rt.set(ys, Value::Array([Value::I64(3)].into_iter().collect()))?;
+    let three = |v: &Value| matches!(v, Value::Array(a) if a[..] == [Value::I64(3)]);
+    await_update(&mut rx, e_late, three).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
+    both_sides_of_deleted_interface_modules_keep_nothing_once_dropped,
+    a_held_function_outlives_a_collected_reader_of_its_val,
 );

@@ -93,6 +93,12 @@ indicating what went wrong. Regardless of the outcome the previous loaded
 module, if any, will be deleted. If compilation succeeded the new module will be
 initialized, possibly causing values it exports to update.
 
+A function taken out of the module and kept somewhere else (`saved <-
+foo::add`) is the function of the body it was taken from. After a reload it
+still runs that body's code, over that body's bindings as they last stood, and
+it sees nothing of the new module. Code that should follow a reload calls
+through the module each time, `foo::add(x)`.
+
 Obviously the loaded module must match the type signature defined in the dynamic
 mod statement. However, the signature checking only cares that every item
 mentioned in the signature is present in the dynamic module and that the types

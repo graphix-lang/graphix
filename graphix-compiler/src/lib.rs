@@ -2455,12 +2455,45 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     pub(crate) fn forget_binding(&mut self, id: BindId) {
         self.bind_to_lambda.remove(&id);
         self.builtin_bindings.remove(&id);
-        if self.rt.var(id) != id && self.control.lives().pinned(id) {
+        if self.rt.var(id) != id
+            && self.control.lives().pinned(id)
+            && !self.static_callees.kept(id)
+        {
             self.rt.store_own(id)
         }
         self.static_callees.forget(id);
         self.connect_targets.remove(&id);
         self.batch_connect_targets.remove(&id);
+    }
+
+    /// `inner` and the val `outer` it implements, which
+    /// [`StaticCallees::keep`] held through the deletion of `inner`, stay
+    /// one variable where a reference or a function value names each;
+    /// else `inner` leaves, with what the variable holds where one names
+    /// it alone.
+    pub(crate) fn part_deleted_pair(&mut self, inner: BindId, outer: BindId) {
+        let lives = self.control.lives();
+        let named = lives.pinned(inner);
+        if named && lives.pinned(outer) {
+            return;
+        }
+        if named {
+            self.rt.store_own(inner)
+        }
+        self.static_callees.part(inner, outer)
+    }
+
+    /// `id`, released, leaves the pair [`StaticCallees::keep`] held it in:
+    /// a binding it was the variable of that is still named takes what it
+    /// holds.
+    fn release_kept(&mut self, id: BindId) {
+        let Some(inners) = self.static_callees.release_kept(id) else { return };
+        for inner in inners {
+            if self.control.lives().pinned(inner) {
+                self.rt.store_own(inner)
+            }
+        }
+        self.sync_var_aliases()
     }
 
     /// Delete the binding `id`: its name goes, and with it its value and
@@ -2483,8 +2516,11 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         let lives = self.control.lives().clone();
         let rt = &self.rt;
         lives.collect(
+            // a binding that is another's variable holds no value of its
+            // own: the variable's is walked once, as the val's
             |id, f| {
-                if let Some((tv, _)) = rt.store_get(&id)
+                if rt.var(id) == id
+                    && let Some((tv, _)) = rt.store_get(&id)
                     && !tv.tag().is_bottom()
                 {
                     tv.with_value(|v| f(v))
@@ -2497,6 +2533,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             self.cx.env.by_id.remove(&id);
             self.cx.env.poly_binds.remove(&id);
             self.rt.clear_ref_path(&id);
+            self.release_kept(id);
             self.rt.store_release(&id);
         });
     }
@@ -4028,6 +4065,8 @@ struct Holds {
     aside_vars: AHashMap<BindId, u32>,
     /// `joined` as the runtime takes it, as of the change it was read at.
     aliases: branch::VarAliases,
+    /// The bindings of the pairs a deletion keeps ([`StaticCallees::keep`]).
+    kept: IntSet<BindId>,
 }
 
 /// A binding's side of the interface pairs it is in
@@ -4107,17 +4146,54 @@ impl StaticCallees {
 
     /// `inner` and `outer` are no longer one variable.
     pub(crate) fn unjoin(&self, inner: BindId, outer: BindId) {
-        let mut held = self.0.lock();
+        self.0.lock().unjoin(inner, outer);
         self.1.fetch_add(1, Ordering::Relaxed);
-        if matches!(held.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
-            held.joined.remove(&inner);
+    }
+
+    /// `inner` and `outer`, about to be deleted together, stay one
+    /// variable through [`Self::forget`] until [`Self::part`] or
+    /// [`Self::release_kept`].
+    pub(crate) fn keep(&self, inner: BindId, outer: BindId) {
+        let mut held = self.0.lock();
+        held.kept.insert(inner);
+        held.kept.insert(outer);
+    }
+
+    /// Whether `id` is of a pair [`Self::keep`] holds.
+    pub(crate) fn kept(&self, id: BindId) -> bool {
+        self.0.lock().kept.contains(&id)
+    }
+
+    /// `inner` leaves `outer`, a pair [`Self::keep`] held.
+    pub(crate) fn part(&self, inner: BindId, outer: BindId) {
+        self.0.lock().part(inner, outer);
+        self.1.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `id`, a deleted binding whose last name went, leaves the pairs
+    /// [`Self::keep`] held it in: each binding it was the variable of, or
+    /// `None` when it was in none.
+    fn release_kept(&self, id: BindId) -> Option<SmallVec<[BindId; 1]>> {
+        let mut held = self.0.lock();
+        if !held.kept.contains(&id) {
+            return None;
         }
-        if let Some(Side::Outer(inners)) = held.joined.get_mut(&outer) {
-            inners.retain(|id| *id != inner);
-            if inners.is_empty() {
-                held.joined.remove(&outer);
+        let mut inners = SmallVec::new();
+        match held.joined.get(&id) {
+            None => {
+                held.kept.remove(&id);
+            }
+            Some(Side::Inner(outer)) => {
+                let outer = *outer;
+                held.part(id, outer)
+            }
+            Some(Side::Outer(with)) => {
+                inners = with.clone();
+                inners.iter().for_each(|inner| held.part(*inner, id))
             }
         }
+        self.1.fetch_add(1, Ordering::Relaxed);
+        Some(inners)
     }
 
     /// `id` and every binding it is one variable with.
@@ -4217,6 +4293,9 @@ impl StaticCallees {
     pub(crate) fn forget(&self, id: BindId) {
         let mut held = self.0.lock();
         held.calls.remove(&id);
+        if held.kept.contains(&id) {
+            return;
+        }
         let Some(side) = held.joined.remove(&id) else { return };
         self.1.fetch_add(1, Ordering::Relaxed);
         for with in side.with() {
@@ -4293,6 +4372,26 @@ pub(crate) struct StaticHold {
 }
 
 impl Holds {
+    fn part(&mut self, inner: BindId, outer: BindId) {
+        self.kept.remove(&inner);
+        self.unjoin(inner, outer);
+        if !self.joined.contains_key(&outer) {
+            self.kept.remove(&outer);
+        }
+    }
+
+    fn unjoin(&mut self, inner: BindId, outer: BindId) {
+        if matches!(self.joined.get(&inner), Some(Side::Inner(o)) if *o == outer) {
+            self.joined.remove(&inner);
+        }
+        if let Some(Side::Outer(inners)) = self.joined.get_mut(&outer) {
+            inners.retain(|id| *id != inner);
+            if inners.is_empty() {
+                self.joined.remove(&outer);
+            }
+        }
+    }
+
     /// Extend `ids` with every binding one of them is one variable with.
     fn close_over_joins<A: smallvec::Array<Item = BindId>>(&self, ids: &mut SmallVec<A>) {
         let mut i = 0;
