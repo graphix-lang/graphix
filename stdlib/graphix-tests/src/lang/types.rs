@@ -2561,6 +2561,16 @@ run!(
     "#
 ; FuseExpect::None);
 
+// The refusal names the first unused parameter as written.
+run!(
+    typedef_unused_parameter_named_in_order,
+    refused("unused type parameter 'b in definition of D"),
+    "/test.gx" => r#"
+        type D<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h> = [`W('a), `Z];
+        let result = 0
+    "#
+; FuseExpect::None);
+
 // An array whose last element is empty converts element by element.
 const CAST_ARRAY_TO_LIST: &str = r#"{
   let a: Array<Array<i64>> = [[1], []];
