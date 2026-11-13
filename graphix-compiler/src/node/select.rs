@@ -1112,7 +1112,8 @@ impl Reach {
 
     /// The composite atom `sp`, whose predicate is `at`, against the
     /// nested ladders: true (`checking`) when at each member it can match
-    /// one of its slices matches only lengths earlier arms claimed there;
+    /// one of its slices matches only lengths earlier arms claimed there,
+    /// on a ladder whose member holds it;
     /// else, `unguarded`, it claims its lengths of each member it holds
     /// where one slice is all it refutes by, covering a member it completes.
     /// A member stands as `sp`'s shape narrows it: less what a position
@@ -1140,13 +1141,23 @@ impl Reach {
             let m = inner.narrowed.unwrap_or(m);
             if dead_check && at.could_match(env, &m)? {
                 any = true;
-                all &= slices.iter().any(|s| {
-                    self.nested.iter().any(|l| {
-                        l.ladder.member == m
-                            && l.path == s.path
+                let mut claimed = false;
+                'slices: for s in slices.iter() {
+                    for l in self.nested.iter() {
+                        if l.path == s.path
                             && l.ladder.covers(s.len.0, s.len.1)
-                    })
-                });
+                            && l.ladder.member.contains_with_flags(
+                                BitFlags::empty(),
+                                env,
+                                &m,
+                            )?
+                        {
+                            claimed = true;
+                            break 'slices;
+                        }
+                    }
+                }
+                all &= claimed;
             }
             if unguarded
                 && inner.only

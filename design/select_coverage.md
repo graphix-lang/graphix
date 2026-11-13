@@ -40,8 +40,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   a tuple of names over `[(i64, i64), i64]` does not), and its predicate
   holds the member; an
   arm is dead where at each member it can match one of its slices
-  matches only lengths claimed at that path (`([a, b, ..], _)` after
-  `([a, ..], _)`), and a complete ladder covers its member; exact-length slice arms pool their elements' heads per length
+  matches only lengths claimed at that path, on a ladder whose member
+  holds the member as the arm narrows it (`([a, b, ..], _)` after
+  `([a, ..], _)`; `` `A([(a, b), ..]) `` after `` `A([h, ..]) `` over
+  `` `A([Array<(i64, i64)>, Array<string>]) ``), and a complete ladder
+  covers its member; exact-length slice arms pool their elements' heads per length
   (`[true]` with `[false]` claims length 1); a `null` literal covers `null`, a
   constructor at a union position the members it takes, and a written test
   over a closed type the part of it its structure takes

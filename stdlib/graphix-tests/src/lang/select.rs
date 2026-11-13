@@ -872,6 +872,49 @@ run!(
     FuseExpect::None
 );
 
+// An arm whose shape narrows the member more than the arms before it did is
+// dead where their ladder holds what it narrows to: the tuple element leaves
+// out the `Array<string>` the names claimed beside it, with a null left out
+// by both and without one. Claimed the other way round, the names' arm still
+// takes the strings.
+run!(
+    nested_slice_narrowed_arm_behind_a_wider_ladder_refused,
+    r#"{
+  let f = |x: [`A([Array<(i64, i64)>, Array<string>])]| select x {
+    `A([h, ..]) => 1, `A([(a, b), ..]) => 2, `A([]) => 0
+  };
+  f(`A([]))
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_narrowed_arm_behind_a_wider_narrowed_ladder_refused,
+    r#"{
+  let f = |x: [`A([Array<(i64, i64)>, Array<string>, null])]| select x {
+    `A([h, ..]) => 1, `A([(a, b), ..]) => 2, `A([]) => 0, `A(null) => 3
+  };
+  f(`A([]))
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_narrowed_arm_before_a_wider_ladder,
+    r#"{
+  let f = |x: [`A([Array<(i64, i64)>, Array<string>, null])]| select x {
+    `A([(a, b), ..]) => a + b, `A([h, ..]) => 10, `A([]) => 0, `A(null) => 20
+  };
+  [f(`A([(1, 2)])), f(`A(["s"])), f(`A([])), f(`A(null))]
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 10, 0, 20])
+    };
+    FuseExpect::Jit
+);
+
 run!(
     nested_slice_ladder_union_position_other_member_missing_refused,
     r#"{
