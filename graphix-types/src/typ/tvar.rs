@@ -3893,6 +3893,33 @@ impl Type {
     // toward this signature's own names: a quantifier base-r23 counted held
     // only through a captured bound is now refused as not held. probes:
     // ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/review/partition_diffs.tsv
+    // 2026-11-12 claude: Fixed in b472d086d and reverted in review (816b44254).
+    // That fix had FnType::held_through_bounds find the quantifiers a signature
+    // holds only through a bound, and Passing::Held pass their bounds in the
+    // alias walk and in free_cells. It got the cells and the printing right,
+    // but it is exponential outside a parse. There is no DECLARED record there,
+    // and the FREE memo does not hit under the CONSTRAINING guard, so each
+    // level computes the next level's free_cells twice: once in held_cells'
+    // search, and once in the conjunct pass or the position walk.
+    // instructions:u of --no-cache --check of nestbb-16.gx (the shape of the
+    // fix's own pin nested_by_bound_of_bound_naming_outer, 16 deep) was 756M on
+    // base-r23 and 3518M on the fix, doubling with each level (14 deep: 763M
+    // with the closure off). fmt --stdout of the same shape 40 deep was killed
+    // at 120 s, where base-r23 takes 41M. posch-14.gx (each level's quantifier
+    // held only through the next level's bound) went from 755M to 1915M. The
+    // profile runs Bind::compile, Type::rewrite_written,
+    // FnType::constraint_view, then free_cells and held_through_bounds nested.
+    // The fix's linear-steps pin measures the parse alone, and held_cells
+    // counts no TVAR_WALK_STEPS. A fix needs a search that walks each nested
+    // signature once outside a parse too: a memo of the search that holds under
+    // the walk's guards, or the held set recorded on the FnType at its
+    // declaration. It also needs a steps pin for constraint_view or
+    // collect_tvars of these nests 8 and 16 deep, beside the parse pins. Its
+    // census, 2962 files, had 0 changes. On 4000 gen3.py nests its fmt outcomes
+    // moved as follows: five newly refused as genuine self-reaching bounds, one
+    // newly printed right, and g01880 went from refused as a formatter bug to
+    // rewritten by the capture of (nested-quantifier-capture-01). probes:
+    // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/review/ (README)
     // CR claude for claude: [bug/low] An enclosing declaration's alias walk
     // captures a variable across signatures. Walking a nested quantified
     // signature, it passes the conjuncts of every cell that signature's
