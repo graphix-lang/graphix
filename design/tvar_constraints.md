@@ -1842,8 +1842,34 @@ a written one is. So where the containment fails, the instance's copy
 takes each cell from what stands at its own place in the instance's
 signature, wherever the two are built alike (`Type::place_cells`: a named
 type's parameters, an array's element, a tuple's, a struct's, a function's
-positions; a union's members have no places; a place holding ⊥ gives its
-cell ⊥), and the containment then judges the whole (`FnType::held_at`).
+positions; a place holding ⊥ gives its cell ⊥), and the containment then
+judges the whole (`FnType::held_at`).
+A union's members have places only where the instance's union stands
+member for member beside the definition's, as a copy of it does: as many
+members, in the definition's order, each built by its member's
+constructor, an open cell's being whatever stands there
+(`fntyp::members_stand_alike`). A cell takes such a place only where no
+place of its own binds it, since a union that reached the instance some
+other way (a written function type the definition was passed as) may hold
+its members in another order (unit test
+`typ::fntyp::tests::a_cell_takes_a_members_place_after_its_own`). That is
+what gives a cell only unions hold
+the ⊥ a call left it at, which no containment of the union finds: `|x:
+P<'a, string>, y: O<'a>|` over `type P<'p, 'q> = [Array<'p>, Array<'q>]`
+and `type O<'t> = ['t, null]`, called through `|u, v| f(u, v)` with `["s"]`
+and `null`, is held at `[Array<string>, Array<⊥>]` and `[null, ⊥]`, where
+the containment gives `Array<'a>` to the decided `Array<string>` and then
+finds no member of `[null, ⊥]` for a string (pins
+`lang::types::instance_cell_only_union_members_hold_takes_its_members_place`,
+`instance_cell_under_a_recursive_typedefs_members_takes_its_members_place`,
+`instance_cells_under_a_unions_member_take_a_typedefs_arguments`).
+A function an instance defines takes its signature from its row of the
+enclosing definition's check the same way: its cells are placed at the
+row, then the containment judges (`Lambda::typecheck0_instance`). The
+containment alone would give `Array<'a>` of `|x0: P<'a, string>, x1: 'a|`
+to the row's `Array<string>`, and the build would refuse every call of
+the inner function at another `'a` (pins
+`lang::types::function_defined_in_an_instance_holds_a_variable_{beside_a_written_member,in_a_written_union,no_argument_decides}`).
 Where that still has to choose, the cells no position holds, a variable
 only bounds name, are first settled to their bounds, the deepest first
 (`TVar::settle_bounds_first`), as the call's check leaves a variable it

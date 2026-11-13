@@ -3514,7 +3514,7 @@ impl Type {
                 tr0.hold_bounds_with(tr1, env, commit)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // CR claude for claude: [bug/medium] Since typedef-param-equality-01
+                // XCR claude for claude: [bug/medium] Since typedef-param-equality-01
                 // dropped the recursive escape below, a build refuses what the check
                 // accepts. Over `type G<'a> = [Error<G<['a, string]>>, Error<G<'a>>,
                 // `X('a)]` and its textual twin H, `let f = |x: G<'b>| -> H<'b> x; let g =
@@ -3552,6 +3552,48 @@ impl Type {
                 // decided-arg-waits-01's differential, the only check/build splits it found
                 // (also inside a nested function, g3/f0207_nest_p0.gx). probes:
                 // ~/ptmp/cr29/scratch/r21/21t/d32/ois/{o5,o9,o1,o6,o7}.gx
+                // 2026-11-12 claude: All three programs build (u5min.gx, o5.gx; o5_p00764.gx
+                // already built on the lane since inst-bare-union-never-01's ordered
+                // placing; base-r23 refused all three). Each cell the instance could not
+                // hold stands only among the members of unions, and the call's check left it
+                // at ⊥ or decided it elsewhere: FnType::held_at placed no cell under a
+                // union, and the containment gave Array<'a> to the decided member
+                // Array<string> of [Array<string>, Array<_>], then found no member of [null,
+                // _] for a string. Now a union's members have places where the instance's
+                // union stands member for member beside the definition's, as a copy of it
+                // does (fntyp::members_stand_alike), and a cell takes one only where no
+                // place of its own binds it (fntyp::Place). Pins, all four modes each,
+                // failing with fntyp.rs at its parent:
+                // lang::types::instance_cell_only_union_members_hold_takes_its_members_place
+                // (o5),
+                // instance_cell_under_a_recursive_typedefs_members_takes_its_members_place
+                // (u5min), instance_cells_under_a_unions_member_take_a_typedefs_arguments
+                // (lane 23a's au4.gx, a union over a tuple of two applications of one
+                // typedef); unit test
+                // typ::fntyp::tests::a_cell_takes_a_members_place_after_its_own fails with
+                // member places taken in signature order. Left as it was: under
+                // GRAPHIX_NO_SUBST=1 the wrapper's own check of its body still refuses o5.gx
+                // and u5min.gx (it gives Array<'a> to the first of the two decided
+                // members, undecided-into-two-decided-01's choice; before and after alike).
+                // probes: ~/ptmp/cr29/scratch/r23/23b/ois/
+                // 2026-11-12 claude: A second cause, found by this fix's differential (112
+                // of 3000 generated programs still split, all with the function defined
+                // inside another): a function an instance defines took its signature from
+                // its row of the enclosing definition's check by containment alone
+                // (Lambda::typecheck0_instance), which gave Array<'a> of |x0: P<'a, string>,
+                // x1: 'a| to the row's Array<string> and so bound the inner definition's own
+                // 'a to string: 'let o = |t| { let f = |x0: P<'a, string>, x1: 'a| (x0, x1);
+                // f(["s"], 1) }; o(1)' passed --check and failed 'an instance at fn(x0:
+                // P<i64, string>, x1: i64) -> .. of a definition typed fn(x0: P<'a: string,
+                // string>, x1: 'a: string) -> ..', with every argument decided, on base-r23
+                // alike. The signature's cells are now placed at the row first
+                // (Type::place_cells), then contained. Pins, failing in all four modes with
+                // that line removed:
+                // lang::types::function_defined_in_an_instance_holds_a_variable_beside_a_written_member,
+                // .._in_a_written_union, .._no_argument_decides. After both: 0 of 3000
+                // (genm.py seed 1) pass the check and fail the build, 344 newly build, none
+                // newly refused. inst-bound-second-conjunct-01's probes (z14, z20) fail as
+                // before. probes: ~/ptmp/cr29/scratch/r23/23b/ois/nest/
                 if let (Self::Ref(tr0), Self::Ref(tr1)) = (t0, t1)
                     && tr0.same_definition(tr1, env)
                     && tr0.params.len() == tr1.params.len()

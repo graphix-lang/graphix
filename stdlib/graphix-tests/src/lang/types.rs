@@ -8759,6 +8759,74 @@ run!(
     FuseExpect::Jit
 );
 
+// A cell only the members of unions hold takes what stands at its
+// member's place, where the instance's union stands member for member
+// beside the definition's: the ⊥ the call's check left it, which no
+// member of either union would take by containment.
+run!(
+    instance_cell_only_union_members_hold_takes_its_members_place,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  type O<'t> = ['t, null];
+  let f = |x: P<'a, string>, y: O<'a>| (x, y);
+  let g = |u, v| f(u, v);
+  g(["s"], null)
+}"#,
+    prints(r#"[["s"], null]"#)
+);
+run!(
+    instance_cell_under_a_recursive_typedefs_members_takes_its_members_place,
+    r#"{
+  type G<'a> = [Error<G<['a, string]>>, Error<G<'a>>, `X('a)];
+  type H<'a> = [Error<H<['a, string]>>, Error<H<'a>>, `X('a)];
+  let f = |x: G<'b>| -> H<'b> x;
+  let g = |y| f(y);
+  let z = g(never());
+  7
+}"#,
+    is(Value::I64(7))
+);
+run!(
+    instance_cells_under_a_unions_member_take_a_typedefs_arguments,
+    r#"{
+  type R<'p, 'q, 'r> = [Array<'p>, Array<'q>, 'r];
+  let f = |y: [(R<'a, 'c, 'b>, R<'a, 'b, 'c>), null], z: 'c| y;
+  f((["s"], 1), 2)
+}"#,
+    prints(r#"[["s"], i64:1]"#)
+);
+
+// A function an instance defines takes its signature's cells from its
+// definition's check place by place: a variable beside a written member
+// of one constructor is not given that member's type.
+run!(
+    function_defined_in_an_instance_holds_a_variable_beside_a_written_member,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let o = |t| { let f = |x0: P<'a, string>, x1: 'a| (x0, x1); f(["s"], 1) };
+  o(1)
+}"#,
+    prints(r#"[["s"], i64:1]"#)
+);
+run!(
+    function_defined_in_an_instance_holds_a_variable_in_a_written_union,
+    r#"{
+  let o = |t| { let f = |x0: [Array<'a>, Array<string>], x1: ['a, null]| (x0, x1); f(["s"], 1) };
+  o(1)
+}"#,
+    prints(r#"[["s"], i64:1]"#)
+);
+run!(
+    function_defined_in_an_instance_holds_a_variable_no_argument_decides,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  type O<'t> = ['t, null];
+  let o = |t| { let f = |x0: P<'a, string>, x1: O<'a>| (x0, x1); f(["s"], null) };
+  o(1)
+}"#,
+    prints(r#"[["s"], null]"#)
+);
+
 // An alias that adds a member, applied to a variable under an invariant
 // constructor: an argument written as the alias over a type that already
 // holds the member gives the variable that type, and the instance holds

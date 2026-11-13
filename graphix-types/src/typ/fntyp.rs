@@ -34,6 +34,7 @@ use std::{
     collections::{VecDeque, hash_map::Entry},
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
+    mem::discriminant,
     ops::{ControlFlow, Range},
     sync::{Arc as SArc, Weak},
     thread::LocalKey,
@@ -2668,6 +2669,53 @@ mod tests {
         }
     }
 
+    /// A cell a union's member holds takes what stands at that member's
+    /// place where the two unions stand member for member, and its own
+    /// place first where it has one, whichever the signature holds first.
+    #[test]
+    fn a_cell_takes_a_members_place_after_its_own() {
+        use crate::{
+            env::Env,
+            typ::{PrintFlag, format_with_flags},
+        };
+        let env = Env::default();
+        let placed = |own: &str, at: &str| {
+            let own = parse_fn_type(own).unwrap();
+            own.place_cells(&env, &parse_fn_type(at).unwrap());
+            format_with_flags(PrintFlag::DerefTVars, || {
+                own.args.iter().map(|a| a.typ.to_string()).collect::<Vec<_>>().join("; ")
+            })
+        };
+        assert_eq!(
+            placed(
+                "fn(x: [Array<'a>, null], y: [{v: 'b}, null]) -> i64",
+                "fn(x: [Array<string>, null], y: [{v: _}, null]) -> i64"
+            ),
+            "[null, Array<'a: string>]; [null, { v: 'b: _ }]"
+        );
+        assert_eq!(
+            placed(
+                "fn(x: [Array<'a>, null], y: 'a) -> i64",
+                "fn(x: [Array<string>, null], y: [i64, string]) -> i64"
+            ),
+            "[null, Array<'a: [i64, string]>]; 'a: [i64, string]"
+        );
+        assert_eq!(
+            placed(
+                "fn(x: [Array<'a>, null]) -> i64",
+                "fn(x: [Array<string>, i64]) -> i64"
+            ),
+            "[null, Array<'a: unbound>]"
+        );
+        assert_eq!(
+            placed(
+                "fn(x: [Array<'a>, null]) -> i64",
+                "fn(x: [Array<string>, null, i64]) -> i64"
+            ),
+            "[null, Array<'a: unbound>]"
+        );
+    }
+
     /// The refusal names the first variable declared whose bound reaches
     /// it, by the shortest path back its bounds' names lead to first:
     /// what a breadth-first walk from each variable in turn finds.
@@ -3293,13 +3341,23 @@ fn place_cell(env: &Env, tv: &TVar, at: &Type) {
     }
 }
 
+/// Where a signature holds a cell: at a position of its own, or among the
+/// members of a union.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Own,
+    Member,
+}
+
 /// Bind each open cell `places` gives to what stands at its place, each
 /// after the open cells its bounds hold, at any depth: a cell a bound
 /// holds takes its own place, not what the bound's holder is placed at.
-fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(&TVar, &Type))) {
+/// A cell takes a member's place only where no place of its own binds it.
+fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(Place, &TVar, &Type))) {
     struct Order<'a> {
         env: &'a Env,
         at: LPooled<AddrMap<SmallVec<[Type; 1]>>>,
+        among: LPooled<AddrMap<SmallVec<[Type; 1]>>>,
         seen: LPooled<AddrSet>,
     }
     impl Order<'_> {
@@ -3315,29 +3373,60 @@ fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(&TVar, &Type))) 
                     });
                 }
             });
-            for at in self.at.remove(&tv.cell_addr()).iter().flatten() {
+            let (own, member) =
+                (self.at.remove(&tv.cell_addr()), self.among.remove(&tv.cell_addr()));
+            for at in own.iter().chain(member.iter()).flatten() {
                 place_cell(self.env, tv, at)
             }
         }
     }
-    let mut order = Order { env, at: LPooled::take(), seen: LPooled::take() };
+    let mut order =
+        Order { env, at: LPooled::take(), among: LPooled::take(), seen: LPooled::take() };
     let mut cells: LPooled<Vec<TVar>> = LPooled::take();
-    places(&mut |tv, at| {
-        let ats = order.at.entry(tv.cell_addr()).or_default();
-        if ats.is_empty() {
+    places(&mut |place, tv, at| {
+        let addr = tv.cell_addr();
+        if !order.at.contains_key(&addr) && !order.among.contains_key(&addr) {
             cells.push(tv.clone())
         }
-        ats.push(at.clone())
+        let ats = match place {
+            Place::Own => &mut order.at,
+            Place::Member => &mut order.among,
+        };
+        ats.entry(addr).or_default().push(at.clone())
     });
     for tv in cells.iter() {
         order.place(tv)
     }
 }
 
+/// Whether the union `at` holds a member for each member of `own`, in
+/// `own`'s order, as a copy of `own` does: an open cell's is whatever
+/// stands there, any other member's is built by the same constructor.
+fn members_stand_alike(own: &[Type], at: &[Type]) -> bool {
+    let alike = |own: &Type, at: &Type| {
+        own.with_deref(|own| match own {
+            None => true,
+            Some(own) => at.with_deref(|at| {
+                at.is_some_and(|at| match (own, at) {
+                    (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
+                    (Type::Variant(n0, a0, _), Type::Variant(n1, a1, _)) => {
+                        n0 == n1 && a0.len() == a1.len()
+                    }
+                    (Type::Tuple(a0), Type::Tuple(a1)) => a0.len() == a1.len(),
+                    (own, at) => discriminant(own) == discriminant(at),
+                })
+            }),
+        })
+    };
+    own.len() == at.len() && own.iter().zip(at.iter()).all(|(own, at)| alike(own, at))
+}
+
 impl Type {
     /// Bind each open cell of `self` to what stands at its place in `at`,
     /// ⊥ included, wherever the two types are built alike
-    /// ([`place_in_order`]). A union's members have no places: a cell they
+    /// ([`place_in_order`]). A union's members have places where `at`'s
+    /// union stands member for member beside it
+    /// ([`members_stand_alike`]); a cell the members of any other union
     /// alone hold is left open.
     pub fn place_cells(&self, env: &Env, at: &Self) {
         place_in_order(env, |f| self.for_each_place(env, at, f))
@@ -3345,15 +3434,25 @@ impl Type {
 
     /// Each open cell of `self` with what stands at its place in `at`,
     /// wherever the two types are built alike.
-    fn for_each_place(&self, env: &Env, at: &Self, f: &mut dyn FnMut(&TVar, &Self)) {
+    fn for_each_place(
+        &self,
+        env: &Env,
+        at: &Self,
+        f: &mut dyn FnMut(Place, &TVar, &Self),
+    ) {
         crate::stack::ensure_sufficient(|| match (self, at) {
             (Self::TVar(tv), _) => match tv.binding() {
                 Some(b) => b.for_each_place(env, at, f),
-                None => f(tv, at),
+                None => f(Place::Own, tv, at),
             },
             (_, Self::TVar(tv)) => {
                 if let Some(b) = tv.binding() {
                     self.for_each_place(env, &b, f)
+                }
+            }
+            (Self::Set(own), Self::Set(at)) if members_stand_alike(own, at) => {
+                for (own, at) in own.iter().zip(at.iter()) {
+                    own.for_each_place(env, at, &mut |_, tv, at| f(Place::Member, tv, at))
                 }
             }
             (Self::Set(_), _) | (_, Self::Set(_)) => (),
@@ -3377,7 +3476,12 @@ impl Type {
 
 impl FnType {
     /// [`Type::for_each_place`] over two signatures, position by position.
-    fn for_each_place(&self, env: &Env, at: &Self, f: &mut dyn FnMut(&TVar, &Type)) {
+    fn for_each_place(
+        &self,
+        env: &Env,
+        at: &Self,
+        f: &mut dyn FnMut(Place, &TVar, &Type),
+    ) {
         for (own, at) in self.align(at).0 {
             own.typ.for_each_place(env, &at.typ, f)
         }
@@ -3393,11 +3497,11 @@ impl FnType {
         place_in_order(env, |f| self.for_each_place(env, at, f))
     }
 
-    /// Place the cells whose bounds hold no open cell
-    /// ([`decides_others`]), which decide no other.
+    /// Place, each at a place of its own, the cells whose bounds hold no
+    /// open cell ([`decides_others`]), which decide no other.
     fn place_free_cells(&self, env: &Env, at: &Self) {
-        self.for_each_place(env, at, &mut |tv, at| {
-            if !decides_others(tv) {
+        self.for_each_place(env, at, &mut |place, tv, at| {
+            if place == Place::Own && !decides_others(tv) {
                 place_cell(env, tv, at)
             }
         })
@@ -3435,6 +3539,25 @@ impl FnType {
     // cell's one conjunct. Found reviewing open-param-let-arg-01 (gen2.py, 1 of 1584:
     // lam_nul_len_post_holdx). probes: ~/ptmp/cr29/scratch/r23/23b/opl/z/{z14,z20,z15,z19,z8}.gx
     // (inst-bound-second-conjunct-01)
+    // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
+    // where a chain of two bounds relates three parameters and two arguments hold an
+    // undecided element: `let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1,
+    // x2: 'a2| (x0, x1, x2); f((1, 1), (1, never()), (never(), 1))` passes `--check` and
+    // the run fails "an instance at fn(x0: (i64, i64), x1: (i64, i64), x2: (_, i64)) -> ..
+    // of a definition typed fn<'a0: [null, 'a1: ..], 'a1: [null, 'a2: unbound]>(..)". No
+    // copy of the signature holds that instance: 'a1 is (i64, i64) and its bound [null,
+    // 'a2] is [null, (_, i64)]. The call's check left the first element of x2 at ⊥ where
+    // 'a1's bound gives it the lower bound i64; x1's second element, which x0 decides, is
+    // i64. With one bound (`'a1: ['a2, null] |x: 'a1, y: 'a2|`) the check refuses the same
+    // two arguments, "'a2: (i64, _) does not contain (_, i64)". A second form: `'a3:
+    // [Array<'a4>, duration], 'a1: [Array<'a2>, string], 'a4: Any, 'a2: [('a3, bool),
+    // bool] |x1: 'a1, x2: 'a2, x3: 'a3| 7` called with `[(never(), true)], (duration:1.s,
+    // true), [never()]` is held at x2: (duration, bool), x3: Array<Any>, where 'a2's bound
+    // needs 'a3 to hold duration. base-r23 alike. Not looked into: the first suspect is the
+    // call's settle of a cell whose lower bound came through a quantifier's bound. Found by
+    // open-instance-signature-01's differential (2 of the 3000 programs of lane 23b's
+    // ibun-rev/rgen.py and rgen2.py at seed 7). probes:
+    // ~/ptmp/cr29/scratch/r23/23b/ois/new/{p8,p3,q7}.gx (bound-chain-lower-settle-01)
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
     /// the instance's own and bound to the instance's type. Where the

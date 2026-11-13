@@ -3070,6 +3070,7 @@ impl<R: Rt> Update<R> for Lambda {
         };
         {
             let _at = AtLevel::enter(level);
+            self.typ.place_cells(&ctx.env, &row);
             if let (Type::Fn(own), Type::Fn(row)) = (&self.typ, &row) {
                 row.pre_unify_params(&ctx.env, own).at(&self.spec)?;
             }
