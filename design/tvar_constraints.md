@@ -714,11 +714,20 @@ those parts is the bind's own cell, a member the arm's pattern gave the
 scrutinee, the bind holds the others as that member's part does, so each
 open cell among them is that cell and what is left binds it. A member is
 read through a copy of the arm's predicate, but a cell the member holds
-at the same part as the predicate, outside any union, is not copied: it
+at the same part as the predicate, alone there, is not copied: it
 is its own part of that member, and a copy, which carries the cell's
 lower bounds, would merge back into it and leave them there twice, at
 every arm and member (a part four arms bind over an undecided payload,
-`B((2, x))`). The
+`B((2, x))`). A union of the one cell is that cell alone: a slice's
+elements and rest, `Array<['e, 'e, 'e]>`, once an arm made them one. A
+copy holds one cell for each open cell of the predicate, however many
+forward links lead to it (a cell an earlier member's copy took forwards
+to that copy's), so the links to a cell grow by the pairs narrowed,
+never by a factor at each arm, and the check of a ladder of slice arms
+costs what its arms hold (pins
+`lang::types::slice_arms_over_an_unannotated_parameter_copy_no_chain_of_cells`,
+units `narrowing_slice_arms_over_their_one_cell_copies_nothing`,
+`narrowing_nested_slice_arms_copies_no_chain_of_links`). The
 elements of the arms' slices share a cell that way, and so do the arms'
 binds of another part of a tuple or a struct, however many arms bind it
 (`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..`), literal arms'

@@ -4825,7 +4825,9 @@ impl Type {
     /// of self that is itself a member's part (self typed the scrutinee)
     /// holds the other parts as that member's part: each open cell among
     /// them is that cell, and it takes the union of the rest. Such a cell
-    /// is not copied for the member that holds it at the same part.
+    /// is not copied for the member that holds it alone at the same part,
+    /// and a copy holds one cell for each open cell of self, whatever
+    /// forwards to it.
     pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
         self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
@@ -4883,9 +4885,28 @@ impl Type {
                 }
             })
         }
+        // whether `t` is one open cell and nothing else, `of`: that cell, or
+        // a union of it alone, through its bindings and nested unions
+        fn one_cell(t: &Type, seen: &mut AddrSet, of: &mut Option<TVar>) -> bool {
+            ensure_sufficient(|| {
+                if let Type::TVar(tv) = t {
+                    if let Some(o) = tv.open_cell() {
+                        return of.get_or_insert_with(|| o.clone()).same_cell(&o);
+                    }
+                    if !seen.insert(tv.cell_addr()) {
+                        return true;
+                    }
+                }
+                match &t.deref_cloned() {
+                    Some(Type::Set(ms)) => ms.iter().all(|m| one_cell(m, seen, of)),
+                    _ => false,
+                }
+            })
+        }
         // maps to itself each open cell of `alt` that `m` holds at the same
-        // part, outside any union: it is its own part of `m`, where a copy
-        // would merge back into it and leave it its lower bounds twice
+        // part, alone there: it is its own part of `m`, where a copy would
+        // merge back into it and leave it its lower bounds twice. A slice's
+        // elements and rest that are one cell are that cell alone.
         fn own_parts(
             env: &Env,
             m: &Type,
@@ -4894,11 +4915,13 @@ impl Type {
             known: &mut AHashMap<usize, TVar>,
         ) -> Result<()> {
             ensure_sufficient(|| {
-                if let Type::TVar(a) = alt
-                    && let Some(a) = a.open_cell()
+                let mut a = None;
+                if one_cell(alt, &mut LPooled::take(), &mut a)
+                    && let Some(a) = a
                 {
-                    if let Type::TVar(t) = m
-                        && t.open_cell().is_some_and(|t| t.same_cell(&a))
+                    let mut held = None;
+                    if one_cell(m, &mut LPooled::take(), &mut held)
+                        && held.is_some_and(|h| h.same_cell(&a))
                     {
                         known.insert(a.cell_addr(), a);
                     }
@@ -4938,6 +4961,7 @@ impl Type {
         open(self, &mut LPooled::take(), &mut cells);
         let mut parts: SmallVec<[Option<SmallVec<[Type; 4]>>; 8]> =
             cells.iter().map(|_| Some(SmallVec::new())).collect();
+        let mut ends: SmallVec<[TVar; 8]> = SmallVec::new();
         let mut alts: SmallVec<[Type; 8]> = SmallVec::new();
         crate::expr::union_members(env, self, &mut alts)?;
         if alts.is_empty() {
@@ -4950,13 +4974,34 @@ impl Type {
                 }
                 let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                 own_parts(env, m, alt, &mut LPooled::take(), &mut known)?;
+                // an open cell is copied before the vars that forward to it,
+                // which then name its copy: no chain of links is copied
+                open(alt, &mut LPooled::take(), &mut ends);
+                for e in ends.drain(..) {
+                    let _ = Type::TVar(e).reset_tvars_int(&mut known, Fresh::Copy);
+                }
                 let copy = alt
                     .reset_tvars_int(&mut known, Fresh::Copy)
                     .unwrap_or_else(|| alt.clone());
                 // read before the narrowing, which may move a cell of self the
-                // member holds into its copy's
-                let copies: SmallVec<[Option<TVar>; 8]> =
-                    cells.iter().map(|c| known.get(&c.cell_addr()).cloned()).collect();
+                // member holds into its copy's; a cell of self an earlier
+                // member's copy took forwards to that copy's, and its copy to
+                // the copy of that
+                let copies: SmallVec<[Option<TVar>; 8]> = cells
+                    .iter()
+                    .map(|c| match known.get(&c.cell_addr()) {
+                        Some(f) => Some(f.clone()),
+                        None => {
+                            let end = c.open_cell()?;
+                            let f = known.get(&end.cell_addr())?;
+                            (!f.same_cell(&end)).then(|| {
+                                let link = c.fresh_copy();
+                                link.bind(Type::TVar(f.clone()));
+                                link
+                            })
+                        }
+                    })
+                    .collect();
                 if !m.narrow_member(env, &copy, walk)? {
                     continue;
                 }

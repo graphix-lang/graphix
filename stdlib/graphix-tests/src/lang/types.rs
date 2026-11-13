@@ -7542,6 +7542,98 @@ run!(
 }"#,
     prints("[i64:1, i64:0, i64:3, i64:0]")
 );
+/// The cells bound to another cell that the type of `name` reaches after
+/// the check of `code`.
+async fn forward_links(code: &str, name: &str) -> Result<usize> {
+    use ahash::AHashMap;
+    use graphix_compiler::{Scope, expr::ModPath, typ::Type};
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _c = ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
+    let env = ctx.rt.get_env().await?;
+    let (_, bind) = env
+        .lookup_bind(&Scope::root().lexical, &ModPath::from_iter([name]))?
+        .ok_or_else(|| anyhow::anyhow!("{name} not in scope"))?;
+    let mut cells = AHashMap::default();
+    bind.typ.reached_cells(&mut cells);
+    let links =
+        cells.values().filter(|c| matches!(c.binding(), Some(Type::TVar(_)))).count();
+    ctx.shutdown().await;
+    Ok(links)
+}
+
+/// `arms` slice arms of `arm`, the longest first, then `last`: `{names}`
+/// is the arm's element binds.
+fn slice_arms(arms: usize, arm: &str, last: &str) -> String {
+    let mut code = String::from("let f = |x| select x {\n");
+    for k in (1..=arms).rev() {
+        let names: Vec<String> = (0..k).map(|i| format!("a{i}")).collect();
+        code.push_str(&arm.replace("{names}", &names.join(", ")));
+        code.push_str(",\n");
+    }
+    code.push_str(last);
+    code.push_str("\n}");
+    code
+}
+
+// The check of slice arms over an unannotated parameter costs what the arms
+// hold: an arm narrows against each member the arms gave the parameter
+// through a copy of its cells, and a copy holds one cell for a cell however
+// many links lead to it, none for a cell the member holds alone where the
+// arm does. So the links the function's type reaches are few where the arms
+// share one cell, and grow with the arms and the members where an arm's copy
+// takes a member's cell, never by a factor at each arm.
+#[tokio::test(flavor = "current_thread")]
+async fn slice_arms_over_an_unannotated_parameter_copy_no_chain_of_cells() -> Result<()> {
+    type Most = fn(usize) -> usize;
+    let (few, each, pairs): (Most, Most, Most) = (|_| 2, |arms| arms, |arms| arms * arms);
+    for (shape, arm, last, most) in [
+        ("rest", "[{names}, t..] => t", "[] => []", few),
+        ("suffix", "[t.., {names}] => t", "[] => []", few),
+        ("list", "[<{names}, t..>] => t", "[<>] => [<>]", few),
+        ("in a variant", "`A([{names}, t..]) => t", "`A([]) => []", few),
+        ("in a tuple", "([{names}, t..], b) => (t, b)", "([], b) => ([], b)", each),
+        ("nested", "[[{names}, t..], u..] => t", "_ => []", pairs),
+    ] {
+        for arms in [4, 12] {
+            let links = forward_links(&slice_arms(arms, arm, last), "f").await?;
+            assert!(links <= most(arms), "{shape}, {arms} arms: {links} links");
+        }
+    }
+    Ok(())
+}
+
+run!(
+    ladder_of_rest_slice_arms_over_an_unannotated_parameter,
+    r#"{
+  let g = |x| select x {
+    [a0, a1, a2, a3, a4, a5, t..] => t,
+    [a0, a1, a2, a3, a4, t..] => t,
+    [a0, a1, a2, a3, t..] => t,
+    [a0, a1, a2, t..] => t,
+    [a0, a1, t..] => t,
+    [a0, t..] => [a0],
+    [] => []
+  };
+  (g([1, 2, 3, 4, 5, 6, 7, 8]), g(["a", "b", "c"]), g(["d"]), g([]))
+}"#,
+    prints(r#"[[i64:7, i64:8], [], ["d"], []]"#)
+);
+run!(
+    ladder_of_nested_slice_arms_over_an_unannotated_parameter,
+    r#"{
+  let f = |x| select x {
+    [[a0, a1, a2, a3, t..], u..] => (t, u),
+    [[a0, a1, a2, t..], u..] => (t, u),
+    [[a0, a1, t..], u..] => (t, u),
+    [[a0, t..], u..] => (t, u),
+    _ => ([], [])
+  };
+  (f([[1, 2, 3, 4, 5], [6]]), f([[1, 2], [3], [4]]), f([[]]))
+}"#,
+    prints("[[[i64:5], [[i64:6]]], [[], [[i64:3], [i64:4]]], [[], []]]")
+);
 // One cell is one type: arms that use the part as two types are refused
 // where the function is defined, whichever arm a call would take.
 run!(

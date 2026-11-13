@@ -911,6 +911,76 @@ mod tests {
         assert!(one.cell_lower().len() <= cells.len());
     }
 
+    /// The forward links from `tv` to the cell it stands for.
+    fn links(tv: &TVar) -> usize {
+        let mut at = tv.clone();
+        let mut n = 0;
+        while let Some(Type::TVar(next)) = &at.binding() {
+            (at, n) = (next.clone(), n + 1)
+        }
+        n
+    }
+
+    /// An array of the union of `cell` standing `k` times: the predicate
+    /// of a slice pattern of `k` positions once they are one cell.
+    fn slice_of(cell: &TVar, k: usize) -> Type {
+        let elems = std::iter::repeat_n(Type::TVar(cell.clone()), k);
+        Type::Array(Arc::new(Type::Set(elems.collect())))
+    }
+
+    /// The one element cell slice arms leave an open scrutinee is alone
+    /// at each member's elements, a union of it or a cell bound to it: no
+    /// arm copies it, so none adds a link to it or a lower bound.
+    #[test]
+    fn narrowing_slice_arms_over_their_one_cell_copies_nothing() {
+        let env = Env::default();
+        let (c, e) = (TVar::empty_named("c".into()), TVar::empty_named("e".into()));
+        c.add_lower(Type::Primitive(Typ::I64.into()));
+        e.bind(Type::TVar(c.clone()));
+        let mut arms: Vec<Type> = (2..=13).rev().map(|k| slice_of(&c, k)).collect();
+        arms.push(Type::Array(Arc::new(Type::TVar(e))));
+        let scrut = Type::TVar(TVar::empty_named("x".into()));
+        let Type::TVar(x) = &scrut else { unreachable!() };
+        x.bind(Type::Set(Arc::from_iter(arms.iter().cloned())));
+        for arm in arms.iter() {
+            assert!(scrut.narrow_pattern(&env, arm).unwrap());
+        }
+        assert_eq!(links(&c), 0);
+        assert_eq!(c.cell_lower().len(), 1);
+    }
+
+    /// Arms that take apart a slice inside a slice (`[[a0, .., t..], u..]`)
+    /// narrow against members that hold the inner cell beside an array of
+    /// it, where an arm's copy takes the cell: each copy copies the cell,
+    /// never the links to it, so the links grow by the pairs narrowed, not
+    /// by a factor at each.
+    #[test]
+    fn narrowing_nested_slice_arms_copies_no_chain_of_links() {
+        let env = Env::default();
+        let n = 4;
+        let (arms, cells): (Vec<Type>, Vec<Vec<TVar>>) = (1..=n)
+            .rev()
+            .map(|k| {
+                let mut cells: Vec<TVar> = (0..=k + 1)
+                    .map(|i| TVar::empty_named(arcstr::format!("c{k}_{i}")))
+                    .collect();
+                let rest = Type::TVar(cells.pop().unwrap());
+                let inner = Type::Set(cells.iter().cloned().map(Type::TVar).collect());
+                let elems =
+                    Type::Set(Arc::from_iter([Type::Array(Arc::new(inner)), rest]));
+                (Type::Array(Arc::new(elems)), cells)
+            })
+            .unzip();
+        let scrut = Type::TVar(TVar::empty_named("x".into()));
+        let union = Type::union_exact(&env, &arms.iter().collect::<Vec<_>>()).unwrap();
+        assert!(union.contains_ordered(&env, &scrut).unwrap());
+        for arm in arms.iter() {
+            assert!(scrut.narrow_pattern(&env, arm).unwrap());
+        }
+        let most = cells.iter().flatten().map(links).max().unwrap();
+        assert!(most <= 2 * n * n, "{most} links after {n} arms");
+    }
+
     /// A union of named or abstract members normalizes in linear time:
     /// each is tried only against members it could merge with.
     #[test]

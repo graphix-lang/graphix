@@ -639,7 +639,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [perf/medium] The check of a select over an unannotated
+            // XCR claude for claude: [perf/medium] The check of a select over an unannotated
             // parameter costs about four times as much for each slice arm more that binds
             // elements and the rest, at the definition, with no call: `|x| select x { [a0,
             // .., a11, t..] => t, [a0, .., a10, t..] => t, .., [a0, t..] => t, [] => [] }`
@@ -680,6 +680,51 @@ impl Reach {
             // fails without that (the wider form is in
             // ~/ptmp/cr29/scratch/r23/23d/stb-rev/rev3.patch). With own_parts as kept:
             // fixed16u_def.gx 1.03 G, rest11u_def.gx 8.8 G, rest12u_def.gx 34.3 G.
+            // 2026-11-13 claude: Two changes in Type::narrow_per_member. A copy of an arm's
+            // predicate copies each open cell before the vars that forward to it, so a chain of
+            // forward links is one cell in the copy: each (member, arm) pair bound the cell's
+            // end to a copy of the whole chain, which doubled it (rest arms: 1, 3, 7, 15 links
+            // an arm; nested slices, which variant-slice-coverage-01 made checkable, eightfold
+            // an arm of three: 4 arms 14 G, 5 arms past 800 G). And a cell a member holds alone at the
+            // same part as the arm is not copied where either side is a union of that cell
+            // alone (own_parts::one_cell), which a slice's elements and rest are after the
+            // first arm. User instructions of --no-cache --check, base-r23 / lane head / fix:
+            // rest12u_def.gx 33.6 G / 34.5 G / 0.84 G (written parameter 0.77 G),
+            // rest11u_def.gx 8.70 / 8.94 / 0.81 G, rest50u_def.gx killed at 150 s / the same /
+            // 9.8 G, fixed32u_def.gx 146 G / 4.18 G / 2.34 G, g_nested_6.gx refused / killed
+            // past 800 G / 0.84 G. Pins that fail with the fix undone: units
+            // typ::normalize::tests::narrowing_slice_arms_over_their_one_cell_copies_nothing
+            // (4095 links for 0) and narrowing_nested_slice_arms_copies_no_chain_of_links (4095
+            // for 12),
+            // lang::types::slice_arms_over_an_unannotated_parameter_copy_no_chain_of_cells
+            // (rest, 4 arms: 8 links); the first alone fails with only the one-cell rule
+            // undone, the second with only the flat copy undone. Values:
+            // lang::types::ladder_of_{rest,nested}_slice_arms_over_an_unannotated_parameter.
+            // The flat copy alone changes no verdict or message; the one-cell rule changes the
+            // refusal's text of 2 of 3069 generated selects (noted on
+            // wildcard-slot-any-part-01), no verdict, none split between check, build,
+            // NO_SUBST, --no-fusion and PAR=force. Census 2962 files head against fix: 0
+            // verdicts, 0 messages. guicheck base 41.29 G, head 41.14 G, fix 41.17 G. What is
+            // left is slice-arms-member-cost-01. probes: ~/ptmp/cr29/scratch/r23/23d/sacc/
+            // (README)
+            // CR claude for claude: [perf/low] The check of slice arms over an unannotated
+            // parameter still grows steeply with the arms, at the definition: `gen.py 20 rest u
+            // def` takes 1.12 G user instructions of `--no-cache --check` in a debug build, 30
+            // arms 2.18 G, 50 arms 9.8 G, beside 0.79 G to 0.94 G over `|x: Array<'e>|`; arms of
+            // fixed lengths 32 arms 2.32 G, 48 arms 7.8 G; a slice inside a slice (`gen2.py 10
+            // nested`: `[[a0, .., t..], u..] => t`) 6 arms 0.84 G, 10 arms 1.55 G, 12 arms 2.76
+            // G, 20 arms 33 G. Twelve rest arms take 0.84 G and twelve of fixed lengths 0.82 G.
+            // The scrutinee keeps one array member an arm, each a union of the one element cell
+            // standing once a position, and every arm narrows against every member
+            // (Type::narrow_per_member), then StructPatternNode::hold_slice_members and the
+            // coverage walk them again; the nested form adds a forward link to the inner cell
+            // for each (member, arm) pair, where a copy's cell takes the member's (132 links at
+            // 12 arms). A profile of the 50 arm rest case is flat (7% in
+            // expr::pattern::union_members_stopping, then TVar reads, Type::meet_parts,
+            // Type::diff_inner). What would likely fix it: the members that are one type
+            // (setops::one_type) kept as one member once the first arm's narrowing has made
+            // their cells one. probes: ~/ptmp/cr29/scratch/r23/23d/sacc/{gen.py,gen2.py,m.sh},
+            // rest50u_def.gx, g_nested_10.gx (slice-arms-member-cost-01)
             // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
             // over an unannotated parameter is refused at the call, where the same slices
             // in arms of their own and the written parameter run: `let f = |x| select x {
@@ -712,6 +757,14 @@ impl Reach {
             // refused where the written twin runs each hold such a `_`. base-r23 alike.
             // probes: ~/ptmp/cr29/scratch/r23/23d/stb/{s4.txt,s5.txt} (run with rb.sh),
             // gen.py (seeds 4201 and 977), rungen.sh (wildcard-slot-any-part-01)
+            // 2026-11-13 claude: slice-arms-check-cost-01's fix (a cell a member holds
+            // alone, a union of it included, is not copied) changes how two generated
+            // selects of this shape are refused, not that they are: `let f = |s| select s
+            // { ([x], b, c) => x + b, ([], _, _) => 1, ([x, y, t..], _, _) => 2 }; f(([],
+            // 5, "r"))` said "Any could go to '_N or '_N or '_N or '_N of the union ['_N,
+            // '_N, '_N, '_N], which nothing has decided" and now says "type mismatch
+            // Number does not contain Any", as this CR's other shapes do. probes:
+            // ~/ptmp/cr29/scratch/r23/23d/sacc/{msg_p0085u,msg_p0199u}.gx
             // CR claude for claude: [bug/low] An arm that binds a part whole beside arms that
             // take that part apart in two shapes is refused at the call, where the written
             // parameter runs: `let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3,
