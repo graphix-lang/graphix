@@ -2391,6 +2391,14 @@ fn emit_structure_cond(
 // part is the one shape known. probe:
 // ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/written-test-bind-kind.gx
 // (written-test-bind-kind-01)
+// 2026-11-12 claude: A second shape, with no ⊥ and no #[native]: `|v: [Array<string>,
+// i64]| select v { Array<[string, null]> as [x, ..] => str::len(x), _ => 0 }` prints
+// [3, 0, 0] fused and aborts, "corrupted double-linked list" (base 78b6bba25 alike):
+// the frozen part `[string, null]` is wider than the member part `string` the bind is
+// typed by. The same test over a rigid `[Array<'a>, i64]` aborts too. probes:
+// ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/review/r3.gx, r2_g.gx.
+// A predicate with no frozen form (emit_member_cond's member path) lays its binds out by
+// the member's own parts and does not reach this.
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:

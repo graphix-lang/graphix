@@ -2630,6 +2630,21 @@ impl<R: Rt> PatternNode<R> {
         Ok(())
     }
 
+    // CR claude for claude: [bug/high] A written test whose own variable stays
+    // undecided types a bind over a rigid cell by the test's part alone, which
+    // does not hold the values the test passes: in `type Opt<'b> = ['b,
+    // null]; let f = |v: [Array<'a>, i64]| select v { Array<Opt<'b>> as [x,
+    // ..] => select x { null as _ => 0, _ => 1 }, _ => 2 }`, `x` is `[null,
+    // 'b]` (a `let y: bool = x` there says so), not `'a` or `['a, null]`, and
+    // an instance types it `[null, ⊥]`, so `f(["abc"])` prints 0 fused (the
+    // arm body's kernel reads its input `x` as Nullable { elem: Bottom }) and
+    // 1 under --no-fusion or GRAPHIX_NO_SUBST=1, whose instance check narrows
+    // `x` to the member's `string` (base 78b6bba25 alike, no #[native]
+    // needed; the `['b, null]` spelling alike). The doc below says a name
+    // over a value holding the cell keeps it; this name stands at the cell
+    // itself and loses it. probe:
+    // ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/review/r5.gx
+    // (run.sh beside it runs base and lane, both engines) (written-test-rigid-var-01)
     /// Under a written test, each bind in `leaves`, typed over what passes
     /// the test among `scrut`'s values, typed instead by the test's part
     /// where it stands inside a rigid cell `scrut` holds, whose values no
