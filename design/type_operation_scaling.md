@@ -355,6 +355,24 @@ can keep the original member slice.
   `lang::types::
   six_parameters_of_two_recursive_typedefs_with_one_body_check` (720
   applications).
+- The placement takes its trial's word only while the two decide
+  alike (`ContainsHist::strays`). They part at a choice between a
+  union's members (`Type::take`, `Type::residue_member`, a decided
+  member found after an undecided one in `Type::set_commit`, two
+  applications of one definition whose arguments do not hold in
+  order): a trial takes the first member that holds, keeps what a
+  member that did not hold bound, and reads which members are decided
+  from what it has walked, and the placement judges. They part too at
+  a part that waits for the end of a function's arguments, which a
+  trial begun inside them binds at once. A trial that met one allows
+  no placement, and a placement that meets one asks a trial at each
+  such union from there: the trials are saved only where no member is
+  a choice, which is where the applications of two definitions with
+  one body are. Pins `typ::contains::tests::
+  a_placement_leaves_its_trial_at_a_choice_between_members`,
+  `a_trial_that_chose_a_member_allows_no_placement_below`,
+  `lang::types::
+  a_union_below_a_choice_between_members_asks_its_own_trial`.
 - A verdict reached inside pairs in progress rests on the outermost
   of them, a place in `ContainsHist::assumed`. A pair answered resting
   on one further out leaves that pair's place in its own and rewrites
@@ -371,7 +389,7 @@ can keep the original member slice.
   one head over a recursive definition, a choice at every application,
   take every path through the applications. Pins
   `typ::contains::tests::a_walk_over_held_cells_keeps_its_verdicts`
-  (40 000 steps, 3.7 M with no memo), `lang::types::
+  (40 000 steps, 11.6 M with no memo), `lang::types::
   two_members_of_one_head_over_a_recursive_typedef_check`.
 - The trial of a union with a bare open member starts with the pairs
   its walk is expanding in progress, on its copies

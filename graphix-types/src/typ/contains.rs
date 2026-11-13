@@ -199,10 +199,14 @@ pub(super) struct ContainsHist {
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
     /// The walk places a union's members in an order a trial placed them
-    /// all in ([`Type::place_in_order`]): that trial took each union below
-    /// with two members holding open cells as written, and so does this
+    /// all in ([`Type::place_in_order`]), and neither has met a choice
+    /// since ([`Self::strays`]): that trial took each union below with
+    /// two members holding open cells as written, and so does this
     /// placement, with no trial of its own.
     as_tried: bool,
+    /// The walk met a choice ([`Self::strays`]): were it a trial, it
+    /// vouches for no union below the one it placed.
+    chose: bool,
     /// A union's first member that holds a type takes it (a walk that
     /// binds copies alone, a select's patterns), where any other walk
     /// refuses a choice between two ([`AmbiguousMember`]).
@@ -448,6 +452,7 @@ impl ContainsHist {
             defer_index: None,
             trial: false,
             as_tried: false,
+            chose: false,
             ordered: false,
             early: false,
             identical: IdenticalMemo::default(),
@@ -534,6 +539,7 @@ impl ContainsHist {
             return false;
         }
         self.deferring[i].parts.push((t.clone(), flags));
+        self.strays();
         true
     }
 
@@ -558,7 +564,17 @@ impl ContainsHist {
         });
         let Some(i) = waiting else { return false };
         self.deferring[i].choices.push((s.clone(), t.clone(), flags));
+        self.strays();
         true
+    }
+
+    /// A trial and the walk it is a trial of part here: at a choice
+    /// between a union's members, which the trial makes by their order
+    /// and the walk judges, or at a part or a union that waits for the
+    /// end of a function's arguments, which the trial meets at once.
+    fn strays(&mut self) {
+        self.chose = true;
+        self.as_tried = false
     }
 
     /// The first of `deferring` that stands for `cell`.
@@ -4203,6 +4219,7 @@ impl Type {
                     &tr1.params,
                 )?
             {
+                hist.strays();
                 return Ok(None);
             }
         }
@@ -4533,6 +4550,25 @@ impl Type {
         }))))
     }
 
+    // CR claude for claude: [risk/low] Which member of a union a walk on copies gives a
+    // type depends on what the walk looked at before. The shortcut for a decided member
+    // asks ContainsHist::closed, which keeps `Open` for a node it met before its cells
+    // were bound: a walk that first meets the member after the binding answers at once
+    // and binds nothing, one that met it before has it as one candidate among the
+    // admitted, and a walk on copies gives the type to the first of them (Type::take).
+    // In typ::contains::tests::a_trial_that_chose_a_member_allows_no_placement_below the
+    // trial of the outer union binds 'a, then gives `Array<null>` to `P<'b, 'a>` and
+    // binds 'b to null (closed('a) false, closed_now('a) true); a trial begun at the
+    // inner union, the cells standing the same, answers by 'a's binding, binds 'b to
+    // `Array<[null, string]>` two members on, and does not hold. So the order
+    // Type::place_in_order picks follows the walk's history, and a trial of an outer
+    // union is no witness for a union below it (ContainsHist::strays keeps the placement
+    // from taking it as one). ContainsHist::closed_now here would make the shortcut the
+    // cells' own; untried: it walks the member again after every write, and it moves
+    // which order the trials pick, so it needs the differential and a census. Found in
+    // the review of open-app-commit-trials-01. trace:
+    // ~/ptmp/cr29/scratch/r23/23c/oact-rev/stale-closure-trace.txt
+    // (set-commit-stale-closure-01)
     /// Decide `s ⊇ t` by the member that takes `t` ([`Self::take`]),
     /// structural members before bare unbound tvars, which admit anything:
     /// `['b, Array<'b>]` must bind an array through `Array<'b>`. `None`
@@ -4545,6 +4581,7 @@ impl Type {
         t: &Type,
     ) -> Result<Option<bool>> {
         let probe = guide(flags);
+        let commit = flags.contains(ContainsFlags::Commit);
         let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
         let mut structural = 0;
         for bare in [false, true] {
@@ -4553,9 +4590,10 @@ impl Type {
                     continue;
                 }
                 // a decided member that holds a decided type binds nothing
-                if !flags.contains(ContainsFlags::Commit)
-                    || (hist.closed(m) && hist.closed(t))
-                {
+                if !commit || (hist.closed(m) && hist.closed(t)) {
+                    if commit && !admit.is_empty() {
+                        hist.strays()
+                    }
                     return Ok(Some(true));
                 }
                 admit.push(m)
@@ -4684,6 +4722,7 @@ impl Type {
         if tiers[0].len() + tiers[1].len() == 1 {
             return Ok(Some(last.contains_int(flags, env, hist, t)?));
         }
+        hist.strays();
         if !hist.ordered {
             for m in tiers.iter().flat_map(|tier| tier.iter().copied()) {
                 if let Some(r) = Self::takes_as_it_stands(m, flags, env, hist, t)? {
@@ -5107,7 +5146,7 @@ impl Type {
     /// does. A [`ContainsHist::trial`] that places them took every union
     /// below with two members holding open cells as written, so the
     /// placement it allows does too (`as_tried`), asking no trial of its
-    /// own for them.
+    /// own for them until either meets a choice ([`ContainsHist::strays`]).
     fn place_in_order(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -5144,10 +5183,10 @@ impl Type {
             let mut on_copies = trial();
             hist.seed(&mut on_copies, &mut known, env, inherit);
             if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
-                let tried = hist.as_tried || on_copies.trial;
+                let tried = hist.as_tried || (on_copies.trial && !on_copies.chose);
                 let outer = mem::replace(&mut hist.as_tried, tried);
                 let r = place(flags, env, hist, t0, s0, order);
-                hist.as_tried = outer;
+                hist.as_tried &= outer;
                 return r;
             }
         }
@@ -5390,13 +5429,17 @@ impl Type {
         hist: &mut ContainsHist,
         residue: &Type,
     ) -> Result<Option<&'a Type>> {
-        let judged = flags.contains(ContainsFlags::Commit) && !hist.ordered;
+        let commit = flags.contains(ContainsFlags::Commit);
+        let judged = commit && !hist.ordered;
         let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
         for m in members.clone() {
             if !m.contains_int(guide(flags), env, hist, residue)? {
                 continue;
             }
             if !judged || !undecided(m) {
+                if commit && (undecided(m) || !open.is_empty()) {
+                    hist.strays()
+                }
                 return Ok(Some(m));
             }
             if !open.iter().any(|o| one_member(o, m)) {
@@ -6541,6 +6584,59 @@ mod tests {
         held.check_contains(&env, &open).unwrap();
         let steps = CONTAINS_STEPS.with(|n| n.get());
         assert!(steps <= 40_000, "a commit took {steps} steps");
+    }
+
+    // The trial gives the first array to `Array<'a>`, deciding 'a, and
+    // the placement to the member that holds it as it stands, deciding
+    // nothing: the union after it asks a trial of its own, since as
+    // written 'a would be `Array<i64>` and the `T` member refused.
+    #[test]
+    fn a_placement_leaves_its_trial_at_a_choice_between_members() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let held = at_root(
+            &env,
+            "[`X([Array<'a>, Array<Array<['c, i64, Array<i64>]>>], [Array<'a>, `T('a)]), \
+             `Y('d)]",
+        );
+        let t = at_root(
+            &env,
+            "[`X(Array<Array<[i64, Array<i64>]>>, \
+             [Array<Array<i64>>, `T(Array<[i64, Array<i64>]>)]), \
+             `Y(Array<Array<Array<Array<Array<Array<Array<i64>>>>>>>)]",
+        );
+        held.check_contains(&env, &t).unwrap();
+    }
+
+    // A trial that chose a member vouches for no union below: the outer
+    // union's trial binds 'b at `Array<null>`, a trial begun at the inner
+    // union does not, and placed as written on the outer one's word the
+    // inner union meets `Array<Array<[null, string]>>` with 'b undecided.
+    #[test]
+    fn a_trial_that_chose_a_member_allows_no_placement_below() {
+        let defs = [
+            ("P<'x, 'y>", "[Array<'x>, Array<Array<['y, i64]>>]"),
+            ("Q<'x, 'y>", "[`N, `X(Array<'x>, Q<'y, 'x>), `Y(Q<'y, 'x>)]"),
+        ];
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        let held = at_root(
+            &env,
+            "[`X([Array<'a>, `T('a)]), \
+             `Y([Array<('a, null)>, `T([Array<'a>, `T('a)])], \
+             [[[string, 'a], [string, null, i64]], (Q<i64, 'a>, 'b), \
+             [P<'b, 'a>, [Array<'b>, Array<Array<['b, string]>>], \
+             [Array<'a>, `T(null)]]])]",
+        );
+        let t = at_root(
+            &env,
+            "[`X(`T([Array<null>, `T(i64)])), \
+             `Y([Array<([[Array<null>, `T(i64)], `T(Array<null>)], null)>, \
+             `T([Array<[Array<null>, `T(i64)]>, `T([Array<null>, `T(i64)])])], \
+             [(Q<i64, [Array<null>, `T(i64)]>, null), \
+             [P<null, [[Array<null>, `T(i64)], `T(Array<null>)]>, \
+             [Array<null>, Array<Array<[null, string]>>], \
+             Array<[Array<null>, `T(i64)]>]])]",
+        );
+        held.check_contains(&env, &t).unwrap();
     }
 
     // Two applications of one definition are compared by their arguments,

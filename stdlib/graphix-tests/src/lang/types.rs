@@ -10550,6 +10550,34 @@ run!(
     FuseExpect::None
 );
 
+// A union's trial gives the first array to `Array<'a>`, deciding 'a; the
+// placement gives it to the member that holds it as it stands, deciding
+// nothing, so the union after it asks a trial of its own, which places
+// the `T` member first: as written, 'a would be `Array<i64>`.
+run!(
+    a_union_below_a_choice_between_members_asks_its_own_trial,
+    r#"{
+  let f = |x: [`X([Array<'a>, Array<Array<['a, i64, Array<i64>]>>], [Array<'a>, `T('a)]), `Y('d)]| 0;
+  let v: [`X(Array<Array<[i64, Array<i64>]>>, [Array<Array<i64>>, `T(Array<[i64, Array<i64>]>)]), `Y(Array<Array<Array<Array<Array<Array<Array<i64>>>>>>>)] = `Y([[[[[[[1]]]]]]]);
+  f(v)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
+// The same choice, between the members a typedef names.
+run!(
+    a_union_below_a_choice_between_a_typedefs_members_asks_its_own_trial,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<Array<['y, i64, Array<i64>]>>];
+  let f = |x: [`X(P<'a, 'c>, [Array<'a>, `T('a)]), `Y('d)]| 0;
+  let v: [`X(Array<Array<[i64, Array<i64>]>>, [Array<Array<i64>>, `T(Array<[i64, Array<i64>]>)]), `Y(Array<Array<Array<Array<Array<Array<Array<i64>>>>>>>)] = `Y([[[[[[[1]]]]]]]);
+  f(v)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
 // A cell two arguments of one definition share holds what both ask.
 run!(
     a_cell_two_arguments_of_one_typedef_share_takes_both,

@@ -1704,8 +1704,12 @@ to and never refuse.
   them so a later one fits nowhere: the other union's members go in as
   written, else deepest first, whichever order places them all on copies
   (`Type::place_each`). The walk on copies takes every such union below
-  it as written, and so does the placement in an order it held
-  (`Type::place_in_order`).
+  it as written, and so does the placement in an order it held, while
+  the two decide alike: a walk on copies that met a choice between a
+  union's members allows it for no union below, and a placement that
+  meets one, or a part that waits for the end of a function's
+  arguments, asks a trial at each such union from there
+  (`Type::place_in_order`, `ContainsHist::strays`).
 - A builtin reads a quantifier only through the values of the arguments
   that hold it. At a call, a quantifier of a builtin's signature that the
   result and throws do not hold, and that no argument the call passes or
