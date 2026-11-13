@@ -4029,6 +4029,75 @@ run!(
     FuseExpect::None
 );
 
+run!(
+    names_arm_binds_same_form_parts_in_every_shape,
+    r#"{
+        let k = |v: i64| {
+            let t = select v > 0 { true => (|x: i64| x + 10, 1), false => (|y: string| str::len(y), "s") };
+            let w = select v > 0 { true => `K(|x: i64| x + 10, 1), false => `K(|y: string| str::len(y), "s") };
+            let n = select v > 0 { true => (`A, (|x: i64| x + 10, 1)), false => (`B, (|y: string| str::len(y), "s")) };
+            let o = select v > 0 { true => (|x: i64| x + 10, [1, 2]), false => (|y: string| str::len(y), (1, 2)) };
+            let list = select [<t>] { [<(r, 1), ..>] => r(v), _ => 0 };
+            let payload = select w { `K(f, 1) => f(v), `K(f, "s") => f("abc"), _ => 0 };
+            let nested = select n { (`A, (f, i)) => f(i), (`B, (g, s)) => g(s) };
+            let ignored = select t { (_, 1) => 1, (r, n) => 0 };
+            let whole = select t { x@ (r, 1) => x.0(v), (r, n) => 0 };
+            let form = select o { (r, (a, b)) => r("abc"), (r, [a, b]) => r(v), _ => 0 };
+            [list, payload, nested, ignored, whole, form]
+        };
+        array::concat(k(2), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [12, 12, 11, 1, 12, 12, 0, 3, 1, 0, 0, 3]);
+    FuseExpect::Jit
+);
+
+// A test that does not rule a member out leaves it in the bind: a part
+// that is a union, a part still undecided at the select, an arm above
+// whose guard may fail.
+run!(
+    names_arm_bind_holds_a_member_a_union_part_admits,
+    r#"{
+        let k = |v: i64| {
+            let w: [i64, string] = select v > 5 { true => "s", false => 1 };
+            let t = select v > 0 { true => (|x: i64| x + 10, 1), false => (|y: string| str::len(y), w) };
+            select t { (r, 1) => r(v), (r, n) => 0 }
+        };
+        k(1)
+    }"#,
+    refused("this callee is one of fn(x: i64) -> i64 and fn(y: string) -> i64");
+    FuseExpect::None
+);
+
+run!(
+    names_arm_bind_holds_a_member_an_undecided_part_admits,
+    r#"{
+        let k = |v: i64| {
+            let e = never();
+            let t = select v > 0 { true => (|x: i64| x + 10, 1), false => (|y: string| str::len(y), e) };
+            let z = select t { (r, 1) => r(v), (r, n) => 0 };
+            e <- v ~ 1;
+            z
+        };
+        k(1)
+    }"#,
+    refused("this callee is one of fn(x: i64) -> i64 and fn(y: string) -> i64");
+    FuseExpect::None
+);
+
+run!(
+    names_arm_bind_holds_a_member_a_guarded_arm_left,
+    r#"{
+        let k = |v: i64| {
+            let t = select v > 0 { true => (`A, |x: i64| x + 10), false => (`B, |y: string| str::len(y)) };
+            select t { (`A, f) if v > 100 => f(v), (_, g) => g(v) }
+        };
+        k(1)
+    }"#,
+    refused("this callee is one of fn(x: i64) -> i64 and fn(y: string) -> i64");
+    FuseExpect::None
+);
+
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };
