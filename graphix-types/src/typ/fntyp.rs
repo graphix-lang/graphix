@@ -2977,6 +2977,34 @@ mod tests {
         assert!(s.contains("throws"), "explicit throws should be shown, got: {s}");
         assert!(s.contains("`Boom"), "throws variant should be printed, got: {s}");
     }
+
+    /// A read's copy, of a typedef application as of a function type, is
+    /// one copy to every read through the same copies, and its own to a
+    /// later read, alone or held in a node the later read meets first.
+    #[test]
+    fn a_read_copy_is_its_own_to_a_later_read() {
+        use crate::{
+            expr::parser::parse_type,
+            typ::{
+                FnType, ReadCopies, Type, node_addr,
+                tvar::{AtLevel, Level},
+            },
+        };
+        use nohash::IntSet;
+        let _generic = AtLevel::enter(Level::GENERIC);
+        let open = IntSet::default();
+        let keep = |_: &FnType| false;
+        for src in ["F<'a>", "F<'a, i64>", "fn(x: 'a) -> 'a"] {
+            let t = parse_type(src).unwrap();
+            let mut copies = ReadCopies::default();
+            let copy = copies.read(&t, &open, &keep).expect(src);
+            let again = copies.read(&t, &open, &keep).expect(src);
+            assert_eq!(node_addr(&copy), node_addr(&again), "{src}: {copy}, {again}");
+            assert!(copies.read(&copy, &open, &keep).is_none(), "{src}: {copy}");
+            let held = Type::Array(triomphe::Arc::new(copy.clone()));
+            assert!(copies.read(&held, &open, &keep).is_none(), "{src}: {held}");
+        }
+    }
 }
 
 impl FnType {
@@ -3351,7 +3379,7 @@ impl<'a> ReadWalk<'a> {
 }
 
 impl ReadWalk<'_> {
-    // CR claude for claude: [risk/low] A named type's copy is not its own copy to
+    // XCR claude for claude: [risk/low] A named type's copy is not its own copy to
     // a later read, against ReadCopies' contract ("a type a read made is its own
     // copy to a later read"): `node` gives a `Ref` no key, so neither the copy a
     // read makes of one nor one it rebuilt is remembered, and a later read
@@ -3363,18 +3391,24 @@ impl ReadWalk<'_> {
     // contract hold; it changes which cells a nested holder's reads share, so it
     // wants a pin and a census. Found fixing chainbounds-elab-quadratic-01, which
     // gave node_addr the key. (read-copies-ref-01)
-    fn node(t: &Type) -> Option<usize> {
-        match t {
-            Type::Ref(_) => None,
-            t => super::node_addr(t),
-        }
-    }
-
+    // 2026-11-13 claude: ReadWalk::go keys an applied Ref by node_addr as it keys
+    // every other node (the node helper and its Ref arm are gone): two reads of one
+    // typedef application through one ReadCopies return one copy, and the copy,
+    // alone or inside a node a later read meets first, is its own to that later
+    // read, as a function type's is. Pin:
+    // typ::fntyp::tests::a_read_copy_is_its_own_to_a_later_read, which fails
+    // without the fix at both the one-copy and the own-copy assertions. Still no
+    // program tells the two apart: in every shape tried (a val typed F<'a> read in
+    // a holder's value through a forwarding let, a tuple, an array or a struct
+    // field, then read again) a cell takes the copy by containment, which binds it
+    // to the expanded form, so the later read meets a new Fn node and never the Ref
+    // copy. Census against base-r23 and the lane's previous tip: 0 verdict / 0
+    // message changes (2962 files). guicheck: base-r23 41.35 G, fix 41.17 G.
     fn go(&mut self, t: &Type) -> Option<Type> {
         crate::stack::ensure_sufficient(|| {
             let addr = match t {
                 Type::TVar(tv) => Some(tv.cell_addr()),
-                t => Self::node(t),
+                t => super::node_addr(t),
             };
             if let Some(a) = addr
                 && let Some((_, r)) = self.copies.memo.get(&a)
@@ -3412,7 +3446,7 @@ impl ReadWalk<'_> {
                 self.copies.memo.insert(a, (t.clone(), r.clone()));
             }
             if let Some(c) = &r
-                && let Some(a) = Self::node(c)
+                && let Some(a) = super::node_addr(c)
             {
                 self.copies.memo.insert(a, (c.clone(), None));
             }
