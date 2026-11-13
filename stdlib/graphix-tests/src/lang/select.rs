@@ -10967,6 +10967,43 @@ run!(
     FuseExpect::Jit
 );
 
+// A written test's own variable in its part over a declared variable, in
+// one member of the scrutinee: the test passes every value of the declared
+// variable, and the bind is of it.
+run!(
+    written_test_own_variable_over_a_declared_one_binds_its_values,
+    r#"{
+        type Opt<'b> = ['b, null];
+        let alias = |v: [Array<'a>, i64]| select v { Array<Opt<'b>> as [x, ..] => select x { null as _ => 0, _ => 1 }, _ => 2 };
+        let union = |v: [Array<'a>, i64]| select v { Array<['b, null]> as [x, ..] => select x { null as _ => 0, _ => 1 }, _ => 2 };
+        let tag = |v: [`A('a), `B]| select v { `A(['b, null]) as `A(x) => select x { null as _ => 0, _ => 1 }, _ => 2 };
+        let nat = |v: [Array<'a>, i64], d: 'a| #[native] select v { Array<Opt<'b>> as [x, ..] => select x { null as _ => 0, _ => 1 }, _ => 2 };
+        let val = |v: [Array<'a>, i64]| select v { Array<['b, null]> as [x, ..] => x, _ => never() };
+        let u: [i64, string] = "s";
+        [
+            alias(["abc"]), alias([null]), alias(3),
+            union(["abc"]), union([u]), union([]),
+            tag(`A("abc")), tag(`A(null)), tag(`B),
+            nat([[1, 2]], [3]), nat([(1, "a")], (2, "b")), nat(3, 4),
+            str::len(val(["abcd"]))
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 0, 2, 1, 1, 2, 1, 0, 2, 1, 1, 2, 4]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_test_own_variable_over_a_declared_one_takes_no_other_type,
+    r#"{
+        let val = |v: [Array<'a>, i64]| select v { Array<['b, null]> as [x, ..] => x, _ => never() };
+        let y: [i64, null] = val(["abc"]);
+        y$ + 1
+    }"#,
+    refused("[i64, null] does not contain string");
+    FuseExpect::None
+);
+
 // A written test holding `Any` reads its value as the one composite
 // member of the scrutinee its type may pass and holds whole, as its
 // written-out twin reads its own frozen form. Over two such members

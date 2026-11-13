@@ -3016,7 +3016,7 @@ impl<R: Rt> PatternNode<R> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/high] A written test whose own variable stays
+    // XCR claude for claude: [bug/high] A written test whose own variable stays
     // undecided types a bind over a rigid cell by the test's part alone, which
     // does not hold the values the test passes: in `type Opt<'b> = ['b,
     // null]; let f = |v: [Array<'a>, i64]| select v { Array<Opt<'b>> as [x,
@@ -3031,10 +3031,31 @@ impl<R: Rt> PatternNode<R> {
     // itself and loses it. probe:
     // ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/review/r5.gx
     // (run.sh beside it runs base and lane, both engines) (written-test-rigid-var-01)
+    // 2026-11-13 claude: A part of a written test holding a variable of the test's
+    // own, over a cell held rigid, no longer types the cell's values:
+    // Type::matching_type keeps the cell there (setops.rs, own_over_rigid), so the
+    // bind is `'a` and an instance types it by its argument. The arms' settle
+    // (Reach::new) had made the test's variable the declared one wherever it ran,
+    // which is why only a select the settle leaves alone showed it (a wildcard arm
+    // over a union scrutinee; an `Array<Any>` arm beside the test); there base-r24
+    // also accepted `let y: [i64, null] = f(["abc"])`. Pins that fail with the rule
+    // undone:
+    // typ::setops::tests::matching_type_keeps_a_rigid_cell_under_a_part_holding_the_tests_own_variable,
+    // lang::select::written_test_own_variable_over_a_declared_one_binds_its_values
+    // and .._takes_no_other_type (every mode); two cases in the skill's select.md. Of
+    // 3360 generated programs (14 scrutinee shapes, 12 parts, 5 bodies, 4 bounds;
+    // dgen.py, judged by dexp.py's oracle) base-r24 runs 567 wrong, crashing or
+    // panicking in one engine or both, the lane 45, all fused and all one shape that
+    // base-r24 has without a declared variable too:
+    // written-own-variable-member-layout-01. 534 programs base-r24 refused for an arm
+    // dead under the wrong bind type now check and run right. probes:
+    // ~/ptmp/cr29/scratch/r24/24a/wtrv/
     /// Under a written test, each bind in `leaves`, typed over what passes
     /// the test among `scrut`'s values, typed instead by the test's part
     /// where it stands inside a rigid cell `scrut` holds, whose values no
-    /// pattern takes apart; a name over a value holding the cell keeps it.
+    /// pattern takes apart; a name over a value holding the cell keeps it,
+    /// and so does a name over the cell under a part holding the test's own
+    /// variable, which types none of its values ([`Type::matching_type`]).
     fn type_inside_rigid(
         &self,
         env: &Env,

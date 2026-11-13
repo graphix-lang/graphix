@@ -23,7 +23,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   variable's value keeps it where the test holds the scrutinee around it:
   `([`A(i64), `B(i64)], i64) as (v, n)` over `('b, i64)` gives `v: 'b`;
   at the top, `[`A(i64), `B(i64)] as v` over `'b` types `v` by the test,
-  not as `'b`. A slice over a constructor variable's application
+  not as `'b`. A variable of the test's own passes every value, so a
+  name under it holds the declared variable's values: `Array<['c, null]>
+  as [x, ..]` over `[Array<'b>, i64]` gives `x: 'b` (`['b, null]` where
+  no `_` arm follows). A slice over a constructor variable's application
   (`'c<'b>`, a `c: Collection` parameter) stands over `Array<'b>` (a list
   pattern, `List<'b>`): `[h, ..]` gives `h: 'b`, and a pattern inside the
   element needs `Array<..> as [..]`.
@@ -169,6 +172,8 @@ no "a type variable its type test" |xs: Array<[i64, `A(i64)]>| select xs { Array
 no "a type variable its type test" |x: Any| select x { ['b, `A(i64)] as `A(n) => 1, _ => 0 }
 ok |xs: Array<[i64, `A(i64)]>| select xs { Array<[i64, `A(i64)]> as [`A(n)] => n, _ => 0 }
 ok |xs: Array<[i64, `A(i64)]>| select xs { Array<'b> as [a, ..] => 1, _ => 0 }
+ok let f = |v: [Array<'b>, i64]| -> 'b select v { Array<['c, null]> as [x, ..] => x, _ => never() }; f(["s"])
+no "[i64, null] does not contain string" let f = |v: [Array<'b>, i64]| select v { Array<['c, null]> as [x, ..] => x, _ => never() }; let y: [i64, null] = f(["s"]); y
 ok |xs: Array<(i64, i64)>| select xs { Array<'b> as [(a, b), ..] => a + b, _ => 0 }
 no "cannot hold Array<string>" let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- ["s"]; z
 ok let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- [2]; z

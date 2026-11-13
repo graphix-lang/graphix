@@ -1859,6 +1859,7 @@ impl Type {
                 Some(p) => p.matching_type_int(env, walk, t),
                 None => Ok(t.clone()),
             },
+            (p, Self::TVar(tv)) if own_over_rigid(p, tv) => Ok(reaching.clone()),
             (p, Self::TVar(tv)) => match tv.binding() {
                 Some(t) => p.matching_type_int(env, walk, &t),
                 None if tv.cell_constraints().contains(&Self::Bound(Bound::NoError)) => {
@@ -1975,6 +1976,14 @@ impl Type {
         let r = if diff_already_normal(self, &r) { r } else { r.normalize() };
         Ok((r, hist.widened))
     }
+}
+
+/// Whether `p`, a written test's part, holds a variable of the test's own
+/// over `tv`, an open cell held rigid: a run-time test passes every value
+/// at that variable, so `p` does not type the cell's values that pass it,
+/// and the cell does.
+fn own_over_rigid(p: &Type, tv: &TVar) -> bool {
+    tv.open_cell().is_some_and(|c| c.is_rigid()) && p.has_free()
 }
 
 /// `Any`, read through bound type variables.
@@ -2187,6 +2196,40 @@ pub(crate) mod tests {
             let m = test.matching_type(&env, &reaching).unwrap().normalize();
             assert_eq!(m.to_string(), "[`X, Box<i64>, Box<string>]");
         }
+    }
+
+    // A test's part holding a variable of the test's own, over a cell held
+    // rigid, types none of the cell's values: a run-time test passes every
+    // value at the variable, so what passes the part is the cell's. A
+    // closed part types what passes it.
+    #[test]
+    fn matching_type_keeps_a_rigid_cell_under_a_part_holding_the_tests_own_variable() {
+        let (env, _) = typed(&[("Opt<'b>", "['b, null]")], "null");
+        let tests = [
+            "Array<['b, null]>",
+            "Array<Opt<'b>>",
+            "Array<Opt<Opt<'b>>>",
+            "Array<['b, i64]>",
+            "Array<'b>",
+        ];
+        for test in tests {
+            let test = parsed(&env, test);
+            let reaching = parsed(&env, "[Array<'a>, i64]");
+            let mut cells = AHashMap::default();
+            reaching.collect_tvars(&mut cells);
+            let _gate = cells["a"].open_rigid();
+            let m = test.matching_type(&env, &reaching).unwrap().normalize();
+            assert_eq!(m.to_string(), "Array<'a>", "{test}");
+            let m = test.matching_parts(&env, &reaching).unwrap().normalize();
+            assert_eq!(m.to_string(), "Array<'a>", "{test}");
+        }
+        let closed = parsed(&env, "Array<[i64, null]>");
+        let reaching = parsed(&env, "Array<'a>");
+        let mut cells = AHashMap::default();
+        reaching.collect_tvars(&mut cells);
+        let _gate = cells["a"].open_rigid();
+        let m = closed.matching_parts(&env, &reaching).unwrap().normalize();
+        assert_eq!(m.to_string(), "Array<[i64, null]>");
     }
 
     // A reference whose cell is open names the definition its name has

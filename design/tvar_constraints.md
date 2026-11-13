@@ -201,7 +201,12 @@ member and over a whole value of it in another
 (`StructPatternNode::binds_inside_rigid`) is the union of both types. A
 name over the cell's value at the top of the written test is typed by
 the test: ``[`A(i64), `B(i64)] as v`` over `'b` gives `v` the bound, and
-a body returning it as `'b` is refused. An
+a body returning it as `'b` is refused. A part holding a variable of the
+test's own types none of the cell's values (a run-time test passes every
+value at that variable), so a name under it keeps the cell
+(`Type::matching_type`; `design/select_coverage.md`, Patterns inside a
+declared variable; pins
+`lang::select::written_test_own_variable_over_a_declared_one_*`). An
 abstract pattern names the type its compile resolved, an alias's
 included (`CompiledAbstracts`); a name a later statement of the block
 declares is that type there, in a function above the declaration too, and

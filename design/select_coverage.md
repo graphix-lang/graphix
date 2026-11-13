@@ -203,7 +203,16 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`PatternNode::type_inside_rigid`), and one that stands inside it in
   another alternative or member takes both. A name over the variable's
   value at the top of the test (`[`A(i64), `B(i64)] as v` over `'b`) is
-  typed by the test, never `'b`. A slice over an open constructor's
+  typed by the test, never `'b`. A part of the test holding a variable of
+  the test's own types none of the declared variable's values (a run-time
+  test passes every value at the test's own variable), so a name under it
+  is the declared variable (`Type::matching_type`): `Array<['c, null]> as
+  [x, ..]` over
+  `[Array<'b>, i64]` beside a `_` arm gives `x: 'b`. Where the arms'
+  settle against the scrutinee has made `'c` the declared variable first
+  (`Reach::new`, which runs with no wildcard arm or over a scrutinee that
+  is no union), the part is closed and `x` is `['b, null]`. A slice over
+  an open constructor's
   application (`'c<'b>`, a `c: Collection` parameter's element) stands
   over the slice's collection, `Array<'b>` or `List<'b>`, the values its
   run-time test passes: an inferred predicate's narrowing, its binds and
