@@ -1,7 +1,7 @@
 # Organic Firing
 
 Status: built 2026-08-14
-Pins: `stdlib/graphix-tests/src/lang/organic_deltas.rs` (one fixture per ruled delta below); `graphix-fuzz/findings/quiet-frame-init-view-aug2026/`, `fold-midchain-fired-aug2026/`, `standing-bottom-refire-sep2026/`
+Pins: `stdlib/graphix-tests/src/lang/organic_deltas.rs` (one fixture per ruled delta below, then one per consequence of the rule's three parts); `graphix-fuzz/findings/quiet-frame-init-view-aug2026/`, `fold-midchain-fired-aug2026/`, `standing-bottom-refire-sep2026/`
 
 ## The rule
 
