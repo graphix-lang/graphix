@@ -269,8 +269,8 @@ fn primitive_union(members: &[Type], folds: &mut Folds) -> Option<Type> {
 /// result (`Nullable`), all variants (`Variant`), or any other union of
 /// encoded members (`Value`). `None` for shapes with no kernel encoding:
 /// an unbound TVar, `Fn`, `Any`, `ByRef`, a `Set` holding one of them or
-/// a `Set`, a `Ref` with an empty resolution cell, or a recursive named
-/// type.
+/// a `Set`, a `Ref` with an empty resolution cell, a recursive named
+/// type, or an application the deref cannot fill.
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
     abi_kind_d(t, &mut AbiWalk::default())
 }
@@ -328,18 +328,6 @@ fn abi_kind_d(t: &Type, walk: &mut AbiWalk) -> Option<AbiKind> {
             Type::Struct(_) => return Some(AbiKind::Struct),
             Type::Variant(_, _, _) => return Some(AbiKind::Variant),
             Type::Abstract { .. } => return Some(AbiKind::Value),
-            // A constructor application whose ctor is a bound TVar is
-            // unreduced by typecheck; classify its filled form.
-            Type::App(c, a) => {
-                let cd = c.deref_cloned();
-                let ad = a.deref_cloned();
-                return match (cd, ad) {
-                    (Some(cd), Some(ad)) => {
-                        cd.fill_hole(&ad).and_then(|r| abi_kind_d(&r, walk))
-                    }
-                    _ => None,
-                };
-            }
             Type::Ref(tr) => {
                 let def = tr.def_key()?;
                 match walk.kinds.get(def, &tr.params) {
@@ -763,19 +751,9 @@ impl Freeze {
                         params: Arc::from_iter(frozen.drain(..)),
                     })
                 }
-                // A constructor application whose ctor is a bound TVar is
-                // unreduced by typecheck; freeze its filled form.
-                Type::App(c, a) => {
-                    let cd = c.deref_cloned();
-                    let ad = a.deref_cloned();
-                    match (cd, ad) {
-                        (Some(cd), Some(ad)) => {
-                            let r = cd.fill_hole(&ad).ok_or(NonCanonical)?;
-                            self.freeze(&r, seen)
-                        }
-                        _ => Err(NonCanonical),
-                    }
-                }
+                // An application the deref left is one it cannot fill: its
+                // constructor open or holding no hole.
+                Type::App(..) => Err(NonCanonical),
                 // A recurring ref becomes the opaque leaf, built on the outer
                 // (cell-filled) occurrence with its params frozen so the
                 // leaf stays TVar-free.
@@ -816,6 +794,10 @@ impl Freeze {
                     self.recurred.set(recurred || self.recurred.get());
                     Ok(t)
                 }
+                // No value's type: the hole of a constructor its
+                // application did not fill, kept in a cell of the
+                // constructor, which the normalized form fills.
+                Type::Hole => Err(NonCanonical),
                 _ => Err(Unsupported),
             }
         }
@@ -866,15 +848,16 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
     }
 }
 
-/// [`freeze_for_abi`], retrying on an un-flattened union through
-/// `resolve_tvars().normalize()`. The retry must normalize a deep clone,
-/// never `t`: `normalize` writes bindings back into shared TVar cells,
-/// and attempting fusion must not change the program's static types.
+/// [`freeze_for_abi`], retrying on an un-flattened union or a hole left
+/// in a cell through `resolve_tvars().normalize()`. The retry must
+/// normalize a deep clone, never `t`: `normalize` writes bindings back
+/// into shared TVar cells, and attempting fusion must not change the
+/// program's static types.
 pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
     try_freeze_for_abi_normalized(t).ok()
 }
 
-// CR claude for claude: [risk/low] The selective retry refuses a type the
+// XCR claude for claude: [risk/low] The selective retry refuses a type the
 // unconditional retry freezes: `App(Set([Hole, TVar a := Hole]), A)`, a
 // constructor union one of whose members is a cell bound to the hole.
 // Type::fill_hole fills the bare hole and leaves the one inside the cell, so
@@ -891,6 +874,19 @@ pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
 // `cc c3b87ec6923fa53de409cdb05d795bbf86ed5d39c84aea87e47c8fe1f50c0078`, kept
 // with the gate's log in ~/ptmp/cr29/scratch/r20/20h/finisher/.
 // (freeze-ctor-cell-hole-01)
+// 2026-11-12 claude: Freeze::freeze_inner now refuses a Type::Hole as
+// NonCanonical, not Unsupported: a hole is no value's type, so one the freeze
+// meets is a constructor's hole that its application's fill (Type::with_deref
+// through app_filled and fill_hole) left in a cell, and the normalized retry
+// fills it. fill_hole is unchanged (it is the typechecker's). The App arms this
+// CR names were dead: with_deref already fills a bound constructor's
+// application, so freeze_inner's arm only met one it cannot fill (now
+// Type::App(..) => Err(NonCanonical)) and abi_kind_d's twin always gave None
+// (removed). Pins: tests::constructor_union_with_hole_cell_normalizes, and the
+// seed c3b87ec6 now in proptest-regressions/fusion/kernel_abi.txt, which
+// selective_retry_matches_unconditional_retry replays every run; both fail with
+// the Hole arm removed. 6M random cases of that proptest pass; graphix-fuzz
+// regress and fusecheck clean.
 pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeError> {
     super::TypeMemo::frozen(t, || match try_freeze_for_abi(t) {
         Err(FreezeError::NonCanonical) => {
@@ -1449,6 +1445,22 @@ mod tests {
         );
         assert_eq!(freeze_for_abi(&typ), Some(i64_t()));
         assert_eq!(freeze_for_abi_normalized(&typ), Some(i64_t()));
+    }
+
+    /// A constructor union one of whose members is a cell bound to the
+    /// hole freezes as its normalized form, the union collapsed to the hole.
+    #[test]
+    fn constructor_union_with_hole_cell_normalizes() {
+        let arg = abstract_type(Arc::from_iter([]));
+        let typ = Type::App(
+            Arc::new(Type::Set(Arc::from_iter([
+                Type::Hole,
+                Type::TVar(TVar::named(literal!("a"), Type::Hole)),
+            ]))),
+            Arc::new(arg.clone()),
+        );
+        assert_eq!(freeze_for_abi(&typ.resolve_tvars().normalize()), Some(arg.clone()));
+        assert_eq!(freeze_for_abi_normalized(&typ), Some(arg));
     }
 
     fn unresolved_ref(params: Arc<[Type]>) -> Type {

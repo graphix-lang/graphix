@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc b8253199bf562f38726af7454521ecaa37acc17ac2e246ec44a4a1ae38734619 # shrinks to typ = Set([Error(Ref(TypeRef { scope: ModPath(Path("/")), name: ModPath(Path("/T")), params: [], pos: None, ori: None, resolved: Mutex { data: Open } })), Set([])])
+cc c3b87ec6923fa53de409cdb05d795bbf86ed5d39c84aea87e47c8fe1f50c0078 # shrinks to typ = App(Set([Hole, TVar(TVar(TVarInner { name: "a", link: RwLock { data: TVarLink { id: TVarId(4611686018427388062), frozen: false, cell: CellLock(RwLock { data: TCell { binding: Some(Hole), constraints: [], lower: [], facts: BitFlags<CellFact>(0b0), rigid_gates: 0, level: Generic, task: TaskId(0), ground: 0, judged: [0, 0] } }), task: TaskId(0) } } }))]), Abstract { id: AbstractId(11291001133013621972), params: [] })
