@@ -1491,20 +1491,6 @@ where
     })
 }
 
-// XCR claude for claude: [dead/low] A loop claims one word a slot for each
-// cross-kernel lambda call site in its body, which was the site's
-// first-call word: nothing reads or writes it now (a first call is an entry,
-// `call::emit_callee_context_word`). `loop_body` still lists the site so
-// that `BodyCx::open_slot_tables` sizes the callee's block table from the
-// same list; drop the plain word and keep the block table.
-// (first-call-word-storage-01)
-// 2026-11-12 claude: A loop's sites are SlotSite::Loop (a nested loop, its
-// prev-length word) or SlotSite::Call (a cross-kernel call, its callee's block
-// table), and claim_slot_tables claims a plain word for a Loop alone. The pin
-// graphix-shell tests/shell/loop_call_words.rs
-// (a_call_in_a_loop_claims_its_callee_block_alone) reads GRAPHIX_DBG_KERNELS:
-// g's site words 2 -> 1, the region's state words 4 -> 2; it fails when
-// loop_body lists a call as a Loop too.
 /// What a scaffold-loop body needs of its loop: its per-slot state
 /// sites, every nested collection HOF call (a [`StateSite::Loop`]) and
 /// every cross-kernel lambda call (a [`StateSite::Call`]), whose tables
