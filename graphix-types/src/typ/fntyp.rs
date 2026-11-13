@@ -2356,6 +2356,17 @@ impl FnType {
                             // 3 5 7) this takes about 1 in 50 that base-r24 ran at every pick.
                             // probes: ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/{o1,o2,o3}/main.gx
                             // (sig-one-type-order-01)
+                            // 2026-11-13 claude: Round 24 review of sig-unpaired-apart-01 (lane 24e): the
+                            // review's second route (FnType::sig_bounds judges every other witnessed
+                            // variable as its witness beside one named at two places, as FnType::held_at
+                            // settles them together) reads a variable WITH a witness at two places of one
+                            // signature variable as settled, though an instance whose first place decides
+                            // it never settles, so it refuses a witnessed variable in a function's
+                            // argument beside it: 1 of 4000 generated interfaces that ran at every
+                            // generated pick (g3/h21_0307: 'p: [i64, string] under fn(x: i64) -> 'c and
+                            // ['c, `X], 'k: [i64, string, f64] in fn(x: 'k, y: i64) -> i64). A fix here
+                            // that carries the position each place is reached from frees it too. probes:
+                            // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/review/g3/h21_0307/
                             None => {
                                 let mut other = rest.iter().map(|(m, _)| m).rev();
                                 let other = other.find(|m| !strictly_identical(first, m));
@@ -2403,21 +2414,62 @@ impl FnType {
                 image.insert(copy.cell_addr(), at);
             }
         }
-        let in_sig = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
-        let stood = |tv: &TVar| match slot.get(&tv.cell_addr()) {
-            Some(i) if stands[*i].is_none() => None,
-            _ => image.get(&tv.cell_addr()),
+        // An instance that takes one cell as its witness takes every cell
+        // only bounds name that has one as its own ([`FnType::held_at`]
+        // settles them together): beside a cell named at two places, each
+        // other such cell as its witness.
+        let twice = copies.iter().zip(settled.iter()).find(|(_, s)| **s);
+        let mut beside: LPooled<AHashMap<usize, Type>> = LPooled::take();
+        if twice.is_some() {
+            let once = copies.iter().zip(settled.iter()).filter(|(_, s)| !**s);
+            for ((tv, copy), _) in once {
+                if let Some(w) = tv.bounds_witness(env) {
+                    beside.insert(tv.cell_addr(), w.clone());
+                    beside.insert(copy.cell_addr(), w);
+                }
+            }
+            for _ in 0..copies.len() {
+                let read = |addr| beside.get(&addr).or_else(|| image.get(&addr)).cloned();
+                let now: LPooled<Vec<(usize, Type)>> =
+                    beside.iter().map(|(addr, w)| (*addr, w.swap_cells(&read))).collect();
+                beside.extend(now.iter().cloned());
+            }
+        }
+        let settling = Cell::new(false);
+        let image_of = |addr: usize| {
+            let settled = if settling.get() { beside.get(&addr) } else { None };
+            settled.or_else(|| image.get(&addr))
         };
-        // the cell of `t` named at two places
+        let in_sig = |t: &Type| t.swap_cells(&|addr| image_of(addr).cloned());
+        let stood = |tv: &TVar| {
+            let addr = tv.cell_addr();
+            let settled = settling.get() && beside.contains_key(&addr);
+            match slot.get(&addr) {
+                Some(i) if stands[*i].is_none() && !settled => None,
+                _ => image_of(addr),
+            }
+        };
+        // the cell of `t` an instance settles: one judged as its witness
+        // beside a cell named at two places, or that cell
         let one_type = |t: &Type| {
-            let twice =
+            let find = |pick: &dyn Fn(&TVar) -> bool| {
+                super::contains::find_open_cell(t, true, &mut |tv| pick(tv))
+            };
+            let named_twice =
                 |tv: &TVar| slot.get(&tv.cell_addr()).is_some_and(|i| settled[*i]);
-            match super::contains::find_open_cell(t, true, &mut |tv| twice(tv)) {
-                None => CompactString::default(),
-                Some(tv) => format_compact!(
+            let once = |tv: &TVar| settling.get() && beside.contains_key(&tv.cell_addr());
+            match (find(&once).zip(twice), find(&named_twice)) {
+                (Some((tv, ((twice, _), _))), _) => format_compact!(
+                    ": an instance that takes {twice} as its own bound takes {tv} as \
+                     its own too, {}; name one of them at a parameter, or give {tv} \
+                     no bound that is one type",
+                    stood(&tv).unwrap_or(&Type::Bottom)
+                ),
+                (None, Some(tv)) => format_compact!(
                     ": {tv} is one type wherever a bound names it, {}",
                     stood(&tv).unwrap_or(&Type::Bottom)
                 ),
+                (None, None) => CompactString::default(),
             }
         };
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
@@ -2649,7 +2701,12 @@ impl FnType {
         // refuses about 1 in 50 that base-r24 ran at every pick, written up as
         // sig-one-type-order-01. probes, generator and scripts:
         // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/ (README)
-        for (_, tv) in impl_cells.iter() {
+        // each cell as it stands, then as an instance that settles it holds it
+        let routes = [false, true];
+        let routes = routes.iter().take(if beside.is_empty() { 1 } else { 2 });
+        let judged = routes.flat_map(|r| impl_cells.iter().map(move |(_, tv)| (*r, tv)));
+        for (settle, tv) in judged {
+            settling.set(settle);
             match stood(tv) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
@@ -4488,6 +4545,29 @@ impl FnType {
             prepare(&own, &known);
             instance.check_contains(env, &own).map(|()| own)
         };
+        // CR claude for claude: [bug/low] The settle below takes every cell only bounds
+        // name that has a witness, or none, so an instance is refused that is held with
+        // one such cell as its witness and another at its place. `val f: fn<'a: [i64,
+        // string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g:
+        // fn(x: 'e, y: i64) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;` over `let f = 'p: [i64,
+        // string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y:
+        // i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0`, called `m::f((1, "s"), (1, 1), |x:
+        // i64, y: i64| x)`, is held with 'p as [i64, string] and 'k as i64; the settle
+        // makes 'k [i64, string] too, which the argument's `fn(x: i64, ..)` does not hold.
+        // base-r24 passed it at --check and failed the run "an instance at"; since the
+        // review of sig-unpaired-apart-01 the signature's judgment refuses the
+        // implementation, though its bound of 'g restates the signature's ("an instance
+        // that takes 'p as its own bound takes 'k as its own too"; FnType::sig_bounds's
+        // second route). A trait's own variable is refused the same way beside an impl's
+        // variable two bounds name, since a method's cells carry the trait's bounds
+        // (tr/k3.gx). A fix settles only the cells whose places differ, which the
+        // judgment's walk finds (its `settled`), and the second route goes with it. Of
+        // 4000 generated interfaces with two or three such variables (gen3.py seed 21,
+        // gen4.py seed 31) the judgment took 248 before that route; 28 of them failed at
+        // an instance at some pick and are refused by it now, with one more that ran at
+        // every generated pick (g3/h21_0307, of sig-one-type-order-01's kind). probes:
+        // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/review/{a4,a1,a6}/main.gx,
+        // tr/k3.gx there (README) (inst-settle-all-01)
         let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
             let mut placed: LPooled<AddrSet> = LPooled::take();
             own.for_each_type(&mut |t| {

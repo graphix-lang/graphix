@@ -157,7 +157,13 @@ variable only bounds name is one type wherever they name it. Named at two
 places of the signature it is its own bound's type, which must hold both
 (`'p: [i64, string]`, `'p: Any`); with no bound that is one type (none, a
 predicate alone, a union under `Singleton`) it is refused: name it at a
-parameter, as the signature does. A
+parameter, as the signature does. Beside a variable that is its own
+bound's type, every other variable only bounds name that has such a bound
+is its own too, so one a function's argument names (`'s: fn(x: 'k) ->
+i64`) is refused: name one of the two at a parameter, or give the second
+no such bound. A method's variables carry its trait's bounds, so there the
+second may be the trait's own (`'e` below): give each of the trait's
+variables a variable of the impl's. A
 trait method,
 an impl's or a default, is judged the same way:
 
@@ -170,6 +176,8 @@ no "requires 'b: ['p, `X, `Y], which the signature does not declare" trait T { v
 ok trait T { val m: fn<'a: [i64, string] + Singleton, 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: Singleton, 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
 no "'p is one type wherever a bound names it" trait T { val m: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 }; impl T for i64 { let m = 'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 }; T::m(1, (1, "s"), (1, 1))
 ok trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 }; impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 }; T::m(1, (1, "s"), (1, 1))
+no "takes 'e as its own too" trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 }; impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r, z| -> i64 0 }; T::m(1, (1, "s"), (1, 1), |x: i64| x)
+ok trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 }; impl T for i64 { let m = 'p: [i64, string], 'o: [i64, string], 'q: (Number, 'p), 'r: (Number, 'o) |s, x: 'q, y: 'r, z| -> i64 0 }; T::m(1, (1, "s"), (1, 1), |x: i64| x)
 ```
 
 A `val`'s type variable stands only inside a function type, where each

@@ -2111,6 +2111,58 @@ run!(
     "/test/m.gx" => "let f = 'p: Number, 'q: ['p, null] |x: 'q| -> 'q x"
 );
 
+// An instance that takes a variable named at two places as its own bound
+// takes every variable only bounds name that has such a bound as its own
+// too, so beside one named at two places each is judged as its bound as
+// well as at its place: a function's argument does not hold the wider type.
+run!(
+    an_unpaired_variable_in_an_argument_beside_one_at_two_places_is_its_own_bound,
+    refused("the implementation requires 'g: fn(x: 'k, y: i64) -> i64, which the signature does not declare: an instance that takes 'p as its own bound takes 'k as its own too, [i64, string]; name one of them at a parameter, or give 'k no bound that is one type"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: Number| x)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e, y: Number) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_a_bound_paired_in_an_argument_beside_one_at_two_places_is_its_own_bound,
+    refused("the implementation requires 'g: fn(x: 'k, y: i64) -> i64, which the signature does not declare: an instance that takes 'p as its own bound takes 'k as its own too, [i64, string]"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: i64| x)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e, y: i64) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_in_a_positions_argument_beside_one_at_two_places_is_its_own_bound,
+    refused("signature has concrete type fn(x: 'e, y: Number) -> i64, which the implementation constraint fn(x: 'k, y: i64) -> i64 does not admit: an instance that takes 'p as its own bound takes 'k as its own too, [i64, string]"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: Number| x)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string]>(x: 'b, y: 'd, z: fn(x: 'e, y: Number) -> i64) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_with_a_predicate_alone_in_an_argument_beside_one_at_two_places_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: Number| x)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e, y: Number) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: NoError, 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
+);
+
+run!(
+    a_variable_in_a_parameters_argument_beside_one_at_two_places_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: i64| x)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string]>(x: 'b, y: 'd, z: fn(x: 'e, y: i64) -> i64) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string] |x: 'q, y: 'r, z: fn(x: 'k, y: i64) -> i64| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_in_a_tuple_beside_one_at_two_places_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: (i64, 'e)>(x: 'b, y: 'd, z: 'g) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: (Number, 'k) |x: 'q, y: 'r, z: 's| -> i64 0"
+);
+
 // A cell carrying several conjuncts of one shape has each paired with
 // the signature's bound, so every variable inside them is judged.
 run!(

@@ -5560,3 +5560,26 @@ run!(
         let result = T::m(1, (1, "s"), (1, 1))
     "#
 );
+
+// A method's cells carry its trait's bounds, so beside a variable of the
+// impl's named at two places the trait's own variable is its bound's type
+// too, and a function's argument does not hold it.
+run!(
+    method_variable_in_two_bounds_beside_a_trait_variable_in_an_argument,
+    refused("the implementation requires 'g: fn(x: 'e) -> i64, which the signature does not declare: an instance that takes 'p as its own bound takes 'e as its own too, [i64, string]; name one of them at a parameter"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 };
+        impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r, z| -> i64 0 };
+        let result = T::m(1, (1, "s"), (1, 1), |x: i64| x)
+    "#
+; FuseExpect::None);
+
+run!(
+    method_variables_each_in_one_bound_beside_a_trait_variable_in_an_argument_hold,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 };
+        impl T for i64 { let m = 'p: [i64, string], 'o: [i64, string], 'q: (Number, 'p), 'r: (Number, 'o) |s, x: 'q, y: 'r, z| -> i64 0 };
+        let result = T::m(1, (1, "s"), (1, 1), |x: i64| x)
+    "#
+);

@@ -532,14 +532,33 @@ decides that variable, and the holders' picks may differ beneath it. A
 variable its own bound does not admit where it is named stands nowhere,
 and stays a copy each bound judges apart, which refuses the bound.
 
+An instance that takes one variable as its witness takes every variable
+only bounds name that has a witness as its own: `FnType::held_at` settles
+them together, once holding each at its place has failed. So beside a
+variable that is its witness, each other one with a witness is judged
+twice, at its place and as its witness, and every bound naming it must
+hold both ways. A bound that names it in a function's argument holds it at
+its place and not as the wider witness (``'k: [i64, string], 's: fn(x: 'k,
+y: i64) -> i64`` under ``'e: [i64, string], 'g: fn(x: 'e, y: Number) ->
+i64``, beside the `'p` above), and is refused, "an instance that takes 'p
+as its own bound takes 'k as its own too": one of the two is to be named
+at a parameter, or `'k` given no bound that is one type. A method's cells
+carry its trait's bounds, so there the second variable may be the trait's
+own, which the impl cannot unbound: the impl gives each of the trait's
+variables a variable of its own. An instance could hold such an
+implementation, `'k` at its place and `'p` as its witness
+(`inst-settle-all-01`).
+
 The order a call decides its variables in is not modelled, so some
 implementations every instance of which is held are refused: a variable
 with no witness at two places of one signature variable that the first of
 them decides (`sig-one-type-order-01`). Pins: `lang::interfaces`
 `an_unpaired_variable_*_is_one_type` with their twins
 (`*_is_its_own_bound`, `*_holds`), `a_variable_paired_by_*`,
-`an_unpaired_variable_in_an_argument_must_be_admitted`;
-`lang::traits::method_variable_in_two_bounds_*`.
+`an_unpaired_variable_in_an_argument_must_be_admitted`,
+`*_beside_one_at_two_places_*`;
+`lang::traits::method_variable_in_two_bounds_*`,
+`method_variables_each_in_one_bound_*`.
 
 What is written through a val lands on the implementation, the pair
 being one variable, and every use takes the implementation's generic
