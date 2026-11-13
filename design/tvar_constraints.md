@@ -909,7 +909,19 @@ the definition gates:
   are identical cell by cell (`normalize::Members`), since dropping one
   would pick a member for every later relation: `E<fn(x: 'c) -> i64,
   fn(x: 'd) -> i64>` over `type E<'p, 'q> = ['p, 'q]` stays two members,
-  which the choice below judges. And
+  which the choice below judges. A union standing inside a function
+  type's signature is none of that union's alternatives, and its members
+  stay as they stand there too (`normalize::NormCx::in_signature`): the
+  cells a renaming would pair are the signature's own, which its calls
+  decide, so merging them would equate two of its variables and dropping
+  a generic member would type the call's result as the other. `|y: 'a,
+  z: 'b, x: F2<'a, 'b>| x` over `type F2<'p, 'q> = [fn(q: 'p) -> i64,
+  fn(q: 'q) -> i64]` read through a field, a tuple position or a select
+  of two copies returns the union of both members, as a read of its
+  binding does (pins `lang::types::field_read_keeps_a_signature_union_of_functions_over_its_variables`
+  and its neighbours,
+  `typ::normalize::tests::a_union_of_alternatives_keeps_a_signature_union_of_renamings`).
+  And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
   arms (`Type::union_of_alternatives`), and so does a name the
@@ -2685,7 +2697,9 @@ references name the target is told the recursive type alone
   or live with live, never a generic cell with a live one,
   `setops::Identity::cells`, and it merges the live pairs,
   `setops::union_collapses`; any other flattening keeps them two members,
-  `normalize::Members`; a written union tells variables by name,
+  `normalize::Members`, and so does that union inside a function type's
+  signature, `normalize::NormCx::in_signature`; a written union tells
+  variables by name,
   `Type::flatten_written`;
   a field read of a union, a select's arms and an or-pattern's name meet
   their function members, through a copy of a member's generic cells,

@@ -323,7 +323,11 @@ it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
 A `let` nothing writes or annotates reads `s` once in its value,
 wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
 fn(x: i64) -> i64}` makes `t.a.f` take `i64` too, and so does `b: seqq
-1 { k(s) }`.
+1 { k(s) }`. A lambda read through a field or a tuple position has the
+type a read of its binding has: a union of function types its signature
+holds over two of its variables (`x: F2<'a, 'b>`) is that union in the
+call's result, and a call through the result is refused, naming the
+members.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
@@ -341,6 +345,8 @@ ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
 ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
 ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)
 no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
+ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)}; s.fld(1, "s", |q: i64| 0)
+no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| x}; let g = s.fld(1, "s", |q: i64| q + 1); g("s")
 ```
 
 A sample is no binding: under a binding made generic before the write,

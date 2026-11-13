@@ -8835,6 +8835,108 @@ run!(
     prints(r#"[[["s"], "s"], [[i64:1], i64:1]]"#)
 );
 
+// A union of function types a signature holds over its own variables is
+// the function's: a read of the function through a field, a tuple
+// position or a select of its copies keeps both members, as a read of
+// its binding does, so the call's result is the union and the instance
+// holds its definition's signature.
+run!(
+    field_read_keeps_a_signature_union_of_functions_over_its_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)};
+  let r = s.fld(1, "s", |q: i64| 0);
+  (r.1, r.2)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+run!(
+    field_read_keeps_a_signature_union_of_functions_with_the_union_first,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let s = {fld: |x: F2<'a, 'b>, y: 'a, z: 'b| (x, y, z)};
+  let j = s.fld;
+  let r = j(|q: i64| 0, 1, "s");
+  (r.1, r.2)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+run!(
+    tuple_read_keeps_a_signature_union_of_functions_over_its_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let s = (|y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z), 1);
+  let r = s.0(1, "s", |q: i64| 0);
+  (r.1, r.2)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+run!(
+    select_of_copies_keeps_a_signature_union_of_functions_over_its_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z);
+  let s = {fld: f};
+  let c = true;
+  let g = select c { true => f, false => f };
+  let t = select c { true => s, false => s };
+  let (r, u) = (g(1, "s", |q: i64| 0), t.fld(2, "t", |q: string| 0));
+  (r.1, r.2, u.1, u.2)
+}"#,
+    prints(r#"[i64:1, "s", i64:2, "t"]"#);
+    FuseExpect::None
+);
+run!(
+    field_read_result_of_a_signature_union_of_functions_is_no_one_function,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| x};
+  let g = s.fld(1, "s", |q: i64| q + 1);
+  g("s")
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(q: 'a: i64) -> i64 and \
+         fn(q: 'b: string) -> i64; write one variable in both, or one written type in both"
+    );
+    FuseExpect::None
+);
+
+// So an argument both members of such a union could take is refused
+// through a select of the function's copies as at a call of its binding,
+// where one variable in both members takes it.
+run!(
+    select_of_copies_leaves_a_signature_union_of_functions_to_its_call_refused,
+    r#"{
+  type K<'p, 'q> = [fn(q: i64) -> 'p, fn(q: i64) -> 'q];
+  let f = |x: K<'a, 'b>| x;
+  let c = true;
+  let g = select c { true => f, false => f };
+  let r = g(|q: i64| q);
+  0
+}"#,
+    refused(
+        "fn(q: i64) -> i64 could go to fn(q: i64) -> 'a: unbound or fn(q: i64) -> 'b: unbound \
+         of the union"
+    );
+    FuseExpect::None
+);
+run!(
+    select_of_copies_of_a_signature_union_of_functions_over_one_variable,
+    r#"{
+  type K<'p, 'q> = [fn(q: i64) -> 'p, fn(q: i64) -> 'q];
+  let f = |x: K<'a, 'a>| x;
+  let c = true;
+  let g = select c { true => f, false => f };
+  let r = g(|q: i64| q);
+  r(3)
+}"#,
+    prints("i64:3");
+    FuseExpect::None
+);
+
 // An alias that adds a member, applied to a variable under an invariant
 // constructor: an argument written as the alias over a type that already
 // holds the member gives the variable that type, and the instance holds

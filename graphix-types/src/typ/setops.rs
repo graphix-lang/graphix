@@ -1317,6 +1317,26 @@ impl Type {
     // string function and `A(r) | `B(r) | `C(r) the i64 one. probe:
     // ~/ptmp/cr29/scratch/r23/23d/obfm-review/o6.gx (o3.gx of the fixer's probes is
     // its twin)
+    // CR claude for claude: [bug/low] A select of two copies of one function whose
+    // signature holds a typedef union of two of its variables under one constructor
+    // is refused where a call of its binding runs: `type P<'p, 'q> = [Array<'p>,
+    // Array<'q>]; let f = |x: P<'a, 'b>, y: 'a| x; let g = select c { true => f,
+    // false => f }; g([1], 1)` fails at the select, "Array<'a: unbound> could go to
+    // Array<'a: unbound> or Array<'b: unbound> of the union [Array<'a: unbound>,
+    // Array<'b: unbound>], which nothing has decided .. write the type of what holds
+    // that union", and `f([1], 1)` runs. A twin lambda literal in place of the second
+    // copy, and the same function in a struct or a tuple in each arm, are refused
+    // alike. The meet contains one copy's signature in the other's, where the two
+    // unions' undecided members are ambiguous, though each member stands beside its
+    // own image. The other way round, a select of a function and its twin literal
+    // runs a call the binding's own call refuses as ambiguous (twin-fa.gx: two
+    // parameters `F2<'a, 'b>` over `[fn(q: 'p) -> i64, fn(q: 'q) -> i64]` beside
+    // `[fn(q: 'b) -> i64, Array<'a>]`, both given `|q: i64| 0`). base-r23 alike. Of
+    // 1500 select forms of 300 generated functions, 143 are refused where the direct
+    // call runs and 8 run where it is refused. Found fixing runtime-bind-fn-union-01.
+    // probes: ~/ptmp/cr29/scratch/r23/23b/rbf/sel-p.gx, sel-p-direct.gx,
+    // sel-p-twin.gx, twin-fa.gx, twin-fa-direct.gx; generator genfam.py 7 300, summary
+    // famsum.py (select-copies-union-meet-01)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh

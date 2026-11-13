@@ -2980,7 +2980,7 @@ impl TVar {
         // A cell an earlier task owns keeps its binding as it stands: the
         // normal form means the same, and writing it would be a decision.
         // The normal form reaches only cells its source reached.
-        if cx.cells.insert(self.cell_addr())
+        if cx.visited.cells.insert(self.cell_addr())
             && !self.earlier_task()
             && let Some(t) = self.binding()
             && let Some(n) = t.normalize_int(cx)

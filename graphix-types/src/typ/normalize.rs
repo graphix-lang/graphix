@@ -16,21 +16,34 @@ use smallvec::SmallVec;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     iter,
-    mem::Discriminant,
+    mem::{self, Discriminant},
 };
 use triomphe::Arc;
 
-/// Per-pass [`Type::normalize`] state: `cells` are the visited TVar
-/// cells (the first visit normalizes the binding in place); `memo` is a
-/// cache of each shared node's result ([`Type::part_key`]). Each entry
-/// pins the keyed type: an in-place rebinding frees the old binding, and
-/// its address must not be reused under its key.
+/// Per-pass [`Type::normalize`] state.
 pub(super) struct NormCx {
-    pub(super) cells: LPooled<AddrSet>,
-    memo: LPooled<AHashMap<NodeKey, (Type, Option<Type>)>>,
+    pub(super) visited: Visited,
     /// The live cells the pass's collapses paired.
     welds: Welds,
+    /// What a welding pass visited inside function types.
+    signatures: Option<Visited>,
+}
+
+/// What a pass visited: `cells` are the visited TVar cells (the first
+/// visit normalizes the binding in place); `memo` is a cache of each
+/// shared node's result ([`Type::part_key`]). Each entry pins the keyed
+/// type: an in-place rebinding frees the old binding, and its address
+/// must not be reused under its key.
+pub(super) struct Visited {
+    pub(super) cells: LPooled<AddrSet>,
+    memo: LPooled<AHashMap<NodeKey, (Type, Option<Type>)>>,
     flat: FlatCx,
+}
+
+impl Visited {
+    fn take() -> Self {
+        Self { cells: LPooled::take(), memo: LPooled::take(), flat: FlatCx::default() }
+    }
 }
 
 #[doc(hidden)]
@@ -38,12 +51,23 @@ pub type NormKey = (Discriminant<Type>, usize, usize);
 
 impl NormCx {
     pub(super) fn take() -> Self {
-        Self {
-            cells: LPooled::take(),
-            memo: LPooled::take(),
-            welds: Welds::new(),
-            flat: FlatCx::default(),
+        Self { visited: Visited::take(), welds: Welds::new(), signatures: None }
+    }
+
+    /// `f` over a function type's signature. A union standing there is
+    /// the function's own, which its calls decide: a welding pass keeps its
+    /// members as they stand, visiting what the signature reaches apart
+    /// from what it welds outside.
+    fn in_signature<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        if !matches!(self.visited.flat.members, Members::Welding) {
+            return f(self);
         }
+        let mut inner = self.signatures.take().unwrap_or_else(Visited::take);
+        mem::swap(&mut self.visited, &mut inner);
+        let r = f(self);
+        mem::swap(&mut self.visited, &mut inner);
+        self.signatures = Some(inner);
+        r
     }
 }
 
@@ -477,7 +501,7 @@ impl Type {
     /// go on `welds`.
     pub(super) fn normalize_welding(&self, welds: &mut Welds) -> Self {
         let mut cx = NormCx::take();
-        cx.flat.members = Members::Welding;
+        cx.visited.flat.members = Members::Welding;
         let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
         welds.extend(cx.welds.drain(..));
         r
@@ -492,7 +516,7 @@ impl Type {
     fn normalize_int_inner(&self, cx: &mut NormCx) -> Option<Self> {
         let key = self.part_key();
         if let Some(k) = key
-            && let Some((_, r)) = cx.memo.get(&k)
+            && let Some((_, r)) = cx.visited.memo.get(&k)
         {
             return r.clone();
         }
@@ -507,11 +531,13 @@ impl Type {
                 let (flat, changed) = Self::normalize_members(s.iter(), cx);
                 changed.then_some(flat)
             }
-            Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
+            Type::Fn(ft) => cx
+                .in_signature(|cx| ft.normalize_int(cx))
+                .map(|ft| Type::Fn(Arc::new(ft))),
             t => t.cow_children(&mut |c| c.normalize_int(cx)),
         };
         if let Some(k) = key {
-            cx.memo.insert(k, (self.clone(), r.clone()));
+            cx.visited.memo.insert(k, (self.clone(), r.clone()));
         }
         r
     }
@@ -533,8 +559,11 @@ impl Type {
                 None => normal.push(t.clone()),
             }
         }
-        let (flat, flat_changed) =
-            Self::flatten_set_tracked(normal.drain(..), &mut cx.flat, &mut cx.welds);
+        let (flat, flat_changed) = Self::flatten_set_tracked(
+            normal.drain(..),
+            &mut cx.visited.flat,
+            &mut cx.welds,
+        );
         (flat, members_changed || flat_changed)
     }
 
@@ -845,6 +874,30 @@ mod tests {
         assert_eq!(members(&Type::flatten_set(fs.iter().cloned())), 2);
         let alternatives = Type::union(&Env::default(), &[&fs[0], &fs[1]]).unwrap();
         assert_eq!(members(&alternatives), 1);
+    }
+
+    /// A union standing in a function type's signature keeps the members
+    /// a renaming of the signature's cells would make one, live or
+    /// generic, and the union of alternatives merges none of those cells.
+    #[test]
+    fn a_union_of_alternatives_keeps_a_signature_union_of_renamings() {
+        let sig = "fn(y: 'c, z: 'd) -> [fn(q: 'c) -> i64, fn(q: 'd) -> i64]";
+        for generic in [false, true] {
+            let t = crate::expr::parser::parse_type(sig).unwrap();
+            t.alias_tvars(&mut AHashMap::default());
+            let Type::Fn(ft) = &t else { unreachable!() };
+            if generic {
+                ft.generalize(0)
+            }
+            let read = Type::union(&Env::default(), &[&t]).unwrap();
+            let Type::Fn(sig) = &read else { unreachable!() };
+            assert!(matches!(&sig.rtype, Type::Set(ms) if ms.len() == 2), "{read}");
+            let (Type::TVar(c), Type::TVar(d)) = (&sig.args[0].typ, &sig.args[1].typ)
+            else {
+                unreachable!()
+            };
+            assert!(c.stands_for() != d.stands_for(), "{read}");
+        }
     }
 
     /// A node shared by both sides compares equal without walking it.
