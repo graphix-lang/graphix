@@ -2645,8 +2645,11 @@ shape (`'q: Array<'p> + Array<'r>`, and a trait method's cell carries
 its trait's bound beside its own), and each one that no bound paired
 with pairs with a bound that takes it whole, so the variables inside
 each are judged. A conjunct of another shape than every bound pairs
-nothing, and a bounded variable inside it is not judged
-(`iface-bound-shape-01`).
+nothing, and a variable inside it stays an open cell, which stands for a
+signature variable only where its own conjuncts admit it
+(`design/module_system.md`). A union of a bound's length whose members
+pair with the bound's in no order is refused, though the
+implementation's may be the wider (`iface-bound-shape-01`).
 
 ### `FnType` derives its constraint list from the cells
 

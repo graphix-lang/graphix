@@ -2260,6 +2260,31 @@ impl FnType {
             // ways). A paired cell's predicate against a concrete signature type is a new
             // CR, iface-predicate-member-01. Still left: k4, as noted. probes:
             // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/ (README)
+            // 2026-11-13 claude: Round 24 (lane 24e fixer): k4 is still refused on
+            // base-r24, and its fix is written and held back. The bounds pass dropping a
+            // group of deferred unions that cannot pair (a SigPairs::settle_bound, called
+            // by FnType::sig_bounds in place of settle, so the group pairs nothing as a
+            // bound of another shape does) accepts k4, `'b: [`A(i64, 'a), null]` over
+            // `'q: [`A(Number, 'p), null]` (k5) and the two-bound twin (u1n), all valid
+            // and all run; the judgment then refuses the invalid ones by its own message
+            // (k6, `'p: [i64, f64]`; k7, `` `A(string) ``; w5, a function bound called
+            // wider: "the implementation requires 'b: .., which the signature does not
+            // declare"), and a union at a position stays exact (w2). Five pins in
+            // lang::interfaces fail in all 4 modes without it; census 0/0 of 2967 against
+            // base-r24; guicheck 39,539,113,625 before, 39,539,939,608 after. It is not
+            // committed because u1 then passes --check and fails at the instance, through
+            // the hole of sig-unpaired-apart-01, which base-r24 reaches by a tuple
+            // already (v1: `'b: (i64, 'a), 'd: (i64, 'c)` over `'q: (Number, 'p), 'r:
+            // (Number, 'p)`, `'p` a Singleton). Another route was weighed and not built:
+            // pairing such a union's members by their variables alone, a part that holds
+            // none matching whatever it meets. By reading the code it would keep u1
+            // refused and accept k4, but keep refusing the valid u1n, hand
+            // iface-predicate-member-01 one more shape, and do nothing the drop does not
+            // once the hole is closed. So: close sig-unpaired-apart-01 at the judgment,
+            // then apply the patch with u1 as its refusal pin. This commit corrects
+            // design/tvar_constraints.md, which still said a variable inside an unpaired
+            // conjunct is not judged. patch, probes:
+            // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/ (README, k4-drop.patch)
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2298,6 +2323,18 @@ impl FnType {
         // implementation with `m::f((1, "s"))`, the variable meeting two concrete types.
         // On base-r23 and lane 23g alike. probes:
         // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/{p1,p2}/main.gx
+        // 2026-11-13 claude: Round 24 (lane 24e, fixer of iface-bound-shape-01): base-r24
+        // reaches this by a tuple too, no union needed: `val f: fn<'a: [i64, string] +
+        // Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b,
+        // y: 'd) -> i64;` over `let f = 'p: [i64, string] + Singleton, 'q: (Number, 'p),
+        // 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0` passes --check with `m::f((1, "s"),
+        // (1, 1))` and fails at the instance (v1; v2, without the Singletons, is valid and
+        // runs). The second half of iface-bound-shape-01 waits on this hole and nothing
+        // else: its patch is written and tested (k4-drop.patch there), and with it u1
+        // passes --check, so u1 refused, and u1n (u1 without the Singletons, valid) judged
+        // as u3 is, are the pins that go with applying it once this is closed at the
+        // judgment. probes:
+        // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/{v1,v2,u1,u1n}/main.gx
         for (_, tv) in impl_cells.iter() {
             match tvar_map.sig_type(tv.cell_addr()) {
                 None => (),
