@@ -1515,7 +1515,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                             }
                         });
                     wrap!(self.body, contain)?;
-                    // CR claude for claude: [bug/medium] A function read out of a declared
+                    // XCR claude for claude: [bug/medium] A function read out of a declared
                     // return type that is a typedef application whose body holds it is called
                     // with no default judged: `type W<'z> = {cb: fn(?#d: 'z, x: i64) ->
                     // string, n: i64}; let mk = |j: i64| -> W<'z> {cb: |#d = 1, x: i64|
@@ -1536,6 +1536,28 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     // x_single_struct_ret,x_single_ret_closed,x_single_ret_annot,
                     // u_struct_ref_ret_bare,u_struct_ref_ret,u_variant_ref}.gx
                     // (typedef-return-defaults-01)
+                    // 2026-11-13 claude: A function of a declaration that names none of the
+                    // value's definitions (a typedef's body writes it, and each expansion is
+                    // a type of its own, so the link contains makes dies with it) is now
+                    // judged as it stands, not on a copy (callsite::hidden_defaults_at,
+                    // names_definitions): the default decides the declaration's open cell
+                    // (let w: W<'p> = .. holds a W<i64>), and a definition's declared
+                    // variable, rigid in its check, refuses it, "write the default's type in
+                    // the declared type". The CR's probes w_single_ret,
+                    // u_struct_ref_ret_bare, u_struct_ref_ret and u_variant_ref are refused
+                    // at the definition; -> W<i64>, -> W<[i64, string]> and |z: 'z| -> W<'z>
+                    // over #d = z build and run. A function the declaration writes itself
+                    // keeps the copy and the per-call judgment. Pins
+                    // lang::functions::default_behind_a_typedef_return_type,
+                    // _variant_return_type, default_behind_a_recursive_typedef_return_type,
+                    // default_behind_a_typedef_body_annotation, _annotation_holds_its_type,
+                    // _connect, _connect_fits, _reference_write and
+                    // defaults_behind_two_typedef_annotations_met fail in all four modes with
+                    // names_definitions answering true; their passing twins are beside them.
+                    // Census (base-r23 against the lane, 2963 files): no verdict and no
+                    // message changed. One program that ran is refused now: let w: W<'p> =
+                    // {cb: |#d = 1, ..| ..}; w.cb(#d: "s", 7) (the typedef's body written out
+                    // in the annotation keeps it). probes: ~/ptmp/cr29/scratch/r23/23b/trd/
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,

@@ -1169,6 +1169,13 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
     }
 
+    /// [`Self::reset_tvars`] through `known`, the cells copied already:
+    /// signatures copied through one map share each cell's copy.
+    #[doc(hidden)]
+    pub fn reset_tvars_with(&self, known: &mut AHashMap<usize, TVar>) -> Self {
+        self.reset_tvars_int(known, Fresh::Copy)
+    }
+
     /// [`Type::instantiate_with`] over the signature.
     #[doc(hidden)]
     pub fn instantiate_with(

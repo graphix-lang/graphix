@@ -439,8 +439,21 @@ pub(crate) enum Narrowing {
     /// narrows.
     Site,
     /// A declaration's type (an annotation, a `<-` target, a return
-    /// type): judged on a copy, so it binds nothing of the declaration.
+    /// type). A function of it that names the value's definitions is
+    /// judged on a copy, which binds nothing of the declaration: a call
+    /// through it judges them again. One that names none (a typedef's
+    /// body writes it) is judged as it stands, since no call will.
     Copy,
+}
+
+/// What a hidden-default walk carries.
+struct HiddenWalk {
+    /// The pairs of shared nodes walked already, each held for the walk
+    /// so an address stays its node's.
+    visited: LPooled<AHashMap<(usize, usize), (Type, Type)>>,
+    /// The copies of a declaration's cells ([`Narrowing::Copy`]), by the
+    /// cell's address; `None` at a call's formals.
+    copies: Option<LPooled<AHashMap<usize, TVar>>>,
 }
 
 /// [`judge_hidden_defaults`] wherever `declared` and `value` both give a
@@ -463,16 +476,24 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     {
         return Ok(());
     }
-    let visited = &mut LPooled::take();
-    match narrowing {
-        Narrowing::Site => {
-            hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, visited)
-        }
-        Narrowing::Copy => {
-            let declared = declared.reset_tvars();
-            hidden_defaults_at(ctx, flags, scope, top_id, &declared, value, 0, visited)
-        }
-    }
+    let walk = &mut HiddenWalk {
+        visited: LPooled::take(),
+        copies: (narrowing == Narrowing::Copy).then(LPooled::take),
+    };
+    hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
+}
+
+/// What a default a declaration refuses is told, where the declaration's
+/// function names no definition and holds an open cell.
+const UNNAMED_DEFAULT: &str = "a function read through a typedef's function type is not \
+    known where it is called, so this default must fit the declared type as it is \
+    written: write the default's type in the declared type";
+
+/// Whether a reader of `formal` finds every definition `value` may be:
+/// what holding `value` linked onto a function the declaration keeps.
+fn names_definitions(formal: &FnType, value: &FnType) -> bool {
+    let named = formal.lambda_ids.ids();
+    value.lambda_ids.ids().iter().all(|id| named.contains(id))
 }
 
 /// Whether a function may stand somewhere in `t`, through bindings; a
@@ -524,13 +545,8 @@ fn holds_defaulted<R: Rt>(
 /// recursive one ends.
 const MAX_EXPANSIONS: u8 = 16;
 
-/// The pairs of shared nodes a hidden-default walk has walked, each
-/// held for the walk so an address stays its node's.
-type Visited = AHashMap<(usize, usize), (Type, Type)>;
-
-/// `expanded` counts the typedefs expanded on the way here; `visited`
-/// holds the pairs of shared nodes walked already, so a type that shares
-/// a part is walked once per part.
+/// `expanded` counts the typedefs expanded on the way here; a type that
+/// shares a part is walked once per part ([`HiddenWalk::visited`]).
 #[allow(clippy::too_many_arguments)]
 fn hidden_defaults_at<R: Rt>(
     ctx: &mut CompileCtx<R>,
@@ -540,7 +556,7 @@ fn hidden_defaults_at<R: Rt>(
     declared: &Type,
     value: &Type,
     expanded: u8,
-    visited: &mut Visited,
+    walk: &mut HiddenWalk,
 ) -> Result<()> {
     let Some(v) = value.deref_cloned() else { return Ok(()) };
     if let Type::Ref(_) = &v {
@@ -556,7 +572,7 @@ fn hidden_defaults_at<R: Rt>(
                 declared,
                 &v,
                 expanded + 1,
-                visited,
+                walk,
             ),
             None => Ok(()),
         };
@@ -564,18 +580,28 @@ fn hidden_defaults_at<R: Rt>(
     let mut expanded = expanded;
     let Some(d) = opened(&ctx.env, declared, &mut expanded) else { return Ok(()) };
     if let (Some(a), Some(b)) = (d.shared_identity(), v.shared_identity()) {
-        match visited.entry((a, b)) {
+        match walk.visited.entry((a, b)) {
             Entry::Occupied(_) => return Ok(()),
             Entry::Vacant(e) => e.insert((d.clone(), v.clone())),
         };
     }
-    let mut at = |ctx: &mut CompileCtx<R>, d: &Type, v: &Type| {
-        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded, visited)
+    let at = |ctx: &mut CompileCtx<R>, walk: &mut HiddenWalk, d: &Type, v: &Type| {
+        hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded, walk)
     };
     ensure_sufficient(|| match (&d, &v) {
-        (Type::Fn(formal), Type::Fn(fv)) => {
-            judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
-        }
+        (Type::Fn(formal), Type::Fn(fv)) => match &mut walk.copies {
+            Some(copies) if names_definitions(formal, fv) => {
+                let formal = formal.reset_tvars_with(copies);
+                judge_hidden_defaults(ctx, flags, scope, top_id, &formal, fv)
+            }
+            Some(_) if formal.has_unbound() => {
+                judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
+                    .context(UNNAMED_DEFAULT)
+            }
+            Some(_) | None => {
+                judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
+            }
+        },
         (Type::Set(_), _) | (_, Type::Set(_)) => {
             let mut formals: LPooled<Vec<Type>> = LPooled::take();
             union_members(&d, &mut formals, &mut |m| opened(&ctx.env, m, &mut 0));
@@ -583,18 +609,18 @@ fn hidden_defaults_at<R: Rt>(
             union_members(&v, &mut values, &mut |m| m.deref_cloned());
             values.iter().try_for_each(|v| {
                 if let Type::Ref(_) = v {
-                    return at(ctx, &d, v);
+                    return at(ctx, walk, &d, v);
                 }
                 let mut holders = formals.iter().filter(|d| d.takes_constructor_of(v));
                 match (holders.next(), holders.next()) {
-                    (Some(d), None) => at(ctx, d, v),
+                    (Some(d), None) => at(ctx, walk, d, v),
                     _ => Ok(()),
                 }
             })
         }
         (Type::Struct(df), Type::Struct(vf)) => df.iter().try_for_each(|(n, dt, _)| {
             match vf.iter().find(|(m, _, _)| m == n) {
-                Some((_, vt, _)) => at(ctx, dt, vt),
+                Some((_, vt, _)) => at(ctx, walk, dt, vt),
                 None => Ok(()),
             }
         }),
@@ -602,15 +628,15 @@ fn hidden_defaults_at<R: Rt>(
         | (Type::Variant(_, a, _), Type::Variant(_, b, _))
             if a.len() == b.len() =>
         {
-            a.iter().zip(b.iter()).try_for_each(|(d, v)| at(ctx, d, v))
+            a.iter().zip(b.iter()).try_for_each(|(d, v)| at(ctx, walk, d, v))
         }
         (Type::Array(d), Type::Array(v))
         | (Type::List(d), Type::List(v))
         | (Type::Error(d), Type::Error(v))
-        | (Type::ByRef(_, d), Type::ByRef(_, v)) => at(ctx, d, v),
+        | (Type::ByRef(_, d), Type::ByRef(_, v)) => at(ctx, walk, d, v),
         (Type::Map(d), Type::Map(v)) => {
-            at(ctx, &d.key, &v.key)?;
-            at(ctx, &d.value, &v.value)
+            at(ctx, walk, &d.key, &v.key)?;
+            at(ctx, walk, &d.value, &v.value)
         }
         _ => Ok(()),
     })

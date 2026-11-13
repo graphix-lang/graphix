@@ -368,6 +368,24 @@ ok |z: i64| { let g = |#d = z, x| (d, x); g }
 ok |z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }
 ```
 
+A lambda with a labeled default that a declaration holds through a
+typedef whose body writes the function type (`type W<'z> = {cb: fn(?#d:
+'z, x: i64) -> string}`) must fit the declared type as written: a reader's
+`w.cb` is a function nothing is known of, so no call can judge the
+default. A return type `-> W<'z>` over `#d = 1` is refused: write `->
+W<i64>`, or give the default the variable's type (`|z: 'z| .. #d = z`). A
+`let w: W<'p> = ..` annotation takes `W<i64>` from the default. The
+typedef's body written out in the declaration leaves each call to judge
+its own default.
+
+```graphix,cases
+no "write the default's type in the declared type" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> W<'z> {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(7)
+ok type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> W<i64> {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(7)
+ok type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |z: 'z| -> W<'z> {cb: |#d = z, x: i64| cast<string>(d)$}; mk("s").cb(7)
+ok let mk = |j: i64| -> {cb: fn(?#d: 'z, x: i64) -> string} {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(#d: "s", 7)
+no "i64 does not contain string" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let w: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$}; w.cb(#d: "s", 7)
+```
+
 A generic function's variable that only data holds takes the widest
 argument, in either order, an omitted labeled default included (one
 that is neither wider nor narrower waits for the others to widen it). An

@@ -1165,6 +1165,28 @@ An image carries each cell's level and each definition's depth.
   bind compiled is checked over that copy's label, so the instance's
   body types see what it decides (`CallSite::instance_signature`; pin
   `lang::functions::default_hidden_by_a_fn_type_types_the_instance`).
+- A function value's labeled default that a fn type hides or makes
+  optional is judged where the value meets that type
+  (`callsite::check_hidden_defaults`). A call's formal is the site's own
+  instantiation, which the default narrows. A declaration (a `let`'s
+  annotation, a `<-` target, a reference write's referent, a declared
+  return type) is judged per function it holds
+  (`callsite::Narrowing::Copy`): one that names the value's definitions,
+  by the link `contains` left on it, is judged on a copy and decides
+  nothing of the declaration, since every call through it judges the
+  default again at its own view. A function type a typedef's body writes
+  names none: each expansion is a type of its own, so the reader's `w.cb`
+  is a function no definition is known for, no call judges its default,
+  and the bind would meet whatever the declaration's variable settled to.
+  Such a function is judged as it stands: the default decides the
+  declaration's open cell (`let w: W<'p> = {cb: |#d = 1, ..| ..}` holds a
+  `W<i64>`), and a definition's declared variable, rigid in its check,
+  refuses it, naming the annotation (`-> W<'z>` over `#d = 1`: "write the
+  default's type in the declared type", `-> W<i64>`); a default of the
+  variable's own type fits (`|z: 'z| -> W<'z> {cb: |#d = z, ..| ..}`).
+  The typedef's body written out in the declaration keeps the per-call
+  judgment. Pins `lang::functions::default_behind_a_typedef_return_type`
+  and its neighbours.
 - The terminal settle (`FnType::settle_terminal`, the check's drain)
   walks the LIVE ftype in dependency order, the cells its bindings hold
   as positions included and every cell a chain of bounds reaches from

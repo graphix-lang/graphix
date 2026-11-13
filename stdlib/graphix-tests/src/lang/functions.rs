@@ -3678,6 +3678,132 @@ run!(default_hidden_by_a_return_type, r#"
 }
 "#, refused("does not contain i64"); FuseExpect::None);
 
+// A function type a typedef's body writes names no function to its
+// readers, so no call through it judges a default: a declaration that
+// holds a function through one judges the default as it stands. A
+// definition's declared variable refuses it, and the written type passes.
+run!(default_behind_a_typedef_return_type, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let mk = |j: i64| -> W<'z> {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    let w = mk(0);
+    w.cb(7)
+}
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
+
+run!(default_behind_a_typedef_return_type_written, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let mk = |j: i64| -> W<i64> {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    let w = mk(0);
+    w.cb(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_a_typedef_fits_its_factorys_variable, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let mk = |z: 'z| -> W<'z> {cb: |#d = z, x: i64| cast<string>(d)$, n: 1};
+    let a = mk(1);
+    let b = mk("s");
+    "[a.cb(7)] [b.cb(7)] [b.cb(#d: "t", 7)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s t"); FuseExpect::None);
+
+run!(default_behind_a_typedef_variant_return_type, r#"
+{
+    type V<'z> = [`Cb(fn(?#d: 'z, x: i64) -> string), `No];
+    let mk = |j: i64| -> V<'z> select j { 0 => `Cb(|#d = 1, x: i64| cast<string>(d)$), _ => `No };
+    select mk(0) { `No => "n", `Cb(f) => f(7) }
+}
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
+
+run!(default_behind_a_recursive_typedef_return_type, r#"
+{
+    type L<'a> = [`Cons(fn(?#d: 'a, x: i64) -> string, L<'a>), `Nil];
+    let mk = |j: i64| -> L<'z> `Cons(|#d = 1, x: i64| cast<string>(d)$, `Nil);
+    select mk(0) { `Cons(f, _) => f(7), `Nil => "n" }
+}
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
+
+run!(default_behind_an_optional_typedef_field_written, r#"
+{
+    type W<'z> = {cb: [fn(?#d: 'z, x: i64) -> string, null], n: i64};
+    let mk1 = |j: i64| -> W<[i64, string]> {cb: select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }, n: 1};
+    let mk2 = |j: i64| -> W<[i64, string]> {cb: select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null }, n: 2};
+    let i = 1;
+    let w = select i { 0 => mk1(0), _ => mk2(0) };
+    select w.cb { null as _ => "n", f => f(7) }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
+run!(default_behind_a_typedef_body_annotation, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let mk = |z: 'z| -> string {
+        let w: W<'z> = {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+        w.cb(7)
+    };
+    mk("s")
+}
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
+
+// An annotation's own variable is decided by the default it holds so.
+run!(default_behind_a_typedef_annotation_decides_it, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let w: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    "[w.cb(7)] [w.cb(#d: 2, 7)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 2"); FuseExpect::None);
+
+run!(default_behind_a_typedef_annotation_holds_its_type, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let w: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    w.cb(#d: "s", 7)
+}
+"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(defaults_behind_two_typedef_annotations_met, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let w1: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    let w2: W<'q> = {cb: |#d = "q", x: i64| cast<string>(d)$, n: 2};
+    let i = 1;
+    let w = select i { 0 => w1, _ => w2 };
+    w.cb(7)
+}
+"#, refused("a call takes one function type"); FuseExpect::None);
+
+run!(default_behind_a_typedef_connect, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let v: W<'q> = {cb: |#d = "a", x: i64| cast<string>(d)$, n: 1};
+    v <- once(v) ~ {cb: |#d = 1, x: i64| cast<string>(d)$, n: 2};
+    v.cb(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_behind_a_typedef_connect_fits, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let v: W<'q> = {cb: |#d = "a", x: i64| cast<string>(d)$, n: 1};
+    v <- once(v) ~ {cb: |#d = "b", x: i64| cast<string>(d)$, n: 2};
+    select v.n { 2 => v.cb(7), _ => never() }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "b"); FuseExpect::None);
+
+run!(default_behind_a_typedef_reference_write, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let g: W<'q> = {cb: |#d = "a", x: i64| cast<string>(d)$, n: 1};
+    let r = &mut g;
+    *r <- once(g) ~ {cb: |#d = 1, x: i64| cast<string>(d)$, n: 2};
+    g.cb(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
 // A union member built by the value's constructor holds the value, so a
 // function under it meets the fn type there: a field of an optional
 // struct, a tuple member, an array element of an option, a variant's
