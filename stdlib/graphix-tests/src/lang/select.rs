@@ -11004,6 +11004,28 @@ run!(
     FuseExpect::None
 );
 
+// A written test's own variable that another part of the test decides is
+// tested where it stands over a declared variable: the name under it is
+// the declared variable, and holds only the values that pass.
+run!(
+    written_test_own_variable_another_part_decides_is_tested_over_a_declared_one,
+    r#"{
+        let tup = |v: [((i64, i64), 'a), i64]| select v { (('b, i64), ['b, null]) as ((y, _), x) => y, i64 as n => n, (_, _) => -1 };
+        let arr = |v: [(Array<i64>, Array<'a>), i64]| select v { (Array<'b>, Array<['b, null]>) as ([y, ..], [x, ..]) => select x { null as _ => 0, _ => y }, _ => -1 };
+        let rev = |v: [(Array<'a>, Array<i64>), i64]| select v { (Array<['b, null]>, Array<'b>) as ([x, ..], [y, ..]) => select x { null as _ => 0, _ => y }, _ => -1 };
+        let u: [i64, string] = "s";
+        let w: [i64, string] = 5;
+        [
+            tup(((1, 1), "abc")), tup(((1, 1), 7)), tup(((1, 1), null)), tup(((1, 1), u)), tup(((1, 1), w)), tup(3),
+            arr(([1], ["abc"])), arr(([1], [7])), arr(([1], [null])), arr(([1], [u])), arr(([1], [w, u])), arr(4),
+            rev((["abc"], [1])), rev(([7], [1])), rev(([w], [1]))
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [-1, 1, 1, -1, 1, 3, -1, 1, 0, -1, -1, -1, -1, 1, 1]);
+    FuseExpect::Jit
+);
+
 // A written test holding `Any` reads its value as the one composite
 // member of the scrutinee its type may pass and holds whole, as its
 // written-out twin reads its own frozen form. Over two such members

@@ -3291,6 +3291,19 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
         return Ok(());
     };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+    // CR claude for claude: [readability/low] The message below names one variable of
+    // a written test two ways: `let f = |v: 'a| select v { Array<'b> as xs => xs, _ =>
+    // never() }; f([1])` is refused with "this pattern tests for Array<'b: unbound>
+    // among 'a: unbound, but a type variable there isn't known here and may share
+    // Array<'b1: unbound>'s runtime form: annotate it" (base-r24 alike): the author
+    // wrote one `'b`, and `known` prints it as a second variable. A body that does not
+    // return the bind (`=> 1`) prints `Array<_>` at both places on base-r24 and the
+    // two names since written-test-rigid-var-01, which leaves the variable open
+    // there. Not diagnosed: `known` comes out of the collision's pair, which may hold
+    // a copy of the test's cell that the printer numbers apart. What would fix it:
+    // print the part of `test` the pair stands for, or one name for both cells.
+    // probe: ~/ptmp/cr29/scratch/r24/24a/wtrv/review/msg1.gx
+    // (told-names-variable-twice-01)
     format_with_flags(PrintFlag::DerefTVars, || {
         if let Indiscernible::Pair(a, b) = &why
             && (open(a) || open(b))

@@ -207,12 +207,20 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   the test's own types none of the declared variable's values (a run-time
   test passes every value at the test's own variable), so a name under it
   is the declared variable (`Type::matching_type`): `Array<['c, null]> as
-  [x, ..]` over
-  `[Array<'b>, i64]` beside a `_` arm gives `x: 'b`. Where the arms'
-  settle against the scrutinee has made `'c` the declared variable first
-  (`Reach::new`, which runs with no wildcard arm or over a scrutinee that
-  is no union), the part is closed and `x` is `['b, null]`. A slice over
-  an open constructor's
+  [x, ..]` over `[Array<'b>, i64]` beside a `_` arm gives `x: 'b`. Where
+  the arms' settle against the scrutinee has made `'c` the declared
+  variable first (`Reach::new`, which runs with no wildcard arm or over a
+  scrutinee that is no union), the part is closed and `x` is `['b,
+  null]`. The name does not hold `'c`, so the arm's body cannot decide it
+  (`x$ + 1` is refused, as it is under the closed test `Array<[i64,
+  null]>`). The narrowing of what reaches the arm decides a `'c` that
+  another part of the test stands over a decided type with, and the
+  run-time test tests it: `(Array<'c>, Array<['c, null]>)` over
+  `[(Array<i64>, Array<'b>), i64]` passes an `Array<[i64, null]>` alone
+  at the second part, as it does where the settle runs and where an
+  instance checks again, and `x` is `'b` all the same (pin
+  `lang::select::written_test_own_variable_another_part_decides_is_tested_over_a_declared_one`).
+  A slice over an open constructor's
   application (`'c<'b>`, a `c: Collection` parameter's element) stands
   over the slice's collection, `Array<'b>` or `List<'b>`, the values its
   run-time test passes: an inferred predicate's narrowing, its binds and
