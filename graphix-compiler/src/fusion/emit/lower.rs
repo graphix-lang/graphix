@@ -414,7 +414,7 @@ impl TruncLeaf {
 
 /// A site in a scaffold loop's body that keeps state a slot.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SlotSite {
+pub(crate) enum StateSite {
     /// A nested loop: its prev-length word.
     Loop(ExprId),
     /// A call of another kernel: the callee's block.
@@ -424,7 +424,7 @@ pub(crate) enum SlotSite {
 /// A state site's per-slot table in an open scaffold loop.
 #[derive(Clone, Copy)]
 pub(crate) struct SlotTable {
-    pub(super) site: SlotSite,
+    pub(super) site: StateSite,
     pub(super) base: ClifValue,
 }
 

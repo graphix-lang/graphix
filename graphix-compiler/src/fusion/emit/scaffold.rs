@@ -37,7 +37,7 @@ use super::{
         ensure_owned_value_src,
     },
     call::{CompositeSource, emit_drop_local, finalize_valarray, open_value_buf},
-    lower::SlotSite,
+    lower::StateSite,
     outline,
     scalar::{prim_to_clif, scalar_to_payload_i64, valarray_get_helper, widen_to_i64},
 };
@@ -278,7 +278,7 @@ fn open_loop(
     cx: &mut BodyCx,
     len: ClifValue,
     src_disc: ClifValue,
-    state_sites: &[SlotSite],
+    state_sites: &[StateSite],
     entered: ClifValue,
 ) -> Result<LoopFrame> {
     let i_var = cx.b.declare_var(types::I64);
@@ -1506,8 +1506,8 @@ where
 // g's site words 2 -> 1, the region's state words 4 -> 2; it fails when
 // loop_body lists a call as a Loop too.
 /// What a scaffold-loop body needs of its loop: its per-slot state
-/// sites, every nested collection HOF call (a [`SlotSite::Loop`]) and
-/// every cross-kernel lambda call (a [`SlotSite::Call`]), whose tables
+/// sites, every nested collection HOF call (a [`StateSite::Loop`]) and
+/// every cross-kernel lambda call (a [`StateSite::Call`]), whose tables
 /// [`BodyCx::open_slot_tables`] claims; and the bindings it reads from
 /// outside, the captures of every kernel it calls included, a nested
 /// loop's slots' too (a self-call's callee has no node to read them
@@ -1515,12 +1515,12 @@ where
 /// body lives behind its own lambda def and anchors its sites in the
 /// chain its own loop opens.
 pub(crate) struct LoopBody {
-    pub(super) sites: LPooled<Vec<SlotSite>>,
+    pub(super) sites: LPooled<Vec<StateSite>>,
     pub(super) reads: LPooled<IntSet<BindId>>,
 }
 
 pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
-    let mut sites: LPooled<Vec<SlotSite>> = LPooled::take();
+    let mut sites: LPooled<Vec<StateSite>> = LPooled::take();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
             let id = n.spec().id;
@@ -1530,10 +1530,10 @@ pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
             ) || cs.recursion_callback().is_some()
                 || cx.shared_loop(cs).is_some();
             if collection {
-                sites.push(SlotSite::Loop(id));
+                sites.push(StateSite::Loop(id));
             }
             if cx.lambda_site(id).is_some() {
-                sites.push(SlotSite::Call(id));
+                sites.push(StateSite::Call(id));
             }
         }
         _ => {}

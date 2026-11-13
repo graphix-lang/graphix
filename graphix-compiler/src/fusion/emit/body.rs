@@ -36,7 +36,7 @@ use super::{
     flow::{emit_body_tail, emit_scope_drops},
     jit::Names,
     lower::{
-        Channel, ClosedFrame, LowerCtx, SiteLayout, SlotSite, SlotTable, SlotTableFrame,
+        Channel, ClosedFrame, LowerCtx, SiteLayout, SlotTable, SlotTableFrame, StateSite,
         StateWord, TruncAnchor, TruncLeaf, TruncRec, freeze_node_typ,
     },
     nodes::{emit_owned_value_operand_node, narrow_value_to_composite},
@@ -441,7 +441,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// pop it after body emission.
     pub(crate) fn open_slot_tables(
         &mut self,
-        sites: &[SlotSite],
+        sites: &[StateSite],
         len: ClifValue,
         src_disc: ClifValue,
         idx_var: Variable,
@@ -466,7 +466,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// truncated at that level's exit.
     pub(crate) fn claim_slot_tables(
         &mut self,
-        sites: &[SlotSite],
+        sites: &[StateSite],
         len: ClifValue,
         src_disc: ClifValue,
     ) -> Result<Vec<SlotTable>> {
@@ -490,7 +490,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let mut pending: Vec<TruncRec> = Vec::new();
         for site in sites {
             match *site {
-                SlotSite::Loop(_) => {
+                StateSite::Loop(_) => {
                     let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
                     pending.push(TruncRec {
                         anchor,
@@ -500,7 +500,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                     let base = self.emit_slot_chain(word.0, &enclosing, len, src_disc)?;
                     tables.push(SlotTable { site: *site, base });
                 }
-                SlotSite::Call(id) => {
+                StateSite::Call(id) => {
                     let layout = self.lambda_site(id).and_then(|info| {
                         let callee = !std::ptr::eq(&*info.kernel, self.ctx.kernel);
                         callee.then(|| {
@@ -696,7 +696,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             if f.depth != self.env.loop_depth {
                 return None;
             }
-            let t = f.tables.iter().find(|t| t.site == SlotSite::Loop(id))?;
+            let t = f.tables.iter().find(|t| t.site == StateSite::Loop(id))?;
             (f.idx_var, t.base)
         };
         let i = self.b.use_var(idx_var);
@@ -713,7 +713,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         if f.depth != self.env.loop_depth {
             return None;
         }
-        let t = f.tables.iter().find(|t| t.site == SlotSite::Call(id))?;
+        let t = f.tables.iter().find(|t| t.site == StateSite::Call(id))?;
         Some((f.idx_var, t.base))
     }
 
