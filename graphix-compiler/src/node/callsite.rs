@@ -990,6 +990,18 @@ fn typecheck_arg<R: Rt>(
     // alike. The skill's generics.md states it with the `let` remedy. Found reviewing
     // decided-arg-waits-01. probes: ~/ptmp/cr29/scratch/r21/21t/rev/f1.txt (REPL inputs 8
     // to 16) (literal-element-open-copy-01)
+    // 2026-11-13 claude: Review of union-bound-two-takers-01 (lane 23b): the same refusal
+    // now reaches a literal passed at a union bound two of whose members take it, one
+    // holding the other, since the wider member passes its parts down before the
+    // literal's own check. Over `type O<'t> = ['t, null]; type D0<'a> = [`K('a),
+    // `J(Array<'a>)]`, `f(`K([`K("s")]), `K("s"), "s")` at `'a0: [`K(Array<'a1>),
+    // `K(O<Array<'a1>>)], 'a1: [`K('a2), `K(O<'a2>)], 'a2: [i64, string]` ran on base-r23
+    // and is refused, "`K(string) could go to `K(O<'a2>) or `K('a2) .. which nothing has
+    // decided"; the one-member bound `'a0: Array<'a1>` is refused on base-r23 alike. With
+    // the members behind names (the review's correction) 3 of 3100 generated programs
+    // that ran are refused this way (mix_p00027vm, vp, vX). The literal bound to a `let`
+    // first runs. probes: ~/ptmp/cr29/scratch/r23/23b/ubt-rev/{t1,t2,t3,t4}.gx,
+    // g3/mix_p00027vm.gx
     let unchecked = !named && n.typ().with_deref(|t| t.is_none());
     match &opening {
         None => Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?,
@@ -998,7 +1010,7 @@ fn typecheck_arg<R: Rt>(
         }
         Some(_) => (),
     }
-    wrap!(n, n.typecheck0(ctx)).map_err(refused)?;
+    wrap!(n, n.typecheck0(ctx)).map_err(|e| undecided_taker(ctx, n, refused(e)))?;
     Ok(match copies {
         Some(copies) if n.typ().has_free_in_data() => {
             let mut copied: Copied = LPooled::take();

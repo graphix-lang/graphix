@@ -1583,6 +1583,24 @@ fn commit_cell_bounds(
         if !held {
             return Ok(false);
         }
+        // CR claude for claude: [bug/medium] A union bound with a member that is a variable
+        // nothing has decided yet gives a value to its structural member, so the order of
+        // the parameters decides whether a call checks. `let f = 'a: [Array<i64>, 'b] |v:
+        // 'a, y: 'b| v; f(["x"], ["s"])` is refused, "Array<i64> does not contain
+        // Array<string>", though 'b, an Array<string>, holds `["x"]`; with the parameters
+        // the other way round (`|y: 'b, v: 'a|`, `f(["s"], ["x"])`) 'b is decided first and
+        // it runs. An undecided value alike: `let z = never(); let r = f([z], ["s"]); z <-
+        // "s"` is refused, "z is i64, inferred from an earlier use, and cannot hold string;
+        // declare z: [i64, string]" (declared so, or a string, the call is refused), and
+        // the other way round the call is refused for the choice, naming `z`
+        // (UndecidedTaker). The step below walks `['b, Array<i64>] ⊇ Array<'z>` as a lower
+        // bound and the structural member takes it, binding 'z to i64, where
+        // member_with_parts tells no member apart while one is an open variable. base-r23
+        // alike. A fix waits for the variable member as a widening argument waits
+        // (callsite.rs::Widening), or refuses here naming the argument to annotate. probes:
+        // ~/ptmp/cr29/scratch/r23/23b/ubt-rev/{r9,r9b,r9c,r9d,r9e,r9f,q2}.gx
+        // (union-bound-open-member-order-01)
+
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
         // later to a type without it is refused
@@ -1663,9 +1681,10 @@ fn commit_cell_bounds(
 /// ⊇ [i64, 'k]` gives `'k: Int`), an exact part is committed as an exact
 /// conjunct is, and a function's argument takes the conjunct's argument,
 /// the least it must accept. A writable reference's referent is its
-/// part's exactly. Of a union's members one has the parts
-/// ([`member_with_parts`]). A probe accepted `t` already; what the walk
-/// can't line up it leaves.
+/// part's exactly, and so is an abstract type's parameter. Of a union's
+/// members, each name and bound variable among them followed to what it
+/// stands for, one has the parts ([`member_with_parts`]). A probe
+/// accepted `t` already; what the walk can't line up it leaves.
 fn commit_parts(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
@@ -1727,8 +1746,19 @@ fn commit_parts(
                 Err(_) => Ok(true),
             },
             (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist),
-            (Type::Set(cs), t) if structured(t) && cs.iter().all(structured_or_prim) => {
-                match member_with_parts(cs, flags, env, hist, t)? {
+            (Type::Set(cs), t) if structured(t) => {
+                let named: SmallVec<[Type; 8]>;
+                let cs: &[Type] = match cs.iter().all(structured_or_prim) {
+                    true => cs,
+                    false => match Type::dispatch_members(env, c) {
+                        Ok(ms) if ms.iter().all(structured_or_prim) => {
+                            named = ms;
+                            &named
+                        }
+                        Ok(_) | Err(_) => return Ok(true),
+                    },
+                };
+                match member_with_parts(c, cs, flags, env, hist, t)? {
                     Some(c) => commit_parts(tv, flags, env, hist, c, t),
                     None => Ok(true),
                 }
@@ -1741,6 +1771,9 @@ fn commit_parts(
             }
             (Type::ByRef(Mutability::Mut, c), Type::ByRef(Mutability::Mut, t)) => {
                 c.equal_int(flags, env, hist, t)
+            }
+            (Type::Abstract { .. }, Type::Abstract { .. }) => {
+                c.contains_int(flags, env, hist, t)
             }
             (Type::Map(c), Type::Map(t)) => {
                 all(&mut [(&c.key, &t.key), (&c.value, &t.value)].into_iter(), hist)
@@ -1783,8 +1816,9 @@ fn commit_parts(
     })
 }
 
-/// The member of `cs`, a union conjunct, that has the parts of a value of
-/// type `t` ([`commit_parts`]): the one that takes its constructor
+/// The member of `cs`, the members of the union conjunct `bound`, that
+/// has the parts of a value of type `t` ([`commit_parts`]): the one that
+/// takes its constructor
 /// ([`Type::takes_constructor_of`]); of several, where `t` is a function
 /// or holds a cell to decide, the one a probe admits `t` into, or the one
 /// of those that holds the others. `None` where no member is told apart
@@ -1793,7 +1827,8 @@ fn commit_parts(
 /// ([`ContainsHist::decides`]). Else which member holds `t` follows what
 /// decides its cells: [`UndecidedTaker`].
 fn member_with_parts<'a>(
-    cs: &'a Arc<[Type]>,
+    bound: &Type,
+    cs: &'a [Type],
     flags: BitFlags<ContainsFlags>,
     env: &Env,
     hist: &mut ContainsHist,
@@ -1831,7 +1866,7 @@ fn member_with_parts<'a>(
             return Ok(None);
         }
     }
-    Err(UndecidedTaker::new(cs, t, &admit))
+    Err(UndecidedTaker::new(bound, t, &admit))
 }
 
 /// Whether `m` holds `t` with every open cell of both held as it stands,
@@ -1859,6 +1894,7 @@ fn holds_as_it_stands(
 fn structured(t: &Type) -> bool {
     match t {
         Type::Variant(_, ps, _) => !ps.is_empty(),
+        Type::Abstract { params, .. } => !params.is_empty(),
         Type::Array(_)
         | Type::List(_)
         | Type::Tuple(_)
@@ -1878,7 +1914,7 @@ fn structured_or_prim(t: &Type) -> bool {
         Type::Primitive(p) => {
             !p.intersects(Typ::Array | Typ::Map | Typ::Error | Typ::Abstract)
         }
-        t => structured(t) || matches!(t, Type::Variant(..)),
+        t => structured(t) || matches!(t, Type::Variant(..) | Type::Abstract { .. }),
     }
 }
 
@@ -2732,12 +2768,12 @@ pub struct UndecidedTaker {
 }
 
 impl UndecidedTaker {
-    fn new(bound: &Arc<[Type]>, t: &Type, members: &[&Type]) -> anyhow::Error {
+    fn new(bound: &Type, t: &Type, members: &[&Type]) -> anyhow::Error {
         if graphix_dbg_bind() {
-            eprintln!("UNDECIDED-TAKER {} <- {t}", Type::Set(bound.clone()));
+            eprintln!("UNDECIDED-TAKER {bound} <- {t}");
         }
         anyhow::Error::new(UndecidedTaker {
-            bound: Type::Set(bound.clone()),
+            bound: bound.clone(),
             typ: t.clone(),
             members: members.iter().map(|m| (*m).clone()).collect(),
         })

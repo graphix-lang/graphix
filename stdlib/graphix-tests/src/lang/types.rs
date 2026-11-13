@@ -10381,6 +10381,142 @@ run!(
     is(Value::I64(1))
 );
 
+// A union bound's members are what its names and its decided variables
+// stand for: two that take the value are a choice, one decides the cell.
+run!(union_bound_two_named_members_refuse_an_undecided_element, r#"{
+    type A = Array<i64>;
+    type B = Array<string>;
+    let f = 'a: [A, B] |v: 'a| v;
+    let z = never();
+    let r = f([z]);
+    z <- 2.5;
+    r
+}"#, refused("Array<i64> or Array<string> of the bound [A, B], and nothing has decided which: `z` is undecided at this call; annotate `z`"); FuseExpect::None);
+
+run!(
+    union_bound_two_named_members_take_a_decided_element,
+    r#"{
+    type A = Array<i64>;
+    type B = Array<string>;
+    let f = 'a: [A, B] |v: 'a| v;
+    let z: i64 = never();
+    let r = f([z]);
+    z <- 7;
+    r[0]$
+}"#,
+    is(Value::I64(7))
+);
+
+run!(union_bound_one_named_member_decides_the_cell, r#"{
+    type A = Array<[i64, null]>;
+    let f = 'a: [A, null] |v: 'a| v;
+    let z = never();
+    let r = f([z]);
+    z <- "s";
+    r
+}"#, refused("cannot hold string"); FuseExpect::None);
+
+run!(
+    union_bound_one_named_member_accepts,
+    r#"{
+    type A = Array<[i64, null]>;
+    let f = 'a: [A, null] |v: 'a| v;
+    let z = never();
+    let r = f([z]);
+    z <- 5;
+    r[0]$
+}"#,
+    is(Value::I64(5))
+);
+
+run!(union_bound_a_recursive_name_decides_the_cell, r#"{
+    type T = [Array<T>, i64];
+    let f = 'a: [T, null] |v: 'a| v;
+    let z = never();
+    let r = f([z]);
+    z <- "s";
+    r
+}"#, refused("cannot hold string"); FuseExpect::None);
+
+run!(union_bound_two_decided_variable_members_refuse_an_undecided_element, r#"{
+    let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v;
+    let z = never();
+    let r = f(["s"], [z]);
+    z <- 2.5;
+    r
+}"#, refused("nothing has decided which: `z` is undecided at this call; annotate `z`"); FuseExpect::None);
+
+run!(union_bound_a_decided_variable_member_leaves_one_taker, r#"{
+    let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v;
+    let z = never();
+    let r = f("s", [z]);
+    z <- 2.5;
+    r
+}"#, refused("z is i64, inferred from an earlier use, and cannot hold f64"); FuseExpect::None);
+
+run!(
+    union_bound_a_decided_variable_member_accepts,
+    r#"{
+    let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v;
+    let z = never();
+    let r = f("s", [z]);
+    z <- 3;
+    r[0]$
+}"#,
+    is(Value::I64(3))
+);
+
+run!(union_bound_an_abstract_member_takes_no_array, r#"{
+    type C = Abstract<i64>;
+    let f = 'a: [Array<[i64, null]>, C] |v: 'a| v;
+    let z = never();
+    let r = f([z]);
+    z <- "s";
+    r
+}"#, refused("cannot hold string"); FuseExpect::None);
+
+// An abstract type's parameter is invariant: a bound's member makes the
+// value's exactly its own, and two members that take it are a choice.
+run!(union_bound_two_abstract_members_refuse_an_undecided_parameter, r#"{
+    type B<'p> = Abstract<'p>;
+    let f = 'a: [B<i64>, B<string>] |v: 'a| v;
+    let z = never();
+    let r = f(B(z));
+    z <- 2.5;
+    r.0
+}"#, refused("B<i64> or B<string> of the bound [B<i64>, B<string>], and nothing has decided which: `z` is undecided at this call; annotate `z`"); FuseExpect::None);
+
+run!(abstract_bound_decides_the_parameter, r#"{
+    type B<'p> = Abstract<'p>;
+    let f = 'a: B<[i64, null]> |v: 'a| v;
+    let z = never();
+    let r = f(B(z));
+    z <- "s";
+    r.0
+}"#, refused("z is [i64, null], inferred from an earlier use, and cannot hold string"); FuseExpect::None);
+
+run!(
+    abstract_bound_parameter_accepts,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = 'a: B<[i64, null]> |v: 'a| v;
+    let z = never();
+    let r = f(B(z));
+    z <- 5;
+    r.0
+}"#,
+    is(Value::I64(5))
+);
+
+// The choice met inside the argument's own check names the binding too.
+run!(union_bound_under_a_constructor_names_the_binding, r#"{
+    let f = 'a: Array<[Array<i64>, Array<string>]> |v: 'a| v;
+    let z = never();
+    let r = f([[z]]);
+    z <- 2.5;
+    r
+}"#, refused("nothing has decided which: `z` is undecided at this call; annotate `z`"); FuseExpect::None);
+
 // A union of primitives the cell's bound refuses whole holds the cell in
 // one of its bits, as a union holds it in one member.
 run!(

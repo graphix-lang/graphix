@@ -992,13 +992,19 @@ the definition gates:
   (`contains::UndecidedTaker`, `callsite.rs::undecided_taker`), where the
   check used to accept it and the build refuse the instance. A trial, an
   ordered walk and a pre-unification pass the choice by; the argument's
-  own check meets it. A read-only reference member bounds a writable
-  reference's referent (`'a: &[i64, null]` holds the `z` of `&mut z`
-  within `[i64, null]`), a writable member's referent is the value's
-  exactly (`'a: &mut [i64, null]` makes `z` `[i64, null]`), and a map
-  passes its key down as it does its value (pins
-  `lang::types::union_bound_*`, `reference_bound_*`,
-  `writable_reference_bound_*`, `map_bound_*`). A written
+  own check meets it. The members are what the bound's names and decided
+  variables stand for (`'a: [A, B]` over `type A = Array<i64>`, `'a:
+  [Array<i64>, 'b]` once an argument has decided `'b`), and an abstract
+  member takes no structural value; where a member is a variable nothing
+  has decided yet, no member is told apart here. A read-only reference
+  member bounds a writable reference's referent (`'a: &[i64, null]` holds
+  the `z` of `&mut z` within `[i64, null]`), a writable member's referent
+  is the value's exactly (`'a: &mut [i64, null]` makes `z` `[i64,
+  null]`), and so is an abstract member's parameter (`'a: B<[i64, null]>`
+  makes the `z` of `B(z)` `[i64, null]`); a map passes its key down as it
+  does its value (pins `lang::types::union_bound_*`, `reference_bound_*`,
+  `writable_reference_bound_*`, `map_bound_*`, `abstract_bound_*`). A
+  written
   cell is: an enclosing definition's parameter merged into `'n` in `let
   p: fn(y: 'n) -> Array<'n> = |y| [y, n]` makes `'n` that parameter,
   which every call of the enclosing definition's inner functions shares.

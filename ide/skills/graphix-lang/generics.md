@@ -394,7 +394,9 @@ function types) takes an argument whose type is decided. One still open
 lambda) is refused where both members could hold it, "nothing has decided
 which", naming the binding to annotate: which member holds it would
 follow a later use. Where only one member can hold it that member decides
-it (`(z, 1)` at `[(i64, i64), (string, string)]` makes `z` an `i64`).
+it (`(z, 1)` at `[(i64, i64), (string, string)]` makes `z` an `i64`). A
+member written as a name, or as a variable another argument has decided,
+counts as what it stands for.
 
 ```graphix,cases
 no "nothing has decided which: `z` is undecided at this call; annotate `z`" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
@@ -402,6 +404,9 @@ ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z: i64 = never(); let 
 no "nothing has decided which: this argument is undecided at this call; annotate it" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; f([])
 ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let e: Array<string> = []; f(e)
 no "cannot hold f64" let f = 'a: [(i64, i64), (string, string)] |v: 'a| v; let z = never(); let r = f((z, 1)); z <- 2.5; r
+no "nothing has decided which: `z` is undecided at this call; annotate `z`" type A = Array<i64>; type B = Array<string>; let f = 'a: [A, B] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
+no "nothing has decided which" let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; let z = never(); let r = f(["s"], [z]); z <- 1; r
+ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; let z = never(); let r = f("s", [z]); z <- 1; r
 ```
 
 A variable a callback also holds does not widen: the first argument decides
