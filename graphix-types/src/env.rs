@@ -1925,6 +1925,19 @@ impl Env {
         }
     }
 
+    // CR claude for claude: [risk/low] Two impl heads that share values and neither
+    // holds the other are both registered (the test below is containment either way),
+    // and a union dispatch over them gives a shared value to whichever member the
+    // union's own order puts first, which is not the order written: `impl Show for
+    // Array<[i64, string]> { let show = |x| "arr-is" }; impl Show for Array<[i64,
+    // null]> { let show = |x| "arr-in" }; let x: [Array<[i64, string]>, Array<[i64,
+    // null]>] = [1]; Show::show(x)` prints arr-in, where `let y: Array<[i64, string]>
+    // = [1]; Show::show(y)` prints arr-is. base-r23 and lane 23b after
+    // trait-dispatch-equal-members-01 alike, with and without --no-fusion. The empty
+    // array is such a value of any two Array heads. Whether heads that share a value
+    // are refused at the impl, or the dispatch's order is said to be the type's, is a
+    // language rule nobody has ruled on. probe: ~/ptmp/cr29/scratch/r23/23b/tdm/b1.gx
+    // (impl-heads-share-values-01)
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.

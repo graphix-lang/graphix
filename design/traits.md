@@ -461,11 +461,25 @@ union self type lowers the call to `{ let #s = self; let #a_i = arg_i;
 ..; select #s { M as #t => #bind::N(#t, #a_i, ..), .. } }` — `#bind::N`
 being the compiler's private spelling for a binding by id — and the
 `CallSite` delegates every `Update` method to the lowered node. The
-arms are `Type::dispatch_members`: the union flattened through its
-names, each named type expanded once and each member tested once, in
-the order first met, so a DAG of named unions costs its names, not its
-paths, and a member two names reach is one arm. The
-generated select fuses over a union of primitives
+check asks its question of `Type::dispatch_members`: the union flattened
+through its names, each named type expanded once and each member asked
+once, in the order first met, so a DAG of named unions costs its names,
+not its paths. The arms are `Type::dispatch_arms`, those members one per
+type and a narrower one first: of two spellings of one type (each holds
+the other: `Array<X>` beside `Array<[i64, string]>`) the first met is
+the arm, and a member another holds (`Array<i64>` beside `Array<[i64,
+string]>`) is tested before it, so no arm is dead. Only members that
+share a constructor are compared. Two members that share values and
+neither holds the other (`Array<[i64, string]>` beside `Array<[i64,
+null]>`) keep their order, and a value of both takes the first: the
+select types that arm's bind as its member and its part of the other, so
+an arm whose member shares a constructor with another takes its bind at
+the member's own type (`M as #t => { let #t: M = #t; #bind::N(#t, ..)
+}`), which a generic impl's head then matches as it did in the check
+(pins `lang::traits::trait_union_dispatch_{one_type_spelled_twice,
+member_another_holds, members_that_overlap}`,
+`typ::setops::tests::dispatch_arms_are_one_per_type_narrower_first`).
+The generated select fuses over a union of primitives
 (`lang::traits::native_on_a_union_dispatch` holds a `#[native]` call);
 over a union of abstract types it de-fuses (coverage residue). A
 dispatcher is only ever a call's own function: a trait method named as a

@@ -181,7 +181,11 @@ let v: [i64, Counter] = select flag { true => 1, false => Counter(2) };
 show(v)
 ```
 
-Every member needs an implementation. The call narrows only the `self`
+Every member needs an implementation. Two spellings of one type are one
+member. Where one member holds another (`Array<i64>` beside
+`Array<[i64, string]>`) the narrower is tested first, and a value that
+two members share (`[1]` in `Array<[i64, string]>` and `Array<[i64,
+null]>`) takes the first of them. The call narrows only the `self`
 argument, so a trait with a method that takes `self` anywhere else (as
 another parameter's type, or in the bound of a type variable) cannot be
 called on a union: write the `select` yourself there.

@@ -220,6 +220,78 @@ run!(
     "#
 );
 
+// One type spelled two ways, inline and behind names, is one member.
+run!(
+    trait_union_dispatch_one_type_spelled_twice,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "arr 1 null str a arr 2"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for string { let show = |x| "str [x]" };
+        impl Show for null { let show = |x| "null" };
+        impl Show for Array<[i64, string]> { let show = |x| "arr [array::len(x)]" };
+        type X = [i64, string];
+        type Y = [string, i64];
+        type A = [Array<X>, null];
+        type B = [Array<[i64, string]>, Array<Y>, string];
+        let pick = |n: i64| -> [A, B] select n { 0 => [1], 1 => null, 2 => "a", _ => ["b", 2] };
+        let two: [Array<X>, Array<[i64, string]>, null] = [1, "c"];
+        let result = "[Show::show(pick(0))] [Show::show(pick(1))] [Show::show(pick(2))] [Show::show(two)]"
+    "#
+);
+
+// A member another member holds is tested before it, whichever is met
+// first, so every member keeps its arm.
+run!(
+    trait_union_dispatch_member_another_holds,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if s == "arr(int 1) arr(str a,int 2) null str s arr(int 1) arr(str a,int 2)"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int [x]" };
+        impl Show for string { let show = |x| "str [x]" };
+        impl Show for null { let show = |x| "null" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |x| "arr([str::join(#sep: ",", array::map(x, |e| Show::show(e)))])"
+        };
+        type N = [Array<i64>, string];
+        type W = [Array<[i64, string]>, null];
+        type Z = [Array<i64>, string];
+        let wide = |n: i64| -> [W, Z] select n { 0 => [1], 1 => ["a", 2], 2 => null, _ => "s" };
+        let narrow = |n: i64| -> [N, W] select n { 0 => [1], _ => ["a", 2] };
+        let result = "[Show::show(wide(0))] [Show::show(wide(1))] [Show::show(wide(2))] [Show::show(wide(3))] [Show::show(narrow(0))] [Show::show(narrow(1))]"
+    "#
+);
+
+// Two members that share some values and neither holds the other: a value
+// of both takes the first, at that member's type.
+run!(
+    trait_union_dispatch_members_that_overlap,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if s == "arr(int 1) arr(null) arr(str a) tup(int 1, null) tup(null, str b)"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int [x]" };
+        impl Show for string { let show = |x| "str [x]" };
+        impl Show for null { let show = |x| "null" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |x| "arr([str::join(#sep: ",", array::map(x, |e| Show::show(e)))])"
+        };
+        impl<'a: Show, 'b: Show> Show for ('a, 'b) {
+            let show = |x| "tup([Show::show(x.0)], [Show::show(x.1)])"
+        };
+        type S = Array<[i64, string]>;
+        type N = Array<[i64, null]>;
+        let arr = |n: i64| -> [S, N] select n { 0 => [1], 1 => [null], _ => ["a"] };
+        let tup = |n: i64| -> [([i64, string], [i64, null]), ([i64, null], [string, null])]
+            select n { 0 => (1, null), _ => (null, "b") };
+        let result = "[Show::show(arr(0))] [Show::show(arr(1))] [Show::show(arr(2))] [Show::show(tup(0))] [Show::show(tup(1))]"
+    "#
+);
+
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,

@@ -2830,6 +2830,35 @@ pub(crate) mod tests {
         assert_eq!(printed, "null, Error<`E>, `A, `B");
     }
 
+    // Two spellings of one type are one member, and a member another
+    // holds stands before it, whichever was met first.
+    #[test]
+    fn dispatch_arms_are_one_per_type_narrower_first() {
+        let defs = [
+            ("X", "[i64, string]"),
+            ("Wide", "[Array<[i64, string]>, null]"),
+            ("Narrow", "[Array<i64>, Array<X>, string]"),
+            ("Zed", "[Array<i64>, Array<X>, string]"),
+        ];
+        let printed = |t: &str| {
+            let (env, t) = typed(&defs, t);
+            let members = Type::dispatch_arms(&env, &t).unwrap();
+            format_with_flags(PrintFlag::DerefTVars, || {
+                members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+            })
+        };
+        assert_eq!(printed("[Narrow, Wide]"), "string, Array<i64>, Array<X>, null");
+        assert_eq!(
+            printed("[Wide, Zed]"),
+            "null, Array<i64>, Array<[i64, string]>, string"
+        );
+        assert_eq!(
+            printed("[Array<[i64, null]>, Wide, Array<[null, i64, string]>, Narrow]"),
+            "string, Array<i64>, Array<X>, null, Array<[i64, null]>, \
+             Array<[i64, null, string]>"
+        );
+    }
+
     // One definition applied to two open cells is two types, each
     // expanded; applied to one cell twice, it is expanded once.
     #[test]

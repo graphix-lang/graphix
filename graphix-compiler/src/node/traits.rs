@@ -1496,7 +1496,7 @@ impl<R: Rt> CallSite<R> {
             _ => false,
         };
         if union && !def.hole {
-            let members = Type::dispatch_members(&ctx.env, &self_t)?;
+            let members = Type::dispatch_arms(&ctx.env, &self_t)?;
             return self.lower_trait_union(ctx, &def, tm.index, &members);
         }
         // A constructor trait selects by the receiver's outermost form.
@@ -1653,7 +1653,9 @@ impl<R: Rt> CallSite<R> {
     ///   select #s { M1 as #t => <impl M1>(#t, #a0, ..), M2 as #t => .. } }
     /// ```
     ///
-    /// The implementation bindings are named by id (`#bind::N`).
+    /// The implementation bindings are named by id (`#bind::N`). An arm
+    /// whose member shares a constructor with another calls over `let #t:
+    /// M = #t`.
     fn lower_trait_union(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -1692,7 +1694,7 @@ impl<R: Rt> CallSite<R> {
                 (label.clone(), mk(ExprKind::Ref { name: ModPath::from([arg]) }))
             })
             .collect();
-        let arms = targets.drain(..).map(|(mem, bind)| {
+        let arms = targets.drain(..).enumerate().map(|(i, (mem, bind))| {
             let bind = format_compact!("{}", bind.inner());
             let f = mk(ExprKind::Ref {
                 name: ModPath::from([literal!("#bind"), ArcStr::from(bind.as_str())]),
@@ -1701,6 +1703,26 @@ impl<R: Rt> CallSite<R> {
                 function: Arc::new(f),
                 args: Arc::from_iter(call_args.iter().cloned()),
             }));
+            // the select types the bind as `mem` and its part of each
+            // member sharing the constructor: every one a value of `mem`
+            let shared = members
+                .iter()
+                .enumerate()
+                .any(|(j, o)| j != i && o.shares_constructor(&mem));
+            let call = match shared {
+                false => call,
+                true => {
+                    let own = mk(ExprKind::Bind(Arc::new(BindExpr {
+                        rec: false,
+                        pattern: StructurePattern::Bind(literal!("#t").into()),
+                        typ: Some(mem.clone()),
+                        value: mk(ExprKind::Ref {
+                            name: ModPath::from([literal!("#t")]),
+                        }),
+                    })));
+                    mk(ExprKind::Block { exprs: Arc::from_iter([own, call]) })
+                }
+            };
             let pat = Pattern {
                 type_predicate: Some(mem),
                 structure_predicate: StructurePattern::Bind(literal!("#t").into()),
