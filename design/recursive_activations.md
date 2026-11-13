@@ -119,9 +119,19 @@ the
 program already runs, so the failure is reported as an unhandled error
 is, once a definition (`DefAssertion::said`), and the assertion stays for
 the compiles after it. Where fusion does not run (`--no-fusion`, a
-dynamic module) only the gate is checked, as `#[native]` is not. A
-run-time bind fuses only a collection slot's instance and one an
-assertion covers, and it does so as its runtime does, not as its call
+dynamic module) only the gate is checked, as `#[native]` is not. Every
+run-time bind fuses, so a function value costs what a call naming its
+definition does: a collection slot's instance takes its prototype's
+kernels; any other takes the kernels an earlier bind of its definition
+at its type built (`FusionCtx::instances`, keyed by definition and
+type), else its body is fused at this bind (`fusion::fuse_instance`).
+An instance whose walk fused nothing is cached as such and not walked
+again, so a node-walked recursion that binds an instance per level tries
+its body once however deep it goes, unless an assertion reaches the
+bind, whose check reads the walk. A bind of an instance already cached
+still walks its body, for the fingerprint and to splice the kernels, as a
+slot's does: a call whose function changes every cycle pays that at each
+bind. It fuses as its runtime does, not as its call
 site's flags say: a site the package root compiled (a stdlib function's body) has
 fusion off, and one a collection or a builtin builds has no flags of its
 own; a runtime whose flags disable fusion disables its context's

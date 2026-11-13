@@ -92,6 +92,9 @@ impl<X: GXExt> Drop for CompExp<X> {
 pub struct CompRes<X: GXExt> {
     pub exprs: SmallVec<[CompExp<X>; 1]>,
     pub env: Env,
+    /// The regions the runtime had fused when the compile ended, before a
+    /// cycle ran what it compiled: a run-time bind fuses later.
+    pub fused: usize,
 }
 
 /// Result of a typecheck-only compile pass: the env as it would be after
@@ -458,7 +461,7 @@ enum ToGX<X: GXExt> {
     /// Hand out the program compiled at construction, once. See
     /// [`GXHandle::program`].
     Program {
-        res: oneshot::Sender<(Option<Result<ProgramRoot, String>>, Env)>,
+        res: oneshot::Sender<(Option<Result<ProgramRoot, String>>, Env, usize)>,
     },
     /// Snapshot the compiler-env and runtime-ref registry sizes.
     EnvStats {
@@ -899,7 +902,7 @@ impl<X: GXExt> GXHandle<X> {
     /// (`GXConfig::program`), as `load` would have returned it; its
     /// compile error when it failed, `None` when none was configured.
     pub async fn program(&self) -> Result<Option<CompRes<X>>> {
-        let (root, env) = self.exec(|res| ToGX::Program { res }).await?;
+        let (root, env, fused) = self.exec(|res| ToGX::Program { res }).await?;
         match root {
             None => Ok(None),
             Some(Err(e)) => Err(anyhow!("{e}")),
@@ -911,13 +914,14 @@ impl<X: GXExt> GXHandle<X> {
                     rt: self.clone()
                 }],
                 env,
+                fused,
             })),
         }
     }
 
     /// Snapshot the fusion outcome counters accumulated by every
-    /// `compile()` this runtime has dispatched. Compile-time only, so
-    /// fetch any time after the compile of interest. See
+    /// `compile()` this runtime has dispatched, and every run-time bind
+    /// its cycles fused since ([`CompRes::fused`] is a compile's own). See
     /// [`graphix_compiler::FusionStats`].
     pub async fn fusion_stats(&self) -> Result<FusionStats> {
         self.exec(|res| ToGX::FusionStats { res }).await

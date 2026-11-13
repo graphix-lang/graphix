@@ -369,6 +369,8 @@ pub(super) struct GX<X: GXExt> {
     /// The program compiled or restored at construction; a compile
     /// failure is kept for the embedder to report, the runtime starts.
     program: Option<Result<ProgramRoot, String>>,
+    /// The regions fused when the program's compile or restore ended.
+    program_fused: usize,
     /// The registration was restored from an image, not compiled.
     restored: bool,
     /// Active trace recording, if any. See [`GXHandle::trace_start`].
@@ -430,6 +432,7 @@ impl<X: GXExt> GX<X> {
             trace: None,
             scope: Scope::root(),
             program: None,
+            program_fused: 0,
             restored: false,
         };
         info!("runtime construction before the root: {:?}", st_new.elapsed());
@@ -490,6 +493,7 @@ impl<X: GXExt> GX<X> {
                 Err(e) => t.program = Some(Err(format!("{e:?}"))),
             }
         }
+        t.program_fused = t.ctx.fusion.fused();
         if let (Some(Ok(root)), Some(tr)) = (&t.program, t.trace.as_mut()) {
             tr.record_compiled(t.ctx.rt.cycle, root.id);
         }
@@ -975,7 +979,7 @@ impl<X: GXExt> GX<X> {
                             other
                         }
                     };
-                    let _ = res.send((root, self.ctx.env.clone()));
+                    let _ = res.send((root, self.ctx.env.clone(), self.program_fused));
                 }
                 ToGX::SetDeref { cell, v } => self.set_deref(cell, v, sets),
                 ToGX::EnvStats { res } => {
@@ -1123,7 +1127,8 @@ impl<X: GXExt> GX<X> {
                 CompExp { id: e.id, output, typ, rt: rt.clone() }
             })
             .collect::<SmallVec<[_; 1]>>();
-        Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() })
+        let fused = self.ctx.fusion.fused();
+        Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone(), fused })
     }
 
     async fn load_exprs(
@@ -1301,7 +1306,8 @@ impl<X: GXExt> GX<X> {
         let ProgramRoot { id, output, typ, .. } =
             self.load_program(source, None, load).await?;
         let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
-        Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
+        let fused = self.ctx.fusion.fused();
+        Ok(CompRes { exprs: res, env: self.ctx.env.clone(), fused })
     }
 
     /// Warn of each import a compile since `since` added that no lookup

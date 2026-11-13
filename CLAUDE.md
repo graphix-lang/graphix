@@ -128,8 +128,9 @@ off-topic failure is discussed with Eric before it is fixed.
   predicate pins the value exactly and a refusal names its message
   (`testing::refused`). `interp` also fails unless the check alone refuses
   exactly when the build does. `FuseExpect::{Jit, None}` asserts WHETHER
-  anything fuses, both ways; `#[native]` asserts that an expression does.
-  Details: `design/testing.md`.
+  the build fuses anything, both ways (a run-time bind fuses later);
+  `#[native]` asserts that an expression does. Details:
+  `design/testing.md`.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, cold and warm images, forked against serial, and
   check against build. Its `findings/` corpus is the regression gate:

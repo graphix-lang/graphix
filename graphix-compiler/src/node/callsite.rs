@@ -3330,7 +3330,7 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
-            // CR claude for claude: [perf/low] A run-time bind fuses only a collection
+            // XCR claude for claude: [perf/low] A run-time bind fuses only a collection
             // slot's instance and one an assertion it reaches covers (`asserted`): a
             // function value called with no attribute in reach, `let g = select b {
             // true => fib, .. }; g(20)`, runs every level of its recursion in the
@@ -3404,16 +3404,40 @@ impl<R: Rt> CallSite<R> {
             // same answer in both engines and a formal a wake re-stood is read stale,
             // moved, by a run-time bind's closure in both. (b) waits on nothing but
             // its own measurement.
+            // 2026-11-12 claude: Built D20 (b) on the tree as it is (the
+            // r19-e-wip-bound-bind commits, ported): build_bound fuses every non-slot
+            // bind through fusion::fuse_instance, which caches by definition and type,
+            // an instance whose walk fused nothing included (walked again only where
+            // an assertion reaches the bind), fingerprints unmemoized; a bind of a
+            // cached instance takes its kernels without a TypeMemo of its own;
+            // FuseExpect counts the build alone (CompRes::fused). Pins:
+            // lang::fusion::bound_function_value_fuses (fails without the policy: no
+            // kernel runs), bound_unfused_instance_tried_once (16 against 406 failures
+            // without the nothing-fused cache, 6 against 201 retained with the memo),
+            // first_cycle_bind_is_not_the_builds (fails with the old count);
+            // bound_function_value_rebinds pins the cached path's values in every
+            // mode. Measured (instructions:u, debug): b8.gx 23.90G on base-r23, 0.93G
+            // here (the named call 0.93G); nf_bound +1.4%; a one-operator function
+            // rebound every cycle (rb2.gx) 3.94G to 4.60G, +17% (5.61G before the
+            // TypeMemo was dropped). netidx-admin milestone_latency, 5 runs each under
+            // the farm's load: first role-menu key (max) 2.8-9.3 ms without, 12-24 ms
+            // with; p50 and total instructions equal. Probes:
+            // ~/ptmp/cr29/scratch/r23/23e/bound-bind-policy/. Needs a soak.
+            // 2026-11-12 claude: The admin figures above are from the build before the
+            // TypeMemo was dropped; with the commit's code, 5 runs each under the same
+            // load: first role-menu key (max) 2.5-5.3 ms without the policy, 10.7-16.2
+            // ms with it, p50 0.06-0.25 ms both, total instructions 39.9-40.5G against
+            // 40.2-41.1G. The earlier lane's judgment stands (D20 follow-up 2 put about
+            // 9 ms before Eric): one key, once, under a frame in a debug build; quick
+            // was not built (debug builds only in a lane).
             if !ctx.fusion.disabled() {
-                // an assertion the bind reaches asks for the kernels its
-                // check reads
                 let asserted =
                     !ctx.attr_census.lock().is_empty() || tail_loops.checking();
                 if let Some(apply) = self.callee.apply_mut() {
                     if let Some(share) = &self.share {
                         share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
-                    } else if asserted && ctx.fusion.available() {
-                        fusion::fuse_instance(ctx, self.top_id, apply)?;
+                    } else if ctx.fusion.available() {
+                        fusion::fuse_instance(ctx, self.top_id, apply, asserted)?;
                     }
                 }
                 crate::check_attribute_census(ctx)?;

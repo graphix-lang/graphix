@@ -16,6 +16,27 @@ use netidx::publisher::Value;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
 
+// A function value bound in the first cycle fuses at its bind, after the
+// build: `FuseExpect` counts what the build fused, none here.
+run!(first_cycle_bind_is_not_the_builds, r#"
+{
+    let b = true;
+    let g = select b { true => |x: i64| #[native] (x + 1), false => |x: i64| x };
+    g(41)
+}
+"#, is(Value::I64(42)); FuseExpect::None);
+
+// A call whose function changes binds again at each change: a later bind
+// of a definition takes the kernels its first bind built.
+run!(bound_function_value_rebinds, r#"
+{
+    let fs = [|x: i64| -> i64 x * 2, |x: i64| -> i64 x + 7];
+    let i = array::iter([0, 1, 0, 1, 0]);
+    let f = fs[i]$;
+    array::group(f(i + 10), |n, _| n == 5)
+}
+"#, prints("[i64:20, i64:18, i64:20, i64:18, i64:20]"); FuseExpect::None);
+
 run!(neg_value_shapes, r#"
 {
     let d = decimal:1.5;
@@ -91,6 +112,11 @@ struct Run {
     /// The (fused kernel runs, JIT wrapper entries) the runtime made
     /// from just before the build.
     invocations: (u64, u64),
+    /// The fusion failures recorded from just before the build to its
+    /// first value.
+    failures: usize,
+    /// What fusion holds at the first value (its stats' `retained`).
+    retained: usize,
 }
 
 impl Run {
@@ -128,18 +154,20 @@ async fn run_code(
         held.push(ctx.rt.compile(ArcStr::from(*p)).await?);
     }
     ctx.rt.control().reset_invocations();
-    let fused_before = ctx.fusion_stats().await?.fused;
+    let before = ctx.fusion_stats().await?;
     let res = match as_file {
         true => ctx.rt.load(Load::Text(ArcStr::from(code))).await?,
         false => ctx.rt.compile(ArcStr::from(code)).await?,
     };
-    let regions = ctx.fusion_stats().await?.fused - fused_before;
+    let regions = res.fused - before.fused;
     let eid = res.exprs.first().context("no top-level expr")?.id;
     let value =
         next_update(&mut rx, eid, Instant::now() + Duration::from_secs(5)).await?;
     let invocations = ctx.rt.control().invocations();
+    let after = ctx.fusion_stats().await?;
+    let failures = after.failed.len() - before.failed.len();
     ctx.shutdown().await;
-    Ok(Run { value, regions, invocations })
+    Ok(Run { value, regions, invocations, failures, retained: after.retained })
 }
 
 /// Load `code` as a file and return its first value and the runtime's
@@ -246,6 +274,48 @@ async fn compile_then_compile_external_scalar() -> Result<()> {
     // A compile registers a binding a subsequent compile sees.
     let run = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", false).await?;
     assert_eq!(run.value, Value::I64(42));
+    Ok(())
+}
+
+/// A function value bound at run time fuses as a call naming it does:
+/// the build fuses nothing, and the bound recursion runs in kernels.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "current_thread")]
+async fn bound_function_value_fuses() -> Result<()> {
+    let code = "{
+  let rec fib = |n: i64| -> i64 select n { 0 => 0, 1 => 1, _ => fib(n - 1) + fib(n - 2) };
+  let b = true;
+  let g = select b { true => fib, false => |n: i64| -> i64 n };
+  g(20)
+}";
+    let run = run_code(BitFlags::empty(), &[], code, true).await?;
+    assert_eq!(run.value, Value::I64(6765));
+    assert_eq!(run.regions, 0, "the build fused a region");
+    assert!(run.invocations.0 > 0, "the bound instance ran no kernel");
+    Ok(())
+}
+
+/// A node-walked recursion binds an instance per level; one whose body
+/// does not fuse is tried once, however deep it goes, and leaves fusion
+/// holding nothing for the levels.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_unfused_instance_tried_once() -> Result<()> {
+    let code = |depth: i64| {
+        format!(
+            "{{
+  let rec f = |n: i64| -> i64 select n {{ 0 => 0, _ => count(n) + f(n - 1) }};
+  let b = true;
+  let g = select b {{ true => f, false => |n: i64| -> i64 n }};
+  g({depth})
+}}"
+        )
+    };
+    let shallow = run_code(BitFlags::empty(), &[], &code(5), true).await?;
+    let deep = run_code(BitFlags::empty(), &[], &code(200), true).await?;
+    assert_eq!((&shallow.value, &deep.value), (&Value::I64(5), &Value::I64(200)));
+    assert!(shallow.failures > 0, "the unfused body records its failure");
+    assert_eq!(shallow.failures, deep.failures);
+    assert_eq!(shallow.retained, deep.retained);
     Ok(())
 }
 

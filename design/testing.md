@@ -17,8 +17,9 @@ How `run!` fixtures run, and what a landing owes.
   and fails unless the check refuses exactly when the build does
   (`; build_only` exempts a refusal only a build makes: `#[native]`,
   `#[parallel]`, the definition assertions). `FuseExpect::{Jit, None}` asserts
-  WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
-  expression does. Every mode, `testing::init`, the `eval*` helpers,
+  WHETHER the build fuses anything, bidirectionally (`CompRes::fused`,
+  taken before a cycle runs: a run-time bind fuses later); `#[native]`
+  asserts that an expression does. Every mode, `testing::init`, the `eval*` helpers,
   `compile_error` and `Fixture` restore the package root from the image
   the process compiled once per root, as a warm shell start does, and
   fail where it does not restore; a start through `testing::config`

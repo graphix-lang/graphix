@@ -80,7 +80,7 @@ pub(super) async fn run_delta_with(
         verdicts_agree(checked, built.as_ref().map(|_| ()))?;
     }
     let res = built?;
-    let regions = ctx.fusion_stats().await.map(|s| s.fused).unwrap_or(0);
+    let regions = res.fused;
     let deadline = Instant::now() + HANG_GUARD;
     let values =
         updates_until(&ctx.rt, &mut rx, res.exprs[0].id, until, deadline).await?;

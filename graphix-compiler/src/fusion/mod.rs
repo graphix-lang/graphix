@@ -117,10 +117,10 @@ pub struct FusionStats {
     /// ([`FusionCtx::relocate_kernels`]), and the kernels they moved.
     pub jit_relocations: usize,
     pub jit_kernels_moved: usize,
-    /// What the JIT holds now, not a count across compiles: its records,
-    /// cached bodies, kernel signatures and names
-    /// ([`FusionCtx::stats`]). Code that was deleted holds none of it
-    /// after the next link.
+    /// What fusion holds now, not a count across compiles: the JIT's
+    /// records, cached bodies, kernel signatures and names, and the
+    /// instances' fingerprints ([`FusionCtx::stats`]). Code that was
+    /// deleted holds none of it after the next link.
     pub retained: usize,
     /// The bytes every live generation's arena has committed now.
     pub jit_committed: usize,
@@ -413,7 +413,10 @@ pub struct FusionCtx {
     pub(crate) share: Option<share::Share>,
     /// Definitions deleted since the last link, whose kernels it forgets.
     dead: Vec<LambdaId>,
-    instances: Arc<parking_lot::Mutex<BTreeMap<KernelCacheKey, share::SlotShare>>>,
+    /// Each run-time bound instance's kernels, by definition and type;
+    /// `None` where its walk fused nothing.
+    instances:
+        Arc<parking_lot::Mutex<BTreeMap<KernelCacheKey, Option<share::SlotShare>>>>,
     /// Each instance's body fingerprint, as a walk now would find it: a
     /// kernel spliced anywhere may change one, so any splice forgets them
     /// all ([`kernel_node`]). Shared with the context's compile tasks.
@@ -611,7 +614,12 @@ impl FusionCtx {
         jit.forget(&funcs);
     }
 
-    /// The outcome counters, and what the JIT retains now.
+    /// [`FusionStats::fused`] alone.
+    pub fn fused(&self) -> usize {
+        self.stats.fused
+    }
+
+    /// The outcome counters, and what fusion retains now.
     pub fn stats(&self) -> FusionStats {
         let (retained, jit_committed) = match (&*self.emission.lock(), &*self.jit.lock())
         {
@@ -620,6 +628,7 @@ impl FusionCtx {
             }
             _ => (0, 0),
         };
+        let retained = retained + self.fingerprints.lock().by_instance.len();
         FusionStats { retained, jit_committed, ..self.stats.clone() }
     }
 
@@ -1531,24 +1540,31 @@ fn calls_a_function<R: Rt>(node: &Node<R>) -> bool {
     calls
 }
 
+/// Fuse `apply`, an instance bound at run time, or give it the kernels an
+/// earlier bind of its definition at its type built. An instance whose
+/// walk fused nothing is walked again only when `asserted`: an assertion
+/// the bind reaches is checked by the walk.
 pub(crate) fn fuse_instance<R: Rt>(
     ctx: &mut CompileCtx<R>,
     top_id: ExprId,
     apply: &mut dyn crate::Apply<R>,
+    asserted: bool,
 ) -> anyhow::Result<()> {
     let key = match apply.view() {
         ApplyView::Lambda(g) => {
-            let (coverage, resolutions) = ctx.fusion.fingerprint(g, ctx);
+            let (coverage, resolutions) = lowering::body_fingerprint(g.body(), ctx);
             Some((g.id(), Arc::new(apply.typ().resolve_tvars()), coverage, resolutions))
         }
         _ => None,
     };
     let cached =
         key.as_ref().and_then(|key| ctx.fusion.instances.lock().get(key).cloned());
-    if let Some(cached) = cached {
-        return TypeMemo::scope(|| {
-            share::fuse_slot(ctx, &cached, top_id, |ctx| apply.fuse(ctx))
-        });
+    match cached {
+        Some(Some(cached)) => {
+            return share::fuse_slot(ctx, &cached, top_id, |ctx| apply.fuse(ctx));
+        }
+        Some(None) if !asserted => return Ok(()),
+        Some(None) | None => (),
     }
     ctx.env.seed_typedef_refs();
     let local = matches!(*ctx.fusion.emission.lock(), EmissionSlot::NonEmitting);
@@ -1564,7 +1580,8 @@ pub(crate) fn fuse_instance<R: Rt>(
     if local {
         *ctx.fusion.emission.get_mut() = EmissionSlot::NonEmitting;
     }
-    if let (Some(key), Some(shared)) = (key, result?) {
+    let shared = result?;
+    if let Some(key) = key {
         ctx.fusion.instances.lock().insert(key, shared);
     }
     Ok(())

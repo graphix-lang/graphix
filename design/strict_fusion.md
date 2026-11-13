@@ -282,10 +282,14 @@ engine-independent.
   fusion built: no call to it left in the node-walk, a dynamic call's
   included, but one dispatching an instance whose body is the loop's
   kernel (`analysis::check_tail_loops`; a bind it covers is fused until
-  its failure is reported, once; unchecked where fusion does not run). A
-  run-time bind fuses a collection slot's instance (its prototype's
-  kernels) and one an assertion it reaches covers, no other (a function
-  value called with no attribute in reach node-walks); it does so as its
+  its failure is reported, once; unchecked where fusion does not run).
+  Every run-time bind fuses, so a function value costs what a named call
+  does: a collection slot's instance takes its prototype's kernels, and
+  any other instance takes the kernels an earlier bind of its definition
+  at its type built, else is fused at its first bind
+  (`fusion::fuse_instance`, cached by definition and type, an instance
+  that fused nothing included, walked again only where an assertion
+  reaches the bind); it does so as its
   runtime does, whatever its site's flags (the package root's have fusion
   off, a site a collection or a builtin builds has none): a runtime whose
   flags disable fusion disables its context's (`FusionCtx::disable`).

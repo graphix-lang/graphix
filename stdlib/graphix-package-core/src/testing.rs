@@ -437,10 +437,7 @@ async fn fixture_mode(
         Some(checked) => verdicts_agree(checked, built.as_ref().map(|_| ()))?,
         None => None,
     };
-    let regions = match &built {
-        Ok(_) => ctx.fusion_stats().await.ok().map(|s| s.fused),
-        Err(_) => None,
-    };
+    let regions = built.as_ref().ok().map(|res| res.fused);
     match built {
         Err(e) => {
             if let Err(dead) = ctx.rt.get_env().await {
