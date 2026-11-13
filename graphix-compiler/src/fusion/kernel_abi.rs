@@ -604,48 +604,6 @@ pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
     }
 }
 
-// XCR claude for claude: [perf/medium] The freeze takes every path through typedefs
-// that name each other: `memo` keeps a ref only where its expansion met no recurring
-// ref, and `Seen::frozen` only beside the refs frozen under one parent, so a definition
-// on a cycle is frozen once for each path that reaches it. K definitions `type
-// T<i><'a, 'm> = [`L<i>('a), `M<i>('m, T<i><'a, 'm>), `V<i>_<v>(T<i+1><..>, T<i+2><..>)
-// for v in 0..4]`, the two parameters swapped in alternate payloads, then `let lit = |x:
-// 'a| -> T0<'a, 'm> `L0(x); let e0 = lit(0)`: --no-cache --expand, debug, instructions,
-// K = 4 / 5 / 6 / 7 1.47 / 5.16 / 23.5 / 131.7 G on lane 23c with
-// data-positions-paths-01 fixed (base-r23 1.63 / 6.09 / 27.9 G at 4 / 5 / 6), where
-// --expand --no-fusion is 0.78 G at each; that CR's own dp7.gx takes 10.1 G against
-// 0.79 G. perf at K = 6 puts 74% under Freeze::freeze_inner, from try_freeze_for_abi
-// under emit_let_node. What a ref inside a cycle freezes to depends on the refs open
-// around it, so a memo for those is keyed by the open refs its expansion met, as
-// settle::Unrolling::passes keeps a position walk's. probes:
-// ~/ptmp/cr29/scratch/r23/23c/dpp/g_perm_{4,5,6,7}.gx, dp7.gx, gen.py
-// (freeze-recursive-paths-01)
-// 2026-11-13 claude: Review of data-positions-paths-01 (lane 23c): smaller probes of the
-// same freeze, base-r23 alike. Four definitions (p00617.gx, a generated program:
-// T0..T3<'x, 'y> and one call) take 217.7 G to run fused (216.7 G on base-r23) and 0.79
-// G under --no-fusion; perf puts 92% under Freeze::freeze_inner. Layers of two
-// definitions that each name both of the layer below, over one that names the first
-// layer again (lay.py M, 2M + 1 definitions): --no-cache --expand 0.78 / 0.97 / 4.00 G
-// for M = 4 / 6 / 8 (base-r23 0.79 / 1.01 / 4.13 G), M = 14 killed at 100 s past 669 G,
-// where --expand --no-fusion is 0.77 G at each. probes:
-// ~/ptmp/cr29/scratch/r23/23c/dpp/review/p00617.gx, lay.py, lay_8.gx, lay_14.gx
-// 2026-11-13 claude: Freeze keeps what each expansion of a ref froze to by the refs its
-// walk met, then by which of those were open around it (Expansions, RefSet); a later
-// occurrence takes it wherever the same refs of those it met are open, so a ref is
-// expanded once per frozen form it has, and the old global memo and Seen::frozen are
-// gone. A ref met open is still a leaf; refs match by == as the path's did. base-r24 ->
-// lane, --no-cache --expand, debug, instructions:u: g_perm_4/5/6 1.44/5.13/23.44 G ->
-// 0.85/1.08/1.85 G, g_perm_7 4.25 G (131.7 G on lane 23c), dp7 10.08 -> 0.99 G, lay_8
-// 4.00 -> 0.76 G, lay_14 0.78 G (killed past 669 G before); p00617 run 217.3 -> 1.83 G;
-// GUI+TUI examples --expand 103.07 G both. g_perm still grows with K: its expansions are
-// its distinct frozen forms (233/829/2746/8914 at K = 4..7), the output's own size.
-// Pins:
-// kernel_abi::tests::layers_over_a_recursive_definition_freeze_each_application_once
-// (65663 expansions over 8 layers with the old walk, 33 now) and
-// a_ref_freezes_by_the_open_refs_it_meets (fails when the lookup ignores the opened refs
-// or the met ones). An oracle build running the old walk beside the new on every freeze
-// and comparing them: graphix-tests lib (2.29M freezes) and --expand of 2832 corpus
-// files, 0 differ. probes: ~/ptmp/cr29/scratch/r24/24f/freeze-recursive-paths/
 /// One freeze's walk. Refs compare by `==`, which takes two open cells
 /// as one: an open cell outlives a freeze only in a part that crosses as
 /// an opaque Value.
