@@ -1490,6 +1490,38 @@ fn select_holder_chains_check_and_run_in_linear_time() {
     }
 }
 
+/// A chain of selects, each over the pair of the last one's result, and a
+/// seq's chain of steps, each a generic pair constructor's call on the
+/// last, check and run in time linear in their length: every part of the
+/// scrutinee's DAG is a bound cell (a select's result, an instance's), and
+/// the arm's pattern is opened over its `Any` parts once per pair of the
+/// nodes the cells hold, where once per path takes 2^links.
+#[test]
+#[cfg(target_os = "linux")]
+fn select_chains_over_parts_shared_through_cells_are_linear() {
+    const LINKS: usize = 40;
+    let selects = chain(
+        "let x0 = (|x| x, 1);\n",
+        LINKS,
+        &|i| format!("let x{i} = select (x{p}, x{p}) {{ v => v }};\n", p = i - 1),
+        "",
+    );
+    let steps = chain(
+        "let mk = |f| (f, f);\nlet x0 = (|x| x, 1);\nlet r = seq {\n",
+        LINKS,
+        &|i| format!("  let x{i} = mk(x{p});\n", p = i - 1),
+        "  0\n};\n",
+    );
+    for program in [selects, steps] {
+        checks_within(&format!("{program}0\n"), 4 * BILLION);
+        completes_within(
+            &["--no-cache"],
+            &format!("{program}sys::exit(0)\n"),
+            4 * BILLION,
+        )
+    }
+}
+
 /// A pair DAG named through a typedef builds in time linear in its depth:
 /// a call's argument checked against its formal compares and welds two
 /// equal DAGs, in different allocations, once per pair of nodes.

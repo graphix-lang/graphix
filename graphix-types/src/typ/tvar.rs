@@ -4573,7 +4573,7 @@ impl Type {
         self.open_over_any_int(env, pred, &mut AnyWalk::default())
     }
 
-    // CR claude for claude: [perf/low] An arm's bind over a scrutinee whose DAG shares
+    // XCR claude for claude: [perf/low] An arm's bind over a scrutinee whose DAG shares
     // its parts through cells checks in 2^depth. `let x0 = (|x| x, 1);` then `let x{i}
     // = select (x{i-1}, x{i-1}) { v => v };`: --check (--no-cache, instructions:u, an
     // empty program 0.76G) 0.80/1.05/1.93/5.40G at 12/16/18/20 links, base-r20 alike;
@@ -4590,9 +4590,22 @@ impl Type {
     // at each bind; needs_split_int keys the same way), and pin both shapes at 40
     // links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc-review/{seld,seld0,seqmk}-*.gx
     // (any-walk-cell-pairs-01)
+    // 2026-11-13 claude: open_over_any_int and needs_split_int look both sides through
+    // their bound cells before keying, so a pair reached through cells is remembered
+    // by the nodes the cells hold (the split walk had the same flaw: 2^25 steps at
+    // depth 24 in the unit test, no source shape found that reaches it). --check,
+    // instructions:u, lane build before/after: seld-20 5.54G/0.78G, seqmk-20
+    // 3.20G/0.83G; at 40 links 0.83G and 0.93G (an empty program 0.76G). Pins that
+    // fail with the old keying:
+    // typ::tvar::tests::{opening_cells_over_any_takes_a_pair_through_cells_once,
+    // a_split_is_asked_of_a_pair_through_cells_once} (33.5M steps each) and
+    // deep_nesting's select_chains_over_parts_shared_through_cells_are_linear (both
+    // shapes at 40 links, over its 4G budget). probes:
+    // ~/ptmp/cr29/scratch/r23/23d/awcp/
     /// [`Self::open_over_any`], each pair of shared nodes walked once
     /// while no cell is bound: a pair walked whole under the cells as they
-    /// stand binds nothing when met again.
+    /// stand binds nothing when met again. A bound cell is the node it
+    /// holds, so parts shared through cells are walked once too.
     fn open_over_any_int(
         &self,
         env: &Env,
@@ -4600,51 +4613,42 @@ impl Type {
         walk: &mut AnyWalk,
     ) -> Result<()> {
         ensure_sufficient(|| {
-            let key = walk.walked.key(self, pred);
+            let Some(p) = pred.deref_cloned() else {
+                if matches!(self.head(env)?, Some(Type::Any)) {
+                    pred.contains_ordered(env, &Type::Any)?;
+                    walk.binds += 1;
+                    walk.walked.clear()
+                }
+                return Ok(());
+            };
+            let Some(t) = self.deref_cloned() else { return Ok(()) };
+            let key = walk.walked.key(&t, &p);
             if key.is_some_and(|k| walk.walked.contains(k)) {
                 return Ok(());
             }
             let binds = walk.binds;
-            self.open_over_any_inner(env, pred, walk)?;
+            t.open_over_any_inner(env, &p, walk)?;
             if let Some(k) = key.filter(|_| walk.binds == binds) {
-                walk.walked.insert(k, self, pred)
+                walk.walked.insert(k, &t, &p)
             }
             Ok(())
         })
     }
 
-    fn open_over_any_inner(
-        &self,
-        env: &Env,
-        pred: &Type,
-        walk: &mut AnyWalk,
-    ) -> Result<()> {
+    fn open_over_any_inner(&self, env: &Env, p: &Type, walk: &mut AnyWalk) -> Result<()> {
         #[cfg(test)]
         ANY_STEPS.with(|n| n.set(n.get() + 1));
-        if let Type::TVar(tv) = pred {
-            return match tv.binding() {
-                Some(b) => self.open_over_any_int(env, &b, walk),
-                None if matches!(self.head(env)?, Some(Type::Any)) => {
-                    pred.contains_ordered(env, &Type::Any)?;
-                    walk.binds += 1;
-                    walk.walked.clear();
-                    Ok(())
-                }
-                None => Ok(()),
-            };
-        }
-        let Some(p) = pred.deref_cloned() else { return Ok(()) };
-        if let Type::Set(qs) = &p {
+        if let Type::Set(qs) = p {
             return qs.iter().try_for_each(|q| self.open_over_any_int(env, q, walk));
         }
-        let Some(t) = self.shape_under(env, &p)? else { return Ok(()) };
+        let Some(t) = self.shape_under(env, p)? else { return Ok(()) };
         let mut each = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
             for (t, p) in parts {
                 t.open_over_any_int(env, p, walk)?
             }
             Ok(())
         };
-        match (&t, &p) {
+        match (&t, p) {
             (Type::Set(_), p) => {
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 crate::expr::union_members(env, &t, &mut members)?;
@@ -4678,8 +4682,9 @@ impl Type {
     }
 
     /// [`Self::needs_split`], each pair of shared nodes that needs none
-    /// (`apart`) walked once. Exact: the walk assumes no pair in progress,
-    /// so a pair's false holds wherever it is met, and a true ends it.
+    /// (`apart`) walked once, a bound cell as the node it holds. Exact:
+    /// the walk assumes no pair in progress, so a pair's false holds
+    /// wherever it is met, and a true ends it.
     fn needs_split_int(
         &self,
         env: &Env,
@@ -4687,13 +4692,16 @@ impl Type {
         apart: &mut NodePairs,
     ) -> Result<bool> {
         ensure_sufficient(|| {
-            let key = apart.key(self, pred);
+            let (Some(t), Some(p)) = (self.deref_cloned(), pred.deref_cloned()) else {
+                return Ok(false);
+            };
+            let key = apart.key(&t, &p);
             if key.is_some_and(|k| apart.contains(k)) {
                 return Ok(false);
             }
-            let split = self.needs_split_inner(env, pred, apart)?;
+            let split = t.needs_split_inner(env, &p, apart)?;
             if let Some(k) = key.filter(|_| !split) {
-                apart.insert(k, self, pred)
+                apart.insert(k, &t, &p)
             }
             Ok(split)
         })
@@ -4702,7 +4710,7 @@ impl Type {
     fn needs_split_inner(
         &self,
         env: &Env,
-        pred: &Type,
+        p: &Type,
         apart: &mut NodePairs,
     ) -> Result<bool> {
         #[cfg(test)]
@@ -4737,8 +4745,7 @@ impl Type {
         // scrutinee was an open cell with no lower bound). base-r23 alike. probes:
         // ~/ptmp/cr29/scratch/r23/23d/stb-rev/{a5,a6,a7,a9}.txt (run with rb.sh),
         // rev2.patch (the attempt) (variant-payload-bind-cells-01)
-        let Some(p) = pred.deref_cloned() else { return Ok(false) };
-        if let Type::Set(qs) = &p {
+        if let Type::Set(qs) = p {
             for q in qs.iter() {
                 if self.needs_split_int(env, q, apart)? {
                     return Ok(true);
@@ -4746,7 +4753,7 @@ impl Type {
             }
             return Ok(false);
         }
-        let Some(t) = self.shape_under(env, &p)? else { return Ok(false) };
+        let Some(t) = self.shape_under(env, p)? else { return Ok(false) };
         let mut any = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
             for (t, p) in parts {
                 if t.needs_split_int(env, p, apart)? {
@@ -4755,7 +4762,7 @@ impl Type {
             }
             Ok(false)
         };
-        match (&t, &p) {
+        match (&t, p) {
             (Type::Set(_), _) => Ok(true),
             (Type::Tuple(ts), Type::Tuple(ps))
             | (Type::Variant(_, ts, _), Type::Variant(_, ps, _)) => {
@@ -5948,6 +5955,46 @@ mod tests {
         let steps = ANY_STEPS.with(|s| s.get());
         assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
         assert!(matches!(c.binding(), Some(Type::Any)));
+    }
+
+    /// `n` pairs, each of one bound cell twice, the cell holding the pair
+    /// below it and the last one `leaf`.
+    fn pairs_through_cells(n: usize, leaf: Type) -> Type {
+        (0..n).fold(leaf, |t, i| {
+            let part = TVar::empty_named(arcstr::format!("p{i}"));
+            part.bind(t);
+            Type::Tuple(Arc::from_iter([Type::TVar(part.clone()), Type::TVar(part)]))
+        })
+    }
+
+    /// A pair DAG that shares its parts through bound cells, on either
+    /// side, is opened once per pair of the nodes the cells hold.
+    #[test]
+    fn opening_cells_over_any_takes_a_pair_through_cells_once() {
+        let n = 24;
+        let c = TVar::empty_named(literal!("c"));
+        let t = pairs_through_cells(n, Type::Any);
+        let pred = pairs_through_cells(n, Type::TVar(c.clone()));
+        ANY_STEPS.with(|s| s.set(0));
+        t.open_over_any(&Env::default(), &pred).unwrap();
+        let steps = ANY_STEPS.with(|s| s.get());
+        assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
+        assert!(matches!(c.binding(), Some(Type::Any)));
+    }
+
+    /// Whether a union stands under a constructor of a pair DAG that
+    /// shares its parts through bound cells is asked once per pair of the
+    /// nodes the cells hold.
+    #[test]
+    fn a_split_is_asked_of_a_pair_through_cells_once() {
+        let n = 24;
+        let leaf = Type::Primitive(netidx_value::Typ::I64.into());
+        let t = pairs_through_cells(n, leaf.clone());
+        let pred = pairs_through_cells(n, leaf);
+        SPLIT_STEPS.with(|s| s.set(0));
+        assert!(!t.needs_split(&Env::default(), &pred).unwrap());
+        let steps = SPLIT_STEPS.with(|s| s.get());
+        assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
     }
 
     #[test]
