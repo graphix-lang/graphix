@@ -90,6 +90,15 @@ async fn seq_composed_iterators(mode: Mode) -> Result<()> {
 
 modes!(seq_composed_iterators);
 
+// CR claude for claude: [test-gap/low] This test races a timer against a file
+// read: `go` fires at 150 ms and 300 ms, and the second fire is dropped where
+// the first run has not answered by then (a `seq` drops a trigger that meets a
+// busy machine). `jit_par` failed so once in a gate of r23-staging at load
+// average 254 (`[String("first")]` for `["first", "second"]`), and passed 24 of
+// 24 runs alone. The second fire should follow from the first run's answer, as
+// `seq_timers` does (`go <- .. once(out)`). evidence:
+// ~/ptmp/cr29/scratch/r23/23e/finisher/seq_io-jit_par-gate2.txt
+// (seq-io-timer-race-01)
 async fn seq_io(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("1"), "first")?;
