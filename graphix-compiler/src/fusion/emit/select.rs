@@ -1108,54 +1108,6 @@ pub(super) fn emit_select_arms<R: Rt>(
 ) -> Result<()> {
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
-    // XCR claude for claude: [bug/high] An arm a written test's structure rules out at an
-    // instance is still emitted: `live` below asks the type predicate alone. The arm's
-    // binds are read from the scrutinee's own parts and its body reads them at the types
-    // the definition's check gave, and where the two differ in kind the kernel does not
-    // verify and the link panics. `let g = 'a: [{a: string, b: f64}, {a: bool, c: f64}]
-    // |x: 'a| select x { [{a: string, b: f64}, {a: bool, c: f64}] as {a: h, b: _} =>
-    // `H(h), _ => `N }; g({a: true, c: 0.5})` panics "the JIT could not link emitted code:
-    // compile: Verifier errors"; --no-fusion prints `N. Same on base-r23: h is string by
-    // the one member with both fields, and the instance's `a` is a bool. Under
-    // GRAPHIX_NO_SUBST=1 `'a: [`V(bool), `W(i64), `V(i64)] |x: 'a| select x { [`V(bool),
-    // `W(i64), `V(i64)] as `V(h) => `H(h), _ => `N }` called at each member panics the
-    // same way, base-r23 alike. The same gap is why a literal rules out no member for a
-    // bind under a written test or in an or-alternative (StructPatternNode::leaves,
-    // RuledOut::ByShape): with literals narrowing there, `'a: [(string, f64), (bool,
-    // i64)] |x: 'a| select x { [(string, f64), (bool, i64)] as (h, 0.5) => `H(h), _ =>
-    // `N }` panicked at g((true, 1)), "arg 1 has type i8, expected i64", and so did
-    // `[`V(h, "a") | {t: null, c: h}, ..]` over `Array<[`V(bool, string), {t: f64, c:
-    // f64}]>` (pins lang::select::written_test_over_an_instance_its_structure_rules_out,
-    // slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out). What would
-    // close it: an arm, and an or-alternative or a composite member (the may_pass tests in
-    // this file), is live only where the structure admits a value of the scrutinee's type
-    // by the predicate the checker narrows binds with (StructPatternNode::admits, looking
-    // into a slice's elements too); a written test and an or-alternative can then rule
-    // out by any test, as an inferred predicate does. probes:
-    // ~/ptmp/cr29/scratch/r23/23d/sft-review/jit_struct_generic.gx, r27min.gx,
-    // jit_lit_generic_i.gx, or_lit_dead_alt.gx (instance-arm-liveness-01)
-    // 2026-11-13 claude: A kernel emits no arm, or-alternative or composite member whose
-    // structure admits no value of what it stands over (StructPatternNode::may_admit:
-    // admits at every part, a slice's elements included, each struct field at the index
-    // the pattern reads; it replaces may_pass in emit_select_arms, emit_alt_match, or_arm,
-    // composite_member and the leaf or-alternatives). On base-r24 the struct probe and a
-    // struct of another width panicked, and a struct pattern in a slice's element, beside
-    // a tuple's other part or in a slice or-alternative over an instance of other fields
-    // read the fields by index and took the arm (6 for 0): pin
-    // lang::select::written_test_over_an_instance_its_fields_rule_out fails without the
-    // fix (jit, jit_par). With members now ruled out by a literal, a trivial written test
-    // (the scrutinee's whole union) read any value as the one tuple the structure admits;
-    // base did so already where the shape alone left one (a struct read as a tuple, 0 for
-    // -1): emit_member_cond now tests that member, pin
-    // written_test_of_the_whole_union_reads_no_other_member_as_its_composite (fails
-    // without). Three pins that de-fused over a dead arm or a member of no shape now fuse
-    // (FuseExpect::None dropped). NOT closed here: under GRAPHIX_NO_SUBST=1 the r27min
-    // program still panics at g(`V(true)) alone, base alike: that arm is live, and its
-    // bind is laid out by the frozen predicate's `V([bool, i64]) where the instance's own
-    // check types it bool, which is written-test-bind-kind-01 (probes r27v.gx, ns_*.gx).
-    // The literal exception for binds stands as it was (written-literal-narrowing-01).
-    // Differential: ~/ptmp/cr29/scratch/r24/24a/dgen.py, 1653 programs, lane fused equal
-    // to the node-walk on every one. probes: ~/ptmp/cr29/scratch/r24/24a/
     let n = sel.arms.len();
     // an arm no value of this scrutinee passes is never taken, and its
     // pattern need not fit the scrutinee's layout: an instance's scrutinee
