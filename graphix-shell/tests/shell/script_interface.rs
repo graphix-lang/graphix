@@ -189,3 +189,27 @@ async fn matching_interface_checks() -> Result<()> {
         .check()
         .await
 }
+
+// A type the script declares and its interface does not is not the
+// interface's: there the name is what the interface has in view.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scripts_own_type_is_not_its_interfaces() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("prog.gx");
+    fs::write(
+        &file,
+        "type Result<'a> = ['a, null];\n\
+         let f = |x: core::Result<i64, string>| -> i64 { let r: Result<i64> = x$; r$ };\n\
+         f(1)\n",
+    )?;
+    fs::write(
+        dir.path().join("prog.gxi"),
+        "val f: fn(x: Result<i64, string>) -> i64;\n",
+    )?;
+    ShellBuilder::<NoExt>::default()
+        .cache(CacheMode::Off)
+        .mode(Mode::Check(Load::File(file)))
+        .build()?
+        .check()
+        .await
+}

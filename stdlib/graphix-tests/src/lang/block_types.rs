@@ -530,3 +530,36 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
 }
 
 modes!(a_later_block_type_beside_another_warns);
+
+// A module's names are its own only while its statements compile: a
+// type deleted with its module leaves its name to what else is in view.
+async fn a_deleted_modules_type_frees_its_name(mode: Mode) -> Result<()> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let files = [(
+        netidx::path::Path::from("/n.gx"),
+        VfsEntry::from(literal!("type Result<'a, 'b> = ['a, 'b]")),
+    )];
+    let resolver = VfsResolver::new(ahash::AHashMap::from_iter(files));
+    let ctx = TestCtx::start(
+        config(tx, crate::TEST_REGISTER, vec![resolver], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(mode.flags() | CFlag::WarningsAreErrors),
+    )
+    .await?;
+    let source = literal!("use n::*; let y: Result<i64, string> = error(\"e\")");
+    let held = ctx.rt.compile(literal!("mod n")).await?;
+    match ctx.rt.compile(source.clone()).await {
+        Ok(_) => anyhow::bail!("the module's Result took an error"),
+        Err(e) => {
+            let e = format!("{e:#}");
+            assert!(e.contains("Result<i64, string> does not contain Error<"), "{e}")
+        }
+    }
+    drop(held);
+    let _prelude = ctx.rt.compile(source).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(a_deleted_modules_type_frees_its_name);

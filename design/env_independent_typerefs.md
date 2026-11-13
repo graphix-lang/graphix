@@ -191,7 +191,17 @@ nothing.
   its snapshot and is refused, in its signature and in its body. The note
   is the block's, saying "module" (pins `lang::block_types::module_type_*`,
   `script_type_*`, `lang::types::typedef_names_its_modules_later_type_*`,
-  `alias_shadowing_an_import_*`).
+  `alias_shadowing_an_import_*`). A module's and a script's names are
+  recorded only while their statements compile (`Env::close_block`), and
+  in the snapshots taken meanwhile: once compiled, the maps hold every
+  type the list declares, and a name they lose is no longer its own. So
+  in a script's interface, whose view hides what the script alone
+  declares (`Env::interface_view`), such a name is what the interface has
+  in view or undefined, and a type deleted with its module leaves its
+  name to a glob's other sources and the prelude (pins
+  `script_interface::a_scripts_own_type_is_not_its_interfaces`,
+  `interface_names_resolve_in_the_interface`,
+  `lang::block_types::a_deleted_modules_type_frees_its_name`).
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

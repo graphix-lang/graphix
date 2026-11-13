@@ -739,7 +739,8 @@ pub struct Lexical {
     /// body, a script), by its scope. A name there is its type before its
     /// declaration too: a block's through `Env::block_types` where an
     /// earlier compile declared it, else it is refused, never an outer
-    /// type of the name or one a `use` or a prelude brings.
+    /// type of the name or one a `use` or a prelude brings. A module's and
+    /// a script's are held only while their statements compile.
     pub block_names: Map<ModPath, Map<CompactString, ()>>,
     /// The load of a dynamic module's source this view is inside, whose
     /// own traits, impls and imports it reads before the registries'.
@@ -2807,6 +2808,16 @@ impl Env {
             for n in names {
                 m.insert_cow(CompactString::from(n), ());
             }
+        }
+    }
+
+    /// Forget the names [`Self::open_block`] recorded for the module's
+    /// body or script at `scope`, whose statements have compiled: the
+    /// lexical maps hold what it declares, and a name they lose (one its
+    /// interface hides, one deleted) is no longer its own. A block's stay.
+    pub fn close_block(&mut self, scope: &ModPath) {
+        if !is_block_scope(scope) {
+            self.lexical.block_names.remove_cow(scope);
         }
     }
 

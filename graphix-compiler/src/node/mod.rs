@@ -1249,8 +1249,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     if declares_types {
         ctx.block_typedefs.push((scope.lexical.clone(), typedefs));
     }
+    let list = &scope.lexical;
     ctx.env.open_block(
-        &scope.lexical,
+        list,
         exprs.iter().filter_map(|e| match &e.kind {
             ExprKind::TypeDef(td) => Some(td.name.name.as_str()),
             _ => None,
@@ -1282,6 +1283,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     if declares_types {
         ctx.block_typedefs.pop();
     }
+    ctx.env.close_block(list);
     compiled?;
     for n in children.iter() {
         defer_typedef_names(ctx, n)?;
