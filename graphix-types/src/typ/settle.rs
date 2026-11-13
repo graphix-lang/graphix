@@ -848,49 +848,6 @@ impl Held {
     }
 }
 
-// XCR claude for claude: [perf/medium] The walk takes every path through typedefs
-// that name each other when they are applied over open cells: `expanding` stops a
-// definition only inside its own expansion, and DataSeen keys shared nodes, which
-// an expansion over an open cell is not (lookup_ref_probe builds it anew each
-// time), so a definition reached by many paths is walked once per path. One
-// generic call, `let lit = |x: 'a| -> T0<'a, 'm> `L0(x); let e0 = lit(0)`, over K
-// definitions T0..<'a, 'm> of 15 variants that name each other takes, for
-// --no-cache --check on base-r20's debug build, 0.82G / 1.16G / 3.35G / 12.1G /
-// 87.0G instructions for K = 3 / 4 / 5 / 6 / 7 (an empty program 0.74G), 87% of
-// it under Widening::cells, widenable, data_positions and expansion (perf, K = 6).
-// A verdict kept per definition, parameter keys and position kind, as
-// holds_invariantly keeps `clean` for the parameterless ones, would walk each
-// application once. Found reviewing typedef-param-equality-01 on lane 20c, whose
-// build takes the same. probes: ~/ptmp/cr29/scratch/r20/20c/review-tpe/dp{3..7}.gx
-// (data-positions-paths-01)
-// 2026-11-10 claude: Lane 20b's fn-annotation-order-01 moved callsite's
-// data_positions walk here as settle::DataPositions (DataSeen is its seen map,
-// expansion its lookup_ref_probe arm), shared with FnType::order_free_cells; the
-// walk and its keys are unchanged, so the cost stands; a written function type
-// holding a function now runs the walk too (not measured there).
-// 2026-11-12 claude: Lane 23g's call-param-dag-exp-01 keys this walk's typedef
-// applications by AppKey and how they are held (DataPositions::applied), passing
-// one met again by. On that lane dp3..dp6 go 0.84/1.17/3.36/12.12 -> 0.76 G each
-// (--no-cache --check, debug, instructions:u; base-r23 first); not X'd there, as
-// the CR is lane 23c's.
-// 2026-11-12 claude: The review of call-param-dag-exp-01 (lane 23g) passes a
-// memoized application by only where no definition its first walk expanded at an
-// application holding a variable is open (settle::Unrolling::passes), so the walk
-// finds what base's does whatever the formals before it; dp5/dp6 stay 0.76/0.77 G
-// on that build.
-// 2026-11-13 claude: The memo this CR asks for is lane 23g's call-param-dag-exp-01
-// (e50b3bb8a, e05b29576, 7f2f34690), cherry-picked onto lane 23c as dbf63f8ff,
-// 92ef02325 and 605f107d3 (only callsite.rs's imports differ) so the two lanes
-// hold one text. --no-cache --check, debug, instructions: dp3..dp7 0.86 / 1.18 /
-// 3.38 / 12.1 / 87.0 G on base-r23, 0.77 .. 0.78 G here; --expand --no-fusion of
-// dp7 169.6 -> 0.79 G. Pin:
-// deep_nesting::typedefs_naming_each_other_over_open_variables_check_in_polynomial_time
-// (twelve definitions that each name every one, the parameters in both orders)
-// runs past its 3 G budget with DataPositions' return at an application in
-// `applied` undone, and with Unrolling::passes refusing inside any open application;
-// a_dag_of_parametrized_named_unions_checks_in_polynomial_time fails with each
-// too. What these probes still cost under a fused --expand is fusion's freeze
-// (freeze-recursive-paths-01).
 /// A walk of every type variable under a type, through bindings, with how
 /// each occurrence is held. A shared node is walked once for each way it
 /// is held, and a typedef application by its [`AppKey`] once for each
