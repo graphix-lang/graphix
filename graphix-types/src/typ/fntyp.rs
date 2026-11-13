@@ -2285,6 +2285,24 @@ impl FnType {
             // design/tvar_constraints.md, which still said a variable inside an unpaired
             // conjunct is not judged. patch, probes:
             // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/ (README, k4-drop.patch)
+            // 2026-11-13 claude: Round 24 review (lane 24e): the fixer's BLOCKED holds.
+            // base-r24 and this lane agree on every probe; with k4-drop.patch applied its
+            // table reproduces (k4 k5 u1n w1 w3 check and run, k6 k7 w4 w5 refused by the
+            // judgment, w2 exact, u1 accepted and failing at the instance) and
+            // lang::interfaces passes 1001. Two more programs the patch newly accepts and
+            // the run refuses, both through holes base-r24 has by other shapes: y6, one
+            // bound with the variable twice in one member (`'b: [`A(i64), ('a, 'c)]` over
+            // `'q: [`A(Number), ('p, 'p)]`, the Singletons of u1, `m::f(("s", 1))`), the
+            // one-conjunct form of sig-unpaired-apart-01; and z1, `'a: Number, 'b:
+            // [`A(i64), 'a]` over `'p: OneNumber, 'q: [`A(string), 'p]` called at `[i64,
+            // f64]`, where the unpaired variable takes the union whole and its predicate
+            // is asked of that union as it stands, which base-r24 reaches by a longer
+            // union (noted on iface-predicate-member-01). So the patch waits on both of
+            // those, and u1, y6 and z1 are its refusal pins. Valid shapes it also frees:
+            // an unbounded variable (x6), a variable at a position too (x11), `` `B('p)
+            // `` beside the wider member (x12), a function member and a function bound
+            // called narrower (y4n, z3). probes:
+            // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/ (README)
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2363,6 +2381,22 @@ impl FnType {
                     // Sealed arm of Type::contains_dispatch). On base-r23 and lane 23g alike.
                     // probes: ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/{p9,p9n}/main.gx
                     // (iface-predicate-member-01)
+                    // 2026-11-13 claude: Round 24 (lane 24e, review of iface-bound-shape-01): the
+                    // unpaired cell has this hole too, where it stands for a union holding a signature
+                    // variable, not a bare one: the Sealed arm of Type::contains_dispatch judges a
+                    // predicate against a rigid variable alone, and a union goes to one_number_holds
+                    // or may_be_error as it stands. `val f: fn<'a: Number, 'b: [`X, 'a]>(x: 'b) ->
+                    // i64;` over `let f = 'p: OneNumber, 'q: [`Y, `Z, 'p] |x: 'q| -> i64 0` passes
+                    // --check with `m::f(v)`, `v: [i64, f64]`, and the run fails "an instance at fn(x:
+                    // [i64, f64]) -> i64 of a definition typed fn<'p: OneNumber, ..>" (z7); the same
+                    // with `'a: [i64, Error<`E>]` over `'p: NoError` and `m::f(error(`E))` (z10), and
+                    // with the union at a position, `fn<'a: Number>(x: [`X, 'a])` (z11). With `` `X ``
+                    // in the implementation's union the variable is left alone and the check refuses
+                    // (z7m); `'a: Number + OneNumber` is valid and runs (z7n); Singleton refuses the
+                    // union by its two members. On base-r24 and lane 24e alike. The held-back patch of
+                    // iface-bound-shape-01 reaches it by a union of the bound's length (z1 there).
+                    // probes:
+                    // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/{z7,z7n,z7m,z10,z11,z1}/main.gx
 
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside
