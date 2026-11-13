@@ -1184,15 +1184,18 @@ An image carries each cell's level and each definition's depth.
   the written value links the two function types, so each names the
   other's definitions (`LambdaIds::link`), where the binding's function
   contains the written one and where a member of the binding's union is
-  the written function's type but for its cells, which are welded
-  (`contains::Link`). So `let o = select j { 0 => |#d = 1, ..| .., _ =>
+  the written function's type, its cells welded where the two differ
+  (`contains::Link`); two functions an array or a select met share
+  their cells before the write and are linked by it all the same. So
+  `let o = select j { 0 => |#d = 1, ..| .., _ =>
   null }; o <- |#d = "q", ..| ..` is refused at the write as `let o =
   |#d = 1, ..| ..` is, whatever the calls pass, "annotate the binding
   that holds them": `let o: [fn(?#d: [i64, string], x: i64) -> string,
   null]` (pins
   `lang::functions::default_of_another_type_written_beside_a_null` and
-  its neighbours,
-  `typ::contains::tests::a_union_member_welded_to_a_function_names_its_definitions`).
+  its neighbours, `..written_after_an_array_met_them`,
+  `typ::contains::tests::a_union_member_welded_to_a_function_names_its_definitions`,
+  `a_union_member_that_is_a_function_names_its_definitions`).
   A declaration nothing writes (a `let`'s
   annotation, a declared return type) and a generic binding's copy at a
   `<-` are judged per function they hold

@@ -3978,6 +3978,60 @@ run!(defaults_of_one_type_written_beside_a_null, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "12"); FuseExpect::None);
 
+// Two functions an array or a select met share their cells already: the
+// member is the written function's type as it stands, and still one
+// function with it.
+run!(default_of_another_type_written_after_an_array_met_them, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let p = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let both = [o, p];
+    o <- once(j) ~ p;
+    select o { null as _ => "n", f => f(7) }
+}
+"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(default_of_another_type_written_after_a_select_met_them, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let p = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let either = select j { 0 => o, _ => p };
+    o <- once(j) ~ p;
+    select o { null as _ => "n", f => f(#d: "z", 7) }
+}
+"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(defaults_of_two_types_written_to_a_declared_optional_after_an_array_met_them, r#"
+{
+    let j = 0;
+    let o: [fn(?#d: [i64, string], x: i64) -> string, null] =
+        select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let p = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let both = [o, p];
+    o <- once(j) ~ p;
+    let r = select o { null as _ => never(), f => f(7) };
+    let seen = "";
+    seen <- r ~ "[seen][r]";
+    filter(seen, |s| s == "1q")
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1q"); FuseExpect::None);
+
+run!(defaults_of_one_type_written_after_an_array_met_them, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let p = select j { 0 => |#d = 2, x: i64| cast<string>(d)$, _ => null };
+    let both = [o, p];
+    o <- once(j) ~ p;
+    let r = select o { null as _ => never(), f => f(7) };
+    let seen = "";
+    seen <- r ~ "[seen][r]";
+    filter(seen, |s| s == "12")
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "12"); FuseExpect::None);
+
 // What a function returns is a part of it as a field is of a struct: a
 // default of the function it returns is judged where the outer function
 // meets a fn type whose return hides the label or makes it optional.

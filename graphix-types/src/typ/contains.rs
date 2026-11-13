@@ -2279,8 +2279,9 @@ impl OpenPair {
 /// loose part is `Fn` equality, which does not tell distinct open cells
 /// apart): two open cells that compared equal must share fate, or the
 /// discarded side's later binding never reaches the survivor. Two
-/// function types welded are one, so each names the other's definitions.
-/// `false` when two distinct rigid cells meet; only `commit` links.
+/// function types paired are one, their cells welded or shared already,
+/// so each names the other's definitions. `false` when two distinct
+/// rigid cells meet; only `commit` links.
 struct Link {
     commit: bool,
     found: NodePairs,
@@ -2288,6 +2289,9 @@ struct Link {
 
 impl Link {
     fn equal(&mut self, t0: &Type, t1: &Type) -> bool {
+        if t0.node_key().is_some_and(|k| t1.node_key() == Some(k)) {
+            return true;
+        }
         let pair = self.found.key(t0, t1);
         if pair.is_some_and(|pair| self.found.contains(pair)) {
             return true;
@@ -2533,11 +2537,12 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
-/// Two types identical up to `Fn` equality whose cells can be welded.
+/// Two types identical up to `Fn` equality whose cells can be welded;
+/// under `commit` their function types are linked as one.
 fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
     match hist.identical.identical(t0, t1) {
         Identical::Apart => false,
-        Identical::Same => true,
+        Identical::Same => !commit || link_equal(t0, t1, true),
         Identical::Renamed => {
             link_equal(t0, t1, false) && (!commit || link_equal(t0, t1, true))
         }
@@ -5967,6 +5972,32 @@ mod tests {
             _ => unreachable!(),
         };
         let ((f0, id0), (f1, id1)) = (f("a"), f("b"));
+        let held =
+            Type::Set(Arc::from_iter([f0.clone(), Type::Primitive(Typ::Null.into())]));
+        let env = Env::default();
+        assert!(held.contains_with_flags(BitFlags::empty(), &env, &f1).unwrap());
+        assert!(!ids(&f0).contains(&id1) && !ids(&f1).contains(&id0));
+        assert!(held.contains(&env, &f1).unwrap());
+        assert!(ids(&f0).contains(&id1) && ids(&f1).contains(&id0));
+    }
+
+    // A member that is the function's type as it stands, their cells
+    // shared already, names its definitions too.
+    #[test]
+    fn a_union_member_that_is_a_function_names_its_definitions() {
+        let t = crate::expr::parser::parse_type("fn(x: 'a) -> 'a").unwrap();
+        let Type::Fn(ft) = &t else { unreachable!() };
+        let node = |id: crate::LambdaId| {
+            let lambda_ids = crate::typ::fntyp::LambdaIds::default();
+            lambda_ids.set_id(id);
+            Type::Fn(Arc::new(FnType { lambda_ids, ..(**ft).clone() }))
+        };
+        let ids = |t: &Type| match t {
+            Type::Fn(ft) => ft.lambda_ids.ids(),
+            _ => unreachable!(),
+        };
+        let (id0, id1) = (crate::LambdaId::new(), crate::LambdaId::new());
+        let (f0, f1) = (node(id0), node(id1));
         let held =
             Type::Set(Arc::from_iter([f0.clone(), Type::Primitive(Typ::Null.into())]));
         let env = Env::default();

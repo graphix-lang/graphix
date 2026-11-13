@@ -372,6 +372,12 @@ fn judge_hidden_defaults<R: Rt>(
     // the label taking the widest default, or refuse any two defaults of different types
     // naming the annotation. probes: ~/ptmp/cr29/scratch/r20/20d/djo/ord1.gx .. ord6.gx
     // (met-default-order-verdict-01)
+    // 2026-11-13 claude: A function held beside a null follows this order since
+    // connect-union-defaults-01 (its write judges the binding's first function with the
+    // written one): `let o = select j { 0 => |#d = n, ..| .., _ => null }; o <- t ~ |#d =
+    // 1, ..| ..` checks and runs (null, then 1), and with the two defaults the other way
+    // round the write is refused, as a binding holding the function alone already was.
+    // probes: ~/ptmp/cr29/scratch/r23/23b/cud-rev/{ord1,ord2,ord2_fn}.gx
     for def in defs.iter() {
         let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()) else {
             continue;
