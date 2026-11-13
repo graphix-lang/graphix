@@ -1128,6 +1128,95 @@ run!(naming_an_open_part_below_a_reference, r#"{
     [f(`M), f("s")]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1]); FuseExpect::None);
 
+// A declared variable below a bound is met as one the scrutinee holds
+// itself: no arm decides it.
+run!(tag_testing_a_declared_variable_below_a_reference_refused, r#"{
+    let f = |x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("[`J, _] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [`J, _]`, or bound 'a"); FuseExpect::None);
+
+run!(tag_testing_a_declared_variable_the_referent_keeps_refused, r#"{
+    let f = |x: 'a| { let r = &mut [x, 0]; select *r { [`J, ..] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("[`J, ..] tests inside a value of 'a"); FuseExpect::None);
+
+run!(tag_testing_a_bounded_variable_below_a_reference_refused, r#"{
+    let f = 'a: [`J, `M] |x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("[`J, _] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `Array<[i64, `J, `M]> as [`J, _]`"); FuseExpect::None);
+
+run!(written_test_over_a_bounded_variable_below_a_reference, r#"{
+    let f = 'a: [`J, `M] |x: 'a| {
+        let r = &mut [x, 0];
+        select *r { Array<[i64, `J, `M]> as [`J, _] => 1, _ => 3 }
+    };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+
+run!(naming_a_declared_variable_below_a_reference, r#"{
+    let f = |x: 'a| { let r = &mut [x, 0]; select *r { [a, _] => 1, _ => 3 } };
+    [f(`M), f("s")]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1]); FuseExpect::None);
+
+run!(tag_testing_a_declared_variable_in_a_tuple_below_a_reference_refused, r#"{
+    let f = |x: 'a| { let r = &mut (x, 0); select *r { (`J, _) => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("(`J, _) tests inside a value of 'a, a type variable of the definition"); FuseExpect::None);
+
+run!(tag_testing_a_declared_variable_below_a_read_only_reference_refused, r#"{
+    let f = |x: 'a| { let r = &[x, 0]; select *r { [`J, _] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("[`J, _] tests inside a value of 'a"); FuseExpect::None);
+
+run!(literal_testing_a_declared_variable_below_a_reference_refused, r#"{
+    let f = |x: 'a| { let r = &mut [x, 0]; select *r { [0, _] => 1, _ => 3 } };
+    [f(1), f(0)]
+}"#, refused("[0, _] tests inside a value of 'a"); FuseExpect::None);
+
+run!(tag_testing_a_declared_variable_below_an_abstract_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: 'a| select W([x, 0]).0 { [`J, _] => 1, _ => 3 };
+    [f(`M), f(`J)]
+}"#, refused("[`J, _] tests inside a value of 'a"); FuseExpect::None);
+
+run!(written_test_over_a_bounded_variable_below_an_abstract_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = 'a: [`J, `M] |x: 'a| select W([x, 0]).0 {
+        Array<[i64, `J, `M]> as [`J, _] => 1,
+        _ => 3
+    };
+    [f(`M), f(`J)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::Jit);
+
+run!(tag_testing_a_declared_variable_a_write_brings_refused, r#"{
+    let f = |x: 'a| { let v = never(); v <- [x, 0]; select v { [`J, _] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("[`J, _] tests inside a value of 'a"); FuseExpect::None);
+
+run!(written_test_holding_bottom_over_a_variable_below_a_reference_refused, r#"{
+    let f = 'b: [`A(i64), `B] |x: 'b| {
+        let r = &mut (x, 0);
+        select *r { (`A(_), i64) as (`A(z), _) => 1, _ => 2 }
+    };
+    [f(`B), f(`A(7))]
+}"#, refused("(`A(z), _) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(_) holds `_`, which is bottom; write the type it tests, `([`A(i64), `B], i64) as (`A(z), _)`"); FuseExpect::None);
+
+run!(written_test_holding_its_own_variable_below_a_reference_refused, r#"{
+    let f = 'b: [`A(i64), `B] |x: 'b| {
+        let r = &mut (x, 0);
+        select *r { ('c, i64) as (`A(z), _) => 1, _ => 2 }
+    };
+    [f(`B), f(`A(7))]
+}"#, refused("(`A(z), _) tests inside a value of 'b, a type variable of the definition, and its type test types none of it: 'c is a type variable nothing declares"); FuseExpect::None);
+
+run!(closed_written_test_over_a_variable_below_a_reference, r#"{
+    let f = 'b: [`A(i64), `B] |x: 'b| {
+        let r = &mut (x, 0);
+        select *r { ([`A(i64), `B], i64) as (`A(z), _) => z, _ => 2 }
+    };
+    [f(`B), f(`A(7))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 7]); FuseExpect::None);
+
 // A dead arm is refused as dead: nothing reaches it, and the bounds hold
 // what the arms before it took.
 run!(dead_arm_testing_an_open_part_below_a_reference_is_unreachable, r#"{

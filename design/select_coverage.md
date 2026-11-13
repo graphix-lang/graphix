@@ -154,7 +154,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   union. A written test's part over the variable must be closed: one
   holding `_` (a typedef's body included) or an undeclared variable is
   refused
-  (`StructurePattern::meets_rigid_written`). Under a written test a bind
+  (`StructurePattern::meets_rigid_written`). A select meets the variable
+  in its scrutinee as it stands and as its open cells' lower bounds hold
+  it (`lower_view`: `*r` over `&mut [x, 0]`, an abstract constructor's
+  parameter), a whole open scrutinee included, since no arm decides a
+  declared variable. Under a written test a bind
   inside the variable takes the test's part (`Type::matching_parts`); a
   name over a value holding it keeps the variable where a part of the test
   around it holds the scrutinee's part there

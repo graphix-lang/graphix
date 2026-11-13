@@ -13,7 +13,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   `'a` may hold (bound `'a` apart), and a destructuring `let` (annotate
   it: `let {x, y}: {x: i64, y: i64} = p`, or a parameter, `|(n, s):
   (i64, string)|`). A variable with no bound is bounded first (`'a:
-  (bool, i64)`, then `(bool, i64) as (true, k)`). The test is a closed
+  (bool, i64)`, then `(bool, i64) as (true, k)`). A value read through
+  a reference or out of an abstract's payload is judged the same
+  (`select *r` over `let r = &mut [x, 0]`, `select W([x, 0]).0`). The
+  test is a closed
   type: `` `A(_) as `A(z) `` (`_` is bottom, through a typedef too:
   `` `A(T) `` over `type T = _`) and `` 'c as `A(z) `` (an undeclared
   variable) are refused. Under a written test a name over the
@@ -98,6 +101,10 @@ no "tests inside" |x: ['a, null]| select x { null => 0, _ => 1 }
 ok |x: ['a, null]| select x { null as _ => 0, _ => 1 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { 'c as `A(z) => 1, _ => 2 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { `A(_) as `A(z) => 1, _ => 2 }
+no "[`J, _] tests inside a value of 'a" |x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
+ok 'a: [`J, `M] |x: 'a| { let r = &mut [x, 0]; select *r { Array<[i64, `J, `M]> as [`J, _] => 1, _ => 3 } }
+no "[`J, _] tests inside a value of 'a" type W<'a> = Abstract<'a>; |x: 'a| select W([x, 0]).0 { [`J, _] => 1, _ => 3 }
+no "types none of it" 'b: [`A(i64), `B] |x: 'b| { let r = &mut (x, 0); select *r { (`A(_), i64) as (`A(z), _) => 1, _ => 2 } }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }

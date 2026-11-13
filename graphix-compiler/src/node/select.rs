@@ -38,7 +38,7 @@ use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
-use std::{mem, sync::OnceLock};
+use std::{iter, mem, sync::OnceLock};
 use triomphe::Arc;
 
 /// Where an error in a pattern is placed: the pattern's text when it was
@@ -2908,11 +2908,10 @@ impl<R: Rt> Select<R> {
                 let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
                 let ids = |p: &StructurePattern| ids.get(p);
                 let site = || pattern_site(spec_pat, n.spec());
-                let over = match pat.explicit_type_predicate {
-                    true => &pat.type_predicate,
-                    false => scrut,
-                };
-                // CR claude for claude: [bug/low] A declared variable the scrutinee
+                // the scrutinee as it stands, and as its open cells' lower
+                // bounds hold it: no arm decides a declared variable
+                let mut views = iter::once(scrut).chain(lower.as_ref());
+                // XCR claude for claude: [bug/low] A declared variable the scrutinee
                 // holds only through an open cell's lower bounds is not met: meets_rigid
                 // reads the scrutinee as it stands before the arms, an open cell there.
                 // `|x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }`
@@ -2927,17 +2926,51 @@ impl<R: Rt> Select<R> {
                 // no arm decides a declared variable. Same on base-r20. probes:
                 // ~/ptmp/cr29/scratch/r20/20e/ulb03/rig1.gx, rig2.gx, rig3.gx, twin
                 // rig1t.gx (rigid-lower-bound-01)
-                if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, over)? {
-                    let e = rigid_refusal(&ctx.env, &ids, sp, over, &tv, Holder::Arm);
-                    return Err(e).at(&site());
-                }
-                if pat.explicit_type_predicate
-                    && scrut.has_rigid()
-                    && let Some((tv, part)) =
-                        sp.meets_rigid_written(&ctx.env, &ids, scrut, over)?
-                {
-                    let e = written_refusal(&ctx.env, &ids, sp, scrut, &tv, &part);
-                    return Err(e).at(&site());
+                // 2026-11-12 claude: The select meets a declared variable in the scrutinee
+                // as it stands and as its open cells' lower bounds hold it (lower_view), a
+                // whole open scrutinee included, for an inferred pattern (meets_rigid) and
+                // under a written test (meets_rigid_written): rig1/rig2/rig3 are refused as
+                // the plain twin is, and a tuple, struct or variant below a reference now
+                // names 'a where it named the referent. Census against base-r23: no verdict
+                // and no message changes (2962 files). Pins that fail with the fix undone,
+                // lang::select_undecided:
+                // tag_testing_a_declared_variable_below_a_reference_refused,
+                // tag_testing_a_declared_variable_the_referent_keeps_refused,
+                // tag_testing_a_bounded_variable_below_a_reference_refused,
+                // tag_testing_a_declared_variable_in_a_tuple_below_a_reference_refused,
+                // literal_testing_a_declared_variable_below_a_reference_refused,
+                // tag_testing_a_declared_variable_below_an_abstract_parameter_refused,
+                // written_test_holding_bottom_over_a_variable_below_a_reference_refused,
+                // written_test_holding_its_own_variable_below_a_reference_refused; the
+                // passing twins are written_test_over_a_bounded_variable_below_a_reference,
+                // closed_written_test_over_a_variable_below_a_reference. Found beside it,
+                // not fixed: slice-open-element-later-01. probes:
+                // ~/ptmp/cr29/scratch/r23/23d/rlb/
+                let rigid = |over: &Type| -> Result<()> {
+                    match sp.meets_rigid(&ctx.env, &ids, over)? {
+                        None => Ok(()),
+                        Some(tv) => {
+                            let e =
+                                rigid_refusal(&ctx.env, &ids, sp, over, &tv, Holder::Arm);
+                            Err(e).at(&site())
+                        }
+                    }
+                };
+                match pat.explicit_type_predicate {
+                    false => views.try_for_each(rigid)?,
+                    true => {
+                        let over = &pat.type_predicate;
+                        rigid(over)?;
+                        for view in views.filter(|v| v.has_rigid()) {
+                            if let Some((tv, part)) =
+                                sp.meets_rigid_written(&ctx.env, &ids, view, over)?
+                            {
+                                let e =
+                                    written_refusal(&ctx.env, &ids, sp, view, &tv, &part);
+                                return Err(e).at(&site());
+                            }
+                        }
+                    }
                 }
             }
         }

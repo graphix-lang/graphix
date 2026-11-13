@@ -3248,6 +3248,30 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
     Ok(())
 }
 
+// CR claude for claude: [bug/high] A slice arm over a scrutinee wholly undecided at
+// its select types its binds by the element it tests, and a later write gives the
+// element type a second member of the tested form, which the arm then matches with
+// binds of the wrong type. `let x = `J("s"); let v = never(); let z = select v {
+// [`J(n), _] => n + 1, _ => 3 }; v <- [x, 0]; println(z)` passes --check; fused it
+// panics, "kernel param `n`: runtime String("s") does not match the compiled
+// Scalar(I64) slot", with `[`J(n), ..]` it prints a pointer as an i64
+// (140604949744433), and --no-fusion logs an arith error. Alike `[(n, m), _]`,
+// `[{a}, _]`, a list (`[<`J(n), _>]`), and in a lambda over a declared variable
+// (`|x: 'a| { let v = never(); let z = select v { [`J(n), _] => n + 1, _ => 3 }; v
+// <- [x, 0]; z }` called with `J("s")). The arms decide v as Array<[`J(i64), '_e]>,
+// '_e the cell the `_` (or the rest) brought; the write binds it to [`J(string),
+// i64], and the inferred predicate's run-time test passes what the element type
+// now holds. No rule sees it: Select::check_undecided exempts a cell the arms' own
+// patterns brought, and this judgment, run at the settle over the decided rest,
+// asks only for a shared runtime form, which `J(i64) and `J(string) do not have.
+// Annotated (`let v: Array<[`J(i64), `J(string), i64]> = never()`) n is [i64,
+// string] and `n + 1` is refused, as it is with the write above the select. A fix:
+// refuse here, over the settled rest, a member the test's structure admits and the
+// test's type does not hold (a variant of its tag and arity, a tuple of its arity,
+// a struct of its fields), naming the binding to annotate; or hold a slice's
+// element cell undecided for the elements its arm tests. Same on base-r23. probes:
+// ~/ptmp/cr29/scratch/r23/23d/rlb/sl1.gx, sl2.gx, sl3.gx, sl6.gx, sl7.gx, lw3.gx,
+// annotated twin sl4.gx (slice-open-element-later-01)
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {

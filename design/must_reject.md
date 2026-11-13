@@ -336,6 +336,10 @@ refuses first; pins `lang::select::pool_variable_*`,
 whose part over the variable holds `_` or an undeclared variable
 (`StructurePattern::meets_rigid_written`, the same message): the
 mutation writes no test; pins `lang::select::written_test_holding_*`.
+Nor a variable the scrutinee holds only through an open cell's lower
+bounds (`*r` over `&mut [x, 0]`): the mutation selects the parameter
+itself; pins `lang::select_undecided::*_declared_variable_*`,
+`*_variable_below_a_reference*`.
 
 **14. Undecided parts at a select.** Site: a select over a concrete
 scrutinee `s` whose arms bind no name and have no guard or type test,
