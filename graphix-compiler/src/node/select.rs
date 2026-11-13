@@ -3105,35 +3105,6 @@ impl<R: Rt> Select<R> {
                 let spec = Arc::new(site.clone());
                 for (test, among) in tests {
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
-                    // XCR claude for claude: [bug/low] An arm of names alone over
-                    // members that hold two different function types is refused as
-                    // unable to tell them apart, though it tests nothing: `let t =
-                    // select v > 0 { true => (|x: i64| x, 1), false => (|y: string|
-                    // y, "s") }; select t { (r, n) => 0 }` says "this pattern can't
-                    // tell fn(y: string) -> string from fn(x: i64) -> i64", and so
-                    // does the same over `(.., 1)` and `(.., 2)`; `let (r, n) = t`
-                    // and `select t { q => 0 }` check. The test is `([fn, fn], [i64,
-                    // string])`; Type::diff of two tuples subtracts only an
-                    // identical one, so `rest` is every member, and the test's
-                    // union of functions collides with each member's own. base-r20
-                    // refuses it too, naming one type twice. probes:
-                    // ~/ptmp/cr29/scratch/r20/20f/ans/p2/{c5,c8}.gx
-                    // (names-arm-fn-union-01)
-                    // 2026-11-12 claude: The arm's own judgment of an inferred
-                    // predicate is Type::rep_collision_tested with open cells
-                    // benign, as the settle's is: a cell of the test's is a part the
-                    // arm binds, so (r, n), (r, 1), {f, n}, (`A, f) and a slice
-                    // element [(r, 1), ..] over members holding two function types
-                    // or two references check, and the bind holds every member the
-                    // arm's tests admit. A written test is judged whole as before
-                    // (written-variable-told-01), and a part another part tells
-                    // apart is still refused where it is no cell
-                    // (told-by-another-part-01). Pins that fail without it:
-                    // lang::select names_arm_binds_two_function_types,
-                    // tagged_arm_binds_its_member_of_two_same_form_types,
-                    // names_arm_bind_holds_both_function_types, and the three cases
-                    // lines at the end of the graphix-lang skill's select.md
-                    // (shell::examples_compile skill_fences_check).
                     let collision = match pat.explicit_type_predicate {
                         // CR claude for claude: [bug/low] A written test's variable
                         // is judged as the type it took, not as a part the arm
