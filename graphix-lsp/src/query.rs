@@ -75,11 +75,12 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
 // close generalized its cells, so nothing tells it `w` is one instance. probe:
 // ~/ptmp/cr29/scratch/r23/23h/hover-review/gx/w1.gx (the message), probe_test.rs
 // beside it (`let |w = rf`) (hover-rec-self-read-header-01)
-/// A binding's type for display. `replace_auto_constrained` folds a
-/// function's constraint-table tvars into the surface and must run
-/// before `resolve_tvars`, which empties the table. A header lists only
+/// A binding's type for display: a hover's, an outline's, a completion's
+/// (the server's and the REPL's). `replace_auto_constrained` folds a
+/// function's open auto variables into their one bound and must run
+/// before `resolve_tvars`, which discards the cells. A header lists only
 /// the quantifiers a call still picks, as a checker message's does.
-pub(crate) fn display_type(typ: &Type) -> CompactString {
+pub fn display_type(typ: &Type) -> CompactString {
     let folded = match typ {
         Type::Fn(ft) => Type::Fn(Arc::new(ft.replace_auto_constrained())),
         t => t.clone(),

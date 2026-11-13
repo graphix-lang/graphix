@@ -1,6 +1,6 @@
 use arcstr::ArcStr;
 use graphix_compiler::{env::Env, expr::ModPath, typ::Type};
-use graphix_lsp::text;
+use graphix_lsp::{display_type, text};
 use log::debug;
 use lsp_types::Position;
 use netidx::path::Path;
@@ -60,21 +60,11 @@ impl Completer for BComplete {
                     for (value, id) in self.0.lookup_matching(&ModPath::root(), &part) {
                         let description = match self.0.by_id.get(&id) {
                             None => format!("_"),
-                            Some(b) => {
-                                use std::fmt::Write;
-                                let mut res = String::new();
-                                match &b.typ {
-                                    Type::Fn(ft) => {
-                                        let ft = ft.replace_auto_constrained();
-                                        write!(res, "{} ", ft).unwrap()
-                                    }
-                                    t => write!(res, "{} ", t).unwrap(),
-                                }
-                                if let Some(doc) = &b.doc {
-                                    write!(res, "{doc}").unwrap();
-                                };
-                                res
-                            }
+                            Some(b) => format!(
+                                "{} {}",
+                                display_type(&b.typ),
+                                b.doc.as_deref().unwrap_or("")
+                            ),
                         };
                         let value = match Path::dirname(&part.0) {
                             None => String::from(value.as_str()),
@@ -104,7 +94,8 @@ impl Completer for BComplete {
                             for arg in ft.args.iter() {
                                 if let Some(lbl) = arg.label() {
                                     if lbl.starts_with(part.as_str()) {
-                                        let description = Some(format!("{}", arg.typ));
+                                        let description =
+                                            Some(display_type(&arg.typ).to_string());
                                         res.push(Suggestion {
                                             span,
                                             value: lbl.as_str().into(),
@@ -154,5 +145,47 @@ mod tests {
         assert_eq!(ctx("#a"), "none");
         assert_eq!(ctx("f([a, #"), "none");
         assert_eq!(ctx("let t: fn(?#"), r#"bind "" at 12"#);
+    }
+
+    /// A completion describes a binding, or a label, as a hover does: a
+    /// variable a call decided as its type, one instance with no header.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_completion_describes_a_binding_as_a_hover_does() -> anyhow::Result<()> {
+        use super::BComplete;
+        use graphix_rt::{GXConfig, GXRt, NoExt};
+        use reedline::Completer;
+        use tokio::sync::mpsc;
+        let mut ctx = GXRt::<NoExt>::new_state()?;
+        let packages = crate::stdlib_packages::<NoExt>();
+        let (vfs, root) =
+            graphix_package::register_packages(&mut ctx, packages.iter().map(|p| &**p))?;
+        let (tx, mut rx) = mpsc::channel(100);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let gx = GXConfig::builder(ctx, tx)
+            .root(root)
+            .resolvers(vec![vfs])
+            .build()?
+            .start()
+            .await?;
+        let src = "let h = 'a: Number |x: 'a| -> 'a x;\n\
+                   let decided = |q: i64| h(q);\n\
+                   let mk = |z: i64| 'a: Number |x: 'a| -> 'a x;\n\
+                   let one = mk(0);\n\
+                   let labeled = |#w, v: i64| h(v) + w";
+        let env = gx.compile(src.into()).await?.env;
+        let mut c = BComplete(env);
+        let mut described = |line: &str, name: &str| {
+            let found = c.complete(line, line.len());
+            found
+                .into_iter()
+                .find(|s| s.value == name)
+                .and_then(|s| s.description)
+                .unwrap_or_else(|| panic!("no completion of {name} after {line}"))
+        };
+        assert_eq!(described("decided", "decided"), "fn(q: i64) -> i64 ");
+        assert_eq!(described("one", "one"), "fn(x: 'a) -> 'a ");
+        assert_eq!(described("labeled", "labeled"), "fn(#w: i64, v: i64) -> i64 ");
+        assert_eq!(described("labeled(#", "w"), "i64");
+        Ok(())
     }
 }

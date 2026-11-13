@@ -1250,7 +1250,7 @@ impl FnType {
         self.cow_walk(|t| t.replace_tvars_int(s, fresh))
     }
 
-    // CR claude for claude: [bug/medium] A hover shows a decided variable as its
+    // XCR claude for claude: [bug/medium] A hover shows a decided variable as its
     // bound: `let h = 'a: Number |x: 'a| -> 'a x; let n = |q: i64| h(q)` hovers (and
     // outlines) `n: fn(q: i64) -> Number`, where the check says `fn(q: i64) -> i64`
     // (`let z: string = n` prints it). This replaces every `'_N` the signature holds
@@ -1262,16 +1262,46 @@ impl FnType {
     // instance's header (hover-instance-header-01). probe:
     // ~/ptmp/cr29/scratch/r23/23h/hover-review/probe_test.rs (`nested`, `nested3`,
     // `nested4`; outputs in lane-final.txt beside it) (display-auto-bound-01)
-    /// Replace auto type variables (`'_23`) that carry one constraint
-    /// with that constraint, for display. Call before
-    /// `Type::resolve_tvars`, which discards the cells.
+    // 2026-11-13 claude: FnType::replace_auto_constrained folds an auto variable
+    // into its one conjunct only where its chain of bindings ends open
+    // (TVar::open_cell); a decided one is left to resolve_tvars, so it prints as the
+    // type it was decided to be. The REPL's completion (BComplete, a binding's
+    // description and a label's) now prints through graphix_lsp::display_type, as a
+    // hover and an outline do (on base-r24 it printed fn(q: i64) -> Number, and with
+    // the fold fixed alone raw '_N names: one = mk(0) as '_8375). Pins that fail
+    // without the fix: graphix-shell tests/lsp a_decided_variable_hovers_as_its_type
+    // (hover and outline of n, nested, two, named),
+    // completion::tests::a_completion_describes_a_binding_as_a_hover_does (fails
+    // with either half undone). Open auto variables still print folded or raw:
+    // display-open-auto-01.
+    /// Replace auto type variables (`'_23`) that stand open with one
+    /// constraint by that constraint, for display; a decided one prints as
+    /// what it was decided to be. Call before `Type::resolve_tvars`, which
+    /// discards the cells.
     pub fn replace_auto_constrained(&self) -> Self {
+        // CR claude for claude: [bug/low] A hover prints an open auto variable two
+        // ways, neither the one a message prints, and one reads as another type.
+        // With `let h = 'a: Number |x: 'a| -> 'a x`: `let k = |q| h(q)` hovers (and
+        // outlines, and completes in the REPL) `k: fn(q: Number) -> Number`, where
+        // `k` keeps its argument's type (`let a: string = k(1)` prints "string does
+        // not contain i64", and `k(1); k(1.0)` checks): the fold here drops that the
+        // two positions are one variable. `let mk = |z: i64| |q| h(q)` hovers `mk:
+        // fn(z: i64) -> fn(q: '_8450) -> '_8450` (a nested signature's cell is not
+        // folded) and `let add = |x, y| x + y` hovers `fn(x: '_8435, y: '_8435) ->
+        // '_8435` (two conjuncts): a generated name that changes run to run, where a
+        // message prints `'_8435: unbound within Number & Singleton`. A fix decides
+        // one form for an undecided inferred variable in display (a named variable
+        // with its bound, as a header or as a message's `unbound within`) and drops
+        // this fold. Base-r24 alike. probe: in ~/ptmp/cr29/scratch/r24/24g/
+        // display-auto-bound, `python3 lsp_hover.py <graphix> hov open.gx 'let |k '`
+        // (hover and outline), and `--check hov/kk.gx` (display-open-auto-01)
         let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
         // Read the cells directly: auto names are never declared, so
         // `constraint_view` cannot see them.
         for (name, tv) in self.sig_tvars().drain() {
             if name.starts_with('_')
-                && let [tc] = &tv.cell_constraints()[..]
+                && let Some(open) = tv.open_cell()
+                && let [tc] = &open.cell_constraints()[..]
             {
                 known.insert(name, tc.clone());
             }

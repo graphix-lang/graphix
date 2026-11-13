@@ -18,5 +18,6 @@ pub mod workspace;
 
 pub use lsp_server::Connection;
 pub use position::PositionEncoding;
+pub use query::display_type;
 pub use server::{serve, workspace_roots};
 pub use state::{Checked, LspBackend};

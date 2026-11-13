@@ -99,6 +99,39 @@ let hs = array::map([1], |r| h);
     hover_is(&mut c, "let |hs", "hs: Array<fn(x: 'a) -> 'a>");
 }
 
+/// A variable a call decided hovers, and outlines, as the type it was
+/// decided to be, as a message prints it, whatever bound it carries.
+#[test]
+fn a_decided_variable_hovers_as_its_type() {
+    const SRC: &str = "\
+let h = 'a: Number |x: 'a| -> 'a x;
+let n = |q: i64| h(q);
+let nested = |q: i64| { let inner = 'a: Number |x: 'a| -> 'a x; inner(q) };
+let two = |q: i64| { let inner = 'a: Number + Singleton |x: 'a| -> 'a x; inner(q) };
+let named = |q: i64| { let r = h(q); r };
+0
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let decided = [
+        ("n", "fn(q: i64) -> i64"),
+        ("nested", "fn(q: i64) -> i64"),
+        ("two", "fn(q: i64) -> i64"),
+        ("named", "fn(q: i64) -> i64"),
+    ];
+    for (name, typ) in decided {
+        hover_is(&mut c, &format!("let |{name} "), &format!("{name}: {typ}"));
+    }
+    let symbols = c.symbols("main.gx");
+    for (name, typ) in decided {
+        assert!(
+            symbols.iter().any(|(n, t)| n == name && t.as_deref() == Some(typ)),
+            "{name}: {symbols:?}"
+        );
+    }
+}
+
 /// A hover is one message: a name a header listed stays the header's once
 /// its signature ends, so a later instance's variable numbers apart past it.
 #[test]
