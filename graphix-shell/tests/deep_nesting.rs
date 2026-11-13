@@ -1701,6 +1701,70 @@ fn typedefs_naming_each_other_over_open_variables_check_in_polynomial_time() {
     }
 }
 
+/// A call whose signature holds `D40<'b, 'a>` and then `W<'b, 'a>`,
+/// where the chain under `D40` ends at `W<'a, 'a>` and `W` names `D40`,
+/// checks and elaborates in time linear in the chain, each link of which
+/// names the one below twice: an application walked outside `W` and met
+/// again inside it is walked once more there, and that walk is the one
+/// kept.
+#[test]
+#[cfg(target_os = "linux")]
+fn an_application_met_again_inside_a_definition_it_expanded_is_walked_once_there() {
+    const LINKS: usize = 40;
+    let mut types = format!(
+        "type W<'p, 'q> = [`W('p), `WD(D{LINKS}<'p, 'q>), null];\n\
+         type D1<'p, 'q> = [`L1('p), `P1(W<'q, 'q>), `Q1(W<'q, 'q>), null];\n"
+    );
+    for i in 2..=LINKS {
+        let below = i - 1;
+        types.push_str(&format!(
+            "type D{i}<'p, 'q> = \
+             [`L{i}('p), `P{i}(D{below}<'p, 'q>), `Q{i}(D{below}<'p, 'q>), null];\n"
+        ));
+    }
+    let call = format!(
+        "let f = |x: D{LINKS}<'b, 'a>, y: W<'b, 'a>, z: 'a| z;\nf(null, null, 1)\n"
+    );
+    completes_within(
+        &["--expand", "--no-fusion", "--no-cache"],
+        &format!("{types}{call}"),
+        3 * BILLION,
+    )
+}
+
+/// Layers of two typedefs, each naming both of the layer below, the
+/// lowest naming a typedef that names the first layer again, check and
+/// elaborate in time linear in the layers, where the walk meets the
+/// lowest inside a different set of open definitions for each choice of
+/// one a layer: what it holds is told as held under a function at the
+/// first of them, and it is passed by at the rest.
+#[test]
+#[cfg(target_os = "linux")]
+fn layers_of_typedefs_over_a_recursive_one_check_in_polynomial_time() {
+    const LAYERS: usize = 24;
+    let mut types =
+        "type X<'y> = [`X('y), `XA(A1<'y, 'y>), `XB(B1<'y, 'y>), null];\n".to_string();
+    for i in 1..=LAYERS {
+        for n in ["A", "B"] {
+            let below = match i == LAYERS {
+                true => format!("`{n}{i}x(X<'y>)"),
+                false => {
+                    let j = i + 1;
+                    format!("`{n}{i}a(A{j}<'x, 'y>), `{n}{i}b(B{j}<'x, 'y>)")
+                }
+            };
+            types.push_str(&format!(
+                "type {n}{i}<'x, 'y> = [`{n}{i}('x), {below}, null];\n"
+            ));
+        }
+    }
+    completes_within(
+        &["--expand", "--no-fusion", "--no-cache"],
+        &format!("{types}let f = |p: A1<'b, 'a>, z: 'a| z;\nf(null, 1)\n"),
+        3 * BILLION,
+    )
+}
+
 /// A type test for one recursive union over a value of another, each
 /// returning to itself through `Error` or `Array`, checks in the time of
 /// a program without it: the difference the arm leaves is built of the

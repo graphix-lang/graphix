@@ -23,6 +23,7 @@ use smallvec::SmallVec;
 use std::{
     error::Error,
     fmt::{self, Write},
+    ops::ControlFlow,
 };
 
 #[derive(Debug)]
@@ -893,8 +894,11 @@ impl Held {
 /// A walk of every type variable under a type, through bindings, with how
 /// each occurrence is held. A shared node is walked once for each way it
 /// is held, and a typedef application by its [`AppKey`] once for each
-/// way it is held where [`Unrolling::passes`]; each is kept so its keys
-/// stay its own.
+/// way it is held, then again only where its walk does not
+/// [`Unrolling::passes`]; each is kept so its keys stay its own. A caller
+/// takes a variable told once as held under a function for held so,
+/// whatever else is told of it: an application holding no other variable
+/// is passed by.
 #[doc(hidden)]
 pub struct DataPositions<'a> {
     env: &'a Env,
@@ -902,6 +906,9 @@ pub struct DataPositions<'a> {
     unrolling: Unrolling,
     seen: LPooled<AHashMap<(usize, Held), Type>>,
     applied: LPooled<AHashMap<(AppKey, Held), (Type, Expanded)>>,
+    /// The cells told as held under a function, each with every cell
+    /// under its binding.
+    sunk: LPooled<AddrSet>,
 }
 
 impl<'a> DataPositions<'a> {
@@ -912,6 +919,7 @@ impl<'a> DataPositions<'a> {
             unrolling: Unrolling::default(),
             seen: LPooled::take(),
             applied: LPooled::take(),
+            sunk: LPooled::take(),
         }
     }
 
@@ -925,10 +933,26 @@ impl<'a> DataPositions<'a> {
         t.for_each_child(&mut |c| self.walk(c, held, f))
     }
 
+    /// Whether every variable `t` writes is told as held under a function.
+    fn all_sunk(&self, t: &Type) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => self.sunk.contains(&tv.cell_addr()),
+            t => t
+                .try_for_each_child(&mut |c| match self.all_sunk(c) {
+                    true => ControlFlow::Continue(()),
+                    false => ControlFlow::Break(()),
+                })
+                .is_continue(),
+        })
+    }
+
     pub fn walk(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 f(tv, held);
+                if held.function {
+                    self.sunk.insert(tv.cell_addr());
+                }
                 if self.seen.insert((tv.cell_addr(), held), t.clone()).is_none()
                     && let Some(b) = tv.binding()
                 {
@@ -942,6 +966,9 @@ impl<'a> DataPositions<'a> {
                 if let Some(key) = tr.probe_def_key(self.env)
                     && !self.unrolling.is_open(key) =>
             {
+                if self.all_sunk(t) {
+                    return;
+                }
                 let app = (tr.app_key(key), held);
                 if let Some((_, expanded)) = self.applied.get(&app)
                     && self.unrolling.passes(expanded)
@@ -953,7 +980,7 @@ impl<'a> DataPositions<'a> {
                         self.unrolling.enter(key);
                         self.walk(&whole, held, f);
                         let expanded = self.unrolling.leave(tr);
-                        self.applied.entry(app).or_insert((t.clone(), expanded));
+                        self.applied.insert(app, (t.clone(), expanded));
                     }
                     None => self.beneath_function(t, held, f),
                 }

@@ -622,6 +622,15 @@ pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
 // settle::Unrolling::passes keeps a position walk's. probes:
 // ~/ptmp/cr29/scratch/r23/23c/dpp/g_perm_{4,5,6,7}.gx, dp7.gx, gen.py
 // (freeze-recursive-paths-01)
+// 2026-11-13 claude: Review of data-positions-paths-01 (lane 23c): smaller probes of the
+// same freeze, base-r23 alike. Four definitions (p00617.gx, a generated program:
+// T0..T3<'x, 'y> and one call) take 217.7 G to run fused (216.7 G on base-r23) and 0.79
+// G under --no-fusion; perf puts 92% under Freeze::freeze_inner. Layers of two
+// definitions that each name both of the layer below, over one that names the first
+// layer again (lay.py M, 2M + 1 definitions): --no-cache --expand 0.78 / 0.97 / 4.00 G
+// for M = 4 / 6 / 8 (base-r23 0.79 / 1.01 / 4.13 G), M = 14 killed at 100 s past 669 G,
+// where --expand --no-fusion is 0.77 G at each. probes:
+// ~/ptmp/cr29/scratch/r23/23c/dpp/review/p00617.gx, lay.py, lay_8.gx, lay_14.gx
 /// One freeze's walk.
 #[derive(Default)]
 struct Freeze {
