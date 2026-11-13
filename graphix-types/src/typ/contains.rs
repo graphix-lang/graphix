@@ -5322,6 +5322,27 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [bug/low] An invariant position holding a union of a variable
+    // and a member decides the variable by how the argument's type is spelled, and by
+    // the order of the parameters, where the argument already holds the member: `['a,
+    // null]` equal to `[i64, null]` holds at 'a = i64 and at 'a = [i64, null], and the
+    // first containment takes one. Over `type Opt<'a> = ['a, null]; let nest = |w: &mut
+    // Opt<'a>| -> &mut 'a never()`, `let x: &mut Opt<i64> = nest(&mut n0)` checks for
+    // `n0: Opt<Opt<i64>>` (the member `Opt<i64>` goes to 'a whole) and is refused for
+    // `n0: [i64, null]`, `Opt<i64>` and `Opt<[i64, null]>`, "&mut Opt<i64> does not
+    // contain &mut 'a: i64"; `let x: &mut i64` the other way round. The formal's
+    // spelling changes nothing (`w: &mut ['a, null]` gives the same verdicts). A call
+    // only the wider solution types depends on parameter order: `|w: &mut Opt<'a>, k:
+    // &mut 'a| -> i64 0` at `(&mut n0, &mut d)` with `n0: Opt<i64>` and `d: Opt<i64>`
+    // is refused, "&mut 'a: i64 does not contain &mut [i64, null]", and `|k: &mut 'a, w:
+    // &mut Opt<'a>|` runs; with `k: 'a` both orders are refused, "'a: i64 does not
+    // contain [i64, null]", and `n0: Opt<Opt<i64>>` runs in every one. Nothing unsound,
+    // and the check and the build agree (base-r23 alike; found closing
+    // alias-instance-signature-01). What would fix it is a rule, not looked into: the
+    // variable waits for its other positions as one in a data position does, or the
+    // choice is refused naming what to annotate. probes:
+    // ~/ptmp/cr29/scratch/r23/23b/alias/w.txt (one program a line, run by hp.sh; w/h1.gx
+    // to h23.gx) (invariant-union-two-solutions-01)
     /// Containment both ways: an invariant position.
     fn equal_int(
         &self,

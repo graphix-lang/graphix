@@ -8759,6 +8759,43 @@ run!(
     FuseExpect::Jit
 );
 
+// An alias that adds a member, applied to a variable under an invariant
+// constructor: an argument written as the alias over a type that already
+// holds the member gives the variable that type, and the instance holds
+// its signature there.
+run!(
+    alias_over_a_variable_under_a_writable_reference_builds_at_a_nested_alias,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let nest = |w: &mut Opt<'a>| -> &mut 'a never();
+  let put = |w: &mut Opt<'a>, v: 'a| -> 'a { *w <- v; v };
+  let n0: Opt<Opt<i64>> = null;
+  let x: &mut Opt<i64> = nest(&mut n0);
+  let d: Opt<i64> = 5;
+  let p: Opt<i64> = put(&mut n0, d);
+  p
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
+run!(
+    alias_over_a_variable_under_an_abstract_builds_at_a_nested_alias,
+    r#"{
+  type Opt<'a> = ['a, null];
+  type B<'a> = Abstract<'a>;
+  let nest = |w: B<Opt<'a>>| -> B<'a> never();
+  let inner = |w: B<Opt<'a>>, d: 'a| -> B<'a> B(d);
+  let n0: Opt<i64> = null;
+  let y: B<Opt<Opt<i64>>> = B(n0);
+  let x: B<Opt<i64>> = nest(y);
+  let z: B<Opt<i64>> = inner(y, 3);
+  z.0
+}"#,
+    is(Value::I64(3));
+    FuseExpect::Jit
+);
+
 // A callback whose formal is a variable bounded by a union of function
 // types is given to no member before its result is known, and takes its
 // parameter's type from the member that then admits it.

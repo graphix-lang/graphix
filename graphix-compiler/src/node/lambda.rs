@@ -1382,6 +1382,29 @@ impl Typing {
         // (formal-union-order-01) comes to refuse. probes:
         // ~/ptmp/cr29/scratch/r20/20c/ag-review/inst3.gx, inst4.gx (written out:
         // inst1.gx, inst2.gx) (alias-instance-signature-01)
+        // 2026-11-12 claude: Stale: base-r21, base-r22, base-r23 and lane 23b all pass
+        // --check and build inst3.gx and inst4.gx (fused, --no-fusion, GRAPHIX_NO_SUBST=1).
+        // An instance now holds this signature two ways the CR's main did not have: a
+        // variable of the definition in a data position waits for the position that holds
+        // it exactly, here the result (the deferral in FnType::contains_gated), and
+        // FnType::held_at's later attempts place each cell at its own place through a
+        // typedef application's arguments (Type::for_each_place). With both switched off
+        // the CR's message comes back for the Abstract form, and either one alone builds
+        // it; the &mut form builds even then. Pins added, passing on base-r23's code:
+        // lang::types::alias_over_a_variable_under_a_writable_reference_builds_at_a_nested_alias
+        // and alias_over_a_variable_under_an_abstract_builds_at_a_nested_alias; the second
+        // fails in all four modes with both switched off. Differential, check against
+        // --expand: 6165 generated programs on base-r23 and 15876 on the lane (alias,
+        // constructor, the formal's and the argument's spelling, result, a second parameter
+        // before or after, non-primitive members), none the check accepts and the build
+        // refuses; 700 accepted ones build under GRAPHIX_NO_SUBST=1. The CR's aside reads
+        // differently now: the formal written as the alias or written out gives one verdict
+        // in all 910 pairs, and the argument's spelling is what decides between the two
+        // solutions, in the check alone (invariant-union-two-solutions-01). Tried beside
+        // it: Type::place_members giving a primitive member no constructor member admits
+        // whole to its members a type apiece (what union-prim-member-whole-01 proposes)
+        // leaves both probes and both pins building. probes:
+        // ~/ptmp/cr29/scratch/r23/23b/alias/ (README)
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
