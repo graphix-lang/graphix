@@ -2125,6 +2125,25 @@ impl FnType {
             // unsound program (u1) through sig-unpaired-apart-01's hole, which base
             // reaches already by other shapes (u2): fix that first. probes:
             // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/ (README)
+            // 2026-11-12 claude: Review (lane 23g): the partial fix holds for the shapes
+            // it names (f1 g1 g3 g6, r1-r4, s1 s3, t1 t2 refused at the check; f2 s2 t3
+            // t4 u3 hold), and each part is pinned: with the Sealed merge undone 10
+            // refusal pins fail, with holding through bounds undone 2, with the Some
+            // arm's signature terms undone 2. It left a predicate conjunct on the
+            // unpaired cell: a predicate read a rigid signature variable as it stands,
+            // one member of no kind, so `'p: Singleton` (or NoError, OneNumber) stood for
+            // `'a: [i64, string]`: `val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) ->
+            // 'b;` over `let f = 'p: Singleton, 'q: ['p, `X, `Y] |x: 'q| -> 'q x` passed
+            // --check and the run failed at the instance with a `[i64, string]` argument.
+            // Corrected: under Sealed a rigid cell holds a predicate only where one of
+            // its conjuncts implies it (Type::contains_dispatch, by Type::implies), as a
+            // paired cell's predicate is judged; pins
+            // an_unpaired_variable_with_a_{singleton,no_error,one_number}_bound_* and
+            // an_unpaired_variable_with_a_singleton_bound_against_a_position_* (each
+            // refusal fails in all 4 modes without the correction, each twin holds both
+            // ways). A paired cell's predicate against a concrete signature type is a new
+            // CR, iface-predicate-member-01. Still left: k4, as noted. probes:
+            // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/ (README)
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2154,6 +2173,15 @@ impl FnType {
         // that hard refusal). On base-r23 and lane 23g alike. probes:
         // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/{u1,u2,u3,k4}/main.gx (README)
         // (sig-unpaired-apart-01)
+        // 2026-11-12 claude: Review of iface-bound-shape-01: the variable is judged apart
+        // inside one conjunct too, since a probe merges nothing: `val f: fn<'a: [i64,
+        // string] + Singleton, 'c: [i64, string] + Singleton, 'b: ('a, 'c)>(x: 'b) ->
+        // i64;` over `let f = 'p: [i64, string] + Singleton, 'q: [('p, 'p), null] |x: 'q|
+        // -> i64 0` passes --check with `m::f(("s", 1))` and the run fails at the
+        // instance; so does `val f: fn(x: (i64, string)) -> i64;` over the same
+        // implementation with `m::f((1, "s"))`, the variable meeting two concrete types.
+        // On base-r23 and lane 23g alike. probes:
+        // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/{p1,p2}/main.gx
         for (_, tv) in impl_cells.iter() {
             match tvar_map.sig_type(tv.cell_addr()) {
                 None => (),
@@ -2163,6 +2191,26 @@ impl FnType {
                     }
                 }
                 Some(sig_type) => {
+                    // CR claude for claude: [bug/medium] A paired implementation cell's
+                    // predicate conjunct is asked of the signature's concrete type as that type
+                    // stands, where a signature variable that is a member of its union does not
+                    // count as the types its bounds admit, though the caller may pick any of
+                    // them; the predicates asked of each signature variable inside (the list
+                    // below: Discernible, Ordered, JsonData, TomlData, Concrete, Data) leave out
+                    // NoError and OneNumber. `val f: fn<'a: Number>(x: ['a, `X]) -> i64;` over
+                    // `let f = 'q: OneNumber |x: 'q| -> i64 0` passes --check with `m::f(v)`, `v:
+                    // [i64, f64, `X]`, and the run fails "an instance at fn(x: [i64, f64, `X])
+                    // -> i64 of a definition typed fn<'q: OneNumber>(..)"; the same with `'a:
+                    // [i64, Error<`E>]` over `'q: NoError` and an error argument. Asking NoError
+                    // of each signature variable that is a member of the union (not one below a
+                    // constructor: an `Array<Error<..>>` is no error) closes the second; OneNumber
+                    // and Singleton count members, so a variable there would count as its bounds'
+                    // members. The open pair's case, a predicate on an unpaired cell standing
+                    // for a bare signature variable, is judged by the variable's bounds (the
+                    // Sealed arm of Type::contains_dispatch). On base-r23 and lane 23g alike.
+                    // probes: ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/{p9,p9n}/main.gx
+                    // (iface-predicate-member-01)
+
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside
                     for impl_tc in tv.cell_constraints() {

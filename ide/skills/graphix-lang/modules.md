@@ -127,7 +127,9 @@ string], 'b: ['a, `X]>(x: 'b) -> 'b`` over ``let f = 'a: [i64, f64], 'b:
 the implementation (`'a: [i64, string, f64]`) is fine. A bound of
 another shape than the signature's (``'q: ['p, `X, `Y]`` under ``'b: ['a,
 `X]``) is judged by what its own variables admit: `'p` stands for `'a`
-only where `'p`'s bound holds every type `'a`'s does. A trait method,
+only where `'p`'s bound holds every type `'a`'s does (`'p: Singleton`
+only where `'a` declares `Singleton` or a bound that implies it). A
+trait method,
 an impl's or a default, is judged the same way:
 
 ```graphix,cases
@@ -135,6 +137,8 @@ no "requires 'a: [i64, f64], which the signature does not declare" trait T { val
 ok trait T { val m: fn<'a: [i64, string], 'b: Array<'a>>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: [i64, string, f64], 'q: Array<'p> |s, x: 'q| -> 'q x }; T::m(1, ["s"])
 no "requires 'b: ['p, `X, `Y], which the signature does not declare" trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: [i64, f64], 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
 ok trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: [i64, string], 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
+no "requires 'b: ['p, `X, `Y], which the signature does not declare" trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: Singleton, 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
+ok trait T { val m: fn<'a: [i64, string] + Singleton, 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: Singleton, 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
 ```
 
 A `val`'s type variable stands only inside a function type, where each

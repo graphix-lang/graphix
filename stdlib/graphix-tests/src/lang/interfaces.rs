@@ -1786,6 +1786,73 @@ run!(
     "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Number |x: 'c, y: 'r| -> i64 0"
 ; FuseExpect::None);
 
+// A predicate on an unpaired implementation variable holds of the
+// signature variable it stands for only where one of that variable's
+// bounds implies it.
+run!(
+    an_unpaired_variable_with_a_singleton_bound_must_be_declared,
+    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Singleton, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_with_a_singleton_bound_holds,
+    is(Value::String("s".into())),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Singleton, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+);
+
+run!(
+    an_unpaired_variable_with_a_no_error_bound_must_be_declared,
+    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, Error<`E>], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: NoError, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_with_a_no_error_bound_holds,
+    is(Value::String("s".into())),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: NoError, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+);
+
+run!(
+    an_unpaired_variable_with_a_one_number_bound_must_be_declared,
+    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn<'a: Number, 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_with_a_one_number_bound_holds,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber, 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+);
+
+run!(
+    an_unpaired_variable_with_a_singleton_bound_against_a_position_must_be_admitted,
+    refused("signature has concrete type Array<'a>, which the implementation constraint [null, Array<'p>] does not admit"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: Array<'a>) -> i64;",
+    "/test/m.gx" => "let f = 'p: Singleton, 'q: [Array<'p>, null] |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_with_a_singleton_bound_against_a_position_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton>(x: Array<'a>) -> i64;",
+    "/test/m.gx" => "let f = 'p: Singleton, 'q: [Array<'p>, null] |x: 'q| -> i64 0"
+);
+
 // A cell carrying several conjuncts of one shape has each paired with
 // the signature's bound, so every variable inside them is judged.
 run!(

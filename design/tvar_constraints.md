@@ -120,7 +120,8 @@ conjuncts of an open cell merged into it, which its definition's
 signature then carries; a judgment against a signature whose bounds are
 fixed (`Type::implies`, an interface's bounds: `ContainsFlags::Sealed`)
 merges an open cell into a rigid one only where the open cell's own
-conjuncts admit it. The witness
+conjuncts admit it, and there a rigid cell holds a predicate only where
+one of its own conjuncts implies it. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.

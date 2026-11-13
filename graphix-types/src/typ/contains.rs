@@ -69,7 +69,8 @@ pub enum ContainsFlags {
     LowerInArgs,
     /// The rigid cells are a fixed signature's variables, whose bounds its
     /// callers read: an open cell merges into one only where its own
-    /// conjuncts admit it, since the rigid cell may take on none.
+    /// conjuncts admit it, since the rigid cell may take on none, and one
+    /// holds a predicate only where its own conjuncts imply it.
     Sealed,
 }
 
@@ -3315,6 +3316,20 @@ impl Type {
             && let Some(behind) = self.ref_behind()
         {
             return behind.contains_int(flags, env, hist, t);
+        }
+        // a fixed signature's variable is any type its conjuncts admit: it
+        // holds a predicate only where one of them implies it
+        if flags.contains(ContainsFlags::Sealed)
+            && let (Self::Bound(_), Self::TVar(tv)) = (self, t)
+            && tv.binding().is_none()
+            && tv.is_rigid()
+        {
+            for c in tv.cell_constraints().iter() {
+                if c.implies(env, self)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
         match (self, t) {
             (Self::Bound(Bound::Concrete), t) => Ok(t.concrete_holds(env)),
