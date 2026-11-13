@@ -1719,6 +1719,20 @@ impl Type {
             // elements that pass it: one that is not all `t1` is any
             // collection of `t0`, so only a `t1` covering every element
             // subtracts anything.
+            // CR claude for claude: [bug/high] `t0 == t1` holds for two distinct
+            // open cells (TVar's equality reads bindings, None == None), so a written
+            // test of one declared variable takes an array of another out of what
+            // reaches the next arm: `let f = |x: [Array<'a>, i64], y: 'b| select x {
+            // Array<'b> as a => 1, v => select v { i64 as n => n } }; [f([1], "s"),
+            // f(3, "s")]` passes --check, and runs fused printing `[140038021692400,
+            // 3]` (the array read as an i64, a new number each run), while
+            // --no-fusion logs "no arm matches [i64:1]: a coverage hole in the
+            // check" and bottoms. The Map arm below (same_type) alike over `Map<'b,
+            // i64> as a`. base-r24 alike. The (TVar, TVar) arm above tells cells
+            // apart by same_cell and setops::held_by_shape by union_identical; the
+            // element here wants the same, and the Map arm's key and value. probe:
+            // ~/ptmp/cr29/scratch/r24/24h/vtp-rev/r5.txt lines 1 and 3, run by
+            // run.sh beside it (diff-collection-open-cells-01)
             (Type::List(t0), Type::List(t1)) | (Type::Array(t0), Type::Array(t1)) => {
                 let covered = t0 == t1
                     || matches!(
@@ -2006,24 +2020,32 @@ fn same_normal(t0: &Type, t1: &Type) -> bool {
     t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
 }
 
+/// [`same_normal`] where two open cells are one type only when they are
+/// one cell: two declared variables may differ in every instance.
+fn identical_normal(t0: &Type, t1: &Type) -> bool {
+    union_identical(&t0.resolve_tvars().normalize(), &t1.resolve_tvars().normalize())
+}
+
 /// Whether every value of `t0` is one of `t1` by their shapes alone: `t1`
 /// is `Any` or `t0` itself, read through bound cells, or the two are
 /// tuples, structs or variants of one shape whose parts are held so. A
 /// union `t0` is held where each of its members is, and a name `t0` stands
-/// for is read through where `t1` takes it apart; `t1`'s names are not, so
-/// the walk ends within `t1`.
+/// for is read through; `t1`'s names are not, so the walk ends within `t1`.
 fn held_by_shape(env: &Env, t0: &Type, t1: &Type) -> bool {
-    if is_any(t1) || t0 == t1 {
+    if is_any(t1) || union_identical(t0, t1) {
         return true;
     }
     let product =
         |t: &Type| matches!(t, Type::Tuple(_) | Type::Struct(_) | Type::Variant(..));
     ensure_sufficient(|| match (t0.deref_cloned(), t1.deref_cloned()) {
+        (Some(t0 @ Type::Ref(_)), Some(t1)) => {
+            (!product(&t1) && identical_normal(&t0, &t1))
+                || matches!(
+                    t0.lookup_ref_with(env, false),
+                    Ok(Some(t)) if held_by_shape(env, &t, &t1)
+                )
+        }
         (Some(t0), Some(t1)) if product(&t1) => match (&t0, &t1) {
-            (Type::Ref(_), _) => matches!(
-                t0.lookup_ref_with(env, false),
-                Ok(Some(t)) if held_by_shape(env, &t, &t1)
-            ),
             (Type::Set(ms), _) => ms.iter().all(|m| held_by_shape(env, m, &t1)),
             (Type::Tuple(p0), Type::Tuple(p1)) => held_at_each(env, p0.iter(), p1.iter()),
             (Type::Variant(tag0, p0, _), Type::Variant(tag1, p1, _)) => {
@@ -2040,7 +2062,7 @@ fn held_by_shape(env: &Env, t0: &Type, t1: &Type) -> bool {
             }
             _ => false,
         },
-        _ => same_normal(t0, t1),
+        _ => identical_normal(t0, t1),
     })
 }
 
@@ -2254,7 +2276,7 @@ pub(crate) mod tests {
 
     // A tuple, struct or variant goes whole where its subtrahend holds each of
     // its positions, through a name and at any depth, and stays whole where a
-    // position keeps a value.
+    // position keeps a value, as one where two open cells stand.
     #[test]
     fn diff_takes_a_product_held_at_every_position() {
         let (env, _) = typed(&[("P", "(i64, i64)")], "null");
@@ -2266,9 +2288,41 @@ pub(crate) mod tests {
             ("`A([(i64, i64), (i64, string)])", "`A((i64, Any))", "[]"),
             ("`A((i64, [i64, null]))", "`A((i64, i64))", "`A((i64, [i64, null]))"),
             ("(i64, i64)", "(i64, string)", "(i64, i64)"),
+            ("`A(('a, i64))", "`A(('b, Any))", "`A(('a, i64))"),
+            ("`A('a)", "`A('b)", "`A('a)"),
         ] {
             let d = parsed(&env, t0).diff(&env, &parsed(&env, t1)).unwrap();
             assert_eq!(d.to_string(), left, "{t0} - {t1}");
+        }
+    }
+
+    // A bind's cell holds a name's expansion, never the name: the name in
+    // the minuend is read through to meet it, a union, a recursive union
+    // and an abstract type alike, at a payload's top and inside a tuple.
+    #[test]
+    fn diff_reads_a_minuend_name_through_to_a_bound_expansion() {
+        let (env, _) = typed(
+            &[
+                ("U", "[i64, string]"),
+                ("L", "[`Cons(i64, L), `Nil]"),
+                ("W", "Abstract<(i64, i64)>"),
+            ],
+            "null",
+        );
+        for (t0, t1, cell, left) in [
+            ("[`A((U, i64)), `B]", "`A(('c, Any))", "U", "`B"),
+            ("[`A(L), `B]", "`A('c)", "L", "`B"),
+            ("[`A((L, i64)), `B]", "`A(('c, i64))", "L", "`B"),
+            ("[`A(W), `B]", "`A('c)", "W", "`B"),
+            ("[`A((U, i64)), `B]", "`A(('c, Any))", "L", "[`A((U, i64)), `B]"),
+            ("[`A(W), `B]", "`A('c)", "U", "[`A(W), `B]"),
+        ] {
+            let t1 = parsed(&env, t1);
+            let mut cells = AHashMap::default();
+            t1.collect_tvars(&mut cells);
+            cells["c"].bind(parsed(&env, cell).lookup_ref(&env).unwrap());
+            let d = parsed(&env, t0).diff(&env, &t1).unwrap();
+            assert_eq!(d.to_string(), left, "{t0} - {t1}, 'c = {cell}");
         }
     }
 

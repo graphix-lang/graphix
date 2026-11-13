@@ -5955,6 +5955,43 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2])
 );
 
+// A bind covers a position whatever name its type has there: a union, a
+// recursive union, an abstract type.
+run!(variant_named_union_position_names_cover_its_member, "{ type U = [i64, string]; let f = |x: [`A((U, i64)), `B]| select x { `A((u, n)) => n, `B => 100, _ => 0 }; f(`B) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(variant_recursive_payload_bind_covers_its_member, "{ type L = [`Cons(i64, L), `Nil]; let f = |x: [`A(L), `B]| select x { `A(l) => 1, `B => 100, _ => 0 }; f(`B) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(variant_abstract_position_names_cover_its_member, "{ type W = Abstract<(i64, i64)>; let f = |x: [`A((W, i64)), `B]| select x { `A((w, n)) => n, `B => 100, _ => 0 }; f(`B) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(
+    variant_named_positions_leave_the_other_members,
+    "{ type U = [i64, string]; type L = [`Cons(i64, L), `Nil]; let f = |x: [`A((U, L)), `B]| select x { `A((u, l)) => select l { `Cons(h, _) => h, `Nil => 0 }, v => select v { `B => 100 } }; [f(`A((1, `Cons(7, `Nil)))), f(`A((\"s\", `Nil))), f(`B)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [7, 0, 100])
+);
+
+// A written test of one declared variable covers no part of another's: an
+// instance may make them two types, so what the test passes is no member.
+run!(variant_payload_test_of_another_variable_leaves_its_member, "{ let f = |x: [`A(('a, i64)), `B], y: 'b| select x { `A(('b, i64)) as `A((p, _)) => 1, v => select v { `B => 100 } }; [f(`A((\"s\", 1)), 5), f(`B, 5)] }",
+    refused("missing match cases: no arm covers `A(('a"); FuseExpect::None);
+
+run!(variant_payload_test_of_another_variable_beside_any_leaves_its_member, "{ let f = |x: [`A(('a, i64)), `B], y: 'b| select x { `A(('b, Any)) as `A((p, _)) => 1, v => select v { `B => 100 } }; [f(`A((\"s\", 1)), 5), f(`B, 5)] }",
+    refused("missing match cases: no arm covers `A(('a"); FuseExpect::None);
+
+run!(
+    variant_payload_test_of_another_variable_leaves_a_later_arm_live,
+    "{ let f = |x: [`A(('a, i64)), `B], y: 'b| select x { `A(('b, Any)) as `A((p, _)) => 1, `B => 100, _ => 7 }; [f(`A((\"s\", 1)), 5), f(`B, 5)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [7, 100])
+);
+
+run!(
+    variant_payload_test_of_its_own_variable_covers_its_member,
+    "{ let f = |x: [`A(('a, i64)), `B]| select x { `A(('a, Any)) as `A((p, _)) => 1, v => select v { `B => 100 } }; [f(`A((\"s\", 1))), f(`B)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 100])
+);
+
 // Under a written test a slice element's literal rules out no member for a
 // bind, as a literal outside a slice does: an instance's scrutinee may be
 // the member alone.
