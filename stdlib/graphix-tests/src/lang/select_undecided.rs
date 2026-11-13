@@ -1219,8 +1219,27 @@ run!(covering_arm_testing_its_member_below_a_reference_refused, r#"{
     [f(1, true), f(1, false)]
 }"#, refused("(`K, i64) as (_, n) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
 
-// A declared variable below a bound is met as one the scrutinee holds
-// itself: no arm decides it.
+// A later use decides the covered member's cell apart from what the arm
+// behind the cover tests: that arm meets none of its values.
+run!(later_use_decides_a_cell_of_a_covered_member_below_a_reference, r#"{
+    let x = never();
+    let b = false;
+    let r = &mut (select b { true => (x, `K), false => (0, `L) });
+    let s = select *r { (_, `K) => 1, (0, _) => 2, _ => 3 };
+    x <- "s";
+    s
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+// The arms up to a dead one are judged behind their covers too, so the
+// dead arm is what is refused.
+run!(dead_arm_behind_a_cover_of_a_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (x, null), false => (`L, 0) });
+        select *r { (_, null) => 1, (`L, _) => 2, _ => 3 }
+    };
+    [f("s", true), f("s", false)]
+}"#, refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
 run!(tag_testing_a_declared_variable_below_a_reference_refused, r#"{
     let f = |x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } };
     [f(`M), f(`J)]

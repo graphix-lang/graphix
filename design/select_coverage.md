@@ -100,7 +100,7 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   scrutinee read as those bounds hold it (`lower_view`), less each
   member of that union a type the unguarded arms before the arm cover
   holds whole, every cell still open one type equal only to itself
-  (`uncovered`: over the referent of `` &mut (select b { true => (`K,
+  (`Uncovered`: over the referent of `` &mut (select b { true => (`K,
   x), false => (`L, 0) }) ``, `(_, 0)` behind `` (`K, _) `` meets no
   value of `x`; a member inside a part, `select (*r, 1)`, is not taken
   out), and so does

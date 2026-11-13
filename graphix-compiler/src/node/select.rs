@@ -739,6 +739,23 @@ impl Reach {
             // "[['_N, i64, Array<'_N>, Array<i64>], ['_N, Array<'_N>]]"). Not diagnosed.
             // probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/{sp1,sp2,sp3}.gx
             // (payload-bound-arms-split-01)
+            // CR claude for claude: [bug/low] A lower bound of a scrutinee cell the arms
+            // decide goes to the first member of the arms' union that can take it, which
+            // may decide a cell a later member would hold as it stands: `let f = |x, b:
+            // bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select
+            // *r { (`K, _) => 1, (_, 0) => 2, _ => 3 } }` checks since lower-view-reach-01,
+            // as `fn(x: i64, b: bool) -> i64`: the referent is `[(Any, i64), (`K, Any)]`
+            // and `(`K, 'x)` goes to `(Any, i64)`. So `f("s", true)` is refused, "type
+            // mismatch i64 does not contain string", which names no annotation, where
+            // the plain twin `select (select b { .. }) { .. }` prints [1, 2] and base-r23
+            // refused the definition naming `x`. `|x: string, b: bool|` prints [1, 2], and
+            // so does the string call with the parts swapped (`(x, `K)` beside `(0, `L)`,
+            // arms `(_, `K)`, `(0, _)`, `_`), where `(Any, `K)` sorts first. A bind does
+            // the same on base-r23 (`(`K, _) => 1, (_, n) => n + 1`). `(`K, (x, 1))`
+            // behind `(`K, _)` and the struct form alike. What would close it: a bound
+            // goes to a member that holds it deciding no cell before one that decides
+            // one. probes: ~/ptmp/cr29/scratch/r23/23d/lvr-rev/{r1.txt,r4.txt} (run with
+            // rb.sh), r1.txt lines 3 to 5 (lower-bound-first-member-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);
@@ -3186,7 +3203,7 @@ impl<R: Rt> Select<R> {
     /// since, as one of `decided` is met. A cell decided through the
     /// scrutinee's lower bounds is met in `lower`, the scrutinee as those
     /// bounds held it ([`lower_view`]), less the members the unguarded arms
-    /// before the arm cover whole (`covered`, [`uncovered`]), except by the
+    /// before the arm cover whole (`covered`, [`Uncovered`]), except by the
     /// last arm where it is `dead`: nothing reaches it.
     #[allow(clippy::too_many_arguments)]
     fn check_undecided(
@@ -3209,12 +3226,12 @@ impl<R: Rt> Select<R> {
         written.decided(&mut own);
         let own_open = |tv: &TVar| own.cells.contains_key(&tv.stands_for());
         let own_was = Decided { cell: &own_open, held: &|_| None };
+        let mut below = Below { lower, covered, decided, left: None };
         for (i, (((pat, n), (spec_pat, _)), arm)) in
             self.arms.iter().zip(se.arms.iter()).zip(reached.iter()).enumerate()
         {
             let reaching = &arm.atype;
-            let lower = lower.filter(|_| !dead || i + 1 < reached.len());
-            let below = Below { lower, covered: &covered[..arm.covered], decided };
+            let view = !dead || i + 1 < reached.len();
             let sp = &spec_pat.structure_predicate;
             let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
             let ids = |p: &StructurePattern| ids.get(p);
@@ -3239,9 +3256,18 @@ impl<R: Rt> Select<R> {
                             match written_tests_undecided(env, t, reaching, undecided)? {
                                 Some(tv) => Some(tv),
                                 None if decided.cells.is_empty() => None,
-                                None => below.met_beside(env, reaching, |over| {
-                                    written_tests_decided(env, t, over, decided)
-                                })?,
+                                None => {
+                                    let meets = |over: &Type| {
+                                        written_tests_decided(env, t, over, decided)
+                                    };
+                                    below.met_beside(
+                                        env,
+                                        arm.covered,
+                                        view,
+                                        reaching,
+                                        meets,
+                                    )?
+                                }
                             }
                             .map(|tv| {
                                 let pat = format_compact!("{t} as {sp}");
@@ -3253,9 +3279,10 @@ impl<R: Rt> Select<R> {
                 false => match sp.meets_undecided(env, &ids, reaching, &open)? {
                     Some(tv) => Some(tv),
                     None if decided.cells.is_empty() => None,
-                    None => below.met_beside(env, reaching, |over| {
-                        sp.meets_decided(env, &ids, over, &was)
-                    })?,
+                    None => {
+                        let meets = |over: &Type| sp.meets_decided(env, &ids, over, &was);
+                        below.met_beside(env, arm.covered, view, reaching, meets)?
+                    }
                 }
                 .map(|tv| undecided_refusal(env, sp, &tv, &self.spec)),
             };
@@ -3428,28 +3455,33 @@ struct Reached {
     covered: usize,
 }
 
-/// What reaches an arm through the lower bounds of the scrutinee's open
-/// cells: `lower`, the scrutinee as those bounds held it ([`lower_view`]),
-/// and `covered`, what the unguarded arms before the arm cover.
+/// What reaches the arms of a select through the lower bounds of the
+/// scrutinee's open cells: `lower`, the scrutinee as those bounds held it
+/// ([`lower_view`]), less what the unguarded arms before an arm cover
+/// (`covered`), taken out arm by arm in the arms' order.
 struct Below<'a> {
     lower: Option<&'a Type>,
     covered: &'a [Type],
     decided: &'a Decisions,
+    left: Option<Uncovered>,
 }
 
-impl Below<'_> {
-    /// What `meets` finds over `reaching`, else over the lower view less
-    /// what the arms before cover of it.
+impl<'a> Below<'a> {
+    /// What `meets` finds over `reaching`, else, where the arm is judged
+    /// in the lower `view`, over that view less what the first `before`
+    /// of the covers hold of it.
     fn met_beside(
-        &self,
+        &mut self,
         env: &Env,
+        before: usize,
+        view: bool,
         reaching: &Type,
         meets: impl Fn(&Type) -> Result<Option<TVar>>,
     ) -> Result<Option<TVar>> {
         if let Some(tv) = meets(reaching)? {
             return Ok(Some(tv));
         }
-        let Some(lower) = self.lower else { return Ok(None) };
+        let Some(lower) = self.lower.filter(|_| view) else { return Ok(None) };
         // XCR claude for claude: [bug/low] The lower view is the whole scrutinee as its
         // bounds held it, never narrowed to what reaches the arm, so an arm is judged
         // against a member an earlier arm took whole. `|x, b: bool| { let r = &mut (select
@@ -3476,40 +3508,77 @@ impl Below<'_> {
         // with the narrowing undone (7 fixtures, 28 runs); the guarded, reordered and
         // same-cell controls stay refused either way. Census 2962 files: 0 verdict, 0
         // message. probes: ~/ptmp/cr29/scratch/r23/23d/lvr/ (a-d.txt, run with rb.sh)
-        match uncovered(env, lower, self.covered, self.decided)? {
+        if before == 0 {
+            return meets(lower);
+        }
+        let (covered, decided) = (self.covered, self.decided);
+        let left = self.left.get_or_insert_with(|| Uncovered::new(lower, decided));
+        left.take(env, covered, before)?;
+        match left.view(lower) {
             Some(left) => meets(&left),
             None => Ok(None),
         }
     }
 }
 
-/// `lower` less each member of its union that one of `covered` holds whole,
-/// with every cell still open one type equal only to itself: no value of
-/// such a member reaches an arm behind the arms that cover it. A cell of
-/// `decided` among the members stands whole, where the walks that read it
-/// as open meet it. `None` where nothing is left.
-fn uncovered<'a>(
-    env: &Env,
-    lower: &'a Type,
-    covered: &[Type],
-    decided: &Decisions,
-) -> Result<Option<Cow<'a, Type>>> {
-    fn members(t: &Type, decided: &Decisions, out: &mut SmallVec<[Type; 8]>) {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::Set(ms) => ms.iter().for_each(|m| members(m, decided, out)),
-            Type::TVar(tv)
-                if !decided.cells.contains_key(&tv.stands_for())
-                    && !decided.held.contains_key(&tv.stands_for())
-                    && let Some(b) = tv.binding() =>
-            {
-                members(&b, decided, out)
+#[cfg(test)]
+thread_local! {
+    static HOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The members of a lower view's union that none of the first `seen` of
+/// the covers holds whole, each with its cells still open, which a cover
+/// meets as one type equal only to itself: no value of a member taken out
+/// reaches an arm behind the arms that cover it. A cell of the decisions
+/// among the members stands whole, where the walks that read it as open
+/// meet it.
+struct Uncovered {
+    members: SmallVec<[(Type, OpenCells); 8]>,
+    whole: bool,
+    seen: usize,
+}
+
+type OpenCells = SmallVec<[TVar; 2]>;
+
+impl Uncovered {
+    fn new(lower: &Type, decided: &Decisions) -> Self {
+        fn members(t: &Type, decided: &Decisions, out: &mut SmallVec<[Type; 8]>) {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::Set(ms) => ms.iter().for_each(|m| members(m, decided, out)),
+                Type::TVar(tv)
+                    if !decided.cells.contains_key(&tv.stands_for())
+                        && !decided.held.contains_key(&tv.stands_for())
+                        && let Some(b) = tv.binding() =>
+                {
+                    members(&b, decided, out)
+                }
+                t => out.push(t.clone()),
+            })
+        }
+        let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
+        members(lower, decided, &mut ms);
+        let members = ms
+            .into_iter()
+            .map(|m| {
+                let mut open = OpenCells::new();
+                Self::open_cells(&m, &mut open);
+                (m, open)
+            })
+            .collect();
+        Self { members, whole: true, seen: 0 }
+    }
+
+    /// Add to `out` the open cells `t` holds, each once.
+    fn open_cells(t: &Type, out: &mut OpenCells) {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        crate::typ::settle::position_cells(t, &mut cells);
+        for tv in cells.values().filter_map(|tv| tv.open_cell()) {
+            if !out.iter().any(|h| h.same_cell(&tv)) {
+                out.push(tv)
             }
-            t => out.push(t.clone()),
-        })
+        }
     }
-    if covered.is_empty() {
-        return Ok(Some(Cow::Borrowed(lower)));
-    }
+
     // CR claude for claude: [bug/low] A member of the lower view that a pool of arms
     // takes whole still reaches the arms behind them: `|x, b: bool| { let r = &mut
     // (select b { true => (b, x), false => (`L, 0) }); select *r { (true, _) => 1,
@@ -3523,38 +3592,47 @@ fn uncovered<'a>(
     // probes are shown to bind no cell of the view. probes:
     // ~/ptmp/cr29/scratch/r23/23d/lvr/pool.gx, e.txt lines 3 and 4 (run with rb.sh)
     // (lower-view-pool-cover-01)
-    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    crate::typ::settle::position_cells(lower, &mut cells);
-    for c in covered {
-        crate::typ::settle::position_cells(c, &mut cells)
-    }
-    let mut held: SmallVec<[TVar; 4]> = SmallVec::new();
-    for tv in cells.values().filter_map(|tv| tv.open_cell()) {
-        if !held.iter().any(|h| h.same_cell(&tv)) {
-            held.push(tv)
-        }
-    }
-    let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-    members(lower, decided, &mut ms);
-    let mut left: SmallVec<[Type; 8]> = SmallVec::new();
-    for m in ms.iter() {
-        let mut taken = false;
-        for c in covered {
-            if c.contains_holding(env, m, &held)? {
-                taken = true;
-                break;
+    /// Take out the members the covers from `seen` up to `before` hold.
+    fn take(&mut self, env: &Env, covered: &[Type], before: usize) -> Result<()> {
+        for c in covered.iter().take(before).skip(self.seen) {
+            let mut of_cover = OpenCells::new();
+            Self::open_cells(c, &mut of_cover);
+            let mut i = 0;
+            while i < self.members.len() {
+                let (m, of_member) = &self.members[i];
+                let mut held = of_cover.clone();
+                for tv in of_member {
+                    if !held.iter().any(|h| h.same_cell(tv)) {
+                        held.push(tv.clone())
+                    }
+                }
+                #[cfg(test)]
+                HOLDS.with(|n| n.set(n.get() + 1));
+                match c.contains_holding(env, m, &held)? {
+                    true => {
+                        self.members.remove(i);
+                        self.whole = false;
+                    }
+                    false => i += 1,
+                }
             }
         }
-        if !taken {
-            left.push(m.clone())
+        self.seen = self.seen.max(before);
+        Ok(())
+    }
+
+    /// What is left of `lower`, `None` where nothing is.
+    fn view<'a>(&self, lower: &'a Type) -> Option<Cow<'a, Type>> {
+        match &self.members[..] {
+            [] => None,
+            _ if self.whole => Some(Cow::Borrowed(lower)),
+            [(m, _)] => Some(Cow::Owned(m.clone())),
+            ms => {
+                let ms = ms.iter().map(|(m, _)| m.clone());
+                Some(Cow::Owned(Type::Set(Arc::from_iter(ms))))
+            }
         }
     }
-    Ok(match left.len() {
-        0 => None,
-        n if n == ms.len() => Some(Cow::Borrowed(lower)),
-        1 => left.pop().map(Cow::Owned),
-        _ => Some(Cow::Owned(Type::Set(Arc::from_iter(left)))),
-    })
 }
 
 /// The open cells, none rigid, of the scrutinee's cells `outer`, each by
@@ -3739,11 +3817,18 @@ fn undecided_refusal(
 
 #[cfg(test)]
 mod test {
-    use super::{Claim, Head, Leaf, MATCHES, PoolGroup, Shape};
-    use crate::typ::Type;
-    use arcstr::ArcStr;
+    use super::{Below, Claim, Decisions, HOLDS, Head, Leaf, MATCHES, PoolGroup, Shape};
+    use crate::{
+        env::Env,
+        expr::WrittenAt,
+        typ::{TVar, Type},
+    };
+    use arcstr::{ArcStr, literal};
     use enumflags2::BitFlags;
+    use netidx_value::Typ;
     use smallvec::{SmallVec, smallvec};
+    use std::cell::RefCell;
+    use triomphe::Arc;
 
     fn group() -> PoolGroup {
         PoolGroup {
@@ -3784,5 +3869,49 @@ mod test {
         assert_eq!(g.add(arm(&tags, n - 1)), Claim::Completes(g.member.clone()));
         let steps = MATCHES.with(|m| m.get());
         assert!(steps <= 3 * n * n, "{steps} matches for {n} arms");
+    }
+
+    // n arms, each behind one more cover, over a lower view of n + 1
+    // members test a member against a cover once, n^2 / 2 containments:
+    // the view keeps what the covers before took out.
+    #[test]
+    fn lower_view_takes_each_cover_out_once() {
+        let n = 200;
+        let env = Env::default();
+        let x = Type::TVar(TVar::empty_named(literal!("x")));
+        let pair = |i: usize, t: &Type| {
+            let tag = ArcStr::from(format!("T{i}"));
+            let tag = Type::Variant(tag, Arc::from_iter([]), WrittenAt::NOWHERE);
+            Type::Tuple(Arc::from_iter([tag, t.clone()]))
+        };
+        let rest = pair(n, &Type::Primitive(Typ::I64.into()));
+        let lower = (0..n).map(|i| pair(i, &x)).chain([rest.clone()]);
+        let lower = Type::Set(Arc::from_iter(lower));
+        let covered: Vec<Type> = (0..n).map(|i| pair(i, &Type::Any)).collect();
+        let decided = Decisions::default();
+        let mut below = Below {
+            lower: Some(&lower),
+            covered: &covered,
+            decided: &decided,
+            left: None,
+        };
+        let reaching = Type::Primitive(BitFlags::empty());
+        let met: RefCell<Option<Type>> = RefCell::new(None);
+        let meets = |over: &Type| {
+            *met.borrow_mut() = Some(over.clone());
+            Ok(None)
+        };
+        HOLDS.with(|h| h.set(0));
+        for before in 0..=n {
+            below.met_beside(&env, before, true, &reaching, meets).unwrap();
+            let left = match met.borrow().as_ref() {
+                Some(Type::Set(ms)) => ms.len(),
+                _ => 1,
+            };
+            assert_eq!(left, n + 1 - before, "behind {before} covers");
+        }
+        assert_eq!(met.borrow().as_ref(), Some(&rest));
+        let holds = HOLDS.with(|h| h.get());
+        assert!(holds <= n * (n + 3) / 2, "{holds} containments for {n} arms");
     }
 }
