@@ -1250,30 +1250,6 @@ impl FnType {
         self.cow_walk(|t| t.replace_tvars_int(s, fresh))
     }
 
-    // XCR claude for claude: [bug/medium] A hover shows a decided variable as its
-    // bound: `let h = 'a: Number |x: 'a| -> 'a x; let n = |q: i64| h(q)` hovers (and
-    // outlines) `n: fn(q: i64) -> Number`, where the check says `fn(q: i64) -> i64`
-    // (`let z: string = n` prints it). This replaces every `'_N` the signature holds
-    // that carries one conjunct by that conjunct, a cell already bound to `i64`
-    // included: with `'a: Number + Singleton` (two conjuncts) the hover reads `->
-    // i64`. Base-r23 alike. The shell's REPL completion (`graphix-shell/src/
-    // completion.rs`) folds through this too, and prints canonically rather than
-    // through `graphix_lsp::query::display_type`, so by reading it also lists one
-    // instance's header (hover-instance-header-01). probe:
-    // ~/ptmp/cr29/scratch/r23/23h/hover-review/probe_test.rs (`nested`, `nested3`,
-    // `nested4`; outputs in lane-final.txt beside it) (display-auto-bound-01)
-    // 2026-11-13 claude: FnType::replace_auto_constrained folds an auto variable
-    // into its one conjunct only where its chain of bindings ends open
-    // (TVar::open_cell); a decided one is left to resolve_tvars, so it prints as the
-    // type it was decided to be. The REPL's completion (BComplete, a binding's
-    // description and a label's) now prints through graphix_lsp::display_type, as a
-    // hover and an outline do (on base-r24 it printed fn(q: i64) -> Number, and with
-    // the fold fixed alone raw '_N names: one = mk(0) as '_8375). Pins that fail
-    // without the fix: graphix-shell tests/lsp a_decided_variable_hovers_as_its_type
-    // (hover and outline of n, nested, two, named),
-    // completion::tests::a_completion_describes_a_binding_as_a_hover_does (fails
-    // with either half undone). Open auto variables still print folded or raw:
-    // display-open-auto-01.
     /// Replace auto type variables (`'_23`) that stand open with one
     /// constraint by that constraint, for display; a decided one prints as
     /// what it was decided to be, and one whose cell a declared variable
