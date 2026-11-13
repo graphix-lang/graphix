@@ -27,6 +27,19 @@ no "write its return type, `-> 'a`" let t = 'a: Number |x: 'a| x; let r = &mut t
 ok let t = 'a: Number |x: 'a| -> 'a x; let r = &mut t; t(1)
 ```
 
+A function written inside another names the outer one's variables, in its
+parameters, return type and bounds alike, unless it declares the name
+itself. One it declares is its own, whatever an outer bound names: inside
+`'a: Number, 'z: Array<'a> |w: 'z|`, a `'a: Any |x: 'z, y: 'a| -> 'a`
+returns its own `'a`, never an element of `x`.
+
+```graphix,cases
+no "does not contain Array<string>" let f = 'z: Number |w: 'z| -> 'z { let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g(["s"]); w }; f(1)
+ok let f = 'z: Number |w: 'z| { let g = 'b: Array<'z> |y: 'b| -> 'b y; g([w]) }; f(1)
+ok let f = 'a: Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z, y: 'a| -> 'a y; g(w, "s") }; f([1])
+no "a call picks 'a" let f = 'a: Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z, y: 'a| -> 'a x[0]$; g(w, "s") }; f([1])
+```
+
 A return type that writes a declared variable takes a value of that
 variable, and a value of its bound is not one, since a call may pick a
 narrower type: `'a: Number |x: 'a| -> 'a 1` is refused. So is `'a: {n:

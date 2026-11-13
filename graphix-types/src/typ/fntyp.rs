@@ -693,18 +693,21 @@ pub fn seed_conjuncts<'a>(
     known: &mut AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
 ) {
-    seed_conjuncts_aliasing(known, constraints, Aliasing::Every)
+    seed_conjuncts_aliasing(known, &[], constraints, Aliasing::Every)
 }
 
-/// [`seed_conjuncts`], the conjuncts' variables aliased `how`.
+/// [`seed_conjuncts`] in the scope of the signature quantifying `own`, the
+/// conjuncts' variables aliased `how`.
 fn seed_conjuncts_aliasing<'a>(
     known: &mut AHashMap<ArcStr, TVar>,
+    own: &[ArcStr],
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
     how: Aliasing,
 ) {
     let constraints: LPooled<Vec<(&TVar, Type)>> = constraints.into_iter().collect();
+    let passed = tvar::ConjunctsPassed::within(own);
     for (_, tc) in constraints.iter() {
-        tc.alias_tvars_in(known, &tvar::ConjunctsPassed::take(), how);
+        tc.alias_tvars_in(known, &passed, how);
     }
     for (tv, tc) in constraints.iter() {
         known[&tv.name].add_cell_constraint(tc.normalize());
@@ -766,9 +769,13 @@ impl FnType {
         let ft = Arc::new(self);
         let nested = PARSE_DEPTH.with(|d| d.get()) > 1;
         let how = if nested { Aliasing::Known } else { Aliasing::Every };
-        ft.alias_tvars_in(&mut known, &tvar::ConjunctsPassed::take(), how);
+        ft.alias_tvars_in(
+            &mut known,
+            &tvar::ConjunctsPassed::within(&ft.quantifiers),
+            how,
+        );
         let constraints = constraints.iter().map(|(tv, tc)| (tv, tc.clone()));
-        seed_conjuncts_aliasing(&mut known, constraints, how);
+        seed_conjuncts_aliasing(&mut known, &ft.quantifiers, constraints, how);
         if nested {
             known.clear();
             ft.collect_tvars(&mut known);
@@ -1265,7 +1272,11 @@ impl FnType {
     }
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_tvars_in(known, &tvar::ConjunctsPassed::take(), Aliasing::Every)
+        self.alias_tvars_in(
+            known,
+            &tvar::ConjunctsPassed::within(&self.quantifiers),
+            Aliasing::Every,
+        )
     }
 
     pub(super) fn alias_tvars_in(
@@ -1474,6 +1485,30 @@ impl FnType {
         self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
+    // CR claude for claude: [bug/low] A name walk over a quantified signature
+    // reads a bound of a cell declared outside it under the signature's own
+    // names. This walk passes the conjuncts of every position cell
+    // (for_each_part) and close_through_bounds those of every cell found, both
+    // keyed by name, so where an enclosing definition's cell has a bound naming
+    // a variable the signature also declares, the enclosing variable lands
+    // under that name, and constraint_view, printed_view, each_quantifier and
+    // check_quantifiers_held read it as the signature's own. In `let f = 'a:
+    // Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z| -> i64 0; g(w)
+    // }; f([1])` g declares `'a`, which nothing of g holds, and the check
+    // accepts it (h1.gx; h2.gx, where no outside bound names `'a`, is refused,
+    // "'a is declared but the signature does not hold it"). `graphix fmt
+    // --stdout` rewrites 5 of 12000 generated nests (gen2.py q mode, seeds 101
+    // 202 303 404: fmt/g404_s02086.gx prints its inner signature's own `'z:
+    // i64`, held only through a bound, as `'z: Any`) and refuses
+    // fmt/g303_s00747.gx as a formatter bug, on base-r23 and after
+    // (nested-quantifier-capture-01), which gave the alias walk the scope rule
+    // alone. Where one round finds two cells of one name, close_through_bounds
+    // keeps one or the other by hash order: collect_tvars_through_bounds of a
+    // nested signature of bounds_order.gx disagrees between calls. A fix would
+    // give the name walks the alias walk's rule (tvar::ConjunctsPassed): a
+    // signature's walk reads the bounds of its own quantifiers alone. probes:
+    // ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/ (README)
+    // (name-walk-outer-bound-01)
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
@@ -2728,6 +2763,42 @@ mod tests {
         assert_eq!(parse_fn_type(closed).unwrap().to_string(), closed);
         let nested = format!("fn(x: {closed}) -> i64");
         assert_eq!(parse_fn_type(&nested).unwrap().to_string(), nested);
+    }
+
+    // A variable the bound of an enclosing signature's quantifier names is
+    // the enclosing signature's, where a signature nested in it declares a
+    // quantifier of the same name: the nest prints as written.
+    #[test]
+    fn a_nested_quantifier_takes_no_enclosing_bounds_variable() {
+        let middle = |inner: &str| {
+            format!(
+                "fn<'a: Number, 'z: Array<'a>>(x0: {inner}, x1: 'z, q1: 'a, w: 'k) -> 'a"
+            )
+        };
+        let rewritten = [
+            format!(
+                "fn(x: {}, k: 'k) -> i64",
+                middle("fn<'a: Any>(x1: 'z, q0: 'a) -> 'a")
+            ),
+            format!(
+                "fn(x: {}, k: 'k) -> i64",
+                middle("fn<'a: Any>(x1: fn(y: 'z) -> i64, q0: 'a) -> 'a")
+            ),
+            format!(
+                "fn<'q: Any>(x: {}, k: 'k) -> 'q",
+                middle("fn<'a: Any>(x1: fn<'b: Any>(y: 'z, qb: 'b) -> 'b, q0: 'a) -> 'a")
+            ),
+            "fn<'b: Any>(qb: 'b) -> fn<'d: Array<'b>>(x: 'b, qd: 'd) -> \
+             fn<'b: Number>(qb: 'b) -> 'd"
+                .into(),
+        ]
+        .into_iter()
+        .filter_map(|src| {
+            let printed = parse_fn_type(&src).unwrap().to_string();
+            (printed != src).then_some(printed)
+        })
+        .collect::<Vec<_>>();
+        assert!(rewritten.is_empty(), "{rewritten:#?}");
     }
 
     // What a nested signature names from outside itself is read again

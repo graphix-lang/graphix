@@ -862,20 +862,32 @@ impl Drop for LinkWatch {
 pub struct CellLock(RwLock<TCell>);
 
 /// The cells whose conjuncts an alias walk has passed under one scope of
-/// quantifier names: passing them again aliases nothing. Each cell is
-/// held, so its address stays its own while the walk lasts.
-pub(super) struct ConjunctsPassed(RefCell<LPooled<AHashMap<usize, Arc<CellLock>>>>);
+/// quantifier names: passing them again aliases nothing. A scope passes
+/// the cells of the quantifiers it declares alone: a cell declared
+/// outside it has its conjuncts aliased in its declarer's scope, never
+/// under names the scope declares. Each cell is held, so its address
+/// stays its own while the walk lasts.
+pub(super) struct ConjunctsPassed {
+    cells: RefCell<LPooled<AHashMap<usize, Arc<CellLock>>>>,
+    own: LPooled<AHashSet<ArcStr>>,
+}
 
 impl ConjunctsPassed {
-    pub(super) fn take() -> Self {
-        Self(RefCell::new(LPooled::take()))
+    /// The scope of the signature quantifying `own`.
+    pub(super) fn within(own: &[ArcStr]) -> Self {
+        let mut names: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        names.extend(own.iter().cloned());
+        Self { cells: RefCell::new(LPooled::take()), own: names }
     }
 
-    /// Whether `tv`'s cell is passed for the first time.
+    /// Whether `tv`'s cell is this scope's to pass, for the first time.
     pub(super) fn first(&self, tv: &TVar) -> bool {
+        if !self.own.contains(&tv.name) {
+            return false;
+        }
         let cell = tv.cell();
         let addr = cell.data_ptr().addr();
-        self.0.borrow_mut().insert(addr, cell).is_none()
+        self.cells.borrow_mut().insert(addr, cell).is_none()
     }
 }
 
@@ -3849,7 +3861,7 @@ impl Type {
 
     /// Alias type variables with the same name to each other.
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_tvars_in(known, &ConjunctsPassed::take(), Aliasing::Every)
+        self.alias_tvars_in(known, &ConjunctsPassed::within(&[]), Aliasing::Every)
     }
 
     // CR claude for claude: [risk/low] The alias walk passes the conjuncts of
@@ -3920,7 +3932,7 @@ impl Type {
     // newly printed right, and g01880 went from refused as a formatter bug to
     // rewritten by the capture of (nested-quantifier-capture-01). probes:
     // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/review/ (README)
-    // CR claude for claude: [bug/low] An enclosing declaration's alias walk
+    // XCR claude for claude: [bug/low] An enclosing declaration's alias walk
     // captures a variable across signatures. Walking a nested quantified
     // signature, it passes the conjuncts of every cell that signature's
     // positions name (FnType::for_each_part_passing) under that signature's
@@ -3976,6 +3988,34 @@ impl Type {
     // 3604 q-mode nests have the same outcome on both (393 rewritten by both). A
     // fix here should pin capture_moved.gx and fmt_regress/*.gx. probes:
     // ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/review/ (README)
+    // 2026-11-12 claude: Fixed: an alias walk passes a bound in the scope of the
+    // signature that declares its variable (tvar::ConjunctsPassed holds the
+    // scope's quantifier names). A nested signature's walk, a declaration's own
+    // walk and its bounds' seed (FnType::declaring) and FnType::alias_tvars (an
+    // instance's copy) pass their own quantifiers' bounds alone; a walk no
+    // signature in it declares (Type::alias_tvars: a lambda's walk before its
+    // declaration, a body annotation) passes none. The capture also reached the
+    // compiler through nested lambdas: inside 'a: Number, 'z: Array<'a> |w: 'z|,
+    // a 'a: Any |x: 'z, y: 'a| -> 'a y was refused (Number & Any), -> 'a x[0]$
+    // accepted, and c1.gx ran base-r23 out of 3 GB. Without the root's pass of
+    // an outer cell's bound, lambda-bound-enclosing-01 showed where that pass
+    // had covered it (r2.gx), so it is fixed in the same commit. Pins, each
+    // failing with its part undone:
+    // typ::fntyp::tests::a_nested_quantifier_takes_no_enclosing_bounds_variable
+    // (nested walk: cap_open's shape, capture_moved.gx),
+    // lang::types::a_nested_signatures_own_variable_takes_no_enclosing_bound
+    // (root, declaring, instance, seed),
+    // a_nested_signatures_own_variable_holds_no_enclosing_value (declaring,
+    // instance), deep_nesting
+    // a_nested_lambda_bounded_by_an_enclosing_variable_checks_at_once (2.1G over
+    // its 2G budget on the lane head). Over 12000 gen2.py nests, formatter-bug
+    // refusals were 40 on base-r23, 30 on the lane head and 1 with the fix;
+    // capture_moved.gx and fmt_regress/*.gx print as written. The 5 nests still
+    // rewritten, the 1 still refused and the collect_tvars_through_bounds
+    // nondeterminism seen beside this CR come from the name walks: new CR
+    // name-walk-outer-bound-01. Census 2962 files: 0 verdicts, 0 messages
+    // changed. probes: ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/
+    // (README)
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
@@ -4003,7 +4043,7 @@ impl Type {
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
-                ft.alias_tvars_in(known, &ConjunctsPassed::take(), how);
+                ft.alias_tvars_in(known, &ConjunctsPassed::within(&ft.quantifiers), how);
                 for (q, tv) in outer {
                     known.remove(&q);
                     if let Some(tv) = tv {

@@ -2083,6 +2083,24 @@ former consumer derives from the cells:
   `nested_quantified_types_compare_in_linear_steps`,
   `a_cell_write_drops_the_free_cells_read_before_it`,
   `a_closed_signature_nests_as_it_stands_alone`.
+- An alias walk aliases a bound's variables in the scope of the
+  signature that declares the bound's variable: a signature's walk
+  passes the bounds of its own quantifiers alone, and a walk no
+  signature in it declares passes none (`tvar::ConjunctsPassed`). So a
+  variable an enclosing signature's bound names is that signature's,
+  whatever a signature inside it declares of the same name, in a
+  written nest, a nested lambda's declaration and an instance's copy
+  alike. A nested lambda's bounds are aliased with the names the
+  definitions around it declare, as its parameters are, before its
+  declaration aliases its own (`Lambda::compile`), so a bound names an
+  enclosing definition's variable wherever the lambda does not declare
+  the name.
+  Pins: `typ::fntyp::tests::a_nested_quantifier_takes_no_enclosing_bounds_variable`,
+  `lang::types::a_nested_signatures_own_variable_takes_no_enclosing_bound`,
+  `a_nested_signatures_own_variable_holds_no_enclosing_value`,
+  `a_nested_lambdas_bound_names_the_enclosing_variable`,
+  `a_nested_lambdas_bound_takes_the_enclosing_variables_value`,
+  `deep_nesting::a_nested_lambda_bounded_by_an_enclosing_variable_checks_at_once`.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
   directly (inference declares no header); `sig_matches_int`'s
   impl-constraint check is SATISFACTION — the

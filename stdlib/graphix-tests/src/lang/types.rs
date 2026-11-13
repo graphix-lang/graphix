@@ -3163,6 +3163,45 @@ run!(a_nested_signature_names_the_enclosing_variable, r#"{
   (mk(1)(2), own(1)("s"))
 }"#, prints(r#"[i64:3, ["s"]]"#); FuseExpect::None);
 
+// A variable the bound of an enclosing definition's variable names is that
+// definition's, where a nested lambda declares one of the same name.
+run!(a_nested_signatures_own_variable_takes_no_enclosing_bound, r#"{
+  let f = 'a: Number, 'z: Array<'a> |w: 'z, v: 'a| {
+    let g = 'a: Any |x: 'z, y: 'a| -> 'a y;
+    let h = 'a: Any, 'b: Array<'a> |x: 'z, y: 'b| -> 'b y;
+    let e = 'a: Any |x: 'z, y: 'a| x[0]$;
+    let k = 'a: Any, 'b: fn(x: 'z) -> i64 |y: 'a, c: 'b| -> 'a y;
+    let m = 'a: Any |y: 'a| -> 'a { let n: fn(q: 'z) -> i64 = |q| 0; y };
+    (g(w, "s"), h(w, ["t"]), e(w, "u"), k("v", |x| 0), m("x"), v)
+  };
+  f([1], 2)
+}"#, prints(r#"["s", ["t"], i64:1, "v", "x", i64:2]"#); FuseExpect::Jit);
+
+// A nested lambda's bound names a variable a definition around it declares,
+// and the lambda does not, as that definition's.
+run!(
+    a_nested_lambdas_bound_names_the_enclosing_variable,
+    "{ let f = 'z: Number |w: 'z| -> 'z { \
+       let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g([\"s\"]); w }; f(1) }",
+    refused("does not contain Array<string>");
+    FuseExpect::None
+);
+
+run!(
+    a_nested_lambdas_bound_takes_the_enclosing_variables_value,
+    "{ let f = 'z: Number |w: 'z| { let g = 'b: Array<'z> |y: 'b| -> 'b y; g([w]) }; f(1) }",
+    prints("[i64:1]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_nested_signatures_own_variable_holds_no_enclosing_value,
+    "{ let f = 'a: Number, 'z: Array<'a> |w: 'z, v: 'a| { \
+       let g = 'a: Any |x: 'z, y: 'a| -> 'a x[0]$; g(w, v) }; f([1], 2) }",
+    refused("a call picks 'a, and the body's value need not be of the type it picks");
+    FuseExpect::None
+);
+
 run!(
     a_nested_signature_takes_no_other_type,
     "{ let mk = 'a: Number |k: 'a| |x: 'a| [x, k]; let g = mk(1); g(\"s\") }",

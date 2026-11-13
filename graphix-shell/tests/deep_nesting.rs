@@ -751,6 +751,22 @@ fn a_chain_of_bounds_checks_in_linear_time() {
     checks_within(&program("chainbounds", 3 * CHAIN_DEPTH), 14 * BILLION)
 }
 
+/// A nested lambda's own variable bounded by an enclosing variable, whose
+/// bound names the enclosing variable of the nested one's name, checks at
+/// once: the two variables stay apart, so no bound reaches itself.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_nested_lambda_bounded_by_an_enclosing_variable_checks_at_once() {
+    checks_within(
+        "let f = 'z: Any, 'b: 'z |w0: 'z, w1: 'b| {\n\
+           let g = 'z: 'b |x0: 'z, x1: 'b| x0;\n\
+           g(w1, w1)\n\
+         };\n\
+         f(1, 2)",
+        2 * BILLION,
+    )
+}
+
 /// A chain of bounds through function types checks in time linear in its
 /// length: a walk meets each link's conjunct once however many function
 /// types name its variable, whether it aliases names, counts occurrences,
