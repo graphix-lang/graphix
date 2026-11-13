@@ -233,7 +233,6 @@ fn emit_chunk(
         .map(|(j, t)| SlotTable {
             site: t.site,
             base: load(&mut b, types::I64, HEADER + j),
-            blocks: t.blocks,
         })
         .collect();
     // The body's locals, borrowed: the body drops them.

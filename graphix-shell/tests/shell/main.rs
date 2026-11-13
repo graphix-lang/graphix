@@ -31,6 +31,7 @@ mod interrupt_wedge;
 mod jit_arena_rotation;
 mod jit_unavailable;
 mod kernel_ssa_growth;
+mod loop_call_words;
 mod lsp_stdio;
 mod netidx_zero_config;
 mod no_subst;

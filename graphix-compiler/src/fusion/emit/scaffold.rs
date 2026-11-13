@@ -7,7 +7,6 @@
 
 use crate::{
     ApplyView, BindId, Node, NodeView, Refs, Rt,
-    expr::ExprId,
     fusion::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
@@ -38,6 +37,7 @@ use super::{
         ensure_owned_value_src,
     },
     call::{CompositeSource, emit_drop_local, finalize_valarray, open_value_buf},
+    lower::SlotSite,
     outline,
     scalar::{prim_to_clif, scalar_to_payload_i64, valarray_get_helper, widen_to_i64},
 };
@@ -278,7 +278,7 @@ fn open_loop(
     cx: &mut BodyCx,
     len: ClifValue,
     src_disc: ClifValue,
-    state_sites: &[ExprId],
+    state_sites: &[SlotSite],
     entered: ClifValue,
 ) -> Result<LoopFrame> {
     let i_var = cx.b.declare_var(types::I64);
@@ -1491,30 +1491,36 @@ where
     })
 }
 
-/// What a scaffold-loop body needs of its loop: its per-slot state
-/// sites, the callsite `ExprId` of every nested collection HOF call (its
-// CR claude for claude: [dead/low] A loop claims one word a slot for each
+// XCR claude for claude: [dead/low] A loop claims one word a slot for each
 // cross-kernel lambda call site in its body, which was the site's
 // first-call word: nothing reads or writes it now (a first call is an entry,
 // `call::emit_callee_context_word`). `loop_body` still lists the site so
 // that `BodyCx::open_slot_tables` sizes the callee's block table from the
 // same list; drop the plain word and keep the block table.
 // (first-call-word-storage-01)
-/// prev-length word) and of every cross-kernel lambda call, each of which
-/// claims one per-slot state chain (see
-/// [`BodyCx::open_slot_tables`]); and the bindings it reads from outside,
-/// the captures of every kernel it calls included, a nested loop's slots'
-/// too (a self-call's callee has no node to read them from), which an
-/// outlined loop's chunk is handed. A nested callback body lives behind
-/// its own lambda def and anchors its sites in the chain its own loop
-/// opens.
+// 2026-11-12 claude: A loop's sites are SlotSite::Loop (a nested loop, its
+// prev-length word) or SlotSite::Call (a cross-kernel call, its callee's block
+// table), and claim_slot_tables claims a plain word for a Loop alone. The pin
+// graphix-shell tests/shell/loop_call_words.rs
+// (a_call_in_a_loop_claims_its_callee_block_alone) reads GRAPHIX_DBG_KERNELS:
+// g's site words 2 -> 1, the region's state words 4 -> 2; it fails when
+// loop_body lists a call as a Loop too.
+/// What a scaffold-loop body needs of its loop: its per-slot state
+/// sites, every nested collection HOF call (a [`SlotSite::Loop`]) and
+/// every cross-kernel lambda call (a [`SlotSite::Call`]), whose tables
+/// [`BodyCx::open_slot_tables`] claims; and the bindings it reads from
+/// outside, the captures of every kernel it calls included, a nested
+/// loop's slots' too (a self-call's callee has no node to read them
+/// from), which an outlined loop's chunk is handed. A nested callback
+/// body lives behind its own lambda def and anchors its sites in the
+/// chain its own loop opens.
 pub(crate) struct LoopBody {
-    pub(super) sites: LPooled<Vec<ExprId>>,
+    pub(super) sites: LPooled<Vec<SlotSite>>,
     pub(super) reads: LPooled<IntSet<BindId>>,
 }
 
 pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
-    let mut sites: LPooled<Vec<ExprId>> = LPooled::take();
+    let mut sites: LPooled<Vec<SlotSite>> = LPooled::take();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
             let id = n.spec().id;
@@ -1523,8 +1529,11 @@ pub(crate) fn loop_body<R: Rt>(cx: &BodyCx, node: &Node<R>) -> LoopBody {
                 Some(ApplyView::Lambda(l)) if l.inline_callback().is_some()
             ) || cs.recursion_callback().is_some()
                 || cx.shared_loop(cs).is_some();
-            if collection || cx.lambda_site(id).is_some() {
-                sites.push(id);
+            if collection {
+                sites.push(SlotSite::Loop(id));
+            }
+            if cx.lambda_site(id).is_some() {
+                sites.push(SlotSite::Call(id));
             }
         }
         _ => {}

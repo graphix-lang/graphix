@@ -36,8 +36,8 @@ use super::{
     flow::{emit_body_tail, emit_scope_drops},
     jit::Names,
     lower::{
-        Channel, ClosedFrame, LowerCtx, SiteLayout, SlotTable, SlotTableFrame, StateWord,
-        TruncAnchor, TruncLeaf, TruncRec, freeze_node_typ,
+        Channel, ClosedFrame, LowerCtx, SiteLayout, SlotSite, SlotTable, SlotTableFrame,
+        StateWord, TruncAnchor, TruncLeaf, TruncRec, freeze_node_typ,
     },
     nodes::{emit_owned_value_operand_node, narrow_value_to_composite},
     record::{EmitConst, KernelConst, KernelType},
@@ -433,14 +433,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// loop preheader. For each state site in `sites` it
     /// anchors a chain of owning tables mirroring the loop nesting
     /// (one directory level per enclosing frame) that ends in a leaf
-    /// table with one word per slot ordinal. A tainted source at any
+    /// table with, per slot ordinal, a nested loop's one word or a
+    /// call's callee block. A tainted source at any
     /// level grows that level only as an in-bounds guard, never as a
     /// logical resize. A frame is always pushed, possibly with no
     /// tables; [`close_slot_tables`](Self::close_slot_tables) must
     /// pop it after body emission.
     pub(crate) fn open_slot_tables(
         &mut self,
-        sites: &[ExprId],
+        sites: &[SlotSite],
         len: ClifValue,
         src_disc: ClifValue,
         idx_var: Variable,
@@ -465,7 +466,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// truncated at that level's exit.
     pub(crate) fn claim_slot_tables(
         &mut self,
-        sites: &[ExprId],
+        sites: &[SlotSite],
         len: ClifValue,
         src_disc: ClifValue,
     ) -> Result<Vec<SlotTable>> {
@@ -487,28 +488,36 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let n_dirs = enclosing.len();
         let mut tables = Vec::new();
         let mut pending: Vec<TruncRec> = Vec::new();
-        for id in sites {
-            let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
-            pending.push(TruncRec {
-                anchor,
-                n_dirs: n_dirs as u32,
-                leaf: TruncLeaf::Table { stride: 1 },
-            });
-            let table = self.emit_slot_chain(word.0, &enclosing, len, src_disc)?;
-            tables.push(SlotTable { site: *id, base: table, blocks: None });
-            // a call site's callee blocks too, so an iteration only
-            // indexes them
-            let layout = self.lambda_site(*id).and_then(|info| {
-                let callee = !std::ptr::eq(&*info.kernel, self.ctx.kernel);
-                callee.then(|| {
-                    self.callee_site_layout(kernel_abi::kernel_key(&info.kernel))
-                })?
-            });
-            if let Some(layout) = layout.filter(|l| l.words > 0) {
-                let (base, rec) =
-                    super::call::callee_table(self, layout, &enclosing, (len, src_disc))?;
-                pending.push(rec);
-                tables.push(SlotTable { site: *id, base, blocks: Some(layout.words) });
+        for site in sites {
+            match *site {
+                SlotSite::Loop(_) => {
+                    let (anchor, word) = self.claim_anchor(n_dirs as u32, None);
+                    pending.push(TruncRec {
+                        anchor,
+                        n_dirs: n_dirs as u32,
+                        leaf: TruncLeaf::Table { stride: 1 },
+                    });
+                    let base = self.emit_slot_chain(word.0, &enclosing, len, src_disc)?;
+                    tables.push(SlotTable { site: *site, base });
+                }
+                SlotSite::Call(id) => {
+                    let layout = self.lambda_site(id).and_then(|info| {
+                        let callee = !std::ptr::eq(&*info.kernel, self.ctx.kernel);
+                        callee.then(|| {
+                            self.callee_site_layout(kernel_abi::kernel_key(&info.kernel))
+                        })?
+                    });
+                    if let Some(layout) = layout.filter(|l| l.words > 0) {
+                        let (base, rec) = super::call::callee_table(
+                            self,
+                            layout,
+                            &enclosing,
+                            (len, src_disc),
+                        )?;
+                        pending.push(rec);
+                        tables.push(SlotTable { site: *site, base });
+                    }
+                }
             }
         }
         if let Some(f) = self.ctx.slot_tables.borrow_mut().last_mut() {
@@ -687,9 +696,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             if f.depth != self.env.loop_depth {
                 return None;
             }
-            let SlotTable { base, .. } =
-                *f.tables.iter().find(|t| t.site == id && t.blocks.is_none())?;
-            (f.idx_var, base)
+            let t = f.tables.iter().find(|t| t.site == SlotSite::Loop(id))?;
+            (f.idx_var, t.base)
         };
         let i = self.b.use_var(idx_var);
         let off = self.b.ins().ishl_imm_u(i, 3);
@@ -705,7 +713,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         if f.depth != self.env.loop_depth {
             return None;
         }
-        let t = f.tables.iter().find(|t| t.site == id && t.blocks.is_some())?;
+        let t = f.tables.iter().find(|t| t.site == SlotSite::Call(id))?;
         Some((f.idx_var, t.base))
     }
 

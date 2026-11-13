@@ -412,14 +412,20 @@ impl TruncLeaf {
     }
 }
 
+/// A site in a scaffold loop's body that keeps state a slot.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlotSite {
+    /// A nested loop: its prev-length word.
+    Loop(ExprId),
+    /// A call of another kernel: the callee's block.
+    Call(ExprId),
+}
+
 /// A state site's per-slot table in an open scaffold loop.
 #[derive(Clone, Copy)]
 pub(crate) struct SlotTable {
-    pub(super) site: ExprId,
+    pub(super) site: SlotSite,
     pub(super) base: ClifValue,
-    /// For a lambda call site's callee blocks, their words per slot; a
-    /// site's state word otherwise.
-    pub(super) blocks: Option<u32>,
 }
 
 /// One open scaffold loop's per-slot state tables. A site consults the
