@@ -2321,7 +2321,9 @@ closed definition cannot come back, so its arguments stay as written and
 its unfolding prints as before. An alias whose expansion holds the
 parameter under a constructor stays as written and grows the type. One
 that cannot be looked through where it is applied, because it is defined
-below the definition or because it bounds a parameter of its own (only
+below the definition (a name its block or module declares below is that
+type, never one a `use` or a prelude brings: `Lexical::block_names`) or
+because it bounds a parameter of its own (only
 its application holds the bound), stays as written and counts as a
 constructor; a cycle through it is refused naming the alias
 (`Expansive::Through`), since looking later would leave every walk made

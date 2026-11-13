@@ -620,11 +620,12 @@ pub(crate) enum TypeName {
     Trait(TraitId),
 }
 
-/// Why a block's type name has no definition where it is looked up.
+/// Why a type name its scope declares has no definition where it is
+/// looked up.
 enum Unseen {
     /// Its definition is gone.
     Dead,
-    /// Its block declares it in a statement not compiled yet.
+    /// Its block or module declares it in a statement not compiled yet.
     Later,
 }
 
@@ -634,6 +635,11 @@ fn in_scope(scope: &ModPath) -> CompactString {
         "/" | "" => CompactString::const_new("at the top level"),
         _ => format_compact!("in scope {scope}"),
     }
+}
+
+/// What the statement list at `scope` is, for a message.
+fn scope_kind(scope: &str) -> &'static str {
+    if is_block_scope(scope) { "block" } else { "module" }
 }
 
 /// True if scope `s` is `prefix` itself or a path descendant of it.
@@ -729,10 +735,11 @@ pub struct Lexical {
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     pub traits: Map<ModPath, Map<CompactString, TraitId>>,
-    /// The type names each compiling block declares, by the block's
-    /// scope. A name there is the block's type before its declaration
-    /// too: through `Env::block_types` where an earlier compile declared
-    /// it, else it is refused, never an outer type of the name.
+    /// The type names each statement list declares (a block, a module's
+    /// body, a script), by its scope. A name there is its type before its
+    /// declaration too: a block's through `Env::block_types` where an
+    /// earlier compile declared it, else it is refused, never an outer
+    /// type of the name or one a `use` or a prelude brings.
     pub block_names: Map<ModPath, Map<CompactString, ()>>,
     /// The load of a dynamic module's source this view is inside, whose
     /// own traits, impls and imports it reads before the registries'.
@@ -1570,8 +1577,12 @@ impl Env {
         scope: &ModPath,
         name: &ModPath,
     ) -> Result<Option<TypeName>> {
-        let hit = self
-            .resolve_visible(scope, name, NameNs::Type, |s, n| self.type_name_at(s, n))?;
+        let mut kind = "";
+        let hit = self.resolve_visible(scope, name, NameNs::Type, |s, n| {
+            let hit = self.type_name_at(s, n)?;
+            kind = scope_kind(s);
+            Some(hit)
+        })?;
         match hit {
             None => Ok(None),
             Some(Ok(t)) => Ok(Some(t)),
@@ -1579,7 +1590,7 @@ impl Env {
                 bail!("type `{name}` outlived its definition in `{scope}`")
             }
             Some(Err(Unseen::Later)) => bail!(
-                "{name} names the type a later statement of this block declares: \
+                "{name} names the type a later statement of this {kind} declares: \
                  declare it before its first use"
             ),
         }
@@ -1593,26 +1604,26 @@ impl Env {
         if let Some(id) = self.lexical.traits.get(s).and_then(|m| m.get(n)) {
             return Some(Ok(TypeName::Trait(*id)));
         }
-        if !is_block_scope(s) {
-            return None;
-        }
         let later = match self.lexical.block_names.get(s) {
             Some(names) if names.get(n).is_none() => return None,
-            Some(_) => true,
-            None => false,
+            Some(_) => Some(Err(Unseen::Later)),
+            None => None,
         };
+        if !is_block_scope(s) {
+            return later;
+        }
         match self.block_types.find(s, n) {
             Some(BlockHit::Live(def)) => Some(Ok(TypeName::Def(def))),
             Some(BlockHit::Dead) => Some(Err(Unseen::Dead)),
-            None => later.then_some(Err(Unseen::Later)),
+            None => later,
         }
     }
 
-    /// Where the written name `tr` means a type its block declares below
-    /// it while the name means something else at the block's door (an
-    /// outer type or trait, or an import): what its reader is told. A name
-    /// already resolved to a trait or to another definition means that
-    /// one: no note.
+    /// Where the written name `tr` means a type its block or module
+    /// declares below it while the name means something else at that
+    /// scope's door (an outer type or trait, an import, a prelude's): what
+    /// its reader is told. A name already resolved to a trait or to
+    /// another definition means that one: no note.
     pub fn later_block_type_note(&self, tr: &TypeRef) -> Option<CompactString> {
         let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) else { return None };
         if tr.trait_id().is_some() {
@@ -1630,8 +1641,7 @@ impl Env {
         let declared = match hit {
             Err(Unseen::Later) if named.is_none() => None,
             Ok(TypeName::Def(d))
-                if is_block_scope(&level)
-                    && same_origin(d.ori(), ori)
+                if same_origin(d.ori(), ori)
                     && d.pos() > pos
                     && named.is_none_or(|k| k == d.def_key()) =>
             {
@@ -1657,10 +1667,11 @@ impl Env {
             false => format_compact!(" in {}", oori.source),
         };
         let name = &tr.name;
+        let kind = scope_kind(&level);
         Some(format_compact!(
-            "`{name}` here names the type this block declares below it{at}, not the \
-             `{name}` declared at {opos}{elsewhere}: a name a block declares is its \
-             type throughout the block"
+            "`{name}` here names the type this {kind} declares below it{at}, not the \
+             `{name}` declared at {opos}{elsewhere}: a name a {kind} declares is its \
+             type throughout the {kind}"
         ))
     }
 
@@ -2780,17 +2791,18 @@ impl Env {
             .map(|td| td.def.clone())
     }
 
-    /// Record the type names the block at `scope` declares before its
-    /// statements compile: a name a block declares means its type
-    /// throughout the block, so before its declaration it is never an
-    /// outer type of the name ([`Lexical::block_names`]).
+    /// Record the type names the statement list at `scope` (a block, a
+    /// module's body, a script) declares before its statements compile: a
+    /// name it declares means its type throughout it, so before its
+    /// declaration it is never an outer type of the name or one a `use`
+    /// or a prelude brings ([`Lexical::block_names`]).
     pub fn open_block<'a>(
         &mut self,
         scope: &ModPath,
         names: impl IntoIterator<Item = &'a str>,
     ) {
         let mut names = names.into_iter().peekable();
-        if is_block_scope(scope) && names.peek().is_some() {
+        if names.peek().is_some() {
             let m = self.lexical.block_names.get_or_default_cow(scope.clone());
             for n in names {
                 m.insert_cow(CompactString::from(n), ());

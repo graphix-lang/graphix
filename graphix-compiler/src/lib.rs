@@ -3893,6 +3893,22 @@ pub(crate) fn resite_pending_name<R: Rt>(
     }
 }
 
+// CR claude for claude: [bug/medium] A `use` below a typedef changes what a name
+// the typedef already read means, and nothing checks the typedef again: a `use`
+// rechecks only the pending ones (`Completed::Use`). With `type N<'a> = [`Nil,
+// `Cons('a, Option<'a>)]` above `mod o; use o::Option`, where o declares `type
+// Option<'a> = N<Array<'a>>` over `use super::N`, N's walk reads the prelude's
+// Option and settles N regular, o's Option skips the settled N, and the check's
+// end fills N's Option to the import: N is expansive and accepted, and `|a:
+// N<i64>| -> P<i64> a` over a second such pair never returns (`--check` killed at
+// 30 s, base-r23 alike). A glob's name that an explicit `use` below takes over,
+// and a block's `use` below its typedef over an outer type, are the same door.
+// typedef-import-shadow-01 closed it for a name the statement list declares
+// (`Lexical::block_names`); a name it imports below has no such rule. Either
+// record the type names a list's explicit `use`s bring as it opens and refuse a
+// read above the `use` (a glob below still slips through), or check again, at a
+// `use`, every typedef of the list whose body names what the `use` brings. probe:
+// ~/ptmp/cr29/scratch/r23/23c/tis/use-below/ (typedef-use-below-01)
 /// Refuse now each deferred typedef what just `completed` makes
 /// unsound, before anything later in the run expands it, and forget
 /// those it settled.

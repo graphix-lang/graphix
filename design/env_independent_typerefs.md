@@ -175,6 +175,23 @@ nothing.
   `warn_later_block_names` at a body's annotations, type tests, casts,
   `never<T>` and lambda signatures; never in an instance's body: pin
   `lang::block_types::a_later_block_type_beside_another_warns`).
+- **A module's body and a script are held to the same rule.**
+  `Env::open_block` records the names of every statement list's typedefs,
+  a module's and a script's too, and a name its module declares below is
+  never one a `use` or a prelude brings. A module's typedefs have no
+  registry (they stay in the lexical maps, and a definition's snapshot
+  taken above the declaration never holds them), so at a module level a
+  recorded name the maps do not hold is refused: "names the type a later
+  statement of this module declares". A reader that defers the name finds
+  the module's type once declared: a `let` annotation, and a typedef body,
+  which reads the name as not defined yet, so the shape check stays open
+  until the declaration, which then sees every cycle it completes
+  (`expansive::definition`), and an alias applied below is one not defined
+  above (`through_aliases`). A function above the declaration checks under
+  its snapshot and is refused, in its signature and in its body. The note
+  is the block's, saying "module" (pins `lang::block_types::module_type_*`,
+  `script_type_*`, `lang::types::typedef_names_its_modules_later_type_*`,
+  `alias_shadowing_an_import_*`).
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

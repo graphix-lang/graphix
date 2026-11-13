@@ -9,8 +9,9 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, TestCtx, config, prints, refused},
+    testing::{FuseExpect, Mode, TestCtx, config, is, prints, refused},
 };
+use netidx::publisher::Value;
 
 // An instance's body names its block's type over an outer one of the
 // same name, wherever the outer one is declared.
@@ -398,17 +399,62 @@ run!(
     prints(r#""b""#)
 );
 
-// A name above its block's declaration of it, with another of the name in
-// view there (an outer type, an import), is the block's type, and the
-// check says so at the name; with nothing else in view, or below the
-// declaration, it says nothing, nor of an impl's `self`, which is the
-// target as its head names it.
+// A module's body and a script are held to the block's rule: a name one
+// declares is its type above the declaration too. A `let` annotation there
+// takes it, and a function above the declaration, which needs the type as
+// it is checked, is refused, whatever a `use` or the prelude brings.
+run!(
+    module_type_named_above_its_declaration_over_an_import,
+    is(Value::I64(4)),
+    "/test.gx" => "type M = string; mod m; let result = m::y",
+    "/test/m.gx" => "use super::M; let x: M = 1; type M = i64; let f = |a: M| a + x; let y = f(3)"
+);
+
+run!(
+    module_type_in_a_signature_above_its_declaration_refused,
+    refused("M names the type a later statement of this module declares: declare it before its first use"),
+    "/test.gx" => "type M = string; mod m; let result = m::y",
+    "/test/m.gx" => "use super::M; let f = |a: M| a; type M = i64; let y = f(1)"
+; FuseExpect::None);
+
+run!(
+    module_type_in_a_body_above_its_declaration_refused,
+    refused("M names the type a later statement of this module declares: declare it before its first use"),
+    "/test.gx" => "type M = string; mod m; let result = m::y",
+    "/test/m.gx" => "use super::M; let f = |x| { let a: M = x; a }; type M = i64; let y = f(1)"
+; FuseExpect::None);
+
+run!(
+    script_type_over_the_prelude_above_its_declaration,
+    prints(r#"["s", error:"e"]"#),
+    "/test.gx" => "let x: Result<i64, string> = \"s\"; type Result<'a, 'b> = ['a, 'b, Error<'b>]; \
+        let y: Result<i64, string> = error(\"e\"); let result = (x, y)"
+);
+
+run!(
+    script_type_in_a_signature_above_its_declaration_refused,
+    refused("Result names the type a later statement of this module declares: declare it before its first use"),
+    "/test.gx" => "let f = |r: Result<i64, string>| r; type Result<'a, 'b> = ['a, 'b]; let result = f(1)"
+; FuseExpect::None);
+
+// A name above its block's or its module's declaration of it, with
+// another of the name in view there (an outer type, an import), is the
+// block's or the module's type, and the check says so at the name; with
+// nothing else in view, or below the declaration, it says nothing, nor of
+// an impl's `self`, which is the target as its head names it.
 async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
-    let files = [(
-        netidx::path::Path::from("/n.gx"),
-        VfsEntry::from(literal!("type L = string")),
-    )];
+    let files = [
+        (netidx::path::Path::from("/n.gx"), VfsEntry::from(literal!("type L = string"))),
+        (
+            netidx::path::Path::from("/w.gx"),
+            VfsEntry::from(literal!("use super::n::L;\nlet b: L = 3;\ntype L = i64")),
+        ),
+        (
+            netidx::path::Path::from("/q.gx"),
+            VfsEntry::from(literal!("use super::n::L;\ntype L = i64;\nlet b: L = 3")),
+        ),
+    ];
     let resolver = VfsResolver::new(ahash::AHashMap::from_iter(files));
     let ctx = TestCtx::start(
         config(tx, crate::TEST_REGISTER, vec![resolver], |ctx| {
@@ -418,6 +464,16 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
     )
     .await?;
     let _n = ctx.rt.compile(literal!("mod n")).await?;
+    match ctx.rt.compile(literal!("mod w")).await {
+        Ok(_) => anyhow::bail!("no warning for mod w"),
+        Err(e) => {
+            let e = format!("{e:#}");
+            let note = "`L` here names the type this module declares below it, not the \
+                        `L` declared at line: 1, column: 6 in ";
+            assert!(e.contains(note), "mod w: {e}")
+        }
+    }
+    let _q = ctx.rt.compile(literal!("mod q")).await?;
     let outer = "`L` here names the type this block declares below it";
     for (source, note) in [
         (

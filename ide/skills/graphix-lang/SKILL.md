@@ -824,7 +824,10 @@ away the element it had in hand. Build the final row there:
   let f = |x: i64| { let b: L = 3; b }; type L = string; f(1) }` the `L` in
   `f` is the string, and so is an abstract `W(v)` or pattern `W(p)` there.
   A statement above the declaration that needs the type at once (`let a =
-  W(1)`, a cast) is refused. Declare a block's types first.
+  W(1)`, a cast) is refused. Declare a block's types first. A module's
+  body and a script follow the same rule, over a name a `use` or the
+  prelude brings too: a `let` annotation above the declaration takes the
+  module's type, and a function above it that names the type is refused.
 - Each REPL statement, a script and a dynamic module's load is checked
   alone, and what it leaves undecided is `_` from its end: after `let e
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),
@@ -838,6 +841,9 @@ away the element it had in hand. Build the final row there:
 ```graphix,cases
 ok {type: 1}
 no "declare it before its first use" { let a = W(1); type W = Abstract<i64>; a }
+no "M names the type a later statement of this module declares" let f = |a: M| a; type M = i64; f(1)
+ok type M = i64; let f = |a: M| a; f(1)
+ok let x: M = 1; type M = i64; x
 ok let e = []; e <- [1]; e
 ok let f = |x: i64| #[native] x + 1; 1
 ```

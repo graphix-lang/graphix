@@ -37,7 +37,9 @@ is refused (`node::later_typedef`); a name a block declares is its type
 throughout the block (an annotation, a test, a cast, an abstract
 constructor, pattern or payload read), never an outer type of the name
 or one a `use` brings, and a statement above the declaration that needs
-it as it compiles is refused (`Lexical::block_names`); where another of
+it as it compiles is refused (`Lexical::block_names`); a module's body
+and a script are held to the same rule, where a function above the
+declaration is refused too; where another of
 the name is in view, the definition's check warns at the name
 (`Env::later_block_type_note`). A top-level input (a REPL input, each
 statement of its line one; a script; a dynamic module's load) is checked

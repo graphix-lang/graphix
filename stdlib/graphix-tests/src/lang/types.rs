@@ -4315,6 +4315,56 @@ run!(
     FuseExpect::None
 );
 
+// A name a module declares is its type in a typedef above the declaration
+// too, never the one a `use` or the prelude brings: the cycle the later
+// typedef completes is found, and the alias is one not defined above.
+run!(
+    typedef_names_its_modules_later_type_over_an_import,
+    refused("recursive type M grows its parameter 'a as it recurses"),
+    "/test.gx" => "type M<'a> = Array<'a>; mod m; let result = 0",
+    "/test/m.gx" => "use super::M; type N<'a> = [`Nil, `Cons('a, M<'a>)]; \
+        type M<'a> = N<Array<'a>>; let x: N<i64> = `Nil"
+; FuseExpect::None);
+
+run!(
+    typedef_names_its_modules_later_type_over_the_prelude,
+    refused("recursive type Result grows its parameter 'a as it recurses"),
+    "/test.gx" => "type N<'a> = [`Nil, `Cons('a, Result<'a, `E>)]; \
+        type Result<'a, 'b> = [N<Array<'a>>, 'b]; let x: N<i64> = `Nil; let result = 0"
+; FuseExpect::None);
+
+run!(
+    typedef_names_its_parents_later_type,
+    refused("recursive type M grows its parameter 'a as it recurses"),
+    "/test.gx" => "mod m; type M<'a> = m::N<Array<'a>>; let result = 0",
+    "/test/m.gx" => "use super::M; type N<'a> = [`Nil, `Cons('a, M<'a>)]"
+; FuseExpect::None);
+
+run!(
+    alias_shadowing_an_import_below_its_application_refused,
+    refused("passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first"),
+    "/test.gx" => "type Opt<'a> = ['a, null]; mod m; let result = m::x",
+    "/test/m.gx" => "use super::Opt; type T<'a> = [`N, `C(Opt<'a>, T<Opt<'a>>)]; \
+        type Opt<'a> = ['a, string]; let x: T<i64> = `C(\"s\", `C(null, `N))"
+; FuseExpect::None);
+
+run!(
+    alias_shadowing_an_import_above_its_application_refuses_the_imports_member,
+    refused("does not contain"),
+    "/test.gx" => "type Opt<'a> = ['a, null]; mod m; let result = m::x",
+    "/test/m.gx" => "use super::Opt; type Opt<'a> = ['a, string]; \
+        type T<'a> = [`N, `C(Opt<'a>, T<Opt<'a>>)]; let x: T<i64> = `C(\"s\", `C(null, `N))"
+; FuseExpect::None);
+
+run!(
+    alias_shadowing_an_import_above_its_application,
+    is(Value::I64(2)),
+    "/test.gx" => "type Opt<'a> = ['a, null]; mod m; let result = m::n",
+    "/test/m.gx" => "use super::Opt; type Opt<'a> = ['a, string]; \
+        type T<'a> = [`N, `C(Opt<'a>, T<Opt<'a>>)]; let x: T<i64> = `C(\"s\", `C(1, `N)); \
+        let n = select x { `C(_, `C(_, _)) => 2, `C(_, `N) => 1, `N => 0 }"
+);
+
 /// An alias that bounds its parameter is not looked through; its body
 /// written out in its place checks.
 const BOUNDED_ALIAS_OVER_A_RECURSIVE_PARAMETER: &str = r#"
