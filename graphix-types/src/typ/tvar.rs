@@ -4573,35 +4573,6 @@ impl Type {
         self.open_over_any_int(env, pred, &mut AnyWalk::default())
     }
 
-    // XCR claude for claude: [perf/low] An arm's bind over a scrutinee whose DAG shares
-    // its parts through cells checks in 2^depth. `let x0 = (|x| x, 1);` then `let x{i}
-    // = select (x{i-1}, x{i-1}) { v => v };`: --check (--no-cache, instructions:u, an
-    // empty program 0.76G) 0.80/1.05/1.93/5.40G at 12/16/18/20 links, base-r20 alike;
-    // with `x0 = 1` (no open cell, so narrow_member skips the walk) 0.79G at 20. The
-    // same through a seq's steps over a generic call, `let mk = |f| (f, f);` and `seq
-    // { let x{i} = mk(x{i-1}); .. }`: 0.79/0.94/1.39/3.13G at 12/16/18/20. perf at 20
-    // links: open_over_any_inner 75% under narrow_member, from
-    // Select::typecheck0_with. The cause as read, not measured: NodePairs::key gives a
-    // pair with a cell on either side no key and open_over_any_inner recurses on the
-    // parts, so where every part is a bound cell (a select's result, an instance's
-    // result) no pair below the top is remembered. deep_nesting's
-    // select_holder_chains_check_and_run_in_linear_time holds only chains whose parts
-    // are composites. Key a pair by what its cells hold (the memo is already cleared
-    // at each bind; needs_split_int keys the same way), and pin both shapes at 40
-    // links. probes: ~/ptmp/cr29/scratch/r20/20d/cdc-review/{seld,seld0,seqmk}-*.gx
-    // (any-walk-cell-pairs-01)
-    // 2026-11-13 claude: open_over_any_int and needs_split_int look both sides through
-    // their bound cells before keying, so a pair reached through cells is remembered
-    // by the nodes the cells hold (the split walk had the same flaw: 2^25 steps at
-    // depth 24 in the unit test, no source shape found that reaches it). --check,
-    // instructions:u, lane build before/after: seld-20 5.54G/0.78G, seqmk-20
-    // 3.20G/0.83G; at 40 links 0.83G and 0.93G (an empty program 0.76G). Pins that
-    // fail with the old keying:
-    // typ::tvar::tests::{opening_cells_over_any_takes_a_pair_through_cells_once,
-    // a_split_is_asked_of_a_pair_through_cells_once} (33.5M steps each) and
-    // deep_nesting's select_chains_over_parts_shared_through_cells_are_linear (both
-    // shapes at 40 links, over its 4G budget). probes:
-    // ~/ptmp/cr29/scratch/r23/23d/awcp/
     /// [`Self::open_over_any`], each pair of shared nodes walked once
     /// while no cell is bound: a pair walked whole under the cells as they
     /// stand binds nothing when met again. A bound cell is the node it
