@@ -6,9 +6,9 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Indiscernible, Lazy,
-        Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId, Type,
-        TypeRef, Unfolded, node_addr,
+        AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Held, Indiscernible,
+        Lazy, Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId,
+        Type, TypeRef, Unfolded, node_addr,
         normalize::NormCx,
         probe_key,
         setops::{
@@ -182,10 +182,10 @@ pub(super) struct ContainsHist {
     /// refusal gives ([`TypeMismatch`]).
     cycled: bool,
     /// [`Self::closure`]'s verdicts by node and cell identity, with the
-    /// [`cell_writes`] count each was reached at, each node pinned so its
-    /// address is not recycled under its key.
+    /// [`cell_writes`] count each was reached at, each node and cell held
+    /// so its address is not recycled under its key.
     closed: Lazy<AddrMap<(Closure, u64)>>,
-    closed_pins: Lazy<Vec<Type>>,
+    closed_pins: Lazy<Vec<Held>>,
     /// The one normalize pass of the unions this walk builds from members
     /// holding no cell and no function type ([`Self::normal_union`]):
     /// what it keeps of a node read nothing a walk can write.
@@ -773,7 +773,7 @@ impl ContainsHist {
         t.shared_identity().is_some() && self.closure(t, false) >= Closure::NoCell
     }
 
-    // CR claude for claude: [risk/low] Two walk memos key a var by its cell's address
+    // XCR claude for claude: [risk/low] Two walk memos key a var by its cell's address
     // without holding the cell: ContainsHist::closure pins the var, which a merge
     // re-points, so a fresh cell may later take the freed address and its key's verdict
     // (a stale Closed turns a commit into a probe); RefHist::ref_id's content_ids holds
@@ -782,6 +782,14 @@ impl ContainsHist {
     // the vars it compares. Holding the cell (TVar::cell) beside each such key closes
     // both. Found beside union-dag-rigid-cell-01, whose probe memo keys a var by its
     // wrapper instead. (cell-addr-keys-01)
+    // 2026-11-13 claude: Both memos hold what their keys read (typ::Held: a var's cell,
+    // any other node itself): ContainsHist::closed_pins holds the cell where it held the
+    // var, and RefHist::content_ids keeps each id with its type held, an abstract type's
+    // parameters included, which nothing held either. No verdict changes (census of both
+    // repos 0/0, regress 582/0). Pins, graphix-types contains::tests:
+    // a_closure_key_holds_its_cell and a_ref_id_holds_what_its_key_reads (a merged-away
+    // cell stays held; with the hold off, an abstract type made after a dropped one took
+    // its id) fail without the change.
     fn closure(&mut self, t: &Type, now: bool) -> Closure {
         ensure_sufficient(|| {
             let key = t.shared_identity();
@@ -792,7 +800,7 @@ impl ContainsHist {
                         return c;
                     }
                     Some(_) => (),
-                    None => self.closed_pins.get_mut().push(t.clone()),
+                    None => self.closed_pins.get_mut().push(Held::of(t)),
                 }
                 // a binding that reaches its own cell is not closed
                 self.closed.get_mut().insert(k, (Closure::Open, writes));
@@ -6768,6 +6776,48 @@ mod tests {
         let mut hist = ContainsHist::new();
         hist.pair_key(&app).unwrap();
         assert_eq!(hist.app_cells.get().map(|c| c.len()), Some(1));
+    }
+
+    /// `c` and `d`, two open vars, merged after `met` saw each: the cell
+    /// the merge left no var reading.
+    fn absorbed_after(mut met: impl FnMut(&Type)) -> Arc<CellLock> {
+        let [c, d] = ["c", "d"].map(|n| TVar::empty_named(n.into()));
+        let before = [c.cell(), d.cell()];
+        met(&Type::TVar(c.clone()));
+        met(&Type::TVar(d.clone()));
+        Type::TVar(c.clone()).check_contains(&Env::default(), &Type::TVar(d)).unwrap();
+        let merged = c.cell();
+        let [x, y] = before;
+        if Arc::ptr_eq(&x, &merged) { y } else { x }
+    }
+
+    // A closure verdict's key reads its var's cell's address, so the walk
+    // holds the cell: one a merge leaves no var reading keeps its address.
+    #[test]
+    fn a_closure_key_holds_its_cell() {
+        let mut hist = ContainsHist::new();
+        let absorbed = absorbed_after(|t| assert!(!hist.closed(t)));
+        assert_eq!(Arc::count(&absorbed), 2, "held here and by the walk");
+    }
+
+    // And so an open var's id, and an abstract type's, which reads its
+    // parameters' address: a type the walk met and its caller dropped
+    // lends its id to none made after it.
+    #[test]
+    fn a_ref_id_holds_what_its_key_reads() {
+        let env = Env::default();
+        let mut hist = ContainsHist::new();
+        let absorbed = absorbed_after(|t| {
+            hist.ref_id(t, &env).unwrap();
+        });
+        assert_eq!(Arc::count(&absorbed), 2, "held here and by the walk");
+        let abstract_over = |p: Typ| Type::Abstract {
+            id: AbstractId::of(&ModPath::root(), "A"),
+            params: Arc::from_iter([Type::Primitive(p.into())]),
+        };
+        let first = hist.ref_id(&abstract_over(Typ::I64), &env);
+        let later: Vec<Type> = (0..64).map(|_| abstract_over(Typ::String)).collect();
+        assert!(later.iter().all(|t| hist.ref_id(t, &env) != first));
     }
 
     /// `T0..T3` and `U0..U3`, each `[Error<next>, Error<next but one>, tag]`

@@ -497,6 +497,24 @@ impl<A> Kept<A> {
     }
 }
 
+/// What a memo holds beside a key that reads a type's address
+/// ([`Type::shared_identity`]), so no other type takes the address while
+/// the key stands: a var's cell, which a merge takes from the var; any
+/// other node itself.
+enum Held {
+    Cell { _cell: Arc<tvar::CellLock> },
+    Node { _node: Type },
+}
+
+impl Held {
+    fn of(t: &Type) -> Self {
+        match t {
+            Type::TVar(tv) => Held::Cell { _cell: tv.cell() },
+            t => Held::Node { _node: t.clone() },
+        }
+    }
+}
+
 /// [`norm_key`] extended with `Ref`, keyed by its node, an abstract type
 /// by its parameters' node and its id, and the leaves whose content fits
 /// the key: a primitive by its bits, `Any` and `⊥`.
@@ -544,8 +562,9 @@ struct RefHist<H: IsoPoolable> {
     /// (Definition key, the params' [`Self::param_id`]s) → id.
     ref_apps: Lazy<AHashMap<(usize, SmallVec<[usize; 4]>), usize>>,
     /// Content identity → id for non-Ref types, so the cycle memo does
-    /// not conflate distinct finite sub-problems.
-    content_ids: Lazy<AHashMap<NormKey, usize>>,
+    /// not conflate distinct finite sub-problems, each type held so the
+    /// address its key reads stays its own.
+    content_ids: Lazy<AHashMap<NormKey, (usize, Held)>>,
     /// Structure → id for composite non-Ref types, open cells by their
     /// cell: an expansion rebuilt at every visit meets its earlier self.
     /// A hash bucket holds the types themselves, matched by
@@ -765,11 +784,11 @@ impl<H: IsoPoolable> RefHist<H> {
             Type::Any | Type::Bottom => (d, 0, 0),
             t => return Some(self.shape_id(t, env)),
         };
-        if let Some(&id) = self.content_ids.get().and_then(|m| m.get(&k)) {
-            return Some(id);
+        if let Some((id, _)) = self.content_ids.get().and_then(|m| m.get(&k)) {
+            return Some(*id);
         }
         let id = self.next();
-        self.content_ids.get_mut().insert(k, id);
+        self.content_ids.get_mut().insert(k, (id, Held::of(t)));
         Some(id)
     }
 
