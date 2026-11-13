@@ -1287,36 +1287,6 @@ fn first_expansion(seen: &mut Expanded, def: usize, params: &Arc<[Type]>) -> boo
     true
 }
 
-// XCR claude for claude: [bug/medium] A union dispatch over two members that are one
-// type spelled two ways, or over a member another member holds, passes --check and is
-// refused at the build. The walk below drops only a member strictly_identical to an
-// earlier one, which reads through no name inside a member, and lower_trait_union
-// makes a select arm per member. `impl Show for Array<[i64, string]>; type X = [i64,
-// string]; let x: [Array<X>, Array<[i64, string]>, null] = [1]; Show::show(x)` fails
-// the run with "unreachable arm: the earlier arms already cover the whole scrutinee"
-// (q1.gx; q5.gx over `[Array<X>, Array<Y>]` with Y = [string, i64]; p02.gx with the
-// two spellings behind two names). With `impl<'a: Show> Show for Array<'a>`, `type A =
-// [Array<[i64, string]>, null]; type B = [Array<i64>, string]; let x: [A, B] = [1]`
-// fails the run with "type mismatch Array<'a: i64> does not contain [Array<i64>,
-// Array<[i64, string]>]" (q7.gx; q8.gx over `[B, A]`), where the inline `[Array<[i64,
-// string]>, Array<i64>, null]` runs (q6.gx). base-r20 and lane 20g behave alike, with
-// and without --no-fusion. The check and the build must agree: Type::trait_contains
-// refuses what the lowering cannot dispatch, or the members are one per type (equal
-// types by containment both ways) in an order that tests a narrower member first.
-// probes: ~/ptmp/cr29/scratch/r20/20g/rvw-tdm/ (trait-dispatch-equal-members-01)
-// 2026-11-13 claude: The check is as it was; the lowering's arms are
-// Type::dispatch_arms, the members one per type (each holds the other, among members
-// that share a constructor) with a member another holds before it, so q1, q5, p02, q7,
-// q8 run. An arm whose member shares a constructor with another rebinds #t at its
-// member's type, which also runs two members that share values where neither holds the
-// other (`[Array<[i64, string]>, Array<[i64, null]>]` under the generic impl passed
-// the check and failed the build the same way: a1.gx, b3.gx). Pins that fail without
-// it: lang::traits::trait_union_dispatch_one_type_spelled_twice and
-// trait_union_dispatch_member_another_holds (with dispatch_members for the arms),
-// trait_union_dispatch_members_that_overlap (without the rebind),
-// typ::setops::tests::dispatch_arms_are_one_per_type_narrower_first. Census and
-// guicheck unchanged; a run over 196 members of one constructor costs 4% more
-// instructions (s196.gx). Probes: ~/ptmp/cr29/scratch/r23/23b/tdm/.
 /// The walk of [`Type::dispatch_members`]: a named type already
 /// expanded is skipped, and a member already in `out` is not added.
 fn flatten_members(
