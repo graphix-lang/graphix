@@ -8751,6 +8751,8 @@ run!(
   let f = 'a0: ['a1, null], 'a1: ['a2, string], 'a2: ['a3, bool], 'a3: ['a4, datetime], 'a4: ['a5, duration], 'a5: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| 7;
   let g = 'a0: ['a1, null], 'a1: ['a2, string], 'a2: ['a3, bool], 'a3: ['a4, datetime], 'a4: ['a5, duration], 'a5: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4)| x.0;
   let r = g(never());
+  let h = 'a0: ['a1, null], 'a1: ['a2, string], 'a2: ['a3, bool], 'a3: ['a4, datetime], 'a4: ['a5, duration], 'a5: ['a6, bytes], 'a6: ['a7, null], 'a7: ['a8, string], 'a8: Number |x: ('a0, 'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7)| 1;
+  let s = h(never());
   f(never())
 }"#,
     is(Value::I64(7));
