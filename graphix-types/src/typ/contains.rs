@@ -2869,6 +2869,20 @@ impl UndecidedTaker {
         self.at
     }
 
+    // CR claude for claude: [readability/low] The refusal prints a lambda whose only open
+    // cell is what it throws as a decided type and calls it undecided. `let g = |k: [fn(x:
+    // i64) -> i64 throws `A, fn(x: i64) -> i64 throws `B]| 4; g(|x: i64| 0)` is refused,
+    // "fn(x: i64) -> i64 could go to fn(x: i64) -> i64 throws `A or fn(x: i64) -> i64
+    // throws `B of the union [..], and nothing has decided which: this argument is
+    // undecided at this call; annotate it (bind it to a `let` with its type written)":
+    // nothing the message prints is open, and it does not say that the throws is what the
+    // two members would decide differently. The remedy it names does work (`let h: fn(x:
+    // i64) -> i64 = |x: i64| 0; g(h)`, or `-> i64 throws `A` on the lambda). The same for
+    // `[fn(x: i64) -> i64, fn(x: string) -> i64 throws `B]` and `|x: [i64, string]| 0`.
+    // What would fix it: where the type's open cells are all throws cells, the fact says
+    // "what it throws is undecided" and the note says to write the lambda's throws.
+    // Found in the review of undecided-into-two-decided-01. probes:
+    // ~/ptmp/cr29/scratch/r24/24d/u2d-rev/{c5,c8,c10,c11}.gx (undecided-taker-open-throws-01)
     /// The refusal without what to annotate, for a site that names it.
     pub fn fact(&self) -> impl std::fmt::Display + '_ {
         struct Fact<'a>(&'a UndecidedTaker);
