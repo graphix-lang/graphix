@@ -268,7 +268,9 @@ numbers one, `'_1`, one number a cell. A call's copy of a variable its
 callee declares is no variable the program wrote for the copy
 (`TCell::call_copy`): `[Array<string>, Array<Array<'_1>>]` where `g(never())`
 over `|u: 'a| -> Array<'a>` built the inner array. A copy merged with a
-cell a written variable names is that variable's again. The hint names
+cell a written variable names is a copy no more: each name the cell goes
+by writes itself, the variable's as the variable and the copy's as the
+callee's. The hint names
 no type only where what was built has no written form. Two payloads
 of one Graphix-minted abstract type are declared as the union of the
 parameter (`B<[P1, P2]>`), read through one application,
@@ -1416,8 +1418,9 @@ number a cell (`Holders::number`), told as "types no binding names,
 annotated where their values are built". A call's copy of a variable
 its callee declares is one no binding names, though it carries the
 callee's name (`TCell::call_copy`): two calls of `|x: 'a| -> Array<'a>
-[]` give `Array<'_1>` and `Array<'_2>`, never `Array<'a>` twice, which
-reads as one type.
+[]` give `Array<'_1>` and `Array<'_2>`, not `Array<'a>` twice, which
+reads as one type, unless a let's annotation took the copies and the
+members are written through the copies' own names.
 
 ### Unfolding a pair of definitions
 

@@ -5444,6 +5444,29 @@ run!(
     prints(r#"[["B", []], ["B", "s"]]"#)
 );
 
+// What was built holds a `[]`'s element, which no binding and no written
+// variable names: numbered.
+run!(
+    select_arms_at_two_depths_over_an_empty_arrays_payloads,
+    arms_at_two_depths(r#"B([[]])"#, r#"B(["s"])"#),
+    refused(
+        "the arms decide this scrutinee's type from their patterns, and their binds \
+         cannot hold what was built into it, [Array<string>, Array<Array<'_1>>]: \
+         annotate that type where it is built, writing for '_1 a type no binding names, \
+         annotated where its value is built"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_arms_at_two_depths_over_an_empty_arrays_payloads_declared,
+    arms_at_two_depths(
+        r#"{ let b: B<[Array<string>, Array<Array<string>>]> = B([[]]); b }"#,
+        r#"B(["s"])"#
+    ),
+    prints(r#"[["B", []], ["B", "s"]]"#)
+);
+
 // A write a binding's type cannot hold, over such a referent.
 run!(
     write_wider_than_a_binding_holding_a_referent,

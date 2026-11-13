@@ -2799,6 +2799,23 @@ impl TVar {
         let o_copy = o_cell.read().call_copy;
         // a call's copy merged with a cell no variable the program wrote
         // names stays one; a written variable now names the cell
+        // CR claude for claude: [bug/low] A call's copy a written variable took is
+        // unmarked here, but only that variable's handle carries its name: the copy's
+        // own handles still carry the callee's, so two calls' copies still read as
+        // one type where a message reaches them through those. With `let f = |x: 'a|
+        // -> Array<'a> []; let c1 = f(never()); let c2 = f(never())` and `let v:
+        // [{a: Array<i64>, c: Array<'q>}, {a: Array<string>, c: Array<'r>}]` over
+        // `{a: [1], c: c1}` and `{a: ["s"], c: c2}`, `{a, ..}` over those two structs
+        // built again unannotated is refused "{ a: Array<i64>, c: Array<'a> } and {
+        // a: Array<string>, c: Array<'a> }" (undecided-member-instance-name-01's
+        // symptom, as on base-r24); alike `let v: [..] = w` after `w`'s select, then
+        // `select w`. Without the unmarking they are numbered, but the annotation's
+        // own members then print `'_1`/`'_2` for `'q`/`'r`. What would fix both: the
+        // cell keeps the written variable's name, and every handle of it writes that
+        // name (a third state of TCell::call_copy; it costs TCell bytes, 184 of the
+        // 200 its assertion allows, and every node-walked activation holds a cell).
+        // probes: ~/ptmp/cr29/scratch/r24/24g/umin-rev/a1.gx, a2.gx
+        // (copy-taken-by-written-name-01)
         let call_copy = (s_copy || o_copy)
             && (s_copy || self.generated())
             && (o_copy || other.generated());
