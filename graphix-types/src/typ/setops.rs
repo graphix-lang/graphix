@@ -1340,48 +1340,6 @@ impl Type {
         Ok(parts.or(fns))
     }
 
-    // XCR claude for claude: [perf/medium] The meet of alternatives walks its members
-    // once per path: meet_parts pairs the parts of the members of one shape and
-    // recurses with no memory of the nodes it met there (it skips only a part that is
-    // one node in every member), so two different DAGs that each share their parts
-    // cost 4^depth, and each rebuilt member comes back a tree. A select over them,
-    // `let x0 = (|q| q, x); let y0 = (|q| q, y);` (`x: i64`, `y: Any`), `let x{i} =
-    // (x{i-1}, x{i-1}); let y{i} = (y{i-1}, y{i-1});` then `let r = select b { true
-    // => x{n}, false => y{n} }`: --check (--no-cache, instructions:u, an empty program
-    // 0.76G) 0.82/0.99/2.06/12.83G at 8/10/12/14 links on base-r23, 0.82/1.08/3.52/
-    // 36.80G on r23-d (LambdaIds::joining is 19% of it, under meet_parts). An
-    // or-pattern's name over the same pair, `select (tag, x{n}, y{n}) { (`L, a, _) |
-    // (`R, _, a) => 0 }`, has met since or-bind-fn-meet-01
-    // (PatternNode::wholes_by_member, Type::union_exact_of_alternatives): 0.78G at
-    // every length on base-r23, 0.89/1.61/10.41/143.17G on r23-d. With the parts
-    // shared through cells (`let x{i} = select (x{i-1}, x{i-1}) { v => v }`) the
-    // select takes 0.83/0.99/1.83/8.42G on base-r23 and 0.83/1.03/2.52/19.90G on
-    // r23-d, the or-name 0.79/0.80/0.86/1.09G and 0.89/1.39/6.29/73.49G. The cause as
-    // read, not measured beyond the profile (meet_parts 43% of the select on
-    // base-r23, 55% on r23-d). Remember what a tuple of parts met by the nodes the
-    // members hold there, a bound cell as the node it holds (as open_over_any_int
-    // keys a pair), so a shared part is met once and stays shared in each rebuilt
-    // member; pin a step count and both source shapes at 40 links. probes:
-    // ~/ptmp/cr29/scratch/r23/23d/awcp-rev/{f,h,e,c}{8,10,12,14}.gx (select and
-    // or-name over composites, then over cells) (meet-parts-paths-01)
-    // 2026-11-13 claude: meet_alternatives now keeps each meet of its walk past
-    // NodePairs::EAGER steps in setops::Meets, keyed by the nodes the alternatives
-    // hold (a bound cell as the node it holds) and read back only while cell_writes()
-    // is what it was when made; an alternative the meet left as it stands is the
-    // caller's own on a hit. So a pair of nodes meets once, and the rebuilt members
-    // share what they met (99 nodes a member at 40 links, not a tree). --check of the
-    // probes on base-r24 vs this build (instructions:u, empty program 0.75G): f
-    // 0.80/1.01/3.29G at 8/10/12 links -> 0.75/0.77/0.76G, h 0.85/1.50/9.94G -> 0.76G
-    // each, e 0.80/0.96/2.31G -> 0.76/0.76/0.77G, c 0.84/1.28/5.80G -> 0.77G each; at
-    // 40 links 0.78/0.78/0.88/0.89G, and each runs to its exit under 1.0G. Without fns
-    // the meet walked every path too (nf20 7.31G, nh20 20.43G on base-r24), now
-    // 0.76/0.78G. Pins that fail without it:
-    // typ::setops::tests::the_meet_of_two_pair_dags_takes_each_pair_once (93 meets at
-    // 10 links; 4095 with the key never formed) and
-    // deep_nesting::meets_over_two_pair_dags_are_linear (both source shapes, over
-    // composites and through cells, at 40 links, 4G budget; killed at 4.0G without
-    // it). Census of both repos: no verdict or message changed. guicheck base-r24
-    // 39.56G/39.46G, this 39.56G/39.52G.
     /// The members of `ts` of one shape meet part by part
     /// ([`Self::meet_alternatives`]); a part that is one node in every
     /// member meets nothing. `None` when no member changes.
