@@ -152,7 +152,7 @@ const CONSTANT_ACTS_ONCE: &str = r#"{
   ep <- select ep { n if n < 3 => n + 1, _ => never() };
   let x = 0;
   x <- 1;
-  println("hello");
+  #[native] println("hello");
   x
 }"#;
 
@@ -173,9 +173,7 @@ const LEAVING_BOTTOM_FIRES: &str = r#"{
   ep <- select ep { n if n < 6 => n + 1, _ => never() };
   let y = 0;
   y <- select ep { 1 => 1, 2 => 0, 3 => 2, _ => never() };
-  let q = 10 / y;
-  println("q=[q]");
-  q + 1
+  #[native] { let q = 10 / y; println("q=[q]"); q + 1 }
 }"#;
 
 async fn leaving_bottom_fires(mode: Mode) -> Result<()> {
@@ -194,7 +192,7 @@ const FIRST_CYCLE_ARM_FIRES: &str = r#"{
   let ep = 0;
   ep <- select ep { n if n < 3 => n + 1, _ => never() };
   let s: [`A, `B] = `A;
-  select s {
+  #[native] select s {
     `A => { println("arm A"); 1 },
     `B => { println("arm B"); 2 }
   }
@@ -214,6 +212,8 @@ modes!(first_cycle_arm_fires);
 // never fires and its twin sampled on the bind does; the arm reads x
 // where it stands, so the select gives [0, 5].
 const LATE_ARM_CALL_IS_QUIET: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 3 => n + 1, _ => never() };
   let x = 5;
   let s: [`A, `B] = `A;
   s <- `B;
@@ -236,6 +236,8 @@ modes!(late_arm_call_is_quiet);
 // A function called from an arm entered in the second cycle starts
 // nothing over no argument or a standing one, and runs over the bind.
 const LATE_CALLEE_IS_QUIET: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 3 => n + 1, _ => never() };
   let x = 5;
   let f = || println("callee ran");
   let g = |v| println("callee got [v]");
@@ -256,6 +258,32 @@ async fn late_callee_is_quiet(mode: Mode) -> Result<()> {
 }
 
 modes!(late_callee_is_quiet);
+
+// The late arm as one kernel: its print and its callees over what
+// stands are quiet, and the callee over the bind runs.
+const LATE_ARM_KERNEL_IS_QUIET: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 3 => n + 1, _ => never() };
+  let x = 5;
+  let f = || println("callee ran");
+  let g = |v| println("callee got [v]");
+  let s: [`A, `B(i64)] = `A;
+  s <- `B(1);
+  #[native] select s {
+    `A => 0,
+    `B(v) => { println("standing [x]"); f(); g(x); g(v + x); x }
+  }
+}"#;
+
+async fn late_arm_kernel_is_quiet(mode: Mode) -> Result<()> {
+    let (values, out) =
+        run_delta_fused(LATE_ARM_KERNEL_IS_QUIET, mode, FuseExpect::Jit).await?;
+    assert_eq!(as_i64s(&values), vec![0, 5]);
+    assert_eq!(out, "callee got 6\n");
+    Ok(())
+}
+
+modes!(late_arm_kernel_is_quiet);
 
 // x leaves bottom (7) while arm A sleeps: at the wake the call over x
 // is quiet and the one sampled on the bind reads 7. The 8 that arrives
@@ -283,6 +311,33 @@ async fn wake_after_arrival_is_quiet(mode: Mode) -> Result<()> {
 }
 
 modes!(wake_after_arrival_is_quiet);
+
+// The waking arm as one kernel: the 7 that arrived during its sleep is
+// quiet at the wake, where the bind alone prints, and the 8 that
+// arrives while it runs fires.
+const WAKE_KERNEL_IS_QUIET: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 7 => n + 1, _ => never() };
+  let x: i64 = never();
+  x <- select ep { 2 => 7, 5 => 8, _ => never() };
+  let s: [`A(i64), `B] = `A(0);
+  s <- select ep { 0 => `B, 3 => `A(1), _ => never() };
+  #[native] select s {
+    `A(v) => { println("standing [x]"); println("bind [v]"); null },
+    `B => null
+  };
+  x
+}"#;
+
+async fn wake_kernel_is_quiet(mode: Mode) -> Result<()> {
+    let (values, out) =
+        run_delta_fused(WAKE_KERNEL_IS_QUIET, mode, FuseExpect::Jit).await?;
+    assert_eq!(as_i64s(&values), vec![7, 8]);
+    assert_eq!(out, "bind 0\nbind 1\nstanding 8\n");
+    Ok(())
+}
+
+modes!(wake_kernel_is_quiet);
 
 // A constant write in a seq step writes at each run: three runs, each
 // started by the one before it.
