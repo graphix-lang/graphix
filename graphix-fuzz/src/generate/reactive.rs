@@ -608,8 +608,8 @@ fn slept_arm(
 /// `let`, held by `once`. The value follows a state written only on the
 /// epochs arm 0 sleeps through, so each wake re-stands it moved, a new
 /// value and no fire for the reader outside
-/// (`design/bind_driven_bodies.md`, the moved mark), read bare or under
-/// an operator and counted. Two shapes follow a count
+/// (`design/bind_driven_bodies.md`, the moved mark), read bare, under an
+/// operator or by a guard, and counted. Two shapes follow a count
 /// of the input's fires instead: an arm slept late ([`late_slept_arm`])
 /// and a `let` stood again ([`stood_again`]).
 fn escaped_arm(
@@ -635,10 +635,20 @@ fn escaped_arm(
     let read = match shape {
         0 => {
             let (mk, x, y) = (ctx.fresh(), ctx.fresh(), ctx.fresh());
-            let body = match rng.below(3) {
+            let body = match rng.below(4) {
                 0 => x.clone(),
                 1 => format!("{x} + {y}"),
-                _ => format!("#[native] select {x} {{ i64:0 => {y}, v => v * i64:2 }}"),
+                2 => format!("#[native] select {x} {{ i64:0 => {y}, v => v * i64:2 }}"),
+                _ => {
+                    let native = if chance(rng, 0.5) { "#[native] " } else { "" };
+                    let guard = match chance(rng, 0.5) {
+                        true => "v % i64:3 == i64:0",
+                        false => "{ let w = v; w % i64:3 == i64:0 }",
+                    };
+                    format!(
+                        "{native}select {x} {{ v if {guard} => v + {y}, v => v * i64:2 }}"
+                    )
+                }
             };
             stmts.push(format!("let {mk} = |{x}: i64| |{y}: i64| {body}"));
             stmts.push(format!(
