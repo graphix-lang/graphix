@@ -3021,8 +3021,9 @@ impl<R: Rt> Update<R> for Lambda {
     }
 
     /// A lambda an instance defines takes its signature from the
-    /// enclosing definition's check, at its own level, and generalizes it
-    /// as its gate would; its instances read its table from there too.
+    /// enclosing definition's check, at its own level, its written
+    /// parameters taking the row's first, and generalizes it as its gate
+    /// would; its instances read its table from there too.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -3048,6 +3049,9 @@ impl<R: Rt> Update<R> for Lambda {
         };
         {
             let _at = AtLevel::enter(level);
+            if let (Type::Fn(own), Type::Fn(row)) = (&self.typ, &row) {
+                row.pre_unify_params(&ctx.env, own).at(&self.spec)?;
+            }
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         match self.named {

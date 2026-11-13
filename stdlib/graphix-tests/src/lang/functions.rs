@@ -4663,6 +4663,23 @@ run!(
     FuseExpect::None
 );
 
+// A lambda an instance builds takes its parameters from the row first: a
+// variable under a typedef's union in an earlier parameter is decided by
+// every parameter that holds it, not by the first.
+run!(
+    instance_lambda_typedef_union_before_its_variable,
+    r#"{
+  type O<'x> = ['x, null];
+  let g = 'b: [i64, null] |x: 'b| {
+    let h: fn(v: 'b, w: 'b) -> i64 = |v: O<'a>, w: 'a| 1;
+    let k: fn(v: 'b, s: i64) -> i64 = |v: Option<'c>, s: 'c| 2;
+    h(x, x) + k(x, 1)
+  };
+  [g(2), g(null)]
+}"#,
+    prints("[i64:3, i64:3]")
+);
+
 // A builtin binding declares every argument's type, its variadic's too.
 run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;
