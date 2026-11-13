@@ -1138,6 +1138,30 @@ impl Type {
         Ok(parts.or(fns))
     }
 
+    // CR claude for claude: [perf/medium] The meet of alternatives walks its members
+    // once per path: meet_parts pairs the parts of the members of one shape and
+    // recurses with no memory of the nodes it met there (it skips only a part that is
+    // one node in every member), so two different DAGs that each share their parts
+    // cost 4^depth, and each rebuilt member comes back a tree. A select over them,
+    // `let x0 = (|q| q, x); let y0 = (|q| q, y);` (`x: i64`, `y: Any`), `let x{i} =
+    // (x{i-1}, x{i-1}); let y{i} = (y{i-1}, y{i-1});` then `let r = select b { true
+    // => x{n}, false => y{n} }`: --check (--no-cache, instructions:u, an empty program
+    // 0.76G) 0.82/0.99/2.06/12.83G at 8/10/12/14 links on base-r23, 0.82/1.08/3.52/
+    // 36.80G on r23-d (LambdaIds::joining is 19% of it, under meet_parts). An
+    // or-pattern's name over the same pair, `select (tag, x{n}, y{n}) { (`L, a, _) |
+    // (`R, _, a) => 0 }`, has met since or-bind-fn-meet-01
+    // (PatternNode::wholes_by_member, Type::union_exact_of_alternatives): 0.78G at
+    // every length on base-r23, 0.89/1.61/10.41/143.17G on r23-d. With the parts
+    // shared through cells (`let x{i} = select (x{i-1}, x{i-1}) { v => v }`) the
+    // select takes 0.83/0.99/1.83/8.42G on base-r23 and 0.83/1.03/2.52/19.90G on
+    // r23-d, the or-name 0.79/0.80/0.86/1.09G and 0.89/1.39/6.29/73.49G. The cause as
+    // read, not measured beyond the profile (meet_parts 43% of the select on
+    // base-r23, 55% on r23-d). Remember what a tuple of parts met by the nodes the
+    // members hold there, a bound cell as the node it holds (as open_over_any_int
+    // keys a pair), so a shared part is met once and stays shared in each rebuilt
+    // member; pin a step count and both source shapes at 40 links. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/awcp-rev/{f,h,e,c}{8,10,12,14}.gx (select and
+    // or-name over composites, then over cells) (meet-parts-paths-01)
     /// The members of `ts` of one shape meet part by part
     /// ([`Self::meet_alternatives`]); a part that is one node in every
     /// member meets nothing. `None` when no member changes.
