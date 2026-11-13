@@ -261,7 +261,7 @@ impl TVar {
         let cell = self.cell();
         let mut cell = cell.write();
         if cell.binding.is_none() && !super::tvar::earlier_task(&cell) {
-            cell.binding = Some(Type::Bottom);
+            cell.set_binding(Some(Type::Bottom));
         }
     }
 
@@ -293,7 +293,7 @@ impl TVar {
         if graphix_dbg_bind_bt_id().is_some() {
             eprintln!("{}", std::backtrace::Backtrace::force_capture());
         }
-        cell.binding = Some(Type::Bottom);
+        cell.set_binding(Some(Type::Bottom));
         Ok(())
     }
 }

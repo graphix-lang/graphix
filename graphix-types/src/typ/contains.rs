@@ -15,9 +15,9 @@ use crate::{
             Identical, IdenticalMemo, one_type, strictly_identical, union_identical,
         },
         tvar::{
-            CellFact, CellLock, Cycle, Fresh, HeldQuantifiers, RigidGate, Standing,
-            Toward, bare_path, cell_writes, cycle_toward, settled_cause_note,
-            would_cycle_inner,
+            CellFact, CellLock, Cycle, Fresh, HeldQuantifiers, LinkChange, LinkWatch,
+            RigidGate, Standing, Toward, bare_path, cell_writes, cycle_toward,
+            settled_cause_note, would_cycle_inner,
         },
         variance,
     },
@@ -185,12 +185,8 @@ pub(super) struct ContainsHist {
     /// The cells whose closed parts wait for the end of a function's
     /// arguments ([`Self::defer`]), the innermost function's last.
     deferring: SmallVec<[Deferred; 2]>,
-    /// The first of `deferring` standing for each cell, where there are
-    /// more than [`DEFER_SCAN`], as the cells stood at the
-    /// [`cell_writes`] count beside it: a write may move a var to
-    /// another cell.
-    deferred_by_cell: Lazy<AddrMap<usize>>,
-    deferred_as_of: Option<u64>,
+    /// `deferring` by cell, while it holds more than [`DEFER_SCAN`].
+    defer_index: Option<DeferIndex>,
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
@@ -240,6 +236,79 @@ struct Deferred {
     tv: TVar,
     parts: SmallVec<[(Type, BitFlags<ContainsFlags>); 2]>,
     choices: SmallVec<[(Type, Type, BitFlags<ContainsFlags>); 1]>,
+}
+
+/// The first of a walk's [`Deferred`] cells that stands for each cell,
+/// kept as the [`LinkChange`]s made since it was built move vars to other
+/// cells.
+struct DeferIndex {
+    first: AddrMap<usize>,
+    /// The cell each entry is first for: `first` maps it back.
+    first_for: Vec<Option<usize>>,
+    links: LinkWatch,
+}
+
+impl DeferIndex {
+    fn new(deferring: &[Deferred]) -> Self {
+        let mut index = DeferIndex {
+            first: AddrMap::default(),
+            first_for: Vec::with_capacity(deferring.len()),
+            links: LinkWatch::start(),
+        };
+        index.extend(deferring);
+        index
+    }
+
+    /// Index the entries of `deferring` past those indexed.
+    fn extend(&mut self, deferring: &[Deferred]) {
+        for (i, d) in deferring.iter().enumerate().skip(self.first_for.len()) {
+            #[cfg(test)]
+            DEFER_INDEXED.with(|n| n.set(n.get() + 1));
+            let cell = d.tv.stands_for();
+            let first = match self.first.entry(cell) {
+                Entry::Vacant(e) => {
+                    e.insert(i);
+                    Some(cell)
+                }
+                Entry::Occupied(_) => None,
+            };
+            self.first_for.push(first)
+        }
+    }
+
+    /// Drop the entries from `mark` on.
+    fn truncate(&mut self, mark: usize) {
+        for cell in self.first_for.drain(mark..).flatten() {
+            self.first.remove(&cell);
+        }
+    }
+
+    /// Bring the index up to the links made since it last read them.
+    fn sync(&mut self, deferring: &[Deferred]) {
+        while let Some(link) = self.links.next() {
+            match link {
+                LinkChange::Made(cell) => self.moved(deferring, cell),
+                LinkChange::Undone => return *self = Self::new(deferring),
+            }
+        }
+    }
+
+    /// The entries standing for `cell` stand for the end of its link now.
+    fn moved(&mut self, deferring: &[Deferred], cell: usize) {
+        let Some(i) = self.first.remove(&cell) else { return };
+        let to = deferring[i].tv.stands_for();
+        match self.first.entry(to) {
+            Entry::Occupied(e) if *e.get() < i => self.first_for[i] = None,
+            Entry::Occupied(mut e) => {
+                self.first_for[e.insert(i)] = None;
+                self.first_for[i] = Some(to)
+            }
+            Entry::Vacant(e) => {
+                e.insert(i);
+                self.first_for[i] = Some(to)
+            }
+        }
+    }
 }
 
 /// What a verdict assumed of the walk in progress: the depth of the
@@ -351,8 +420,7 @@ impl ContainsHist {
             norm: None,
             gated: 0,
             deferring: SmallVec::new(),
-            deferred_by_cell: Lazy::new(),
-            deferred_as_of: None,
+            defer_index: None,
             trial: false,
             ordered: false,
             early: false,
@@ -416,13 +484,15 @@ impl ContainsHist {
             parts: SmallVec::new(),
             choices: SmallVec::new(),
         }));
-        self.deferred_as_of = None;
+        if let Some(index) = &mut self.defer_index {
+            index.sync(&self.deferring[..mark]);
+            index.extend(&self.deferring)
+        }
         Some(mark)
     }
 
     /// Whether `tv ⊇ t` waits for the end of the arguments in progress. A
-    /// bare undecided variable never does, and is answered before the
-    /// index, which its merge outdates.
+    /// bare undecided variable never does.
     fn defers(&mut self, flags: BitFlags<ContainsFlags>, tv: &TVar, t: &Type) -> bool {
         if self.deferring.is_empty()
             || tv.is_bound()
@@ -462,7 +532,7 @@ impl ContainsHist {
         true
     }
 
-    // CR claude for claude: [perf/low] The index is built again at the first lookup
+    // XCR claude for claude: [perf/low] The index is built again at the first lookup
     // after any cell write, so a signature of n deferred variables whose positions
     // alternate with ones that bind at once (`let f = |x: ('a0, &mut 'c0, 'a1, &mut
     // 'c1, ..)| x; f(never())`) pays up to n builds of n entries: --expand --no-cache,
@@ -511,21 +581,39 @@ impl ContainsHist {
     // three-way differential over the nested and merged shapes
     // (~/ptmp/cr29/scratch/r20/20b/merge-review/gen_mix.py) before it lands. Numbers
     // unchanged by this round's fixes: they do not touch defers.
+    // 2026-11-12 claude: Fixed: the deferral index (DeferIndex) is no longer rebuilt at
+    // any cell write. TCell::set_binding, which every binding write in tvar.rs and
+    // settle.rs now goes through, logs each cell newly bound to a var and each binding
+    // to a var undone while a walk watches (tvar::LinkWatch, a thread-local log kept
+    // only while a watcher lives); the index moves a linked cell's entries to the end of
+    // its link keeping the first, rebuilds only on an undo, and extends and truncates at
+    // defer and settle instead of rebuilding. genmix2.py (--expand --no-cache,
+    // instructions:u) at 2000 / 4000 / 8000: base-r23 3.78 / 11.63 / - G, fix 1.39 /
+    // 2.03 / 3.34; genmix.py 3.07 / 7.83 / - against 1.88 / 3.00 / 5.28. Pins in
+    // contains.rs tests: a_binding_between_waiting_cells_indexes_each_once (a rebuild at
+    // every write indexes 10100 entries at n = 100, the bound is n),
+    // the_deferral_index_follows_the_links_cells_make and
+    // the_deferral_index_answers_as_a_scan (each fails when made links are ignored, the
+    // first when a merge keeps the later entry or an undo is ignored). A build with
+    // DEFER_SCAN = 0 asserting the index against a scan at every lookup matched the
+    // lane's head before the fix over the census and 1400 generated programs
+    // (gen_mix.py, genwide.py with 9 to 30 parameters). Probes:
+    // ~/ptmp/cr29/scratch/r23/23f/defer-index/
     /// The first of `deferring` that stands for `cell`.
     fn deferred_for(&mut self, cell: usize) -> Option<usize> {
         if self.deferring.len() <= DEFER_SCAN {
             return self.deferring.iter().position(|d| d.tv.stands_for() == cell);
         }
-        let writes = Some(cell_writes());
-        let by_cell = self.deferred_by_cell.get_mut();
-        if self.deferred_as_of != writes {
-            by_cell.clear();
-            for (i, d) in self.deferring.iter().enumerate() {
-                by_cell.entry(d.tv.stands_for()).or_insert(i);
-            }
-            self.deferred_as_of = writes;
+        let deferring = &self.deferring[..];
+        let index = self.defer_index.get_or_insert_with(|| DeferIndex::new(deferring));
+        index.sync(deferring);
+        let first = index.first.get(&cell).copied();
+        #[cfg(test)]
+        if DEFER_AUDIT.with(|a| a.get()) {
+            let scanned = deferring.iter().position(|d| d.tv.stands_for() == cell);
+            assert_eq!(first, scanned, "the deferral index disagrees with a scan");
         }
-        by_cell.get(&cell).copied()
+        first
     }
 
     // CR claude for claude: [risk/low] A deferral that fails drops `commit_pairs` and
@@ -561,8 +649,16 @@ impl ContainsHist {
         held: Result<bool>,
     ) -> Result<bool> {
         let Some(mark) = mark else { return held };
+        if let Some(index) = &mut self.defer_index {
+            match mark > DEFER_SCAN {
+                true => {
+                    index.sync(&self.deferring);
+                    index.truncate(mark)
+                }
+                false => self.defer_index = None,
+            }
+        }
         let deferred: SmallVec<[Deferred; 2]> = self.deferring.drain(mark..).collect();
-        self.deferred_as_of = None;
         let holds = match held {
             Ok(true) => self.meet_deferred(env, deferred),
             held => held,
@@ -6943,6 +7039,117 @@ mod tests {
         let array = Type::Array(Arc::new(Type::TVar(a.clone())));
         assert!(Type::TVar(a).contains(&env, &array).unwrap());
     }
+
+    /// `fn(x: (<s0>, <s1>, ..)) -> null ⊇ fn(x: (<t0>, <t1>, ..)) -> null`,
+    /// position `i` of each written by `s(i)` and `t(i)`.
+    fn tuple_signatures(
+        n: usize,
+        s: impl Fn(usize) -> String,
+        t: impl Fn(usize) -> String,
+    ) -> (Type, Type) {
+        let sig = |f: &dyn Fn(usize) -> String| {
+            let positions: Vec<String> = (0..n).map(f).collect();
+            parsed(&format!("fn(x: ({})) -> null", positions.join(", ")))
+        };
+        (sig(&s), sig(&t))
+    }
+
+    // Each `'a` waits for the end of the arguments and each `'c`, held by a
+    // function type, binds at once, between two of them: the deferral index
+    // follows the links cells make, so it indexes each waiting cell once.
+    #[test]
+    fn a_binding_between_waiting_cells_indexes_each_once() {
+        let env = Env::default();
+        for n in [100, 400] {
+            let (s, t) = tuple_signatures(
+                n,
+                |_| "i64, fn(q: i64) -> null".into(),
+                |i| format!("'a{i}, fn(q: 'c{i}) -> null"),
+            );
+            DEFER_INDEXED.with(|c| c.set(0));
+            assert!(s.contains(&env, &t).unwrap(), "n={n}");
+            let indexed = DEFER_INDEXED.with(|c| c.get());
+            assert!(indexed <= n, "n={n}: {indexed} cells indexed");
+            let bound: Vec<String> = (0..n)
+                .map(|i| format!("'a{i}: i64, fn(q: 'c{i}: i64) -> null"))
+                .collect();
+            let bound = format!("fn(x: ({})) -> null", bound.join(", "));
+            assert_eq!(format_with_flags(PrintFlag::DerefTVars, || t.to_string()), bound);
+        }
+    }
+
+    // What the index answers is what a scan of the deferred cells answers,
+    // where waiting cells merge with each other and with cells an inner
+    // function type's arguments wait for.
+    #[test]
+    fn the_deferral_index_answers_as_a_scan() {
+        let env = Env::default();
+        let shapes: [(&dyn Fn(usize) -> String, &dyn Fn(usize) -> String); 4] = [
+            (&|i| format!("'b{}, i64", i % 4), &|i| format!("'a{i}, 'a{}", (i + 3) % 20)),
+            (&|i| format!("'b{}, i64", i / 2), &|i| format!("'a{i}, 'a{}", 19 - i)),
+            (&|i| format!("i64, fn(q: 'd{}) -> null", i % 3), &|i| {
+                format!("'a{i}, fn(q: i64) -> null")
+            }),
+            (&|i| format!("'d{0}, fn(q: 'd{0}) -> null", i % 3), &|i| {
+                format!("'a{i}, fn(q: i64) -> null")
+            }),
+        ];
+        DEFER_AUDIT.with(|a| a.set(true));
+        for (s, t) in shapes {
+            let (s, t) = tuple_signatures(20, s, t);
+            DEFER_INDEXED.with(|c| c.set(0));
+            let _ = s.contains(&env, &t);
+            assert!(DEFER_INDEXED.with(|c| c.get()) > 0, "{s} ⊇ {t} indexed nothing");
+        }
+        DEFER_AUDIT.with(|a| a.set(false));
+    }
+
+    // Merges, a binding to a var, a binding replaced and a binding cleared
+    // move what cells stand for: the index keeps the first entry for each.
+    #[test]
+    fn the_deferral_index_follows_the_links_cells_make() {
+        let vars: Vec<TVar> = (0..12).map(|_| var("a")).collect();
+        let deferring: Vec<Deferred> = vars
+            .iter()
+            .map(|tv| Deferred {
+                tv: tv.clone(),
+                parts: SmallVec::new(),
+                choices: SmallVec::new(),
+            })
+            .collect();
+        let mut index = DeferIndex::new(&deferring);
+        let check = |index: &mut DeferIndex, upto: usize| {
+            index.sync(&deferring[..upto]);
+            assert_eq!(index.first_for.len(), upto);
+            for d in &deferring[..upto] {
+                let cell = d.tv.stands_for();
+                let scanned =
+                    deferring[..upto].iter().position(|e| e.tv.stands_for() == cell);
+                assert_eq!(index.first.get(&cell).copied(), scanned);
+            }
+            assert_eq!(index.first.len(), index.first_for.iter().flatten().count());
+        };
+        check(&mut index, 12);
+        vars[5].alias_cells(&vars[3]);
+        check(&mut index, 12);
+        vars[1].alias_cells(&vars[7]);
+        check(&mut index, 12);
+        vars[3].alias_cells(&var("outside"));
+        check(&mut index, 12);
+        vars[7].alias_cells(&vars[5]);
+        check(&mut index, 12);
+        vars[0].bind(Type::TVar(vars[9].clone()));
+        check(&mut index, 12);
+        vars[0].bind(prim(Typ::I64));
+        check(&mut index, 12);
+        vars[11].bind(Type::TVar(vars[10].clone()));
+        vars[11].unbind();
+        check(&mut index, 12);
+        index.truncate(6);
+        check(&mut index, 6);
+        vars[4].alias_cells(&vars[8]);
+        check(&mut index, 6);
+    }
 }
 
 /// The impl of `trait_id` for `t`, its head matched in the caller's walk
@@ -7018,4 +7225,6 @@ thread_local! {
     static CONTAINS_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NESTING_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HEAD_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DEFER_INDEXED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DEFER_AUDIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
