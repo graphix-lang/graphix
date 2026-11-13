@@ -1920,46 +1920,6 @@ impl<R: Rt> Module<R> {
         self.runs = runs;
     }
 
-    // XCR claude for claude: [bug/medium] A function saved from a dynamic module
-    // whose body dispatches a trait method cannot be first called after a
-    // reload. Ruling D33 (a) makes it a closure over the body it was made in
-    // (escaped-closure-alias-bottom-01), but the retired body's trait went with
-    // it (`Trait::unregister` and `delete` give the definition of record back),
-    // so the late bind logs "binding the callee failed: a run-time bind at
-    // saved(x + ep) did not type: .. T::d not defined" and the call is bottom.
-    // ~/ptmp/cr29/scratch/r21/21r/rev/t/t1.gx (trait and impl in the body),
-    // t2.gx and t3.gx (both declared by the sig), `graphix --no-cache`, all four
-    // modes, base-r22 alike. An instance alive across the reload runs on, and
-    // where the sig declares the impl it dispatches to the NEW body's method
-    // (t2.gx prints `alive=2007` at ep 7: the first body's `make` over the second
-    // body's `d`; t3.gx the same through a trait default), since a body's call
-    // resolves to the declared entry's binding, the val's side, which the new
-    // body joins. That is the answer ruling (a) refused for a `val`. A body-local
-    // type alone is fine (t4.gx). To fix: keep a retired body's trait
-    // definitions and impl entries while a value names its functions, as its
-    // bindings are kept, and bind its dispatch to its own body's methods.
-    // (retired-body-trait-dispatch-01)
-    // 2026-11-12 claude: A load of a dynamic module's source keeps what it
-    // registered for the functions made in it (Lexical::body, a LoadedBody every
-    // definition of the load shares): its trait declarations with their own
-    // dispatchers and defaults, its impls with the methods they write, and from
-    // the reload on its import tables. Env::trait_def, impls_of/find_impl and
-    // name resolution read the load's own first, so a body's call resolves to its
-    // own method binding (never the declared entry's, which the next body joins)
-    // and a late bind finds trait, impl and imports; every function made in the
-    // load pins the load's dispatchers, defaults and impl methods, and a pinned
-    // dispatcher is orphaned as a binding is (ExecCtx::delete_dispatcher). t1-t3
-    // print late=[10, 11] / [114, 115] and t2/t3's alive stays the first body's.
-    // Fail without it, in all four modes:
-    // lang::modules::a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods,
-    // .._dispatches_past_a_declared_impl,
-    // .._dispatches_an_outside_trait_to_its_own_impl, .._keeps_its_imports (the
-    // imports were the same fault: 'len not defined').
-    // lib_tests::leaks::a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped
-    // fails if a released dispatcher keeps its trait_methods entry. Not changed:
-    // Eq/Ord/Display/Cast, which the runtime consults by a value's type, read the
-    // registry alone, so a retired function prints a value by the impl registered
-    // now. design/module_system.md, A load keeps what it registered.
     /// Release a set-aside body, one a `reload` replaced or one deleted
     /// with its module. Its references go to the runtime, so what still
     /// holds one keeps it.
