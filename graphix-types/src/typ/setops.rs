@@ -905,6 +905,90 @@ fn rebuilt(
     })
 }
 
+/// The meets of one [`Type::meet_alternatives`] walk past
+/// [`NodePairs::EAGER`] steps, by the nodes the alternatives hold (a bound
+/// cell as the node it holds), each with the [`cell_writes`] it was made
+/// at: alternatives over shared nodes meet once while no cell is written,
+/// and the members rebuilt of them share what they met.
+struct Meets {
+    steps: u32,
+    found: Lazy<AHashMap<SmallVec<[NodeKey; 4]>, Meet>>,
+}
+
+/// A meet [`Meets`] keeps: each alternative's met type, `None` where the
+/// meet left it as it stands, kept with the nodes its key reads.
+struct Meet {
+    met: Option<SmallVec<[Option<Type>; 4]>>,
+    writes: u64,
+    _nodes: SmallVec<[Type; 4]>,
+}
+
+impl Meets {
+    fn new() -> Self {
+        Meets { steps: 0, found: Lazy::new() }
+    }
+
+    /// The key of the alternatives `ts` and the nodes it reads, once the
+    /// walk has grown past [`NodePairs::EAGER`]; `None` where one holds
+    /// no node.
+    fn key(
+        &mut self,
+        ts: &[&Type],
+    ) -> Option<(SmallVec<[NodeKey; 4]>, SmallVec<[Type; 4]>)> {
+        if self.steps < NodePairs::EAGER {
+            self.steps += 1;
+            return None;
+        }
+        if !memo_on() {
+            return None;
+        }
+        let mut key = SmallVec::new();
+        let mut nodes = SmallVec::new();
+        for t in ts {
+            let (k, n) =
+                t.with_deref(|t| t.and_then(|t| Some((t.node_key()?, t.clone()))))?;
+            key.push(k);
+            nodes.push(n);
+        }
+        Some((key, nodes))
+    }
+
+    /// The meet of `ts` found under `key` while no cell has been written
+    /// since: an alternative it left as it stands is the one in `ts`.
+    fn get(
+        &self,
+        key: &SmallVec<[NodeKey; 4]>,
+        ts: &[&Type],
+    ) -> Option<Option<LPooled<Vec<Type>>>> {
+        let m = self.found.get()?.get(key).filter(|m| m.writes == cell_writes())?;
+        Some(m.met.as_ref().map(|met| {
+            ts.iter()
+                .zip(met.iter())
+                .map(|(t, m)| m.as_ref().unwrap_or(*t).clone())
+                .collect()
+        }))
+    }
+
+    fn insert(
+        &mut self,
+        key: SmallVec<[NodeKey; 4]>,
+        nodes: SmallVec<[Type; 4]>,
+        ts: &[&Type],
+        met: Option<&LPooled<Vec<Type>>>,
+    ) {
+        let met = met.map(|met| {
+            ts.iter()
+                .zip(met.iter())
+                .map(|(t, m)| {
+                    (m.shared_identity() != t.shared_identity()).then(|| m.clone())
+                })
+                .collect()
+        });
+        let m = Meet { met, writes: cell_writes(), _nodes: nodes };
+        self.found.get_mut().insert(key, m);
+    }
+}
+
 /// The two-member union of `a` and `b`.
 fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
@@ -1168,7 +1252,7 @@ impl Type {
     }
 
     fn union_meeting(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
-        match Self::meet_alternatives(env, ts)? {
+        match Self::meet_alternatives(env, &mut Meets::new(), ts)? {
             None => Self::union_with(env, merge, ts),
             Some(met) => {
                 let met: LPooled<Vec<&Type>> = met.iter().collect();
@@ -1196,17 +1280,42 @@ impl Type {
     /// [`Self::meet_members`] over the members of `ts`, an alternative
     /// that is a union standing for its members ([`union_members`]), each
     /// union rebuilt of its met members: a call through the union may be
-    /// any member's. `None` when no member changes.
-    fn meet_alternatives(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+    /// any member's; alternatives over nodes `meets` has met take that
+    /// meet ([`Meets`]). `None` when no member changes.
+    fn meet_alternatives(
+        env: &Env,
+        meets: &mut Meets,
+        ts: &[&Type],
+    ) -> Result<Option<LPooled<Vec<Type>>>> {
+        #[cfg(test)]
+        MEET_STEPS.with(|n| n.set(n.get() + 1));
+        let Some((key, nodes)) = meets.key(ts) else {
+            return Self::meet_unions(env, meets, ts);
+        };
+        if let Some(met) = meets.get(&key, ts) {
+            return Ok(met);
+        }
+        let met = Self::meet_unions(env, meets, ts)?;
+        meets.insert(key, nodes, ts, met.as_ref());
+        Ok(met)
+    }
+
+    fn meet_unions(
+        env: &Env,
+        meets: &mut Meets,
+        ts: &[&Type],
+    ) -> Result<Option<LPooled<Vec<Type>>>> {
         ensure_sufficient(|| {
             if !ts.iter().any(|t| members_of(t).is_some()) {
-                return Self::meet_members(env, ts);
+                return Self::meet_members(env, meets, ts);
             }
             let mut flat: LPooled<Vec<Type>> = LPooled::take();
             let mut shape: LPooled<Vec<Option<usize>>> = LPooled::take();
             ts.iter().for_each(|t| union_members(t, &mut flat, &mut shape));
             let flat: LPooled<Vec<&Type>> = flat.iter().collect();
-            let Some(mut met) = Self::meet_members(env, &flat)? else { return Ok(None) };
+            let Some(mut met) = Self::meet_members(env, meets, &flat)? else {
+                return Ok(None);
+            };
             let (mut shape, mut met) = (shape.drain(..), met.drain(..));
             Ok(Some(ts.iter().map(|_| rebuilt(&mut shape, &mut met)).collect()))
         })
@@ -1215,19 +1324,23 @@ impl Type {
     /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
     /// of members one value may be ([`Type::shares_constructor`]), whose
     /// parts ([`part`]) pair by position. `None` when no member changes.
-    fn meet_members(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+    fn meet_members(
+        env: &Env,
+        meets: &mut Meets,
+        ts: &[&Type],
+    ) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns = Self::meet_open_fns(env, ts)?;
         let parts = match &fns {
             Some(met) => {
                 let met: LPooled<Vec<&Type>> = met.iter().collect();
-                Self::meet_parts(env, &met)?
+                Self::meet_parts(env, meets, &met)?
             }
-            None => Self::meet_parts(env, ts)?,
+            None => Self::meet_parts(env, meets, ts)?,
         };
         Ok(parts.or(fns))
     }
 
-    // CR claude for claude: [perf/medium] The meet of alternatives walks its members
+    // XCR claude for claude: [perf/medium] The meet of alternatives walks its members
     // once per path: meet_parts pairs the parts of the members of one shape and
     // recurses with no memory of the nodes it met there (it skips only a part that is
     // one node in every member), so two different DAGs that each share their parts
@@ -1251,10 +1364,32 @@ impl Type {
     // member; pin a step count and both source shapes at 40 links. probes:
     // ~/ptmp/cr29/scratch/r23/23d/awcp-rev/{f,h,e,c}{8,10,12,14}.gx (select and
     // or-name over composites, then over cells) (meet-parts-paths-01)
+    // 2026-11-13 claude: meet_alternatives now keeps each meet of its walk past
+    // NodePairs::EAGER steps in setops::Meets, keyed by the nodes the alternatives
+    // hold (a bound cell as the node it holds) and read back only while cell_writes()
+    // is what it was when made; an alternative the meet left as it stands is the
+    // caller's own on a hit. So a pair of nodes meets once, and the rebuilt members
+    // share what they met (99 nodes a member at 40 links, not a tree). --check of the
+    // probes on base-r24 vs this build (instructions:u, empty program 0.75G): f
+    // 0.80/1.01/3.29G at 8/10/12 links -> 0.75/0.77/0.76G, h 0.85/1.50/9.94G -> 0.76G
+    // each, e 0.80/0.96/2.31G -> 0.76/0.76/0.77G, c 0.84/1.28/5.80G -> 0.77G each; at
+    // 40 links 0.78/0.78/0.88/0.89G, and each runs to its exit under 1.0G. Without fns
+    // the meet walked every path too (nf20 7.31G, nh20 20.43G on base-r24), now
+    // 0.76/0.78G. Pins that fail without it:
+    // typ::setops::tests::the_meet_of_two_pair_dags_takes_each_pair_once (93 meets at
+    // 10 links; 4095 with the key never formed) and
+    // deep_nesting::meets_over_two_pair_dags_are_linear (both source shapes, over
+    // composites and through cells, at 40 links, 4G budget; killed at 4.0G without
+    // it). Census of both repos: no verdict or message changed. guicheck base-r24
+    // 39.56G/39.46G, this 39.56G/39.52G.
     /// The members of `ts` of one shape meet part by part
     /// ([`Self::meet_alternatives`]); a part that is one node in every
     /// member meets nothing. `None` when no member changes.
-    fn meet_parts(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+    fn meet_parts(
+        env: &Env,
+        meets: &mut Meets,
+        ts: &[&Type],
+    ) -> Result<Option<LPooled<Vec<Type>>>> {
         let members: SmallVec<[Option<Type>; 4]> = ts
             .iter()
             .map(|t| t.with_deref(|t| t.filter(|t| part_count(t) > 0).cloned()))
@@ -1288,7 +1423,7 @@ impl Type {
                     if one.is_some() && at.iter().all(|t| t.node_key() == one) {
                         continue;
                     }
-                    Self::meet_alternatives(env, &at)?
+                    Self::meet_alternatives(env, meets, &at)?
                 };
                 let Some(mut met) = met else { continue };
                 for (m, t) in rebuilt.iter_mut().zip(met.drain(..)) {
@@ -2138,12 +2273,13 @@ impl Held<'_> {
 thread_local! {
     pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DIFF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MEET_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static IDENTITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether diff, could_match and [`IdenticalMemo`] read their memos of
-/// pairs: a test compares their answers with the walks' without them.
+/// Whether diff, could_match, [`IdenticalMemo`] and [`Meets`] read their
+/// memos: a test compares their answers with the walks' without them.
 #[inline(always)]
 pub(super) fn memo_on() -> bool {
     #[cfg(test)]
@@ -2160,7 +2296,7 @@ pub(crate) mod tests {
         expr::{ModPath, TypeDefBody, parser::parse_type},
         format_with_flags,
         typ::{
-            Bound, NodePairs, TVar, Type,
+            Bound, NodeKey, NodePairs, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
             node_addr,
@@ -2170,7 +2306,7 @@ pub(crate) mod tests {
             },
         },
     };
-    use ahash::AHashMap;
+    use ahash::{AHashMap, AHashSet};
     use arcstr::literal;
     use netidx_value::Typ;
     use triomphe::Arc;
@@ -3345,6 +3481,73 @@ pub(crate) mod tests {
                 Identical::Renamed
             );
         }
+    }
+
+    /// `(fn(q: 'a) -> 'a, leaf)` under `n` links, each a pair of one node.
+    fn fn_pair_dag(n: usize, leaf: Type) -> Type {
+        let f = parse_type("fn(q: 'a) -> 'a").unwrap();
+        f.alias_tvars(&mut AHashMap::default());
+        let x0 = Type::Tuple(Arc::from_iter([f, leaf]));
+        (0..n).fold(x0, |x, _| Type::Tuple(Arc::from_iter([x.clone(), x])))
+    }
+
+    /// The meets the union of alternatives takes over two pair DAGs of
+    /// `n` links ([`fn_pair_dag`], over `i64` and over `Any`), and its
+    /// two members.
+    fn pair_dag_meet(n: usize, memo: bool) -> (usize, [Type; 2]) {
+        let x = fn_pair_dag(n, Type::Primitive(Typ::I64.into()));
+        let y = fn_pair_dag(n, Type::Any);
+        super::NO_MEMO.with(|m| m.set(!memo));
+        super::MEET_STEPS.with(|s| s.set(0));
+        let u = Type::union_of_alternatives(&Env::default(), &[&x, &y]).unwrap();
+        super::NO_MEMO.with(|m| m.set(false));
+        let Type::Set(ms) = &u else { panic!("two members: {u}") };
+        let [m0, m1] = &ms[..] else { panic!("two members: {u}") };
+        (super::MEET_STEPS.with(|s| s.get()), [m0.clone(), m1.clone()])
+    }
+
+    /// The nodes `t` holds, each once.
+    fn nodes(t: &Type, seen: &mut AHashSet<NodeKey>) {
+        if t.node_key().is_some_and(|k| seen.insert(k))
+            && let Type::Tuple(ps) = t
+        {
+            ps.iter().for_each(|p| nodes(p, seen))
+        }
+    }
+
+    /// The paths of `m0` and `m1` that end in one function node, the
+    /// meet of their alternatives' functions.
+    fn met_paths(m0: &Type, m1: &Type) -> usize {
+        match (m0, m1) {
+            (Type::Tuple(p0), Type::Tuple(p1)) => {
+                p0.iter().zip(p1.iter()).map(|(a, b)| met_paths(a, b)).sum()
+            }
+            (Type::Fn(_), Type::Fn(_)) => (m0.node_key() == m1.node_key()) as usize,
+            _ => 0,
+        }
+    }
+
+    // A select over two pair DAGs that each share their parts meets each
+    // pair of nodes once, with the answer the walk of every path gives,
+    // and each met member is a DAG as its alternative is.
+    #[test]
+    fn the_meet_of_two_pair_dags_takes_each_pair_once() {
+        for (n, steps) in [(10, 93), (20, 121), (40, 183)] {
+            assert_eq!(pair_dag_meet(n, true).0, steps, "{n} links");
+        }
+        let without = [4, 6, 8].map(|n| pair_dag_meet(n, false).0);
+        assert_eq!(without, [63, 255, 1023]);
+        let print = |m: &Type| format_with_flags(PrintFlag::DerefTVars, || m.to_string());
+        let ([w0, w1], [o0, o1]) = (pair_dag_meet(7, true).1, pair_dag_meet(7, false).1);
+        assert_eq!((print(&w0), print(&w1)), (print(&o0), print(&o1)));
+        assert_eq!((met_paths(&w0, &w1), met_paths(&o0, &o1)), (128, 128));
+        let [m0, m1] = pair_dag_meet(40, true).1;
+        let sizes = [m0, m1].map(|m| {
+            let mut seen = AHashSet::default();
+            nodes(&m, &mut seen);
+            seen.len()
+        });
+        assert_eq!(sizes, [99, 99]);
     }
 
     // A weld moves one function's cell into the other's; a var that shared

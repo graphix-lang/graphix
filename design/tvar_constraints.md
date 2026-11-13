@@ -899,7 +899,13 @@ the definition gates:
   optional lambdas (`[fn(..), null]`) two arms hold are one function, and
   a lambda beside an optional callback is the callback's instance (pins
   `lang::functions::select_of_optional_defaults_of_two_types`,
-  `lambda_beside_an_optional_callback` and their neighbours). Where one
+  `lambda_beside_an_optional_callback` and their neighbours). Parts over
+  nodes the walk has met, a bound cell read as the node it holds, take
+  that meet while no cell has been written since (`setops::Meets`), so
+  alternatives that share their parts meet once a node, not once a path,
+  and each met member shares its parts as its alternative does (pins
+  `typ::setops::tests::the_meet_of_two_pair_dags_takes_each_pair_once`,
+  `deep_nesting::meets_over_two_pair_dags_are_linear`). Where one
   member must hold a value (a union bound passing its parts down to the
   value's open cells, `contains::commit_parts`; a union formal judging a
   function's hidden defaults, `hidden_defaults_at`), it is the one member

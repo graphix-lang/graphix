@@ -1522,6 +1522,43 @@ fn select_chains_over_parts_shared_through_cells_are_linear() {
     }
 }
 
+/// A select over two pair DAGs, and an or-pattern's name over them, their
+/// parts shared as composites or through cells, check and run in time
+/// linear in their length: the meet of the alternatives meets each pair of
+/// the nodes they hold once, where once per path takes 2^links.
+#[test]
+#[cfg(target_os = "linux")]
+fn meets_over_two_pair_dags_are_linear() {
+    const LINKS: usize = 40;
+    let head = "let x: i64 = 1;\nlet y: Any = 1;\nlet b = true;\nlet tag: [`L, `R] = `L;\n\
+                let x0 = (|q| q, x);\nlet y0 = (|q| q, y);\n";
+    let composites = |i: usize| {
+        format!("let x{i} = (x{p}, x{p});\nlet y{i} = (y{p}, y{p});\n", p = i - 1)
+    };
+    let cells = |i: usize| {
+        format!(
+            "let x{i} = select (x{p}, x{p}) {{ v => v }};\n\
+             let y{i} = select (y{p}, y{p}) {{ v => v }};\n",
+            p = i - 1
+        )
+    };
+    let select = format!("let r = select b {{ true => x{LINKS}, false => y{LINKS} }};\n");
+    let or_name = format!(
+        "let r = select (tag, x{LINKS}, y{LINKS}) {{ (`L, a, _) | (`R, _, a) => 0 }};\n"
+    );
+    for link in [&composites as &dyn Fn(usize) -> String, &cells] {
+        for tail in [&select, &or_name] {
+            let program = chain(head, LINKS, link, tail);
+            checks_within(&format!("{program}0\n"), 4 * BILLION);
+            completes_within(
+                &["--no-cache"],
+                &format!("{program}sys::exit(0)\n"),
+                4 * BILLION,
+            )
+        }
+    }
+}
+
 /// A pair DAG named through a typedef builds in time linear in its depth:
 /// a call's argument checked against its formal compares and welds two
 /// equal DAGs, in different allocations, once per pair of nodes.
