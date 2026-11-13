@@ -12513,3 +12513,19 @@ run!(
     refused("unbound within Number & string does not contain i64");
     FuseExpect::None
 );
+
+// A wrapper that declares its callee's chain of bounds through a mutually
+// recursive typedef, called with an undecided argument at the chain's
+// first link: the argument takes the formal where it is met, and the
+// check returns.
+run!(
+    wrapper_of_bounds_through_a_recursive_typedef_takes_an_undecided_argument,
+    r#"{
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  let f = 'a0: Array<G<'a2, 'a1>>, 'a1: Array<G<'a3, 'a2>> |x0: 'a0, x1: 'a1| x0;
+  let h = 'b0: Array<G<'b2, 'b1>>, 'b1: Array<G<'b3, 'b2>> |y0: 'b0, y1: 'b1| f(y0, y1);
+  (h([], [`X(1)]), h([], []))
+}"#,
+    prints("[[], []]")
+);

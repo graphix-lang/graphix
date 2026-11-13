@@ -4433,31 +4433,6 @@ impl<R: Rt> CallSite<R> {
                     }
                 });
             } else {
-                // CR claude for claude: [bug/high] A check never returns, and takes memory until it
-                // is killed, where a wrapper that declares its callee's chain of bounds through a
-                // mutually recursive typedef is called with an undecided argument at the chain's
-                // first link: `type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)]; type H<'a, 'b> = [`X('b),
-                // `Y(G<'b, 'a>), `Z('a)]; let f = 'a0: Array<G<'a2, 'a1>>, 'a1: Array<G<'a3, 'a2>>
-                // |x0: 'a0, x1: 'a1| x0; let h = 'b0: Array<G<'b2, 'b1>>, 'b1: Array<G<'b3, 'b2>>
-                // |y0: 'b0, y1: 'b1| f(y0, y1); h([], [`X(1)])` under `--check` passes 6 G in
-                // seconds (exit 137), and so does `h([], [])`. The walk that does not come back is
-                // Type::holds, entered by the Type::holds_fn below over the call's formals once
-                // CallSite::check_waiting is done: a backtrace at its 300000th step is holds
-                // calling itself through Verdicts::search_once and for_each_child in every frame
-                // shown, under holds_fn, under CallSite::typecheck0 (hold1.stack). So a formal has
-                // come to hold itself, through a binding or a lower bound, and holds keeps no
-                // record of the cells it is inside; which cell, and what closed the cycle, was not
-                // established (GRAPHIX_DBG_BIND ends at `CHK-CONTAINS 'b1 >= Array<'_N> -> true`,
-                // the copies of 'b3 and 'a3 just before it). These check: the direct call `f([],
-                // [`X(1)])`, the wrapper with both arguments decided (`h([`X(2)], [`X(1)])`), with
-                // `never()` for `[]`, with the parameters in the other order (`|y1: 'b1, y0: 'b0|`
-                // called `h([`X(1)], [])`), and the chain over a typedef that is not recursive
-                // (`type Q<'x, 'y> = [`A('x), `B('y)]`). base-r23 alike, and
-                // bound-chain-conjunct-cells-01's fix does not change it: of 2688 generated wrapper
-                // programs (gen.py, seed 103) the nine wrapper forms of p00058 are killed this way
-                // on both sides. Found reviewing bound-chain-conjunct-cells-01. probes:
-                // ~/ptmp/cr29/scratch/r23/23b/bccrev/{hold1,hold2}.gx (killed),
-                // hold_ok_{direct,decided,never,reversed}.gx (check) (wrapper-undecided-holds-01)
                 let callbacks: SmallVec<[&Type; 4]> = ftype
                     .args
                     .iter()
