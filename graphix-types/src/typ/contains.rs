@@ -2291,43 +2291,6 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
-// XCR claude for claude: [perf/low] What is left of an instance's signature check over
-// a DAG of bounds through a union typedef is mostly this walk. Each call walks its pair
-// to the first difference, for two links' types a chain as long as the DAG is deep;
-// IdenticalMemo keeps agreements only, forgets them at every cell write, and keeps
-// nothing of a walk's first NodePairs::EAGER nodes. Over union-dag-build-exp-01's shape
-// (`'a{i}: P<'a{i+1}, 'a{i+2}>`, `type P<'x, 'y> = [Array<'x>, Array<'y>, null]`,
-// `|x: ('a0, 'a1)| 7` called with `never()`) Identity::same takes 0.76M / 2.97M / 8.59M
-// steps at 32 / 48 / 64 links against 0.20M / 0.47M / 1.02M containment steps, 41% of
-// the run at 64 (perf), and the run costs 1.63 / 2.77 / 5.80 G instructions (an empty
-// program 0.79 G): six times a doubling, where the other accepted link shapes are
-// flat. A verdict over two nodes that hold no cell cannot change, so one kept through
-// writes (RefHist::param_id is equal exactly for identical parameters; or a memo of
-// the pairs whose walk read no cell) would walk each pair once. A difference found at
-// a name whose resolution cell is empty may not be kept
-// (TypeRef::same_filled_definition). The other factor is place_in_order's trial on
-// copies at every link, each a walk with a memo of its own. probe:
-// ~/ptmp/cr29/scratch/r20/20g/udb/gen2.py N td (identical-linked-chain-01)
-// 2026-11-12 claude: IdenticalMemo now keeps, in a Settled map that no cell write
-// clears, the verdict (apart or identical) of each node pair whose walk read no cell:
-// no variable and no name whose resolution cell is open (Identity::read_cell; a pair
-// taken from the epoch memo counts as read). A question keys its pairs of applications
-// from its first step, its other pairs past NodePairs::EAGER as before, so the probe's
-// questions (each under 64 steps) are keyed. TypeRef::same_settled_definition reads
-// both cells once and is None where one is open. Pins in typ::setops::tests:
-// identical_memo_walks_each_pair_of_cell_free_links_once (475/1963/8011 steps at
-// 16/32/64 links; 2080/12955/92864 with the settled memo off, 1940/12143/89172 with
-// applications keyed only past EAGER),
-// identical_memo_keeps_no_difference_read_at_an_open_name and
-// identical_memo_keeps_nothing_built_on_an_agreement_over_cells (each fails without its
-// rule); identical_memo_forgets_at_a_cell_write and
-// identical_memo_keeps_no_pair_found_by_renaming fail without the variable rule. Probe
-// gen2.py N td, debug --no-cache run: 1.62/2.65/5.41 G instructions at 32/48/64 links
-// before, 1.52/2.07/3.53 G after (empty program 0.79 G); identity steps
-// 0.66M/2.45M/7.02M before, 0.35M/0.77M/1.64M after, against 0.20M/0.44M/0.92M
-// identical_linked calls; identical_linked was 42% of the 64-link run, now 10%. Not
-// touched: the calls themselves, the containment walk, and place_in_order's trials,
-// each with a memo of its own (the CR's other factor).
 /// Two types identical up to `Fn` equality whose cells can be welded.
 fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
     match hist.identical.identical(t0, t1) {
