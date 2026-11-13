@@ -6238,9 +6238,7 @@ run!(
     FuseExpect::None
 );
 
-// Under a written test a literal rules out no member for a bind: an
-// instance's scrutinee may be the member alone, and the kernel reads the
-// bind from it whatever the literal says.
+// Under a written test a literal rules out no member for a bind.
 run!(
     written_union_bind_beside_a_literal_holds_every_member_refused,
     r#"{
@@ -6264,7 +6262,7 @@ run!(
 );
 
 // An or-alternative's bind holds its part of every member the
-// alternative's shape admits: the kernel reads it from each of them.
+// alternative's shape admits.
 run!(
     slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out,
     r#"{
@@ -6278,7 +6276,7 @@ run!(
 );
 
 // An instance whose scrutinee is the one member a written test's literal
-// or tag rules out runs the arm's test over that member and misses.
+// or tag rules out misses the arm.
 run!(
     written_test_over_an_instance_its_structure_rules_out,
     r#"{
@@ -6298,6 +6296,58 @@ run!(
     ]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 0, 3, 0, 3, 0, 4, 0, 4, 0])
+);
+
+// An instance whose scrutinee is a member a written test's structure admits
+// no value of (a field it lacks, another width, in a slice's element or an
+// or-alternative too) runs no test of that arm: a struct pattern reads its
+// fields by index.
+run!(
+    written_test_over_an_instance_its_fields_rule_out,
+    r#"{
+    type S = [{a: string, b: f64}, {a: bool, c: f64}];
+    type W = [{a: string, b: f64}, {a: bool, b: f64, c: f64}];
+    type E = [{t: i64, w: i64}, {u: i64, v: i64}];
+    type L = [{t: i64, w: string}, {u: i64, v: string}];
+    let n = |h: [string, f64]| -> i64 select h { string as s => str::len(s), f64 as _ => 10 };
+    let a = 'a: S |x: 'a| -> i64 select x { S as {a: h, b: _} => str::len(h), _ => 0 };
+    let b = 'a: W |x: 'a| -> i64 select x { W as {a: h, b: _} => str::len(h), _ => 0 };
+    let c = 'a: E |x: Array<'a>| -> i64 select x { Array<E> as [{t: h, w: _}, ..] => h + 1, _ => 0 };
+    let d = 'a: L |x: Array<'a>| -> i64 select x { Array<L> as [{u: h, v: "a"}, ..] => h + 1, _ => 0 };
+    let e = 'a: E, 'b: E |x: ('a, 'b)| -> i64 select x { (E, E) as ({t: h, w: _}, _) => h + 1, _ => 0 };
+    let f = 'a: E |x: Array<'a>| -> i64 select x { Array<E> as [{t: h, w: _}, ..] | [_, {t: h, w: _}, ..] => h + 1, _ => 0 };
+    let g = 'a: E |x: Array<'a>| -> i64 select x { Array<E> as [{t: h, w: _} | {u: _, v: h}, ..] => h + 1, _ => 0 };
+    let k = 'a: W |x: Array<'a>| -> i64 select x { Array<W> as [{a: h, b: _} | {a: _, b: _, c: h}, ..] => n(h), _ => 0 };
+    [
+        a({a: "abc", b: 0.5}), a({a: true, c: 0.5}), b({a: "abc", b: 0.5}), b({a: true, b: 0.5, c: 0.5}),
+        c([{t: 3, w: 4}]), c([{u: 5, v: 6}]), d([{u: 3, v: "a"}]), d([{t: 5, w: "a"}]),
+        e(({t: 3, w: 4}, {t: 3, w: 4})), e(({u: 5, v: 6}, {t: 3, w: 4})),
+        f([{t: 3, w: 4}]), f([{u: 5, v: 6}, {u: 7, v: 8}]), g([{t: 3, w: 4}]), g([{u: 5, v: 6}]),
+        k([{a: "abc", b: 0.5}]), k([{a: true, b: 0.5, c: 0.5}])
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 7, 3, 10])
+);
+
+// A written test every value of the scrutinee passes tells no member from
+// another: a value read as the one tuple or struct the structure admits is
+// tested to be it.
+run!(
+    written_test_of_the_whole_union_reads_no_other_member_as_its_composite,
+    r#"{
+    type P = [(i64, i64), (f64, string)];
+    type Q = [(i64, i64), {a: f64, b: string}];
+    let n = |h: [i64, string]| -> i64 select h { i64 as i => i, string as s => str::len(s) + 100 };
+    let f = |x: P| -> i64 select x { P as (0, h) => n(h), _ => -1 };
+    let k = |x: Q| -> i64 select x { Q as (_, h) => h, _ => -1 };
+    let o = |x: P| -> i64 select x { P as (0, h) | (7, h) => n(h), _ => -1 };
+    let q = |x: Q| -> i64 select x { Q as (_, h) | {a: _, b: h} => n(h) };
+    [
+        f((0, 3)), f((0.5, "s")), f((0.0, "s")), f((1, 3)), k((0, 3)), k({a: 0.5, b: "s"}),
+        o((0, 3)), o((0.5, "s")), o((7, 4)), q((0, 3)), q({a: 0.5, b: "s"})
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, -1, -1, -1, 3, -1, 3, -1, 4, 3, 101])
 );
 
 // A pattern that takes apart an `Any` part is a run-time test of the
@@ -9101,8 +9151,7 @@ run!(
         let w: [i64, string] = 5;
         [u(`B(w)), u(`B((true, true))), u(`B(`A)), u(`C)]
     }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8]);
-    FuseExpect::None
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7, 8])
 );
 
 run!(
@@ -9129,8 +9178,7 @@ run!(
         let w: [i64, string] = 5;
         [u((true, w)), u((true, (true, true))), u((false, `A))]
     }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7]);
-    FuseExpect::None
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [9, 5, 7])
 );
 
 run!(
@@ -10435,8 +10483,7 @@ run!(
         };
         f((1, `A))
     }"#,
-    prints(r#""v""#);
-    FuseExpect::None
+    prints(r#""v""#)
 );
 
 // An inferred variable is described by its bound.

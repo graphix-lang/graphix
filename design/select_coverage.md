@@ -259,17 +259,19 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   checked again (`GRAPHIX_NO_SUBST`), whose scrutinee may be that one
   member, types its binds as its definition did. A literal rules out
   nothing there (`P as (0, h)` over `[(i64, i64), (f64, string)]` binds
-  `h: [i64, string]`): an instance's kernel emits an arm whose literal
-  its scrutinee never passes (`emit_select_arms` asks the type
-  predicate alone) and reads each bind from the scrutinee's own part,
-  which the bind's type must then hold. An inferred predicate meets no
-  such instance: a pattern that tests inside a declared variable is
-  written. An or-alternative's binds are ruled out by shape as well,
-  wherever it stands: the kernel emits each alternative against every
-  member its shape may pass (`may_pass`), so
+  `h: [i64, string]`). An or-alternative's binds are ruled out by shape
+  as well, wherever it stands, so
   `` [`V(h, "a") | {t: null, c: h}, ..] `` over
   `` Array<[`V(bool, string), {t: f64, c: f64}]> `` binds
-  `h: [bool, f64]`. A
+  `h: [bool, f64]`. A kernel reads a bind from the scrutinee's own part
+  and a struct's field by its index, so it emits no arm, or-alternative
+  or composite member whose structure admits no value of what it stands
+  over (`StructPatternNode::may_admit`: `admits` at every part, a
+  slice's elements included, each field at the index the pattern reads):
+  an instance's scrutinee may be one member of a written test's type,
+  one the test's structure rules out. A value read as the one composite
+  member a structure admits is tested to be that member wherever the
+  arm's own test passes every value (`emit_member_cond`). A
   slice inside a
   tuple, struct, variant or or-pattern takes those members from each
   reaching member's part at its position, so a name over the element of

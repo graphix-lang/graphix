@@ -825,7 +825,7 @@ fn emit_leaf_cond_inner(
             let alts = alts
                 .iter()
                 .map(|alt| {
-                    if !alt.may_pass(cx.ctx.type_env, typ) {
+                    if !alt.may_admit(cx.ctx.type_env, typ) {
                         return Ok(None);
                     }
                     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
@@ -937,7 +937,7 @@ fn composite_member(
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, typ, &mut members).ok()?;
     let mut found = members.iter().filter(|m| {
-        sp.may_pass(env, m) && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
+        sp.may_admit(env, m) && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
     });
     let member = found.next()?;
     match found.next() {
@@ -977,7 +977,7 @@ fn emit_value_leaf_cond(
     };
     let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
     let mut cond: Option<ClifValue> = None;
-    for alt in alts.iter().filter(|a| a.may_pass(cx.ctx.type_env, typ)) {
+    for alt in alts.iter().filter(|a| a.may_admit(cx.ctx.type_env, typ)) {
         let c = match is_composite_pattern(alt) {
             true => {
                 let (member, exact) = match &member {
@@ -1108,7 +1108,7 @@ pub(super) fn emit_select_arms<R: Rt>(
 ) -> Result<()> {
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
-    // CR claude for claude: [bug/high] An arm a written test's structure rules out at an
+    // XCR claude for claude: [bug/high] An arm a written test's structure rules out at an
     // instance is still emitted: `live` below asks the type predicate alone. The arm's
     // binds are read from the scrutinee's own parts and its body reads them at the types
     // the definition's check gave, and where the two differ in kind the kernel does not
@@ -1134,6 +1134,28 @@ pub(super) fn emit_select_arms<R: Rt>(
     // out by any test, as an inferred predicate does. probes:
     // ~/ptmp/cr29/scratch/r23/23d/sft-review/jit_struct_generic.gx, r27min.gx,
     // jit_lit_generic_i.gx, or_lit_dead_alt.gx (instance-arm-liveness-01)
+    // 2026-11-13 claude: A kernel emits no arm, or-alternative or composite member whose
+    // structure admits no value of what it stands over (StructPatternNode::may_admit:
+    // admits at every part, a slice's elements included, each struct field at the index
+    // the pattern reads; it replaces may_pass in emit_select_arms, emit_alt_match, or_arm,
+    // composite_member and the leaf or-alternatives). On base-r24 the struct probe and a
+    // struct of another width panicked, and a struct pattern in a slice's element, beside
+    // a tuple's other part or in a slice or-alternative over an instance of other fields
+    // read the fields by index and took the arm (6 for 0): pin
+    // lang::select::written_test_over_an_instance_its_fields_rule_out fails without the
+    // fix (jit, jit_par). With members now ruled out by a literal, a trivial written test
+    // (the scrutinee's whole union) read any value as the one tuple the structure admits;
+    // base did so already where the shape alone left one (a struct read as a tuple, 0 for
+    // -1): emit_member_cond now tests that member, pin
+    // written_test_of_the_whole_union_reads_no_other_member_as_its_composite (fails
+    // without). Three pins that de-fused over a dead arm or a member of no shape now fuse
+    // (FuseExpect::None dropped). NOT closed here: under GRAPHIX_NO_SUBST=1 the r27min
+    // program still panics at g(`V(true)) alone, base alike: that arm is live, and its
+    // bind is laid out by the frozen predicate's `V([bool, i64]) where the instance's own
+    // check types it bool, which is written-test-bind-kind-01 (probes r27v.gx, ns_*.gx).
+    // The literal exception for binds stands as it was (written-literal-narrowing-01).
+    // Differential: ~/ptmp/cr29/scratch/r24/24a/dgen.py, 1653 programs, lane fused equal
+    // to the node-walk on every one. probes: ~/ptmp/cr29/scratch/r24/24a/
     let n = sel.arms.len();
     // an arm no value of this scrutinee passes is never taken, and its
     // pattern need not fit the scrutinee's layout: an instance's scrutinee
@@ -1142,9 +1164,10 @@ pub(super) fn emit_select_arms<R: Rt>(
         .arms
         .iter()
         .map(|(pat, _)| {
-            resolve_node_typ(cx.ctx, &pat.type_predicate)
-                .could_pass(cx.ctx.type_env, scrut_typ)
-                .unwrap_or(true)
+            let env = cx.ctx.type_env;
+            let pred = resolve_node_typ(cx.ctx, &pat.type_predicate);
+            pred.could_pass(env, scrut_typ).unwrap_or(true)
+                && pat.structure_predicate.may_admit(env, scrut_typ)
         })
         .collect();
     let Some(last) = live.iter().rposition(|l| *l) else {
@@ -2390,6 +2413,18 @@ fn emit_structure_cond(
 // ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/review/r3.gx, r2_g.gx.
 // A predicate with no frozen form (emit_member_cond's member path) lays its binds out by
 // the member's own parts and does not reach this.
+// 2026-11-13 claude: (fixing instance-arm-liveness-01) A third shape, with a live arm
+// and no ⊥, under GRAPHIX_NO_SUBST=1 alone: an instance checked again narrows a bind to
+// its own member's part while the kernel lays it out by the frozen predicate's. `'a:
+// [`V(bool), `W(i64), `V(i64)] |x: 'a| select x { [`V(bool), `W(i64), `V(i64)] as `V(h)
+// => `H(h), _ => `N }` at g(`V(true)) panics in the link, "arg 1 has type i64, expected
+// i8": the predicate freezes to `V([bool, i64]) and h is bool. So do a payload that is a
+// union (`W(h) over `W([f64, bool, `A]) at an instance of one member) and `{ let u = h;
+// .. }` over such a bind (cranelift's "declared type of variable doesn't match"). About
+// 1 generated program in 250 (dgen.py, lane_ns column); none without GRAPHIX_NO_SUBST,
+// where the bind keeps its definition's union. probes:
+// ~/ptmp/cr29/scratch/r24/24a/r27v.gx, ns_plain_r353.gx, ns_or_r424.gx,
+// ns_union_part_r240.gx
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:
@@ -2404,7 +2439,8 @@ fn emit_structure_cond(
 /// the one composite member of the scrutinee it may pass; a written one
 /// passes it by its type alone and holds the whole of it, so its binds
 /// have the member's types. `None` where the scrutinee is no such value or
-/// the member no composite.
+/// the member no composite. The one member a structure admits is tested
+/// to be it where the predicate's own test passes every value.
 fn emit_member_cond(
     cx: &mut BodyCx,
     sp: &StructPatternNode,
@@ -2454,6 +2490,15 @@ fn emit_member_cond(
                     emit_inferred_guard_cond(cx, pred_typ, scrut, scrut_typ)?;
                 let test = match test {
                     Some(test) => test,
+                    // a test every value passes tells this member's values
+                    // from no other's
+                    None if unique => {
+                        let t = cx.interned_type(&pred)?;
+                        let args = [disc, payload, t];
+                        let call =
+                            cx.call_helper("graphix_inferred_type_matches", &args)?;
+                        cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0)
+                    }
                     None => is_untainted(cx.b, disc),
                 };
                 (test, pred, exact || unique)
@@ -2587,7 +2632,7 @@ fn or_arm<R: Rt>(
         .iter()
         .map(|a| {
             let held: SmallVec<[Type; 4]> =
-                members.iter().filter(|m| a.may_pass(env, m)).cloned().collect();
+                members.iter().filter(|m| a.may_admit(env, m)).cloned().collect();
             match &held[..] {
                 [] => pred.clone(),
                 [m] => m.clone(),
@@ -2601,8 +2646,8 @@ fn or_arm<R: Rt>(
 
 /// Alternative `k`'s [`AltMatch`]: it tests against its type in `arm`,
 /// with `arm`'s written test. `None` where no value of the scrutinee
-/// passes that type: its pattern need not fit the scrutinee's layout, as
-/// a whole arm's need not in [`emit_select_arms`].
+/// passes that type or the alternative: its pattern need not fit the
+/// scrutinee's layout, as a whole arm's need not in [`emit_select_arms`].
 fn emit_alt_match(
     cx: &mut BodyCx,
     alts: &[StructPatternNode],
@@ -2613,9 +2658,9 @@ fn emit_alt_match(
     scrut_typ: &Type,
 ) -> Result<Option<AltMatch>> {
     let at = arm.alt_types.as_deref().map_or(pred_typ, |ts| &ts[k]);
-    if !resolve_node_typ(cx.ctx, at)
-        .could_pass(cx.ctx.type_env, scrut_typ)
-        .unwrap_or(true)
+    let env = cx.ctx.type_env;
+    if !resolve_node_typ(cx.ctx, at).could_pass(env, scrut_typ).unwrap_or(true)
+        || !alts[k].may_admit(env, scrut_typ)
     {
         return Ok(None);
     }

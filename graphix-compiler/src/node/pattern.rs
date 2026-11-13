@@ -292,10 +292,26 @@ pub(super) enum RuledOut {
     /// literal's included: an inferred predicate's arm meets every member
     /// of its scrutinee.
     ByAnyTest,
-    /// A type the pattern's shape rules out, in a union or alone: a kernel
-    /// reads a bind from every member whose shape passes, whatever a
-    /// literal says of it. So under a written test, where an instance's
-    /// scrutinee may be one member alone, and in an or-alternative.
+    // CR claude for claude: [structure/low] Nothing needs this rule any more. It
+    // was the kernel's: an arm, an or-alternative and a composite member were emitted
+    // wherever the shape passed, so a bind's type had to hold every such member's part.
+    // A kernel now emits none of them where the pattern admits no value
+    // (StructPatternNode::may_admit, the judgment ByAnyTest types binds by, literals
+    // included), so a written test and an or-alternative could narrow a bind by a
+    // literal as an inferred predicate does, and RuledOut would go. What it takes: the
+    // checker's two rules agree on a type that is no union (ByAnyTest skips only a
+    // union's members; ByShape rules a lone type out too, which an instance checked
+    // again relies on); hold_slice_members' or-alternative case; the pins
+    // lang::select::written_union_bind_beside_a_literal_holds_every_member_refused and
+    // slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out, the two
+    // `cases` lines of the graphix-lang skill and design/select_coverage.md, which
+    // state the exception; and a census, since a narrower bind makes an arm over the
+    // part it lost dead. A differential that judges a bind's static type against every
+    // value it takes, both engines: ~/ptmp/cr29/scratch/r23/23d/sft-review/rgen.py,
+    // and for instances ~/ptmp/cr29/scratch/r24/24a/dgen.py (written-literal-narrowing-01)
+    /// A type the pattern's shape rules out, in a union or alone, whatever
+    /// a literal says of it: under a written test and in an
+    /// or-alternative.
     ByShape,
 }
 
@@ -1417,6 +1433,43 @@ impl StructPatternNode {
             Some(fp) => fp.could_match(env, typ),
             None => Ok(false),
         }
+    }
+
+    /// Whether a value of `typ` may pass this pattern's structure test:
+    /// [`Self::admits`], which types the binds, here and at every part
+    /// below, a slice's elements included, each struct field at the index
+    /// the test reads it. A type this cannot judge may, and so may a
+    /// pattern that takes an abstract apart, which no kernel lowers. A
+    /// kernel emits no arm, alternative or member this rules out.
+    pub(crate) fn may_admit(&self, env: &Env, typ: &Type) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            if self.holds_abstract() {
+                return true;
+            }
+            if let Self::Or { alts } = self {
+                return alts.iter().any(|a| a.may_admit(env, typ));
+            }
+            let admitted = match self.footprint(env, typ, false) {
+                Some(fp) => fp.could_pass(env, typ).unwrap_or(true),
+                None => false,
+            };
+            let children = self.children();
+            if !admitted || children.is_empty() || !decided_head(env, typ) {
+                return admitted;
+            }
+            let read_at = |k: usize, at: usize| match self {
+                Self::Struct { binds, .. } => binds[k].1 == at,
+                _ => true,
+            };
+            let members = self.member_parts(env, typ, false);
+            members.is_empty()
+                || members.iter().any(|(_, ts)| {
+                    children.iter().zip(ts).enumerate().all(|(k, (c, t))| {
+                        t.as_ref()
+                            .is_some_and(|(t, at)| read_at(k, *at) && c.may_admit(env, t))
+                    })
+                })
+        })
     }
 
     /// Under an inferred predicate each element of an array or list slice
@@ -2618,40 +2671,6 @@ impl StructPatternNode {
             .into_iter()
             .zip(ts)
             .all(|(c, t)| t.is_some_and(|(t, _)| c.covers(env, &t, sub)))
-    }
-
-    /// Whether a value of `typ` may pass this structure, by shape alone:
-    /// false only where no member of `typ` has a constructor, tag, arity
-    /// or field the structure tests, here or below.
-    pub(crate) fn may_pass(&self, env: &Env, typ: &Type) -> bool {
-        crate::stack::ensure_sufficient(|| {
-            let Some(t) = expand(env, typ) else { return true };
-            match (self, &t) {
-                (Self::Or { alts }, _) => alts.iter().any(|a| a.may_pass(env, &t)),
-                (
-                    Self::Ignore
-                    | Self::Literal(_)
-                    | Self::Bind(_)
-                    | Self::Abstract { .. },
-                    _,
-                ) => true,
-                (_, Type::Set(ms)) => ms.iter().any(|m| self.may_pass(env, m)),
-                (
-                    _,
-                    Type::Tuple(_)
-                    | Type::Variant(..)
-                    | Type::Struct(_)
-                    | Type::Array(_)
-                    | Type::List(_),
-                ) => self.child_types(env, &t, false).is_some_and(|ts| {
-                    self.children()
-                        .into_iter()
-                        .zip(ts)
-                        .all(|(c, t)| t.is_some_and(|(t, _)| c.may_pass(env, &t)))
-                }),
-                _ => true,
-            }
-        })
     }
 
     /// Whether an abstract pattern is in this one.
