@@ -849,7 +849,11 @@ the definition gates:
   which the choice below judges. And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its
-  arms (`Type::union_of_alternatives`): a member's generic cells meet
+  arms (`Type::union_of_alternatives`), and so does a name the
+  alternatives of an or-pattern share, or a whole capture, over its part
+  of each member its arm matches (`PatternNode::wholes_by_member`, pins
+  `lang::select::or_name_meets_its_functions`,
+  `or_name_judges_every_default`): a member's generic cells meet
   through a copy, and its live cells bind, so a lambda literal in an arm
   is the instance the call through the union makes. Members one value
   may be (`Type::shares_constructor`: arrays, lists, maps, references
@@ -2481,9 +2485,9 @@ references name the target is told the recursive type alone
   `setops::union_collapses`; any other flattening keeps them two members,
   `normalize::Members`; a written union tells variables by name,
   `Type::flatten_written`;
-  a field read of a union and a select's arms meet their function
-  members, through a copy of a member's generic cells, binding its live
-  ones, `Type::union_of_alternatives`); a merge takes the
+  a field read of a union, a select's arms and an or-pattern's name meet
+  their function members, through a copy of a member's generic cells,
+  binding its live ones, `Type::union_of_alternatives`); a merge takes the
   lower of its two cells' levels, a generic survivor included
   (`TVar::merge_one`), so a relation against a scheme instantiates it first
   (`callsite::checked_default`, `Impl::build_prototypes`); in a union checked against

@@ -647,6 +647,8 @@ The rules are the orthodox ones:
 - **Same binds.** Every alternative must bind exactly the same names, and a
   name's type is the union of its types in the alternatives:
   `` `A(n) | `B(n) `` over `` [`A(i64), `B(string)] `` binds `n: [i64, string]`.
+  Functions bound under one name are one function type where their
+  signatures agree, so the name can be called.
   `(0, y) | (y, 0)` is fine over `(i64, i64)`; `1 | x` is refused (the second
   alternative binds `x`, the first binds nothing).
 - **One guard per arm.** A guard written after the alternation covers the

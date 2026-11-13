@@ -291,7 +291,13 @@ Array<fn(?#d: [i64, string], x: i64) -> i64> = ..`; a direct call of a
 named member judges its own). The members of a union meet the same way:
 optional lambdas (`[fn(..), null]`) that one select or array joins are one
 function, and a lambda beside an optional callback (`select b { true =>
-cb, false => |x| x + 1 }`) is the callback's type. A
+cb, false => |x| x + 1 }`) is the callback's type. A name an or-pattern's
+alternatives share, and a field read over two struct shapes, are one
+function the same way where the signatures agree, and the open lambda is
+that function from there on (`|x| x` beside `|y| y + 1` takes `i64`),
+called or not; a call through the name judges each one's labeled
+defaults as a call through an array's element does, and where the
+signatures do not agree it is refused, naming both. A
 `seq` step or a `seqq` request reads `s` as generically as a `let` of
 it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
 A `let` nothing writes or annotates reads `s` once in its value,
@@ -305,6 +311,10 @@ no "i64 does not contain string" let fs = [|#d = 1, x: i64| x, |#d = "q", x: i64
 no "the functions met here share one #d" let j = 0; let o1 = select j { 0 => |#d = 1, x: i64| x, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64| x, _ => null }; let a = [o1, o2]; select a[1]$ { null as _ => 0, f => f(7) }
 ok let j = 0; let o1 = select j { 0 => |#d = 1, x: i64| x, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64| x, _ => null }; let a: Array<[fn(?#d: [i64, string], x: i64) -> i64, null]> = [o1, o2]; select a[1]$ { null as _ => 0, f => f(7) }
 ok let g = |cb: [fn(x: i64) -> i64, null], b: bool| { let h = select b { true => cb, false => |x| x + 1 }; select h { null as _ => 0, f => f(2) } }; g(null, false)
+ok let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
+no "i64 does not contain string" let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r("s") }
+no "a call takes one function type" let b = true; let t = select b { true => `A(|x: string| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
+no "the functions met here share one #d" let b = true; let t = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
 ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
 ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
 ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)

@@ -5005,7 +5005,7 @@ impl Type {
                 if p.is_empty() {
                     continue;
                 }
-                // CR claude for claude: [bug/low] An or-arm's name over members of
+                // XCR claude for claude: [bug/low] An or-arm's name over members of
                 // two shapes whose functions differ only in how far they are decided
                 // is a union of two functions, and a call through it is refused:
                 // `let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1,
@@ -5026,6 +5026,22 @@ impl Type {
                 // members and an annotation that passes (m2.gx), so what stands here
                 // is whether the or-arm should meet its function members as the field
                 // read does.
+                // 2026-11-12 claude: A name the alternatives of an or-pattern share
+                // is typed where a whole capture is, PatternNode::wholes_by_member
+                // (this join types an alternative's own cell, which no two members
+                // reach here), and that join now meets its function parts as a field
+                // read does (Type::union_exact_of_alternatives): m3.gx prints (2, 3),
+                // and the met function keeps every definition, so a call omitting a
+                // label judges each default, where base-r23 passed the check and
+                // failed the run-time bind (`A(|#d = 1, x: i64| x) beside `B(|#d =
+                // "q", x: i64| x + 1), r(7)). An unused or-name now decides an open
+                // lambda as an unused field read does. Pins
+                // lang::select::or_name_meets_its_functions,
+                // or_name_is_its_met_function and or_name_judges_every_default, and
+                // three cases lines in the skill's generics.md, fail with the fix
+                // undone; or_name_holds_the_functions_that_do_not_meet bounds it. The
+                // order an open function meets two members in is
+                // fn-meet-first-member-01. probes: ~/ptmp/cr29/scratch/r23/23d/obfm/
                 let joined = Type::union_exact(env, &p)?;
                 if joined.contains_ordered(env, &cell)? && c.binding().is_none() {
                     joined.open_over_any(env, &cell)?

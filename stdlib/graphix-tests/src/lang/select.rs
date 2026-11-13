@@ -4834,6 +4834,73 @@ run!(or_binds_union, OR_BINDS_UNION, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
+// A name is called through one function type, so the functions it binds
+// over the members and alternatives it stands in meet, as a field read's
+// do: the open one is the instance the call makes, a generic one a copy.
+run!(
+    or_name_meets_its_functions,
+    r#"{
+        let id = |x| x;
+        let k = |b: bool| {
+            let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") };
+            let u = select b { true => (|x| x, 1), false => (|y| y + 1, "s", 0) };
+            let s = select b { true => {f: |x| x, n: 1}, false => {f: |y| y + 1, m: "s"} };
+            let g = select b { true => `A(id, 1), false => `B(|y| y + 1, "s") };
+            let es = [`A(|x| x), `B(|y| y + 1)];
+            let tags = select t { `A(r, n) | `B(r, n) => r(2) };
+            let arities = select u { (r, _) | (r, _, _) => r(3) };
+            let fields = select s { {f, n: _} | {f, m: _} => f(4) };
+            let element = select es { [`A(r) | `B(r), ..] => r(5), _ => 0 };
+            let literal = select t { `A(r, 1) | `B(r, _) => r(6), `A(r, _) => r(7) };
+            let generic = select g { `A(r, _) | `B(r, _) => r(8) };
+            [tags, arities, fields, element, literal, generic, str::len(id("ab"))]
+        };
+        array::concat(k(true), k(false))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [2, 3, 4, 5, 6, 8, 2, 3, 4, 5, 5, 7, 9, 2]);
+    FuseExpect::Jit
+);
+
+run!(
+    or_name_is_its_met_function,
+    r#"{
+        let k = |b: bool| {
+            let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") };
+            select t { `A(r, n) | `B(r, n) => r("s") }
+        };
+        k(true)
+    }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    or_name_judges_every_default,
+    r#"{
+        let k = |b: bool| {
+            let t = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x + 1) };
+            select t { `A(r) | `B(r) => r(7) }
+        };
+        k(false)
+    }"#,
+    refused("the functions met here share one #d");
+    FuseExpect::None
+);
+
+run!(
+    or_name_holds_the_functions_that_do_not_meet,
+    r#"{
+        let k = |b: bool| {
+            let t = select b { true => `A(|x: string| x, 1), false => `B(|y| y + 1, "s") };
+            select t { `A(r, n) | `B(r, n) => r(2) }
+        };
+        k(true)
+    }"#,
+    refused("this callee is one of fn(x: string) -> string and fn(y: i64) -> i64");
+    FuseExpect::None
+);
+
 // A wake keeps a `<-` target's last write but recomputes the target's
 // destructured siblings.
 const WAKE_RECOMPUTES_A_TARGETS_SIBLINGS: &str = r#"

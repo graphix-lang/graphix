@@ -1066,11 +1066,24 @@ impl Type {
     /// select must accept alike: function members meet first, and so do
     /// those in the members' parts ([`Self::meet_alternatives`]).
     pub fn union_of_alternatives(env: &Env, ts: &[&Type]) -> Result<Self> {
+        Self::union_meeting(env, Merge::Supertype, ts)
+    }
+
+    /// The union of the parts `ts` one name of a pattern takes from the
+    /// members and alternatives that bind it, admitting nothing none of
+    /// them admits: a call through the name must accept each alike, so
+    /// they meet as a select's alternatives do
+    /// ([`Self::union_of_alternatives`]).
+    pub fn union_exact_of_alternatives(env: &Env, ts: &[&Type]) -> Result<Self> {
+        Self::union_meeting(env, Merge::Exact, ts)
+    }
+
+    fn union_meeting(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
         match Self::meet_alternatives(env, ts)? {
-            None => Self::union(env, ts),
+            None => Self::union_with(env, merge, ts),
             Some(met) => {
                 let met: LPooled<Vec<&Type>> = met.iter().collect();
-                Self::union(env, &met)
+                Self::union_with(env, merge, &met)
             }
         }
     }
@@ -1188,6 +1201,19 @@ impl Type {
         Ok(out)
     }
 
+    // CR claude for claude: [bug/low] An open function that meets two members that do
+    // not meet each other takes the first, so the order of a union's members decides
+    // a lambda's type. Over `let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y
+    // + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; let u = t.f; select t { {f, a: _} =>
+    // f("s"), _ => "no" }` the read `t.f` makes `|x| x` the `i64` function and the
+    // call is refused, "i64 does not contain string"; with the field names `b` and
+    // `c` exchanged it meets `|z| "[z]!"` first and the program prints "s". An
+    // or-arm's name does the same by the order of its scrutinee's members (`A(r) |
+    // `B(r) | `C(r)` over `A(|x| x)`, `B(|y| y + 1)`, `C(|z| "[z]!")`, against the
+    // same with the tags `B` and `C` exchanged). The rule for a type two undecided
+    // members could take is that it goes to neither (contains.rs::AmbiguousMember).
+    // Same on base-r23 for the field read. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/obfm/{o1,o2,o3,o5}.gx (fn-meet-first-member-01)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh

@@ -318,6 +318,14 @@ struct PayloadReps<'a> {
     over_any: bool,
 }
 
+// CR claude for claude: [bug/low] A call through a name or-alternatives share over
+// a scrutinee not yet decided is refused naming no annotation: `let h = |u| select u
+// { `A(r, n) | `B(r, n) => r(2) }; h(`A(|x| x, 1))` says "expected fn not ['_N:
+// unbound, '_M: unbound]", the name being the union of the alternatives' two open
+// cells, where the separate arms (`A(r, n) => r(2), `B(r, n) => r(2)) say "reading
+// a fn needs its type known here: annotate the binding". Annotating `u` passes. Same
+// on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/obfm/{a29c,a29d}.gx
+// (or-name-open-parts-call-01)
 /// `leaves` gathered over several members or alternatives, each name
 /// once, at the union of its types.
 fn merge_leaves(
@@ -2815,6 +2823,8 @@ impl<R: Rt> PatternNode<R> {
     /// each of `members`, the members of a union reaching the arm that its
     /// predicate can match: each member stands at the pattern's position
     /// whole, its unions distributed at each constructor the pattern tests.
+    /// A call through the name accepts each part alike, so their functions
+    /// meet ([`Type::union_exact_of_alternatives`]).
     fn wholes_by_member(
         &self,
         env: &Env,
@@ -2842,7 +2852,7 @@ impl<R: Rt> PatternNode<R> {
         for l in leaves.iter_mut().filter(|l| l.fresh) {
             if let Some(ts) = parts.get(&l.id) {
                 let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
-                l.typ = Type::union_exact(env, &ts)?;
+                l.typ = Type::union_exact_of_alternatives(env, &ts)?;
             }
         }
         Ok(())
