@@ -6370,6 +6370,62 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 1, 10, 1, 0, 1, 9, 20, 0])
 );
 
+// A bind under a written test is laid out by the test's type and typed by
+// the values that reach it: a read of it has the form of its own type, and
+// owns what a read of that type owns.
+run!(
+    written_test_bind_reads_in_the_form_of_its_own_type,
+    r#"{
+    type S = [Array<string>, i64];
+    type P = [(i64, string), (f64, i64)];
+    let n = |h: [string, i64]| -> i64 select h { string as s => str::len(s), i64 as i => i };
+    let a = |v: S| -> i64 #[native] select v { Array<['b, null]> as [x, ..] => str::len(x), _ => 0 };
+    let b = |v: S| -> i64 #[native] select v { Array<[string, null]> as [x, ..] => str::len(x), _ => 0 };
+    let c = |v: [Array<'a>, i64]| -> i64 select v { Array<[string, null]> as [x, ..] => select x { null as _ => 1, _ => 2 }, _ => 0 };
+    let f = |v: [Array<Array<i64>>, i64]| -> i64 #[native] select v { Array<[Array<i64>, null]> as [x, ..] => array::len(x) + array::len([x, x]), _ => 0 };
+    let g = |v: S| -> i64 #[native] select v {
+        Array<[string, null]> as [x, ..] if str::len(x) > 2 => 1,
+        Array<[string, null]> as [x, y, ..] if str::len(y) > 2 => 2,
+        _ => 0
+    };
+    let h = |v: S| -> i64 #[native] select v { Array<[string, null]> as [x, ..] => { let u = x; str::len("[x]-[u]") + array::len([x, u]) }, _ => 0 };
+    let k = |v: S| -> i64 #[native] select v { Array<[string, null]> as [x, ..] => array::fold([1, 2], 0, |acc, y| acc + str::len(x) + y), _ => 0 };
+    let m = |v: P| -> i64 #[native] select v { P as (0, s) => { let u = s; n(s) + n(u) }, _ => -1 };
+    [
+        a(["abc"]), a(1), a([]), b(["abc"]), b(1), b([]), c(["abc"]), c(1), c([]),
+        f([[1, 2, 3]]), f(1), f([]), g(["abc"]), g(["a", "bcd"]), g(["a"]), g(1),
+        h(["abc"]), h(1), k(["abc"]), k(1), m((0, "abc")), m((1, "abc")), m((0.5, 7))
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [
+        3, 0, 0, 3, 0, 0, 2, 0, 0, 5, 0, 0, 1, 2, 0, 0, 9, 0, 9, 0, 6, -1, -1
+    ])
+);
+
+// A scalar bind a written test lays out as a value is read as its scalar,
+// by the arm and by a function the arm calls that captures it.
+run!(
+    written_test_scalar_bind_reads_as_its_scalar,
+    r#"{
+    type B = [Array<bool>, i64];
+    let d = |v: B| -> i64 #[native] select v { Array<[bool, null]> as [x, ..] => select x { true => 1, false => 2 }, _ => 0 };
+    let e = |v: [Array<f32>, i64]| -> i64 #[native] select v { Array<[f32, null]> as [x, y, ..] => select x + y > f32:3. { true => 1, false => 2 }, _ => 0 };
+    let j = |v: B| -> i64 #[native] select v {
+        Array<[bool, null]> as [x, ..] => {
+            let rec r = |n: i64| -> i64 select n { 0 => select x { true => 10, false => 20 }, n => r(n - 1) + 1 };
+            r(3)
+        },
+        _ => 0
+    };
+    let q = |v: [Array<f64>, i64]| -> f64 #[native] select v { Array<[f64, null]> as [x, ..] => array::fold([1., 2.], 0., |acc, y| acc + x * y), _ => 0. };
+    [
+        d([true]), d([false]), d(1), e([f32:1.5, f32:2.25]), e([f32:1., f32:1.]), e(1),
+        j([true]), j([false]), j(1), cast<i64>(q([1.5]))$, cast<i64>(q(1))$
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 0, 1, 2, 0, 13, 23, 0, 4, 0])
+);
+
 // A pattern that takes apart an `Any` part is a run-time test of the
 // types its arm decides there: no value of another type reaches the arm.
 run!(

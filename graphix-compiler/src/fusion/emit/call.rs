@@ -35,7 +35,7 @@ use super::{
         CtxWord, KernelFns, LowerCtx, SiteLayout, StateWord, TruncAnchor, TruncLeaf,
         TruncRec,
     },
-    nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
+    nodes::{call_result_needs_value_widening, emit_bottom_placeholder, read_local_as},
     record::KernelConst,
     scalar::{cast_u64_to_prim, prim_to_clif},
 };
@@ -759,8 +759,8 @@ fn marshal_args<R: Rt>(
                             c.name
                         )
                     })?;
-                let payload = cx.env.locals[index].words.payload;
-                CompiledExpr::new(cx.read_disc(index), cx.b.use_var(payload))
+                let slot = kernel_abi::abi_kind(&c.typ).and_then(LocalKind::of);
+                read_local_as(cx, index, slot)?.0
             }
         };
         cvs[i] = Some(cv);

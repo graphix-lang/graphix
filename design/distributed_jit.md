@@ -226,6 +226,23 @@ each was obvious in hindsight and invisible in advance.
    aborts. A type that does not freeze de-fuses the region. Pins:
    `lang::fusion::*_select_over_bottom`.
 
+   A read of a binding is a production like any other, and its local
+   need not have its type's form: a pattern lays a bind out by the part
+   it stands over (a written test's part, a member's), which can be
+   wider than the type the bind is narrowed to (`Array<[string, null]>
+   as [x, ..]` over `Array<string>` holds `x: string` in a Value local)
+   or narrower (a member's string part under a bind typed by every
+   member's). The read converts (`read_local_as`): a scalar widens, a
+   string's and a composite's words are a value's and are borrowed as
+   one, and a value local read as a scalar, a string or a composite
+   gives that form, the empty placeholder where the value is of another
+   kind, which only a tainted local holds. A string read alone is an
+   owned clone. A capture handed to another kernel takes its slot's form
+   the same way, borrowed; kinds with no conversion de-fuse. Pins:
+   `lang::select::written_test_bind_reads_in_the_form_of_its_own_type`,
+   `written_test_scalar_bind_reads_as_its_scalar`, and the leakcheck
+   witness `select-written-test-binds`.
+
 10. **A pattern reads a value at its own type.** An arm's predicate is
    narrowed to what the arm matches (`(false, n)` types its first element
    `bool`), and a shallow test admits a member by its outermost shape

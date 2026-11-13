@@ -23,8 +23,9 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, STALE, TAINT, const_stale_gate, is_tainted,
-        prim_to_value_disc, propagate_flags, scalar_disc, taint_if, value_disc,
+        CompiledExpr, LocalKind, STALE, TAGS, TAINT, clean_disc, const_stale_gate,
+        is_tainted, prim_to_value_disc, propagate_flags, scalar_disc, taint_if,
+        value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
@@ -37,8 +38,8 @@ use super::{
     lower::{freeze_node_typ, resolve_node_typ},
     scaffold::{self, ArraySrc},
     scalar::{
-        ElementRead, abstract_read_helper, compile_bin, compile_cast, compile_cmp,
-        compile_const, compile_element_read, kind_disc, prim_to_clif,
+        ElementRead, abstract_read_helper, cast_u64_to_prim, compile_bin, compile_cast,
+        compile_cmp, compile_const, compile_element_read, kind_disc, prim_to_clif,
         scalar_to_payload_i64, string_buf_push_helper, widen_to_i64, zero_const,
     },
 };
@@ -126,6 +127,63 @@ pub(crate) fn emit_map_new_node<R: Rt>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
+/// The local at `index`, borrowed, as a local of kind `to` (its own where
+/// `None`), and that kind. A scalar widens to a value's payload, and a
+/// string's and a composite's words are a value's. A value local narrows
+/// to the kind its reader declares: a value of another kind, which only a
+/// tainted local holds, reads as that kind's empty placeholder.
+pub(super) fn read_local_as(
+    cx: &mut BodyCx,
+    index: usize,
+    to: Option<LocalKind>,
+) -> Result<(CompiledExpr, LocalKind)> {
+    let (vv, from) = {
+        let l = &cx.env.locals[index];
+        (l.words, l.kind)
+    };
+    let to = to.unwrap_or(from);
+    // A wake reads a standing binding with its STALE disc intact; only a
+    // genuine init upgrades: the kernel's at the boundary, a slot's here.
+    let disc = cx.read_disc(index);
+    let payload = cx.b.use_var(vv.payload);
+    let narrowed = |cx: &mut BodyCx, base: i64, payload: ClifValue| {
+        let tags = cx.b.ins().band_imm_u(disc, TAGS);
+        CompiledExpr::new(cx.b.ins().bor_imm_u(tags, base), payload)
+    };
+    let held_or = |cx: &mut BodyCx, base: i64, empty: &str| -> Result<CompiledExpr> {
+        let cd = clean_disc(cx.b, disc);
+        let holds = cx.b.ins().icmp_imm_s(IntCC::Equal, cd, base);
+        let empty = cx.call_helper(empty, &[])?[0];
+        let payload = cx.b.ins().select(holds, payload, empty);
+        Ok(narrowed(cx, base, payload))
+    };
+    let cv = match (from, to) {
+        (from, to) if from == to => CompiledExpr::new(disc, payload),
+        (LocalKind::Scalar(p), LocalKind::Value) => {
+            CompiledExpr::new(disc, scalar_to_payload_i64(cx.b, p, payload))
+        }
+        (LocalKind::String | LocalKind::Composite, LocalKind::Value) => {
+            CompiledExpr::new(disc, payload)
+        }
+        (LocalKind::Value, LocalKind::Scalar(p)) => {
+            let payload = cast_u64_to_prim(cx.b, payload, p);
+            narrowed(cx, prim_to_value_disc(p), payload)
+        }
+        // the static empty string owns nothing
+        (LocalKind::Value, LocalKind::String) => {
+            held_or(cx, value_disc::STRING, "graphix_arcstr_empty")?
+        }
+        (LocalKind::Value, LocalKind::Composite) => {
+            held_or(cx, value_disc::ARRAY, "graphix_valarray_empty_borrowed")?
+        }
+        (from, to) => bail!(
+            "emit_clif: a read of `{}` as a {to:?} where the local holds a {from:?}",
+            cx.env.locals[index].name
+        ),
+    };
+    Ok((cv, to))
+}
+
 /// A binding read: the local's disc (with any `TAINT`/`STALE`) and its
 /// payload, in the representation the read's type `typ` declares.
 pub(crate) fn emit_ref_node(
@@ -137,54 +195,39 @@ pub(crate) fn emit_ref_node(
     // BindId first (exact under shadowing); a synthetic Ref has no name
     // and resolves by id alone.
     let name = ref_local_name(spec);
-    let (index, vv, kind) = {
-        let index = cx.env.position(id, name);
-        if index.is_none() && crate::dbgenv::gxdbg_refmiss() {
-            eprintln!(
-                "REFMISS `{name:?}` id={id:?} locals={:?}",
-                cx.env
-                    .locals
-                    .iter()
-                    .map(|l| (l.name.as_str(), l.bind_id))
-                    .collect::<Vec<_>>()
-            );
-        }
-        let index = index.ok_or_else(|| {
-            anyhow!(
-                "emit_clif: undefined local `{}` ({id:?})",
-                name.unwrap_or("<synthetic>")
-            )
-        })?;
-        let l = &cx.env.locals[index];
-        (index, l.words, l.kind)
-    };
+    let index = cx.env.position(id, name);
+    if index.is_none() && crate::dbgenv::gxdbg_refmiss() {
+        eprintln!(
+            "REFMISS `{name:?}` id={id:?} locals={:?}",
+            cx.env
+                .locals
+                .iter()
+                .map(|l| (l.name.as_str(), l.bind_id))
+                .collect::<Vec<_>>()
+        );
+    }
+    let index = index.ok_or_else(|| {
+        anyhow!("emit_clif: undefined local `{}` ({id:?})", name.unwrap_or("<synthetic>"))
+    })?;
     // a local holds a value of its binding's type, which no read types ⊥
     if typ.with_deref(|t| matches!(t, Some(Type::Bottom))) {
         bail!(
-            "emit_clif: a read of `{}` typed ⊥ where the local holds a {kind:?}",
-            name.unwrap_or("<synthetic>")
+            "emit_clif: a read of `{}` typed ⊥ where the local holds a {:?}",
+            name.unwrap_or("<synthetic>"),
+            cx.env.locals[index].kind
         )
     }
-    // A wake reads a standing binding with its STALE disc intact; only a
-    // genuine init upgrades: the kernel's at the boundary, a slot's here.
-    let disc = cx.read_disc(index);
-    match kind {
+    let declared = cx.node_kind(typ).and_then(LocalKind::of);
+    match read_local_as(cx, index, declared)? {
         // Each consumer gets its own ArcStr ref; the slot keeps its own
         // until scope exit.
-        LocalKind::String => {
-            let s = cx.b.use_var(vv.payload);
-            let call = cx.call_helper("graphix_arcstr_clone", &[s])?;
-            Ok(CompiledExpr::new(disc, call[0]))
-        }
-        LocalKind::Scalar(p) => {
-            let cv = CompiledExpr::new(disc, cx.b.use_var(vv.payload));
-            Ok(widen_to_declared_repr(cx, typ, p, cv))
+        (cv, LocalKind::String) => {
+            let call = cx.call_helper("graphix_arcstr_clone", &[cv.payload])?;
+            Ok(CompiledExpr::new(cv.disc, call[0]))
         }
         // Non-scalar kinds are borrowed reads: the env owns the slot and
         // consumers clone when they need ownership.
-        LocalKind::Composite | LocalKind::Value => {
-            Ok(CompiledExpr::new(disc, cx.b.use_var(vv.payload)))
-        }
+        (cv, _) => Ok(cv),
     }
 }
 

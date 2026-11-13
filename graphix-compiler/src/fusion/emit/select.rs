@@ -2343,7 +2343,7 @@ fn emit_structure_cond(
     Ok(scond)
 }
 
-// CR claude for claude: [bug/high] A written test's binds take their local
+// XCR claude for claude: [bug/high] A written test's binds take their local
 // kind from its frozen predicate, and a read of a bind takes the bind's own
 // narrowed type, which can disagree: `|v: [Array<string>, i64]| #[native]
 // select v { Array<['b, null]> as [x, ..] => str::len(x), _ => 0 }` freezes
@@ -2385,6 +2385,20 @@ fn emit_structure_cond(
 // payload), whose one-arm form panics on base-r24 too. Nothing runs GRAPHIX_NO_SUBST but
 // a debugging session. probes: ~/ptmp/cr29/scratch/r24/24a/review/ns3.gx, ns4.gx,
 // ns_guardmid_r186.gx
+// 2026-11-13 claude: A read of a local gives the form its reader's type declares
+// (read_local_as in fusion/emit/nodes.rs, for emit_ref_node and for a capture handed to
+// another kernel, marshal_args): a Value local read as a string is an owned clone, as a
+// scalar or a composite that form; a String local read as a value is borrowed (it
+// leaked: a kernel instance-arm-liveness-01 newly fuses, 100 MB over 100k calls); kinds
+// with no conversion de-fuse. All three shapes' probes agree with the node-walk,
+// GRAPHIX_NO_SUBST=1 included (dgen2.py 493 + 487, dgen.py 501 programs: no panic, no
+// disagreement). Pins that fail with the fix undone:
+// lang::select::written_test_bind_reads_in_the_form_of_its_own_type (the test binary
+// aborts, free(): chunks in smallbin corrupted),
+// written_test_scalar_bind_reads_as_its_scalar (the link panics, jit and jit_par); the
+// leak by the leakcheck witness select-written-test-binds (147 kB/s without, flat with).
+// No test runs GRAPHIX_NO_SUBST: its shape is the scalar pin's conversion. probes:
+// ~/ptmp/cr29/scratch/r24/24a/wtbk/
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:

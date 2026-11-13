@@ -1360,6 +1360,28 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          hits + got\n",
     ),
     (
+        // a written test's binds read at another kind than their local's:
+        // a string local as a value, a value local as a string
+        "select-written-test-binds",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let pad = \"pppppppppppppppppppppppppppppppppppppppppppppppppp\";\n\
+         let big = \"[pad][pad][pad][pad][pad][pad][pad][pad]\";\n\
+         let f = |v: [(i64, string), (f64, i64)]| select v {\n\
+             [(i64, string), (f64, i64)] as (i64:0, s) => select s {\n\
+                 string as t => str::len(t),\n\
+                 i64 as n => n\n\
+             },\n\
+             _ => i64:0\n\
+         };\n\
+         let g = |w: [Array<string>, i64]| select w {\n\
+             Array<[string, null]> as [s, ..] => str::len(s),\n\
+             _ => i64:0\n\
+         };\n\
+         f((i64:0, \"[big][x]\")) + g([\"[big][x]\"])\n",
+    ),
+    (
         // slots whose callback call feeds an argument, grown and shrunk
         "fed-arg-slots",
         "let clk = sys::time::timer(duration:0.001s, true);\n\

@@ -324,8 +324,8 @@ pub(crate) enum LocalKind {
     /// Owned ValArray bits, dropped via `graphix_valarray_drop`; reads
     /// borrow.
     Composite,
-    /// An owned `ArcStr` pointer, dropped via `graphix_arcstr_drop`;
-    /// reads clone.
+    /// An owned `ArcStr` pointer, dropped via `graphix_arcstr_drop`; a
+    /// read typed a string clones.
     String,
     /// The value word of a two-word Value (a variant, a nullable or any
     /// other value shape), dropped via `graphix_value_drop`; reads borrow.
