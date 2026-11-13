@@ -2855,12 +2855,18 @@ impl<R: Rt> PatternNode<R> {
         self.structure_predicate
             .ids(&mut |id| saved.push((id, ctx.rt.store_get(&id).cloned())));
         // retracted, so never a stand an outside reader takes as a fire
-        let tag = if tag.triggers() { tag } else { tag.quiet() };
+        let stood = if tag.triggers() { tag } else { tag.quiet() };
         if held {
             self.structure_predicate
-                .bind(v, &mut |id, v| ctx.restand(id, TagValue::tagged(v, tag)))
+                .bind(v, &mut |id, v| ctx.restand(id, TagValue::tagged(v, stood)))
         } else {
-            self.bind_event(ctx, v, tag)
+            self.bind_event(ctx, v, stood)
+        }
+        // the guard reads the event, where a bind that moved says so
+        if !tag.triggers() && tag.moved() {
+            self.structure_predicate.bind(v, &mut |id, v| {
+                ctx.event.variables.insert(id, TagValue::tagged(v, tag));
+            })
         }
         saved
     }

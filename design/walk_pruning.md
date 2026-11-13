@@ -197,8 +197,11 @@ that bind marks none (`PatternNode::bind_tentative`'s `held`,
 `RtView::store_restand_var`): a guard, or a statement of one, that
 reads only its binds is skipped where one reading the scrutinee is.
 Readers outside the guard read what the retract puts back, which only
-a marking bind replaces. Pin:
-`lang::prune::a_guard_holding_its_bind_skips_as_its_scrutinee_twin`.
+a marking bind replaces. A scrutinee that moved is no such stand: its
+bind marks, and the guard reads it moved (`bind_driven_bodies.md`, the
+moved mark). Pins:
+`lang::prune::a_guard_holding_its_bind_skips_as_its_scrutinee_twin`,
+`lang::wake_outside::a_moved_scrutinee_moves_its_guards_bind`.
 
 ## Parallel evaluation
 

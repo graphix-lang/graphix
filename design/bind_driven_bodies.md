@@ -164,7 +164,10 @@ result moved when its trigger argument did. An `any` keeps its value too, except
 child the value came from bottom: it stands bottom then, moved (`node::Any::update`). A resident never
 keeps the bit (`Tag::quiet`). A kernel ORs the bit into a disc wherever it ORs `TAINT`
 (`emit::abi::propagate_taint`, the slot accumulators, `emit::body::fold_consumed`) and tests it nowhere;
-it runs, and never rides, when a feeder moved. A guard's tentative binds are retracted and stand nowhere.
+it runs, and never rides, when a feeder moved. A guard's tentative binds are retracted and stand nowhere:
+the store holds them quiet, so no reader outside the guard takes one as a stand that moved, and the guard
+reads them from the event, moved where its scrutinee moved, so it recomputes
+(`PatternNode::bind_tentative`; pin: `lang::wake_outside::a_moved_scrutinee_moves_its_guards_bind`).
 
 **Kernels.** A kernel's one source of birth is the context word its wrapper passes; a call site's first
 use, a loop slot's first iteration and a self-call's fresh block are not births, so a tail recursion that

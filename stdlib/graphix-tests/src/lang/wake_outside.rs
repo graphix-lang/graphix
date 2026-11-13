@@ -186,6 +186,20 @@ async fn a_moved_scrutinee_routes_its_select_quietly() -> Result<()> {
     agrees(closure("", "#[native] select x { 1 => 10, _ => 20 }"), &expected).await
 }
 
+// A guard recomputes from the bind of a scrutinee that moved, a statement
+// of the guard too, and the select takes the arm the guard now admits with
+// no fire.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_scrutinee_moves_its_guards_bind() -> Result<()> {
+    let expected = formal(|x| if x > 2 { 10 } else { 20 });
+    for guard in ["v > 2", "{ let w = v; w > 2 }"] {
+        let select = format!("select x {{ v if {guard} => 10, _ => 20 }}");
+        agrees(closure("", &select), &expected).await?;
+        agrees(closure("", &format!("#[native] {select}")), &expected).await?;
+    }
+    Ok(())
+}
+
 // And it resizes a collection whose length is the formal: a resize is no
 // fire of its own.
 #[tokio::test(flavor = "multi_thread")]
