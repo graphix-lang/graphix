@@ -1630,6 +1630,19 @@ impl Type {
                 }
                 Ok(t)
             }
+            // CR claude for claude: [bug/low] A tuple, struct or variant is subtracted
+            // only by the same type, so one the subtrahend holds stays in the
+            // difference and a select arm that can match nothing is not refused:
+            // `type A = [([i64, string], i64), null]; type B = [(i64, i64), string];
+            // let x: [A, B] = (1, 2); select x { ([i64, string], i64) as t => "wide",
+            // (i64, i64) as t => "narrow", null as _ => "null", string as s => s }`
+            // passes --check and runs (`[A, B]` less `([i64, string], i64)` is `[null,
+            // B]`), where the same select over `Array<[i64, string]>` and `Array<i64>`
+            // is refused, "pattern Array<i64> will never match [null, string]", and so
+            // is the tuple one over the scrutinee `([i64, string], i64)` alone.
+            // base-r23 and lane 23b alike. A product the subtrahend contains could
+            // answer the empty type, as an Array does. probes:
+            // ~/ptmp/cr29/scratch/r23/23b/tdm-rv/u5.gx, u6.gx (diff-product-held-01)
             (Type::Tuple(t0), Type::Tuple(t1)) => {
                 if same_resolved(t0.iter(), t1.iter()) {
                     Ok(Type::Primitive(BitFlags::empty()))
@@ -2856,6 +2869,33 @@ pub(crate) mod tests {
             printed("[Array<[i64, null]>, Wide, Array<[null, i64, string]>, Narrow]"),
             "string, Array<i64>, Array<X>, null, Array<[i64, null]>, \
              Array<[i64, null, string]>"
+        );
+    }
+
+    // A member whose every value the arms before it take is no arm, as
+    // the select over the arms would find it dead.
+    #[test]
+    fn dispatch_arms_leave_out_a_member_the_arms_before_cover() {
+        let defs = [
+            ("P", "[Error<`A>, null]"),
+            ("Q", "[Error<`B>, string]"),
+            ("R", "[Error<[`A, `B]>, i64]"),
+            ("AB", "Error<[`A, `B]>"),
+            ("BC", "Error<[`B, `C]>"),
+            ("CA", "Error<[`C, `A]>"),
+        ];
+        let printed = |t: &str| {
+            let (env, t) = typed(&defs, t);
+            let members = Type::dispatch_arms(&env, &t).unwrap();
+            format_with_flags(PrintFlag::DerefTVars, || {
+                members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+            })
+        };
+        assert_eq!(printed("[R, Q, P]"), "null, Error<`A>, string, Error<`B>, i64");
+        assert_eq!(printed("[AB, BC, CA]"), "Error<[`A, `B]>, Error<[`B, `C]>");
+        assert_eq!(
+            printed("[CA, AB, Error<`A>]"),
+            "Error<`A>, Error<[`A, `B]>, Error<[`A, `C]>"
         );
     }
 

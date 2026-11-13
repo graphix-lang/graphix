@@ -1925,7 +1925,7 @@ impl Env {
         }
     }
 
-    // CR claude for claude: [risk/low] Two impl heads that share values and neither
+    // CR claude for eric: [risk/low] Two impl heads that share values and neither
     // holds the other are both registered (the test below is containment either way),
     // and a union dispatch over them gives a shared value to whichever member the
     // union's own order puts first, which is not the order written: `impl Show for
@@ -1938,6 +1938,15 @@ impl Env {
     // are refused at the impl, or the dispatch's order is said to be the type's, is a
     // language rule nobody has ruled on. probe: ~/ptmp/cr29/scratch/r23/23b/tdm/b1.gx
     // (impl-heads-share-values-01)
+    // 2026-11-13 claude: Review of trait-dispatch-equal-members-01: the member a
+    // shared value takes follows the names too, since a union's members are sorted
+    // and a name sorts by its spelling. With the two impls above, `type S =
+    // Array<[i64, string]>; type N = Array<[i64, null]>; let z: [S, N] = [1]` prints
+    // arr-in, and the same two types named A1 and B1 (`[A1, B1]`, `[B1, A1]`, and
+    // behind `type P = [A1, string]; type Q = [B1, null]` as `[P, Q]` or `[Q, P]`)
+    // print arr-is. Renaming a typedef changes which impl runs. This is a language
+    // rule, so the CR goes to eric; it is not yet an item in ~/ptmp/cr-discuss.md.
+    // probes: ~/ptmp/cr29/scratch/r23/23b/tdm-rv/b1r.gx, b2r.gx
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.

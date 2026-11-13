@@ -468,17 +468,24 @@ not its paths. The arms are `Type::dispatch_arms`, those members one per
 type and a narrower one first: of two spellings of one type (each holds
 the other: `Array<X>` beside `Array<[i64, string]>`) the first met is
 the arm, and a member another holds (`Array<i64>` beside `Array<[i64,
-string]>`) is tested before it, so no arm is dead. Only members that
-share a constructor are compared. Two members that share values and
+string]>`) is tested before it. Only members that share a constructor
+are compared. A member the arms before it leave no value is then left
+out, by the walk the select makes of its arms (`could_match` against
+what reaches the arm, `diff` by each arm kept): `` Error<[`A, `B]> ``
+after `` Error<`A> `` and `` Error<`B> `` has no arm, and its values
+take theirs. So no arm is dead. Two members that share values and
 neither holds the other (`Array<[i64, string]>` beside `Array<[i64,
-null]>`) keep their order, and a value of both takes the first: the
-select types that arm's bind as its member and its part of the other, so
-an arm whose member shares a constructor with another takes its bind at
-the member's own type (`M as #t => { let #t: M = #t; #bind::N(#t, ..)
-}`), which a generic impl's head then matches as it did in the check
-(pins `lang::traits::trait_union_dispatch_{one_type_spelled_twice,
-member_another_holds, members_that_overlap}`,
-`typ::setops::tests::dispatch_arms_are_one_per_type_narrower_first`).
+null]>`) keep their order, the order `dispatch_members` met them in,
+which is the sorted union's and not the one written, and a value of both
+takes the first: the select types that arm's bind as its member and its
+part of the other, so an arm whose member shares a constructor with
+another takes its bind at the member's own type (`M as #t => { let #t: M
+= #t; #bind::N(#t, ..) }`), which a generic impl's head then matches as
+it did in the check (pins
+`lang::traits::trait_union_dispatch_{one_type_spelled_twice,
+member_another_holds, members_that_overlap, member_the_others_cover}`,
+`typ::setops::tests::dispatch_arms_are_one_per_type_narrower_first`,
+`dispatch_arms_leave_out_a_member_the_arms_before_cover`).
 The generated select fuses over a union of primitives
 (`lang::traits::native_on_a_union_dispatch` holds a `#[native]` call);
 over a union of abstract types it de-fuses (coverage residue). A

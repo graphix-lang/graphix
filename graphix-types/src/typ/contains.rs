@@ -3283,17 +3283,22 @@ impl Type {
     }
 
     /// The arms of a dispatch over `t`, a type with no open cell: its
-    /// [`Self::dispatch_members`], one per type and none after a member
-    /// that holds it. Of two that each hold the other the first met
-    /// stays, and a member another holds stands before the first that
-    /// does.
+    /// [`Self::dispatch_members`], one per type, none after a member
+    /// that holds it and none the arms before it leave no value. Of two
+    /// that each hold the other the first met stays, and a member
+    /// another holds stands before the first that does.
     pub fn dispatch_arms(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
         let holds = |a: &Type, b: &Type| a.contains_with_flags(BitFlags::empty(), env, b);
         let mut arms: SmallVec<[Type; 8]> = SmallVec::new();
+        let mut shared = false;
         for m in Self::dispatch_members(env, t)? {
             let mut holder = None;
             for (i, o) in arms.iter().enumerate() {
-                if o.shares_constructor(&m) && holds(o, &m)? {
+                if !o.shares_constructor(&m) {
+                    continue;
+                }
+                shared = true;
+                if holds(o, &m)? {
                     holder = Some((i, holds(&m, o)?));
                     break;
                 }
@@ -3302,6 +3307,19 @@ impl Type {
                 Some((_, true)) => (),
                 Some((i, false)) => arms.insert(i, m),
                 None => arms.push(m),
+            }
+        }
+        if !shared {
+            return Ok(arms);
+        }
+        let mut rest = t.clone();
+        let mut i = 0;
+        while i < arms.len() {
+            if arms[i].could_match(env, &rest)? {
+                rest = rest.diff(env, &arms[i])?;
+                i += 1
+            } else {
+                arms.remove(i);
             }
         }
         Ok(arms)

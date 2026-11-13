@@ -292,6 +292,38 @@ run!(
     "#
 );
 
+// A member whose every value the members before it take has no arm: its
+// values go to theirs.
+run!(
+    trait_union_dispatch_member_the_others_cover,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if s == "E(A) E(B) null str s int 7 E(A) E(C) E(B)"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int [x]" };
+        impl Show for string { let show = |x| "str [x]" };
+        impl Show for null { let show = |x| "null" };
+        impl Show for `A { let show = |x| "A" };
+        impl Show for `B { let show = |x| "B" };
+        impl Show for `C { let show = |x| "C" };
+        impl<'a: Show> Show for Error<'a> { let show = |x| "E([Show::show(x.0)])" };
+        type P = [Error<`A>, null];
+        type Q = [Error<`B>, string];
+        type R = [Error<[`A, `B]>, i64];
+        let one = |n: i64| -> [P, Q, R]
+            select n { 0 => error(`A), 1 => error(`B), 2 => null, 3 => "s", _ => 7 };
+        type AB = [Error<[`A, `B]>, null];
+        type BC = [Error<[`B, `C]>, null];
+        type CA = [Error<[`C, `A]>, null];
+        let ring = |n: i64| -> [AB, BC, CA]
+            select n { 0 => error(`A), 1 => error(`C), _ => error(`B) };
+        let inline: [Error<`A>, Error<`B>, Error<[`A, `B]>, null] = error(`B);
+        let result = "[Show::show(one(0))] [Show::show(one(1))] [Show::show(one(2))] [Show::show(one(3))] [Show::show(one(4))] [Show::show(ring(0))] [Show::show(ring(1))] [Show::show(inline)]"
+    "#
+);
+
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,

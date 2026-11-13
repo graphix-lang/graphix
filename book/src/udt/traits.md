@@ -183,9 +183,11 @@ show(v)
 
 Every member needs an implementation. Two spellings of one type are one
 member. Where one member holds another (`Array<i64>` beside
-`Array<[i64, string]>`) the narrower is tested first, and a value that
-two members share (`[1]` in `Array<[i64, string]>` and `Array<[i64,
-null]>`) takes the first of them. The call narrows only the `self`
+`Array<[i64, string]>`) the narrower is tested first. A value that two
+members share where neither holds the other (`[1]` in `Array<[i64,
+string]>` and `Array<[i64, null]>`) takes the one that comes first in
+the union as it prints: a union's members are sorted, so that is not the
+order they were written in. The call narrows only the `self`
 argument, so a trait with a method that takes `self` anywhere else (as
 another parameter's type, or in the bound of a type variable) cannot be
 called on a union: write the `select` yourself there.
