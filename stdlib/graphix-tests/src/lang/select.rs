@@ -5602,6 +5602,68 @@ run!(
     FuseExpect::None
 );
 
+// Under a written test a literal rules out no member for a bind: an
+// instance's scrutinee may be the member alone, and the kernel reads the
+// bind from it whatever the literal says.
+run!(
+    written_union_bind_beside_a_literal_holds_every_member_refused,
+    r#"{
+    type P = [(i64, i64), (f64, string)];
+    let f = |x: [P, null]| -> i64 select x { P as (0, h) => h + 1, _ => 0 };
+    f((0, 3))
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+run!(
+    inferred_bind_beside_a_literal_holds_the_members_the_literal_admits,
+    r#"{
+    type P = [(i64, i64), (f64, string)];
+    let f = |x: P| -> i64 select x { (0, h) => h + 1, _ => 0 };
+    let g = |x: Array<P>| -> i64 select x { [(0, h), ..] => h + 1, _ => 0 };
+    [f((0, 3)), f((0.5, "s")), g([(0, 3)]), g([(0.5, "s")])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 4, 0])
+);
+
+// An or-alternative's bind holds its part of every member the
+// alternative's shape admits: the kernel reads it from each of them.
+run!(
+    slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out,
+    r#"{
+    type E = [`V(bool, string), {t: f64, c: f64}];
+    let n = |h: [bool, f64]| -> i64 select h { bool as _ => 1, f64 as _ => 2 };
+    let a = |x: Array<E>| -> i64 select x { [`V(h, "a") | {t: null, c: h}, ..] => n(h), _ => 0 };
+    let b = |x: Array<E>| -> i64 select x { [`V(h, "a") | {t: 0.5, c: h}, ..] => n(h), _ => 0 };
+    [a([`V(true, "a")]), a([{t: 0.5, c: 1.5}]), b([`V(true, "b")]), b([{t: 0.5, c: 1.5}])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 0, 2])
+);
+
+// An instance whose scrutinee is the one member a written test's literal
+// or tag rules out runs the arm's test over that member and misses.
+run!(
+    written_test_over_an_instance_its_structure_rules_out,
+    r#"{
+    type P = [(string, f64), (bool, i64)];
+    type T = [(`A, i64), (`B, string)];
+    let n = |h: [string, bool]| -> i64 select h { string as s => str::len(s), bool as _ => 10 };
+    let a = 'a: P |x: 'a| -> i64 select x { P as (h, 0.5) => n(h), _ => 0 };
+    let b = 'a: P |x: 'a| -> i64 select x { P as (h, 0.5) | (h, 1.5) => n(h), _ => 0 };
+    let c = 'a: P |x: Array<'a>| -> i64 select x { Array<P> as [(h, 0.5), ..] => n(h), _ => 0 };
+    let d = 'a: P, 'b: P |x: ('a, 'b)| -> i64 select x { (P, P) as ((h, 0.5), (_, 1)) => n(h), _ => 0 };
+    let e = 'a: T |x: 'a| -> i64 select x { T as (`A, h) => h + 1, _ => 0 };
+    let f = 'a: T |x: Array<'a>| -> i64 select x { Array<T> as [(`A, h), ..] => h + 1, _ => 0 };
+    [
+        a(("abc", 0.5)), a((true, 1)), b(("abc", 1.5)), b((true, 1)), c([("abc", 0.5)]), c([(true, 1)]),
+        d((("abc", 0.5), (true, 1))), d(((true, 1), (true, 1))), e((`A, 3)), e((`B, "abc")),
+        f([(`A, 3)]), f([(`B, "abc")])
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 0, 3, 0, 3, 0, 4, 0, 4, 0])
+);
+
 // A slice over a union's array member binds its elements at that member's
 // element type, so a generic one is the definition's variable, not a cell
 // of its own the signature then settles to ⊥ (the kernel read it as bottom).

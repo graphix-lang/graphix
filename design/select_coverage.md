@@ -209,8 +209,25 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   part that is `Any` or undecided passes any of them. A member one of
   them rules out gives the binds nothing (`` [(`A, h), ..] `` over
   `` Array<[(`A, i64), (`B, string)]> `` binds `h: i64`), whether it is
-  a member of the element type, of a union inside one, or of a written
-  test's union (`StructPatternNode::leaves`: `` P as (`A, h) ``). A
+  a member of the element type or of a union inside one
+  (`StructPatternNode::leaves`, `RuledOut::ByAnyTest`). Under a written
+  test (`` P as (`A, h) ``) a bind takes nothing from a type the
+  pattern's shape rules out (`RuledOut::ByShape`): a tag, an arity, a
+  field, an abstract's type, in a union or alone, so an instance
+  checked again (`GRAPHIX_NO_SUBST`), whose scrutinee may be that one
+  member, types its binds as its definition did. A literal rules out
+  nothing there (`P as (0, h)` over `[(i64, i64), (f64, string)]` binds
+  `h: [i64, string]`): an instance's kernel emits an arm whose literal
+  its scrutinee never passes (`emit_select_arms` asks the type
+  predicate alone) and reads each bind from the scrutinee's own part,
+  which the bind's type must then hold. An inferred predicate meets no
+  such instance: a pattern that tests inside a declared variable is
+  written. An or-alternative's binds are ruled out by shape as well,
+  wherever it stands: the kernel emits each alternative against every
+  member its shape may pass (`may_pass`), so
+  `` [`V(h, "a") | {t: null, c: h}, ..] `` over
+  `` Array<[`V(bool, string), {t: f64, c: f64}]> `` binds
+  `h: [bool, f64]`. A
   slice inside a
   tuple, struct, variant or or-pattern takes those members from each
   reaching member's part at its position, so a name over the element of
@@ -219,5 +236,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   cells, as over an `Any` scrutinee. Pins:
   `lang::select::capture_*`, `slice_elements_typed_apart`,
   `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`,
-  `slice_element_bind_*`, `written_union_bind_beside_a_tag_*`,
+  `slice_element_bind_*`, `slice_element_or_alternative_bind_*`,
+  `written_union_bind_beside_a_tag_*`,
+  `written_union_bind_beside_a_literal_*`,
+  `inferred_bind_beside_a_literal_*`,
+  `written_test_over_an_instance_its_structure_rules_out`, the shell's
+  `no_subst::an_instance_checked_again_takes_no_bind_*`,
   `nested_slice_*`, `let_partial_struct_capture_is_the_whole_value`.

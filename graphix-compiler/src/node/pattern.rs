@@ -284,6 +284,21 @@ fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)
     })
 }
 
+/// What rules a type out for the binds of a pattern
+/// ([`StructPatternNode::leaves`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RuledOut {
+    /// A union's member that any test of the pattern rules out, a
+    /// literal's included: an inferred predicate's arm meets every member
+    /// of its scrutinee.
+    ByAnyTest,
+    /// A type the pattern's shape rules out, in a union or alone: a kernel
+    /// reads a bind from every member whose shape passes, whatever a
+    /// literal says of it. So under a written test, where an instance's
+    /// scrutinee may be one member alone, and in an or-alternative.
+    ByShape,
+}
+
 /// One leaf name of a pattern with the part of a type it stands over.
 /// `fresh`: the name's own cell is fresh and takes `typ` once the select
 /// narrows the arm: a capture (`name@`, a slice's rest), which stands
@@ -1087,8 +1102,8 @@ impl StructPatternNode {
     }
 
     /// Every leaf name with the part of `typ` it stands over, `typ`
-    /// being a type of this pattern's shape; over a union, its part of
-    /// each member the structure admits ([`Self::admits`]). An or-pattern's
+    /// being a type of this pattern's shape; what `out_by` rules out gives
+    /// none. An or-pattern's
     /// alternatives share their names: each is reported once, at the
     /// union of the alternatives' parts; with `checking`, alternatives a
     /// run-time test cannot tell apart are refused, as separate arms
@@ -1098,11 +1113,12 @@ impl StructPatternNode {
         env: &Env,
         typ: &Type,
         inferred: bool,
+        out_by: RuledOut,
         checking: bool,
         out: &mut SmallVec<[Leaf; 4]>,
     ) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
-            self.leaves_inner(env, typ, inferred, checking, out)
+            self.leaves_inner(env, typ, inferred, out_by, checking, out)
         })
     }
 
@@ -1111,6 +1127,7 @@ impl StructPatternNode {
         env: &Env,
         typ: &Type,
         inferred: bool,
+        out_by: RuledOut,
         checking: bool,
         out: &mut SmallVec<[Leaf; 4]>,
     ) -> Result<()> {
@@ -1123,14 +1140,18 @@ impl StructPatternNode {
             for id in self.whole_binds() {
                 out.push(Leaf { id, typ: typ.normalize(), fresh: true })
             }
-            return bind.leaves(env, rep, false, checking, out);
+            return bind.leaves(env, rep, false, out_by, checking, out);
         }
         let Self::Or { alts } = self else {
             let members = self.member_parts(env, typ, inferred);
             let union = matches!(expand(env, typ), Some(Type::Set(_)));
             let mut all: SmallVec<[Leaf; 4]> = SmallVec::new();
             for (m, ts) in members.iter() {
-                if union && !self.admits(env, m, inferred)? {
+                let out = match out_by {
+                    RuledOut::ByAnyTest => union && !self.admits(env, m, inferred)?,
+                    RuledOut::ByShape => self.footprint(env, m, inferred).is_none(),
+                };
+                if out {
                     continue;
                 }
                 for id in self.whole_binds() {
@@ -1138,7 +1159,7 @@ impl StructPatternNode {
                 }
                 for (c, t) in self.children().into_iter().zip(ts.iter()) {
                     if let Some((t, _)) = t {
-                        c.leaves(env, t, sub, checking, &mut all)?
+                        c.leaves(env, t, sub, out_by, checking, &mut all)?
                     }
                 }
             }
@@ -1171,7 +1192,7 @@ impl StructPatternNode {
         }
         let mut all: SmallVec<[Leaf; 4]> = SmallVec::new();
         for (a, t) in alts.iter().zip(ts.iter()) {
-            a.leaves(env, t, sub, checking, &mut all)?;
+            a.leaves(env, t, sub, RuledOut::ByShape, checking, &mut all)?;
         }
         for l in all.iter_mut() {
             l.fresh = true
@@ -1363,6 +1384,13 @@ impl StructPatternNode {
     // lets the arm stand was not traced. Same on base-r23. probes:
     // ~/ptmp/cr29/scratch/r23/23d/sft/n1.gx, n6.gx, n7.gx; refused twin n2.gx
     // (slice-element-dead-arm-01)
+    // 2026-11-12 claude: (review of slice-footprint-tag-01) A written arm whose shape
+    // admits nothing of a concrete scrutinee is the same unreported dead arm, and its
+    // binds are open, since StructPatternNode::leaves gives a bind nothing from a type
+    // the shape rules out: `|x: (i64, `B)| select x { [(string, `A), (i64, `B)] as (h,
+    // `A) => str::len(h), _ => 0 }` checks and prints 0, where base-r23 refused it by
+    // the body's type alone ("string does not contain i64"). probe:
+    // ~/ptmp/cr29/scratch/r23/23d/sft-review/dead_tag_concrete_use.gx
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
@@ -1397,11 +1425,15 @@ impl StructPatternNode {
                 for c in self.children() {
                     parts.clear();
                     for m in members.iter() {
-                        if !c.admits(env, m, false)? {
+                        let admitted = match c {
+                            Self::Or { .. } => c.footprint(env, m, false).is_some(),
+                            _ => c.admits(env, m, false)?,
+                        };
+                        if !admitted {
                             continue;
                         }
                         leaves.clear();
-                        c.leaves(env, m, false, false, &mut leaves)?;
+                        c.leaves(env, m, false, RuledOut::ByAnyTest, false, &mut leaves)?;
                         for l in leaves.drain(..) {
                             parts.entry(l.id).or_default().push(l.typ)
                         }
@@ -1986,7 +2018,7 @@ impl StructPatternNode {
         let mut parts: SmallVec<[Leaf; 4]> = SmallVec::new();
         for m in members.iter() {
             if shape.could_match(env, m)? {
-                self.leaves(env, m, false, false, &mut parts)?
+                self.leaves(env, m, false, RuledOut::ByShape, false, &mut parts)?
             }
         }
         let mut names = SmallVec::new();
@@ -2443,6 +2475,15 @@ impl StructPatternNode {
         })
     }
 
+    // CR claude for claude: [bug/low] A written struct pattern that names a field the
+    // scrutinee's struct lacks is taken to cover the scrutinee: `|x: {a: i64, c: f64}|
+    // select x { [{a: string, b: f64}, {a: i64, c: f64}] as {a: h, b: _} => 0, _ => 1 }`
+    // is refused "unreachable arm: the earlier arms already cover the whole scrutinee",
+    // where the first arm matches no value of x and the `_` arm takes every one (the tag
+    // and arity forms of the same dead arm, `[(string, `A), (i64, `B)] as (h, `A)` over
+    // `(i64, `B)`, check and run the `_` arm). Same on base-r23. Not traced: this answers
+    // by the pattern alone, whatever fields the type has. probe:
+    // ~/ptmp/cr29/scratch/r23/23d/sft-review/sc.gx (written-struct-absent-field-cover-01)
     /// True when the pattern matches any value of the scrutinee's type:
     /// `Select`'s wildcard test. A variant pattern with an all-bind
     /// payload is irrefutable given its tag matched, but its inferred
@@ -2704,10 +2745,15 @@ impl<R: Rt> PatternNode<R> {
             self.structure_predicate.hold_slice_members(env, narrowed, &matched)?;
         }
         let mut leaves = SmallVec::new();
+        let out_by = match self.explicit_type_predicate {
+            true => RuledOut::ByShape,
+            false => RuledOut::ByAnyTest,
+        };
         self.structure_predicate.leaves(
             env,
             narrowed,
             !self.explicit_type_predicate,
+            out_by,
             checking,
             &mut leaves,
         )?;
@@ -2760,7 +2806,14 @@ impl<R: Rt> PatternNode<R> {
     ) -> Result<()> {
         let parts = self.type_predicate.matching_parts(env, scrut)?;
         let mut inside: SmallVec<[Leaf; 4]> = SmallVec::new();
-        self.structure_predicate.leaves(env, &parts, false, false, &mut inside)?;
+        self.structure_predicate.leaves(
+            env,
+            &parts,
+            false,
+            RuledOut::ByShape,
+            false,
+            &mut inside,
+        )?;
         let mut within: SmallVec<[BindId; 4]> = SmallVec::new();
         self.structure_predicate.binds_inside_rigid(env, scrut, &mut within)?;
         for l in inside {
@@ -2792,7 +2845,14 @@ impl<R: Rt> PatternNode<R> {
         let mut parts: AHashMap<BindId, SmallVec<[Type; 4]>> = AHashMap::default();
         for m in members.iter() {
             let mut ls: SmallVec<[Leaf; 4]> = SmallVec::new();
-            self.structure_predicate.leaves(env, m, false, false, &mut ls)?;
+            self.structure_predicate.leaves(
+                env,
+                m,
+                false,
+                RuledOut::ByAnyTest,
+                false,
+                &mut ls,
+            )?;
             for l in ls.into_iter().filter(|l| l.fresh) {
                 parts.entry(l.id).or_default().push(l.typ)
             }

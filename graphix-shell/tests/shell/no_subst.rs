@@ -77,3 +77,39 @@ fn an_instance_checked_again_waits_for_the_arguments_that_decide_a_union() {
         assert_eq!(run(&program, true), expected, "under GRAPHIX_NO_SUBST: {program}");
     }
 }
+
+/// An instance that checks its body again types a written test's binds as
+/// its definition did: a member the test's structure rules out, the
+/// instance's whole scrutinee here, gives them nothing.
+#[test]
+fn an_instance_checked_again_takes_no_bind_from_a_member_the_structure_rules_out() {
+    let typedef = "type T = [(`A, i64), (`B, string)];\n";
+    let programs = [
+        (
+            "let g = 'a: T |x: 'a| select x { T as (`A, h) => `H(h), _ => `N };\n\
+             (g((`A, 3)), g((`B, \"abc\")))\n",
+            "(`H(3), `N)",
+        ),
+        (
+            "let g = 'a: T |x: 'a| select x { T as (`A, h) => h + 1, _ => 0 };\n\
+             (g((`A, 3)), g((`B, \"abc\")))\n",
+            "(4, 0)",
+        ),
+        (
+            "let g = 'a: T |x: Array<'a>| select x { Array<T> as [(`A, h), ..] => h + 1, _ => 0 };\n\
+             (g([(`A, 3)]), g([(`B, \"abc\")]))\n",
+            "(4, 0)",
+        ),
+        (
+            "type U = [(`A, i64, string), (`B, string, bool)];\n\
+             let g = 'a: U |x: 'a| select x { U as (`A, h, _) | (`B, _, h) => `H(h), _ => `N };\n\
+             (g((`A, 1, \"s\")), g((`B, \"s\", true)))\n",
+            "(`H(1), `H(true))",
+        ),
+    ];
+    for (program, expected) in programs {
+        let program = format!("{typedef}{program}");
+        assert_eq!(run(&program, false), expected, "{program}");
+        assert_eq!(run(&program, true), expected, "under GRAPHIX_NO_SUBST: {program}");
+    }
+}

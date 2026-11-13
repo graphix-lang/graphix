@@ -1108,6 +1108,32 @@ pub(super) fn emit_select_arms<R: Rt>(
 ) -> Result<()> {
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
+    // CR claude for claude: [bug/high] An arm a written test's structure rules out at an
+    // instance is still emitted: `live` below asks the type predicate alone. The arm's
+    // binds are read from the scrutinee's own parts and its body reads them at the types
+    // the definition's check gave, and where the two differ in kind the kernel does not
+    // verify and the link panics. `let g = 'a: [{a: string, b: f64}, {a: bool, c: f64}]
+    // |x: 'a| select x { [{a: string, b: f64}, {a: bool, c: f64}] as {a: h, b: _} =>
+    // `H(h), _ => `N }; g({a: true, c: 0.5})` panics "the JIT could not link emitted code:
+    // compile: Verifier errors"; --no-fusion prints `N. Same on base-r23: h is string by
+    // the one member with both fields, and the instance's `a` is a bool. Under
+    // GRAPHIX_NO_SUBST=1 `'a: [`V(bool), `W(i64), `V(i64)] |x: 'a| select x { [`V(bool),
+    // `W(i64), `V(i64)] as `V(h) => `H(h), _ => `N }` called at each member panics the
+    // same way, base-r23 alike. The same gap is why a literal rules out no member for a
+    // bind under a written test or in an or-alternative (StructPatternNode::leaves,
+    // RuledOut::ByShape): with literals narrowing there, `'a: [(string, f64), (bool,
+    // i64)] |x: 'a| select x { [(string, f64), (bool, i64)] as (h, 0.5) => `H(h), _ =>
+    // `N }` panicked at g((true, 1)), "arg 1 has type i8, expected i64", and so did
+    // `[`V(h, "a") | {t: null, c: h}, ..]` over `Array<[`V(bool, string), {t: f64, c:
+    // f64}]>` (pins lang::select::written_test_over_an_instance_its_structure_rules_out,
+    // slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out). What would
+    // close it: an arm, and an or-alternative or a composite member (the may_pass tests in
+    // this file), is live only where the structure admits a value of the scrutinee's type
+    // by the predicate the checker narrows binds with (StructPatternNode::admits, looking
+    // into a slice's elements too); a written test and an or-alternative can then rule
+    // out by any test, as an inferred predicate does. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/sft-review/jit_struct_generic.gx, r27min.gx,
+    // jit_lit_generic_i.gx, or_lit_dead_alt.gx (instance-arm-liveness-01)
     let n = sel.arms.len();
     // an arm no value of this scrutinee passes is never taken, and its
     // pattern need not fit the scrutinee's layout: an instance's scrutinee
