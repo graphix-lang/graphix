@@ -1283,49 +1283,6 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        // XCR claude for claude: [bug/medium] A build refuses an instance the check accepted
-        // where a definition writes a construction over one of its parameters into another
-        // parameter and the call passes a construction over another decided payload. `type
-        // B<'p> = Abstract<'p>; let f = |a, z| a <- B([z]); f(B([1]), "s")` passes
-        // `--check`, and its build fails "an instance at fn(a: B<[Array<i64>,
-        // Array<string>]>, z: string) -> _ of a definition typed fn(a: B<Array<'_1>>, z:
-        // '_1) -> '_2"; GRAPHIX_NO_SUBST=1 builds and runs it. The constructor takes its
-        // argument as a lower bound of 'p (check_contains_lower), the definition's signature
-        // is recorded with 'p at the one bound its body gave it, and a call instantiates 'p
-        // open above that bound, so the argument's own bound makes the instance's payload a
-        // union the recorded signature is no instance of. The same where one payload
-        // contains the other (`let n: [i64, null] = 1; f(B([1]), n)`), and where the union
-        // is taken while the call's own payload is still undecided, which
-        // settle.rs::joined_lower does not reach: the payload returned (`let f = |a, z| { a
-        // <- B([z]); a.0 }; f(B([]), 1)`, refused at "fn(a: B<[Array<_>, Array<i64>]>, z:
-        // i64) -> [Array<_>, Array<i64>]") and the call inside another definition (`let g =
-        // |u| { let x = B([]); f(x, u); x.0 }; g(1)`), and as REPL inputs (`let x = B([])`,
-        // then `f(x, 1)`: "an instance at fn(a: B<Array<_>>, z: i64)"). base-r23 refuses all
-        // five alike. Not decided: whether a definition's signature keeps a constructor's
-        // variable open above its bound, as a call sees it, or the instance's containment
-        // takes a union of lower bounds for the definition's one. 378 of 3168 generated
-        // programs (gen3.py: a definition's construction over a parameter met by the call's
-        // own, in nine forms) are refused this way, base-r23 594. probes:
-        // ~/ptmp/cr29/scratch/r23/23b/rev2/{d1,d2,d3,d4}.gx, repl1.txt, gen3.py, vb.sh
-        // (construct-lower-instance-01)
-        // 2026-11-13 claude: Two halves. (1) The build: an instance's copy places a cell
-        // after the open cells its lower bounds hold (fntyp.rs place_in_order), so the
-        // payload's bound over z is held by z's own type, not by the first member of the
-        // instance's union; d1-d4 and all 378 of gen3.py's programs build and run alike
-        // fused, unfused, forked and under GRAPHIX_NO_SUBST (366; the other 12 are
-        // lower-bound-union-pick-01). Pins that fail without it:
-        // lang::types::two_payloads_decided_apart_at_a_call_build,
-        // typ::fntyp::tests::a_cell_a_lower_bound_holds_is_placed_before_its_holder. (2) The
-        // check: the REPL form, and a payload declared before the call (let x: B<Array<i64>>
-        // = B([1]); f(x, n)), were accepted by a widening of z under a payload already
-        // decided, and rightly refused by the build; Widening::widen now undoes a widening
-        // that leaves a decided cell below one of its lower bounds (below_bounds) and
-        // refuses the argument, naming both types. Pins that fail without it:
-        // lang::types::{decided_payload_takes_no_wider_argument,empty_declared_payload_takes_no_argument,payload_read_into_a_decided_parameter_takes_no_wider_argument},
-        // lang::repl_inputs::settled_payload_takes_nothing_a_function_builds_into_it; their
-        // annotated twins pass. gen4.py (1440 programs): base-r24 180 check ok / build
-        // refused, lane 0 (101 build, 79 refused by the check, each refused by base under
-        // NO_SUBST). Census 0/0. probes: ~/ptmp/cr29/scratch/r24/24c/cli/ (README)
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         let defaults = check_hidden_defaults(
