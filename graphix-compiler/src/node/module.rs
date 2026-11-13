@@ -2193,47 +2193,6 @@ impl<R: Rt> Update<R> for Module<R> {
             source.delete(ctx);
         }
         self.clear_compiled(ctx);
-        // XCR claude for claude: [bug/medium] A deleted module's interface `impl`s
-        // stay. The loop below deletes the bindings its `val`s declared, but not
-        // the method bindings `bind_sig_item` made for a `SigKind::Impl` (at the
-        // module's `impl` block scope) nor the declared `ImplDef` it registered.
-        // Only an embedder reaches it, by dropping a compiled expression (an
-        // `impl` in a function body is refused, so no slot deletes one). With a
-        // dynamic module's `sig { type C; impl Cast for C; val make: fn(x: i64)
-        // -> C }` the same expression compiled again after the drop is refused,
-        // "conflicting implementation: Cast is already implemented for C"; with
-        // a trait the sig declares itself (`sig { trait Sh { val sh: fn(self) ->
-        // i64 }; type C; impl Sh for C; .. }`) each compile and drop leaves 1
-        // store entry and 2 `by_id` entries (`EnvStats` store_len 481 -> 531,
-        // by_id_len 998 -> 1098 over 50 rounds). The same before
-        // (escaped-closure-alias-bottom-01) deleted the vals. Tests to paste
-        // into lib_tests/leaks.rs: `rev_drop_dynamic_impl_cast` and
-        // `rev_drop_dynamic_impl_trait` in
-        // ~/ptmp/cr29/scratch/r21/21r/rev/leaks_temp.rs. To fix: delete each
-        // declared impl's method bindings here as the vals are and unregister
-        // its entry (`Env::unregister_impl`), then see what a sig's `trait` and
-        // `type` leave. (deleted-module-impl-leak-01)
-        // 2026-11-12 claude: Module::delete now takes what the interface declared
-        // (SigDecls: each declared impl's method bindings and registry entry,
-        // each declared trait's dispatchers and record) and the lexical names at
-        // the module's scope and below; Module::unregister gives the record and
-        // entries back at a reload of the source around the module, and
-        // ImplDef::same_definition compares the origin so the later delete leaves
-        // the new load's entry. On base a root module was also refused after a
-        // drop (duplicate module definition m), and an outer reload around a
-        // module whose interface declares an impl failed every time (conflicting
-        // implementation; probe nested.gx in
-        // ~/ptmp/cr29/scratch/r23/23e/deleted-module-impl-leak-01/). Pins that
-        // fail without it:
-        // lib_tests::leaks::a_dropped_module_takes_its_declared_core_impl,
-        // a_dropped_module_takes_its_declared_trait_and_impl,
-        // a_dropped_interface_module_takes_what_its_interface_declared,
-        // a_dropped_root_module_is_declared_again;
-        // lang::image::a_restored_module_dropped_is_declared_again;
-        // lang::modules::a_reload_around_an_interface_module_declares_its_impl_again.
-        // Left open: the import tables (dropped-import-tables-01), and a function
-        // escaping a dropped static declaration, which the leak had kept
-        // answering (escaped-fn-dropped-trait-01).
         self.sig_decls.unregister(&mut ctx.env);
         let SigDecls { traits, impls } = &self.sig_decls;
         let methods = impls.iter().flat_map(|im| im.methods.iter());
