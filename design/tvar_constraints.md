@@ -1616,16 +1616,17 @@ parameter take every edge. Where two cells meet (`contains_tvars`):
   three cells merges all three). The open cells merge, each first
   dropping its bounds that are cells of the cycle: a union lower bound
   holding one keeps its other members, as `'r ⊇ [T, 'r]` collapses, and
-  a conjunct union holding one always holds. Each bound cell on it is
-  the merged cell (`'r = [T, 'r]` gives `'r ⊇ T`): the merged cell
-  takes its binding as an open cell takes any, the bounds it kept
-  checked against it, whatever bare path to that cell they still hold
-  (`ContainsHist::merging`). A bound that names a union holds the cell
-  as the name's parameter, which is no bound to drop: under `'a: O<'b>`
-  over `type O<'t> = ['t, null]`, `'a` holding the decided `'b` is
-  `'b`'s type, as under `'a: ['b, null]` (pins
+  a conjunct union holding one always holds. A bound that names a union
+  is that union here (`TVar::drop_bounds_on`): a name holds a cell as a
+  parameter its body holds under no constructor, which is a member of
+  the union it names, so under `'a: O<'b>` over `type O<'t> = ['t,
+  null]` the bound goes as `['b, null]` does, and a lower bound `O<'b>`
+  leaves `null`. `'a` holding `'b` is then `'b`'s type, decided or not,
+  and a `null` declared for it is refused (pins
   `lang::types::bare_cycle_through_a_bounds_*`,
-  `typ::contains::tests::bare_cycle_through_a_typedefs_parameter_*`). Two declared
+  `typ::contains::tests::bare_cycle_through_a_typedefs_parameter_*`).
+  Each bound cell on the cycle is the merged cell (`'r = [T, 'r]` gives
+  `'r ⊇ T`). Two declared
   variables of the definition under check are not one type, so such a
   relation is refused. A later write to any of the cells widens them
   all: `x = B(1); y = B(t ~ x.0); x <- y; y <- B(t ~ "a")` makes `x.0`

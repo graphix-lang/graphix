@@ -471,6 +471,34 @@ impl BarePath {
     }
 }
 
+/// Whether `t` is a cell of `on`.
+fn is_cell_of(on: &AddrSet, t: &Type) -> bool {
+    match t {
+        Type::TVar(v) => {
+            on.contains(&v.cell_addr())
+                || v.open_cell().is_some_and(|o| on.contains(&o.cell_addr()))
+        }
+        _ => false,
+    }
+}
+
+/// Whether `t` is a cell of `on` or holds one as [`BarePath`] reaches it:
+/// a union's member, or a parameter a name's body holds under no
+/// constructor, which is a member of the union it names.
+fn holds_cell_of(on: &AddrSet, t: &Type) -> bool {
+    ensure_sufficient(|| match t {
+        Type::TVar(_) => is_cell_of(on, t),
+        Type::Set(ms) => ms.iter().any(|m| holds_cell_of(on, m)),
+        Type::Ref(r) => {
+            let def = r.resolved();
+            r.params.iter().enumerate().any(|(i, p)| {
+                !def.as_ref().is_some_and(|d| d.param_guarded(i)) && holds_cell_of(on, p)
+            })
+        }
+        _ => false,
+    })
+}
+
 /// How `t` reaches the cell at `addr` by the edges `toward` takes, a
 /// constructor path over a bare one.
 pub(super) fn cycle_toward(cell: &CellLock, t: &Type, toward: Toward) -> Option<Cycle> {
@@ -2486,7 +2514,7 @@ impl TVar {
         }
     }
 
-    // CR claude for claude: [bug/high] A bare cycle of two open cells through a bound
+    // XCR claude for claude: [bug/high] A bare cycle of two open cells through a bound
     // that names a union keeps no relation, so a binding of one type holds a value of
     // another. `type O<'t> = ['t, null]; let f = 'a: O<'b>, 'b: Number |t: ('b, 'a)| t.1;
     // let v = never(); let r: null = f((v, v)); v <- 2; println(select r { null as _ =>
@@ -2509,48 +2537,62 @@ impl TVar {
     // same path to a BOUND cell looped (alias-bound-cycle-01); ContainsHist::merging ends
     // that. probes: ~/ptmp/cr29/scratch/r23/23c/abc/o7.gx, o9.gx, o8.gx (the union twin),
     // o3.gx, o4.gx (the wrappers) (bare-cycle-named-bound-01)
+    // 2026-11-12 claude: Review of alias-bound-cycle-01: the hang's fix let programs that
+    // hung on base-r23 return through this hole (two open cells and a decided one between
+    // them: a `null` annotation held 2, fused "matched null", --no-fusion "a coverage hole
+    // in the check"), so it is closed here. TVar::drop_bounds_on takes a bound that names
+    // a union as that union: a name holds a cell of the cycle as a parameter its body
+    // holds under no constructor (holds_cell_of, as BarePath walks it), a conjunct that
+    // does is dropped, and a lower bound keeps the other members of the union written out
+    // (contains.rs bound_members). The merge of the open cells then closes no cycle, and
+    // no path to a bound cell is left, so ContainsHist::merging is gone:
+    // alias-bound-cycle-01's pins pass on the drop alone. o7.gx and o9.gx are refused as
+    // o8.gx is, o3.gx and o4.gx infer one type. Pins, which fail (the first three) or do
+    // not return (the last) with holds_cell_of's Ref arm removed:
+    // typ::contains::tests::bare_cycle_through_a_typedefs_parameter_merges_the_open_cells,
+    // bare_cycle_through_a_typedefs_parameter_below_keeps_the_other_members,
+    // lang::types::bare_cycle_through_a_bounds_typedef_parameter_of_open_cells,
+    // bare_cycle_through_a_bounds_typedef_parameter_past_a_decided_cell (each with a twin
+    // that runs). 867 generated twins (~/ptmp/cr29/scratch/r23/23c/abc-rev/gen2.py, seed
+    // 12): the written form unchanged, the named form one verdict and value with it at
+    // every use. Census 2964 files: 0 verdict, 0 message.
     /// Drop each bound of the open cell that is a cell of `on`, each such
-    /// member of a union lower bound, and each conjunct union holding one:
-    /// merged with those cells, the cell is each of them, so `'r ⊇ [T,
-    /// 'r]` holds by `T` and `'r ⊆ [T, 'r]` always.
-    pub(super) fn drop_bounds_on(&self, on: &AddrSet) {
-        let is_on = |t: &Type| match t {
-            Type::TVar(v) => {
-                on.contains(&v.cell_addr())
-                    || v.open_cell().is_some_and(|o| on.contains(&o.cell_addr()))
-            }
-            _ => false,
-        };
-        let holds_on = |t: &Type| matches!(t, Type::Set(ms) if ms.iter().any(is_on));
+    /// member of a union lower bound, and each conjunct union holding one,
+    /// a name as the union `members` writes it out: merged with those
+    /// cells, the cell is each of them, so `'r ⊇ [T, 'r]` holds by `T`
+    /// and `'r ⊆ [T, 'r]` always.
+    pub(super) fn drop_bounds_on(
+        &self,
+        on: &AddrSet,
+        members: &dyn Fn(&Type) -> Result<SmallVec<[Type; 8]>>,
+    ) -> Result<()> {
         let cell = self.cell();
         let (lower, cons) = {
             let c = cell.read();
             (c.lower.clone(), c.constraints.clone())
         };
-        if !lower.iter().chain(cons.iter()).any(|t| is_on(t) || holds_on(t)) {
-            return;
+        if !lower.iter().chain(cons.iter()).any(|t| holds_cell_of(on, t)) {
+            return Ok(());
         }
-        let lower = lower
-            .into_iter()
-            .filter_map(|l| match &l {
-                l if is_on(l) => None,
-                Type::Set(ms) if ms.iter().any(is_on) => {
-                    let mut rest: SmallVec<[Type; 4]> =
-                        ms.iter().filter(|m| !is_on(m)).cloned().collect();
-                    match rest.len() {
-                        0 | 1 => rest.pop(),
-                        _ => Some(Type::Set(Arc::from_iter(rest.drain(..)))),
-                    }
-                }
-                _ => Some(l),
-            })
-            .collect();
-        let cons = cons.into_iter().filter(|c| !is_on(c) && !holds_on(c)).collect();
+        let mut kept: SmallVec<[Type; 1]> = SmallVec::new();
+        for l in lower {
+            if !holds_cell_of(on, &l) {
+                kept.push(l);
+                continue;
+            }
+            let mut rest = members(&l)?;
+            rest.retain(|m| !is_cell_of(on, m));
+            match rest.len() {
+                0 | 1 => kept.extend(rest.pop()),
+                _ => kept.push(Type::Set(Arc::from_iter(rest.drain(..)))),
+            }
+        }
         let mut c = cell.write();
         if decided(&c) {
-            c.lower = lower;
-            c.constraints = cons;
+            c.lower = kept;
+            c.constraints = cons.into_iter().filter(|c| !holds_cell_of(on, c)).collect();
         }
+        Ok(())
     }
 
     pub fn read<'a>(&'a self) -> RwLockReadGuard<'a, TVarLink> {

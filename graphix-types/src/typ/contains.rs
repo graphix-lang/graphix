@@ -210,9 +210,6 @@ pub(super) struct ContainsHist {
     /// In a trial: the pairs the walk it was made in was expanding and
     /// assuming, on the trial's copies ([`Self::seed`]).
     assumed_above: SmallVec<[(Type, Type); 2]>,
-    /// The open and the bound cell of each pair [`merge_bare_cycle`] is
-    /// making one type, innermost last ([`Self::merging`]).
-    merging: SmallVec<[(usize, usize); 2]>,
 }
 
 /// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`],
@@ -436,17 +433,7 @@ impl ContainsHist {
             identical: IdenticalMemo::default(),
             unfolding: SmallVec::new(),
             assumed_above: SmallVec::new(),
-            merging: SmallVec::new(),
         }
-    }
-
-    /// Whether [`merge_bare_cycle`] is making the open cell at `open` and
-    /// the bound one at `bound` one type. The open cell then takes the
-    /// binding as it would off any cycle, whatever bare path to the bound
-    /// cell its bounds still hold: a bound that names a union holds the
-    /// cell as the name's parameter, which the merge cannot drop.
-    fn merging(&self, open: usize, bound: usize) -> bool {
-        self.merging.contains(&(open, bound))
     }
 
     pub(super) fn ordered() -> Self {
@@ -2096,7 +2083,7 @@ fn merge_bare_cycle(
     };
     if commit {
         for o in open.iter() {
-            o.drop_bounds_on(&cells);
+            o.drop_bounds_on(&cells, &|b| bound_members(env, b))?;
         }
     }
     for o in open.iter() {
@@ -2116,21 +2103,31 @@ fn merge_bare_cycle(
     if commit {
         // the merged cell holds a bound cell's binding from below, where
         // `'r ⊇ [T, 'r]` takes `T` beside the bounds it has
-        let merged = Type::TVar(survivor.clone());
+        let merged = Type::TVar(survivor);
         let below = (flags | ContainsFlags::Lower) & !ContainsFlags::Contra;
         for b in bound.iter() {
-            hist.merging.push((survivor.cell_addr(), b.cell_addr()));
             let b = Type::TVar(b.clone());
-            let one = merged
-                .contains_int(below, env, hist, &b)
-                .and_then(|held| Ok(held && b.contains_int(flags, env, hist, &merged)?));
-            hist.merging.pop();
-            if !one? {
+            if !merged.contains_int(below, env, hist, &b)?
+                || !b.contains_int(flags, env, hist, &merged)?
+            {
                 return Ok(false);
             }
         }
     }
     Ok(true)
+}
+
+/// The members of the bound `b`, a union's or `b` alone, each name over
+/// cells as the members of what it names.
+fn bound_members(env: &Env, b: &Type) -> Result<SmallVec<[Type; 8]>> {
+    fn names(_: &Env, m: &Type) -> bool {
+        matches!(m, Type::Ref(tr) if !tr.params.iter().all(|p| p.tvar_free()))
+    }
+    let members = match b {
+        Type::Set(ms) => &ms[..],
+        b => std::slice::from_ref(b),
+    };
+    Type::unfolded_members(env, members, false, names)
 }
 
 /// How two distinct open cells unify.
@@ -4250,9 +4247,7 @@ impl Type {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
                 let up = if lower(false) { Toward::Above } else { Toward::Any };
-                if let Some(cycle) = cycle_toward(&cell1, tt0, up)
-                    && !(cycle == Cycle::Bare && hist.merging(addr0, addr1))
-                {
+                if let Some(cycle) = cycle_toward(&cell1, tt0, up) {
                     return refuse(cycle, &[(t1, tt0, up)], hist);
                 }
                 // A rigid receiver must not bind; re-verdict against
@@ -4293,9 +4288,7 @@ impl Type {
                 if would_cycle_inner(&cell1, tt0) {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
-                if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any)
-                    && !(cycle == Cycle::Bare && hist.merging(addr1, addr0))
-                {
+                if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any) {
                     return refuse(cycle, &[(t0, tt1, Toward::Any)], hist);
                 }
                 if (rigid || commit) && t1.is_rigid() {
@@ -6986,9 +6979,9 @@ mod tests {
     }
 
     /// `x: O<'b>` over `type O<'t> = ['t, null]`, `b` bound, and `x ⊇ b`:
-    /// `x` reaches `b` through the name's parameter, which is no bound of
-    /// `x` to drop, so `x` takes `b`'s binding with its bound checked
-    /// against it; so does a var aliased onto `b`'s cell.
+    /// `x` reaches `b` through the name's parameter, so the bound is
+    /// dropped as the union written out is and `x` takes `b`'s binding; so
+    /// does a var aliased onto `b`'s cell.
     #[test]
     fn bare_cycle_through_a_typedefs_parameter_takes_the_bound_cells_binding() {
         for (bound, aliased) in
@@ -7022,6 +7015,33 @@ mod tests {
             assert_eq!(r.is_ok(), holds, "{r:?}");
             assert_eq!(x.binding(), holds.then_some(bound));
         }
+    }
+
+    /// Two open cells on that cycle are one cell, without the bound that
+    /// named the union.
+    #[test]
+    fn bare_cycle_through_a_typedefs_parameter_merges_the_open_cells() {
+        let (x, b) = (var("x"), var("b"));
+        let (env, o) = named_union_over(&b);
+        x.add_cell_constraint(o);
+        Type::TVar(x.clone()).check_contains(&env, &Type::TVar(b.clone())).unwrap();
+        assert!(x.same_cell(&b));
+        assert!(x.cell_constraints().is_empty(), "{:?}", x.cell_constraints());
+    }
+
+    /// Through a lower bound the merged cell stays above the name's other
+    /// member, beside a written member of the same union.
+    #[test]
+    fn bare_cycle_through_a_typedefs_parameter_below_keeps_the_other_members() {
+        let (x, b) = (var("x"), var("b"));
+        let (env, o) = named_union_over(&b);
+        x.add_lower(Type::Set(Arc::from_iter([o, prim(Typ::String)])));
+        Type::TVar(x.clone()).check_contains(&env, &Type::TVar(b.clone())).unwrap();
+        assert!(x.same_cell(&b));
+        let lower = x.cell_lower();
+        assert!(lower.iter().all(|l| !x.would_cycle(l)), "{lower:?}");
+        x.settle(&env).unwrap();
+        assert_eq!(x.binding(), Some(Type::Primitive(Typ::Null | Typ::String)));
     }
 
     /// A declared var on a cycle of open cells is every one of them.

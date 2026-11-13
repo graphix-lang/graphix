@@ -1560,6 +1560,20 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
 // widening settles. probes:
 // ~/ptmp/cr29/scratch/r23/23h/default-param-at-self-bound-01/{c1,c2}.gx
 // (rigid-arg-union-order-01)
+// CR claude for claude: [bug/medium] The check accepts and the build refuses a call
+// whose undecided argument meets two variables with disjoint bounds, once another
+// argument decides one of them. `let f = 'b: Number, 'c: string |x0: 'c, x1: 'b, x2:
+// 'b| (x0, x1, x2); let h = |v| f(v, v, 1); println(h(2))` passes --check on base-r23
+// and on lane 23c alike, and the build fails "an instance at fn(x0: i64, x1: i64, x2:
+// i64) -> (i64, i64, i64) of a definition typed fn<'b: Number, 'c: string>(..)"
+// (GRAPHIX_ELAB_AUDIT reports instance-signature at the body). `let v = never(); let r
+// = f(v, v, 1)` does the same. Without the third argument the check refuses `f(v, v)`,
+// "'_N: unbound within string & Number does not contain i64". Not looked into: the
+// first suspect is that the waiting argument takes 'b's join (i64) where 'c's bound
+// was never asked of it. Found by generated twins while reviewing
+// alias-bound-cycle-01. probes: ~/ptmp/cr29/scratch/r23/23c/abc-rev/hand/cb3.gx,
+// cb6.gx (cb2.gx: the two-argument call the check refuses)
+// (waiting-arg-two-bounds-01)
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument holding no undecided cell, the omitted defaults
 /// included, whatever the order. An argument that does not fit is probed

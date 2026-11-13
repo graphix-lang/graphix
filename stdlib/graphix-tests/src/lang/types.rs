@@ -6173,6 +6173,60 @@ run!(
     FuseExpect::None
 );
 
+// Two undecided cells on that path are one type: the result is the
+// argument, whatever the bound's other member would have admitted, with a
+// decided cell between them too.
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_of_open_cells,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a: O<'b>, 'b: Number |t: ('b, 'a)| t.1;
+  let v = never();
+  let r: null = f((v, v));
+  v <- 2;
+  select r { null as _ => 0 }
+}"#,
+    refused("null does not contain");
+    FuseExpect::None
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_of_open_cells_is_the_argument,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a: O<'b>, 'b: Number |t: ('b, 'a)| t.1;
+  let v = never();
+  let r: i64 = f((v, v));
+  v <- 2;
+  r
+}"#,
+    is(Value::I64(2))
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_past_a_decided_cell,
+    r#"{
+  type O<'t> = ['t, null];
+  type E<'p, 'q> = ['p, 'q];
+  let f = 'a: O<O<'b>>, 'b: E<O<'c>, O<'c>> |t: ('b, 'b, 'b, 'c, 'a)| t;
+  let h = |v, w| f((v, 1, 1, w, w));
+  let r: (i64, i64, i64, i64, null) = h(1, 2);
+  select r.4 { null as _ => 0 }
+}"#,
+    refused("(i64, i64, i64, i64, null) does not contain");
+    FuseExpect::None
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_past_a_decided_cell_is_the_argument,
+    r#"{
+  type O<'t> = ['t, null];
+  type E<'p, 'q> = ['p, 'q];
+  let f = 'a: O<O<'b>>, 'b: E<O<'c>, O<'c>> |t: ('b, 'b, 'b, 'c, 'a)| t;
+  let h = |v, w| f((v, 1, 1, w, w));
+  let r: (i64, i64, i64, i64, i64) = h(1, 2);
+  r.4
+}"#,
+    is(Value::I64(2))
+);
+
 const BARE_CYCLE_WRITTEN_THROUGH_A_REFERENCE: &str = r#"
 {
     type B<'p> = Abstract<'p>;
