@@ -15,8 +15,8 @@ select, and runtime forms. Each rule refuses and names the fix.
   (i64, string)|`). A variable with no bound is bounded first (`'a:
   (bool, i64)`, then `(bool, i64) as (true, k)`). A value read through
   a reference or out of an abstract's payload is judged the same
-  (`select *r` over `let r = &mut [x, 0]`, `select W([x, 0]).0`). The
-  test is a closed
+  (`select *r` over `let r = &mut [x, 0]`, `select W([x, 0]).0`, `let
+  ((a, b), c) = *r`). The test is a closed
   type: `` `A(_) as `A(z) `` (`_` is bottom, through a typedef too:
   `` `A(T) `` over `type T = _`) and `` 'c as `A(z) `` (an undeclared
   variable) are refused. Under a written test a name over the
@@ -105,6 +105,8 @@ no "[`J, _] tests inside a value of 'a" |x: 'a| { let r = &mut [x, 0]; select *r
 ok 'a: [`J, `M] |x: 'a| { let r = &mut [x, 0]; select *r { Array<[i64, `J, `M]> as [`J, _] => 1, _ => 3 } }
 no "[`J, _] tests inside a value of 'a" type W<'a> = Abstract<'a>; |x: 'a| select W([x, 0]).0 { [`J, _] => 1, _ => 3 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| { let r = &mut (x, 0); select *r { (`A(_), i64) as (`A(z), _) => 1, _ => 2 } }
+no "((a, b), c) binds inside a value of 'a" 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c) = *r; a + b }
+ok 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c): ((i64, i64), i64) = *r; a + b }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }

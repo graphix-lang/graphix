@@ -3272,6 +3272,18 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
 // element cell undecided for the elements its arm tests. Same on base-r23. probes:
 // ~/ptmp/cr29/scratch/r23/23d/rlb/sl1.gx, sl2.gx, sl3.gx, sl6.gx, sl7.gx, lw3.gx,
 // annotated twin sl4.gx (slice-open-element-later-01)
+// 2026-11-12 claude: Review of rigid-lower-bound-01: no write is needed, a call
+// reaches it. `let g = |y| select y { [`J(n), _] => n + 1, _ => 3 };
+// println(g([`J("s"), 0]))` passes --check and panics fused ("kernel param `n`:
+// runtime String("s") does not match the compiled Scalar(I64) slot"), --no-fusion
+// logs an arith error; alike `[(n, m), _]` called with `[("s", 1), 0]`, a list
+// (`[<`J(n), _>]`), and a declared variable (`|x: 'a| { let g = |y| select y {
+// [`J(n), _] => n + 1, _ => 3 }; g([x, 0]) }` called with `J("s")). g is `fn(y:
+// Array<Any>) -> i64` (a mismatch against it prints so): the cell the `_` brought
+// settles to Any at the lambda's end, and the arm still takes `J("s"). With a rest
+// (`[`J(n), ..]`) the lambda is refused ("may share `J(i64)'s runtime form: annotate
+// it"). Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/rlb/review/g1.gx,
+// g3.gx, g5.gx, g6.gx, ty.gx
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {

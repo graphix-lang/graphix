@@ -3411,7 +3411,7 @@ impl Deciding {
 /// `t` with each open cell that has lower bounds read as their union: the
 /// parts an arms' settle that decides such a cell decides through its
 /// bounds. `None` where `t` reaches no such cell.
-fn lower_view(t: &Type) -> Option<Type> {
+pub(super) fn lower_view(t: &Type) -> Option<Type> {
     /// Each shared node's view, by its key: `None` while it is walked.
     type Memo = AHashMap<NodeKey, Option<Type>>;
     fn go(t: &Type, memo: &mut Memo) -> Option<Type> {

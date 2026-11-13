@@ -1217,6 +1217,61 @@ run!(closed_written_test_over_a_variable_below_a_reference, r#"{
     [f(`B), f(`A(7))]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 7]); FuseExpect::None);
 
+// A destructuring `let` meets the variable below a bound as a select does.
+run!(let_binding_inside_a_declared_variable_below_a_reference_refused, r#"{
+    let f = 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c) = *r; a + b };
+    f((1, 2))
+}"#, refused("the pattern ((a, b), c) binds inside a value of 'a, a type variable of the definition, which types none of its parts: annotate the binding, `let ((a, b), c): ((i64, i64), i64) = ..`"); FuseExpect::None);
+
+run!(annotated_let_over_a_declared_variable_below_a_reference, r#"{
+    let f = 'a: (i64, i64) |x: 'a| {
+        let r = &mut (x, 0);
+        let ((a, b), c): ((i64, i64), i64) = *r;
+        a + b
+    };
+    f((1, 2))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(let_binding_inside_an_unbounded_variable_below_a_reference_refused, r#"{
+    let f = |x: 'a| { let r = &mut (x, 0); let ((a, b), c) = *r; c };
+    f((1, 2))
+}"#, refused("the pattern ((a, b), c) binds inside a value of 'a, a type variable of the definition, which types none of its parts: annotate the binding with the type it binds, `let ((a, b), c): T = ..`, or bound 'a"); FuseExpect::None);
+
+run!(let_binding_inside_a_declared_variable_a_read_passes_on_refused, r#"{
+    let f = 'a: (i64, i64) |x: 'a| {
+        let r = &mut (x, 0);
+        let y = *r;
+        let ((a, b), c) = y;
+        a + b
+    };
+    f((1, 2))
+}"#, refused("the pattern ((a, b), c) binds inside a value of 'a"); FuseExpect::None);
+
+run!(let_binding_inside_a_declared_variable_in_a_struct_below_a_reference_refused, r#"{
+    let f = 'a: {p: i64} |x: 'a| { let r = &mut {q: x}; let {q: {p}} = *r; p };
+    f({p: 1})
+}"#, refused("the pattern { q: { p } } binds inside a value of 'a, a type variable of the definition, which types none of its parts: annotate the binding, `let { q: { p } }: { q: { p: i64 } } = ..`"); FuseExpect::None);
+
+run!(let_binding_inside_a_declared_variable_below_an_abstract_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = 'a: (i64, i64) |x: 'a| { let ((a, b), c) = W((x, 0)).0; a + b };
+    f((1, 2))
+}"#, refused("the pattern ((a, b), c) binds inside a value of 'a"); FuseExpect::None);
+
+run!(annotated_let_over_a_declared_variable_below_an_abstract_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = 'a: (i64, i64) |x: 'a| {
+        let ((a, b), c): ((i64, i64), i64) = W((x, 0)).0;
+        a + b
+    };
+    f((1, 2))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(let_naming_a_declared_variable_below_a_reference, r#"{
+    let f = |x: 'a| { let r = &mut (x, (1, 2)); let (p, (c, d)) = *r; c + d };
+    [f(`M), f("s")]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 3]); FuseExpect::Jit);
+
 // A dead arm is refused as dead: nothing reaches it, and the bounds hold
 // what the arms before it took.
 run!(dead_arm_testing_an_open_part_below_a_reference_is_unreachable, r#"{

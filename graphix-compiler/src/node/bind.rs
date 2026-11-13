@@ -6,6 +6,7 @@ use super::{
     pattern::{CompiledAbstracts, Holder, StructPatternNode, rigid_refusal},
     place::{self, Path, RefPath},
     read_var_by,
+    select::lower_view,
 };
 use crate::{
     BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
@@ -42,7 +43,7 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{any::Any, mem};
+use std::{any::Any, iter, mem};
 use triomphe::Arc;
 
 /// A `let` pattern's fit to its value, which waits for the value's check.
@@ -1265,7 +1266,8 @@ impl Ref {
 
 /// Refuse a `let` whose pattern tests or binds inside a value of a type
 /// variable its definition holds rigid
-/// ([`expr::StructurePattern::meets_rigid`]).
+/// ([`expr::StructurePattern::meets_rigid`]), met in `typ` as it stands and
+/// as its open cells' lower bounds hold it.
 fn refuse_inside_rigid(
     env: &Env,
     ids: &expr::AbstractOf,
@@ -1273,10 +1275,17 @@ fn refuse_inside_rigid(
     pat: &expr::StructurePattern,
     typ: &Type,
 ) -> Result<()> {
-    match pat.meets_rigid(env, ids, typ)? {
-        None => Ok(()),
-        Some(tv) => Err(rigid_refusal(env, ids, pat, typ, &tv, Holder::Let)).at(spec),
+    if let expr::StructurePattern::Bind(_) | expr::StructurePattern::Ignore = pat {
+        return Ok(());
     }
+    let lower = lower_view(typ);
+    for view in iter::once(typ).chain(lower.as_ref()) {
+        if let Some(tv) = pat.meets_rigid(env, ids, view)? {
+            let e = rigid_refusal(env, ids, pat, view, &tv, Holder::Let);
+            return Err(e).at(spec);
+        }
+    }
+    Ok(())
 }
 
 /// The refusal of a `let` whose pattern `ptyp` does not hold its value

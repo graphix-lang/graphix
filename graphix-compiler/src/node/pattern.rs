@@ -361,6 +361,20 @@ pub(super) fn rigid_refusal(
     tv: &TVar,
     holder: Holder,
 ) -> anyhow::Error {
+    // CR claude for claude: [bug/low] A declared variable met at a cell whose open
+    // end is a handle the checker made up loses its name, and the refusal names a fix
+    // nobody can write. `|x: 'a| { let r = &mut x; select *r { `J => 1, _ => 3 } }` is
+    // refused "`J tests inside a value of a type variable of the definition, which
+    // types none of its parts: bound the variable by the type it tests, `the variable:
+    // T`, and write that type, `T as `J`", and `|x: 'a| select [x] { [`J] => 1, _ => 3
+    // }` ends "or bound the variable", where `select [x, 0]` says 'a. Alike a list
+    // (`[<x>]`) and, since rigid-lower-bound-01, the same values below a reference
+    // (`let r = &mut [x]; select *r { [`J] => .. }`). TVar::written_open reads the
+    // name of the handle TVar::open_cell ends at, here a generated one a merge with
+    // 'a left at the end of the chain. A fix: name the variable as its definition
+    // declared it (the cell's rigid mark could carry the written name), never by the
+    // handle. Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/rlb/review/msg1.gx,
+    // msg2.gx (rigid-refusal-unnamed-01)
     let named = tv.written_open().is_some();
     let var = match named {
         true => format_compact!("'{}", tv.name),
