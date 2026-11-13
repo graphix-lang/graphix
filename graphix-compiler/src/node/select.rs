@@ -3355,20 +3355,17 @@ impl<R: Rt> Select<R> {
                     );
                 }
                 let spec = Arc::new(site.clone());
+                let mut element_binds: SmallVec<[crate::PendingSettle; 2]> =
+                    SmallVec::new();
                 for Tested { test, among, open_shape } in tests {
-                    if let Some(shape) = open_shape {
-                        let (test, elems, spec) =
-                            (test.clone(), among.clone(), spec.clone());
-                        super::defer_judgment(
-                            ctx,
-                            crate::PendingSettle::ElementBinds {
-                                test,
-                                shape,
-                                elems,
-                                spec,
-                            },
-                        );
-                    }
+                    element_binds.extend(open_shape.map(|shape| {
+                        crate::PendingSettle::ElementBinds {
+                            test: test.clone(),
+                            shape,
+                            elems: among.clone(),
+                            spec: spec.clone(),
+                        }
+                    }));
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
                     let collision = match pat.explicit_type_predicate {
                         true => test.rep_collision_written(&ctx.env, &rest),
@@ -3385,6 +3382,9 @@ impl<R: Rt> Select<R> {
                         ctx,
                         crate::PendingSettle::Told { test, rest, spec },
                     );
+                }
+                for judgment in element_binds {
+                    super::defer_judgment(ctx, judgment)
                 }
             }
             // The guard typechecks after the narrowing so it sees the

@@ -1636,8 +1636,22 @@ literal the element tests) passes, and so does one the write put in the
 element's own type, a bind still undecided at the write taking its part
 (`[`J(n), ..] => "[n]"`). The open member may be a cell the scrutinee
 held that a destructuring element left open, too (`[(a, b), ..] => a + 1`
-over `[e]`, then `e <- ("s", 1)`). A rest still open at the settle is
-refused by the runtime-form judgment beside it (`PendingSettle::Told`).
+over `[e]`, then `e <- ("s", 1)`). A member still open at the settle (a
+rest nothing wrote, a declared variable a write brought) is read as what
+it may become (`lib.rs::unheld_member`). Each member of a bound of its
+that is a type (`TVar::typed_bounds`: `'a: [`J(string), `K]` brings
+`` `J(string) `` with `v <- x` over `x: Array<'a>`) is judged as a
+settled member is, and a cell with several such bounds passes where one
+of them does, since each holds every value of it. One with no such bound
+may become any type, so it is refused unless the element's type holds
+everything its structure admits (a pattern that binds nothing, an
+abstract type without parameters). The runtime-form judgment of the same
+test (`PendingSettle::Told`), deferred before this one, refuses most of
+those first ("may share ..'s runtime form"); an abstract type's test
+shares no other type's form, so `[W(p), ..]` beside an open member is
+refused here alone. A bind still open at the settle is held as one type
+of its own there too: in a function it would be a variable of the
+signature, which a call decides apart from the value the element takes.
 Pins:
 `lang::select_undecided::slice_element_*`, `list_element_*`,
 `slice_suffix_element_*`; the skill's `select.md` cases.

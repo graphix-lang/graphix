@@ -97,7 +97,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   ("takes a value of `` `J(string) `` too"). Annotate the let, ``let v:
   Array<[`J(i64), `J(string), `K]> = never()``, and `n` is `[i64,
   string]`. A member the pattern cannot take (`` v <- [`J(1), `K] ``)
-  checks.
+  checks. A write of a declared variable brings every member of its
+  bound (`v <- x` over `x: Array<'a>`, ``'a: [`J(string), `K]``), and
+  one of a variable with no bound is refused wherever the pattern binds
+  a part.
 - Over `Any` (a scrutinee, a tuple position, a field, a payload) a name
   is `Any`, and a pattern that takes the value apart is a run-time test
   of the types its arm decides: `((a, b), n) => a + b + n` over `(Any,
@@ -207,6 +210,9 @@ no "Array<(i64, i64)> as [(a, b), ..]" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>
 no "a type its scrutinee was given after this select" let v = never(); let z = select v { [`J(n), ..] => n + 1, _ => 3 }; v <- [`J("s"), `K]; z
 ok let v = never(); let z = select v { [`J(n), ..] => n + 1, _ => 3 }; v <- [`J(1), `K]; z
 ok let v: Array<[`J(i64), `J(string), `K]> = never(); let z = select v { [`J(n), ..] => select n { i64 as i => i + 1, string as s => str::len(s) }, _ => 3 }; v <- [`J("abc"), `K]; z
+no "takes a value of `J(string) too" let f = 'a: [`J(string), `K] |x: Array<'a>| { let v = never(); let z = select v { [`J(n), ..] => n + 1, _ => 3 }; v <- x; z }; f([`J("s")])
+ok let f = 'a: [`L(string), `K] |x: Array<'a>| { let v = never(); let z = select v { [`J(n), ..] => n + 1, _ => 3 }; v <- x; z }; f([`L("s")])
+no "typed the pattern's binds for W<i64> alone" type W<'a> = Abstract<'a>; let f = |x| { let v = never(); let z = select v { [W(p), ..] => p + 1, _ => 3 }; v <- [x, W(1)]; z }; f(W("s"))
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }

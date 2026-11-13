@@ -64,7 +64,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 pub use enumflags2::BitFlags;
-use expr::{Attr, Expr, Told, union_members};
+use expr::{Attr, Expr, Told, union_members_with};
 use futures::channel::mpsc;
 use log::{info, warn};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -3372,25 +3372,74 @@ fn element_binds(env: &Env, test: &Type, shape: &Type, elems: &Type) -> Result<(
             cells.drain().filter_map(|(_, tv)| tv.open_cell()).collect();
         test.contains_holding(env, t, &open)
     };
+    match unheld_member(env, shape, &holds, elems, &mut SmallVec::new())? {
+        None => Ok(()),
+        Some(m) => format_with_flags(PrintFlag::DerefTVars, || {
+            let test = test.resolve_tvars();
+            match &m {
+                Type::TVar(tv) => bail!(
+                    "this pattern takes a value of any type '{} becomes that has \
+                     its structure, and this select typed the pattern's binds for \
+                     {test} alone: annotate the scrutinee's type where it is built",
+                    tv.name
+                ),
+                m => bail!(
+                    "this pattern takes a value of {} too, a type its scrutinee \
+                     was given after this select typed the pattern's binds for \
+                     {test}: annotate the scrutinee's type where it is built",
+                    m.resolve_tvars()
+                ),
+            }
+        }),
+    }
+}
+
+/// A member of `t` that `shape` admits a value of and `holds` does not
+/// hold the part `shape` takes of. A member still open is any value of a
+/// bound of its that is a type, each of which holds every value of it,
+/// and any value `shape` admits where it has none; `seen` holds the open
+/// cells met, a bound reaching its own cell adding nothing.
+fn unheld_member(
+    env: &Env,
+    shape: &Type,
+    holds: &dyn Fn(&Type) -> Result<bool>,
+    t: &Type,
+    seen: &mut SmallVec<[usize; 4]>,
+) -> Result<Option<Type>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    union_members(env, elems, &mut members)?;
+    let mut open: SmallVec<[typ::TVar; 2]> = SmallVec::new();
+    union_members_with(env, t, &mut members, &mut |tv| open.push(tv.clone()))?;
     for m in members.iter() {
         if matches!(m, Type::Bottom) || !shape.could_match(env, m)? || holds(m)? {
             continue;
         }
         let taken = shape.matching_type(env, m)?;
         if !taken.is_uninhabited() && !holds(&taken)? {
-            return format_with_flags(PrintFlag::DerefTVars, || {
-                let (test, m) = (test.resolve_tvars(), m.resolve_tvars());
-                bail!(
-                    "this pattern takes a value of {m} too, a type its scrutinee was \
-                     given after this select typed the pattern's binds for {test}: \
-                     annotate the scrutinee's type where it is built"
-                )
-            });
+            return Ok(Some(m.clone()));
         }
     }
-    Ok(())
+    for tv in open.iter() {
+        if seen.contains(&tv.cell_addr()) {
+            continue;
+        }
+        seen.push(tv.cell_addr());
+        let bounds = tv.typed_bounds(env);
+        let mut unheld = match bounds.is_empty() && !holds(shape)? {
+            true => Some(Type::TVar(tv.clone())),
+            false => None,
+        };
+        for b in bounds.iter() {
+            unheld =
+                stack::ensure_sufficient(|| unheld_member(env, shape, holds, b, seen))?;
+            if unheld.is_none() {
+                break;
+            }
+        }
+        if unheld.is_some() {
+            return Ok(unheld);
+        }
+    }
+    Ok(None)
 }
 
 fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {

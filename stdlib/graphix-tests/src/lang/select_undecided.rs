@@ -2046,6 +2046,86 @@ run!(slice_element_takes_apart_an_element_written_later_refused, r#"{
     z
 }"#, refused("this pattern takes a value of (string, i64) too"); FuseExpect::None);
 
+// A member still open at the settle is any value of a bound of its that
+// is a type: a declared variable's bound holds what a call may bring.
+run!(slice_element_binds_a_bounded_variable_written_later_refused, r#"{
+    let f = 'a: [`J(string), `K] |x: Array<'a>| {
+        let v = never();
+        let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+        v <- x;
+        z
+    };
+    f([`J("s")])
+}"#, refused("this pattern takes a value of `J(string) too"); FuseExpect::None);
+
+run!(slice_element_binds_a_bounded_variable_beside_a_member_refused, r#"{
+    let f = 'a: [(string, i64), `K] |x: 'a| {
+        let v = never();
+        let z = select v { [(n, m), ..] => n + 1, _ => 3 };
+        v <- [x, (1, 1)];
+        z
+    };
+    f(("s", 1))
+}"#, refused("this pattern takes a value of (string, i64) too"); FuseExpect::None);
+
+run!(slice_element_beside_a_bounded_variable_it_does_not_take, r#"{
+    let f = 'a: [`L(string), `K] |x: Array<'a>| {
+        let v = never();
+        let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+        v <- x;
+        z
+    };
+    f([`L("s")])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(slice_element_binds_the_bounded_variable_it_typed, r#"{
+    let f = 'a: [`J(i64), `K] |x: Array<'a>| {
+        let v = never();
+        let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+        v <- x;
+        z
+    };
+    f([`J(5)])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
+
+// A bind its arm leaves open would be the function's own variable, which
+// a call decides apart from the value the element takes.
+run!(slice_element_bind_left_open_beside_a_bounded_variable_refused, r#"{
+    let f = 'a: [`J(string), `K] |x: Array<'a>| {
+        let v = never();
+        let z = select v { [`J(n), ..] => n, _ => never() };
+        v <- x;
+        z
+    };
+    let q: i64 = f([`J("s")]);
+    q + 1
+}"#, refused("this pattern takes a value of `J(string) too"); FuseExpect::None);
+
+// An abstract type's test shares no other type's runtime form, so a
+// member left open beside it is this judgment's alone: it may become
+// any instance of the type.
+run!(slice_element_binds_an_abstract_beside_an_open_member_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| {
+        let v = never();
+        let z = select v { [W(p), ..] => p + 1, _ => 3 };
+        v <- [x, W(1)];
+        z
+    };
+    f(W("s"))
+}"#, refused("becomes that has its structure, and this select typed the pattern's binds for W<i64> alone"); FuseExpect::None);
+
+run!(slice_element_binds_an_abstract_of_one_instance_beside_an_open_member, r#"{
+    type W = Abstract<i64>;
+    let f = |x| {
+        let v = never();
+        let z = select v { [W(p), ..] => p + 1, _ => 3 };
+        v <- [x, W(1)];
+        z
+    };
+    f(W(5))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
+
 // With a `_` among its elements the slice tests none of them: the bind
 // is `Any` where it is typed, whatever is written later.
 run!(slice_element_beside_a_wildcard_over_a_let_the_arms_decide_refused, r#"{
