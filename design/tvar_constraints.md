@@ -1197,6 +1197,30 @@ An image carries each cell's level and each definition's depth.
   The typedef's body written out in the declaration keeps the per-call
   judgment. Pins `lang::functions::default_behind_a_typedef_return_type`
   and its neighbours.
+- The walk reaches a function wherever the two types give one at the
+  same place: a part of a struct, tuple, variant, array, list, map or
+  reference, a union's member built by the value's constructor, and what
+  a function returns. A callback's returned function is judged at the
+  call that takes the callback (`app(|j| |#d = 1, ..| ..)` over `f:
+  fn(j: i64) -> fn(?#d: 'z, x: i64) -> string` holds `'z: i64`), since
+  inside `app` the call `f(0)(7)` names no definition; a declaration over
+  a function that returns a typedef's function (`-> fn(k: i64) -> W<'z>`,
+  `let g: fn(k: i64) -> W<'p> = ..`) is judged as the typedef alone is.
+  Pins `lang::functions::default_behind_a_callbacks_return` and its
+  neighbours.
+- An abstract type's constructor holds its argument through the type's
+  representation, an expansion no reader of the payload names a
+  definition by (`c.0` reads a fresh one), so `C(v)` judges `v`'s hidden
+  defaults against the representation at the construction's own
+  parameters (`data.rs::Construct`, `Narrowing::Constructed`). A default
+  is a LOWER bound of the label's variable, as the argument is of the
+  parameter: `C(|#d = 1, ..| ..)` over `Abstract<fn(?#d: 'z, x: i64) ->
+  string>` is a `C<i64>` where nothing else decides it, a `let c:
+  C<[i64, string]>` or a second write of a `#d = "q"` widens it, and a
+  declaration that cannot hold the default refuses (`C<string>`; `->
+  C<'z>`, "write the body's type, `-> C<i64>`"). Pins
+  `lang::functions::default_behind_an_abstract_constructor` and its
+  neighbours.
 - The terminal settle (`FnType::settle_terminal`, the check's drain)
   walks the LIVE ftype in dependency order, the cells its bindings hold
   as positions included and every cell a chain of bounds reaches from

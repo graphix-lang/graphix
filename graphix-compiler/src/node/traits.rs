@@ -501,6 +501,22 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         };
         Arg { constraint, ..a.clone() }
     }));
+    // CR claude for claude: [bug/medium] A method whose declared return type holds a function
+    // type with an optional label is called with no default judged. `trait T { val mk: fn(self)
+    // -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} }; impl T for i64 { let mk = |s| {cb: |#d
+    // = 1, x: i64| cast<string>(d)$, n: 1} }; T::mk(1).cb(7)` passes --check, and the run logs
+    // "T::mk(1).cb(7): binding the callee failed: .. in: 1: type mismatch 'z: _ does not
+    // contain i64". The method's lambda takes the declared return as its own here, so its
+    // return check (GXLambda's check_hidden_defaults, Narrowing::Copy) seems to find the
+    // definition linked onto this copy and leave the default to each call; a call reads the
+    // trait's signature, another copy that names no definition, so no call judges it either.
+    // The same return through a typedef (`-> W<'z>`, written by the trait or by the method) is
+    // refused at the impl since typedef-return-defaults-01, "'z: unbound does not contain i64".
+    // base-r23 alike. A fix: judge a method's declared return as it stands, as a typedef's
+    // function is (callsite::names_definitions answering false for it). probes:
+    // ~/ptmp/cr29/scratch/r23/23b/trdrev/{tr1_trait_typedef, tr2_trait_struct,
+    // tr4_trait_ret_declared}.gx
+    // (trait-method-return-defaults-01)
     let rtype = l.rtype.clone().or_else(|| Some(sig.rtype.clone()));
     let throws =
         l.throws.clone().or_else(|| sig.explicit_throws.then(|| sig.throws.clone()));

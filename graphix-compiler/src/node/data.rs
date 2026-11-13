@@ -1,4 +1,9 @@
-use super::{WakeBit, compiler::compile, dense_gate};
+use super::{
+    WakeBit,
+    callsite::{Narrowing, check_hidden_defaults},
+    compiler::compile,
+    dense_gate,
+};
 use crate::cost::ForkSite;
 use crate::{
     CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update,
@@ -1294,6 +1299,16 @@ impl<R: Rt> Construct<R> {
         // (construct-lower-instance-01)
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
+        let defaults = check_hidden_defaults(
+            ctx,
+            BitFlags::empty(),
+            &Scope::root(),
+            self.spec.id,
+            &self.rep,
+            self.arg.typ(),
+            Narrowing::Constructed,
+        );
+        wrap!(self.arg, defaults)?;
         if let Type::Abstract { params, .. } = &self.typ {
             for p in params.iter() {
                 if let Type::TVar(tv) = p {

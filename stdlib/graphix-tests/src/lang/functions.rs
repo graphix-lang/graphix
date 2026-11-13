@@ -3903,6 +3903,176 @@ run!(default_of_another_type_written_to_a_field, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+// What a function returns is a part of it as a field is of a struct: a
+// default of the function it returns is judged where the outer function
+// meets a fn type whose return hides the label or makes it optional.
+run!(default_behind_a_callbacks_return, r#"
+{
+    let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string| f(0)(7);
+    app(|j: i64| |#d = 1, x: i64| cast<string>(d)$)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_a_callbacks_return_decides_the_sites_variable, r#"
+{
+    let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string, v: 'z| f(0)(#d: v, 7);
+    app(|j: i64| |#d = 1, x: i64| cast<string>(d)$, "s")
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_behind_a_callbacks_return_fits_the_sites_variable, r#"
+{
+    let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string, v: 'z| f(0)(#d: v, 7);
+    app(|j: i64| |#d = 1, x: i64| cast<string>(d)$, 2)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "2"); FuseExpect::None);
+
+run!(default_behind_a_callbacks_typedef_return, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let app = |f: fn(j: i64) -> W<'z>| f(0);
+    let w = app(|j: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1});
+    w.cb(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_a_struct_fields_return, r#"
+{
+    let app = |s: {f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string}| s.f(0)(7);
+    app({f: |j: i64| |#d = 1, x: i64| cast<string>(d)$})
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_a_returned_functions_typedef_return, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let mk = |j: i64| -> fn(k: i64) -> W<'z> |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    mk(0)(0).cb(7)
+}
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
+
+run!(default_behind_a_returned_functions_typedef_return_written, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let mk = |j: i64| -> fn(k: i64) -> W<i64> |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    mk(0)(0).cb(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_an_annotated_functions_typedef_return, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let g: fn(k: i64) -> W<'p> = |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    "[g(0).cb(7)] [g(0).cb(#d: 2, 7)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 2"); FuseExpect::None);
+
+run!(default_behind_an_annotated_functions_typedef_return_holds_its_type, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let g: fn(k: i64) -> W<'p> = |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+    g(0).cb(#d: "s", 7)
+}
+"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(default_of_another_type_written_behind_a_functions_return, r#"
+{
+    let v: fn(k: i64) -> fn(?#d: 'q, x: i64) -> string = |k: i64| |#d = "q", x: i64| cast<string>(d)$;
+    let t = 1;
+    v <- t ~ |k: i64| |#d = 1, x: i64| cast<string>(d)$;
+    v(0)(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+// An abstract type's constructor holds its argument through the type's
+// representation, which no reader of the payload names a function by: a
+// default bounds the construction's parameter from below, so the
+// declaration that takes the value may widen it and one that cannot hold
+// the default refuses.
+run!(default_behind_an_abstract_constructor, r#"
+{
+    type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>;
+    let c = C(|#d = 1, x: i64| cast<string>(d)$);
+    c.0(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_an_abstract_constructor_holds_its_type, r#"
+{
+    type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>;
+    let c = C(|#d = 1, x: i64| cast<string>(d)$);
+    c.0(#d: "s", 7)
+}
+"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(default_behind_an_abstract_wider_annotation, r#"
+{
+    type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>;
+    let c: C<[i64, string]> = C(|#d = 1, x: i64| cast<string>(d)$);
+    "[c.0(7)] [c.0(#d: "s", 7)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s"); FuseExpect::None);
+
+run!(default_of_another_type_behind_an_abstract_annotation, r#"
+{
+    type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>;
+    let c: C<string> = C(|#d = 1, x: i64| cast<string>(d)$);
+    c.0(7)
+}
+"#, refused("C<string> does not contain C<i64>"); FuseExpect::None);
+
+run!(default_of_another_type_behind_an_abstract_representation, r#"
+{
+    type C = Abstract<fn(?#d: string, x: i64) -> string>;
+    let c = C(|#d = 1, x: i64| cast<string>(d)$);
+    c.0(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_behind_an_abstract_return_type, r#"
+{
+    type C<'z> = Abstract<{cb: fn(?#d: 'z, x: i64) -> string, n: i64}>;
+    let mk = |j: i64| -> C<'z> C({cb: |#d = 1, x: i64| cast<string>(d)$, n: 1});
+    mk(0).0.cb(7)
+}
+"#, refused("write the body's type, `-> C<i64>`"); FuseExpect::None);
+
+run!(default_behind_an_abstract_return_type_written, r#"
+{
+    type C<'z> = Abstract<{cb: fn(?#d: 'z, x: i64) -> string, n: i64}>;
+    let mk = |j: i64| -> C<i64> C({cb: |#d = 1, x: i64| cast<string>(d)$, n: 1});
+    mk(0).0.cb(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_behind_an_abstract_fits_its_factorys_variable, r#"
+{
+    type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>;
+    let mk = |z: 'a| -> C<'a> C(|#d = z, x: i64| cast<string>(d)$);
+    let a = mk(1);
+    let b = mk("s");
+    "[a.0(7)] [b.0(7)] [b.0(#d: "t", 7)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s t"); FuseExpect::None);
+
+run!(defaults_of_two_types_written_behind_an_abstract, r#"
+{
+    type C<'z> = Abstract<{cb: fn(?#d: 'z, x: i64) -> string, n: i64}>;
+    let c = C({cb: |#d = 1, x: i64| cast<string>(d)$, n: 1});
+    c <- once(c) ~ C({cb: |#d = "q", x: i64| cast<string>(d)$, n: 2});
+    select c.0.n { 2 => c.0.cb(7), _ => never() }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
+run!(default_behind_a_callbacks_abstract_return, r#"
+{
+    type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>;
+    let app = |f: fn(j: i64) -> C<'z>| f(0);
+    let c = app(|j: i64| C(|#d = 1, x: i64| cast<string>(d)$));
+    c.0(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
 // A union member built by the value's constructor holds the value, so a
 // function under it meets the fn type there: a field of an optional
 // struct, a tuple member, an array element of an option, a variant's

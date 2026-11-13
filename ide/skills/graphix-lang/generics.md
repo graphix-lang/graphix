@@ -403,6 +403,22 @@ no "write the default's type in the binding's type" |r: &mut fn(?#d: 'a, x: i64)
 ok |r: &mut fn(?#d: i64, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
 ```
 
+What a function returns is judged the same way where the function
+meets a fn type: a callback that returns a lambda with a default decides
+the variable the formal's return gives the label, and a default behind an
+abstract type's constructor is a lower bound of the type's parameter (the
+declaration that takes the value may widen it).
+
+```graphix,cases
+ok let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string| f(0)(7); app(|j: i64| |#d = 1, x: i64| cast<string>(d)$)
+no "string does not contain i64" let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string, v: 'z| f(0)(#d: v, 7); app(|j: i64| |#d = 1, x: i64| cast<string>(d)$, "s")
+no "write the default's type in the declared type" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> fn(k: i64) -> W<'z> |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0)(0).cb(7)
+ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c = C(|#d = 1, x: i64| cast<string>(d)$); c.0(7)
+no "i64 does not contain string" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c = C(|#d = 1, x: i64| cast<string>(d)$); c.0(#d: "s", 7)
+ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c: C<[i64, string]> = C(|#d = 1, x: i64| cast<string>(d)$); c.0(#d: "s", 7)
+no "write the body's type, `-> C<i64>`" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<'z> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
+```
+
 A generic function's variable that only data holds takes the widest
 argument, in either order, an omitted labeled default included (one
 that is neither wider nor narrower waits for the others to widen it). An

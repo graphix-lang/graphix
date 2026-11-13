@@ -302,6 +302,21 @@ fn checked_default<R: Rt>(
         None => Ok(()),
         Some(t) => t.check_contains(&ctx.env, typ),
     };
+    // CR claude for claude: [bug/medium] A labeled default whose value holds a function with a
+    // labeled default of its own is held by containment alone: the inner default is never
+    // judged (no check_hidden_defaults walk here), so a call that omits the outer label passes
+    // --check and the build or the bind refuses it. `let f = |#w: fn(?#d: 'z, x: i64) -> string
+    // = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x); f(7)` checks, and its build fails "in
+    // the instance of w(x) at this call site .. in: 1: type mismatch 'z: _ does not contain
+    // i64"; with the function in a struct field, written out or behind a typedef (`#w: W<'z> =
+    // {cb: |#d = 1, ..| .., n: 1}`, `w.cb(x)`), the program builds and logs "w.cb(x): binding
+    // the callee failed: .. in: 1: type mismatch 'z: _ does not contain i64". A call that
+    // passes the label (`f(#w: {cb: |#d = "q", ..| .., n: 1}, 7)`) is judged by
+    // CallSite::check_value_defaults and runs. base-r23 alike. A fix: once the default is held,
+    // walk its type against the label as a written argument's is (Narrowing::Site), in each of
+    // the three arms below. probes: ~/ptmp/cr29/scratch/r23/23b/trdrev/{lam_default_fn,
+    // lam_default, lam_default_struct, lam_default_passed}.gx
+    // (default-holds-defaulted-fn-01)
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
         Some(t) => match join {
             Some(join) => {
@@ -336,8 +351,16 @@ fn judge_hidden_defaults<R: Rt>(
     top_id: ExprId,
     formal: &FnType,
     value: &FnType,
+    narrowing: Narrowing,
 ) -> Result<()> {
     let defs = written_defs(ctx, value);
+    let mut bound =
+        |env: &Env,
+         _: &ArcStr,
+         label: &Type,
+         default: &Type,
+         _: &Expr,
+         _: Option<CompactString>| { label.check_contains_lower(env, default) };
     // CR claude for claude: [bug/low] The verdict depends on the order the defaults are
     // judged in: each narrows `formal`'s label, and a later one must fit what an earlier
     // one decided. With `let n: [i64, null] = null`, `[|#d = n, x: i64| x, |#d = 1, x:
@@ -373,7 +396,10 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(formal),
                 Some(value),
                 Judge::Check,
-                None,
+                match narrowing {
+                    Narrowing::Constructed => Some(&mut bound),
+                    Narrowing::Site | Narrowing::Written | Narrowing::Copy => None,
+                },
             )
             .map_err(|e| met_default_note::<R>(e, &defs, name))?;
             ctx.discard(node);
@@ -438,6 +464,10 @@ pub(crate) enum Narrowing {
     /// A call's formals: the site's own instantiation, which a default
     /// narrows.
     Site,
+    /// An abstract constructor's representation: the construction's own
+    /// parameters, which a default bounds from below, so the declaration
+    /// that takes the value may still widen them.
+    Constructed,
     /// The type of a binding something writes (its annotation, a `<-`
     /// target, a reference's referent): one type for every reader,
     /// which a default narrows.
@@ -456,7 +486,7 @@ impl Narrowing {
     /// the declaration's function holds an open cell.
     fn note(self) -> Option<&'static str> {
         match self {
-            Narrowing::Site => None,
+            Narrowing::Site | Narrowing::Constructed => None,
             Narrowing::Written => Some(
                 "a binding something writes holds one function type for every \
                  reader, so this default must fit its type as it is written: write \
@@ -484,10 +514,10 @@ struct HiddenWalk {
 
 /// [`judge_hidden_defaults`] wherever `declared` and `value` both give a
 /// function at one place: a struct field, a tuple, variant, array, list,
-/// map or reference part, through typedefs, and in a union the one
-/// member built by the value's constructor.
-/// What a call's formal, a `let`'s annotation, a `<-` target and a
-/// declared return type hold.
+/// map or reference part, what a function returns, through typedefs, and
+/// in a union the one member built by the value's constructor.
+/// What a call's formal, a `let`'s annotation, a `<-` target, a declared
+/// return type and an abstract constructor's representation hold.
 pub(crate) fn check_hidden_defaults<R: Rt>(
     ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -532,8 +562,8 @@ fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
 }
 
 /// Whether a function whose definition has a labeled default stands in
-/// `t` outside any function type, through bindings: what
-/// [`hidden_defaults_at`] can judge. Each shared node is asked once
+/// `t` as a part or as what a function of it returns, through bindings:
+/// what [`hidden_defaults_at`] can judge. Each shared node is asked once
 /// (`seen`).
 fn holds_defaulted<R: Rt>(
     ctx: &CompileCtx<R>,
@@ -542,12 +572,15 @@ fn holds_defaulted<R: Rt>(
 ) -> bool {
     ensure_sufficient(|| match t {
         _ if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
-        Type::Fn(ft) => ft.lambda_ids.ids().iter().any(|id| {
-            ctx.lambda_defs
-                .get(id)
-                .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
-                .is_some_and(|f| f.argspec.iter().any(|a| a.kind.default().is_some()))
-        }),
+        Type::Fn(ft) => {
+            let defaulted = ft.lambda_ids.ids().iter().any(|id| {
+                ctx.lambda_defs
+                    .get(id)
+                    .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+                    .is_some_and(|f| f.argspec.iter().any(|a| a.kind.default().is_some()))
+            });
+            defaulted || holds_defaulted(ctx, &ft.rtype, seen)
+        }
         Type::TVar(tv) => tv.binding().is_some_and(|b| holds_defaulted(ctx, &b, seen)),
         // a typedef's body is a written type, whose functions were judged
         // where they entered it: only its parameters hold the value's own
@@ -609,7 +642,15 @@ fn hidden_defaults_at<R: Rt>(
     ensure_sufficient(|| match (&d, &v) {
         (Type::Fn(formal), Type::Fn(fv)) => {
             let judge = |ctx: &mut CompileCtx<R>, formal: &FnType| {
-                judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
+                judge_hidden_defaults(
+                    ctx,
+                    flags,
+                    scope,
+                    top_id,
+                    formal,
+                    fv,
+                    walk.narrowing,
+                )
             };
             match walk.narrowing {
                 Narrowing::Copy if names_definitions(formal, fv) => {
@@ -621,7 +662,23 @@ fn hidden_defaults_at<R: Rt>(
                     }
                     Some(_) | None => judge(ctx, formal),
                 },
-            }
+            }?;
+            // CR claude for claude: [risk/low] An instance checked again (GRAPHIX_NO_SUBST=1)
+            // judges, at its return, the default of a function its body returns against the
+            // label a later use of the result decided, which the definition's check leaves to
+            // the calls. `let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$; v(0)(#d: "s", 7)`
+            // checks, builds and prints s (no call omits the label, so the default is never
+            // needed), and under GRAPHIX_NO_SUBST=1 the build refuses the instance of v(0),
+            // "the functions met here share one #d .. in: 1: type mismatch string does not
+            // contain i64". base-r23 alike; with one more function between (`|k: i64| |j: i64|
+            // |#d = 1, ..| ..`) base-r23 fails under NO_SUBST at the run-time bind ("a run-time
+            // bind at v(0)(0) did not type") and the lane at the build, since the walk reaches
+            // what a function returns. 54 of the 950 programs of gen_rev.py that run differ
+            // this way, under NO_SUBST alone, all 54 on base-r23 too. An instance takes its
+            // definition's types by default, so only the debug A/B splits. probes:
+            // ~/ptmp/cr29/scratch/r23/23b/trdrev/{ns1,ns2}.gx, gen_rev.py, nosubst_base.out
+            // (nosubst-returned-default-01)
+            at(ctx, walk, &formal.rtype, &fv.rtype)
         }
         (Type::Set(_), _) | (_, Type::Set(_)) => {
             let mut formals: LPooled<Vec<Type>> = LPooled::take();
