@@ -21,7 +21,7 @@ use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use triomphe::Arc;
 
 /// The primitive types a kernel holds in a register: the numerics and bool.
@@ -203,6 +203,9 @@ impl<V: Copy> Applied<V> {
 
 /// What each named type a walk expanded folds to ([`prim_bits`]).
 type Folds = Applied<Option<BitFlags<Typ>>>;
+
+#[cfg(test)]
+use std::cell::Cell;
 
 #[cfg(test)]
 thread_local! {
@@ -461,11 +464,6 @@ pub(crate) struct Seen<'a> {
     /// [`expand_key_fp`] of `key`; membership compares it before full equality.
     fp: u64,
     prev: Option<&'a Seen<'a>>,
-    /// The refs a freeze expanded directly below this one that the
-    /// freeze's own memo ([`Freeze::memo`]) does not hold, and what they
-    /// froze to: a ref's freeze depends only on it and the path, so a
-    /// sibling occurrence takes it.
-    frozen: RefCell<SmallVec<[(u64, Arc<TypeRef>, Type); 2]>>,
 }
 
 /// Fingerprint of an expansion key; a collision only costs a
@@ -488,7 +486,7 @@ pub(crate) fn key_closed(key: &TypeRef) -> bool {
 impl<'a> Seen<'a> {
     pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: Arc<TypeRef>) -> Self {
         let fp = expand_key_fp(&key);
-        Self { key, fp, prev, frozen: RefCell::default() }
+        Self { key, fp, prev }
     }
 
     /// The occurrence of `key` on the path. Keys compare cell-blind, so
@@ -540,7 +538,7 @@ pub(crate) enum FreezeError {
 
 fn try_freeze_for_abi(t: &Type) -> Result<Type, FreezeError> {
     let _profile = profile::phase(Phase::Freeze);
-    Freeze::default().freeze(t, None)
+    Freeze::default().freeze(t)
 }
 
 /// A hash of a frozen node's own content and its parts' node keys (a
@@ -606,7 +604,7 @@ pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
     }
 }
 
-// CR claude for claude: [perf/medium] The freeze takes every path through typedefs
+// XCR claude for claude: [perf/medium] The freeze takes every path through typedefs
 // that name each other: `memo` keeps a ref only where its expansion met no recurring
 // ref, and `Seen::frozen` only beside the refs frozen under one parent, so a definition
 // on a cycle is frozen once for each path that reaches it. K definitions `type
@@ -631,35 +629,166 @@ pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
 // for M = 4 / 6 / 8 (base-r23 0.79 / 1.01 / 4.13 G), M = 14 killed at 100 s past 669 G,
 // where --expand --no-fusion is 0.77 G at each. probes:
 // ~/ptmp/cr29/scratch/r23/23c/dpp/review/p00617.gx, lay.py, lay_8.gx, lay_14.gx
-/// One freeze's walk.
+// 2026-11-13 claude: Freeze keeps what each expansion of a ref froze to by the refs its
+// walk met, then by which of those were open around it (Expansions, RefSet); a later
+// occurrence takes it wherever the same refs of those it met are open, so a ref is
+// expanded once per frozen form it has, and the old global memo and Seen::frozen are
+// gone. A ref met open is still a leaf; refs match by == as the path's did. base-r24 ->
+// lane, --no-cache --expand, debug, instructions:u: g_perm_4/5/6 1.44/5.13/23.44 G ->
+// 0.85/1.08/1.85 G, g_perm_7 4.25 G (131.7 G on lane 23c), dp7 10.08 -> 0.99 G, lay_8
+// 4.00 -> 0.76 G, lay_14 0.78 G (killed past 669 G before); p00617 run 217.3 -> 1.83 G;
+// GUI+TUI examples --expand 103.07 G both. g_perm still grows with K: its expansions are
+// its distinct frozen forms (233/829/2746/8914 at K = 4..7), the output's own size.
+// Pins:
+// kernel_abi::tests::layers_over_a_recursive_definition_freeze_each_application_once
+// (65663 expansions over 8 layers with the old walk, 33 now) and
+// a_ref_freezes_by_the_open_refs_it_meets (fails when the lookup ignores the opened refs
+// or the met ones). An oracle build running the old walk beside the new on every freeze
+// and comparing them: graphix-tests lib (2.29M freezes) and --expand of 2832 corpus
+// files, 0 differ. probes: ~/ptmp/cr29/scratch/r24/24f/freeze-recursive-paths/
+/// One freeze's walk. Refs compare by `==`, which takes two open cells
+/// as one: an open cell outlives a freeze only in a part that crosses as
+/// an opaque Value.
 #[derive(Default)]
 struct Freeze {
-    /// The refs whose expansion met no recurring ref, by
-    /// [`expand_key_fp`]: such a ref freezes alike on every path, so any
-    /// later occurrence takes it, and a typedef DAG freezes once per
-    /// definition.
-    memo: RefCell<LPooled<AHashMap<u64, SmallVec<[(Arc<TypeRef>, Type); 1]>>>>,
-    /// The expansion in progress met a recurring ref.
-    recurred: Cell<bool>,
+    /// The index in `refs` of each ref, by [`expand_key_fp`].
+    index: RefCell<LPooled<AHashMap<u64, SmallVec<[usize; 1]>>>>,
+    /// Each ref the walk expanded.
+    refs: RefCell<LPooled<Vec<Expansions>>>,
+    /// The refs being expanded on the path.
+    open: RefCell<RefSet>,
+    /// The refs the expansion in progress met.
+    met: RefCell<RefSet>,
     folds: RefCell<Folds>,
 }
 
+/// A ref a freeze expanded: the occurrence it first expanded (its
+/// resolution cell filled), and what each expansion froze to by the refs
+/// it met, then by those of them open around it. A ref the walk meets
+/// open becomes a leaf and nothing else turns on the path, so a form
+/// holds wherever the same refs of those it met are open.
+struct Expansions {
+    key: Arc<TypeRef>,
+    frozen: SmallVec<[(RefSet, LPooled<AHashMap<RefSet, Type>>); 1]>,
+}
+
+/// Some of the refs one freeze met, by their index in [`Freeze::refs`].
+#[derive(Default)]
+struct RefSet(SmallVec<[u64; 2]>);
+
+impl RefSet {
+    /// The words up to the last that holds a member.
+    fn words(&self) -> &[u64] {
+        let n = self.0.iter().rposition(|w| *w != 0).map_or(0, |i| i + 1);
+        &self.0[..n]
+    }
+
+    fn contains(&self, r: usize) -> bool {
+        self.0.get(r / 64).is_some_and(|w| w & (1 << (r % 64)) != 0)
+    }
+
+    fn insert(&mut self, r: usize) {
+        if self.0.len() <= r / 64 {
+            self.0.resize(r / 64 + 1, 0)
+        }
+        self.0[r / 64] |= 1 << (r % 64)
+    }
+
+    fn remove(&mut self, r: usize) {
+        if let Some(w) = self.0.get_mut(r / 64) {
+            *w &= !(1 << (r % 64))
+        }
+    }
+
+    fn union_with(&mut self, other: &RefSet) {
+        if self.0.len() < other.0.len() {
+            self.0.resize(other.0.len(), 0)
+        }
+        self.0.iter_mut().zip(other.0.iter()).for_each(|(w, o)| *w |= o)
+    }
+
+    fn intersection(&self, other: &RefSet) -> RefSet {
+        RefSet(self.0.iter().zip(other.0.iter()).map(|(w, o)| w & o).collect())
+    }
+}
+
+impl PartialEq for RefSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.words() == other.words()
+    }
+}
+
+impl Eq for RefSet {}
+
+impl std::hash::Hash for RefSet {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.words().hash(state)
+    }
+}
+
 impl Freeze {
-    fn freeze(&self, t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
+    fn freeze(&self, t: &Type) -> Result<Type, FreezeError> {
         crate::stack::ensure_sufficient(|| {
-            self.freeze_inner(t, seen).map(super::TypeMemo::intern_frozen)
+            self.freeze_inner(t).map(super::TypeMemo::intern_frozen)
         })
     }
 
-    /// The memo's frozen form of `tr`.
-    fn memoized(&self, fp: u64, tr: &TypeRef) -> Option<Type> {
-        let memo = self.memo.borrow();
-        let (_, t) = memo.get(&fp)?.iter().find(|(k, _)| **k == *tr)?;
+    fn find(&self, fp: u64, tr: &TypeRef) -> Option<usize> {
+        let (index, refs) = (self.index.borrow(), self.refs.borrow());
+        index.get(&fp)?.iter().copied().find(|r| *refs[*r].key == *tr)
+    }
+
+    /// What an expansion of `r` froze to where the refs it met that are
+    /// open now were open then.
+    fn memoized(&self, r: usize) -> Option<Type> {
+        let (refs, open) = (self.refs.borrow(), self.open.borrow());
+        let (met, t) = refs[r].frozen.iter().find_map(|(met, by_open)| {
+            Some((met, by_open.get(&met.intersection(&open))?))
+        })?;
+        self.met.borrow_mut().union_with(met);
         Some(t.clone())
     }
 
-    fn freeze_inner(&self, t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
-        use FreezeError::{NonCanonical, Unresolved, Unsupported};
+    /// `tr`, the ref `r` if met before, expanded and frozen.
+    fn expand(
+        &self,
+        fp: u64,
+        tr: &Arc<TypeRef>,
+        r: Option<usize>,
+    ) -> Result<Type, FreezeError> {
+        let expanded = tr.expand_cell().ok_or(FreezeError::Unresolved)?;
+        #[cfg(test)]
+        EXPANSIONS.with(|n| n.set(n.get() + 1));
+        let r = r.unwrap_or_else(|| {
+            let mut refs = self.refs.borrow_mut();
+            refs.push(Expansions { key: tr.clone(), frozen: SmallVec::new() });
+            self.index.borrow_mut().entry(fp).or_default().push(refs.len() - 1);
+            refs.len() - 1
+        });
+        self.open.borrow_mut().insert(r);
+        let outer = std::mem::take(&mut *self.met.borrow_mut());
+        let t = self.freeze(&expanded);
+        self.open.borrow_mut().remove(r);
+        let mut met = std::mem::replace(&mut *self.met.borrow_mut(), outer);
+        let t = t?;
+        met.insert(r);
+        let opened = met.intersection(&self.open.borrow());
+        self.met.borrow_mut().union_with(&met);
+        let mut refs = self.refs.borrow_mut();
+        let frozen = &mut refs[r].frozen;
+        let i = match frozen.iter().position(|(m, _)| *m == met) {
+            Some(i) => i,
+            None => {
+                frozen.push((met, LPooled::take()));
+                frozen.len() - 1
+            }
+        };
+        frozen[i].1.insert(opened, t.clone());
+        Ok(t)
+    }
+
+    fn freeze_inner(&self, t: &Type) -> Result<Type, FreezeError> {
+        use FreezeError::{NonCanonical, Unsupported};
         // The TVar lock is not reentrant: clone out of the guard before recursing.
         let resolved = t.deref_cloned();
         {
@@ -677,16 +806,16 @@ impl Freeze {
                     Ok(Type::Primitive(*p))
                 }
                 Type::Array(inner) => {
-                    let inner = self.freeze(inner, seen)?;
+                    let inner = self.freeze(inner)?;
                     Ok(Type::Array(Arc::new(inner)))
                 }
                 Type::List(inner) => {
-                    let inner = self.freeze(inner, seen)?;
+                    let inner = self.freeze(inner)?;
                     Ok(Type::List(Arc::new(inner)))
                 }
                 Type::Tuple(elems) => {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                        elems.iter().map(|e| self.freeze(e, seen)).collect();
+                        elems.iter().map(|e| self.freeze(e)).collect();
                     let mut frozen = frozen?;
                     Ok(Type::Tuple(Arc::from_iter(frozen.drain(..))))
                 }
@@ -696,28 +825,26 @@ impl Freeze {
                         FreezeError,
                     > = fields
                         .iter()
-                        .map(|(n, ft, at)| {
-                            self.freeze(ft, seen).map(|t| (n.clone(), t, *at))
-                        })
+                        .map(|(n, ft, at)| self.freeze(ft).map(|t| (n.clone(), t, *at)))
                         .collect();
                     let mut frozen = frozen?;
                     Ok(Type::Struct(Arc::from_iter(frozen.drain(..))))
                 }
                 Type::Variant(tag, payloads, at) => {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                        payloads.iter().map(|p| self.freeze(p, seen)).collect();
+                        payloads.iter().map(|p| self.freeze(p)).collect();
                     let mut frozen = frozen?;
                     Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
                 }
                 Type::Set(members) => {
                     let folded = primitive_union(members, &mut self.folds.borrow_mut());
                     if let Some(p) = folded {
-                        return self.freeze(&p, seen);
+                        return self.freeze(&p);
                     }
                     if let Some(succ) = option_result_success(members) {
                         let succ_idx =
                             if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
-                        let frozen_succ = self.freeze(succ, seen)?;
+                        let frozen_succ = self.freeze(succ)?;
                         let m0 = if succ_idx == 0 {
                             frozen_succ.clone()
                         } else {
@@ -743,7 +870,7 @@ impl Freeze {
                     let mut frozen: LPooled<Vec<Type>> = LPooled::take();
                     let mut spliced = false;
                     for m in members.iter() {
-                        let m = self.freeze(m, seen)?;
+                        let m = self.freeze(m)?;
                         match &m {
                             Type::Bottom => return Err(NonCanonical),
                             Type::Set(ms) => {
@@ -769,7 +896,7 @@ impl Freeze {
                 }
                 Type::Abstract { id, params } => {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                        params.iter().map(|p| self.freeze(p, seen)).collect();
+                        params.iter().map(|p| self.freeze(p)).collect();
                     let mut frozen = frozen?;
                     Ok(Type::Abstract {
                         id: *id,
@@ -779,45 +906,26 @@ impl Freeze {
                 // An application the deref left is one it cannot fill: its
                 // constructor open or holding no hole.
                 Type::App(..) => Err(NonCanonical),
-                // A recurring ref becomes the opaque leaf, built on the outer
-                // (cell-filled) occurrence with its params frozen so the
-                // leaf stays TVar-free.
+                // A recurring ref becomes the opaque leaf, built on the
+                // occurrence first expanded (its cell filled) with its params
+                // frozen so the leaf stays TVar-free.
                 Type::Ref(tr) => {
-                    if let Some(outer) = Seen::find(seen, tr) {
-                        self.recurred.set(true);
-                        let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
-                            tr.params.iter().map(|p| self.freeze(p, seen)).collect();
-                        let mut frozen = frozen?;
-                        return Ok(Type::Ref(Arc::new(
-                            outer.with_params(Arc::from_iter(frozen.drain(..))),
-                        )));
-                    }
                     let fp = expand_key_fp(tr);
-                    if let Some(t) = self.memoized(fp, tr) {
-                        return Ok(t);
+                    let r = self.find(fp, tr);
+                    match r {
+                        Some(r) if self.open.borrow().contains(r) => {
+                            self.met.borrow_mut().insert(r);
+                            let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
+                                tr.params.iter().map(|p| self.freeze(p)).collect();
+                            let mut frozen = frozen?;
+                            let outer = self.refs.borrow()[r].key.clone();
+                            Ok(Type::Ref(Arc::new(
+                                outer.with_params(Arc::from_iter(frozen.drain(..))),
+                            )))
+                        }
+                        Some(r) if let Some(t) = self.memoized(r) => Ok(t),
+                        r => self.expand(fp, tr, r),
                     }
-                    if let Some(parent) = seen
-                        && let Some((_, _, t)) = parent
-                            .frozen
-                            .borrow()
-                            .iter()
-                            .find(|(f, k, _)| *f == fp && **k == **tr)
-                    {
-                        self.recurred.set(true);
-                        return Ok(t.clone());
-                    }
-                    let expanded = tr.expand_cell().ok_or(Unresolved)?;
-                    let node = Seen::push(seen, tr.clone());
-                    let recurred = self.recurred.replace(false);
-                    let t = self.freeze(&expanded, Some(&node))?;
-                    if !self.recurred.get() && key_closed(tr) {
-                        let mut memo = self.memo.borrow_mut();
-                        memo.entry(fp).or_default().push((tr.clone(), t.clone()));
-                    } else if let Some(parent) = seen {
-                        parent.frozen.borrow_mut().push((fp, tr.clone(), t.clone()));
-                    }
-                    self.recurred.set(recurred || self.recurred.get());
-                    Ok(t)
                 }
                 // No value's type: the hole of a constructor its
                 // application did not fill, kept in a cell of the
@@ -1335,6 +1443,61 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(freeze_for_abi_normalized(&t).is_some());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// Layers of two definitions each naming both of the layer below,
+    /// over `X<'y>`, which names the first layer again at `<'y, 'y>`: `X`
+    /// recurs inside its own expansion and meets none of the refs above
+    /// it, so each application freezes once, not once per path.
+    #[test]
+    fn layers_over_a_recursive_definition_freeze_each_application_once() {
+        let m = 8;
+        let mut defs = vec![(
+            "X<'y>".to_string(),
+            "[`X('y), `XA(A1<'y, 'y>), `XB(B1<'y, 'y>), null]".to_string(),
+        )];
+        for i in 1..=m {
+            for n in ["A", "B"] {
+                let below = match i < m {
+                    true => format!(
+                        "`{n}{i}a(A{j}<'x, 'y>), `{n}{i}b(B{j}<'x, 'y>)",
+                        j = i + 1
+                    ),
+                    false => format!("`{n}{i}x(X<'y>)"),
+                };
+                defs.push((
+                    format!("{n}{i}<'x, 'y>"),
+                    format!("[`{n}{i}('x), {below}, null]"),
+                ));
+            }
+        }
+        let (_env, t) = typed(&defs, "A1<null, i64>");
+        EXPANSIONS.with(|c| c.set(0));
+        assert!(freeze_for_abi_normalized(&t).is_some());
+        let expansions = EXPANSIONS.with(|c| c.get());
+        assert!(expansions <= 4 * m + 1, "{expansions} expansions over {m} layers");
+    }
+
+    /// A ref freezes again where the refs open among those its walk met
+    /// differ: `C` under `B` holds `B` as a leaf where `C` at the root
+    /// expands it, and `A` at the root expands `B` where under `B` it
+    /// holds the leaf.
+    #[test]
+    fn a_ref_freezes_by_the_open_refs_it_meets() {
+        let defs = [
+            ("A".to_string(), "[`A, `X(B)]".to_string()),
+            ("B".into(), "[`B, `Y(A), `Z(C)]".into()),
+            ("C".into(), "[`C, `W(A)]".into()),
+        ];
+        let b = "[`B, `Y([`A, `X(B)]), `Z([`C, `W([`A, `X(B)])])]";
+        for (root, frozen) in [
+            ("(B, C)", format!("({b}, [`C, `W([`A, `X([`B, `Y(A), `Z(C)])])])")),
+            ("(A, B)", format!("([`A, `X([`B, `Y(A), `Z([`C, `W(A)])])], {b})")),
+        ] {
+            let (_env, t) = typed(&defs, root);
+            let f = freeze_for_abi_normalized(&t).expect("a recursive typedef freezes");
+            assert_eq!(f.to_string(), frozen, "{root}");
+        }
     }
 
     /// `L<i> = [L<i-1>, M<i-1>]` and `M<i> = [M<i-1>, L<i-1>]` to `L<n>`,
