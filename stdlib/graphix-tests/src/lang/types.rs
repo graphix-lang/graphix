@@ -6138,6 +6138,41 @@ run!(
     FuseExpect::None
 );
 
+// A bound that names a union holds its parameter as the union written out
+// does: an argument that is the parameter's own decided cell makes the
+// bounded variable that type, and what the bound's other member would
+// have admitted is refused after it.
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_to_a_decided_cell,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a: O<'b>, 'b: Number |t: ('b, 'b, 'a)| t.2;
+  let h = |v| f((v, 1, v));
+  h(2)
+}"#,
+    is(Value::I64(2))
+);
+run!(
+    bare_cycle_through_a_bounds_union_to_a_decided_cell,
+    r#"{
+  let f = 'a: ['b, null], 'b: Number |t: ('b, 'b, 'a)| t.2;
+  let h = |v| f((v, 1, v));
+  h(2)
+}"#,
+    is(Value::I64(2))
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_is_the_decided_cell,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a: O<'b>, 'b: Number |t: ('b, 'b, 'a), u: 'a| t.2;
+  let h = |v| f((v, 1, v), null);
+  h(2)
+}"#,
+    refused("'a: i64 does not contain null");
+    FuseExpect::None
+);
+
 const BARE_CYCLE_WRITTEN_THROUGH_A_REFERENCE: &str = r#"
 {
     type B<'p> = Abstract<'p>;

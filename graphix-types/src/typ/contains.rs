@@ -210,6 +210,9 @@ pub(super) struct ContainsHist {
     /// In a trial: the pairs the walk it was made in was expanding and
     /// assuming, on the trial's copies ([`Self::seed`]).
     assumed_above: SmallVec<[(Type, Type); 2]>,
+    /// The open and the bound cell of each pair [`merge_bare_cycle`] is
+    /// making one type, innermost last ([`Self::merging`]).
+    merging: SmallVec<[(usize, usize); 2]>,
 }
 
 /// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`],
@@ -433,7 +436,17 @@ impl ContainsHist {
             identical: IdenticalMemo::default(),
             unfolding: SmallVec::new(),
             assumed_above: SmallVec::new(),
+            merging: SmallVec::new(),
         }
+    }
+
+    /// Whether [`merge_bare_cycle`] is making the open cell at `open` and
+    /// the bound one at `bound` one type. The open cell then takes the
+    /// binding as it would off any cycle, whatever bare path to the bound
+    /// cell its bounds still hold: a bound that names a union holds the
+    /// cell as the name's parameter, which the merge cannot drop.
+    fn merging(&self, open: usize, bound: usize) -> bool {
+        self.merging.contains(&(open, bound))
     }
 
     pub(super) fn ordered() -> Self {
@@ -1991,7 +2004,7 @@ pub(super) fn on_copies<const N: usize, R>(
 /// A cell, a type that may reach it and the edges the walk takes.
 type Reach<'a> = (&'a TVar, &'a Type, Toward);
 
-// CR claude for claude: [risk/low] A check that meets an open var aliased
+// XCR claude for claude: [risk/low] A check that meets an open var aliased
 // (TVar::alias) onto a cell that is already bound may not return: with
 // callsite::rejoin aliasing an open copy to its formal's cell where an earlier
 // argument had bound that cell (it binds the copy to it instead), --check of
@@ -2013,6 +2026,26 @@ type Reach<'a> = (&'a TVar, &'a Type, Toward);
 // lang::types::undecided_argument_inside_what_its_formals_variable_settled_to.
 // Nothing aliases onto a bound cell, so this CR's hang stays unreached;
 // hang_g4_p00166.gx checks and builds.
+// 2026-11-12 claude: The state needs no alias, and it is reached: an open cell
+// whose bound names a union (`'a: O<'b>` over `type O<'t> = ['t, null]`) reaches a
+// bound cell through the name's parameter, which TVar::drop_bounds_on does not drop
+// (it drops a cell or a union holding one), so merge_bare_cycle's own relation of
+// the merged cell to that bound cell found the same cycle and merged again, without
+// end. `let f = 'a: O<'b>, 'b: Number |t: ('b, 'b, 'a)| t.2; let h = |v| f((v, 1,
+// v)); h(2)` never returned from --check on base-r23 (probe
+// ~/ptmp/cr29/scratch/r23/23c/abc/s1.gx); a var aliased onto the bound cell is one
+// more way to the same state. merge_one is unchanged. merge_bare_cycle now names
+// the pair it is making one type (ContainsHist::merging), and contains_tvars takes
+// that pair past a bare cycle: the open cell takes the bound one's binding as off a
+// cycle, the bounds it kept checked against it, so `'a` is i64 as under `'a: ['b,
+// null]`. The CR's probe with TVar::rejoin put back to alias always hung before and
+// builds now. Pins, which never return without the guard:
+// typ::contains::tests::bare_cycle_through_a_typedefs_parameter_takes_the_bound_cells_binding
+// (the hand-built cells, with and without the alias),
+// bare_cycle_through_a_typedefs_parameter_below_holds_the_other_members,
+// lang::types::bare_cycle_through_a_bounds_typedef_parameter_to_a_decided_cell,
+// bare_cycle_through_a_bounds_typedef_parameter_is_the_decided_cell. Two OPEN cells
+// on such a path are bare-cycle-named-bound-01.
 /// The cells on a cycle through cells and unions alone, each type's bare
 /// paths to its cell and the cell, are one type: the open ones merge, each
 /// first dropping its bounds that are cells of the cycle, and each bound
@@ -2083,13 +2116,16 @@ fn merge_bare_cycle(
     if commit {
         // the merged cell holds a bound cell's binding from below, where
         // `'r ⊇ [T, 'r]` takes `T` beside the bounds it has
-        let merged = Type::TVar(survivor);
+        let merged = Type::TVar(survivor.clone());
         let below = (flags | ContainsFlags::Lower) & !ContainsFlags::Contra;
         for b in bound.iter() {
+            hist.merging.push((survivor.cell_addr(), b.cell_addr()));
             let b = Type::TVar(b.clone());
-            if !merged.contains_int(below, env, hist, &b)?
-                || !b.contains_int(flags, env, hist, &merged)?
-            {
+            let one = merged
+                .contains_int(below, env, hist, &b)
+                .and_then(|held| Ok(held && b.contains_int(flags, env, hist, &merged)?));
+            hist.merging.pop();
+            if !one? {
                 return Ok(false);
             }
         }
@@ -4214,7 +4250,9 @@ impl Type {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
                 let up = if lower(false) { Toward::Above } else { Toward::Any };
-                if let Some(cycle) = cycle_toward(&cell1, tt0, up) {
+                if let Some(cycle) = cycle_toward(&cell1, tt0, up)
+                    && !(cycle == Cycle::Bare && hist.merging(addr0, addr1))
+                {
                     return refuse(cycle, &[(t1, tt0, up)], hist);
                 }
                 // A rigid receiver must not bind; re-verdict against
@@ -4255,7 +4293,9 @@ impl Type {
                 if would_cycle_inner(&cell1, tt0) {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
-                if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any) {
+                if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any)
+                    && !(cycle == Cycle::Bare && hist.merging(addr1, addr0))
+                {
                     return refuse(cycle, &[(t0, tt1, Toward::Any)], hist);
                 }
                 if (rigid || commit) && t1.is_rigid() {
@@ -6934,6 +6974,54 @@ mod tests {
         let settled = p.binding().unwrap();
         assert!(both.contains(&env, &settled).unwrap(), "{settled}");
         assert!(settled.contains(&env, &both).unwrap(), "{settled}");
+    }
+
+    /// `x` over the union `O` names, `b` its parameter there.
+    fn named_union_over(b: &TVar) -> (Env, Type) {
+        let (env, o) = Env::typed_at_root(&[("O<'t>", "['t, null]")], "O<'b>").unwrap();
+        let known = AHashMap::from_iter([(b.name.clone(), Type::TVar(b.clone()))]);
+        let o = o.replace_tvars(&known);
+        o.seed_refs(&env);
+        (env, o)
+    }
+
+    /// `x: O<'b>` over `type O<'t> = ['t, null]`, `b` bound, and `x ⊇ b`:
+    /// `x` reaches `b` through the name's parameter, which is no bound of
+    /// `x` to drop, so `x` takes `b`'s binding with its bound checked
+    /// against it; so does a var aliased onto `b`'s cell.
+    #[test]
+    fn bare_cycle_through_a_typedefs_parameter_takes_the_bound_cells_binding() {
+        for (bound, aliased) in
+            [(Typ::I64, false), (Typ::Null, false), (Typ::I64, true), (Typ::Null, true)]
+        {
+            let (x, b, held) = (var("x"), var("b"), var("b"));
+            b.bind(prim(bound));
+            let (env, o) = named_union_over(if aliased { &held } else { &b });
+            x.add_cell_constraint(o);
+            if aliased {
+                held.alias(&b);
+                assert!(held.same_cell(&b));
+            }
+            let below = Type::TVar(if aliased { held } else { b });
+            Type::TVar(x.clone()).check_contains(&env, &below).unwrap();
+            assert_eq!(x.binding(), Some(prim(bound)));
+        }
+    }
+
+    /// The same cycle through a lower bound: `x` above `O<'b>` is `b` only
+    /// where `b` holds the name's other member.
+    #[test]
+    fn bare_cycle_through_a_typedefs_parameter_below_holds_the_other_members() {
+        let both = Type::Primitive(Typ::I64 | Typ::Null);
+        for (bound, holds) in [(prim(Typ::I64), false), (both, true)] {
+            let (x, b) = (var("x"), var("b"));
+            b.bind(bound.clone());
+            let (env, o) = named_union_over(&b);
+            x.add_lower(o);
+            let r = Type::TVar(x.clone()).check_contains(&env, &Type::TVar(b));
+            assert_eq!(r.is_ok(), holds, "{r:?}");
+            assert_eq!(x.binding(), holds.then_some(bound));
+        }
     }
 
     /// A declared var on a cycle of open cells is every one of them.

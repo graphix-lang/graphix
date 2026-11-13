@@ -2486,6 +2486,29 @@ impl TVar {
         }
     }
 
+    // CR claude for claude: [bug/high] A bare cycle of two open cells through a bound
+    // that names a union keeps no relation, so a binding of one type holds a value of
+    // another. `type O<'t> = ['t, null]; let f = 'a: O<'b>, 'b: Number |t: ('b, 'a)| t.1;
+    // let v = never(); let r: null = f((v, v)); v <- 2; println(select r { null as _ =>
+    // "matched null" })` passes --check on base-r23: fused it prints "matched null", under
+    // --no-fusion "no arm matches i64:2: a coverage hole in the check". With the union
+    // written out, `'a: ['b, null]`, the check refuses `let r: null` ("null does not
+    // contain '_N: unbound within Number"). `'a ⊇ 'b` with `'a` under O<'b> is a bare
+    // cycle (BarePath and CycleWalk walk a typedef's parameter its body holds under no
+    // constructor), but this drop takes out a bound that is a cell of the cycle or a
+    // union holding one, never a name of such a union: the conjunct stays, merge_one's
+    // occurs check (TVar::closes_cycle) refuses the merge and marks both cells
+    // CycleRefused, and merge_bare_cycle answers true. Nothing then holds `'a ⊇ 'b`, and
+    // a later bind of each cell alone (`'a := null`, `'b := i64`) leaves none open for
+    // the terminal settle to refuse. A wrapper `let h = |v| f((v, v))` infers `fn(v: 'x)
+    // -> 'y` with `'y: O<'b>`, where the union gives `fn(v: 'x) -> 'x`. A fix:
+    // merge_bare_cycle has the env, so before the drop it can write each bound of an open
+    // cell that names a union holding a cell of the cycle as that union
+    // (Type::unfolded_members over names_members); the drop then takes the cell out as it
+    // does of the union written out, a lower bound keeping the name's other members. The
+    // same path to a BOUND cell looped (alias-bound-cycle-01); ContainsHist::merging ends
+    // that. probes: ~/ptmp/cr29/scratch/r23/23c/abc/o7.gx, o9.gx, o8.gx (the union twin),
+    // o3.gx, o4.gx (the wrappers) (bare-cycle-named-bound-01)
     /// Drop each bound of the open cell that is a cell of `on`, each such
     /// member of a union lower bound, and each conjunct union holding one:
     /// merged with those cells, the cell is each of them, so `'r ⊇ [T,
