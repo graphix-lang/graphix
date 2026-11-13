@@ -391,7 +391,10 @@ a default written to it decides its label's variable: after `let v:
 fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| ..`,
 `'q` is `string`, and a later write of a `#d = 1` or a call `v(#d: 1.5,
 7)` is refused. Write the label's type wide enough for every default
-(`?#d: [i64, string]`). A write through a parameter's `&mut fn(?#d: 'a,
+(`?#d: [i64, string]`). The function the binding starts with counts, and
+so does one held beside a null: `let o = select j { 0 => |#d = 1, ..| ..,
+_ => null }; o <- |#d = "q", ..| ..` is refused at the write, whatever
+the calls pass. A write through a parameter's `&mut fn(?#d: 'a,
 ..)` may not decide the function's own `'a`: write the label's type there
 (`?#d: i64`).
 
@@ -399,6 +402,8 @@ fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| ..`,
 ok let v: fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| cast<string>(d)$; v(7)
 no "string does not contain i64" let v: fn(?#d: 'q, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
 ok let v: fn(?#d: [i64, string], x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
+no "the functions met here share one #d" let j = 0; let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }; let t = 1; o <- t ~ |#d = "q", x: i64| cast<string>(d)$; select o { null as _ => "n", f => f(#d: "z", 7) }
+ok let j = 0; let o: [fn(?#d: [i64, string], x: i64) -> string, null] = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }; let t = 1; o <- t ~ |#d = "q", x: i64| cast<string>(d)$; select o { null as _ => "n", f => f(7) }
 no "write the default's type in the binding's type" |r: &mut fn(?#d: 'a, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
 ok |r: &mut fn(?#d: i64, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
 ```

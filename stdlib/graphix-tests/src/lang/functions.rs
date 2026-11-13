@@ -3903,6 +3903,81 @@ run!(default_of_another_type_written_to_a_field, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+// A union's member that is the written function's type but for its cells
+// is one function with it, so the write judges the defaults of every
+// function the binding holds, as a write to a function alone does.
+run!(default_of_another_type_written_beside_a_null, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    o <- once(j) ~ |#d = "q", x: i64| cast<string>(d)$;
+    select o { null as _ => "n", f => f(7) }
+}
+"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(default_of_another_type_written_beside_a_null_and_unwrapped, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    o <- once(j) ~ |#d = "q", x: i64| cast<string>(d)$;
+    (o$)(7)
+}
+"#, refused("write the default's type in the binding's type"); FuseExpect::None);
+
+run!(default_of_another_type_written_from_an_optional_binding, r#"
+{
+    let j = 0;
+    let o1 = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    let o2 = select j { 0 => |#d = "q", x: i64| cast<string>(d)$, _ => null };
+    let o = o1;
+    o <- once(j) ~ o2;
+    select o { null as _ => "n", f => f(7) }
+}
+"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(default_of_another_type_written_beside_a_null_no_call_omits, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    o <- once(j) ~ |#d = "q", x: i64| cast<string>(d)$;
+    select o { null as _ => "n", f => f(#d: "z", 7) }
+}
+"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(default_of_another_type_written_to_a_select_of_one, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+    o <- once(j) ~ |#d = "q", x: i64| cast<string>(d)$;
+    o(7)
+}
+"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+
+run!(defaults_of_two_types_written_to_a_declared_optional, r#"
+{
+    let j = 0;
+    let o: [fn(?#d: [i64, string], x: i64) -> string, null] =
+        select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    o <- once(j) ~ |#d = "q", x: i64| cast<string>(d)$;
+    let r = select o { null as _ => never(), f => f(7) };
+    let seen = "";
+    seen <- r ~ "[seen][r]";
+    filter(seen, |s| s == "1q")
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1q"); FuseExpect::None);
+
+run!(defaults_of_one_type_written_beside_a_null, r#"
+{
+    let j = 0;
+    let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+    o <- once(j) ~ |#d = 2, x: i64| cast<string>(d)$;
+    let r = select o { null as _ => never(), f => f(7) };
+    let seen = "";
+    seen <- r ~ "[seen][r]";
+    filter(seen, |s| s == "12")
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "12"); FuseExpect::None);
+
 // What a function returns is a part of it as a field is of a struct: a
 // default of the function it returns is judged where the outer function
 // meets a fn type whose return hides the label or makes it optional.

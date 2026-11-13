@@ -4115,7 +4115,7 @@ impl<R: Rt> Connect<R> {
             })
             .map_err(|e| e.at(&self.spec));
         }
-        // CR claude for claude: [bug/medium] A lambda written to a binding whose union
+        // XCR claude for claude: [bug/medium] A lambda written to a binding whose union
         // holds an open function is never judged against that function's defaults: `let o
         // = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }; o <- select i
         // { 0 => never(), _ => |#d = "q", x: i64| cast<string>(d)$ }; (o$)(7)` passes
@@ -4138,6 +4138,23 @@ impl<R: Rt> Connect<R> {
         // [i64, string], x: i64) -> string, null]`. No program of
         // ~/ptmp/cr29/scratch/r23/23b/trd2/gen.py (4188, unions with null among them) passes
         // the check and fails the bind on the lane.
+        // 2026-11-13 claude: The union's member is the written function's type but for its
+        // cells, so the write took the identical-member path of contains (Type::Set over a
+        // member identical_linked finds), which welded the cells and left the two functions'
+        // lambda_ids unlinked: the write judged the written lambda alone. contains::Link now
+        // links the ids of two function types it welds, as the Fn/Fn containment does, so the
+        // write judges the birth lambda's default with the written one's and the four probes
+        // are refused at the write, 'the functions met here share one #d: annotate the
+        // binding that holds them', as a binding holding the function alone is
+        // (connect_sel1). Newly refused: such a write where no call omits the label or
+        // nothing calls (192 of gen.py's 9360 programs, each one's plain-function twin
+        // refused already; census 0/0). Fail without the fix:
+        // typ::contains::tests::a_union_member_welded_to_a_function_names_its_definitions and
+        // lang::functions::default_of_another_type_written_{beside_a_null,beside_a_null_and_unwrapped,beside_a_null_no_call_omits,from_an_optional_binding}
+        // (16 runs); default_of_another_type_written_to_a_select_of_one,
+        // defaults_of_two_types_written_to_a_declared_optional and
+        // defaults_of_one_type_written_beside_a_null hold either way. Probes
+        // ~/ptmp/cr29/scratch/r23/23b/cud/ (README).
         let scope = Scope::root();
         wrap!(
             self,

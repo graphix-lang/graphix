@@ -2278,8 +2278,9 @@ impl OpenPair {
 /// Weld the tvar cells of two loosely-equal types by position (the
 /// loose part is `Fn` equality, which does not tell distinct open cells
 /// apart): two open cells that compared equal must share fate, or the
-/// discarded side's later binding never reaches the survivor. `false`
-/// when two distinct rigid cells meet; only `commit` links.
+/// discarded side's later binding never reaches the survivor. Two
+/// function types welded are one, so each names the other's definitions.
+/// `false` when two distinct rigid cells meet; only `commit` links.
 struct Link {
     commit: bool,
     found: NodePairs,
@@ -2319,7 +2320,8 @@ impl Link {
                 }
             }
             (Type::Fn(f0), Type::Fn(f1)) => {
-                f0.args
+                let equal = f0
+                    .args
                     .iter()
                     .zip(f1.args.iter())
                     .all(|(a, b)| self.equal(&a.typ, &b.typ))
@@ -2328,7 +2330,11 @@ impl Link {
                         _ => true,
                     }
                     && self.equal(&f0.rtype, &f1.rtype)
-                    && self.equal(&f0.throws, &f1.throws)
+                    && self.equal(&f0.throws, &f1.throws);
+                if equal && self.commit {
+                    f0.lambda_ids.link(&f1.lambda_ids)
+                }
+                equal
             }
             (Type::Ref(r0), Type::Ref(r1)) => self.all(&r0.params, &r1.params),
             (Type::Set(a), Type::Set(b))
@@ -5941,6 +5947,33 @@ mod tests {
         assert!(identical_linked(&mut hist, &x, &y, true));
         cell(&f0, "a").bind(Type::Primitive(Typ::I64.into()));
         assert_eq!(cell(&f1, "b").binding(), Some(Type::Primitive(Typ::I64.into())));
+    }
+
+    // A union's member that is the function it takes, by pairing their
+    // cells, names that function's definitions and is named by it, as a
+    // member that only contains it does; a probe links nothing.
+    #[test]
+    fn a_union_member_welded_to_a_function_names_its_definitions() {
+        let f = |v: &str| {
+            let t = crate::expr::parser::parse_type(&format!("fn(x: '{v}) -> '{v}"));
+            let t = t.unwrap();
+            let Type::Fn(ft) = &t else { unreachable!() };
+            let id = crate::LambdaId::new();
+            ft.lambda_ids.set_id(id);
+            (t, id)
+        };
+        let ids = |t: &Type| match t {
+            Type::Fn(ft) => ft.lambda_ids.ids(),
+            _ => unreachable!(),
+        };
+        let ((f0, id0), (f1, id1)) = (f("a"), f("b"));
+        let held =
+            Type::Set(Arc::from_iter([f0.clone(), Type::Primitive(Typ::Null.into())]));
+        let env = Env::default();
+        assert!(held.contains_with_flags(BitFlags::empty(), &env, &f1).unwrap());
+        assert!(!ids(&f0).contains(&id1) && !ids(&f1).contains(&id0));
+        assert!(held.contains(&env, &f1).unwrap());
+        assert!(ids(&f0).contains(&id1) && ids(&f1).contains(&id0));
     }
 
     const CHAIN_DEPTH: usize = 12;

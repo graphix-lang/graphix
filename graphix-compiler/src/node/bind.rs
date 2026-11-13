@@ -661,6 +661,26 @@ impl<R: Rt> Bind<R> {
                 matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
             let contain = |t: &Type| t.check_contains(&ctx.env, &value);
             wrap!(self.node, contain(&self.typ))?;
+            // CR claude for claude: [bug/medium] In a function's body, a `let` whose
+            // annotation leaves a label's type to a variable of its own, over a select
+            // whose arm is a lambda with a default, passes the check and is refused when
+            // the instance is built: `let j = 0; let mk = |t: Any| -> string { let v:
+            // fn(?#d: 'q, x: i64) -> string = select j { 0 => |#d = 1, x: i64|
+            // cast<string>(d)$, _ => never() }; "none" }; mk(1)` checks, and the run says
+            // "in the instance of mk(1) .. the functions met here share one #d .. in: 1:
+            // type mismatch 'q: _ does not contain i64" (GRAPHIX_ELAB_AUDIT=1 reports it
+            // at typecheck0). With `v(#d: "s", 7)` as the body's value the instance is
+            // refused "'q: string does not contain i64", where the same `let` at the top
+            // level prints s. The definition's check judges the default on a copy
+            // (Narrowing::Copy), which decides nothing, so 'q is what the body's calls
+            // make it or settles to bottom; the instance judges the default again
+            // against that. A lambda written directly, or as a block's value, runs; so
+            // does a call that omits the label. The same behind a union, a struct field
+            // or an array (`[fn(?#d: 'q, ..) -> string, null]`, `{cb: ..}`,
+            // `Array<..>`). base-r23 alike; 156 of gen.py's 9360 programs. probes:
+            // ~/ptmp/cr29/scratch/r23/23b/cud/{s1,s6,s7,s8,s9,s12}.gx, twins that run
+            // {s2,s13,s14,s15}.gx, gen.py, gen.out
+            // (let-annotation-default-instance-01)
             if annotated {
                 let scope = Scope::root();
                 let (flags, top) = (BitFlags::empty(), self.spec.id);
