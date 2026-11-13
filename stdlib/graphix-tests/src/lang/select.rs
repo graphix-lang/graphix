@@ -3974,6 +3974,61 @@ const SAME_FORM_REFERENCES: &str = r#"
 
 run!(same_form_references_refused, SAME_FORM_REFERENCES, refused("same runtime form"); FuseExpect::None);
 
+// A name tests nothing, so an arm binds a part whose members share a
+// runtime form: the bind holds every member the arm's tests admit.
+run!(
+    names_arm_binds_two_function_types,
+    r#"{
+        let k = |v: i64| {
+            let t = select v > 0 { true => (|x: i64| x + 10, 1), false => (|y: string| y, "s") };
+            let u = select v > 0 { true => (|x: i64| x, 1), false => (|y: string| y, 2) };
+            let s = select v > 0 { true => {f: |x: i64| x, n: 1}, false => {f: |y: string| y, n: "s"} };
+            let names = select t { (r, n) => 1 };
+            let same = select u { (r, n) => n };
+            let literal = select u { (r, 1) => 5, (r, n) => n };
+            let fields = select s { {f, n} => 3 };
+            let told = select t { (r, 1) => r(v), (r, n) => 0 };
+            let element = select [t] { [(r, 1), ..] => r(v), _ => 0 };
+            [names, same, literal, fields, told, element]
+        };
+        array::concat(k(1), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 1, 5, 3, 11, 11, 1, 2, 2, 3, 0, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    tagged_arm_binds_its_member_of_two_same_form_types,
+    r#"{
+        let a = 1;
+        let b = "s";
+        let k = |v: i64| {
+            let t = select v > 0 { true => (`A, |x: i64| x + 10), false => (`B, |y: string| str::len(y)) };
+            let w = select v > 0 { true => (`A, &a), false => (`B, &b) };
+            let called = select t { (`A, f) => f(v), (`B, g) => g("abc") };
+            let read = select w { (`A, r) => *r + 1, (`B, r) => 0 };
+            [called, read]
+        };
+        array::concat(k(2), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [12, 2, 3, 0]);
+    FuseExpect::Jit
+);
+
+run!(
+    names_arm_bind_holds_both_function_types,
+    r#"{
+        let k = |v: i64| {
+            let u = select v > 0 { true => (|x: i64| x, 1), false => (|y: string| y, 2) };
+            select u { (r, 1) => r(v), (r, n) => n }
+        };
+        k(1)
+    }"#,
+    refused("this callee is one of fn(x: i64) -> i64 and fn(y: string) -> string");
+    FuseExpect::None
+);
+
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };

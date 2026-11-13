@@ -3287,7 +3287,9 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
-    let Some(why) = test.rep_collision_tested(env, rest) else { return Ok(()) };
+    let Some(why) = test.rep_collision_tested(env, Open::Unknown, rest) else {
+        return Ok(());
+    };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {
         if let Indiscernible::Pair(a, b) = &why

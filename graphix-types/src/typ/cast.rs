@@ -2629,6 +2629,25 @@ fn rep_collision(
                     (Type::Map(m0), Type::Map(m1)) => pairs(
                         &mut [(&m0.key, &m1.key), (&m0.value, &m1.value)].into_iter(),
                     ),
+                    // CR claude for claude: [bug/low] A test is refused for a part
+                    // whose members share a runtime form though another part of the
+                    // same test tells the members apart: the tuple, struct and
+                    // variant arms here report the first colliding position,
+                    // whatever the other positions decide. Over `s = select v > 0 {
+                    // true => {f: |x: i64| x, n: 1}, false => {f: |y: string| y, n:
+                    // "s"} }`, `select s { {n: 1, ..} => 1, _ => 0 }` says "this
+                    // pattern can't tell fn(x: i64) -> i64 from fn(y: string) ->
+                    // string" (the completed predicate holds the member's own `f`,
+                    // a field the arm leaves out; `{n: 1, f: _}` and `{n: 1, f}`
+                    // check), and over `[(&i64, i64), (&string, string)]` the
+                    // written `(&i64, i64) as (r, n)` says "can't tell &i64 from
+                    // &string" (it checks over `[(&i64, i64), string]`), though no
+                    // value of the other member passes either test. What would
+                    // close it for a select arm: a product's parts collide only
+                    // where every other part admits a value of the other side
+                    // (Type::could_match). probes:
+                    // ~/ptmp/cr29/scratch/r23/23d/nafu/{p20,p27,p31}.gx
+                    // (told-by-another-part-01)
                     (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
                         pairs(&mut x.iter().zip(y.iter()))
                     }
@@ -2695,13 +2714,18 @@ impl Type {
         rep_collision(env, &mut RepSeen::default(), false, Open::Unknown, false, self, t)
     }
 
-    /// [`Self::rep_collision_open`] for a select arm testing for `self`
-    /// among `t`: a cell of the test's, bound or open, is a part the arm
-    /// binds and does not test (a bind, a slice's rest), so it collides
-    /// with nothing; an open one of `t`'s may be any type, even where the
-    /// arm's capture shares it.
-    pub fn rep_collision_tested(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), true, Open::Unknown, false, self, t)
+    /// [`Self::rep_collision`] for a select arm testing for `self` among
+    /// `t`: a cell of the test's, bound or open, is a part the arm binds
+    /// and does not test (a bind, a slice's rest), so it collides with
+    /// nothing; under [`Open::Unknown`] an open one of `t`'s may be any
+    /// type, even where the arm's capture shares it.
+    pub fn rep_collision_tested(
+        &self,
+        env: &Env,
+        open: Open,
+        t: &Type,
+    ) -> Option<Indiscernible> {
+        rep_collision(env, &mut RepSeen::default(), true, open, false, self, t)
     }
 }
 

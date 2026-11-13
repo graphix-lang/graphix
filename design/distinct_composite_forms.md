@@ -184,7 +184,13 @@ any type there (`` 'b: `Keep(&i64) `` refuses `` `Keep(r) `` over `` ['b,
 `Keep('c)] ``); an open cell of what else reaches the arm may be any type,
 even where the arm's capture shares it, so `` |x: ['b, `Keep('b)]| select
 x { `Keep(r) => r, r => r } `` is refused as its `` `Keep(i64) `` spelling
-is. A slice pattern's predicate is a Set whose rest cell holds the whole
+is. An inferred predicate is judged that way at its arm too, with open
+cells as no type yet, so an arm of names over members that hold two
+function types or two references checks and its bind holds every member
+the arm's tests admit: `(r, n)` over `[(fn(x: i64) -> i64, i64), (fn(y:
+string) -> string, string)]` gives `r` both, `(r, 1)` the first alone. A
+written test is judged at its arm whole, its variables as the types they
+took. A slice pattern's predicate is a Set whose rest cell holds the whole
 element type, so as a type it covers every array and subtracts everything
 from what reaches the arm; its test is its elements', each of which sees
 any member of the element type. So each element that is not a bind is

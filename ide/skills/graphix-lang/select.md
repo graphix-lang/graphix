@@ -88,6 +88,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   member, or annotate `x` and `y`.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
+  A name tests nothing, so an arm may bind such a part, and the bind
+  holds every member the arm's own tests admit: `(r, n)` over two tuples
+  that hold different function types gives `r` both, `` (`A, f) `` the
+  `` `A `` member's alone.
   Everything else is told apart: a string from a bare variant, an array
   from a tuple, struct, variant or list, `[]` from `[<>]`. A type
   variable may be any type, so a test beside one is refused where an
@@ -148,4 +152,7 @@ ok |xs: Array<(i64, i64)>| select xs { Array<'b> as [(a, b), ..] => a + b, _ => 
 no "cannot hold Array<string>" let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- ["s"]; z
 ok let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- [2]; z
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
+ok let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, "s") }; select t { (r, n) => 0 }
+ok let b = true; let t = select b { true => (`A, |x: i64| x), false => (`B, |y: string| y) }; select t { (`A, f) => "[f(1)]", (`B, g) => g("s") }
+no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (r, n) => r(n) }
 ```

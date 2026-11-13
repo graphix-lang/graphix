@@ -23,8 +23,8 @@ use crate::{
     },
     prune::BoundaryRef,
     typ::{
-        AbstractId, ContainsFlags, InfiniteType, NodeKey, ShallowScrutinee, TVar, Type,
-        TypeMismatch,
+        AbstractId, ContainsFlags, InfiniteType, NodeKey, Open, ShallowScrutinee, TVar,
+        Type, TypeMismatch,
     },
     wrap,
 };
@@ -3105,7 +3105,7 @@ impl<R: Rt> Select<R> {
                 let spec = Arc::new(site.clone());
                 for (test, among) in tests {
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
-                    // CR claude for claude: [bug/low] An arm of names alone over
+                    // XCR claude for claude: [bug/low] An arm of names alone over
                     // members that hold two different function types is refused as
                     // unable to tell them apart, though it tests nothing: `let t =
                     // select v > 0 { true => (|x: i64| x, 1), false => (|y: string|
@@ -3119,7 +3119,43 @@ impl<R: Rt> Select<R> {
                     // refuses it too, naming one type twice. probes:
                     // ~/ptmp/cr29/scratch/r20/20f/ans/p2/{c5,c8}.gx
                     // (names-arm-fn-union-01)
-                    if let Some(why) = test.rep_collision(&ctx.env, &rest) {
+                    // 2026-11-12 claude: The arm's own judgment of an inferred
+                    // predicate is Type::rep_collision_tested with open cells
+                    // benign, as the settle's is: a cell of the test's is a part the
+                    // arm binds, so (r, n), (r, 1), {f, n}, (`A, f) and a slice
+                    // element [(r, 1), ..] over members holding two function types
+                    // or two references check, and the bind holds every member the
+                    // arm's tests admit. A written test is judged whole as before
+                    // (written-variable-told-01), and a part another part tells
+                    // apart is still refused where it is no cell
+                    // (told-by-another-part-01). Pins that fail without it:
+                    // lang::select names_arm_binds_two_function_types,
+                    // tagged_arm_binds_its_member_of_two_same_form_types,
+                    // names_arm_bind_holds_both_function_types, and the three cases
+                    // lines at the end of the graphix-lang skill's select.md
+                    // (shell::examples_compile skill_fences_check).
+                    let collision = match pat.explicit_type_predicate {
+                        // CR claude for claude: [bug/low] A written test's variable
+                        // is judged as the type it took, not as a part the arm
+                        // binds: over `u = select v > 0 { true => (|x: i64| x, 1),
+                        // false => (|y: string| y, 2) }`, `select u { ('q, i64) as
+                        // (r, n) => n, _ => 0 }` says "this pattern can't tell fn(y:
+                        // string) -> string from fn(x: i64) -> i64", where `(r, n)`
+                        // checks; so no arm can take the i64 member of `[(fn(x:
+                        // i64) -> i64, i64), (fn(y: string) -> string, string)]` by
+                        // a written test. Tried: rep_collision_tested here for a
+                        // written test too. Every lang:: pin passed, and `r` was
+                        // typed `[fn(x: i64) -> i64, fn(y: string) -> string]` in
+                        // that arm, also where `'q` annotates a let of one of the
+                        // functions. Not shown: that a written variable's cell
+                        // always holds every member that reaches the arm, which
+                        // is what the judgment here guards. probes:
+                        // ~/ptmp/cr29/scratch/r23/23d/nafu/{p6,p32,q1,q3}.gx
+                        // (written-variable-told-01)
+                        true => test.rep_collision(&ctx.env, &rest),
+                        false => test.rep_collision_tested(&ctx.env, Open::Benign, &rest),
+                    };
+                    if let Some(why) = collision {
                         return Err(format_with_flags(PrintFlag::DerefTVars, || {
                             why.untold("this pattern")
                         }))
