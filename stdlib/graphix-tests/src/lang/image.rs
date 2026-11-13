@@ -122,7 +122,7 @@ async fn eval_on(
     code: &str,
 ) -> Result<Value> {
     let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
-    let eid = compiled.exprs[0].id;
+    let eid = compiled.exprs[compiled.exprs.len() - 1].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
     tokio::pin!(timeout);
     loop {
@@ -1183,6 +1183,60 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
     // the root's owner; dropping it deletes the program
     let _program = warm.rt.program().await?.expect("the program restored");
     assert_eq!(cold_values, first_values(&warm.rt, &mut warm_rx).await?);
+    warm.shutdown().await;
+    Ok(())
+}
+
+/// A restored module takes what its interface declared when its program
+/// is dropped, as the one compiled does: the same program compiles
+/// again, its module, trait and core impl declared anew.
+#[tokio::test]
+async fn a_restored_module_dropped_is_declared_again() -> Result<()> {
+    let files = || {
+        vec![VfsResolver::new(ahash::AHashMap::from_iter([
+            (
+                netidx_core::path::Path::from("/m.gxi"),
+                VfsEntry::from(literal!(
+                    "trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; \
+                     impl Cast for C; val make: fn(x: i64) -> C"
+                )),
+            ),
+            (
+                netidx_core::path::Path::from("/m.gx"),
+                VfsEntry::from(literal!(
+                    "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+                     impl Cast for C { let to_value = |c: C| Sh::sh(c) }; \
+                     let make = |x: i64| C(x)"
+                )),
+            ),
+        ]))]
+    };
+    let program = literal!("mod m; json::write_str(m::make(3))$");
+    let expected = [Value::String(literal!("{\"C\":30}"))];
+    let (tx, mut cold_rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    let cold = TestCtx::start(
+        config(tx, TEST_REGISTER, files(), |_| {})?
+            .registration(RegistrationImage::save(reg_tx))
+            .program(Load::Text(program.clone()))
+            .program_image(prog_tx),
+    )
+    .await?;
+    let image = prog_rx.await??.image;
+    assert_eq!(first_values(&cold.rt, &mut cold_rx).await?, expected);
+    cold.shutdown().await;
+    let (tx, mut warm_rx) = mpsc::channel(10);
+    let warm = TestCtx::start(
+        config(tx, TEST_REGISTER, files(), |_| {})?
+            .registration(RegistrationImage::load(image)),
+    )
+    .await?;
+    assert!(warm.rt.env_stats().await?.restored, "the warm runtime compiled cold");
+    let restored = warm.rt.program().await?.expect("the program restored");
+    assert_eq!(first_values(&warm.rt, &mut warm_rx).await?, expected);
+    drop(restored);
+    assert_eq!(eval_on(&warm, &mut warm_rx, &program).await?, expected[0]);
     warm.shutdown().await;
     Ok(())
 }

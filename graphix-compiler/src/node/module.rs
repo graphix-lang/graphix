@@ -3,7 +3,7 @@ use crate::{
     Refs, Rt, Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{
-        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, UseAnchor,
+        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, UseAnchor,
         scope_params,
     },
     errf,
@@ -214,12 +214,29 @@ pub(crate) fn compile_use<R: Rt>(
     Ok(Nop::new(Type::Bottom))
 }
 
+/// The traits and impls an interface declared: with its `val`s'
+/// bindings, what [`bind_sig`] registered outside the lexical maps, which
+/// goes when the module does.
+#[derive(Debug, Default)]
+struct SigDecls {
+    traits: Vec<Arc<TraitDef>>,
+    impls: Vec<Arc<ImplDef>>,
+}
+
+impl SigDecls {
+    /// Give the registries back what is still these declarations'.
+    fn unregister(&self, env: &mut Env) {
+        self.impls.iter().for_each(|im| env.unregister_impl(im));
+        self.traits.iter().for_each(|def| env.unrecord_trait(def))
+    }
+}
+
 fn bind_sig(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
     scope: &Scope,
     sig: &Sig,
-) -> Result<()> {
+) -> Result<SigDecls> {
     env.lexical.modules.insert_cow(scope.lexical.clone());
     // a sig `use self::sub::…` may precede `mod sub;`
     for si in sig.items.iter() {
@@ -227,16 +244,19 @@ fn bind_sig(
             env.lexical.modules.insert_cow(scope.append(name).lexical);
         }
     }
+    let mut decls = SigDecls::default();
     for (i, si) in sig.items.iter().enumerate() {
-        bind_sig_item(env, pending, scope, i, si, &si.ori).placed(&si.ori, si.pos)?;
+        bind_sig_item(env, pending, &mut decls, scope, i, si, &si.ori)
+            .placed(&si.ori, si.pos)?;
     }
-    Ok(())
+    Ok(decls)
 }
 
 /// Bind the interface's item `si`, the `item`th.
 fn bind_sig_item(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
+    decls: &mut SigDecls,
     scope: &Scope,
     item: usize,
     si: &SigItem,
@@ -324,14 +344,14 @@ fn bind_sig_item(
                     traits::method_decl(env, m, &tref, &scope.lexical, &t.name, si.pos)
                 })
                 .collect::<Result<LPooled<Vec<_>>>>()?;
-            env.deftrait(
+            decls.traits.push(env.deftrait(
                 &scope.lexical,
                 &t.name,
                 sigs.drain(..),
                 si.doc.0.clone(),
                 t.name.pos_or(si.pos),
                 si_ori.clone(),
-            )?;
+            )?);
         }
         SigKind::Impl(im) => {
             traits::impl_outside_functions(&scope.lexical, &im.trait_name)?;
@@ -358,7 +378,7 @@ fn bind_sig_item(
                 );
                 methods.insert_cow(d.name.as_str().into(), bind.id);
             }
-            env.register_impl(Arc::new(ImplDef {
+            let def = Arc::new(ImplDef {
                 trait_id,
                 target,
                 params,
@@ -367,7 +387,9 @@ fn bind_sig_item(
                 declared: true,
                 pos: si.pos,
                 ori: si_ori.clone(),
-            }))?;
+            });
+            env.register_impl(def.clone())?;
+            decls.impls.push(def);
         }
     }
     Ok(())
@@ -1373,6 +1395,7 @@ pub struct Module<R: Rt> {
     /// hold them (a lambda instance's holds only the binds from before
     /// its body).
     sig_binds: Map<CompactString, BindId>,
+    sig_decls: SigDecls,
     sig: Sig,
     pub(crate) scope: Scope,
     proxy: Vec<Proxy>,
@@ -1422,6 +1445,7 @@ impl<R: Rt> Module<R> {
         body: Body<R>,
         env: Lexical,
         sig_binds: Map<CompactString, BindId>,
+        sig_decls: SigDecls,
         sig: Sig,
         scope: Scope,
         proxy: Vec<Proxy>,
@@ -1440,6 +1464,7 @@ impl<R: Rt> Module<R> {
             env,
             base,
             sig_binds,
+            sig_decls,
             sig,
             scope,
             proxy,
@@ -1480,6 +1505,10 @@ impl<R: Rt> Module<R> {
         };
         let env = image::lexical_decode(buf)?;
         let sig_binds = SharedMap::decode(buf)?.0;
+        let sig_decls = SigDecls {
+            traits: Vec::<Arc<TraitDef>>::decode(buf)?,
+            impls: Vec::<Arc<ImplDef>>::decode(buf)?,
+        };
         let sig = Sig::decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let proxy = Vec::<Proxy>::decode(buf)?;
@@ -1499,6 +1528,7 @@ impl<R: Rt> Module<R> {
             body,
             env,
             sig_binds,
+            sig_decls,
             sig,
             scope,
             proxy,
@@ -1553,7 +1583,7 @@ impl<R: Rt> Module<R> {
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
         env.lexical.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
+        let sig_decls = bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
         // the interface grants the traits it declares impls of, wherever
         // the sandbox leaves them
@@ -1571,6 +1601,7 @@ impl<R: Rt> Module<R> {
             body,
             env.lexical(),
             sig_binds(&ctx.env, scope),
+            sig_decls,
             sig,
             scope.clone(),
             Vec::new(),
@@ -1596,15 +1627,17 @@ impl<R: Rt> Module<R> {
         let mut env = ctx.env.lexical();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig).with_context(
-            || format_compact!("binding signature for module {}", scope.lexical),
-        )?;
+        let sig_decls = bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
+            .with_context(|| {
+                format_compact!("binding signature for module {}", scope.lexical)
+            })?;
         let mut t = Self::with(
             spec,
             flags,
             Body::Static,
             env,
             sig_binds(&ctx.env, scope),
+            sig_decls,
             sig,
             scope.clone(),
             Vec::new(),
@@ -2027,6 +2060,8 @@ impl<R: Rt> Update<R> for Module<R> {
         }
         image::lexical_encode(&self.env, buf)?;
         SharedMap(self.sig_binds.clone()).encode(buf)?;
+        self.sig_decls.traits.encode(buf)?;
+        self.sig_decls.impls.encode(buf)?;
         self.sig.encode(buf)?;
         image::scope_encode(&self.scope, buf)?;
         self.proxy.encode(buf)?;
@@ -2148,7 +2183,7 @@ impl<R: Rt> Update<R> for Module<R> {
             source.delete(ctx);
         }
         self.clear_compiled(ctx);
-        // CR claude for claude: [bug/medium] A deleted module's interface `impl`s
+        // XCR claude for claude: [bug/medium] A deleted module's interface `impl`s
         // stay. The loop below deletes the bindings its `val`s declared, but not
         // the method bindings `bind_sig_item` made for a `SigKind::Impl` (at the
         // module's `impl` block scope) nor the declared `ImplDef` it registered.
@@ -2168,10 +2203,56 @@ impl<R: Rt> Update<R> for Module<R> {
         // declared impl's method bindings here as the vals are and unregister
         // its entry (`Env::unregister_impl`), then see what a sig's `trait` and
         // `type` leave. (deleted-module-impl-leak-01)
-        for (_, val) in self.sig_binds.iter() {
-            ctx.forget_binding(*val);
-            ctx.delete_binding(*val)
+        // 2026-11-12 claude: Module::delete now takes what the interface declared
+        // (SigDecls: each declared impl's method bindings and registry entry,
+        // each declared trait's dispatchers and record) and the lexical names at
+        // the module's scope and below; Module::unregister gives the record and
+        // entries back at a reload of the source around the module, and
+        // ImplDef::same_definition compares the origin so the later delete leaves
+        // the new load's entry. On base a root module was also refused after a
+        // drop (duplicate module definition m), and an outer reload around a
+        // module whose interface declares an impl failed every time (conflicting
+        // implementation; probe nested.gx in
+        // ~/ptmp/cr29/scratch/r23/23e/deleted-module-impl-leak-01/). Pins that
+        // fail without it:
+        // lib_tests::leaks::a_dropped_module_takes_its_declared_core_impl,
+        // a_dropped_module_takes_its_declared_trait_and_impl,
+        // a_dropped_interface_module_takes_what_its_interface_declared,
+        // a_dropped_root_module_is_declared_again;
+        // lang::image::a_restored_module_dropped_is_declared_again;
+        // lang::modules::a_reload_around_an_interface_module_declares_its_impl_again.
+        // Left open: the import tables (dropped-import-tables-01), and a function
+        // escaping a dropped static declaration, which the leak had kept
+        // answering (escaped-fn-dropped-trait-01).
+        self.sig_decls.unregister(&mut ctx.env);
+        let SigDecls { traits, impls } = &self.sig_decls;
+        let methods = impls.iter().flat_map(|im| im.methods.iter());
+        for (_, id) in self.sig_binds.iter().chain(methods) {
+            ctx.forget_binding(*id);
+            ctx.delete_binding(*id)
         }
+        for m in traits.iter().flat_map(|def| def.methods.iter()) {
+            ctx.delete_dispatcher(m.dispatcher)
+        }
+        ctx.env.unbind_lexical_under(&self.scope.lexical);
+        // CR claude for claude: [bug/low] A dropped expression's import tables
+        // stay in `Env::names`: one for each of its block scopes that imports,
+        // declares a trait or writes an impl, and a deleted module's own with
+        // those below it. Each compile names its blocks apart, so an embedder
+        // that compiles and drops `{ use str::len; len("ab") }` 50 times holds 50
+        // more tables (`env.names.len()` 60 -> 110), and the module of
+        // `lib_tests::leaks::a_dropped_module_takes_its_declared_trait_and_impl`
+        // leaves 3 a round. Nothing scrubs them here, as a reload does
+        // (`Env::clear_names_under`), because a function that outlives its
+        // module compiles against its scope's table at every new call site, and
+        // every instance of a function names its body's scopes alike
+        // (instance-import-tables-01). To fix with that one: a table goes with
+        // the last view that names its scope. (dropped-import-tables-01)
+    }
+
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.for_each_child_mut(&mut |c| c.unregister(ctx));
+        self.sig_decls.unregister(&mut ctx.env)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {

@@ -349,6 +349,29 @@ a_function_saved_across_reloads_keeps_nothing_once_dropped`,
 `a_held_function_outlives_a_collected_reader_of_its_val`
 and graphix-shell's `retired_binding_image` (cold and from an image).
 
+What the interface declared goes with the module too (`SigDecls`,
+`Module::delete`). A declared impl's method bindings are deleted as the
+vals are and its entry leaves the registry; a declared trait's
+dispatchers are deleted as a body's are (`ExecCtx::delete_dispatcher`)
+and its record is given back; and every name the interface made at the
+module's scope or below leaves the lexical maps
+(`Env::unbind_lexical_under`). So a module an embedder drops is declared
+again by the next compile, its core-trait impls included. A reload of a
+source that declares the module gives the record and the entries back
+before the new source compiles (`Module::unregister`), as a body's own
+`trait` and `impl` do, and the module's delete, which follows, leaves the
+new load's: a declared impl is its load's (`ImplDef::same_definition`
+compares the origin, since every load names the declaration's block
+alike). The import tables stay (CR `dropped-import-tables-01`), and a
+function that outlives a dropped static declaration binds at no new call
+site (CR `escaped-fn-dropped-trait-01`). Pins: `lib_tests::leaks::
+a_dropped_module_takes_its_declared_core_impl`,
+`a_dropped_module_takes_its_declared_trait_and_impl`,
+`a_dropped_interface_module_takes_what_its_interface_declared`,
+`a_dropped_root_module_is_declared_again`, `lang::image::
+a_restored_module_dropped_is_declared_again` and `lang::modules::
+a_reload_around_an_interface_module_declares_its_impl_again`.
+
 ### A `val`'s type variables
 
 A `val` is a scheme its uses copy: every val whose type holds a variable

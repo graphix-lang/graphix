@@ -594,12 +594,14 @@ impl TraitDef {
 
 impl ImplDef {
     /// One implementation, whether or not both sides were decoded from
-    /// an image: an implementation's scope is its own block.
+    /// an image: its scope is its own block, or, declared by an
+    /// interface, a block every load names alike, so its load's.
     pub(crate) fn same_definition(&self, other: &ImplDef) -> bool {
         self.trait_id == other.trait_id
             && self.scope == other.scope
             && self.declared == other.declared
             && self.pos == other.pos
+            && same_origin(&self.ori, &other.ori)
     }
 }
 
@@ -2758,8 +2760,9 @@ impl Env {
     }
 
     /// Drop the lexical entries (modules, binds, typedefs, traits) at
-    /// `scope` or below; the number of names they held.
-    fn unbind_lexical_under(&mut self, scope: &str) -> usize {
+    /// `scope` or below; the number of names they held. The bindings
+    /// themselves stay registered.
+    pub fn unbind_lexical_under(&mut self, scope: &str) -> usize {
         fn drop_scopes<V: Clone>(
             m: &mut Map<ModPath, Map<CompactString, V>>,
             scope: &str,

@@ -255,20 +255,31 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
-async fn held(ctx: &TestCtx) -> Result<[usize; 6]> {
+async fn held(ctx: &TestCtx) -> Result<[usize; 13]> {
     let s = ctx.rt.env_stats().await?;
-    let dispatchers = ctx.rt.get_env().await?.trait_methods.len();
+    let env = ctx.rt.get_env().await?;
+    macro_rules! names {
+        ($m:expr) => {
+            (&$m).into_iter().map(|(_, names)| names.len()).sum::<usize>()
+        };
+    }
     Ok([
         s.store_len,
         s.aliases_len,
         s.ref_var_keys,
         s.ref_var_total,
         s.by_id_len,
-        dispatchers,
+        env.trait_methods.len(),
+        env.trait_defs.len(),
+        names!(*env.impls),
+        env.poly_binds.len(),
+        names!(env.lexical.binds),
+        names!(env.lexical.typedefs),
+        names!(env.lexical.traits),
+        env.lexical.modules.len(),
     ])
 }
 
-/// The root binding `name`, which a test writes to drive a program.
 async fn root_bind(ctx: &TestCtx, name: &str) -> Result<BindId> {
     let env = ctx.rt.get_env().await?;
     let root = &graphix_compiler::Scope::root().lexical;
@@ -590,6 +601,126 @@ async fn a_held_function_outlives_a_collected_reader_of_its_val(
     await_update(&mut rx, e_late, three).await?;
     ctx.shutdown().await;
     Ok(())
+}
+
+/// Compile `code` and drop it once its last expression is `want`, 50
+/// times over: the same text compiles each time, and the session holds
+/// after the last what it held after the fifth.
+async fn compiled_and_dropped<const N: usize>(
+    files: [(&'static str, &'static str); N],
+    code: &'static str,
+    want: Value,
+) -> Result<()> {
+    const ROUNDS: usize = 50;
+    let files = files.map(|(path, text)| (path, VfsEntry::from(ArcStr::from(text))));
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let mut early = None;
+    for i in 0..5 + ROUNDS {
+        if i == 5 {
+            early = Some(held(&ctx).await?)
+        }
+        let res = match ctx.rt.compile(ArcStr::from(code)).await {
+            Ok(r) => r,
+            Err(e) => bail!("compile {i} failed: {e:?}"),
+        };
+        let eid = res.exprs[res.exprs.len() - 1].id;
+        await_update(&mut rx, eid, |v| *v == want).await?;
+        drop(res);
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, Some(late), "grew over {ROUNDS} compiles");
+    Ok(())
+}
+
+/// A dropped dynamic module's interface `impl` of a core trait goes with
+/// it: the declaration registers again at the next compile.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_module_takes_its_declared_core_impl() -> Result<()> {
+    compiled_and_dropped(
+        [],
+        r#"{
+            let status = mod m dynamic {
+                sandbox whitelist [core];
+                sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+                source "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
+            };
+            select status { error as e => never(dbg(e)), null as _ => json::write_str(m::make(3))$ }
+        }"#,
+        Value::String(literal!("{\"C\":30}")),
+    )
+    .await
+}
+
+/// The same for a trait the interface declares itself: its dispatchers,
+/// its record, the impl's method bindings and the type's name go too.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_module_takes_its_declared_trait_and_impl() -> Result<()> {
+    compiled_and_dropped(
+        [],
+        r#"{
+            let status = mod m dynamic {
+                sandbox whitelist [core];
+                sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
+                source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
+            };
+            select status { error as e => never(dbg(e)), null as _ => m::Sh::sh(m::make(3)) }
+        }"#,
+        Value::I64(30),
+    )
+    .await
+}
+
+/// A dropped module with an interface file leaves nothing its interface
+/// declared, a submodule's names included.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_interface_module_takes_what_its_interface_declared() -> Result<()> {
+    compiled_and_dropped(
+        [
+            (
+                "/m/mod.gxi",
+                "trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+                 type C; impl Sh for C; impl Cast for C; mod sub; \
+                 val make: fn(x: i64) -> C",
+            ),
+            (
+                "/m/mod.gx",
+                "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * sub::ten }; \
+                 impl Cast for C { let to_value = |c: C| Sh::sh(c) }; \
+                 let make = |x: i64| C(x)",
+            ),
+            ("/m/sub.gxi", "trait Tw { val tw: fn(self) -> i64 }; type T = i64; val ten: T"),
+            ("/m/sub.gx", "let ten = 10"),
+        ],
+        r#"{ mod m; "[m::Sh::twice(m::make(3))] [json::write_str(m::make(4))$] [m::sub::ten]" }"#,
+        Value::String(literal!("60 {\"C\":40} 10")),
+    )
+    .await
+}
+
+/// A module declared at the root is declared again once it is dropped.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_root_module_is_declared_again() -> Result<()> {
+    compiled_and_dropped(
+        [
+            ("/m.gxi", "val make: fn(x: i64) -> i64"),
+            ("/m.gx", "let make = |x: i64| x + 1"),
+        ],
+        "mod m; m::make(3)",
+        Value::I64(4),
+    )
+    .await?;
+    compiled_and_dropped(
+        [],
+        r#"mod m dynamic {
+            sandbox whitelist [core];
+            sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
+            source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
+        }"#,
+        Value::Null,
+    )
+    .await
 }
 
 modes!(
