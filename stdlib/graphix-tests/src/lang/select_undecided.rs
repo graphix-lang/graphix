@@ -1128,6 +1128,97 @@ run!(naming_an_open_part_below_a_reference, r#"{
     [f(`M), f("s")]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1]); FuseExpect::None);
 
+// A member of the bound that the unguarded arms before an arm cover whole
+// does not reach it: the arm tests no value of that member's cells.
+run!(arm_behind_a_cover_of_a_member_below_a_reference, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_the_covered_part_open, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (x, `K), false => (0, `L) });
+        select *r { (_, `K) => 1, (0, _) => 2, _ => 3 }
+    };
+    [f("s", true), f(0, true), f("s", false), f(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_of_a_member_below_an_abstract_parameter, r#"{
+    type W<'p> = Abstract<'p>;
+    let f = |x, b: bool| {
+        let w = W(select b { true => (x, `K), false => (0, `L) });
+        select w.0 { (_, `K) => 1, (0, _) => 2, _ => 3 }
+    };
+    [f("s", true), f(0, true), f("s", false), f(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
+
+run!(arm_behind_an_or_cover_of_two_members_below_a_reference, r#"{
+    let f = |x, y, b: i64| {
+        let r = &mut (select b { 0 => (`K, x), 1 => (`M, y), _ => (`L, 0) });
+        select *r { (`K, _) | (`M, _) => 1, (_, 0) => 3, _ => 4 }
+    };
+    [f(1, 2, 0), f(1, 2, 1), f(1, 2, 2)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 3]); FuseExpect::Jit);
+
+run!(arm_behind_a_null_cover_of_a_member_below_a_reference, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (null, x), false => (1, 0) });
+        select *r { (null, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2]); FuseExpect::Jit);
+
+run!(written_arm_behind_a_cover_of_a_member_below_a_reference, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        select *r { (`K, _) => 1, (Any, i64) as (_, 0) => 2, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_tests_the_member_that_reaches_it_refused, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, y) });
+        select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f(1, 0, true), f(1, 0, false)]
+}"#, refused("(_, 0) tests a value of 'y, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_behind_a_cover_of_another_member_of_its_cell_refused, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, x) });
+        select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_behind_a_guarded_arm_over_a_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        select *r { (`K, _) if b => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_before_the_cover_of_a_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        select *r { (_, 0) => 2, (`K, _) => 1, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(covering_arm_testing_its_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        select *r { (`K, i64) as (_, n) => n, (_, 0) => 2, _ => 3 }
+    };
+    [f(1, true), f(1, false)]
+}"#, refused("(`K, i64) as (_, n) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
 // A declared variable below a bound is met as one the scrutinee holds
 // itself: no arm decides it.
 run!(tag_testing_a_declared_variable_below_a_reference_refused, r#"{

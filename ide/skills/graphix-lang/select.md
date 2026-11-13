@@ -52,7 +52,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   and through a reference or an abstract's payload alike (`select *r`
   over `let r = &mut (x, 0)`, `select W((x, 0)).0`), whether the arms
   would decide the part or leave it open (``[`J, _] => 1, _ => 3`` over
-  `let r = &mut [x, 0]`); so is a literal,
+  `let r = &mut [x, 0]`), and there too an earlier unguarded arm that
+  takes a member whole frees the later arms of it (`(_, 0)` behind
+  `` (`K, _) `` over `` &mut (select b { true => (`K, x), false => (`L,
+  0) }) ``); so is a literal,
   `null`, `[]`, a fixed-length slice or an or-pattern there. A pattern
   that only takes it apart decides its shape: `((a, b), _)`, `({a, b},
   _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check, unless
@@ -129,6 +132,9 @@ ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }
 no "[`J, _] tests a value of 'x" |x| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
 ok |x: [`J, `M]| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
 ok |x| { let r: &mut Array<[`J, `M, i64]> = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
+ok |x, b: bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 } }
+no "(_, 0) tests a value of 'x" |x, b: bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select *r { (_, 0) => 2, (`K, _) => 1, _ => 3 } }
+no "(_, 0) tests a value of 'x" |x, b: bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) if b => 1, (_, 0) => 2, _ => 3 } }
 no "the type `r` refers to" |x| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
 no "the type `r` refers to" |x: [`J, `M]| { let r = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }
 ok |x| { let r: &mut ([`J, `M], i64) = &mut (x, 0); select (*r, 1) { ((`J, _), _) => 1, ((`M, _), _) => 2 } }

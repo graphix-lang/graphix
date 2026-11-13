@@ -97,7 +97,13 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `StructurePattern::meets_decided`, `written_tests_decided`), one the
   scrutinee holds only through an open cell's lower bounds (`*r` over
   `&mut (x, 0)`, an abstract constructor's parameter) met in the
-  scrutinee read as those bounds hold it (`lower_view`), and so does
+  scrutinee read as those bounds hold it (`lower_view`), less each
+  member of that union a type the unguarded arms before the arm cover
+  holds whole, every cell still open one type equal only to itself
+  (`uncovered`: over the referent of `` &mut (select b { true => (`K,
+  x), false => (`L, 0) }) ``, `(_, 0)` behind `` (`K, _) `` meets no
+  value of `x`; a member inside a part, `select (*r, 1)`, is not taken
+  out), and so does
   one those bounds hold that the arms leave open (`Deciding::left_open`:
   over `&mut [x, 0]`, `` [`J, _] `` beside `_` decides the referent
   `Array<Any>`, which holds `x`'s values without `x`), except a

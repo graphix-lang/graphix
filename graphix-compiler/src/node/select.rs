@@ -38,7 +38,7 @@ use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
-use std::{iter, mem, sync::OnceLock};
+use std::{borrow::Cow, iter, mem, sync::OnceLock};
 use triomphe::Arc;
 
 /// Where an error in a pattern is placed: the pattern's text when it was
@@ -2984,7 +2984,7 @@ impl<R: Rt> Select<R> {
         let scrut = self.arg.node.typ().clone();
         let mut reach = Reach::new(&ctx.env, &scrut, &self.arms)?;
         deciding.decided(&mut decided);
-        let mut reached: SmallVec<[Type; 16]> = SmallVec::new();
+        let mut reached: SmallVec<[Reached; 16]> = SmallVec::new();
         let spec_pats: &[_] = match &self.spec.kind {
             ExprKind::Select(se) => &se.arms,
             _ => &[],
@@ -3033,7 +3033,10 @@ impl<R: Rt> Select<R> {
                 })
                 .unwrap_or(reaching);
             if checking {
-                reached.push(reaching.clone());
+                reached.push(Reached {
+                    atype: reaching.clone(),
+                    covered: reach.covered.len(),
+                });
             }
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             union_members(&ctx.env, &reaching, &mut members)?;
@@ -3136,6 +3139,7 @@ impl<R: Rt> Select<R> {
                     &decided,
                     &written,
                     &reached,
+                    &reach.covered,
                     lower.as_ref(),
                     true,
                 )?;
@@ -3156,6 +3160,7 @@ impl<R: Rt> Select<R> {
                     &decided,
                     &written,
                     &reached,
+                    &reach.covered,
                     lower.as_ref(),
                     false,
                 )?;
@@ -3180,9 +3185,9 @@ impl<R: Rt> Select<R> {
     /// before the arms (`written`), its own variable, still open or decided
     /// since, as one of `decided` is met. A cell decided through the
     /// scrutinee's lower bounds is met in `lower`, the scrutinee as those
-    /// bounds held it ([`lower_view`]), except by the last arm where it is
-    /// `dead`: nothing reaches it, and `lower` holds what the arms before
-    /// it took.
+    /// bounds held it ([`lower_view`]), less the members the unguarded arms
+    /// before the arm cover whole (`covered`, [`uncovered`]), except by the
+    /// last arm where it is `dead`: nothing reaches it.
     #[allow(clippy::too_many_arguments)]
     fn check_undecided(
         &self,
@@ -3190,7 +3195,8 @@ impl<R: Rt> Select<R> {
         undecided: &AHashMap<usize, TVar>,
         decided: &Decisions,
         written: &Deciding,
-        reached: &[Type],
+        reached: &[Reached],
+        covered: &[Type],
         lower: Option<&Type>,
         dead: bool,
     ) -> Result<()> {
@@ -3203,10 +3209,12 @@ impl<R: Rt> Select<R> {
         written.decided(&mut own);
         let own_open = |tv: &TVar| own.cells.contains_key(&tv.stands_for());
         let own_was = Decided { cell: &own_open, held: &|_| None };
-        for (i, (((pat, n), (spec_pat, _)), reaching)) in
+        for (i, (((pat, n), (spec_pat, _)), arm)) in
             self.arms.iter().zip(se.arms.iter()).zip(reached.iter()).enumerate()
         {
+            let reaching = &arm.atype;
             let lower = lower.filter(|_| !dead || i + 1 < reached.len());
+            let below = Below { lower, covered: &covered[..arm.covered], decided };
             let sp = &spec_pat.structure_predicate;
             let ids = CompiledAbstracts::new(&pat.structure_predicate, sp);
             let ids = |p: &StructurePattern| ids.get(p);
@@ -3231,7 +3239,7 @@ impl<R: Rt> Select<R> {
                             match written_tests_undecided(env, t, reaching, undecided)? {
                                 Some(tv) => Some(tv),
                                 None if decided.cells.is_empty() => None,
-                                None => met_in(reaching, lower, |over| {
+                                None => below.met_beside(env, reaching, |over| {
                                     written_tests_decided(env, t, over, decided)
                                 })?,
                             }
@@ -3245,7 +3253,7 @@ impl<R: Rt> Select<R> {
                 false => match sp.meets_undecided(env, &ids, reaching, &open)? {
                     Some(tv) => Some(tv),
                     None if decided.cells.is_empty() => None,
-                    None => met_in(reaching, lower, |over| {
+                    None => below.met_beside(env, reaching, |over| {
                         sp.meets_decided(env, &ids, over, &was)
                     })?,
                 }
@@ -3413,28 +3421,140 @@ pub(super) fn lower_view(t: &Type) -> Option<Type> {
     go(t, &mut LPooled::take())
 }
 
-/// What `meets` finds over `reaching`, else over `lower`.
-fn met_in(
-    reaching: &Type,
-    lower: Option<&Type>,
-    meets: impl Fn(&Type) -> Result<Option<TVar>>,
-) -> Result<Option<TVar>> {
-    // CR claude for claude: [bug/low] The lower view is the whole scrutinee as its
-    // bounds held it, never narrowed to what reaches the arm, so an arm is judged
-    // against a member an earlier arm took whole. `|x, b: bool| { let r = &mut (select
-    // b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _
-    // => 3 } }` is refused "(_, 0) tests a value of 'x", though only (`L, i64) reaches
-    // that arm; the plain twin `select (select b { .. }) { .. }` checks and runs ([1,
-    // 2]). Annotating x passes, and nothing unsound follows. Same on base-r20. A fix:
-    // narrow the lower view arm by arm as Reach narrows the scrutinee (a Reach over the
-    // lower view, or the view of what reaches each arm). probes:
-    // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/lv1.gx, twin lv1t.gx
-    // (lower-view-reach-01)
-    match (meets(reaching)?, lower) {
-        (Some(tv), _) => Ok(Some(tv)),
-        (None, Some(l)) => meets(l),
-        (None, None) => Ok(None),
+/// What reaches an arm of a select, and how many of [`Reach::covered`]
+/// the arms before it cover.
+struct Reached {
+    atype: Type,
+    covered: usize,
+}
+
+/// What reaches an arm through the lower bounds of the scrutinee's open
+/// cells: `lower`, the scrutinee as those bounds held it ([`lower_view`]),
+/// and `covered`, what the unguarded arms before the arm cover.
+struct Below<'a> {
+    lower: Option<&'a Type>,
+    covered: &'a [Type],
+    decided: &'a Decisions,
+}
+
+impl Below<'_> {
+    /// What `meets` finds over `reaching`, else over the lower view less
+    /// what the arms before cover of it.
+    fn met_beside(
+        &self,
+        env: &Env,
+        reaching: &Type,
+        meets: impl Fn(&Type) -> Result<Option<TVar>>,
+    ) -> Result<Option<TVar>> {
+        if let Some(tv) = meets(reaching)? {
+            return Ok(Some(tv));
+        }
+        let Some(lower) = self.lower else { return Ok(None) };
+        // XCR claude for claude: [bug/low] The lower view is the whole scrutinee as its
+        // bounds held it, never narrowed to what reaches the arm, so an arm is judged
+        // against a member an earlier arm took whole. `|x, b: bool| { let r = &mut (select
+        // b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _
+        // => 3 } }` is refused "(_, 0) tests a value of 'x", though only (`L, i64) reaches
+        // that arm; the plain twin `select (select b { .. }) { .. }` checks and runs ([1,
+        // 2]). Annotating x passes, and nothing unsound follows. Same on base-r20. A fix:
+        // narrow the lower view arm by arm as Reach narrows the scrutinee (a Reach over the
+        // lower view, or the view of what reaches each arm). probes:
+        // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/lv1.gx, twin lv1t.gx
+        // (lower-view-reach-01)
+        // 2026-11-12 claude: check_undecided now meets a cell decided through the
+        // scrutinee's lower bounds in the lower view less each member of its union that a
+        // type the unguarded arms before the arm cover holds whole (uncovered:
+        // Reach::covered up to the arm, by Type::contains_holding with every cell still open
+        // held, read when the arms are done), so lv1.gx checks and prints [1, 2] as its twin
+        // does; x is i64 there (the arms' settle of the referent decides it), and stays open
+        // where the covering member sorts first ((x, `K) beside (0, `L)). Only top-level
+        // members of the view are taken out: a member inside a part (select (*r, 1)) or
+        // behind a cover Reach does not record (`P((`K, _))) is still judged whole. Pins in
+        // lang::select_undecided: the five arm_behind_*_cover_* fixtures that run,
+        // written_arm_behind_a_cover_of_a_member_below_a_reference and
+        // arm_behind_a_cover_tests_the_member_that_reaches_it_refused fail in every mode
+        // with the narrowing undone (7 fixtures, 28 runs); the guarded, reordered and
+        // same-cell controls stay refused either way. Census 2962 files: 0 verdict, 0
+        // message. probes: ~/ptmp/cr29/scratch/r23/23d/lvr/ (a-d.txt, run with rb.sh)
+        match uncovered(env, lower, self.covered, self.decided)? {
+            Some(left) => meets(&left),
+            None => Ok(None),
+        }
     }
+}
+
+/// `lower` less each member of its union that one of `covered` holds whole,
+/// with every cell still open one type equal only to itself: no value of
+/// such a member reaches an arm behind the arms that cover it. A cell of
+/// `decided` among the members stands whole, where the walks that read it
+/// as open meet it. `None` where nothing is left.
+fn uncovered<'a>(
+    env: &Env,
+    lower: &'a Type,
+    covered: &[Type],
+    decided: &Decisions,
+) -> Result<Option<Cow<'a, Type>>> {
+    fn members(t: &Type, decided: &Decisions, out: &mut SmallVec<[Type; 8]>) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::Set(ms) => ms.iter().for_each(|m| members(m, decided, out)),
+            Type::TVar(tv)
+                if !decided.cells.contains_key(&tv.stands_for())
+                    && !decided.held.contains_key(&tv.stands_for())
+                    && let Some(b) = tv.binding() =>
+            {
+                members(&b, decided, out)
+            }
+            t => out.push(t.clone()),
+        })
+    }
+    if covered.is_empty() {
+        return Ok(Some(Cow::Borrowed(lower)));
+    }
+    // CR claude for claude: [bug/low] A member of the lower view that a pool of arms
+    // takes whole still reaches the arms behind them: `|x, b: bool| { let r = &mut
+    // (select b { true => (b, x), false => (`L, 0) }); select *r { (true, _) => 1,
+    // (false, _) => 2, (_, 0) => 3, _ => 4 } }` is refused "(_, 0) tests a value of 'x",
+    // and the plain twin `select (select b { .. }) { .. }` checks and prints [1, 3].
+    // Reach pools over the referent the arms decided, `[(Any, i64), (bool, Any)]`,
+    // whose members overlap, so the bool pair completes none and Reach::covered is
+    // empty there; over the twin's `[(bool, 'x), (`L, i64)]` it completes `(bool, 'x)`.
+    // What would close it: pools that count the lower view's own members (a Reach over
+    // the view, stepped beside check_undecided's arms), once its differences and
+    // probes are shown to bind no cell of the view. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/lvr/pool.gx, e.txt lines 3 and 4 (run with rb.sh)
+    // (lower-view-pool-cover-01)
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    crate::typ::settle::position_cells(lower, &mut cells);
+    for c in covered {
+        crate::typ::settle::position_cells(c, &mut cells)
+    }
+    let mut held: SmallVec<[TVar; 4]> = SmallVec::new();
+    for tv in cells.values().filter_map(|tv| tv.open_cell()) {
+        if !held.iter().any(|h| h.same_cell(&tv)) {
+            held.push(tv)
+        }
+    }
+    let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
+    members(lower, decided, &mut ms);
+    let mut left: SmallVec<[Type; 8]> = SmallVec::new();
+    for m in ms.iter() {
+        let mut taken = false;
+        for c in covered {
+            if c.contains_holding(env, m, &held)? {
+                taken = true;
+                break;
+            }
+        }
+        if !taken {
+            left.push(m.clone())
+        }
+    }
+    Ok(match left.len() {
+        0 => None,
+        n if n == ms.len() => Some(Cow::Borrowed(lower)),
+        1 => left.pop().map(Cow::Owned),
+        _ => Some(Cow::Owned(Type::Set(Arc::from_iter(left)))),
+    })
 }
 
 /// The open cells, none rigid, of the scrutinee's cells `outer`, each by
