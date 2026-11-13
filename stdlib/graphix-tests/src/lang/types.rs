@@ -8937,6 +8937,50 @@ run!(
     FuseExpect::None
 );
 
+// A function a call returned is one instance, its variables open cells
+// its calls decide: read through a field it keeps its signature's union
+// as well, so another argument decides the member, and an argument both
+// members could take is refused as at a call of the instance itself.
+run!(
+    field_read_of_an_instance_keeps_a_signature_union_of_functions_over_its_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let mk = |z| {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)};
+  let s = mk(0);
+  let r = s.fld(1, "s", |q: i64| 0);
+  (r.1, r.2)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+run!(
+    field_read_of_an_instance_leaves_a_signature_union_of_functions_to_its_call_refused,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let mk = |z| {fld: |x: F2<'a, 'b>| x};
+  let s = mk(0);
+  let r = s.fld(|q: string| 1);
+  0
+}"#,
+    refused(
+        "fn(q: string) -> i64 could go to fn(q: 'a: unbound) -> i64 or fn(q: 'b: unbound) -> i64 \
+         of the union"
+    );
+    FuseExpect::None
+);
+run!(
+    field_read_of_an_instance_of_a_signature_union_of_functions_over_one_variable,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let mk = |z| {fld: |x: F2<'a, 'a>| x};
+  let s = mk(0);
+  let r = s.fld(|q: string| 1);
+  r("s")
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
 // An alias that adds a member, applied to a variable under an invariant
 // constructor: an argument written as the alias over a type that already
 // holds the member gives the variable that type, and the instance holds

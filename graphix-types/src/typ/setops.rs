@@ -1134,6 +1134,23 @@ impl Type {
         Self::union_with(env, Merge::Exact, ts)
     }
 
+    // CR claude for claude: [bug/low] A read of one value whose type is a typedef union
+    // of two function types over two undecided variables makes the two variables one:
+    // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
+    // F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; s.fld }; h(1, "s",
+    // |q: i64| q + 1)` is refused, "type mismatch i64 does not contain string" at "s",
+    // naming no annotation, and so is a tuple read (`let r = f(u, v, w); r.0` over an
+    // `f` returning `(x, y, z)`). `h` returning `f(u, v, w)` itself, or taking the tuple
+    // apart by a pattern, runs, and so does `h` with its parameters written (`|u: 'c, v:
+    // 'd, w: F2<'c, 'd>|`). The read is a union of one alternative, which joins nothing,
+    // yet meet_alternatives takes that alternative's own members apart and meets them,
+    // and the welding normalize pairs them, where design/tvar_constraints.md keeps a
+    // union a typedef's expansion made as two members. runtime-bind-fn-union-01 stopped
+    // this inside a function type's signature only. Not looked into: which of the two
+    // merges the variables here, and whether a read of one alternative should return it
+    // as it stands. base-r23 alike. Found reviewing runtime-bind-fn-union-01. probes:
+    // ~/ptmp/cr29/scratch/r23/23b/rbf-rev/{e5,d4}.gx (refused), {e1,e3,e4,d3b}.gx (run)
+    // (read-welds-data-union-01)
     /// The union of a select's alternatives, which a call through the
     /// select must accept alike: function members meet first, and so do
     /// those in the members' parts ([`Self::meet_alternatives`]).
