@@ -215,7 +215,15 @@ Abstract('a: Number |x: 'a| -> 'a x)
 
 An inferred variable numbers apart the same way: where a message shows
 two instances' copies of one, the second prints with `_` and a number
-after the first's name, `'_7` and `'_7_1`.
+after the first's name. Each read of a generic binding is an instance
+of its own:
+
+```graphix
+〉let id = |x| x
+〉(id, id)
+-: (fn(x: '_7: unbound) -> '_7: unbound, fn(x: '_7_1: unbound) -> '_7_1: unbound)
+(Abstract(|x| x), Abstract(|x| x))
+```
 
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
