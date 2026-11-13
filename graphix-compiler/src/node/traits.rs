@@ -568,40 +568,6 @@ impl<R: Rt> Trait<R> {
             if let Some(body) = &m.default {
                 written_method_unions(None, body, &|tv| &*tv.name != "self").at(body)?;
                 default_module_sigs(body)?;
-                // XCR claude for claude: [bug/medium] A default whose parameter is written
-                // at its variable's bound over `self` is refused on r20-staging and ran on
-                // base-r20 and on the round before lane 20b's commits: `trait T { val m:
-                // fn<'b: [self, null]>(self, x: 'b) -> i64 = |s, x: [self, null]| 0 }; impl
-                // T for i64 {}` says "fn<'b: [null, self]>(self, x: 'b) -> i64 does not
-                // contain fn(s: self, x: [null, self]) -> i64". The check `[null, self] ⊇
-                // 'b`, with `'b` rigid within `[null, self]` and the lambda's `self` merged
-                // with the signature's, answered true before and answers false now
-                // (GRAPHIX_DBG_BIND=1: the CHK-CONTAINS line after the CELL-MERGE of the
-                // two `self`). An impl's method written the same way over its target
-                // (`|s, x: [i64, null]|`) runs, and so does a default that reads the bound
-                // in its body (`let y: [self, null] = x`) or returns it. r20-staging at
-                // 316965a1e refuses it, the round at 8203ee95b (without lane 20b) runs it.
-                // probes: ~/ptmp/cr29/scratch/r20/20d/x2/dflt/{d1h,d1c}.gx (refused;
-                // base-r20 prints `0 0` and `3 0 5 0`), {d1e,w3,q5,q6}.gx (run)
-                // (default-param-at-self-bound-01)
-                // 2026-11-12 claude: The deferral of fn-annotation-order-01 held the
-                // default's own `self` open as a waiting variable, and `[null, self] ⊇ 'b`
-                // took the member route (the waiting `self` holds the rigid 'b whole, a
-                // part that always waits) where it needed the bound's parts; at the settle
-                // `self` merged with the signature's `self` and then could not hold 'b.
-                // ContainsHist::defers_member_choice: a rigid variable going into a union
-                // whose member is a waiting variable waits too, and the union meets it
-                // after every waiting variable has met its parts (meet_deferred), by the
-                // member or by the bound as the variable now is. The CR's probes run (d1h
-                // `0 0`, d1c `3 0 5 0`), and so does the same shape outside traits in
-                // either order (`fn(s: i64, v: 'b)` holding `|s: 'a, v: ['a, null]|` in a
-                // definition declaring 'b: [i64, null]). Pins
-                // lang::traits::default_method_parameter_written_at_the_declared_bound and
-                // lang::functions::written_fn_type_union_beside_a_declared_variable_either_order
-                // fail in all four modes without it; their refused twins and two
-                // generics.md cases stand beside them. The call-site analogue (the
-                // arguments of a call, not a function type) is new CR
-                // rigid-arg-union-order-01.
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
                 let name =
