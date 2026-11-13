@@ -263,7 +263,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   over `(i64, Any)`), has no struct to complete it, so its test would be
   the exact struct of the fields it names: it is refused where it is
   completed (`StructurePattern::unique_completion`), naming the written
-  test (pins `*partial_struct_over_an*_refused`). Pins:
+  test (pins `*partial_struct_over_an*_refused`). Only where the pattern
+  could match the member that holds the part: a tag, a literal or an
+  arity beside the struct that the member cannot have leaves the pattern
+  the other member's struct (`` (`K, {a, ..}) `` over `` [(`K, {a: i64,
+  b: i64}), (`J, Any)] ``; pins `partial_struct_beside_an_any_member_*`,
+  `partial_struct_under_a_name_beside_an_any_member_refused`). Pins:
   `lang::select::capture_*`, `slice_elements_typed_apart`,
   `slice_rest_scrutinee_type`, `slice_element_binds_hold_every_member`,
   `slice_element_bind_*`, `slice_element_or_alternative_bind_*`,

@@ -93,7 +93,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   only. A partial struct pattern there has no struct type to complete it
   and is refused, under a tuple, variant or slice too: `(_, {a, ..})`
   over `(i64, Any)`. Write the test, `(i64, {a: i64, b: i64}) as (_, {a,
-  ..})`.
+  ..})`. Where the rest of the pattern cannot match the member whose
+  part is `Any`, the struct is the other member's and nothing is
+  refused: `` (`K, {a, ..}) `` over `` [(`K, {a: i64, b: i64}), (`J,
+  Any)] ``.
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
@@ -180,4 +183,6 @@ ok |x: Any| select x { [h, ..] => h + 1, _ => 2 }
 ok |x: Any| select x { Array<(i64, i64)> as [(a, b), ..] => a + 1, _ => 2 }
 no "has no struct type to complete it" |x: (i64, Any)| select x { (_, {a, ..}) => 1, _ => 0 }
 ok |x: (i64, Any)| select x { (i64, {a: i64, b: i64}) as (_, {a, ..}) => a, _ => 0 }
+ok |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x { (`K, {a, ..}) => a, _ => 0 }
+no "has no struct type to complete it" |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x { (_, {a, ..}) => a, _ => 0 }
 ```

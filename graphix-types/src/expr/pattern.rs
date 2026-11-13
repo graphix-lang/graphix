@@ -394,15 +394,40 @@ impl StructurePattern {
         ptype: &Type,
         scrutinee: &Type,
     ) -> Result<Option<Type>> {
+        let mut over_any = None;
+        let t = self.complete(env, ptype, scrutinee, &mut over_any)?;
+        match over_any {
+            Some(e) => Err(e),
+            None => Ok(t),
+        }
+    }
+
+    /// [`Self::complete_type_predicate`], the refusal of a partial struct
+    /// pattern over a part that may be `Any` ([`Self::no_struct_type`])
+    /// left in `over_any`: it stands only where the pattern could match
+    /// the member that holds the part ([`Self::unique_completion`]).
+    fn complete(
+        &self,
+        env: &Env,
+        ptype: &Type,
+        scrutinee: &Type,
+        over_any: &mut OverAny,
+    ) -> Result<Option<Type>> {
         crate::stack::ensure_sufficient(|| {
-            self.complete_type_predicate_inner(env, ptype, scrutinee)
+            self.complete_type_predicate_inner(env, ptype, scrutinee, over_any)
         })
     }
 
     /// `pt` completed against the scrutinee position `st`, and whether
     /// that changed it.
-    fn complete_at(&self, env: &Env, pt: &Type, st: &Type) -> Result<(bool, Type)> {
-        Ok(match self.complete_type_predicate(env, pt, st)? {
+    fn complete_at(
+        &self,
+        env: &Env,
+        pt: &Type,
+        st: &Type,
+        over_any: &mut OverAny,
+    ) -> Result<(bool, Type)> {
+        Ok(match self.complete(env, pt, st, over_any)? {
             Some(t) => (true, t),
             None => (false, pt.clone()),
         })
@@ -414,11 +439,12 @@ impl StructurePattern {
         elems: &[Self],
         pts: &[Type],
         sts: &[Type],
+        over_any: &mut OverAny,
     ) -> Result<Option<Arc<[Type]>>> {
         let mut changed = false;
         let mut out: SmallVec<[Type; 8]> = SmallVec::new();
         for ((p, pt), st) in elems.iter().zip(pts).zip(sts) {
-            let (c, t) = p.complete_at(env, pt, st)?;
+            let (c, t) = p.complete_at(env, pt, st, over_any)?;
             changed |= c;
             out.push(t)
         }
@@ -439,12 +465,16 @@ impl StructurePattern {
     }
 
     /// The completion of the one scrutinee member `complete` answers
-    /// for and the pattern could match.
+    /// for and the pattern, of the inferred type `ptype`, could match. A
+    /// member that holds a part `over_any` refuses is refused only where
+    /// the pattern could match it.
     fn unique_completion(
         &self,
         env: &Env,
+        ptype: &Type,
         scrutinee: &Type,
-        mut complete: impl FnMut(&Type) -> Result<Option<Type>>,
+        over_any: &mut OverAny,
+        mut complete: impl FnMut(&Type, &mut OverAny) -> Result<Option<Type>>,
     ) -> Result<Option<Type>> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         // an open scrutinee completes against its bound, whose values it holds
@@ -453,14 +483,24 @@ impl StructurePattern {
             None => union_members(env, scrutinee, &mut members)?,
         }
         if members.iter().any(|m| matches!(m, Type::Any)) && self.has_partial_struct() {
-            return Err(self.no_struct_type(scrutinee));
+            over_any.get_or_insert_with(|| self.no_struct_type(scrutinee));
+            return Ok(None);
         }
         let mut found: Option<(Type, &Type)> = None;
         for m in members.iter() {
-            let t = match complete(m)? {
-                Some(t) if t.could_match(env, m)? => t,
-                _ => continue,
+            let mut refused = None;
+            let t = match complete(m, &mut refused)? {
+                Some(t) => t,
+                None if refused.is_some() => ptype.clone(),
+                None => continue,
             };
+            if !t.could_match(env, m)? {
+                continue;
+            }
+            if let Some(e) = refused {
+                over_any.get_or_insert(e);
+                continue;
+            }
             match &found {
                 None => found = Some((t, m)),
                 Some((f, _)) if strictly_identical(f, &t) => (),
@@ -486,11 +526,12 @@ impl StructurePattern {
         env: &Env,
         ptype: &Type,
         scrutinee: &Type,
+        over_any: &mut OverAny,
     ) -> Result<Option<Type>> {
         match self {
             Self::Struct { all: _, exhaustive, binds } => {
                 let Type::Struct(pfields) = ptype else { return Ok(None) };
-                self.unique_completion(env, scrutinee, |m| {
+                self.unique_completion(env, ptype, scrutinee, over_any, |m, over_any| {
                     let Type::Struct(sf) = m else { return Ok(None) };
                     let named = |n: &ArcStr| binds.iter().find(|(bn, _, _)| bn == n);
                     let fits = if *exhaustive {
@@ -514,7 +555,7 @@ impl StructurePattern {
                                     .find(|(pn, _, _)| pn == sn)
                                     .map(|(_, pt, _)| pt)
                                     .expect("inferred field missing");
-                                let (c, t) = p.complete_at(env, pt, st)?;
+                                let (c, t) = p.complete_at(env, pt, st, over_any)?;
                                 changed |= c;
                                 t
                             }
@@ -526,29 +567,38 @@ impl StructurePattern {
             }
             Self::Tuple { all: _, binds } => {
                 let Type::Tuple(pts) = ptype else { return Ok(None) };
-                self.unique_completion(env, scrutinee, |m| match m {
-                    Type::Tuple(sts) if sts.len() == binds.len() => {
-                        Ok(Self::complete_elems(env, binds, pts, sts)?.map(Type::Tuple))
+                self.unique_completion(env, ptype, scrutinee, over_any, |m, over_any| {
+                    match m {
+                        Type::Tuple(sts) if sts.len() == binds.len() => {
+                            let ts =
+                                Self::complete_elems(env, binds, pts, sts, over_any)?;
+                            Ok(ts.map(Type::Tuple))
+                        }
+                        _ => Ok(None),
                     }
-                    _ => Ok(None),
                 })
             }
             Self::Variant { all: _, tag, binds } => {
                 let Type::Variant(_, pts, at) = ptype else { return Ok(None) };
-                self.unique_completion(env, scrutinee, |m| match m {
-                    Type::Variant(t, sts, _) if t == tag && sts.len() == binds.len() => {
-                        let ts = Self::complete_elems(env, binds, pts, sts)?;
-                        Ok(ts.map(|ts| Type::Variant(tag.clone(), ts, *at)))
+                self.unique_completion(env, ptype, scrutinee, over_any, |m, over_any| {
+                    match m {
+                        Type::Variant(t, sts, _)
+                            if t == tag && sts.len() == binds.len() =>
+                        {
+                            let ts =
+                                Self::complete_elems(env, binds, pts, sts, over_any)?;
+                            Ok(ts.map(|ts| Type::Variant(tag.clone(), ts, *at)))
+                        }
+                        _ => Ok(None),
                     }
-                    _ => Ok(None),
                 })
             }
             Self::Slice { list, all: _, binds }
             | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
-                self.complete_slice(env, ptype, scrutinee, *list, binds)
+                self.complete_slice(env, ptype, scrutinee, *list, binds, over_any)
             }
             Self::SliceSuffix { all: _, head: _, suffix } => {
-                self.complete_slice(env, ptype, scrutinee, false, suffix)
+                self.complete_slice(env, ptype, scrutinee, false, suffix, over_any)
             }
             Self::Or(alts) => {
                 let Type::Set(pts) = ptype else { return Ok(None) };
@@ -558,7 +608,7 @@ impl StructurePattern {
                 let mut changed = false;
                 let mut out: SmallVec<[Type; 8]> = SmallVec::new();
                 for (p, pt) in alts.iter().zip(pts.iter()) {
-                    let (c, t) = p.complete_at(env, pt, scrutinee)?;
+                    let (c, t) = p.complete_at(env, pt, scrutinee, over_any)?;
                     changed |= c;
                     out.push(t)
                 }
@@ -579,6 +629,7 @@ impl StructurePattern {
         scrutinee: &Type,
         list: bool,
         elems: &[Self],
+        over_any: &mut OverAny,
     ) -> Result<Option<Type>> {
         let elem = |t: &Type| match (list, t) {
             (true, Type::List(t)) | (false, Type::Array(t)) => Some(t.clone()),
@@ -588,7 +639,7 @@ impl StructurePattern {
             Some(Type::Set(pts)) if pts.len() >= elems.len() => pts.clone(),
             _ => return Ok(None),
         };
-        self.unique_completion(env, scrutinee, |m| {
+        self.unique_completion(env, ptype, scrutinee, over_any, |m, over_any| {
             let Some(st) = elem(m) else { return Ok(None) };
             let mut changed = false;
             let mut ts: SmallVec<[Type; 8]> = SmallVec::new();
@@ -596,7 +647,7 @@ impl StructurePattern {
                 match elems.get(i) {
                     None => ts.push(pt.clone()),
                     Some(p) => {
-                        let (c, t) = p.complete_at(env, pt, &st)?;
+                        let (c, t) = p.complete_at(env, pt, &st, over_any)?;
                         changed |= c;
                         ts.push(t)
                     }
@@ -606,6 +657,11 @@ impl StructurePattern {
         })
     }
 }
+
+/// The refusal of a partial struct pattern over a part of a scrutinee
+/// member that may be `Any`, held while the pattern's completion against
+/// that member goes on.
+type OverAny = Option<anyhow::Error>;
 
 /// A partial struct pattern's two members told apart only by cells not
 /// decided where it is completed.

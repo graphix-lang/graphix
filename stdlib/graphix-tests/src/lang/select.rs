@@ -6037,6 +6037,31 @@ run!(
     prints(r#"[null, null, "s"]"#)
 );
 
+// A nested pattern over a recursive type whose elements are `Any` tests
+// what its arm decides under each `Any`, and the shape of the rest.
+run!(
+    nested_destructure_over_a_recursive_any_member,
+    r#"{
+    type L = [`Cons(Any, L), `Nil];
+    let f = |l: L| -> i64 select l {
+      `Cons(_, `Cons((a, b), `Cons(_, t))) => a + b,
+      `Cons(_, `Cons(_, t)) => 1,
+      _ => 0
+    };
+    let p: Any = (3, 4);
+    let s: Any = ("s", "t");
+    let tail: L = `Cons(0, `Nil);
+    [
+      f(`Cons(0, `Cons(p, tail))), f(`Cons(0, `Cons(s, tail))),
+      f(`Cons(0, `Cons(p, `Nil))), f(`Cons(p, `Nil)), f(`Nil)
+    ]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [7, 1, 1, 0, 0],
+        _ => false,
+    }
+);
+
 // A slice's rest nothing types takes the type of a name beside it, so
 // the test reads every element; with no name it stands over any value.
 run!(
@@ -7806,6 +7831,60 @@ run!(
     r#"{
   let f = |x: Array<Any>| select x { [{a, ..}, ..] => a, _ => 0 };
   f([{a: 1, b: 2}])
+}"#,
+    refused("has no struct type to complete it")
+);
+
+// Only where the pattern could match the member whose part is `Any`: a
+// tag, a literal or an arity beside the struct that the member cannot
+// have leaves the struct the other member's.
+run!(
+    partial_struct_beside_an_any_member_its_pattern_cannot_match,
+    r#"{
+  let f = |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x {
+    (`K, {a, ..}) => a + 1,
+    _ => 0
+  };
+  let g = |x: [{k: `K, v: {a: i64, b: i64}}, {k: `J, v: Any}]| select x {
+    {k: `K, v: {a, ..}} => a + 1,
+    _ => 0
+  };
+  let h = |x: (`K, [(i64, {a: i64, b: i64}), (string, Any)])| select x {
+    (`K, (1, {a, ..})) => a + 1,
+    _ => 0
+  };
+  let v: Any = {a: "s", b: 2};
+  [
+    f((`K, {a: 5, b: 2})), f((`J, v)), g({k: `K, v: {a: 5, b: 2}}), g({k: `J, v}),
+    h((`K, (1, {a: 5, b: 2}))), h((`K, ("x", v))), h((`K, (2, {a: 5, b: 2})))
+  ]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [6, 0, 6, 0, 6, 0, 0],
+        _ => false,
+    }
+);
+
+run!(
+    partial_struct_beside_an_any_member_its_pattern_could_match_refused,
+    r#"{
+  let f = |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x {
+    (_, {a, ..}) => a + 1,
+    _ => 0
+  };
+  f((`K, {a: 5, b: 2}))
+}"#,
+    refused("has no struct type to complete it")
+);
+
+run!(
+    partial_struct_under_a_name_beside_an_any_member_refused,
+    r#"{
+  let f = |x: (`K, [(i64, {a: i64, b: i64}), (string, Any)])| select x {
+    (`K, (n, {a, ..})) => a + 1,
+    _ => 0
+  };
+  f((`K, (1, {a: 5, b: 2})))
 }"#,
     refused("has no struct type to complete it")
 );

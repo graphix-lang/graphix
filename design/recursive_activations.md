@@ -544,7 +544,14 @@ a 1000-element list aborted the process. Two rules:
   the part does not hold the member's: a pattern that takes an `Any`
   apart is typed by its arm, and only this test checks it (`((a, b), n)`
   over `(Any, i64)` seals `((i64, i64), Any)`; pins
-  `lang::select::destructure_under_an_any_part_*`). Consults drop from O(remaining) to O(arity); the list
+  `lang::select::destructure_under_an_any_part_*`). A part kept is sealed
+  the same way against the member's part, through cells and never
+  through a named type, so a nested pattern over a recursive type whose
+  elements are `Any` is tested at the pattern's depth, never the value's
+  (`` `Cons(_, `Cons(_, t)) `` over ``L = [`Cons(Any, L), `Nil]`` seals
+  `` `Cons(Any, `Cons(Any, Any)) ``; pin
+  `typ::cast::tests::shallow_discriminant_shallows_a_kept_part_in_turn`).
+  Consults drop from O(remaining) to O(arity); the list
   recursion curve went linear (release 49.4s → 0.41s at 8k). The kernel
   already tested tag+arity in O(1); this removes the engine asymmetry.
 

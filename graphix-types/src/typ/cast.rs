@@ -1985,6 +1985,25 @@ struct ScrutineeFacts {
     any: bool,
 }
 
+impl ScrutineeFacts {
+    /// `p`, of the facts `pf`, shallowed against the member it meets. The
+    /// shape decides `p` only where one member has it and `p` can match
+    /// that member (an instance's scrutinee may be another member of
+    /// `p`'s shape): `None` elsewhere.
+    fn shallow(&self, env: &Env, p: &Type, pf: &MemberFacts) -> Option<Type> {
+        let mut shaped = self.members.iter().filter(|(_, mf)| match &pf.arr {
+            Some(pa) => mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)),
+            None => (pf.map && mf.map) || (pf.error && mf.error),
+        });
+        match (shaped.next(), shaped.next()) {
+            (Some((m, _)), None) if p.could_pass(env, m).unwrap_or(false) => {
+                Some(shallowify(env, p, self.any.then_some(m)))
+            }
+            _ => None,
+        }
+    }
+}
+
 impl ShallowScrutinee {
     pub fn new(typ: Type) -> Self {
         Self { typ, members: OnceLock::new(), facts: OnceLock::new() }
@@ -2092,18 +2111,7 @@ impl ShallowScrutinee {
                 out.push(p.clone());
                 continue;
             }
-            // the shape decides `p` only where one member has it and `p` can
-            // match that member (an instance's scrutinee may be another
-            // member of `p`'s shape)
-            let mut shaped = sfacts.members.iter().filter(|(_, mf)| match &pf.arr {
-                Some(pa) => mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)),
-                None => (pf.map && mf.map) || (pf.error && mf.error),
-            });
-            let m = match (shaped.next(), shaped.next()) {
-                (Some((m, _)), None) if p.could_pass(env, m).unwrap_or(false) => m,
-                _ => return None,
-            };
-            out.push(shallowify(env, p, sfacts.any.then_some(m)));
+            out.push(sfacts.shallow(env, p, &pf)?);
         }
         Some(if out.len() == 1 {
             out.pop().unwrap()
@@ -2268,6 +2276,7 @@ fn arr_overlap((pf, pcon): &(Form, ArrCon), (mf, mcon): &(Form, ArrCon)) -> bool
 /// `m` is the member it meets in a scrutinee holding `Any`: a position
 /// keeps `p`'s part where `m`'s holds `Any` and `p`'s does not hold all of
 /// `m`'s, since there the part is the arm's own, a test nothing else makes.
+/// A part kept is shallowed against `m`'s in turn ([`shallow_part`]).
 fn shallowify(env: &Env, p: &Type, m: Option<&Type>) -> Type {
     if !matches!(
         p,
@@ -2303,16 +2312,35 @@ fn shallowify(env: &Env, p: &Type, m: Option<&Type>) -> Type {
     }
     let mut parts = parts.iter();
     let blank = p.cow_children(&mut |pp| {
-        let own = parts.next().is_some_and(|mp| {
+        let own = |mp: &&Type| {
             holds_any(mp, env, &mut ShapeSeen::default())
                 && !(!mp.has_unbound()
                     && pp
                         .contains_with_flags(BitFlags::empty(), env, mp)
                         .unwrap_or(false))
-        });
-        (!own).then_some(Type::Any)
+        };
+        match parts.next().filter(own) {
+            Some(mp) => shallow_part(env, pp, mp),
+            None => Some(Type::Any),
+        }
     });
     blank.unwrap_or_else(|| p.clone())
+}
+
+/// `pp`, a part of a predicate that does not hold `mp`, the part of its
+/// member it stands over, shallowed against the member of `mp` it meets;
+/// `None` where its shape decides nothing there (`mp` is `Any` or open)
+/// and the part stays whole. Only cells are looked through: a named
+/// type is not expanded, so this ends with `pp`'s own structure.
+fn shallow_part(env: &Env, pp: &Type, mp: &Type) -> Option<Type> {
+    ensure_sufficient(|| {
+        let pp = pp.deref_cloned()?;
+        let pf = member_facts(&pp);
+        if pf.exact {
+            return None;
+        }
+        ShallowScrutinee::new(mp.clone()).facts(env)?.shallow(env, &pp, &pf)
+    })
 }
 
 /// `t`'s members, each application expanded once, in the order first
@@ -4009,6 +4037,47 @@ pub(crate) mod tests {
             some("(Any, Any, Any)")
         );
         assert_eq!(shallow("((i64, i64), i64)", "((i64, i64), i64)"), some("(Any, Any)"));
+    }
+
+    /// A part kept under a member holding `Any` is shallowed in turn, so
+    /// the test of a nested pattern over a recursive type reads the
+    /// pattern's depth, never the value's. A named part is not expanded:
+    /// a written predicate recursive beside its member ends.
+    #[test]
+    fn shallow_discriminant_shallows_a_kept_part_in_turn() {
+        let defs = [
+            ("L", "[`Cons(Any, L), `Nil]"),
+            ("N", "[`Cons(i64, N), `Nil]"),
+            ("T", "[`Node(Any, T, T), `Leaf]"),
+        ];
+        let (env, _) = typed(&defs, "L");
+        let shallow = |pred: &str, scrutinee: &str| {
+            let d =
+                parsed(&env, pred).shallow_discriminant(&env, &parsed(&env, scrutinee));
+            d.map(|t| t.to_string())
+        };
+        let some = |t: &str| Some(t.to_string());
+        assert_eq!(
+            shallow("`Cons(Any, `Cons(Any, L))", "L"),
+            some("`Cons(Any, `Cons(Any, Any))")
+        );
+        assert_eq!(
+            shallow("`Cons(Any, `Cons((i64, i64), `Cons(Any, L)))", "L"),
+            some("`Cons(Any, `Cons((i64, i64), `Cons(Any, Any)))")
+        );
+        assert_eq!(
+            shallow("`Node(Any, `Node((i64, i64), T, T), `Leaf)", "T"),
+            some("`Node(Any, `Node((i64, i64), Any, Any), `Leaf)")
+        );
+        assert_eq!(
+            shallow("(((i64, i64), i64), i64)", "((Any, i64), i64)"),
+            some("(((i64, i64), Any), Any)")
+        );
+        assert_eq!(
+            shallow("([(i64, i64), null], i64)", "([(Any, i64), null], i64)"),
+            some("([null, (i64, i64)], Any)")
+        );
+        assert_eq!(shallow("N", "L"), some("[`Cons(i64, N), `Nil]"));
     }
 
     /// A runtime-form walk keys the pair it is at by its sides' nodes: a
