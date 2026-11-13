@@ -972,6 +972,28 @@ run!(written_test_over_a_whole_union_beside_a_bind_then_written_apart_refused, r
     r
 }"#, refused("z is i64, inferred from an earlier use, and cannot hold string"); FuseExpect::None);
 
+// A pattern that takes apart two constructions of one nominal type makes
+// their undecided payloads one, and the union's holder then stands for one
+// of its members, which is still judged as the union it was.
+run!(payload_pattern_over_two_constructions_a_call_returns, r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a, c| select true { true => a, false => c };
+    select f(B([1]), B([])) { B(v) => v }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1]); FuseExpect::Jit);
+
+run!(payload_pattern_over_two_constructions_bound_by_a_let, r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a, c| select true { true => a, false => c };
+    let x = f(B([1]), B([]));
+    select x { B(v) => v }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1]); FuseExpect::Jit);
+
+run!(payload_pattern_over_two_undecided_constructions, r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a, c| select true { true => a, false => c };
+    select f(B([]), B([])) { B(v) => 0 }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
+
 // A later arm's pattern decides the part before an earlier arm's body is
 // checked: the body's error is the select's.
 run!(an_earlier_body_over_a_part_a_later_arm_decides_is_its_error, r#"{
