@@ -2434,26 +2434,6 @@ impl Lambda {
                         .iter()
                         .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
             });
-            // CR claude for claude: [bug/low] The alias walk's capture
-            // (nested-quantifier-capture-01) reaches checked programs, not only
-            // `graphix fmt`: this walk passes the bound of every enclosing
-            // variable the signature names under the lambda's own names. In
-            // `let f = 'e: Array<'q>, 'q: Number |a: 'e, b: 'q| -> 'q { let g =
-            // 'q: Any |x: 'q, y: 'e| -> 'q x; println(g("s", a)); b }; f([1],
-            // 2)` g declares a `'q` of its own and `y: 'e` names f's `'e`, whose
-            // bound `Array<'q>` holds f's `'q`: the walk aliases that one to
-            // g's, so g's `'q` holds `Number` too and `g("s", a)` is refused,
-            // "'q: unbound within Number & Any does not contain string", on
-            // base-r23 and since; with g's variable named `'z` the program
-            // prints s and 2. With `'q: 'e` for g's bound the merged cell's
-            // bound reaches the cell, and seed_conjuncts refuses a valid
-            // program, "'q's bound reaches 'q" (base-r23 seeded the cycle and
-            // refused later: "cannot infer a finite type here" at g's call, or
-            // a mismatch at f's call where g is not called); named `'z` it
-            // prints [1] and 2. A fix of the capture should pin all three.
-            // probes: ~/ptmp/cr29/scratch/r23/23c/nsh/review/shadow_any.gx,
-            // shadow_bound.gx, shadow_uncalled.gx and the _ctl twins
-            // (lambda-shadow-capture-01)
             // a variable the definitions around this one declare, and this
             // one does not, is theirs
             ft.alias_tvars(&mut known);
