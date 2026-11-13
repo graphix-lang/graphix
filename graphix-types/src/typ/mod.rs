@@ -39,7 +39,7 @@ pub use cast::{CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee};
 mod contains;
 pub use contains::ContainsFlags;
 pub(crate) use contains::find_impl;
-pub use contains::{AmbiguousMember, InfiniteType, TypeMismatch};
+pub use contains::{AmbiguousMember, InfiniteType, TypeMismatch, UndecidedTaker};
 pub(crate) mod expansive;
 pub mod fntyp;
 mod matches;

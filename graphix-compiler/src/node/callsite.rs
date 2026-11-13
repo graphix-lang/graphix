@@ -36,7 +36,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
-        Mutability, TVar, Type,
+        Mutability, TVar, Type, UndecidedTaker,
         settle::{DataPositions, Expanded, Held, Reaching, Unrolling},
         tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
     },
@@ -2104,6 +2104,20 @@ fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
     ))
 }
 
+/// A refusal of the argument `n` for holding a type nothing has decided
+/// at a bound two members of which could take it ([`UndecidedTaker`])
+/// names what to annotate, at the argument.
+fn undecided_taker<R: Rt>(
+    ctx: &CompileCtx<R>,
+    n: &Node<R>,
+    e: anyhow::Error,
+) -> anyhow::Error {
+    match e.downcast_ref::<UndecidedTaker>() {
+        Some(u) => wrap!(n, anyhow!("{}: {}", u.fact(), undecided_note(ctx, n))),
+        None => e,
+    }
+}
+
 /// The bindings `n` reads whose types are undecided, to annotate.
 fn undecided_binds<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> Option<CompactString> {
     let mut refs = Refs::without_callees();
@@ -2956,7 +2970,12 @@ impl<R: Rt> CallSite<R> {
                     let note = undecided(widening, &mut met, &formal, n.typ())?
                         .then(|| undecided_note(ctx, n));
                     rejoin(&copied);
-                    wrap!(n, noted(formal.check_contains(env, n.typ()), note))?
+                    match formal.check_contains(env, n.typ()) {
+                        Err(e) if e.is::<UndecidedTaker>() => {
+                            return Err(undecided_taker(ctx, n, e));
+                        }
+                        res => wrap!(n, noted(res, note))?,
+                    }
                 }
                 Waiter::Incomparable(key) => {
                     let Some(n) = arg(&key) else { continue };
@@ -4712,15 +4731,9 @@ impl<R: Rt> CallSite<R> {
                 let opening =
                     widening.opening(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
                 let fit = typecheck_arg(ctx, &farg.typ, opening, &prebound, n)?;
-                widening.fit(
-                    &ctx.env,
-                    self.fnode.typ(),
-                    ftype,
-                    &key,
-                    &farg.typ,
-                    n,
-                    fit,
-                )?;
+                widening
+                    .fit(&ctx.env, self.fnode.typ(), ftype, &key, &farg.typ, n, fit)
+                    .map_err(|e| undecided_taker(ctx, n, e))?;
             }
         }
         if let Some(typ) = &ftype.vargs {
@@ -4731,7 +4744,9 @@ impl<R: Rt> CallSite<R> {
                     let opening =
                         widening.opening(&ctx.env, self.fnode.typ(), ftype, typ);
                     let fit = typecheck_arg(ctx, typ, opening, &prebound, n)?;
-                    widening.fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)?;
+                    widening
+                        .fit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n, fit)
+                        .map_err(|e| undecided_taker(ctx, n, e))?;
                 }
             }
         }

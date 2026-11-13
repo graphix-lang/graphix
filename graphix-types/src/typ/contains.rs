@@ -739,6 +739,12 @@ impl ContainsHist {
         self.commit_pairs = commit_pairs;
     }
 
+    /// Whether the walk's verdict is the check's own: neither a trial nor
+    /// ordered, and over types their own checks have made.
+    fn decides(&self) -> bool {
+        !(self.trial || self.ordered || self.early)
+    }
+
     /// Whether `t` reaches no open cell, through bindings: a commit over
     /// two closed sides binds nothing, so it is the probe. Within a walk a
     /// closed node stays closed (cells only bind), and one found open
@@ -1591,7 +1597,7 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
-// CR claude for claude: [bug/medium] A union bound two of whose members take the value's
+// XCR claude for claude: [bug/medium] A union bound two of whose members take the value's
 // constructor passes nothing down to the value's open cells, and neither does a read-only
 // reference bound whose referent is a union to a writable reference: the check accepts what the
 // build refuses. `let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r =
@@ -1631,17 +1637,35 @@ fn commit_cell_bounds(
 // refuses the instance at fn(x0: Array<i64>, x1: null, x2: Array<i64>); annotated (`let v: Array<i64> =
 // never()`) the check refuses the call. Under GRAPHIX_NO_SUBST it runs and prints `1 [7]`. base-r23 alike; 12
 // of 1584 generated programs (gen2.py, the len_*_pun3 family). probe: ~/ptmp/cr29/scratch/r23/23b/opl/z/u1.gx
+// 2026-11-13 claude: Fixed in contains::member_with_parts. Of the members that take the value's constructor
+// the one a probe admits it into has the parts (every constructor now, not functions alone), or the one of
+// those that holds the others; where two admit a value holding a cell to decide and neither holds it whatever
+// decides the cell, the check refuses (contains::UndecidedTaker) and the call names the binding to annotate
+// (callsite.rs::undecided_taker). The writable-member pick is gone: m11 is refused at the choice, naming z.
+// commit_parts also pairs a read-only member with a writable value, makes a writable member's referent the
+// value's exactly, and passes a map's key down. m7, m8, m1, m11, u1, an empty array (f([]) with the result
+// read at Array<f64>) and a lambda at two function members are refused at the check; m13 and the annotated
+// twins run; g3_p00623 and m11_m00620 build. Pins that fail with the fix undone:
+// lang::types::union_bound_undecided_writable_reference_is_refused,
+// union_bound_two_array_members_refuse_{an_undecided_element,an_empty_array},
+// union_bound_two_writable_members_refuse_an_undecided_referent,
+// union_bound_two_function_members_refuse_an_undecided_lambda,
+// union_bound_through_a_typedef_refuses_an_undecided_array,
+// union_bound_one_admitting_member_decides_the_cell, reference_bound_reaches_a_writable_referent,
+// writable_reference_bound_{decides_the_referent,referent_accepts}, map_bound_reaches_an_open_key,
+// seq_step_empty_array_into_a_bound_union_two_members_take_is_refused;
+// union_bound_members_decided_alike_take_an_empty_array holds the other edge. Not covered: a walk that is a
+// trial, ordered or a pre-unification passes the choice by, and the same choice at a union that is no bound
+// is undecided-into-two-decided-01. probes: ~/ptmp/cr29/scratch/r23/23b/ubt/
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
 /// ⊇ [i64, 'k]` gives `'k: Int`), an exact part is committed as an exact
 /// conjunct is, and a function's argument takes the conjunct's argument,
-/// the least it must accept. Of a union's members the one that takes
-/// `t`'s constructor has the parts ([`Type::takes_constructor_of`]);
-/// where a read-only and a writable member both take a writable reference
-/// that holds a cell to decide, the writable one; of several function
-/// types, the one a probe admits `t` into. A probe accepted `t` already;
-/// what the walk can't line up it leaves.
+/// the least it must accept. A writable reference's referent is its
+/// part's exactly. Of a union's members one has the parts
+/// ([`member_with_parts`]). A probe accepted `t` already; what the walk
+/// can't line up it leaves.
 fn commit_parts(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
@@ -1704,24 +1728,7 @@ fn commit_parts(
             },
             (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist),
             (Type::Set(cs), t) if structured(t) && cs.iter().all(structured_or_prim) => {
-                let takers = || cs.iter().filter(|c| c.takes_constructor_of(t));
-                let holder = only(takers()).or_else(|| {
-                    let own = takers().filter(|c| t.takes_constructor_of(c));
-                    only(own).filter(|_| t.has_free())
-                });
-                let holder = match (holder, t) {
-                    (None, Type::Fn(_)) => {
-                        let mut admit: SmallVec<[&Type; 2]> = SmallVec::new();
-                        for c in takers() {
-                            if c.contains_int(guide(flags), env, hist, t)? {
-                                admit.push(c)
-                            }
-                        }
-                        only(admit.into_iter())
-                    }
-                    (holder, _) => holder,
-                };
-                match holder {
+                match member_with_parts(cs, flags, env, hist, t)? {
                     Some(c) => commit_parts(tv, flags, env, hist, c, t),
                     None => Ok(true),
                 }
@@ -1729,11 +1736,14 @@ fn commit_parts(
             (Type::Array(c), Type::Array(t))
             | (Type::List(c), Type::List(t))
             | (Type::Error(c), Type::Error(t))
-            | (Type::ByRef(Mutability::Shared, c), Type::ByRef(Mutability::Shared, t)) => {
+            | (Type::ByRef(Mutability::Shared, c), Type::ByRef(_, t)) => {
                 commit_parts(tv, flags, env, hist, c, t)
             }
+            (Type::ByRef(Mutability::Mut, c), Type::ByRef(Mutability::Mut, t)) => {
+                c.equal_int(flags, env, hist, t)
+            }
             (Type::Map(c), Type::Map(t)) => {
-                commit_parts(tv, flags, env, hist, &c.value, &t.value)
+                all(&mut [(&c.key, &t.key), (&c.value, &t.value)].into_iter(), hist)
             }
             (Type::Tuple(cs), Type::Tuple(ts)) if cs.len() == ts.len() => {
                 all(&mut cs.iter().zip(ts.iter()), hist)
@@ -1773,12 +1783,76 @@ fn commit_parts(
     })
 }
 
-/// The one item of `items`, where there is exactly one.
-fn only<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
-    match (items.next(), items.next()) {
-        (item, None) => item,
-        _ => None,
+/// The member of `cs`, a union conjunct, that has the parts of a value of
+/// type `t` ([`commit_parts`]): the one that takes its constructor
+/// ([`Type::takes_constructor_of`]); of several, where `t` is a function
+/// or holds a cell to decide, the one a probe admits `t` into, or the one
+/// of those that holds the others. `None` where no member is told apart
+/// and none need be: `t` has no cell to decide, some member holds it
+/// whatever decides its cells, or the walk is not the check's own
+/// ([`ContainsHist::decides`]). Else which member holds `t` follows what
+/// decides its cells: [`UndecidedTaker`].
+fn member_with_parts<'a>(
+    cs: &'a Arc<[Type]>,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<Option<&'a Type>> {
+    let mut takers = cs.iter().filter(|c| c.takes_constructor_of(t));
+    let Some(c0) = takers.next() else { return Ok(None) };
+    let Some(c1) = takers.next() else { return Ok(Some(c0)) };
+    let open = undecided(t);
+    if !open && !matches!(t, Type::Fn(_)) {
+        return Ok(None);
     }
+    let mut admit: SmallVec<[&Type; 2]> = SmallVec::new();
+    for c in [c0, c1].into_iter().chain(takers) {
+        if c.contains_int(guide(flags), env, hist, t)? {
+            admit.push(c)
+        }
+    }
+    if admit.len() < 2 {
+        return Ok(admit.first().copied());
+    }
+    'widest: for c in admit.iter().copied() {
+        for o in admit.iter().copied() {
+            if !std::ptr::eq(c, o) && !holds_as_it_stands(c, flags, env, hist, o)? {
+                continue 'widest;
+            }
+        }
+        return Ok(Some(c));
+    }
+    if !open || !hist.decides() {
+        return Ok(None);
+    }
+    for c in admit.iter().copied() {
+        if holds_as_it_stands(c, flags, env, hist, t)? {
+            return Ok(None);
+        }
+    }
+    Err(UndecidedTaker::new(cs, t, &admit))
+}
+
+/// Whether `m` holds `t` with every open cell of both held as it stands,
+/// so it holds `t` whatever decides them.
+fn holds_as_it_stands(
+    m: &Type,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    if hist.closed(m) && hist.closed(t) {
+        return m.contains_int(guide(flags), env, hist, t);
+    }
+    let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
+    hold_rigid(m, &mut gates);
+    hold_rigid(t, &mut gates);
+    hist.gated += 1;
+    let holds = m.contains_int(guide(flags), env, hist, t);
+    hist.gated -= 1;
+    holds
 }
 
 /// Whether `t` is built by a constructor with parts.
@@ -2603,21 +2677,7 @@ impl AmbiguousMember {
                 let Fact(a) = self;
                 format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
                     write!(f, "{} could go to ", Brief(&a.typ))?;
-                    let shown: SmallVec<[CompactString; 2]> = a
-                        .members
-                        .iter()
-                        .map(|m| format_compact!("{}", Brief(m)))
-                        .collect();
-                    // copies of one variable print alike
-                    match shown.iter().all(|m| *m == shown[0]) {
-                        true => write!(f, "any of {} members", shown.len())?,
-                        false => {
-                            for (i, m) in shown.iter().enumerate() {
-                                let sep = if i == 0 { "" } else { " or " };
-                                write!(f, "{sep}{m}")?;
-                            }
-                        }
-                    }
+                    write_members(f, &a.members)?;
                     write!(
                         f,
                         " of the union {}, which nothing has decided, and the check \
@@ -2643,6 +2703,78 @@ impl std::fmt::Display for AmbiguousMember {
 }
 
 impl std::error::Error for AmbiguousMember {}
+
+/// `members` as a refusal lists them: copies of one variable print alike.
+fn write_members(f: &mut std::fmt::Formatter<'_>, members: &[Type]) -> std::fmt::Result {
+    let shown: SmallVec<[CompactString; 2]> =
+        members.iter().map(|m| format_compact!("{}", Brief(m))).collect();
+    match shown.iter().all(|m| *m == shown[0]) {
+        true => write!(f, "any of {} members", shown.len()),
+        false => {
+            for (i, m) in shown.iter().enumerate() {
+                let sep = if i == 0 { "" } else { " or " };
+                write!(f, "{sep}{m}")?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// A value holding a type nothing has decided, at a variable whose bound
+/// is a union two or more members of which could take it. Which member
+/// holds it follows what decides that type, later, so the check takes
+/// neither: the value is annotated.
+#[derive(Debug)]
+pub struct UndecidedTaker {
+    bound: Type,
+    typ: Type,
+    members: SmallVec<[Type; 2]>,
+}
+
+impl UndecidedTaker {
+    fn new(bound: &Arc<[Type]>, t: &Type, members: &[&Type]) -> anyhow::Error {
+        if graphix_dbg_bind() {
+            eprintln!("UNDECIDED-TAKER {} <- {t}", Type::Set(bound.clone()));
+        }
+        anyhow::Error::new(UndecidedTaker {
+            bound: Type::Set(bound.clone()),
+            typ: t.clone(),
+            members: members.iter().map(|m| (*m).clone()).collect(),
+        })
+    }
+
+    /// The refusal without what to annotate, for a site that names it.
+    pub fn fact(&self) -> impl std::fmt::Display + '_ {
+        struct Fact<'a>(&'a UndecidedTaker);
+        impl std::fmt::Display for Fact<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let Fact(u) = self;
+                format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                    write!(f, "{} could go to ", Brief(&u.typ))?;
+                    write_members(f, &u.members)?;
+                    write!(
+                        f,
+                        " of the bound {}, and nothing has decided which",
+                        Brief(&u.bound)
+                    )
+                })
+            }
+        }
+        Fact(self)
+    }
+}
+
+impl std::fmt::Display for UndecidedTaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: annotate the value (bind it to a `let` with its type written)",
+            self.fact()
+        )
+    }
+}
+
+impl std::error::Error for UndecidedTaker {}
 
 /// The walk that finds where an open cell bounded `Data` meets a function
 /// or a reference, pairing the parts of two types as `contains` does.

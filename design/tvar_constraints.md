@@ -971,19 +971,34 @@ the definition gates:
   value's open cells, `contains::commit_parts`; a union formal judging a
   function's hidden defaults, `hidden_defaults_at`), it is the one member
   that takes the value's constructor (`Type::takes_constructor_of`): a
-  writable reference takes no read-only one, and two that take it are no
-  choice, so neither is judged, unless the value is a function and a
-  probe admits it into one alone, which then has the parts: a callback
-  whose result decides
-  between `fn(v: 'x) -> i64` and `fn(v: 'y) -> string` takes its
-  parameter from that member (pins
-  `lang::types::callback_into_{the_second_member_of_a_union_bound,a_union_bound_takes_the_members_parameter}`).
-  One case of two is decided: a union bound
-  with a read-only and a writable reference member (`'a: [&[i64, null],
-  &mut string]`) passes a writable reference that holds a cell to decide
-  (`&mut z`, `z` not yet typed) to the writable member, which decides the
-  cell, so `z` is a string; a decided one (`z: i64`) is left to the
-  member the probe found (pins `lang::types::union_bound_*`). A written
+  writable reference takes no read-only one. Two that take it are no
+  choice for the hidden defaults, so neither is judged. A union bound
+  goes further (`contains::member_with_parts`), for a function and for a
+  value that holds a cell to decide: of the members that take it, the one
+  a probe admits it into has the parts, or the one of those that holds
+  the others. So a callback whose result decides between `fn(v: 'x) ->
+  i64` and `fn(v: 'y) -> string` takes its parameter from that member
+  (pins
+  `lang::types::callback_into_{the_second_member_of_a_union_bound,a_union_bound_takes_the_members_parameter}`),
+  `'a: [(i64, i64), (string, string)]` makes the `z` of `(z, 1)` an
+  `i64`, and `[]` at `'a: P<'b, 'c>` (`type P<'x, 'y> = [Array<'x>,
+  Array<'y>, null]`) is an array of what `'b` and `'c` were both decided
+  to. Where two members admit a value that holds a cell to decide (`[z]`
+  or `[]` at `'a: [Array<i64>, Array<string>]`, `&mut z` at `'a:
+  [&[i64, null], &mut string]`, `|v| v` at two function members) and
+  neither holds it whatever decides the cell, which member holds it
+  follows that decision, later, and no bound on the cell says "one or the
+  other": the call is refused, naming the binding to annotate
+  (`contains::UndecidedTaker`, `callsite.rs::undecided_taker`), where the
+  check used to accept it and the build refuse the instance. A trial, an
+  ordered walk and a pre-unification pass the choice by; the argument's
+  own check meets it. A read-only reference member bounds a writable
+  reference's referent (`'a: &[i64, null]` holds the `z` of `&mut z`
+  within `[i64, null]`), a writable member's referent is the value's
+  exactly (`'a: &mut [i64, null]` makes `z` `[i64, null]`), and a map
+  passes its key down as it does its value (pins
+  `lang::types::union_bound_*`, `reference_bound_*`,
+  `writable_reference_bound_*`, `map_bound_*`). A written
   cell is: an enclosing definition's parameter merged into `'n` in `let
   p: fn(y: 'n) -> Array<'n> = |y| [y, n]` makes `'n` that parameter,
   which every call of the enclosing definition's inner functions shares.

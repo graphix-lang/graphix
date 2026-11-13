@@ -8817,7 +8817,26 @@ run!(
   type P<'x, 'y> = [Array<'x>, Array<'y>, null];
   let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
   let t = 1;
+  seq t { let a = f([], ["s"], ["s"]); a }
+}"#,
+    prints("[]")
+);
+// Where the other arguments decide two members apart that both take it,
+// the undecided argument is refused, and a typed one runs.
+run!(seq_step_empty_array_into_a_bound_union_two_members_take_is_refused, r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+  let t = 1;
   seq t { let a = f([], null, ["s"]); a }
+}"#, refused("nothing has decided which: this argument is undecided at this call; annotate it"); FuseExpect::None);
+run!(
+    seq_step_typed_empty_array_into_a_bound_union_two_members_take,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+  let t = 1;
+  let e: Array<null> = [];
+  seq t { let a = f(e, null, ["s"]); a }
 }"#,
     prints("[]")
 );
@@ -10127,20 +10146,21 @@ run!(
     FuseExpect::None
 );
 
-// A read-only and a writable member both take a writable reference: one
-// with a referent still to decide goes to the writable member, a decided
-// one to the member that holds it.
-run!(union_bound_undecided_writable_reference_takes_writable_member, r#"{
+// Two members of a union bound take a value's constructor: one that
+// holds a cell to decide is refused where both could hold it, naming what
+// to annotate, since which does follows what decides the cell; a decided
+// one goes to the member that holds it.
+run!(union_bound_undecided_writable_reference_is_refused, r#"{
     let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
     let g = |z| f(&mut z);
-    *g(2.5)
-}"#, refused("string does not contain f64"); FuseExpect::None);
+    *g("hello")
+}"#, refused("could go to &[i64, null] or &mut string of the bound [&[i64, null], &mut string], and nothing has decided which: `z` is undecided at this call; annotate `z`"); FuseExpect::None);
 
 run!(
-    union_bound_undecided_writable_reference_accepts,
+    union_bound_decided_writable_reference_takes_writable_member,
     r#"{
     let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
-    let g = |z| f(&mut z);
+    let g = |z: string| f(&mut z);
     *g("hello")
 }"#,
     is(Value::String("hello".into()));
@@ -10156,6 +10176,209 @@ run!(
 }"#,
     is(Value::I64(5));
     FuseExpect::None
+);
+
+run!(union_bound_two_array_members_refuse_an_undecided_element, r#"{
+    let f = 'a: [Array<i64>, Array<string>] |v: 'a| v;
+    let z = never();
+    let r = f([z]);
+    z <- 2.5;
+    r
+}"#, refused("Array<i64> or Array<string> of the bound [Array<i64>, Array<string>], and nothing has decided which: `z` is undecided at this call; annotate `z`"); FuseExpect::None);
+
+run!(
+    union_bound_two_array_members_take_a_decided_element,
+    r#"{
+    let f = 'a: [Array<i64>, Array<string>] |v: 'a| v;
+    let z: i64 = never();
+    let r = f([z]);
+    z <- 7;
+    r[0]$
+}"#,
+    is(Value::I64(7))
+);
+
+run!(union_bound_two_array_members_refuse_an_empty_array, r#"{
+    let f = 'a: [Array<i64>, Array<string>] |v: 'a| v;
+    let r: Array<f64> = f([]);
+    array::len(r)
+}"#, refused("nothing has decided which: this argument is undecided at this call; annotate it"); FuseExpect::None);
+
+run!(
+    union_bound_two_array_members_take_a_typed_empty_array,
+    r#"{
+    let f = 'a: [Array<i64>, Array<string>] |v: 'a| v;
+    let e: Array<string> = [];
+    array::len(f(e))
+}"#,
+    is(Value::I64(0))
+);
+
+run!(union_bound_two_writable_members_refuse_an_undecided_referent, r#"{
+    let f = 'a: [&mut [i64, null], &mut string] |v: 'a| v;
+    let z = never();
+    let r = f(&mut z);
+    z <- 2.5;
+    *r
+}"#, refused("&mut [i64, null] or &mut string of the bound"); FuseExpect::None);
+
+run!(
+    union_bound_two_writable_members_take_a_decided_referent,
+    r#"{
+    let f = 'a: [&mut [i64, null], &mut string] |v: 'a| v;
+    let z: [i64, null] = never();
+    let r = f(&mut z);
+    z <- 5;
+    *r
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
+run!(union_bound_two_function_members_refuse_an_undecided_lambda, r#"{
+    let f = 'a: [fn(x: i64) -> i64, fn(x: string) -> string] |v: 'a| v;
+    let h = f(|v| v);
+    h(2.5)
+}"#, refused("fn(x: i64) -> i64 or fn(x: string) -> string of the bound"); FuseExpect::None);
+
+run!(
+    union_bound_two_function_members_take_a_typed_lambda,
+    r#"{
+    let f = 'a: [fn(x: i64) -> i64, fn(x: string) -> string] |v: 'a| v;
+    let h = f(|v: i64| v);
+    h(2)
+}"#,
+    is(Value::I64(2));
+    FuseExpect::None
+);
+
+run!(union_bound_through_a_typedef_refuses_an_undecided_array, r#"{
+    type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+    let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+    let v = never();
+    let s = array::len(v);
+    let r = f(v, null, [1]);
+    v <- [7];
+    (s, r)
+}"#, refused("nothing has decided which: `v` is undecided at this call; annotate `v`"); FuseExpect::None);
+
+run!(
+    union_bound_through_a_typedef_takes_a_decided_array,
+    r#"{
+    type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+    let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+    let v: Array<null> = never();
+    let s = array::len(v);
+    let r = f(v, null, [1]);
+    v <- [null];
+    (s, r)
+}"#,
+    prints("[i64:1, [null]]")
+);
+
+// Of two members that take the value's constructor the one a probe
+// admits it into has the parts, and so does one that holds the other.
+run!(union_bound_one_admitting_member_decides_the_cell, r#"{
+    let f = 'a: [(i64, i64), (string, string)] |v: 'a| v;
+    let z = never();
+    let r = f((z, 1));
+    z <- 2.5;
+    r
+}"#, refused("cannot hold f64"); FuseExpect::None);
+
+run!(
+    union_bound_one_admitting_member_accepts,
+    r#"{
+    let f = 'a: [(i64, i64), (string, string)] |v: 'a| v;
+    let z = never();
+    let r = f((z, 1));
+    z <- 3;
+    r.0
+}"#,
+    is(Value::I64(3))
+);
+
+run!(
+    union_bound_members_decided_alike_take_an_empty_array,
+    r#"{
+    type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+    let f = 'a: P<'b, 'c> |x: 'a, y: 'b, z: 'c| x;
+    let r = f([], 1, 2);
+    array::len(array::push(r, 3))
+}"#,
+    is(Value::I64(1))
+);
+
+run!(union_bound_members_decided_alike_bound_an_empty_array, r#"{
+    type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+    let f = 'a: P<'b, 'c> |x: 'a, y: 'b, z: 'c| x;
+    let r = f([], 1, 2);
+    array::len(array::push(r, "s"))
+}"#, refused("does not contain string"); FuseExpect::None);
+
+// A read-only reference bound holds a writable reference's referent
+// within its own, a writable one makes it its own exactly, and a map
+// bound passes its key down as it does its value.
+run!(reference_bound_reaches_a_writable_referent, r#"{
+    let f = 'a: &[i64, null] |v: 'a| v;
+    let z = never();
+    let r = f(&mut z);
+    z <- "hello";
+    *r
+}"#, refused("cannot hold string"); FuseExpect::None);
+
+run!(
+    reference_bound_writable_referent_accepts,
+    r#"{
+    let f = 'a: &[i64, null] |v: 'a| v;
+    let z = never();
+    let r = f(&mut z);
+    z <- 5;
+    *r
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
+run!(writable_reference_bound_decides_the_referent, r#"{
+    let f = 'a: &mut [i64, null] |v: 'a| v;
+    let z = never();
+    let r = f(&mut z);
+    z <- "hello";
+    *r
+}"#, refused("z is [i64, null], inferred from an earlier use, and cannot hold string"); FuseExpect::None);
+
+run!(
+    writable_reference_bound_referent_accepts,
+    r#"{
+    let f = 'a: &mut [i64, null] |v: 'a| v;
+    let z = never();
+    let r = f(&mut z);
+    z <- 5;
+    *r
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
+run!(map_bound_reaches_an_open_key, r#"{
+    let f = 'a: Map<[string, i64], [i64, null]> |v: 'a| v;
+    let z = never();
+    let r = f({z => 1});
+    z <- 2.5;
+    r
+}"#, refused("cannot hold f64"); FuseExpect::None);
+
+run!(
+    map_bound_open_key_accepts,
+    r#"{
+    let f = 'a: Map<[string, i64], [i64, null]> |v: 'a| v;
+    let z = never();
+    let r = f({z => 1});
+    z <- "k";
+    r{"k"}$
+}"#,
+    is(Value::I64(1))
 );
 
 // A union of primitives the cell's bound refuses whole holds the cell in

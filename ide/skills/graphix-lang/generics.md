@@ -387,6 +387,23 @@ ok |p, q| { let s = p + q; array::push([1], p) }
 no "undecided at this" { type B<'p> = Abstract<'p>; let x = B(1); x <- B("a"); let v = x.0; array::push([10], v) }
 ```
 
+A variable bounded by a union two members of which could hold the
+argument (`'a: [Array<i64>, Array<string>]`, a `[&T, &mut U]`, two
+function types) takes an argument whose type is decided. One still open
+(`[z]` over a `let z = never()`, an untyped parameter, `[]`, an untyped
+lambda) is refused where both members could hold it, "nothing has decided
+which", naming the binding to annotate: which member holds it would
+follow a later use. Where only one member can hold it that member decides
+it (`(z, 1)` at `[(i64, i64), (string, string)]` makes `z` an `i64`).
+
+```graphix,cases
+no "nothing has decided which: `z` is undecided at this call; annotate `z`" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
+ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z: i64 = never(); let r = f([z]); z <- 1; r
+no "nothing has decided which: this argument is undecided at this call; annotate it" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; f([])
+ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let e: Array<string> = []; f(e)
+no "cannot hold f64" let f = 'a: [(i64, i64), (string, string)] |v: 'a| v; let z = never(); let r = f((z, 1)); z <- 2.5; r
+```
+
 A variable a callback also holds does not widen: the first argument decides
 it, an open one included, so order decides between a value and a refusal.
 `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v: 'a) -> i64|`
