@@ -594,36 +594,6 @@ impl ContainsHist {
         first
     }
 
-    // XCR claude for claude: [risk/low] A deferral that fails drops `commit_pairs` and
-    // keeps the committing verdicts in `provisional`, which typedef-open-expansion-01
-    // (lane 20c) added after this was written: `commit_put` holds an open application's
-    // pair there while what it assumed stands, `commit_held` reads both, and
-    // `answer_assumption` moves such a pair into `commit_pairs` once its assumption is
-    // answered, which may be after the drop. A pair proven while a part of it waited
-    // would then hold though the part never met its cell. Not shown reachable: the
-    // pair outlives the deferral only where it rests on a pair in progress outside the
-    // function, so the function's own arguments reach the recursive type that holds the
-    // function, and `DataPositions` then finds the variable under a function type, so
-    // `FnType::order_free_cells` does not hold it open. Nothing pins that link. Counted
-    // with a throwaway report here over 4301 programs under --expand (4000 generated: a
-    // function over a DAG or chain of bounds through union typedefs held at a written
-    // function type; lane 20b's 301 probes): about 2100 deferrals failed, 1650 of them
-    // with proven pairs to drop, none with a provisional commit. Dropping the provisional
-    // verdicts whose key holds `Commit` here too would close it without the argument.
-    // Found reviewing the merge of lane 20b onto 20g. probes:
-    // ~/ptmp/cr29/scratch/r20/20b/merge-review/{gen_mix.py,runfs.sh}
-    // (defer-provisional-commit-01)
-    // 2026-11-13 claude: A failed deferral now drops the committing verdicts held in
-    // provisional too (ContainsHist::settle_deferred), their keys left in
-    // provisional_order for the marks. The state is reachable, by a question rather than
-    // a pair: a pair proven inside a distribution law's commit rests on the law's
-    // question in progress, so the function-type argument of this CR does not cover it,
-    // and with the deferral failed the pair moved into commit_pairs at the question's
-    // answer. No program is known to read it there: a commit that fails ends its walk
-    // everywhere but contains_tvars's loop over a rigid cell's conjuncts, and 19232 + 558
-    // tests under a throwaway report never failed a deferral holding one. Pin:
-    // typ::contains::tests::a_refused_part_drops_the_pairs_held_on_a_question_in_progress
-    // (fails with the retain undone). probes: ~/ptmp/cr29/scratch/r23/23c/dpc/ (README)
     /// End the deferral [`Self::defer`] marked, the arguments having held
     /// or not: each cell meets every part that waited for it, first the
     /// one that holds every other, so it takes the widest; with none such
