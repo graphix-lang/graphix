@@ -3769,6 +3769,43 @@ run!(
     "#
 ; FuseExpect::None);
 
+// A default's parameter written at the bound over `self`, whatever the
+// order of the parameters, and a result written there.
+run!(
+    default_method_parameter_written_at_the_declared_bound,
+    prints("[i64:3, i64:0, i64:5, i64:0, i64:2, null, i64:1, i64:0]"),
+    "/test.gx" => r#"
+        trait T {
+            val k: fn(self) -> i64;
+            val m: fn<'b: [self, null]>(self, x: 'b) -> i64 = |s, x: [self, null]|
+                select x { null as _ => 0, v => T::k(v) + T::k(s) }
+        };
+        trait U { val u: fn<'b: [self, null]>(self, x: 'b) -> [self, null] = |s, x: [self, null]| x };
+        trait V {
+            val v: fn<'b: [self, null]>(#k: 'b, self) -> i64 = |#k: [self, null], s|
+                select k { null as _ => 0, _ => 1 }
+        };
+        impl T for i64 { let k = |s| s };
+        impl T for string { let k = |s| str::len(s) };
+        impl U for i64 {};
+        impl V for i64 {};
+        let result = [
+            T::m(1, 2), T::m(1, null), T::m("ab", "abc"), T::m("ab", null),
+            U::u(1, 2), U::u(1, null), V::v(#k: 2, 1), V::v(#k: null, 1)
+        ]
+    "#
+);
+
+run!(
+    default_method_parameter_of_another_type_than_the_bound_refused,
+    refused("x: [i64, null]) -> i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 = |s, x: [i64, null]| 0 };
+        impl T for i64 {};
+        let result = T::m(1, 2)
+    "#
+; FuseExpect::None);
+
 // The body reads the bound at the target: a written type under it, and a
 // select over the parameter it bounds.
 run!(

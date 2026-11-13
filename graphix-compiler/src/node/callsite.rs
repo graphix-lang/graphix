@@ -1559,6 +1559,20 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
         .collect()
 }
 
+// CR claude for claude: [bug/low] A call's argument that is a declared variable of the
+// enclosing definition decides a widenable variable by its formal's union member when it
+// comes first: over `let f = |x: ['a, null], s: 'a| 0`, `let g = 'b: ['c, null] |x: 'b,
+// s: 'c| f(x, s)` is refused "'a: unbound within [null, 'c: unbound within [null, 'c1:
+// unbound]] does not contain 'c: unbound within [null, 'c1: unbound]" ('a merged with
+// 'b, which does not hold 'c; the message prints 'b as 'c), and the same with the
+// parameters the other way round (`|s: 'a, x: ['a, null]|`, `f(s, x)`) runs: there 'a is
+// 'c first and `[null, 'c]` holds 'b by its bound. base-r23 alike. A function held at a
+// function type meets such a union after its variable's other positions
+// (ContainsHist::defers_member_choice, default-param-at-self-bound-01); a call's
+// arguments relate one by one. A fix lets the union meet the declared argument after the
+// widening settles. probes:
+// ~/ptmp/cr29/scratch/r23/23h/default-param-at-self-bound-01/{c1,c2}.gx
+// (rigid-arg-union-order-01)
 /// How a fresh instance's arguments settle its [`widenable`] variables:
 /// to the widest argument holding no undecided cell, the omitted defaults
 /// included, whatever the order. An argument that does not fit is probed

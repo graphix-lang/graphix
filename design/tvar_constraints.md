@@ -485,6 +485,19 @@ position (`('y, 'y)` held at `(i64, Any)`) are two parts.
   nominal type's or a constructor application's parameter) binds it when
   it is met, and the parts that waited must fit that: `fn(k: i64, p:
   &mut [i64, null])` holds `|k: 'y, p: &mut 'y|` in either order.
+- A rigid variable (a declared one, or a quantifier of the type) that a
+  position gives a union holding a waiting variable as a member meets the
+  union after the variables have met their parts
+  (`ContainsHist::defers_member_choice`): the member takes it whole, or
+  the members take its bound's parts, by what the variable has become.
+  So with `'b: [i64, null]`, `fn(s: i64, v: 'b)` holds `|s: 'a, v: ['a,
+  null]|` in either order (`'a` is `i64`, and `[i64, null]` holds `'b`
+  by its bound), and `fn(v: 'b, w: 'b)` holds `|v: ['a, null], w: 'a|`
+  (`'a` is `'b`). A trait's default written at its bound over `self`
+  (`|s, x: [self, null]|` under `fn<'b: [self, null]>(self, x: 'b)`) is
+  the first. Pins:
+  `lang::functions::written_fn_type_union_beside_a_declared_variable_*`,
+  `lang::traits::default_method_parameter_*`.
 - A variable a function type holds, a callback's parameter or result, is
   decided by the first position that meets it, as at a call (above): the
   held type writes its earlier position as wide as the later ones need.

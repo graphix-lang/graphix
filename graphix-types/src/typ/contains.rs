@@ -243,10 +243,14 @@ fn probe_flags(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 const DEFER_SCAN: usize = 8;
 
 /// An open cell and the closed parts it must hold that wait for the end
-/// of a function's arguments, each with the flags it met the cell under.
+/// of a function's arguments, each with the flags it met the cell under,
+/// and the unions holding it as a member whose choice of how to hold a
+/// rigid variable waits for what the cell becomes
+/// ([`ContainsHist::defers_member_choice`]).
 struct Deferred {
     tv: TVar,
     parts: SmallVec<[(Type, BitFlags<ContainsFlags>); 2]>,
+    choices: SmallVec<[(Type, Type, BitFlags<ContainsFlags>); 1]>,
 }
 
 /// What a verdict assumed of the walk in progress: the depth of the
@@ -418,8 +422,11 @@ impl ContainsHist {
             return None;
         }
         let mark = self.deferring.len();
-        self.deferring
-            .extend(cells.into_iter().map(|tv| Deferred { tv, parts: SmallVec::new() }));
+        self.deferring.extend(cells.into_iter().map(|tv| Deferred {
+            tv,
+            parts: SmallVec::new(),
+            choices: SmallVec::new(),
+        }));
         self.deferred_as_of = None;
         Some(mark)
     }
@@ -439,6 +446,30 @@ impl ContainsHist {
             return false;
         }
         self.deferring[i].parts.push((t.clone(), flags));
+        true
+    }
+
+    /// Whether `s ⊇ t`, the rigid variable `t` going into the union `s`,
+    /// waits for the end of the arguments in progress: a member of `s` is
+    /// a cell that waits, so whether that member takes `t` whole or the
+    /// members take the parts of `t`'s bound turns on what the cell
+    /// becomes. The union meets `t` once the cell has met its parts.
+    fn defers_member_choice(
+        &mut self,
+        flags: BitFlags<ContainsFlags>,
+        s: &Type,
+        t: &Type,
+    ) -> bool {
+        let Type::Set(members) = s else { return false };
+        if self.deferring.is_empty() {
+            return false;
+        }
+        let waiting = members.iter().find_map(|m| match m {
+            Type::TVar(tv) if is_unbound_tvar(m) => self.deferred_for(tv.stands_for()),
+            _ => None,
+        });
+        let Some(i) = waiting else { return false };
+        self.deferring[i].choices.push((s.clone(), t.clone(), flags));
         true
     }
 
@@ -530,7 +561,8 @@ impl ContainsHist {
     /// End the deferral [`Self::defer`] marked, the arguments having held
     /// or not: each cell meets every part that waited for it, first the
     /// one that holds every other, so it takes the widest; with none such
-    /// they meet it in order, and the first decides it. A pair proven
+    /// they meet it in order, and the first decides it. Then each union
+    /// whose choice waited meets its variable. A pair proven
     /// while a part of it waited holds only if the part does: where one
     /// does not, no proven pair is kept.
     pub(super) fn settle_deferred(
@@ -569,15 +601,16 @@ impl ContainsHist {
     // both orders alike. Found reviewing the merge of lane 20b onto 20g. probes:
     // ~/ptmp/cr29/scratch/r20/20b/merge-review/ord/{o1..o8}.gx, big/genbig.py
     // (fn-annotation-bound-order-01)
-    /// Each cell of `deferred` against the parts that waited for it.
+    /// Each cell of `deferred` against the parts that waited for it, then
+    /// each union whose choice waited against its variable.
     fn meet_deferred(
         &mut self,
         env: &Env,
-        deferred: SmallVec<[Deferred; 2]>,
+        mut deferred: SmallVec<[Deferred; 2]>,
     ) -> Result<bool> {
         let probe = BitFlags::from(ContainsFlags::RigidCheck);
         let mut holds = true;
-        for Deferred { tv, mut parts } in deferred {
+        for Deferred { tv, parts, .. } in deferred.iter_mut() {
             if parts.is_empty() {
                 continue;
             }
@@ -596,10 +629,13 @@ impl ContainsHist {
             if holds_every {
                 parts.swap(0, widest)
             }
-            let tv = Type::TVar(tv);
+            let tv = Type::TVar(tv.clone());
             for (p, flags) in parts.iter() {
                 holds &= tv.contains_int(*flags, env, self, p)?
             }
+        }
+        for (s, t, flags) in deferred.iter().flat_map(|d| d.choices.iter()) {
+            holds &= s.contains_int(*flags, env, self, t)?
         }
         Ok(holds)
     }
@@ -3600,6 +3636,9 @@ impl Type {
                 // member holds it; a commit cannot bind the cell, so it
                 // takes this verdict too.
                 if (rigid || commit) && t1.is_rigid() {
+                    if commit && hist.defers_member_choice(flags, t0, t) {
+                        return Ok(true);
+                    }
                     if let Self::Set(s) = t0
                         && Self::set_commit_flat(s, flags, env, hist, t)?.unwrap_or(false)
                     {

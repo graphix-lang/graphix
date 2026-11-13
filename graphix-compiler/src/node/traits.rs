@@ -568,7 +568,7 @@ impl<R: Rt> Trait<R> {
             if let Some(body) = &m.default {
                 written_method_unions(None, body, &|tv| &*tv.name != "self").at(body)?;
                 default_module_sigs(body)?;
-                // CR claude for claude: [bug/medium] A default whose parameter is written
+                // XCR claude for claude: [bug/medium] A default whose parameter is written
                 // at its variable's bound over `self` is refused on r20-staging and ran on
                 // base-r20 and on the round before lane 20b's commits: `trait T { val m:
                 // fn<'b: [self, null]>(self, x: 'b) -> i64 = |s, x: [self, null]| 0 }; impl
@@ -584,6 +584,24 @@ impl<R: Rt> Trait<R> {
                 // probes: ~/ptmp/cr29/scratch/r20/20d/x2/dflt/{d1h,d1c}.gx (refused;
                 // base-r20 prints `0 0` and `3 0 5 0`), {d1e,w3,q5,q6}.gx (run)
                 // (default-param-at-self-bound-01)
+                // 2026-11-12 claude: The deferral of fn-annotation-order-01 held the
+                // default's own `self` open as a waiting variable, and `[null, self] ⊇ 'b`
+                // took the member route (the waiting `self` holds the rigid 'b whole, a
+                // part that always waits) where it needed the bound's parts; at the settle
+                // `self` merged with the signature's `self` and then could not hold 'b.
+                // ContainsHist::defers_member_choice: a rigid variable going into a union
+                // whose member is a waiting variable waits too, and the union meets it
+                // after every waiting variable has met its parts (meet_deferred), by the
+                // member or by the bound as the variable now is. The CR's probes run (d1h
+                // `0 0`, d1c `3 0 5 0`), and so does the same shape outside traits in
+                // either order (`fn(s: i64, v: 'b)` holding `|s: 'a, v: ['a, null]|` in a
+                // definition declaring 'b: [i64, null]). Pins
+                // lang::traits::default_method_parameter_written_at_the_declared_bound and
+                // lang::functions::written_fn_type_union_beside_a_declared_variable_either_order
+                // fail in all four modes without it; their refused twins and two
+                // generics.md cases stand beside them. The call-site analogue (the
+                // arguments of a call, not a function type) is new CR
+                // rigid-arg-union-order-01.
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
                 let name =

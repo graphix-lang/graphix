@@ -4633,6 +4633,36 @@ run!(
     prints("[null, null, [i64:1, null]]")
 );
 
+// A rigid variable going into a union whose member is a variable that waits
+// is held once that variable has met its other positions: by the member,
+// or by its bound's parts, whatever the order of the positions.
+run!(
+    written_fn_type_union_beside_a_declared_variable_either_order,
+    r#"{
+  let g = 'b: [i64, null] |x: 'b| {
+    let h: fn(s: i64, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 1;
+    let hr: fn(v: 'b, s: i64) -> i64 = |v: ['c, null], s: 'c| 2;
+    let hw: fn(v: 'b, w: 'b) -> i64 = |v: ['d, null], w: 'd| 3;
+    h(1, x) + hr(x, 1) + hw(x, x)
+  };
+  [g(2), g(null)]
+}"#,
+    prints("[i64:6, i64:6]")
+);
+
+run!(
+    written_fn_type_union_beside_a_declared_variable_refused,
+    r#"{
+  let g = 'b: [i64, null] |x: 'b| {
+    let h: fn(s: string, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 0;
+    h("s", x)
+  };
+  g(2)
+}"#,
+    refused("does not contain fn(s: 'a: string, v: [null, 'a: string]) -> i64");
+    FuseExpect::None
+);
+
 // A builtin binding declares every argument's type, its variadic's too.
 run!(builtin_binding_needs_a_typed_variadic, r#"{
   let s = |@args| -> i64 'core_sum;

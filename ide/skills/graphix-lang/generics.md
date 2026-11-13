@@ -347,6 +347,8 @@ ok let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: Any, k: i64, c
 ok type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |k: 'y, l: L<'y>| -> 'y k; let g: fn(k: [i64, null], l: L<i64>) -> [i64, null] = f; g(null, `Nil)
 no "does not contain fn(l: L<'y: i64>" type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |l: L<'y>, k: 'y| -> 'y k; let g: fn(l: L<i64>, k: [i64, null]) -> [i64, null] = f; g(`Nil, null)
 ok type T<'a> = [`Leaf('a), `Node(T<i64>)]; let f = |t: T<'y>, k: 'y| -> 'y k; let g: fn(t: T<i64>, k: [i64, null]) -> [i64, null] = f; g(`Leaf(1), null)
+ok let g = 'b: [i64, null] |x: 'b| { let h: fn(s: i64, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 0; h(1, x) }; g(null)
+ok let g = 'b: [i64, null] |x: 'b| { let h: fn(v: 'b, s: i64) -> i64 = |v: ['a, null], s: 'a| 0; h(x, 1) }; g(null)
 ```
 
 ## Abstract comparisons
