@@ -97,6 +97,29 @@ run!(
     prints("[i64:100, i64:10, i64:2, i64:30, i64:104, i64:50, i64:6, i64:70]")
 );
 
+// A type a lambda's body writes may name a variable of the definition
+// around it: an instance of that definition at another type tests
+// another type, though the lambda's own type and captures are the same.
+run!(
+    bound_definitions_test_their_enclosing_instances_type,
+    r#"
+{
+    let e = 'b: [i64, string] |k: 'b, n: i64| -> i64 {
+        let v: [i64, string] = select n % 3 { 0 => n, 1 => "s", _ => n * 2 };
+        let h = select n % 2 {
+            0 => |x: [i64, string]| -> i64 select x { 'b as w => 10, _ => 20 },
+            _ => |x: [i64, string]| -> i64 select x { 'b as w => 30, _ => 40 }
+        };
+        h(v)
+    };
+    array::map(array::init(6, |i| i), |n| (e(1, n), e("z", n)))
+}
+"#,
+    prints(
+        "[[i64:10, i64:20], [i64:40, i64:30], [i64:10, i64:20], [i64:30, i64:40], [i64:20, i64:10], [i64:30, i64:40]]"
+    )
+);
+
 run!(neg_value_shapes, r#"
 {
     let d = decimal:1.5;
@@ -500,6 +523,36 @@ async fn bound_definitions_capturing_two_types_build_apart() -> Result<()> {
     assert_eq!((&one.value, &two.value), (&Value::I64(12), &Value::I64(12)));
     // the second type's first bind of each lambda builds where the first
     // type's second instance reuses
+    assert_eq!(two.attempts, one.attempts + 2);
+    assert_eq!(two.reused + 2, one.reused);
+    Ok(())
+}
+
+/// ..and where a function they call captures them: the instances of the
+/// definition around them at two types build apart.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_definitions_calling_over_two_types_build_apart() -> Result<()> {
+    let code = |a: &str, b: &str| {
+        format!(
+            "{{
+  let e = |k| {{
+    let g = |y: i64| -> i64 y * 100 + cast<i64>(k)$;
+    let r = array::map(array::init(4, |i| i), |j| {{
+      let h = select j % 2 {{
+        0 => |x: i64| -> i64 g(x) + 1,
+        _ => |x: i64| -> i64 g(x) - 1
+      }};
+      h(j)
+    }});
+    array::fold(r, 0, |s, x| s + x)
+  }};
+  e({a}) + e({b})
+}}"
+        )
+    };
+    let one = run_code(BitFlags::empty(), &[], &code("3", "4"), true).await?;
+    let two = run_code(BitFlags::empty(), &[], &code("3", "4.0"), true).await?;
+    assert_eq!((&one.value, &two.value), (&Value::I64(1228), &Value::I64(1228)));
     assert_eq!(two.attempts, one.attempts + 2);
     assert_eq!(two.reused + 2, one.reused);
     Ok(())

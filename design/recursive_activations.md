@@ -131,9 +131,10 @@ cache (`BodyShared::bound`, held by what every compile of the enclosing
 body shares), so the cache lives while the enclosing definition does: an
 instance's bind takes the kernels an earlier instance's built, after
 that instance is deleted too. It is keyed by what decides the kernels
-(`fusion::BoundKey`): the instance's type, its captures' types (an
-enclosing instance at another type gives the same lambda type other
-captures) and its body's fingerprint named by source, a callee by its
+(`fusion::BoundKey`): the instance's type, the signatures of the
+instances around its definition (a type the body writes names their
+variables, and a function it calls captures what they decide), its
+captures' types and its body's fingerprint named by source, a callee by its
 lambda expression and a handler by the raise the walk first meets it
 at, so a raise to another instance's handler is redirected as a slot's
 is (`fusion/share.rs`). An instance whose walk fused nothing is cached

@@ -26,7 +26,12 @@ use crate::{
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
     fusion::kernel_abi::{KernelParam, KernelSig, ParamKind},
-    node::{self, callsite::CallNode, genn, lambda::GXLambda},
+    node::{
+        self,
+        callsite::CallNode,
+        genn,
+        lambda::{DefOrigin, GXLambda},
+    },
     profile::{self, Phase},
     typ::{Brief, FnType, Type},
 };
@@ -363,14 +368,16 @@ pub(crate) type KernelCacheKey =
     (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions);
 
 /// What a run-time bind's kernels are kept by among the definitions of
-/// its lambda expression ([`BoundKernels`]): its type, its captures'
-/// types and its body's fingerprint named by source
-/// ([`lowering::Naming::Source`]), so that the definition each instance
-/// of an enclosing body makes takes the kernels the first one's bind
-/// built.
+/// its lambda expression ([`BoundKernels`]): its type, the signatures of
+/// the instances around the definition (a type the body writes names
+/// their variables), its captures' types and its body's fingerprint named
+/// by source ([`lowering::Naming::Source`]), so that the definition each
+/// instance of an enclosing body makes takes the kernels the first one's
+/// bind built.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct BoundKey {
     typ: FnType,
+    enclosing: Box<[FnType]>,
     captures: Box<[Type]>,
     coverage: lowering::QopCoverage,
     resolutions: lowering::FnResolutions,
@@ -378,6 +385,12 @@ pub(crate) struct BoundKey {
 
 impl BoundKey {
     fn of<R: Rt>(def: &LambdaDef<R>, g: &GXLambda<R>, ctx: &CompileCtx<R>) -> Self {
+        let enclosing = match &def.origin {
+            DefOrigin::Source { enclosing, .. } => {
+                enclosing.iter().map(|t| t.resolve_tvars()).collect()
+            }
+            DefOrigin::Runtime => Box::default(),
+        };
         let mut captures: LPooled<Vec<Type>> = LPooled::take();
         def.captured_ids(&mut |id| {
             if let Some(b) = ctx.env.by_id.get(&id) {
@@ -388,6 +401,7 @@ impl BoundKey {
             lowering::body_fingerprint(g.body(), ctx, lowering::Naming::Source);
         Self {
             typ: g.typ().resolve_tvars(),
+            enclosing,
             captures: captures.drain(..).collect(),
             coverage,
             resolutions,

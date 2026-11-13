@@ -288,7 +288,8 @@ engine-independent.
   any other instance takes the kernels an earlier bind of a definition of
   its lambda expression built, else is fused at its first bind
   (`fusion::fuse_instance`, cached where every definition of the
-  expression shares it, by type, captures and body, an instance that
+  expression shares it, by type, the enclosing instances' signatures,
+  captures and body, an instance that
   fused nothing included, walked again only where an assertion reaches
   the bind; a lambda in a body is a definition of its own in each
   instance of the body, and the instances' binds of it share the cache,
