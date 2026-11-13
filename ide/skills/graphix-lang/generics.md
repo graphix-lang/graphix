@@ -150,7 +150,12 @@ deciding parts may stand anywhere (`|x: (P<'a, 'b>, 'a, 'b)|` takes
 union does not widen: the first argument that meets it decides it, and
 an argument that needs it wider (`[n]` over `n: [i64, null]` after `1`)
 is refused, so give the earlier argument the wide type (`let one: [i64,
-null] = 1`). A callback is given to the member its result fits.
+null] = 1`). A callback is given to the member its result fits. A
+callback written at the call whose own parameter is a union of two such
+members (`|q: [Array<i64>, Array<string>], r: string|` at `fn(q:
+Array<'a>, r: 'a)`) takes the variable from its other parameters,
+wherever they stand; one read from a field or a select is met in order
+and refused.
 
 ```graphix,cases
 no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
@@ -211,6 +216,8 @@ no "nothing has decided which" let x: [Array<i64>, Array<string>] = []; x
 ok let e: Array<i64> = []; let x: [Array<i64>, Array<string>] = e; x
 no "declare the parameters that decide it before this one" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |k: fn(q: P<'a, 'b>) -> i64, y: 'a, z: 'b| 0; f(|q: [Array<i64>, Array<bool>]| 0, 1, true)
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, k: fn(q: P<'a, 'b>) -> i64| 0; f(1, true, |q: [Array<i64>, Array<bool>]| 0)
+ok let h = |k: fn(q: Array<'a>, r: 'a) -> i64| 0; h(|q: [Array<i64>, Array<string>], r: string| 1)
+no "nothing has decided which" let h = |k: fn(q: Array<'a>, r: 'a) -> i64| 0; let s = {c: |q: [Array<i64>, Array<string>], r: string| 1}; h(s.c)
 no "nothing has decided which" let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x| 0)
 ok let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x: [i64, string]| 0)
 ok let f = |x: ('a, i64), z: 'a| x.1; let g = |y| f(y, y.0); g((1, 2))

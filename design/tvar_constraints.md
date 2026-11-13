@@ -606,7 +606,11 @@ union_before_its_members_position_refused}`,
 label_written_at_the_bound_before_self_refused}`.
 
 The pre-unification of a callback argument with its formal
-(`FnType::pre_unify_params`) meets the positions the same way.
+(`FnType::pre_unify_params`) meets the positions the same way, but for a
+position whose union in the callback's own parameter has two decided
+members that could take the formal's: it passes over that one, so a later
+position may decide the variable before the callback's own check (A
+union's member takes a type by rule).
 
 ### A union of variables in a signature
 
@@ -787,7 +791,16 @@ element was checked), and the
 probes behind a refusal's note are ordered walks on copies
 (`callsite::annotation_may_fit`); a function's parameters pre-unified
 with a formal's leave two decided takers to the argument's own check too
-(`FnType::pre_unify_params`). So a call through an inferred wrapper,
+(`FnType::pre_unify_params`), which meets the variable as the callback's
+other positions left it: `h(|q: [Array<i64>, Array<string>], r: string|
+1)` over `|k: fn(q: Array<'a>, r: 'a) -> i64|` runs with `'a` a string,
+`r: [i64, string]` there is a mismatch at `q`, and a function the call
+does not pre-unify (a field read, `h(s.c)`) is refused at `q`, the first
+position (pins
+`lang::types::callback_parameter_union_of_two_decided_arrays_{decided_by_a_later_position,
+under_a_wider_later_position_refused}`,
+`callback_field_read_union_parameter_before_its_decider_refused`). So a
+call through an inferred wrapper,
 a nested function or a seq step is refused where the direct call is, at
 the check, never at the instance (pins
 `lang::types::{wrapper,nested_function}_into_a_bound_union_of_two_undecided_refused`

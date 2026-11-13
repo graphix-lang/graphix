@@ -8404,6 +8404,41 @@ run!(
     refused(TWO_DECIDED_TAKERS);
     FuseExpect::None
 );
+// The pre-unification of a callback passes over the choice, so a later
+// position of the callback decides the variable before its own check
+// meets the union; one wider than either member leaves it held by
+// neither, and a function the call does not pre-unify is met in order.
+run!(
+    callback_parameter_union_of_two_decided_arrays_decided_by_a_later_position,
+    r#"{
+  let h = |k: fn(q: Array<'a>, r: 'a) -> string, z: 'a| k([z, z], z);
+  let g = |w| h(|q: [Array<i64>, Array<string>], r: string| "[r]-[select q { [] => 0, [_, ..] => 1 }]", w);
+  (h(|q: [Array<i64>, Array<string>], r: string| "[r]:[select q { [] => 0, [_, ..] => 1 }]", "s"), g("t"))
+}"#,
+    prints(r#"["s:1", "t-1"]"#)
+);
+run!(
+    callback_parameter_union_of_two_decided_arrays_under_a_wider_later_position_refused,
+    r#"{
+  let h = |k: fn(q: Array<'a>, r: 'a) -> i64| 0;
+  h(|q: [Array<i64>, Array<string>], r: [i64, string]| 1)
+}"#,
+    refused(
+        "fn(q: Array<'a: [i64, string]>, r: 'a: [i64, string]) -> i64 does not contain \
+         fn(q: [Array<i64>, Array<string>], r: [i64, string]) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    callback_field_read_union_parameter_before_its_decider_refused,
+    r#"{
+  let h = |k: fn(q: Array<'a>, r: 'a) -> i64| 0;
+  let s = {c: |q: [Array<i64>, Array<string>], r: string| 1};
+  h(s.c)
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
+);
 // Members that decide the type alike are no choice: two names holding
 // one array, and a lambda with its types written, whose one open cell is
 // what it throws.
