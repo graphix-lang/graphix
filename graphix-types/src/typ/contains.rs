@@ -1991,48 +1991,6 @@ pub(super) fn on_copies<const N: usize, R>(
 /// A cell, a type that may reach it and the edges the walk takes.
 type Reach<'a> = (&'a TVar, &'a Type, Toward);
 
-// XCR claude for claude: [risk/low] A check that meets an open var aliased
-// (TVar::alias) onto a cell that is already bound may not return: with
-// callsite::rejoin aliasing an open copy to its formal's cell where an earlier
-// argument had bound that cell (it binds the copy to it instead), --check of
-// hang_g4_p00166.gx was killed at 30 s, under GRAPHIX_DBG_BIND printing "BARE-CYCLE
-// 1 open, 1 bound" without end, the time in tvar::CycleWalk and this function
-// (perf). merge_one refuses an alias whose own cell is bound and takes one onto a
-// bound cell; which state the walk then cannot leave was not found. Nothing in the
-// tree makes that alias today, so it is not shown reachable. A pin that builds the
-// two cells by hand and walks them would say whether merge_one should refuse the
-// alias or this merge should answer for the pair in progress. Found building
-// never-arg-instance-split-01's fix. probe:
-// ~/ptmp/cr29/scratch/r20/20b/x6/residual/hang_g4_p00166.gx (alias-bound-cycle-01)
-// 2026-11-11 claude: Review of r20-x6: the bind that replaced that alias had no
-// occurs check either, and where the formal's cell had been bound to a type holding
-// the copy's cell it closed a cycle (`let f = |y| h([y, 1], (y, 2))` over `|a:
-// Array<'a>, b: ('a, i64)|`: --check ran until its memory cap). TVar::rejoin now
-// makes the choice (alias onto an open cell, bind to a decided one) behind
-// closes_cycle, and leaves a copy the cell reaches apart; pin
-// lang::types::undecided_argument_inside_what_its_formals_variable_settled_to.
-// Nothing aliases onto a bound cell, so this CR's hang stays unreached;
-// hang_g4_p00166.gx checks and builds.
-// 2026-11-12 claude: The state needs no alias, and it is reached: an open cell
-// whose bound names a union (`'a: O<'b>` over `type O<'t> = ['t, null]`) reaches a
-// bound cell through the name's parameter, which TVar::drop_bounds_on does not drop
-// (it drops a cell or a union holding one), so merge_bare_cycle's own relation of
-// the merged cell to that bound cell found the same cycle and merged again, without
-// end. `let f = 'a: O<'b>, 'b: Number |t: ('b, 'b, 'a)| t.2; let h = |v| f((v, 1,
-// v)); h(2)` never returned from --check on base-r23 (probe
-// ~/ptmp/cr29/scratch/r23/23c/abc/s1.gx); a var aliased onto the bound cell is one
-// more way to the same state. merge_one is unchanged. merge_bare_cycle now names
-// the pair it is making one type (ContainsHist::merging), and contains_tvars takes
-// that pair past a bare cycle: the open cell takes the bound one's binding as off a
-// cycle, the bounds it kept checked against it, so `'a` is i64 as under `'a: ['b,
-// null]`. The CR's probe with TVar::rejoin put back to alias always hung before and
-// builds now. Pins, which never return without the guard:
-// typ::contains::tests::bare_cycle_through_a_typedefs_parameter_takes_the_bound_cells_binding
-// (the hand-built cells, with and without the alias),
-// bare_cycle_through_a_typedefs_parameter_below_holds_the_other_members,
-// lang::types::bare_cycle_through_a_bounds_typedef_parameter_to_a_decided_cell,
-// bare_cycle_through_a_bounds_typedef_parameter_is_the_decided_cell. Two OPEN cells
-// on such a path are bare-cycle-named-bound-01.
 /// The cells on a cycle through cells and unions alone, each type's bare
 /// paths to its cell and the cell, are one type: the open ones merge, each
 /// first dropping its bounds that are cells of the cycle, and each bound
