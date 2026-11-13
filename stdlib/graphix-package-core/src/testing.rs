@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use graphix_compiler::{
     BindId, CFlag, ParMode, PruneMode,
@@ -18,7 +18,7 @@ use netidx::publisher::Value;
 use netidx_core::path::Path;
 use parking_lot::Mutex;
 use poolshark::global::GPooled;
-use std::{sync::LazyLock, time::Duration};
+use std::{fmt::Write, sync::LazyLock, time::Duration};
 use tokio::{
     sync::{OnceCell, mpsc, oneshot},
     time::Instant,
@@ -734,6 +734,34 @@ pub fn refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
     move |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains(phrase))
 }
 
+/// `text` with each generated variable's id (`'_<digits>`) renumbered
+/// from 0 in order of first appearance, so two runs' types compare.
+pub fn renumbered(mut text: &str) -> CompactString {
+    let mut ids: LPooled<Vec<&str>> = LPooled::take();
+    let mut out = CompactString::default();
+    while let Some(at) = text.find("'_") {
+        out.push_str(&text[..at + 2]);
+        text = &text[at + 2..];
+        let n = text.bytes().take_while(u8::is_ascii_digit).count();
+        if n != 0 {
+            let id = &text[..n];
+            let i = ids.iter().position(|s| *s == id).unwrap_or_else(|| {
+                ids.push(id);
+                ids.len() - 1
+            });
+            write!(out, "{i}").unwrap();
+            text = &text[n..];
+        }
+    }
+    out.push_str(text);
+    out
+}
+
+/// [`refused`], with the error's generated variables [`renumbered`].
+pub fn refused_renumbered(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| matches!(v, Err(e) if renumbered(&format!("{e:#}")).contains(phrase))
+}
+
 /// A [`run!`] predicate for a program whose value is `expected`.
 pub fn is(expected: Value) -> impl Fn(Result<&Value>) -> bool {
     move |v: Result<&Value>| matches!(v, Ok(v) if *v == expected)
@@ -1134,7 +1162,6 @@ use graphix_compiler::expr::parser::GRAPHIX_STRINGS;
 pub use poolshark::local::LPooled;
 
 pub fn escape_path(path: std::path::Display) -> LPooled<String> {
-    use std::fmt::Write;
     let mut buf: LPooled<String> = LPooled::take();
     let mut res: LPooled<String> = LPooled::take();
     write!(buf, "{path}").unwrap();

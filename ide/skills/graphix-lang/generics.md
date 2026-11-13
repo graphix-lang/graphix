@@ -284,7 +284,9 @@ occurs with its state: the next use that decides `'a` decides it
 wherever that instance holds it. Two instances are two variables, and
 in one message the second prints numbered apart (`'a1`), under that
 name in every type the message prints; a name numbered apart is none
-that type, or one the message printed before it, declares.
+that type, or one the message printed before it, declares. An inferred
+variable numbers apart too: a second instance's copy of `'_7` prints
+`'_7_1`.
 
 ```graphix,cases
 no "y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number>" let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1
@@ -292,6 +294,7 @@ no "y is fn(x: 'a: unbound within Number) -> 'a: unbound within Number and" let 
 no "y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: f64) -> 'a1: f64) and" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let y = never(); y <- (h, k); let r = y.0(1); let s = y.1(1.5); y <- 1
 no "y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold fn(x: 'a1: f64) -> 'a1: f64" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = k(1.5); let y = never(); y <- (h, k); y <- k
 no "(fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number) and" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let mk1 = |z: i64| 'a1: Number |x: 'a1| -> 'a1 x; let m = mk1(0); let y = never(); y <- (h, k, m); y <- 1
+no "_1: unbound) -> (string, '_" let mk = |v| |p| (v, p); let c = true; let s = select c { true => mk(1), false => mk("s") }; let n: i64 = s; n
 ```
 
 A `let` nothing writes that holds lambdas in a struct, tuple, array or

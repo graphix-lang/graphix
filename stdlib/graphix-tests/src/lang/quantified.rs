@@ -5,7 +5,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, prints, refused},
+    testing::{FuseExpect, is, prints, refused, refused_renumbered},
 };
 use netidx::publisher::Value;
 
@@ -1426,6 +1426,39 @@ run!(
     one_instance_twice_in_one_printed_type_keeps_one_name,
     "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- (h, h); y <- 1; y }",
     refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a: unbound within Number) -> 'a: unbound within Number) and cannot hold i64");
+    FuseExpect::None
+);
+
+// A union of two functions over two declared variables prints both
+// members, alike in shape as they are.
+run!(
+    a_union_over_two_declared_variables_prints_both_members,
+    r#"{ let f = |c: bool, x: 'a, y: 'b| { let s = select c { true => |p: 'a| p, false => |q: 'b| q }; let n: i64 = s; n }; f(false, 1, "s") }"#,
+    refused("i64 does not contain [fn(p: 'a: unbound) -> 'a: unbound, fn(q: 'b: unbound) -> 'b: unbound]");
+    FuseExpect::None
+);
+
+// Two instances of one inferred generic copy its variables' generated
+// names: the second's cells print numbered apart, so a union of the two
+// prints both members, and the members of a callee's union read as two.
+run!(
+    two_instances_of_an_inferred_generic_print_apart_in_a_union,
+    r#"{ let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x), false => mk(y) }; let n: i64 = s; n }; f(false, 1, "s") }"#,
+    refused_renumbered("i64 does not contain [fn(p: '_0: unbound) -> ('_1: unbound, '_0: unbound), fn(p: '_0_1: unbound) -> ('_1_1: unbound, '_0_1: unbound)]");
+    FuseExpect::None
+);
+
+run!(
+    two_instances_of_an_inferred_generic_print_apart_in_a_callee,
+    r#"{ let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x), false => mk(y) }; let r: i64 = s(1); r }; f(false, 1, "s") }"#,
+    refused_renumbered("this callee is one of fn(p: '_0: unbound) -> ('_1: unbound, '_0: unbound) and fn(p: '_0_1: unbound) -> ('_1_1: unbound, '_0_1: unbound);");
+    FuseExpect::None
+);
+
+run!(
+    two_instances_of_an_inferred_generic_name_their_cells_apart,
+    r#"{ let mk = |v| |p| (v, p); let c = true; let s = select c { true => mk(1), false => mk("s") }; let n: i64 = s; n }"#,
+    refused_renumbered("i64 does not contain [fn(p: '_0: unbound) -> (i64, '_0: unbound), fn(p: '_0_1: unbound) -> (string, '_0_1: unbound)]");
     FuseExpect::None
 );
 

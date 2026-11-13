@@ -2293,7 +2293,10 @@ former consumer derives from the cells:
   no header, though the definition's close has generalized the cells by
   the time the message prints. With no header to scope it, a named cell
   keeps one name through one message, in every type the message prints,
-  and a second cell of that name prints numbered apart (`'a1`;
+  and a second cell of that name prints numbered apart (`'a1`; an
+  inferred variable's too, since an instance copies the generated names
+  of the cells it copies: `'_7`, then `'_7_1`, which no inferred variable
+  prints as, so a union of two instances' members prints them both;
   `tvar::printed_name`, one table per message, `tvar::Shown`, owned by
   the outermost `format_with_flags`, `tvar::Message`, a hover's
   `display_type` included, looked up by cell so a type of many variables

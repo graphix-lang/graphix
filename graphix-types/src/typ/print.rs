@@ -374,7 +374,7 @@ impl Type {
 /// that is kept as far as it printed, and once the kept text passes
 /// [`SHOWN`] the next member that is not identical to one kept counts as
 /// kept unprinted, since none of it shows.
-// CR claude for claude: [bug/low] A union the checker keeps as two members prints as one: in a
+// XCR claude for claude: [bug/low] A union the checker keeps as two members prints as one: in a
 // definition's body check, `[fn(p: 'a) -> .., fn(q: 'b) -> ..]` over two declared variables
 // prints its first member alone, since `union_identical` pairs their unbound cells as a renaming
 // where normalize (`union_collapses`) keeps them two. `let f = |c: bool, x: 'a, y: 'b| { let s =
@@ -405,6 +405,19 @@ impl Type {
 // merges bound cells; nothing pins this message: putting union_identical back in write_deref_set
 // fails no test in graphix-tests lang:: or graphix-types --lib, so pin p11 and s2 as run! refusals
 // naming both members.
+// 2026-11-13 claude: Fixed: printed_name (typ/tvar.rs) no longer exempts generated names from
+// numbering apart, so a second open cell of one inferred variable's name in a message prints
+// apart, a generated name as its short form, _ and a number ('_8357 then '_8357_1,
+// Shown::numbered_apart); the TVar Display asks for the name only where it prints it, so a
+// generated cell printing as its binding or lower bound takes no name. write_deref_set's text
+// branch now merges only members whose cells print as types. s2 and s9 print both members ('_0 /
+// '_0_1 after renumbering); p11 unchanged. Pins:
+// lang::quantified::two_instances_of_an_inferred_generic_{print_apart_in_a_union,print_apart_in_a_callee,name_their_cells_apart}
+// (fail without the fix), a_union_over_two_declared_variables_prints_both_members (fails with
+// union_identical put back in write_deref_set), graphix-types
+// typ::contains::tests::two_open_cells_of_one_generated_name_print_apart (a minted name too);
+// testing::refused_renumbered matches messages with generated ids renumbered (examples_compile's
+// normalizer, moved to testing::renumbered).
 // CR claude for claude: [risk/low] Members that print alike over distinct cells each print
 // whole to be compared, so unions of them nested inside each other cost 2^depth for text that
 // grows by a few bytes a level, under `Brief`'s cap or not: `S = [(S', c1), (S', c2)]`, c1 and c2
@@ -412,6 +425,12 @@ impl Type {
 // bytes), `Brief` and `{}` alike. No program has shown such a chain; cells printing as one
 // lower bound are the likeliest source. probe:
 // ~/ptmp/cr29/scratch/r23/23f/review-brief/lookalike_cost.rs (print-lookalike-exp-01)
+// 2026-11-13 claude: Measured on r24-g with print-set-renaming-01's fix: the probe's members over
+// two open cells of one generated name no longer print alike (the second prints '_7_1), so Brief
+// takes 24 us at depth 12..18 and the whole print is as long as its text; members over cells that
+// each print as one lower bound still print alike and still cost 2^depth: 2.3/10/37/146 ms at
+// depth 12/14/16/18 (Brief and the whole print alike, 87..129 bytes). Probe variant: the probe
+// with cell.add_lower(i64) on each cell.
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     let cap = SHOWN.get();
     let mut text: LPooled<String> = LPooled::take();

@@ -213,6 +213,10 @@ Abstract('a: Number |x: 'a| -> 'a x)
 (Abstract('a: Number |x: 'a| -> 'a x), Abstract('a: Number |x: 'a| -> 'a x))
 ```
 
+An inferred variable numbers apart the same way: where a message shows
+two instances' copies of one, the second prints with `_` and a number
+after the first's name, `'_7` and `'_7_1`.
+
 A third bound, `Discernible`, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
 can: a string, an array, a tuple, a struct, a list and each variant are

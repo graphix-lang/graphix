@@ -7095,9 +7095,10 @@ mod tests {
         }
     }
 
-    /// Two members that print alike over two cells print once, capped or
-    /// not, where the two together pass what the cap leaves them and one
-    /// does not: a union of them, and a union holding it second.
+    /// Two members that print alike over two cells, each printing as the
+    /// one type it settles to, print once, capped or not, where the two
+    /// together pass what the cap leaves them and one does not: a union of
+    /// them, and a union holding it second.
     #[test]
     fn brief_of_a_union_prints_alike_members_once() {
         let i64s = |n| {
@@ -7105,8 +7106,9 @@ mod tests {
         };
         let alike = |n| {
             let member = || {
-                let cell = Type::TVar(TVar::empty_named(literal!("_7")));
-                Type::Tuple(Arc::from_iter([i64s(n), cell]))
+                let cell = TVar::empty_named(literal!("_7"));
+                cell.add_lower(Type::Primitive(Typ::I64.into()));
+                Type::Tuple(Arc::from_iter([i64s(n), Type::TVar(cell)]))
             };
             Type::Set(Arc::from_iter([member(), member()]))
         };
@@ -7117,6 +7119,25 @@ mod tests {
             let whole = format_with_flags(flags, || format!("{t}"));
             assert!(whole.len() <= Brief::BYTES, "{whole}");
             assert_eq!(format_compact!("{}", Brief(&t)), whole);
+        }
+    }
+
+    /// Two open cells of one generated name, as two instances of one
+    /// inferred generic hold, print under two names, so a union over them
+    /// prints both members; a minted name numbers apart in its short form.
+    #[test]
+    fn two_open_cells_of_one_generated_name_print_apart() {
+        let minted = format_compact!("_{}", crate::ids::MINT_BASE + 7);
+        for name in [literal!("_7"), ArcStr::from(minted.as_str())] {
+            let member = || {
+                let cell = Type::TVar(TVar::empty_named(name.clone()));
+                Type::Tuple(Arc::from_iter([Type::Primitive(Typ::I64.into()), cell]))
+            };
+            let t = Type::Set(Arc::from_iter([member(), member()]));
+            let flags = PrintFlag::DerefTVars | PrintFlag::ReplacePrims;
+            let want = "[(i64, '_7: unbound), (i64, '_7_1: unbound)]";
+            assert_eq!(format_with_flags(flags, || format!("{t}")), want);
+            assert_eq!(format_compact!("{}", Brief(&t)), want);
         }
     }
 

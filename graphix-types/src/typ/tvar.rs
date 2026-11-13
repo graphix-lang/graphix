@@ -1871,11 +1871,16 @@ impl fmt::Display for ShortName<'_> {
     }
 }
 
+/// Whether `name` is one the checker makes up: `_<id>`.
+fn generated(name: &str) -> bool {
+    name.strip_prefix('_').is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 impl TVar {
     /// Whether the checker made this variable up (an inferred cell), as
     /// opposed to one a program wrote.
     pub fn generated(&self) -> bool {
-        self.name.strip_prefix('_').is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        generated(&self.name)
     }
 
     /// Whether the name is one no program writes as a variable: the
@@ -1930,9 +1935,8 @@ impl fmt::Display for TVar {
             }
             let _printing = Printing::enter(|| Type::TVar(self.clone()));
             let addr = self.cell_addr();
-            let name = printed_name(self);
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
-                return write!(f, "'{}: …", ShortName(&name));
+                return write!(f, "'{}: …", ShortName(&printed_name(self)));
             }
             let r = (|| {
                 let (typ, cons, below) = {
@@ -1952,7 +1956,7 @@ impl fmt::Display for TVar {
                         }
                         return write!(f, "]");
                     }
-                    _ => write!(f, "'{}: ", ShortName(&name))?,
+                    _ => write!(f, "'{}: ", ShortName(&printed_name(self)))?,
                 }
                 let Some(t) = typ else {
                     write!(f, "unbound")?;
@@ -3346,7 +3350,7 @@ fn under_quantifiers(
 }
 
 /// `q` numbered to a name not `taken`.
-fn name_apart(q: &ArcStr, taken: impl Fn(&ArcStr) -> bool) -> ArcStr {
+fn name_apart(q: &str, taken: impl Fn(&ArcStr) -> bool) -> ArcStr {
     (1u64..)
         .map(|i| ArcStr::from(format_compact!("{q}{i}").as_str()))
         .find(|n| !taken(n))
@@ -3500,13 +3504,19 @@ impl Shown {
         }
     }
 
-    /// `name` numbered apart from every name the message uses.
+    /// `name` numbered apart from every name the message uses; a
+    /// generated name as its short form, `_` and a number, which no
+    /// generated name prints as.
     fn numbered_apart(&mut self, name: &ArcStr) -> ArcStr {
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         for t in self.unwalked.drain(..) {
             t.names_held(&mut self.used, &mut seen)
         }
-        name_apart(name, |n| self.used.contains(n))
+        let taken = |n: &ArcStr| self.used.contains(n);
+        match generated(name) {
+            false => name_apart(name, taken),
+            true => name_apart(&format_compact!("{}_", ShortName(name)), taken),
+        }
     }
 
     fn clear(&mut self) {
@@ -3573,10 +3583,10 @@ impl Drop for Printing {
 
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
-/// gave the cell its header lists ([`quantifiers_apart`]), and for a cell
-/// a program named that no header lists, its own unless the message being
-/// printed showed another cell under it, then numbered apart, so two
-/// instances' cells of one declared name read as two.
+/// gave the cell its header lists ([`quantifiers_apart`]), and for any
+/// other named cell, its own unless the message being printed showed
+/// another cell under it, then numbered apart, so two instances' cells of
+/// one declared or inferred variable read as two.
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
     if !crate::print_standing() || PRINT_DEPTH.get() == 0 {
         return tv.name.clone();
@@ -3584,7 +3594,7 @@ pub(super) fn printed_name(tv: &TVar) -> ArcStr {
     let addr = tv.cell_addr();
     SHOWN.with_borrow_mut(|s| match s.names.get(&addr) {
         Some(name) => name.clone(),
-        None if tv.generated() || tv.unwritten() => tv.name.clone(),
+        None if tv.unwritten() => tv.name.clone(),
         None => {
             let name = s.free_name(&tv.name);
             s.show(addr, name.clone());

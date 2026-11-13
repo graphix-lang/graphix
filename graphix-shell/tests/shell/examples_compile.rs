@@ -12,12 +12,12 @@ use graphix_compiler::{
     format_with_flags,
 };
 use graphix_package::register_packages;
+use graphix_package_core::testing::renumbered;
 use graphix_rt::{GXRt, NoExt};
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use poolshark::local::LPooled;
 use std::{
     collections::HashSet,
-    fmt::Write,
     fs,
     path::{Path, PathBuf},
 };
@@ -299,7 +299,7 @@ impl Repl {
             if let Some(shown) = shown {
                 let actual = result.with_context(|| format_compact!("input {input}"))?;
                 anyhow::ensure!(
-                    normalize_type(&actual) == normalize_type(shown),
+                    renumbered(&actual) == renumbered(shown),
                     "input {input}: the page shows -: {shown}, the check says -: {actual}"
                 );
             } else if refused {
@@ -323,35 +323,14 @@ impl Drop for Repl {
     }
 }
 
-fn normalize_type(mut text: &str) -> CompactString {
-    let mut ids: LPooled<Vec<&str>> = LPooled::take();
-    let mut out = CompactString::default();
-    while let Some(at) = text.find("'_") {
-        out.push_str(&text[..at + 2]);
-        text = &text[at + 2..];
-        let n = text.bytes().take_while(u8::is_ascii_digit).count();
-        if n != 0 {
-            let id = &text[..n];
-            let i = ids.iter().position(|s| *s == id).unwrap_or_else(|| {
-                ids.push(id);
-                ids.len() - 1
-            });
-            write!(out, "{i}").unwrap();
-            text = &text[n..];
-        }
-    }
-    out.push_str(text);
-    out
-}
-
 #[tokio::test]
 async fn transcript_type_readouts_are_checked() -> Result<()> {
     let mut repl = Repl::new().await?;
     repl.transcript("〉let x = 1\n〉x\n-: i64\n1\n")?;
     let error = repl.transcript("〉x\n-: string\n1\n").unwrap_err();
     assert!(error.to_string().contains("the page shows -: string"));
-    assert_eq!(normalize_type("('_123, '_123, '_456)"), "('_0, '_0, '_1)");
-    assert_ne!(normalize_type("('_123, '_123)"), normalize_type("('_1, '_2)"));
+    assert_eq!(renumbered("('_123, '_123, '_456)"), "('_0, '_0, '_1)");
+    assert_ne!(renumbered("('_123, '_123)"), renumbered("('_1, '_2)"));
     Ok(())
 }
 
