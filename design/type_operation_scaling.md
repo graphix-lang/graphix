@@ -145,7 +145,8 @@ structure is returned SHARED, never copied.
   its cell has walked a set closed under the edges it takes; where it
   met no cell twice on its own path (the cells form no cycle), it
   numbers them, each after every cell it reaches (`CycleWalk::number`,
-  the number in `TCell::place`). A walk that met no standing numbering
+  the number in `TCell::place`, boxed at the cell's first number so a
+  cell no walk numbers pays one word for it). A walk that met no standing numbering
   starts one only where it walked `ReachOrder::MIN_NUMBERED` (32) cells
   or more: a shorter chain is walked again by each of its links, a
   bounded cost, and takes no number, so neither the pass-by nor a

@@ -185,7 +185,7 @@ impl Numbers {
 
 impl Place {
     /// Whether a cell that held `was` holds it still.
-    fn same(was: &Option<Self>, now: &Option<Self>) -> bool {
+    fn same(was: Option<&Self>, now: Option<&Self>) -> bool {
         match (was, now) {
             (None, None) => true,
             (Some(w), Some(n)) => Arc::ptr_eq(&w.by, &n.by) && w.n == n.n,
@@ -259,8 +259,7 @@ impl Standing {
     /// numbered first where it holds none that does.
     pub(super) fn of(tv: &TVar) -> Option<Self> {
         let cell = tv.cell();
-        let stands =
-            |cell: &CellLock| cell.read().place.clone().filter(|p| p.by.stands(p.n));
+        let stands = |cell: &CellLock| cell.read().place().filter(|p| p.by.stands(p.n));
         let place = stands(&cell).or_else(|| {
             let mut walk = CycleWalk::numbering();
             let _ = walk.go(&Type::TVar(tv.clone()), Toward::Any, false);
@@ -469,7 +468,7 @@ struct Numbering<'a> {
 impl<'a> Numbering<'a> {
     fn toward(target: Option<&'a CellLock>) -> Self {
         Self {
-            target: target.map(|cell| (cell, cell.read().place.clone())),
+            target: target.map(|cell| (cell, cell.read().place())),
             path: SmallVec::new(),
             walked: SmallVec::new(),
             met: None,
@@ -489,7 +488,8 @@ impl<'a> Numbering<'a> {
         }
         let Some((cell, was)) = &self.target else { return false };
         let below = |t: &Place| Arc::ptr_eq(&t.by, &place.by) && t.n < place.n;
-        was.as_ref().is_some_and(below) || !Place::same(was, &cell.read().place)
+        was.as_ref().is_some_and(below)
+            || !Place::same(was.as_ref(), cell.read().place.as_deref())
     }
 }
 
@@ -614,7 +614,7 @@ impl<'a> CycleWalk<'a> {
         CYCLE_CELLS.with(|n| n.set(n.get() + 1));
         let (edges, place) = {
             let c = cell.read();
-            (toward.edges(&c), c.place.clone())
+            (toward.edges(&c), c.place())
         };
         // whether the cell's number stands, and it may then reach the target
         let stands = match (&mut self.visits, &place) {
@@ -657,10 +657,14 @@ impl<'a> CycleWalk<'a> {
         let Some(mut n) = by.take(numbering.walked.len() as u64, met) else { return };
         for (cell, was) in numbering.walked.drain(..) {
             let mut cell = cell.0.write();
-            if !Place::same(&was, &cell.place) {
+            if !Place::same(was.as_ref(), cell.place.as_deref()) {
                 return;
             }
-            cell.place = Some(Place { by: by.clone(), n });
+            let place = Place { by: by.clone(), n };
+            match &mut cell.place {
+                Some(held) => **held = place,
+                None => cell.place = Some(Box::new(place)),
+            }
             n += 1;
         }
     }
@@ -1348,7 +1352,7 @@ pub struct TCell {
     /// The [`GROUND_EPOCH`] at which a judgment of the ground binding
     /// found nothing, per judgment ([`TVar::ground_verdict`]); 0, never.
     pub(crate) judged: [u64; 2],
-    // CR claude for claude: [perf/low] TCell::place costs every type cell 16 bytes (an
+    // XCR claude for claude: [perf/low] TCell::place costs every type cell 16 bytes (an
     // Arc<ReachOrder> and a u64) for a number only a cell on a walk of
     // ReachOrder::MIN_NUMBERED cells or more ever takes. A node-walked activation holds
     // one cell, so it grew from 5635 to 5651 bytes when lane 20g's chainbounds-neighbours-01
@@ -1374,9 +1378,25 @@ pub struct TCell {
     // has no place for. Not changed here: 8 bytes an activation against an allocation on the
     // chains the numbering was built for is a trade to measure (activation_heap's pin,
     // guicheck, deep_nesting's chain pins) before it is made.
-    /// The cell's number by what it reaches, until its next write.
-    pub(crate) place: Option<Place>,
+    // 2026-11-12 claude: Boxed: TCell::place is Option<Box<Place>>, a box taken at a cell's
+    // first number and reused when a stale place is renumbered; TCell 208 -> 200 bytes. Pin:
+    // the const assert size_of::<TCell>() <= 200 beside TCell, which fails to compile
+    // without the box (208). Measured (debug builds, lane HEAD vs this): activation_heap's
+    // activation 4931 -> 4923 bytes (an activation's cell takes no number, so it pays no
+    // box); guicheck 41.398G -> 41.325G and 41.374G -> 41.363G instructions over two runs,
+    // neutral; --check of a 30000-link chainbounds 6.88G -> 6.93G instructions (+0.7%),
+    // chainboundsreversed 6.88G -> 6.94..6.97G (+0.9..1.3%), the allocation priced above,
+    // the chain pins far inside their budgets. The activation cost had fallen to 4931 before
+    // this change, the ceiling of 5656 15% over it, so MAX_BYTES_PER_ACTIVATION is set again
+    // 5% over today's 4923: 5170.
+    /// The cell's number by what it reaches, until its next write: boxed,
+    /// so a cell no walk numbers pays one word for it.
+    pub(crate) place: Option<Box<Place>>,
 }
+
+// Every node-walked activation holds a cell.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<TCell>() <= 200);
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
 /// which cells occur more than once, a shared node's cells once per sight.
@@ -1513,6 +1533,10 @@ fn new_conjuncts(
 impl TCell {
     fn bound(typ: Type) -> Self {
         TCell { binding: Some(typ), ..TCell::default() }
+    }
+
+    fn place(&self) -> Option<Place> {
+        self.place.as_deref().cloned()
     }
 
     /// Add `c` to the conjunction unless an identical member is present.
@@ -5308,7 +5332,7 @@ mod tests {
         let target = TVar::empty_named(literal!("t")).cell();
         let mut walk = Numbering::toward(Some(&target));
         assert!(!walk.met(&above, 0));
-        target.0.write().place = Some(Place { by, n: first });
+        target.0.write().place = Some(Box::new(Place { by, n: first }));
         assert!(walk.met(&above, 0));
         assert!(Numbering::toward(Some(&target)).met(&above, 0));
     }
