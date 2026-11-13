@@ -284,10 +284,11 @@ fn is_pair(a: i64, b: i64) -> impl Fn(&Value) -> bool {
 }
 
 /// `RELOADS` reloads of a dynamic module whose source is `body` after
-/// `let v = [tick];`, each load's `get` saved and called through the next
-/// reload, which retires the body it was made in, then replaced by the
-/// new load's. `get(x)` is `x + v`.
-async fn saved_across_reloads(mode: Mode, body: &str) -> Result<()> {
+/// `let v = [tick];` and whose interface declares `sig` before `v` and
+/// `get`, each load's `get` saved and called through the next reload,
+/// which retires the body it was made in, then replaced by the new
+/// load's. `get(x)` is `x + v`.
+async fn saved_across_reloads(mode: Mode, sig: &str, body: &str) -> Result<()> {
     const RELOADS: i64 = 1000;
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let _tick = ctx.rt.compile(literal!("let tick: i64 = 0;")).await?;
@@ -296,7 +297,7 @@ async fn saved_across_reloads(mode: Mode, body: &str) -> Result<()> {
           let src = "let v = [tick]; {body}";
           let s = mod d dynamic {{
               sandbox whitelist [core];
-              sig {{ val v: i64; val get: fn(x: i64) -> i64 }};
+              sig {{ {sig} val v: i64; val get: fn(x: i64) -> i64 }};
               source src
           }};
           let saved: fn(x: i64) -> i64 = never();
@@ -327,7 +328,7 @@ async fn saved_across_reloads(mode: Mode, body: &str) -> Result<()> {
 async fn a_function_saved_across_reloads_keeps_nothing_once_dropped(
     mode: Mode,
 ) -> Result<()> {
-    saved_across_reloads(mode, "let get = |x: i64| x + v").await
+    saved_across_reloads(mode, "", "let get = |x: i64| x + v").await
 }
 
 /// A retired body's dispatchers, defaults and impl methods go with the
@@ -337,8 +338,24 @@ async fn a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped(
 ) -> Result<()> {
     saved_across_reloads(
         mode,
+        "",
         "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
          type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
+         let get = |x: i64| T::e(C(x))",
+    )
+    .await
+}
+
+/// The same where the interface declares the trait, the type and the
+/// impl, so each load's methods join the declared entry's.
+async fn a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(
+        mode,
+        "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
+         type C; impl T for C;",
+        "type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
          let get = |x: i64| T::e(C(x))",
     )
     .await
@@ -578,6 +595,7 @@ async fn a_held_function_outlives_a_collected_reader_of_its_val(
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
+    a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped,
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
     both_sides_of_deleted_interface_modules_keep_nothing_once_dropped,
     a_held_function_outlives_a_collected_reader_of_its_val,

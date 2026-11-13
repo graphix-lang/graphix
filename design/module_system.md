@@ -291,7 +291,10 @@ first called, so the view carries the load (`Lexical::body`, one
 `LoadedBody` shared by every definition made in the load): the traits it
 declares, with their own dispatchers and defaults; the impls it writes,
 with the bindings of the methods they write; and, from the reload on,
-the import tables under the module's scope as it left them.
+the import tables under the module's scope as it left them. A module
+declared in a loaded body starts from the load around it
+(`LoadedBody::under`), and only a load of the module's own source is
+retired: its first load leaves the one around it reading the registry.
 `Env::trait_def`, `impls_of`, `find_impl` and name resolution read the
 load's own first and the registries after. A call in a loaded body
 therefore resolves to the body's own method binding from the start, a
@@ -306,12 +309,18 @@ binding is (`ExecCtx::delete_dispatcher`), and they go with the last such
 function. Outside the body a call resolves to the declared entry as
 before, and the core traits, which the runtime consults by a value's
 type, read the registries alone: a value prints and compares by the impl
-registered now. Pins: `lang::modules::
+registered now. The load reaches the calls the body's own text writes: a
+function defined outside the module is instantiated in its definition's
+view, so a dispatch inside it reads the registries whoever called it
+(CR `retired-body-outside-dispatch-01`). Pins: `lang::modules::
 a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 `.._dispatches_past_a_declared_impl`,
-`.._dispatches_an_outside_trait_to_its_own_impl`, `.._keeps_its_imports`
-and `lib_tests::leaks::
-a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped`.
+`.._dispatches_an_outside_trait_to_its_own_impl`, `.._keeps_its_imports`,
+`a_function_saved_across_a_nested_reload_dispatches_to_its_own_bodys_methods`,
+`a_dynamic_module_in_a_loaded_body_reads_its_own_imports` and
+`lib_tests::leaks::
+a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped`,
+`a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped`.
 
 At a deletion the val's binding is deleted with the body's, as a
 `let`'s is (`ExecCtx::delete_binding`), and the pair is what one plain

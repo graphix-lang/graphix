@@ -747,6 +747,8 @@ pub struct Lexical {
 pub struct LoadedBody {
     /// The load around the module, when it is declared in one.
     outer: Option<Arc<LoadedBody>>,
+    /// Never held across a call into the env: a name looked up under it
+    /// reads it again.
     state: RwLock<LoadedState>,
 }
 
@@ -794,14 +796,10 @@ impl LoadedBody {
             .find_map(|b| b.state.read().traits.iter().find(|t| t.id == id).cloned())
     }
 
-    fn impls(&self, trait_id: TraitId, f: &mut impl FnMut(&Arc<ImplDef>)) {
+    fn impls(&self, trait_id: TraitId, own: &mut Vec<Arc<ImplDef>>) {
         for b in self.chain() {
-            b.state
-                .read()
-                .impls
-                .iter()
-                .filter(|im| im.trait_id == trait_id)
-                .for_each(&mut *f)
+            let st = b.state.read();
+            own.extend(st.impls.iter().filter(|im| im.trait_id == trait_id).cloned())
         }
     }
 
@@ -1884,6 +1882,29 @@ impl Env {
         Some(Arc::new(list.iter().filter(|im| !self.impl_hidden(im)).cloned().collect()))
     }
 
+    // CR claude for claude: [bug/low] A retired load's own impls reach only the
+    // calls its own text writes. A function outside the module that a retired
+    // body's function calls is instantiated in its definition's view, which
+    // carries no load, so its dispatch reads the registry. `Sh::e(C(x))` in the
+    // first body, where `Sh` is declared outside, `e` is its default `|s| sh(s)
+    // + 5` and each body implements `sh` for its own `C`, runs the SECOND
+    // body's `sh` where it is first called after the reload: h1.gx prints
+    // `alive=20` and `late=[2019, 2020]` at ep 14, the instance alive across the
+    // reload on the first body's `sh` and the ones `late` binds on the second's.
+    // An outside `let app = |x: Sh| Sh::sh(x) + 5` called from the body does the
+    // same (h2.gx, the same two lines). The core traits are the fault by another
+    // road: the runtime consults Eq, Ord, Display and Cast by a value's abstract
+    // id, which the two bodies' `C` share, so the first body's `impl Eq for C`
+    // stops deciding its own `C(x) == C(x + 1)` at the reload, in the instance
+    // alive across it too (p1.gx: `alive` is ep + 1 to ep 6 and ep + 5000 from
+    // 7, the second body declaring no `C`). base-r23 alike, all three. Ruling
+    // D33 (a) is that a reload does not change what a saved function means. To
+    // fix: an instance made for a call in a loaded view takes that view's load
+    // where its definition has none (first check what shares an instance by
+    // definition and signature), and the core hooks either are kept by load or
+    // a load's abstract types are its own, which may need a ruling. probes:
+    // ~/ptmp/cr29/scratch/r23/23e/retired-body-trait-dispatch-01/rev/{h1,h2,p1}.gx,
+    // `graphix --no-cache` (retired-body-outside-dispatch-01)
     /// Every impl of `trait_id`, hidden ones included (see
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered
@@ -1892,20 +1913,21 @@ impl Env {
     pub(crate) fn impls_all(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
         let registered = self.impls.get(&trait_id);
         let Some(body) = &self.lexical.body else { return registered.cloned() };
-        let mut own: LPooled<Vec<(Arc<ImplDef>, Option<AbstractId>)>> = LPooled::take();
-        body.impls(trait_id, &mut |im| {
-            own.push((im.clone(), self.head_abstract(&im.target)))
-        });
+        let mut own: LPooled<Vec<Arc<ImplDef>>> = LPooled::take();
+        body.impls(trait_id, &mut own);
         if own.is_empty() {
             return registered.cloned();
         }
+        let heads: LPooled<Vec<Option<AbstractId>>> =
+            own.iter().map(|im| self.head_abstract(&im.target)).collect();
         let stands_for = |r: &Arc<ImplDef>| {
             let head = self.head_abstract(&r.target);
-            own.iter().any(|(o, h)| Arc::ptr_eq(o, r) || (head.is_some() && *h == head))
+            own.iter().any(|o| Arc::ptr_eq(o, r))
+                || (head.is_some() && heads.contains(&head))
         };
         let rest =
             registered.into_iter().flat_map(|l| l.iter()).filter(|r| !stands_for(r));
-        Some(Arc::new(own.iter().map(|(o, _)| o).chain(rest).cloned().collect()))
+        Some(Arc::new(own.iter().chain(rest).cloned().collect()))
     }
 
     /// An impl a sibling module's body added undeclared, hidden from the

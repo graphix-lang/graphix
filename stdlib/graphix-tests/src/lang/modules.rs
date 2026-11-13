@@ -2406,6 +2406,89 @@ run!(
     FuseExpect::Jit
 );
 
+// A dynamic module declared in a loaded body resolves the names its own
+// source imports, from its first load on.
+run!(
+    a_dynamic_module_in_a_loaded_body_reads_its_own_imports,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 8 => n + 1, _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => """let isrc = r"use array::len; let f = |x: i64| len([1, 2]) + x";
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { val f: fn(x: i64) -> i64 };
+    source isrc
+};
+let make = |x: i64| inner::f(x) + 100""",
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val make: fn(x: i64) -> i64 };
+        source src
+    };
+    let out = d::make(ep);
+    select ep { 8 => ep ~ out, _ => never() }
+}"##,
+    is(Value::I64(110));
+    FuseExpect::Jit
+);
+
+// A dynamic module `inner` declared in a loaded body that runs on reloads
+// its own source: `saved` is its first body's `f`, which `late` first
+// calls after the reload, and it runs that body's trait, impl and import.
+// The value is the second body's `f(ep)`, `held` and `late` at `ep` 16.
+run!(
+    a_function_saved_across_a_nested_reload_dispatches_to_its_own_bodys_methods,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 16 => n + 1, _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => """let n = 0;
+n <- select n { k if k < 6 => k + 1, _ => never() };
+let isrc: string = never();
+isrc <- select n {
+    0 => r"use array::len;
+        trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) + 5 };
+        type C = Abstract<i64>;
+        impl T for C { let d = |c: C| c.0 + len([1, 2]) };
+        let f = |x: i64| T::e(C(x))",
+    5 => r"let len = |a: Array<i64>| 7000;
+        trait T { val d: fn(self) -> i64 };
+        type C = Abstract<i64>;
+        impl T for C { let d = |c: C| c.0 + len([1]) };
+        let f = |x: i64| T::d(C(x)) * 10",
+    _ => never()
+};
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { val f: fn(x: i64) -> i64 };
+    source isrc
+};
+let make = inner::f""",
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val make: fn(x: i64) -> i64 };
+        source src
+    };
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 6 => ep ~ d::make, _ => never() };
+    let held = saved(ep);
+    let xs: Array<i64> = never();
+    xs <- select ep { 12 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| saved(x + ep));
+    let out = "[d::make(ep)] [held] [late]";
+    select ep { 16 => ep ~ out, _ => never() }
+}"##,
+    is(Value::String("70160 23 [23, 24]".into()));
+    FuseExpect::Jit
+);
+
 /// Slots born at `ep` 3 each run `body`, which returns a function over a
 /// binding `v` of its own, written to a hundred times the slot's element.
 /// `saved` takes the second slot's at 5, the slots are deleted at 7, and

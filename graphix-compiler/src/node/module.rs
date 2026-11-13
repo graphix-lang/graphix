@@ -1408,6 +1408,13 @@ struct SetAside<R: Rt> {
     runs: Runs,
 }
 
+/// The load of the module's source that `env` is the view of: none where
+/// it is still `base`, whose load is the one around the module.
+fn own_load<'a>(base: &Lexical, env: &'a Lexical) -> Option<&'a Arc<LoadedBody>> {
+    let around = base.body.as_ref();
+    env.body.as_ref().filter(|b| around.is_none_or(|a| !Arc::ptr_eq(a, b)))
+}
+
 impl<R: Rt> Module<R> {
     fn with(
         spec: Arc<Expr>,
@@ -1648,9 +1655,27 @@ impl<R: Rt> Module<R> {
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate, and the replaced
         // body keeps its own
-        if let Some(body) = &env.body {
+        if let Some(body) = own_load(&self.base, env) {
             body.retire(ctx.env.names_under(&self.scope.lexical))
         }
+        // CR claude for claude: [bug/medium] The import tables are keyed by scope
+        // path, and every instance of a function that declares a dynamic module
+        // names the module's scope alike, so one instance's load clears the tables
+        // another instance's body still reads. A function of the first instance's
+        // live body, first called after the second instance loads, logs "binding
+        // the callee failed: a run-time bind at saved(x + ep) did not type: ..
+        // len: len not defined" and is bottom: i2.gx, two slots of `|i| { let s =
+        // mod d dynamic { .. source once(i) ~ srcs[i]$ }; d::make }`, the first
+        // source `use str::len; let make = |x: i64| len("ab") + x`, the second
+        // importing nothing; `late` never prints. base-r23 alike. Where the second
+        // source imports another `len`, the first body's function binds that one.
+        // A reload of the first instance hides it, since a retired load keeps its
+        // tables (i1.gx, the same without `once`, prints `late=[16, 17]`). To fix:
+        // a load keeps its import tables from its own end, not from the reload
+        // that replaces it, so the registry's serve only the compile in progress;
+        // a `use` that a late compile adds in a block below must still be found.
+        // probe: ~/ptmp/cr29/scratch/r23/23e/retired-body-trait-dispatch-01/rev/i2.gx,
+        // `graphix --no-cache` (instance-import-tables-01)
         ctx.env.clear_names_under(&self.scope.lexical);
         let env = self.env.clone();
         self.env.body = Some(LoadedBody::under(env.body.clone()));
@@ -1884,7 +1909,7 @@ impl<R: Rt> Module<R> {
     /// replace it failed, so it runs on.
     fn put_back(&mut self, body: SetAside<R>) {
         let SetAside { env, nodes, lets, catches, proxy, runs } = body;
-        if let Some(body) = &env.body {
+        if let Some(body) = own_load(&self.base, &env) {
             body.revive()
         }
         self.env = env;
