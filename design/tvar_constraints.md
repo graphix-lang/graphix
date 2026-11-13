@@ -2074,12 +2074,21 @@ former consumer derives from the cells:
   walks down through the signatures between it and the occurrence: a
   nest whose signatures name, beside their own variables, only ones
   the outermost declares or none does parses in time linear in its
-  size. An occurrence no enclosing walk
-  reaches (in a bound of a quantifier no position names) is aliased by
-  none of them.
+  size. An alias walk, and the collection of the cells a quantified
+  signature names from outside itself (`fntyp::free_cells`, the record),
+  pass the bounds of the cells a signature's positions name, then of
+  each of its own quantifiers it holds only through a bound, its own or
+  one of a signature it holds (`FnType::held_through_bounds`,
+  `fntyp::Passing::Held`), so an occurrence in the bound of a bound is
+  aliased by its name's declaration too, and a quantifier held only
+  there is held and printed. That search reads the bounds of its own
+  quantifiers' cells alone, and runs only where a quantifier is not a
+  position cell; every other walk over a signature's parts passes the
+  position cells' bounds alone.
   Pins: `typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps`,
   `nested_open_signatures_parse_in_linear_steps`,
   `an_open_nest_names_its_declarers_cells`,
+  `a_bound_of_a_bound_names_the_declarers_cell`,
   `nested_quantified_types_compare_in_linear_steps`,
   `a_cell_write_drops_the_free_cells_read_before_it`,
   `a_closed_signature_nests_as_it_stands_alone`.

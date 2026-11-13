@@ -432,6 +432,16 @@ pub(super) enum Aliasing {
     Known,
 }
 
+/// Which cells' conjuncts a walk over a signature's parts passes: those
+/// its positions name, or those and then each of its own quantifiers' it
+/// holds only through a bound ([`FnType::held_through_bounds`]), which an
+/// alias walk and a signature's free cells need.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Passing {
+    Named,
+    Held,
+}
+
 /// `f` of the cells `ft` names from outside itself, where it is a
 /// signature declared inside the parse in progress; `None` for any other.
 fn declared<R>(ft: &Arc<FnType>, f: impl FnOnce(&[(ArcStr, TVar)]) -> R) -> Option<R> {
@@ -477,10 +487,11 @@ pub(super) fn aliases_into(
     .unwrap_or(true)
 }
 
-/// The cells the quantified signature `ft` names from outside itself, its
-/// own quantifiers' left out, into `known`: memoized while a
-/// `for_each_part` walk is in progress. A walk no guard cut is the same
-/// under every guard, and one that found nothing finds nothing under any.
+/// The cells the quantified signature `ft` names from outside itself,
+/// through its own quantifiers' bounds too, its own quantifiers' left out,
+/// into `known`: memoized while a `for_each_part` walk is in progress. A
+/// walk no guard cut is the same under every guard, and one that found
+/// nothing finds nothing under any.
 pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
     let key = Arc::as_ptr(ft) as usize;
     let unguarded = || {
@@ -501,7 +512,7 @@ pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
     }
     let cuts = CUTS.with(|c| c.get());
     let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.collect_tvars(&mut inner);
+    ft.collect_held_tvars(&mut inner);
     inner.retain(|name, _| !ft.quantifiers.contains(name));
     if PARTS_DEPTH.with(|d| d.get()) > 0 && CUTS.with(|c| c.get()) == cuts {
         let cells = inner.iter().map(|(n, tv)| (n.clone(), tv.clone())).collect();
@@ -536,6 +547,25 @@ pub(super) fn position_cells(ft: &Arc<FnType>, out: &mut AHashMap<ArcStr, TVar>)
     for (name, tv) in inner.drain() {
         out.entry(name).or_insert(tv);
     }
+}
+
+/// The cells `t` holds into `out`, by name, never entering a cell's
+/// conjuncts: by position, and for a quantified signature the cells it
+/// names from outside itself, through its bounds too. Each shared node
+/// (`seen`) once.
+fn held_cells(t: &Type, out: &mut AHashMap<ArcStr, TVar>, seen: &mut AHashSet<usize>) {
+    if super::node_addr(t).is_some_and(|n| !seen.insert(n)) {
+        return;
+    }
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            out.entry(tv.name.clone()).or_insert_with(|| tv.clone());
+        }
+        Type::Fn(ft) if declared_free(ft, out) => (),
+        Type::Fn(ft) if !ft.quantifiers.is_empty() => free_cells(ft, out),
+        Type::Fn(ft) => ft.for_each_type(&mut |t| held_cells(t, out, seen)),
+        t => t.for_each_child(&mut |c| held_cells(c, out, seen)),
+    })
 }
 
 /// One walk's reentrancy guard on a signature: a conjunct can reach the
@@ -771,7 +801,7 @@ impl FnType {
         seed_conjuncts_aliasing(&mut known, constraints, how);
         if nested {
             known.clear();
-            ft.collect_tvars(&mut known);
+            ft.collect_held_tvars(&mut known);
             let free = known.drain().filter(|(name, _)| !ft.quantifiers.contains(name));
             let free = (ft.clone(), free.collect());
             DECLARED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, free));
@@ -1085,13 +1115,14 @@ impl FnType {
     /// conjuncts are guarded per `FnType` address: one can reach back.
     #[doc(hidden)]
     pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
-        self.for_each_part_passing(&mut |_| true, f)
+        self.for_each_part_passing(Passing::Named, &mut |_| true, f)
     }
 
     /// [`Self::for_each_part`], passing the conjuncts only of the cells
-    /// `pass` admits.
+    /// `how` names and `pass` admits.
     fn for_each_part_passing(
         &self,
+        how: Passing,
         pass: &mut impl FnMut(&TVar) -> bool,
         f: &mut impl FnMut(&Type, bool),
     ) {
@@ -1118,7 +1149,13 @@ impl FnType {
             let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
             self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells, &mut seen));
-            for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
+            let unnamed = how == Passing::Held
+                && self.quantifiers.iter().any(|q| !cells.contains_key(q));
+            let mut order = sorted_tvars(cells.drain());
+            if unnamed {
+                self.held_through_bounds(&mut order)
+            }
+            for (_, tv) in order.drain(..) {
                 if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr())
                     && pass(&tv)
                 {
@@ -1129,6 +1166,43 @@ impl FnType {
             }
         }
         f(throws, false);
+    }
+
+    /// After `order`, the cells the positions name, the cells of the
+    /// signature's own quantifiers no position names that it holds: through
+    /// a signature it holds, or a bound of one of its own cells, each
+    /// round's by name. Only the bounds of its own quantifiers' cells are
+    /// read.
+    fn held_through_bounds(&self, order: &mut Vec<(ArcStr, TVar)>) {
+        // each own quantifier, and whether `order` holds its cell yet
+        let mut placed: LPooled<AHashMap<ArcStr, bool>> = LPooled::take();
+        placed.extend(self.quantifiers.iter().map(|q| (q.clone(), false)));
+        for (name, _) in order.iter() {
+            if let Some(p) = placed.get_mut(name) {
+                *p = true
+            }
+        }
+        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        self.for_each_type(&mut |t| held_cells(t, &mut found, &mut seen));
+        let mut next = 0;
+        loop {
+            found.retain(|name, _| {
+                placed.get_mut(name).is_some_and(|p| !std::mem::replace(p, true))
+            });
+            order.extend(sorted_tvars(found.drain()).drain(..));
+            if next == order.len() {
+                break;
+            }
+            for (name, tv) in order[next..].iter() {
+                if placed.contains_key(name) {
+                    for tc in tv.cell_constraints() {
+                        held_cells(&tc, &mut found, &mut seen)
+                    }
+                }
+            }
+            next = order.len();
+        }
     }
 
     pub fn unbind_tvars(&self) {
@@ -1274,7 +1348,8 @@ impl FnType {
         passed: &tvar::ConjunctsPassed,
         how: Aliasing,
     ) {
-        self.for_each_part_passing(&mut |tv| passed.first(tv), &mut |t, _| {
+        let pass = &mut |tv: &TVar| passed.first(tv);
+        self.for_each_part_passing(Passing::Held, pass, &mut |t, _| {
             t.alias_tvars_in(known, passed, how)
         })
     }
@@ -1479,13 +1554,30 @@ impl FnType {
         known: &mut AHashMap<ArcStr, TVar>,
         seen: &mut TVarsSeen,
     ) {
-        self.for_each_part(&mut |t, constraint| match constraint {
+        self.collect_tvars_passing(Passing::Named, known, seen)
+    }
+
+    /// [`Self::collect_tvars`] and the variables the bounds of its own
+    /// quantifiers held only through a bound name: every cell the
+    /// signature holds.
+    fn collect_held_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
+        self.collect_tvars_passing(Passing::Held, known, &mut TVarsSeen::take())
+    }
+
+    fn collect_tvars_passing(
+        &self,
+        how: Passing,
+        known: &mut AHashMap<ArcStr, TVar>,
+        seen: &mut TVarsSeen,
+    ) {
+        let f = &mut |t: &Type, constraint| match constraint {
             true => match t.normalize_int(&mut seen.norm) {
                 Some(n) => n.collect_tvars_seen(known, seen),
                 None => t.collect_tvars_seen(known, seen),
             },
             false => t.collect_tvars_seen(known, seen),
-        })
+        };
+        self.for_each_part_passing(how, &mut |_| true, f)
     }
 
     /// Index of the first positional parameter (`args.len()` when all
@@ -2555,6 +2647,15 @@ mod tests {
         format!("fn<'z: Any>(x: {inner}) -> 'z")
     }
 
+    /// Each signature the bound of a bound of the next one's variable, the
+    /// innermost alone naming the outermost's `'z` by position.
+    fn nested_by_bound_of_bound_naming_outer(n: usize) -> String {
+        let inner = nested(n, "fn<'a: Any>(x: 'a, y: 'z) -> 'a", |s| {
+            format!("fn<'a: 'b, 'b: {s}>(x: 'a) -> 'a")
+        });
+        format!("fn<'z: Any>(x: {inner}, w: 'z) -> 'z")
+    }
+
     /// No signature declares a variable; every one names `'a`.
     fn nested_naming_a_variable(n: usize) -> String {
         nested(n, "fn(x: 'a) -> 'a", |s| format!("fn(x: {s}) -> 'a"))
@@ -2568,7 +2669,7 @@ mod tests {
 
     /// Parsing each shape 160 deep takes under six times the steps 40 deep
     /// does.
-    fn assert_parse_in_linear_steps(shapes: [(&str, fn(usize) -> String); 3]) {
+    fn assert_parse_in_linear_steps(shapes: &[(&str, fn(usize) -> String)]) {
         for (name, shape) in shapes {
             let parse = |n| {
                 let src = shape(n);
@@ -2583,7 +2684,7 @@ mod tests {
     // walks each a bounded number of times, however they nest.
     #[test]
     fn nested_closed_signatures_parse_in_linear_steps() {
-        assert_parse_in_linear_steps([
+        assert_parse_in_linear_steps(&[
             ("argument", nested_quantified),
             ("bound", nested_by_bound),
             ("unquantified", nested_unquantified),
@@ -2595,9 +2696,10 @@ mod tests {
     // declaration of a name walks down to it.
     #[test]
     fn nested_open_signatures_parse_in_linear_steps() {
-        assert_parse_in_linear_steps([
+        assert_parse_in_linear_steps(&[
             ("naming outer", nested_naming_outer),
             ("bound naming outer", nested_by_bound_naming_outer),
+            ("bound of a bound naming outer", nested_by_bound_of_bound_naming_outer),
             ("unquantified", nested_naming_a_variable),
         ])
     }
@@ -2637,9 +2739,10 @@ mod tests {
     #[test]
     fn an_open_nest_names_its_declarers_cells() {
         use crate::typ::Type;
-        let shapes: [(&str, fn(usize) -> String, &str); 3] = [
+        let shapes: [(&str, fn(usize) -> String, &str); 4] = [
             ("naming outer", nested_naming_outer, "z"),
             ("bound naming outer", nested_by_bound_naming_outer, "z"),
+            ("bound of a bound naming outer", nested_by_bound_of_bound_naming_outer, "z"),
             ("unquantified", nested_naming_a_variable, "a"),
         ];
         for (name, shape, outer) in shapes {
@@ -2705,6 +2808,40 @@ mod tests {
             let ft = parse_fn_type(&src).unwrap();
             let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
             assert_eq!(cell_named(&ft.args[0].typ, "z"), outer.cell_addr(), "{src}");
+        }
+    }
+
+    // A variable a nested signature names only in the bound of a quantifier
+    // its positions do not name is the declaring signature's cell, as every
+    // other occurrence of it is, and the signature holds it; so is one in
+    // the bound of a quantifier only a signature it holds names.
+    #[test]
+    fn a_bound_of_a_bound_names_the_declarers_cell() {
+        for src in [
+            "fn<'z: Number>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b, w: 'z) -> 'z",
+            "fn<'z: Number>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> i64",
+            "fn(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b, v: 'z) -> 'b) -> 'z",
+            "fn(x: fn<'b: 'c, 'c: fn(a: 'q) -> 'q>(y: 'b) -> 'b, k: 'q) -> 'q",
+            "fn(m: fn<'z: Array<'a>>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> i64, \
+             k: 'a) -> 'a",
+            "fn(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> i64, k: 'a) -> 'a",
+            "fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> i64) -> i64",
+            "fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> \
+             i64) -> i64",
+            "fn(@args: `V(List<'e>)) -> fn<'d: 'a, 'z: Number + Array<'d>>(x0: `V('z), \
+             qz: 'z) -> 'a",
+        ] {
+            let ft = parse_fn_type(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+            let t = crate::typ::Type::Fn(triomphe::Arc::new(ft));
+            let mut by_name: ahash::AHashMap<String, ahash::AHashSet<usize>> =
+                ahash::AHashMap::default();
+            for (name, _, cell) in cells_by_depth(&t) {
+                by_name.entry(name).or_default().insert(cell);
+            }
+            for (name, cells) in by_name.iter() {
+                assert_eq!(cells.len(), 1, "{src}: '{name} is {} cells", cells.len());
+            }
+            assert_eq!(t.to_string(), src);
         }
     }
 

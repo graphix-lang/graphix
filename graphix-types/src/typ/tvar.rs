@@ -3852,7 +3852,7 @@ impl Type {
         self.alias_tvars_in(known, &ConjunctsPassed::take(), Aliasing::Every)
     }
 
-    // CR claude for claude: [risk/low] The alias walk passes the conjuncts of
+    // XCR claude for claude: [risk/low] The alias walk passes the conjuncts of
     // a signature's position cells only, so a variable an enclosing signature
     // declares that a nested quantified signature names only in the bound of a
     // bound stays a cell of its own: in `fn<'z: Number>(x: fn<'b: 'c, 'c:
@@ -3893,6 +3893,26 @@ impl Type {
     // toward this signature's own names: a quantifier base-r23 counted held
     // only through a captured bound is now refused as not held. probes:
     // ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/review/partition_diffs.tsv
+    // 2026-11-12 claude: An alias walk, and the collection of a quantified
+    // signature's free cells (fntyp::free_cells, the parse's record), now pass
+    // after the position cells' bounds those of each of the signature's own
+    // quantifiers it holds only through a bound, its own or one a signature it
+    // holds names (FnType::held_through_bounds, fntyp::Passing::Held); every
+    // other for_each_part walk is unchanged. So the 'z of the CR's example is
+    // the outer cell, and a quantifier held only through a bound of a bound is
+    // held and printed: graphix fmt of p2/p6/p7.gx, refused 'does not hold' on
+    // base-r23, now prints each as written, and r2.gx (a bound reaching its own
+    // variable through a nested bound of a bound) is refused as r1.gx always
+    // was. Pins: typ::fntyp::tests::a_bound_of_a_bound_names_the_declarers_cell
+    // (9 nests: one cell per name, printed as written) and the new 'bound of a
+    // bound naming outer' shape of an_open_nest_names_its_declarers_cells and
+    // nested_open_signatures_parse_in_linear_steps; both cell pins fail with
+    // the closure off, and the printing of p2 fails with free_cells reverted
+    // alone. Census 2962 files 0/0; 9000 gen2.py q-mode nests: 5 fmt outcomes
+    // move (2 print right, 1 refused as r2, 1 no longer rewritten, t03827
+    // rewritten by the capture of nested-quantifier-capture-01, as base-r23
+    // does); 0 of 20k other generated nests and checked lambda headers. probes:
+    // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/ (README)
     // CR claude for claude: [bug/low] An enclosing declaration's alias walk
     // captures a variable across signatures. Walking a nested quantified
     // signature, it passes the conjuncts of every cell that signature's
@@ -3949,6 +3969,23 @@ impl Type {
     // 3604 q-mode nests have the same outcome on both (393 rewritten by both). A
     // fix here should pin capture_moved.gx and fmt_regress/*.gx. probes:
     // ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/review/ (README)
+    // 2026-11-12 claude: Since nested-bound-alias-01 an alias walk passes, after
+    // the position cells' bounds, those of a signature's own quantifiers it
+    // holds only through a bound (FnType::held_through_bounds, Passing::Held),
+    // and a declared signature's free cells include the names those bounds hold,
+    // so a nest whose only outside name stood in a bound of a bound is no longer
+    // closed and the outermost walk enters it. That moves the capture: of 9000
+    // gen2.py q-mode nests (seeds 101 202 303) fmt newly rewrites t03827 (an
+    // inner 'b printed Any + Array<'a>, as base-r23 prints it) and no longer
+    // rewrites t03936; the 14 fmt_regress nests are rewritten before and after.
+    // held_through_bounds finds a signature's own cells exactly during the parse
+    // (position cells named as its quantifiers, cells a nested signature's
+    // record names, then through their bounds), so a fix to try: in the alias
+    // walk's quantified arm pass only the bounds of the signature's own cells,
+    // since each cell declared outside it is one of its declarer's own cells,
+    // passed by that declarer's walk, and the outermost declaration's cells take
+    // their bounds after its walk (seed_conjuncts). probes:
+    // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/g2q/t03827.gx, t03936.gx
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
