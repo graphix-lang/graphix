@@ -242,17 +242,17 @@ struct Deferred {
 /// kept as the [`LinkChange`]s made since it was built move vars to other
 /// cells.
 struct DeferIndex {
-    first: AddrMap<usize>,
+    first: LPooled<AddrMap<usize>>,
     /// The cell each entry is first for: `first` maps it back.
-    first_for: Vec<Option<usize>>,
+    first_for: LPooled<Vec<Option<usize>>>,
     links: LinkWatch,
 }
 
 impl DeferIndex {
     fn new(deferring: &[Deferred]) -> Self {
         let mut index = DeferIndex {
-            first: AddrMap::default(),
-            first_for: Vec::with_capacity(deferring.len()),
+            first: LPooled::take(),
+            first_for: LPooled::take(),
             links: LinkWatch::start(),
         };
         index.extend(deferring);
@@ -7104,8 +7104,9 @@ mod tests {
         DEFER_AUDIT.with(|a| a.set(false));
     }
 
-    // Merges, a binding to a var, a binding replaced and a binding cleared
-    // move what cells stand for: the index keeps the first entry for each.
+    // Merges, a binding or a copy to a var, a binding replaced and a binding
+    // cleared move what cells stand for: the index keeps the first entry for
+    // each.
     #[test]
     fn the_deferral_index_follows_the_links_cells_make() {
         let vars: Vec<TVar> = (0..12).map(|_| var("a")).collect();
@@ -7142,7 +7143,10 @@ mod tests {
         check(&mut index, 12);
         vars[0].bind(prim(Typ::I64));
         check(&mut index, 12);
+        vars[2].copy(&var("o"), Type::TVar(vars[6].clone()));
+        check(&mut index, 12);
         vars[11].bind(Type::TVar(vars[10].clone()));
+        check(&mut index, 12);
         vars[11].unbind();
         check(&mut index, 12);
         index.truncate(6);
