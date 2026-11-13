@@ -1277,6 +1277,23 @@ impl StructPatternNode {
         })
     }
 
+    // CR claude for claude: [bug/low] A slice element whose literal admits no member of
+    // the element type leaves its arm live: `|x: Array<(i64, string)>| select x { [(0,
+    // 1), ..] => 1, _ => 0 }` and `|x: Array<u8>| select x { [1, ..] => 1, _ => 0 }`
+    // check, where `(0, 1)` over `(i64, string)` and `[1]` over `Array<u8>` are refused
+    // "will never match". The slice arm of footprint judges its elements by shape alone
+    // (a tag, an arity, a struct's fields), since footprint is also the shape a written
+    // test's binds are typed by (RuledOut::ByShape): judged by every test, a literal
+    // ruled a member out for a bind there, and `'a: [Array<(string, f64)>,
+    // Array<(bool, i64)>] |x: 'a| select x { [Array<(string, f64)>, Array<(bool, i64)>]
+    // as [(h, 0.5), ..] => `H(h), _ => `N }` called at `[(true, 1)]` panicked "the JIT
+    // could not link emitted code" where --no-fusion prints `N (pin
+    // lang::select::written_test_slice_literal_rules_out_no_member_for_a_bind). What
+    // would close it: Reach::structure_admits judging a slice's elements by every
+    // test, literals included, apart from footprint (StructPatternNode::may_admit on
+    // branch r24-a makes that judgment for kernels), or the literal exception for binds
+    // lifted (written-literal-narrowing-01, r24-a). probes:
+    // ~/ptmp/cr29/scratch/r24/24h/sed-review/ (slice-element-literal-dead-arm-01)
     /// What this pattern's structure test admits of `typ`: `typ` with
     /// every position the structure does not test as `Any`, and a union
     /// as the members it admits a value of; `None` where it admits no
@@ -1306,10 +1323,12 @@ impl StructPatternNode {
                         Self::Slice { kind: SliceKind::List, .. }
                             | Self::SlicePrefix { list: true, .. }
                     );
-                    // every element it names is one the value must hold
+                    // every element it names is one the value must hold, each
+                    // judged by its shape: a literal rules out no member here
+                    // (RuledOut::ByShape)
                     let elements_admit = |ts: &[Option<(Type, usize)>]| {
                         self.children().into_iter().zip(ts).all(|(c, t)| match t {
-                            Some((t, _)) => !matches!(c.admits(env, t, false), Ok(false)),
+                            Some((t, _)) => c.footprint(env, t, false).is_some(),
                             None => true,
                         })
                     };

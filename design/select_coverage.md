@@ -16,8 +16,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   an arm that can match none of
   it (by its type test, and by its structure where the test does not
   hold every part the structure tests: a slice's elements, each one the
-  value must hold, an abstract's payload, the structure under a written
-  test; `Reach::structure_admits`, `StructPatternNode::footprint`), or
+  value must hold and judged by its shape, a tag, an arity or a struct's
+  fields but never a literal, since the footprint is also the shape a
+  written test's binds are typed by (`RuledOut::ByShape`); an abstract's
+  payload; the structure under a written test; `Reach::structure_admits`,
+  `StructPatternNode::footprint`), or
   that tests what an earlier unguarded arm tests, is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member

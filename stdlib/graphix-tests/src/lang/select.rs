@@ -5901,17 +5901,14 @@ run!(
     FuseExpect::None
 );
 
-// A slice element that admits no member of the element type makes its arm
-// dead, as the same pattern is outside a slice: every element a slice
-// names is one the value must hold.
+// A slice element whose shape (a tag, an arity, a struct's fields) admits
+// no member of the element type makes its arm dead, as the same pattern is
+// outside a slice: every element a slice names is one the value must hold.
 run!(slice_element_tag_admitting_no_member_is_dead, "{ let f = |x: Array<[(`A, i64), (`B, string)]>| select x { [(`C, h), ..] => 1, _ => 0 }; f([(`A, 3)]) }",
     refused("unreachable arm: no value of Array<[(`A, i64), (`B, string)]> has the parts this pattern tests"); FuseExpect::None);
 
 run!(slice_element_bare_tag_admitting_no_member_is_dead, "{ let f = |x: Array<[`A, `B]>| select x { [`A, `C, ..] => 1, _ => 0 }; f([`A]) }",
     refused("unreachable arm: no value of Array<[`A, `B]> has the parts this pattern tests"); FuseExpect::None);
-
-run!(slice_element_literal_admitting_no_member_is_dead, "{ let f = |x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }; f([(0, \"a\")]) }",
-    refused("unreachable arm: no value of Array<(i64, string)> has the parts this pattern tests"); FuseExpect::None);
 
 run!(slice_suffix_element_admitting_no_member_is_dead, "{ let f = |x: Array<[`A(i64), `B(string)]>| select x { [h.., `C(n)] => 1, _ => 0 }; f([`A(3)]) }",
     refused("unreachable arm: no value of Array<[`A(i64), `B(string)]> has the parts this pattern tests"); FuseExpect::None);
@@ -5933,6 +5930,22 @@ run!(written_test_structure_admitting_no_member_is_dead, "{ let f = |x: (i64, `B
 
 run!(abstract_payload_admitting_no_member_is_dead, "{ type W<'a> = Abstract<'a>; let f = |x: W<(`A, i64)>| select x { W((`C, h)) => 1, _ => 0 }; f(W((`A, 3))) }",
     refused("unreachable arm: no value of W<(`A, i64)> has the parts this pattern tests"); FuseExpect::None);
+
+// Under a written test a slice element's literal rules out no member for a
+// bind, as a literal outside a slice does: an instance's scrutinee may be
+// the member alone.
+run!(
+    written_test_slice_literal_rules_out_no_member_for_a_bind,
+    r#"{
+    type P = [Array<(string, f64)>, Array<(bool, i64)>];
+    type Q = [(Array<(string, f64)>, i64), (Array<(bool, i64)>, i64)];
+    let n = |h: [string, bool]| -> i64 select h { string as s => str::len(s), bool as _ => 10 };
+    let a = 'a: P |x: 'a| -> i64 select x { P as [(h, 0.5), ..] => n(h), _ => 0 };
+    let b = 'a: Q |x: 'a| -> i64 select x { Q as ([(h, 0.5), ..], m) => n(h) + m, _ => 0 };
+    [a([("abc", 0.5)]), a([(true, 1)]), b(([("abc", 0.5)], 1)), b(([(true, 1)], 1))]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 4, 0])
+);
 
 // Under a written union a bind takes its part of the members the
 // structure admits, as an element's does.
