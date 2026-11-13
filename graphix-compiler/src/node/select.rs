@@ -1338,38 +1338,6 @@ impl Reach {
                 break;
             }
         }
-        // XCR claude for claude: [bug/medium] A refusal that prints what the arms leave
-        // prints a shared type as a tree. What a test written `d` Errors deep leaves of
-        // unions that branch (`type T = [Error<T>, Error<U>, `A]; type U = [Error<T>,
-        // Error<U>, `B]`, `x: T`, arms `Error<..Error<`A>..> as e => 0, `A => 1`) is
-        // exact and shares its levels: 2^d paths through d nodes, which diff walks in
-        // pairs linear in d (`typ::setops::tests::
-        // diff_of_a_shared_residual_walks_each_part_once`). "missing match cases: no arm
-        // covers {}" below writes every path, and so do "pattern {} will never match {}"
-        // and any message that prints a later arm's bind: `--no-cache --check` of the
-        // program takes 0.8G instructions at d = 12, 10 to 15 s at d = 24 and is killed at 30 s
-        // at d = 40, all of it under `Type`'s Display (print::write_deref_set), base-r23
-        // and lane 23c alike. What a recursion leaves is bounded
-        // (`setops::ERRORS_OVER_CUT`); this residual is as deep as its test is written.
-        // What would fix it: the printer writes a message's type within a count of nodes
-        // (the parts past it as `..`), under `PrintFlag::DerefTVars` alone since default
-        // printing is program-visible, or names a shared node once. probes:
-        // ~/ptmp/cr29/scratch/r23/23c/dpr/deep12.gx, deep24.gx, deep40.gx
-        // (residual-message-tree-01)
-        // 2026-11-13 claude: Type's Display cuts every print where cells stand (DerefTVars or
-        // StandingHeaders: a message, the REPL's -: line, an LSP hover) at Brief::MOST (64 KiB)
-        // through the capped writer Brief already used (print::write_capped), and the select's
-        // refusals that print what the arms leave (missing match cases, pattern .. will never
-        // match, an or-alternative's, a slice ladder's member) print it through Brief (512
-        // bytes). Probes: deep24 checks in 0.78G instructions (base-r24 178.6G; an empty
-        // program 0.75G), deep40 0.82G (base killed at 60 s); a later arm's bind in e + 1 at d
-        // = 40, 0.84G. Pins that fail without it:
-        // lang::select::shared_residual_{missing_cases,dead_arm,or_alternative}_is_brief (the
-        // Brief sites), lang::select::shared_residual_later_bind_is_bounded and
-        // typ::contains::tests::a_standing_print_is_bounded (the cap), graphix-shell tests/lsp
-        // hover_of_a_shared_type_is_bounded (the cap under StandingHeaders: a hover of
-        // 1,064,967 bytes at d = 16 without it). Other messages that print a later arm's bind
-        // (op.rs's cannot compute) stay whole up to the 64 KiB cap.
         format_with_flags(PrintFlag::DerefTVars, || {
             let gap = match open {
                 None => format_compact!(""),
