@@ -1824,9 +1824,9 @@ fn holds_as_it_stands(
     let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
     hold_rigid(m, &mut gates);
     hold_rigid(t, &mut gates);
-    hist.gated += 1;
+    let outer = hist.gate();
     let holds = m.contains_int(guide(flags), env, hist, t);
-    hist.gated -= 1;
+    hist.ungate(outer);
     holds
 }
 

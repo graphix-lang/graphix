@@ -1995,7 +1995,9 @@ finds no member of `[null, ⊥]` for a string (pins
 `instance_cells_under_a_unions_member_take_a_typedefs_arguments`).
 A function an instance defines takes its signature from its row of the
 enclosing definition's check the same way: its cells are placed at the
-row, then the containment judges (`Lambda::typecheck0_instance`). The
+row, its written parameters then take the row's
+(`FnType::pre_unify_params`, for a cell no place bound), and the
+containment judges (`Lambda::typecheck0_instance`), in that order. The
 containment alone would give `Array<'a>` of `|x0: P<'a, string>, x1: 'a|`
 to the row's `Array<string>`, and the build would refuse every call of
 the inner function at another `'a` (pins

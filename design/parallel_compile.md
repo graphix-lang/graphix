@@ -484,9 +484,11 @@ only the state part of its check:
 - a lambda literal takes its signature at its own level and generalizes
   it with no gate and no second compile of its body; its instances
   read its table through the enclosing instance's map (`Tables::outer`,
-  `Type::rename_with`). Its written parameters take the row's first,
-  each cell the widest part a parameter gives it
-  (`FnType::pre_unify_params`), and then its type holds the row: a cell
+  `Type::rename_with`). Its cells take what stands at their places in
+  the row first (`Type::place_cells`, `design/tvar_constraints.md`),
+  then its written parameters take the row's, each cell no place bound
+  the widest part a parameter gives it (`FnType::pre_unify_params`),
+  and then its type holds the row: a cell
   under a typedef's union in an earlier parameter (`|v: O<'a>, w: 'a|`
   at `fn(v: O<i64>, w: i64)`) is not decided by that union alone
   (`lang::functions::instance_lambda_typedef_union_before_its_variable`);
