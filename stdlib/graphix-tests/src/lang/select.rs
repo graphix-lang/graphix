@@ -6450,6 +6450,84 @@ run!(native_guard_prologue_follows_the_chain, r#"{
     matches!(v, Ok(v) if v.to_string() == r#"["zero", "small", "small", "pure", "pure", "other", "other", "impure", "impure"]"#)
 }; FuseExpect::Jit);
 
+// A guard below an unguarded arm, whose pattern narrows a union inside a
+// tuple, fuses. It runs wherever its pattern admits the value: `(`A(3), 0)`
+// and `(`B(6), 0)`, which the first arm takes, raise; `(`C, 0)` does not.
+run!(native_guard_below_a_claim_narrows_inside_a_tuple, r#"{
+  let step = 0;
+  step <- select step { n if n < 3 => n + 1, _ => never() };
+  let caught = 0;
+  let f = |v: ([`A(i64), `B(i64), `C], i64)| -> i64 #[native] select v {
+    (_, 0) => 0,
+    (`A(x) | `B(x), n) if (10 /? n)? > 1 => x,
+    (_, n) => n
+  };
+  let vs: Array<([`A(i64), `B(i64), `C], i64)> =
+    [(`A(3), 0), (`C, 0), (`B(4), 20), (`A(5), 2), (`C, 7), (`B(6), 0)];
+  let r = { catch(e) caught <- e ~ caught + 1; array::map(vs, f) };
+  select step { 3 => (r, caught), _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:0, i64:0, i64:20, i64:5, i64:7, i64:0], i64:2]")
+}; FuseExpect::Jit);
+
+// The same over the other places a pattern narrows a union: a literal in a
+// tuple, an or-pattern of tuples, a struct field, a variant's payload, an
+// option's composite, and a scrutinee whose union of two tuples keeps the
+// node-walk's full test.
+run!(native_guard_below_a_claim_narrows_inside_a_composite, r#"{
+  let lit = |v: ([i64, string], i64)| -> i64 #[native] select v {
+    (_, 1) => 1,
+    (0, n) if (10 / n) > 1 => n,
+    (_, n) => n
+  };
+  let top = |v: ([`A(i64), `B(i64), `C], i64)| -> i64 #[native] select v {
+    (_, 0) => 0,
+    (`A(x), n) | (`B(x), n) if (10 / n) > 1 => x,
+    (_, n) => n
+  };
+  let field = |v: {a: [`A(i64), `B(i64), `C], b: i64}| -> i64 #[native] select v {
+    {a: _, b: 0} => 0,
+    {a: `A(x) | `B(x), b: n} if (10 / n) > 1 => x,
+    {a: _, b: n} => n
+  };
+  let variant = |v: `V([i64, string], i64)| -> i64 #[native] select v {
+    `V(_, 0) => 0,
+    `V(0, n) if (10 / n) > 1 => n,
+    `V(_, n) => n
+  };
+  let opt = |v: [([`A(i64), `B(i64), `C], i64), null]| -> i64 #[native] select v {
+    null => 0,
+    (`A(x) | `B(x), n) if (10 / n) > 1 => x,
+    _ => 1
+  };
+  let deep = |v: ([(i64, i64), (string, string)], [`A(i64), `B(i64), `C])| -> i64
+    #[native] select v {
+      (_, `A(0) | `B(0)) => 0,
+      (p, `A(x) | `B(x)) if (10 / x) > 1 => x,
+      (_, _) => 1
+    };
+  let ls: Array<([i64, string], i64)> = [(0, 1), ("a", 2), (0, 2), (0, 20), (5, 3)];
+  let ts: Array<([`A(i64), `B(i64), `C], i64)> =
+    [(`A(3), 0), (`B(4), 2), (`C, 2), (`A(5), 20)];
+  let fs: Array<{a: [`A(i64), `B(i64), `C], b: i64}> =
+    [{a: `C, b: 0}, {a: `A(4), b: 2}, {a: `C, b: 2}, {a: `B(5), b: 20}];
+  let vs: Array<`V([i64, string], i64)> =
+    [`V("a", 0), `V(0, 2), `V("a", 2), `V(0, 20), `V(1, 3)];
+  let os: Array<[([`A(i64), `B(i64), `C], i64), null]> =
+    [null, (`A(4), 2), (`C, 2), (`B(5), 20)];
+  let ds: Array<([(i64, i64), (string, string)], [`A(i64), `B(i64), `C])> =
+    [((0, 4), `A(0)), (("a", "b"), `B(2)), ((1, 6), `C), (("0", "x"), `B(3)), ((0, 7), `A(20))];
+  (
+    array::map(ls, lit), array::map(ts, top), array::map(fs, field),
+    array::map(vs, variant), array::map(os, opt), array::map(ds, deep)
+  )
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[\
+        [i64:1, i64:2, i64:2, i64:20, i64:3], [i64:0, i64:4, i64:2, i64:20], \
+        [i64:0, i64:4, i64:2, i64:20], [i64:0, i64:2, i64:2, i64:20, i64:3], \
+        [i64:0, i64:4, i64:1, i64:1], [i64:0, i64:2, i64:1, i64:3, i64:1]]")
+}; FuseExpect::Jit);
+
 // An exhaustive struct pattern matches only a struct of exactly its
 // fields: `{x, y}` names every field of the first member alone, so the
 // second member reaches past it.

@@ -1471,6 +1471,9 @@ fn emit_inferred_guard_cond(
         }
         None => (pred, true),
     };
+    if pred.contains_with_flags(BitFlags::empty(), env, scrut_typ).unwrap_or(false) {
+        return Ok((None, whole));
+    }
     let cond = match &pred {
         Type::Primitive(prims) => {
             let disc = clean_disc(cx.b, scrut.disc());
@@ -1563,7 +1566,7 @@ fn emit_type_test<R: Rt>(
     }
 }
 
-// CR claude for claude: [perf/low] A guarded arm whose pattern is a
+// XCR claude for claude: [perf/low] A guarded arm whose pattern is a
 // structure the arms above could have narrowed, and whose narrowing neither
 // `StructPatternNode::matched_part` nor the option and result markers
 // account for, falls to `emit_predicate_test`, which lowers only primitive
@@ -1576,11 +1579,26 @@ fn emit_type_test<R: Rt>(
 // scrutinee (element by element, as the structure test reads them) would
 // fuse these. No fuzz pin, book example or netidx-admin select has the
 // shape. (narrowed-guard-structure-defuses-01)
+// 2026-11-12 claude: emit_narrowed_test falls back to emit_inferred_guard_cond,
+// the node-walk's own shape test of an inferred predicate (its shallow
+// discriminant where it has one, else the full predicate, MatchAbstract), in
+// place of emit_predicate_test, which lowers only written primitive and union
+// tests; emit_inferred_guard_cond answers None where the test it runs holds the
+// scrutinee type, so over a tuple, struct or variant whose shallow test is the
+// bare shape no test is emitted. The CR's select and the other shapes (a
+// literal at a union element, an or-pattern of tuples, a struct field, a
+// variant payload, an option of a tuple, a union of two same-arity tuples below
+// the top) now fuse. Pins
+// lang::select::native_guard_below_a_claim_narrows_inside_a_tuple and
+// native_guard_below_a_claim_narrows_inside_a_composite (#[native]; jit and
+// jit_par fail without the fix, 'type predicate ... not lowerable'). The CR's
+// own probe has a dead first arm as written ((0, n) over a variant element);
+// the pins use (_, 0).
 /// The test of `scrut` against an arm's inferred predicate, the type the
 /// arms above it leave: `None` where every value of the scrutinee's type
 /// passes, or every one the arm's structure admits. Over an option or a
 /// result the success type is "not null" or "not an error", whatever it
-/// is.
+/// is; over anything else it is the node-walk's shape test.
 fn emit_narrowed_test<R: Rt>(
     cx: &mut BodyCx,
     pat: &PatternNode<R>,
@@ -1606,7 +1624,7 @@ fn emit_narrowed_test<R: Rt>(
         let disc = clean_disc(cx.b, disc);
         return Ok(Some(cx.b.ins().icmp_imm_s(IntCC::NotEqual, disc, other)));
     }
-    emit_predicate_test(cx, pat, scrut, scrut_typ)
+    Ok(emit_inferred_guard_cond(cx, &pat.type_predicate, scrut, scrut_typ)?.0)
 }
 
 /// The test of `scrut` against an arm's type predicate: `None` where
