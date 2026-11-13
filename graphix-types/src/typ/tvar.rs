@@ -1352,43 +1352,6 @@ pub struct TCell {
     /// The [`GROUND_EPOCH`] at which a judgment of the ground binding
     /// found nothing, per judgment ([`TVar::ground_verdict`]); 0, never.
     pub(crate) judged: [u64; 2],
-    // XCR claude for claude: [perf/low] TCell::place costs every type cell 16 bytes (an
-    // Arc<ReachOrder> and a u64) for a number only a cell on a walk of
-    // ReachOrder::MIN_NUMBERED cells or more ever takes. A node-walked activation holds
-    // one cell, so it grew from 5635 to 5651 bytes when lane 20g's chainbounds-neighbours-01
-    // met r20-staging cccd6a3bd (activation_heap::activations_and_slots_cost_linear_heap;
-    // a throwaway 16 more bytes in TCell made it 5667), over the test's
-    // MAX_BYTES_PER_ACTIVATION of 5640, which moved to 5656 for it. One word in the cell
-    // (a box taken at the cell's first number, or two u32s: the numbering's index and
-    // the number) would halve that. The ceiling has no margin left either way: it was
-    // set 5% over the cost of its day (f71c21931) and the cost had reached 5635 before
-    // this field, so the next byte an activation gains fails the gate. Whether to
-    // reclaim those bytes or set the margin again is open. (tcell-place-bytes-01)
-    // 2026-11-11 claude: A correction to the text above (the coordinator's review of round
-    // 20): a cell takes a number on a walk of fewer than ReachOrder::MIN_NUMBERED cells too,
-    // where the walk passed standing cells of a numbering (CycleWalk::number numbers what it
-    // walked above them whatever its length, one cell included); only a walk that met no
-    // numbering needs MIN_NUMBERED cells to start one. design/type_operation_scaling.md says
-    // both now. On the bytes, read not measured: Option<Place> is an Arc and a u64, 16
-    // bytes; Option<Box<Place>> is 8, a contained change (ten uses of the field in tvar.rs),
-    // at one allocation per cell at its first number and one more pointer read where a walk
-    // passes a standing cell by, the path the chain-of-bounds pins in deep_nesting measure.
-    // That takes an activation from 5651 to 5643 bytes against the ceiling of 5656. Two u32s
-    // in the cell need a table of numberings outside it, which a process with many contexts
-    // has no place for. Not changed here: 8 bytes an activation against an allocation on the
-    // chains the numbering was built for is a trade to measure (activation_heap's pin,
-    // guicheck, deep_nesting's chain pins) before it is made.
-    // 2026-11-12 claude: Boxed: TCell::place is Option<Box<Place>>, a box taken at a cell's
-    // first number and reused when a stale place is renumbered; TCell 208 -> 200 bytes. Pin:
-    // the const assert size_of::<TCell>() <= 200 beside TCell, which fails to compile
-    // without the box (208). Measured (debug builds, lane HEAD vs this): activation_heap's
-    // activation 4931 -> 4923 bytes (an activation's cell takes no number, so it pays no
-    // box); guicheck 41.398G -> 41.325G and 41.374G -> 41.363G instructions over two runs,
-    // neutral; --check of a 30000-link chainbounds 6.88G -> 6.93G instructions (+0.7%),
-    // chainboundsreversed 6.88G -> 6.94..6.97G (+0.9..1.3%), the allocation priced above,
-    // the chain pins far inside their budgets. The activation cost had fallen to 4931 before
-    // this change, the ceiling of 5656 15% over it, so MAX_BYTES_PER_ACTIVATION is set again
-    // 5% over today's 4923: 5170.
     /// The cell's number by what it reaches, until its next write: boxed,
     /// so a cell no walk numbers pays one word for it.
     pub(crate) place: Option<Box<Place>>,
