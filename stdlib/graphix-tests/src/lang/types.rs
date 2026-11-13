@@ -8699,6 +8699,81 @@ run!(
     prints(r#"[["B", "s"], [["A", "t"]]]"#)
 );
 
+// The same where the declared variables reach the callee through an inner
+// function, a collection callback, or a literal that holds one.
+run!(
+    declared_variables_passed_on_through_an_inner_function_and_a_callback,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
+  let g = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: Array<'a0>, x2: 'a2, x3: 'a3| (x0, x2);
+  let inner = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| { let k = |a| f(a, y2, y3); k(y0) };
+  let slot = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| array::map([1], |i| f(y0, y2, y3));
+  let held = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| g([y0], y2, y3);
+  (inner(`B("s"), [], "s"), slot(`B("s"), [], "s"), held(`B("s"), [], "s"))
+}"#,
+    prints(r#"[[["B", "s"], []], [[["B", "s"], []]], [[["B", "s"]], []]]"#)
+);
+
+// A part of an argument that holds a declared variable and no undecided
+// cell is not pre-unified with the formal's copy either: declared
+// variables passed on beside callbacks, in a tuple, a struct and an array,
+// stand within their callee's bounds as they do passed on bare.
+run!(
+    declared_variables_passed_on_beside_callbacks,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: ('a0, fn(v: 'a7) -> 'a7), x2: {k: fn(v: 'a8) -> 'a8, v: 'a2}, x3: Array<('a3, fn(v: 'a9) -> 'a9)>| (x0.0, x2.v);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| { let p = (y0, |v| v); f(p, {k: |v| v, v: y2}, [(y3, |v| v)]) };
+  (f((`B("s"), |v| v), {k: |v| v, v: []}, [("s", |v| v)]), h(`B("s"), [], "s"), h(`A([`B(null)]), [`A("s")], null))
+}"#,
+    prints(
+        r#"[[["B", "s"], []], [["B", "s"], []], [["A", [["B", null]]], [["A", "s"]]]]"#
+    );
+    FuseExpect::None
+);
+run!(
+    declared_variables_passed_on_beside_callbacks_take_decided_arguments,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  let f = 'a0: Array<G<'a2, 'a1>>, 'a1: Array<G<'a3, 'a2>>, 'a2: P<'a3, 'a3>, 'a3: [i64, null] |x0: ('a0, fn(v: 'z0) -> 'z0), x1: ('a1, fn(v: 'z1) -> 'z1), x2: ('a2, fn(v: 'z2) -> 'z2), x3: ('a3, fn(v: 'z3) -> 'z3)| (x0.0, x1.0, x2.0, x3.0);
+  let h = 'b0: Array<G<'b2, 'b1>>, 'b1: Array<G<'b3, 'b2>>, 'b2: P<'b3, 'b3>, 'b3: [i64, null] |y0: 'b0, y1: 'b1, y2: 'b2, y3: 'b3| f((y0, |v| v), (y1, |v| v), (y2, |v| v), (y3, |v| v));
+  (f(([`X([null])], |v| v), ([`X(null)], |v| v), ([null], |v| v), (null, |v| v)), h([`X([null])], [`X(null)], [null], null))
+}"#,
+    prints(
+        r#"[[[["X", [null]]], [["X", null]], [null], null], [[["X", [null]]], [["X", null]], [null], null]]"#
+    );
+    FuseExpect::None
+);
+run!(
+    declared_variable_passed_on_beside_a_callback_stands_within_its_callees_bound_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: ('a0, fn(v: 'a7) -> 'a7), x2: ('a2, fn(v: 'a8) -> 'a8), x3: ('a3, fn(v: 'a9) -> 'a9)| (x0.0, x2.0);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f((y0, |v| v), (y2, |v| v), (y3, |v| v));
+  h(`B("s"), [`A(1)], "s")
+}"#,
+    refused("'b4: unbound within [i64, string] & string");
+    FuseExpect::None
+);
+run!(
+    declared_variable_passed_on_beside_a_callback_stands_within_its_callees_bound,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: ('a0, fn(v: 'a7) -> 'a7), x2: ('a2, fn(v: 'a8) -> 'a8), x3: ('a3, fn(v: 'a9) -> 'a9)| (x0.0, x2.0);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f((y0, |v| v), (y2, |v| v), (y3, |v| v));
+  h(`B("s"), [`A("t")], "s")
+}"#,
+    prints(r#"[["B", "s"], [["A", "t"]]]"#);
+    FuseExpect::None
+);
+
 // A call over a declared chain of bounds whose first link is a union
 // typedef with two members of one constructor, the second link a union
 // that is recursive or not.

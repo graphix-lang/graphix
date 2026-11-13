@@ -405,7 +405,17 @@ Array<Q<'b4, 'b3>>, 'b3: O<'b4>, .. |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2,
 y3)`, `f` declaring the same chain, takes `h(`B("s"), [], "s")` as `f`
 does (pins
 `lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds`,
-`declared_variable_passed_on_stands_within_its_callees_bound{,_refused}`).
+`declared_variable_passed_on_stands_within_its_callees_bound{,_refused}`,
+`declared_variables_passed_on_through_an_inner_function_and_a_callback`).
+A part of an argument that is pre-unified is passed over the same way
+where it holds a declared variable and no undecided cell
+(`Type::pre_unify_copy`), so a declared variable passed on beside a
+callback, `f((y0, |v| v), {k: |v| v, v: y2}, [(y3, |v| v)])`, meets the
+formal as one passed on bare does (pins
+`declared_variables_passed_on_beside_callbacks{,_take_decided_arguments}`,
+`declared_variable_passed_on_beside_a_callback_stands_within_its_callees_bound{,_refused}`).
+A part that holds neither (a written type beside an undecided cell) still
+decides the copy for the parts beside it.
 A formal that is an inferred parameter's cell is opened as what the cell
 is bound to (`Widening::standing`), so an undecided argument waits
 through a wrapper as at the direct call: `g([], 1, "s")` over `let g =

@@ -945,9 +945,11 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 /// copy's bounds before the other arguments decide their variables. A
 /// binding's type stands already, and takes the copy's shape for the
 /// arguments after it to read. One holding no undecided cell takes
-/// nothing from a copy and is not pre-unified with it: a declared
-/// variable it holds would be one cell with the copy's, within the
-/// copy's bounds, over cells no instance has.
+/// nothing from a copy and is not pre-unified with it, and neither is a
+/// part of one that holds a declared variable and no undecided cell
+/// ([`Type::pre_unify_copy`]): a declared variable it holds would be one
+/// cell with the copy's, within the copy's bounds, over cells no
+/// instance has.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
@@ -989,9 +991,12 @@ fn typecheck_arg<R: Rt>(
     // decided-arg-waits-01. probes: ~/ptmp/cr29/scratch/r21/21t/rev/f1.txt (REPL inputs 8
     // to 16) (literal-element-open-copy-01)
     let unchecked = !named && n.typ().with_deref(|t| t.is_none());
-    if opening.is_none() || (!unchecked && n.typ().has_free()) {
-        Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
-            .map_err(refused)?;
+    match &opening {
+        None => Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?,
+        Some(open) if !unchecked && n.typ().has_free() => {
+            Type::pre_unify_copy(&ctx.env, open, n.typ()).map_err(refused)?
+        }
+        Some(_) => (),
     }
     wrap!(n, n.typecheck0(ctx)).map_err(refused)?;
     Ok(match copies {
@@ -1526,6 +1531,18 @@ fn holds_a_variable(t: &Type) -> bool {
 // 1200 generated programs (coord/rebase/mix.py, seeds 31 and 32) are refused
 // this way or by the order above and run on base-r20. Probes:
 // ~/ptmp/cr29/scratch/r20/coord/x1/{q1,q2,p00415,p00430}.gx.
+// 2026-11-13 claude: Review of bound-chain-conjunct-cells-01: a wrapper that
+// declares its callee's chain of bounds is now refused where the direct call in
+// the same order of parameters is, since its signature holds no cell of a
+// formal's copy any more. base-r23 ran three such wrappers of 800 generated
+// families (gen.py seeds 101 to 104 and 201) whose direct call it refuses: 'a3
+// decided by the element of the argument before it (ord1: the wrapper and the
+// direct call are refused, the direct call with the parameters reversed runs),
+// the same beside an inferred parameter (ord2), and a choice the reversed order
+// meets, 'could go to .. the check picks none by order' (ord3). Each runs once
+// this order is closed. probes:
+// ~/ptmp/cr29/scratch/r23/23b/bccrev/{ord1,ord2,ord3}_{wrapper,direct}.gx,
+// ord1_direct_reversed.gx
 /// A fresh instance's type variables that settle to the widest argument
 /// rather than the first: open in the definition `def`, and met only as
 /// data in `inst`, so a value of a wider type is well typed wherever the
@@ -4744,6 +4761,31 @@ impl<R: Rt> CallSite<R> {
                     }
                 });
             } else {
+                // CR claude for claude: [bug/high] A check never returns, and takes memory until it
+                // is killed, where a wrapper that declares its callee's chain of bounds through a
+                // mutually recursive typedef is called with an undecided argument at the chain's
+                // first link: `type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)]; type H<'a, 'b> = [`X('b),
+                // `Y(G<'b, 'a>), `Z('a)]; let f = 'a0: Array<G<'a2, 'a1>>, 'a1: Array<G<'a3, 'a2>>
+                // |x0: 'a0, x1: 'a1| x0; let h = 'b0: Array<G<'b2, 'b1>>, 'b1: Array<G<'b3, 'b2>>
+                // |y0: 'b0, y1: 'b1| f(y0, y1); h([], [`X(1)])` under `--check` passes 6 G in
+                // seconds (exit 137), and so does `h([], [])`. The walk that does not come back is
+                // Type::holds, entered by the Type::holds_fn below over the call's formals once
+                // CallSite::check_waiting is done: a backtrace at its 300000th step is holds
+                // calling itself through Verdicts::search_once and for_each_child in every frame
+                // shown, under holds_fn, under CallSite::typecheck0 (hold1.stack). So a formal has
+                // come to hold itself, through a binding or a lower bound, and holds keeps no
+                // record of the cells it is inside; which cell, and what closed the cycle, was not
+                // established (GRAPHIX_DBG_BIND ends at `CHK-CONTAINS 'b1 >= Array<'_N> -> true`,
+                // the copies of 'b3 and 'a3 just before it). These check: the direct call `f([],
+                // [`X(1)])`, the wrapper with both arguments decided (`h([`X(2)], [`X(1)])`), with
+                // `never()` for `[]`, with the parameters in the other order (`|y1: 'b1, y0: 'b0|`
+                // called `h([`X(1)], [])`), and the chain over a typedef that is not recursive
+                // (`type Q<'x, 'y> = [`A('x), `B('y)]`). base-r23 alike, and
+                // bound-chain-conjunct-cells-01's fix does not change it: of 2688 generated wrapper
+                // programs (gen.py, seed 103) the nine wrapper forms of p00058 are killed this way
+                // on both sides. Found reviewing bound-chain-conjunct-cells-01. probes:
+                // ~/ptmp/cr29/scratch/r23/23b/bccrev/{hold1,hold2}.gx (killed),
+                // hold_ok_{direct,decided,never,reversed}.gx (check) (wrapper-undecided-holds-01)
                 let callbacks: SmallVec<[&Type; 4]> = ftype
                     .args
                     .iter()

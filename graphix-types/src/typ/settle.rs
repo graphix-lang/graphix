@@ -207,6 +207,10 @@ impl TVar {
         // Found on bound-chain-conjunct-cells-01. probes:
         // ~/ptmp/cr29/scratch/r23/23b/bcc/{b5,b5r,b4,c1,c6,c8}.gx
         // (never-under-union-bound-01)
+        // 2026-11-13 claude: Review of bound-chain-conjunct-cells-01: a wrapper passing
+        // its declared variables each beside an inferred parameter (`let p = (y, e);
+        // f(p, ..)`) is refused this way now, as its direct call is; base-r23 ran the
+        // wrapper. probes: ~/ptmp/cr29/scratch/r23/23b/bccrev/nev1_{wrapper,direct}.gx
         if self.cell().read().facts.contains(CellFact::BottomFed)
             && self
                 .cell_lower()

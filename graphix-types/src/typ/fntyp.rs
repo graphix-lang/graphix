@@ -3558,6 +3558,29 @@ impl FnType {
     // open-instance-signature-01's differential (2 of the 3000 programs of lane 23b's
     // ibun-rev/rgen.py and rgen2.py at seed 7). probes:
     // ~/ptmp/cr29/scratch/r23/23b/ois/new/{p8,p3,q7}.gx (bound-chain-lower-settle-01)
+    // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
+    // where a wrapper declares its callee's chain of bounds and leaves a parameter the
+    // chain names inferred: `type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)]; type H<'a, 'b> =
+    // [`X('b), `Y(G<'b, 'a>), `Z('a)]; type Q<'x, 'y> = [`A('x), `B('y)]; let f = 'a2:
+    // Array<G<'a4, 'a3>>, 'a3: Q<'a4, 'a4> |x2: 'a2, x3: 'a3, x4: 'a4| (x2, x3, x4); let
+    // h = 'b2: Array<G<'b4, 'b3>>, 'b3: Q<'b4, 'b4> |y2: 'b2, y3, y4: 'b4| f(y2, y3, y4);
+    // h([`X("u")], `B("t"), "s")` passes `--check` and the run fails "an instance at
+    // fn(y2: Array<[`X(string), `Y(H<Q<string, string>, string>)]>, y3: `B(string), y4:
+    // string) -> .. of a definition typed fn<'b2: Array<G<'a4, 'a3>> + Array<G<'a4,
+    // 'b3>>, 'b3: Q<'a4, 'a4>>(y2: 'b2, y3: 'a3, y4: 'a4)". 'b2 stands within two
+    // conjuncts, its own bound over 'b3, which no parameter holds, and the callee's over
+    // 'a3, which is `y3`'s cell; the instance places 'b3 at its bound, Q<string, string>,
+    // and `y2` at Array<G<string, Q<string, string>>>, which the conjunct over `y3`'s
+    // `B(string) does not hold. Under GRAPHIX_NO_SUBST the instance's own check refuses,
+    // "(.., `B(string), string) does not contain ('a2: .., 'a3: [`A(string), `B(string)],
+    // 'a4: string)". `h([], `B("t"), "s")` the same. These run: the wrapper with `y3:
+    // 'b3` declared, with every parameter inferred, and the chain over `Array<Q<'a4,
+    // 'a3>>` in place of G. base-r23 alike, with and without
+    // bound-chain-conjunct-cells-01's fix; the placing may be the one of
+    // inst-bound-second-conjunct-01. Found reviewing bound-chain-conjunct-cells-01
+    // (gen.py, seed 101, p00074vq: the one ELAB-AUDIT report among 2596 generated wrapper
+    // programs). probes: ~/ptmp/cr29/scratch/r23/23b/bccrev/{part1,part2}.gx (refused at
+    // the run), part_ok_{declared,inferred,q}.gx (run) (partial-wrapper-instance-01)
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
     /// the instance's own and bound to the instance's type. Where the

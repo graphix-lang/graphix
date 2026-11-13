@@ -3037,21 +3037,44 @@ impl Type {
     #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
         let mut hist = contains::ContainsHist::early();
-        Self::pre_unify_seen(env, &mut hist, declared, actual, &mut LPooled::take())
+        Self::pre_unify_seen(
+            env,
+            &mut hist,
+            declared,
+            actual,
+            &mut LPooled::take(),
+            false,
+        )
     }
 
-    /// [`Self::pre_unify_arg`], each pair of shared nodes (`seen`)
-    /// pre-unified once. `seen` holds each pair it keys, so an address
-    /// stays its node's for the whole walk, and the parts unify under one
-    /// walk state: what one part's probes found, the next part reads.
+    /// [`Self::pre_unify_arg`] with a formal's open copy for the declared
+    /// type. A part of the argument that holds a declared variable and no
+    /// undecided cell takes nothing from the copy and is passed over: the
+    /// variable would be one cell with the copy's, within the copy's
+    /// bounds, over cells no instance has.
+    #[doc(hidden)]
+    pub fn pre_unify_copy(env: &Env, open: &Type, actual: &Type) -> Result<()> {
+        let mut hist = contains::ContainsHist::early();
+        Self::pre_unify_seen(env, &mut hist, open, actual, &mut LPooled::take(), true)
+    }
+
+    /// [`Self::pre_unify_arg`], or [`Self::pre_unify_copy`] where `copy`,
+    /// each pair of shared nodes (`seen`) pre-unified once. `seen` holds
+    /// each pair it keys, so an address stays its node's for the whole
+    /// walk, and the parts unify under one walk state: what one part's
+    /// probes found, the next part reads.
     fn pre_unify_seen(
         env: &Env,
         hist: &mut contains::ContainsHist,
         declared: &Type,
         actual: &Type,
         seen: &mut AHashMap<(usize, usize), (Type, Type)>,
+        copy: bool,
     ) -> Result<()> {
         ensure_sufficient(|| {
+            if copy && !actual.has_free() && actual.has_rigid() {
+                return Ok(());
+            }
             let d = match declared.deref_cloned() {
                 Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
                 d => d,
@@ -3071,7 +3094,7 @@ impl Type {
                  hist: &mut contains::ContainsHist,
                  seen: &mut AHashMap<(usize, usize), (Type, Type)>| {
                     ds.iter().zip(as_.iter()).try_for_each(|(d, a)| {
-                        Self::pre_unify_seen(env, hist, d, a, seen)
+                        Self::pre_unify_seen(env, hist, d, a, seen, copy)
                     })
                 };
             let whole = |hist: &mut contains::ContainsHist| {
@@ -3087,7 +3110,7 @@ impl Type {
                 (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a)))
                 | (Some(Type::Array(d)), Some(Type::Array(a)))
                 | (Some(Type::List(d)), Some(Type::List(a))) => {
-                    Self::pre_unify_seen(env, hist, d, a, seen)
+                    Self::pre_unify_seen(env, hist, d, a, seen, copy)
                 }
                 (Some(Type::Tuple(ds)), Some(Type::Tuple(as_)))
                     if ds.len() == as_.len() =>
@@ -3107,7 +3130,7 @@ impl Type {
                             .all(|((n0, ..), (n1, ..))| n0 == n1) =>
                 {
                     ds.iter().zip(as_.iter()).try_for_each(|((_, d, _), (_, a, _))| {
-                        Self::pre_unify_seen(env, hist, d, a, seen)
+                        Self::pre_unify_seen(env, hist, d, a, seen, copy)
                     })
                 }
                 // a union two of whose members admit the argument leaves
@@ -3141,7 +3164,7 @@ impl Type {
                     };
                     match admit {
                         Some(m) if structural(m) && structural(actual) => {
-                            Self::pre_unify_seen(env, hist, m, actual, seen)
+                            Self::pre_unify_seen(env, hist, m, actual, seen, copy)
                         }
                         _ => whole(hist),
                     }
