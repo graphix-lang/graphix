@@ -12,4 +12,5 @@
 // The same with `A as [<>]` / `A as [<_, ..>]` over [List<i64>, List<string>].
 type A = [Array<i64>, Array<string>];
 let f = |x: [A, null]| select x { A as [] => 0, A as [_, ..] => 1, null => 2 };
-[f([]), f(["a"]), f(null)]
+let e: Array<i64> = [];
+[f(e), f(["a"]), f(null)]

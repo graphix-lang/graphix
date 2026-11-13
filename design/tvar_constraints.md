@@ -706,6 +706,16 @@ one member, chosen by rules that read the union alone:
   outside a top-level input, so a commit decides the copy however the
   cell is held (pin `typ::contains::tests::
   a_commit_decides_a_quantifier_an_earlier_task_left_open`).
+- two decided members that could each take a type holding a cell to
+  decide (`[Array<i64>, Array<string>] ⊇ Array<'e>`: `[z]` over a `let z =
+  never()`, `[]`, an untyped lambda at two function members) would decide
+  it by their place in the union, which is the sorted one, so neither
+  takes it: `UndecidedTaker`, the refusal a union bound gives (below),
+  naming the undecided side to annotate. They are no choice where they
+  decide it alike, each holding the type as the other decides it
+  (`decide_alike`: two names holding one member, `[P, Q]` over `type P =
+  [A, `X]; type Q = [A, `Y]`; a lambda with its types written, whose one
+  open cell is what it throws).
 - members that are one type are one member (Eric 11-11, D34): the same
   cells throughout, a union read as the set of its members, so neither
   their order, a member that stands twice, a nested union nor a cell bound
@@ -747,10 +757,25 @@ one member, chosen by rules that read the union alone:
 
 A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
 ⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`
-(`type P<'p, 'q> = [Array<'p>, Array<'q>]`) is refused, and runs where
-the parameters before it decide the members, as a decided argument does
-(`f(1, "s", [])` over `|y: 'a, z: 'b, x: P<'a, 'b>|`; A call's arguments
-are met in order). Nothing gives an argument to a
+(`type P<'p, 'q> = [Array<'p>, Array<'q>]`) is refused. Where the
+parameters before it decided the members (`|y: 'a, z: 'b, x: P<'a,
+'b>|`) it goes to the one member that can hold it, and where both can
+(`f(1, "s", [])`, `[z]` over a `let z = never()`) it is refused for the
+two decided takers, at the argument, naming the binding to annotate
+(`callsite.rs::undecided_taker`; `let e: Array<string> = []; f(1, "s",
+e)` runs). Under a callback's parameter the union is the argument's own
+and the undecided type the formal's, so the refusal names the parameters
+to declare first (`f(|q: [Array<i64>, Array<bool>]| 0, 1, true)` over
+`|k: fn(q: P<'a, 'b>) -> i64, y: 'a, z: 'b|`; with `k` last it runs). A
+`let` or a write holding such a union refuses the value alike (pins
+`lang::types::{undecided_element_into_a_union_of_two_decided_arrays_refused,
+empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders_refused,
+empty_array_into_a_declared_union_of_two_arrays_refused,
+callback_parameter_union_of_two_decided_arrays_before_its_deciders_refused,
+untyped_lambda_into_a_union_of_two_function_types_refused}` and their
+typed twins, `undecided_type_into_two_decided_members_that_decide_it_alike`,
+`typ::contains::tests::two_decided_members_refuse_an_undecided_type_either_could_take`).
+Nothing gives an argument to a
 member before it is decided: a pre-unification that meets the choice
 leaves it to the argument's own check (`Type::pre_unify_arg`), a decided
 member beside another that could take the undecided argument included
@@ -760,7 +785,9 @@ pre-unifies; `f(["a"])` over `|x: [A, null]|` with `type A = [Array<i64>,
 Array<string>]`, where the first member took the literal before its
 element was checked), and the
 probes behind a refusal's note are ordered walks on copies
-(`callsite::annotation_may_fit`). So a call through an inferred wrapper,
+(`callsite::annotation_may_fit`); a function's parameters pre-unified
+with a formal's leave two decided takers to the argument's own check too
+(`FnType::pre_unify_params`). So a call through an inferred wrapper,
 a nested function or a seq step is refused where the direct call is, at
 the check, never at the instance (pins
 `lang::types::{wrapper,nested_function}_into_a_bound_union_of_two_undecided_refused`

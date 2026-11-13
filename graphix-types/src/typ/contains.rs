@@ -1729,7 +1729,7 @@ fn member_with_parts<'a>(
             return Ok(None);
         }
     }
-    Err(UndecidedTaker::new(bound, t, &admit))
+    Err(UndecidedTaker::new(TakerUnion::Bound, bound, t, &admit))
 }
 
 /// The member of `ms` that holds each of the others as it stands
@@ -1793,6 +1793,26 @@ fn holds_as_it_stands(
     let holds = m.contains_int(guide(flags), env, hist, t);
     hist.ungate(outer);
     holds
+}
+
+/// Whether `m0` and `m1`, decided members of a union that each hold `t`,
+/// decide its cells alike: each holds `t` as the other decides it, so
+/// which of them takes it decides nothing.
+fn decide_alike(
+    m0: &Type,
+    m1: &Type,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    let held = |by: &Type, other: &Type| {
+        on_copies(Some((hist, env)), [by, other, t], |[by, other, t], trial| {
+            Ok(by.contains_int(flags, env, trial, &t)?
+                && holds_as_it_stands(&other, flags, env, trial, &t)?)
+        })
+    };
+    Ok(held(m0, m1)? && held(m1, m0)?)
 }
 
 /// Whether `t` is built by a constructor with parts.
@@ -2804,27 +2824,49 @@ fn write_members(f: &mut std::fmt::Formatter<'_>, members: &[Type]) -> std::fmt:
     }
 }
 
-/// A value holding a type nothing has decided, at a variable whose bound
-/// is a union two or more members of which could take it. Which member
-/// holds it follows what decides that type, later, so the check takes
-/// neither: the value is annotated.
+/// Where the union of an [`UndecidedTaker`] stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakerUnion {
+    /// A variable's bound.
+    Bound,
+    /// The type the value is held in: a binding written, a parameter
+    /// passed to.
+    Holder,
+    /// The value's own type, under a function's parameter: the undecided
+    /// type is its holder's.
+    Value,
+}
+
+/// A type nothing has decided, at a union two or more decided members of
+/// which could take it: a variable's bound, or a union met in a
+/// containment. Which member holds it follows what decides that type,
+/// later, so the check takes neither: the undecided side is annotated.
 #[derive(Debug)]
 pub struct UndecidedTaker {
-    bound: Type,
+    union: Type,
     typ: Type,
     members: SmallVec<[Type; 2]>,
+    at: TakerUnion,
 }
 
 impl UndecidedTaker {
-    fn new(bound: &Type, t: &Type, members: &[&Type]) -> anyhow::Error {
+    fn new(at: TakerUnion, union: &Type, t: &Type, members: &[&Type]) -> anyhow::Error {
         if graphix_dbg_bind() {
-            eprintln!("UNDECIDED-TAKER {bound} <- {t}");
+            eprintln!("UNDECIDED-TAKER {union} <- {t}");
+        }
+        if graphix_dbg_cycle_bt() {
+            eprintln!("UNDECIDED-TAKER\n{}", std::backtrace::Backtrace::force_capture());
         }
         anyhow::Error::new(UndecidedTaker {
-            bound: bound.clone(),
+            union: union.clone(),
             typ: t.clone(),
             members: members.iter().map(|m| (*m).clone()).collect(),
+            at,
         })
+    }
+
+    pub fn at(&self) -> TakerUnion {
+        self.at
     }
 
     /// The refusal without what to annotate, for a site that names it.
@@ -2836,10 +2878,14 @@ impl UndecidedTaker {
                 format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
                     write!(f, "{} could go to ", Brief(&u.typ))?;
                     write_members(f, &u.members)?;
+                    let held = match u.at {
+                        TakerUnion::Bound => "bound",
+                        TakerUnion::Holder | TakerUnion::Value => "union",
+                    };
                     write!(
                         f,
-                        " of the bound {}, and nothing has decided which",
-                        Brief(&u.bound)
+                        " of the {held} {}, and nothing has decided which",
+                        Brief(&u.union)
                     )
                 })
             }
@@ -2850,11 +2896,16 @@ impl UndecidedTaker {
 
 impl std::fmt::Display for UndecidedTaker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: annotate the value (bind it to a `let` with its type written)",
-            self.fact()
-        )
+        let annotate = match self.at {
+            TakerUnion::Bound | TakerUnion::Holder => {
+                "annotate the value (bind it to a `let` with its type written)"
+            }
+            TakerUnion::Value => {
+                "write the type of what holds the value (a let, a parameter), or give \
+                 the value's own parameter one member's type"
+            }
+        };
+        write!(f, "{}: {annotate}", self.fact())
     }
 }
 
@@ -4905,6 +4956,14 @@ impl Type {
     // ~/ptmp/cr29/scratch/r20/20b/x6rev/um/{um1,um3,um5}.gx,
     // ~/ptmp/cr29/scratch/r20/20b/x6rev/gen2-w1/{w00087,w00018,w00135,w00580}.gx, generator
     // ~/ptmp/cr29/scratch/r20/20b/x6rev/genw.py (undecided-into-decided-member-01)
+    // 2026-11-13 claude: The same pick is made at the build, after the check: 'type P<'p, 'q>
+    // = [Array<'p>, Array<'q>]; let f = |x0: fn(q: P<'b, 'a>) -> i64, y0: 'a| x0; let g = |t|
+    // f(never(), 1.5); g(1)' checks with 'b undecided, and the instance's unify-back
+    // (CallSite::setup_static_bind) gives the site's Array<'b> to the decided Array<f64>:
+    // GRAPHIX_ELAB_AUDIT=1 says 'narrowed the site's return from fn(q: P<'b: unbound, f64>)
+    // -> i64 to fn(q: P<'b: f64, f64>) -> i64'. The direct call does not. base-r24 and lane
+    // 24d after undecided-into-two-decided-01 alike; 6 of 13030 accepted programs of gen2.py
+    // (family g0390, shape nest). probes: ~/ptmp/cr29/scratch/r24/24d/u2d/{ub1,ub2}.gx
     /// Commit `t` into the member of the union `s` that takes it, of those
     /// a probe admits it into, a tier at a time; `None` with no member. A
     /// probe judges each part apart, so it admits `fn(i: 'c) -> 'c` into
@@ -4913,18 +4972,22 @@ impl Type {
     /// holds on copies, unless a commit can decide no cell of either
     /// ([`decides_no_cell`]): that commit is the probe that admitted it. A
     /// member that holds it as it stands, deciding no cell of the union
-    /// or of `t`, takes it first; else the one member that holds it, in
-    /// the first tier where one does. Of several that could, the one that
-    /// holds the others ([`widest`]) takes it where that leaves each of
-    /// them holding `t` as it stands ([`decides_each`], then the same of
-    /// the walk's own take): no cell another would decide is left open.
-    /// Any other two that could are a choice only the order of the
-    /// check's relations would make ([`AmbiguousMember`]), and so is a
-    /// decided member beside another for a type a pre-unification meets
-    /// undecided; a walk on copies takes the first, and a trial commits
-    /// its members directly: a trial nested in each would double the walk
-    /// at every level of a union typedef chain. Where none holds it, the
-    /// last admitted answers.
+    /// or of `t`, takes it first; else, in the first tier where a member
+    /// holds it, the one decided member that does, else the one undecided
+    /// member. Of several undecided ones that could, the one that holds
+    /// the others ([`widest`]) takes it where that leaves each of them
+    /// holding `t` as it stands ([`decides_each`], then the same of the
+    /// walk's own take): no cell another would decide is left open. Any
+    /// other two that could are a choice only the order of the check's
+    /// relations would make ([`AmbiguousMember`]), and so is a decided
+    /// member beside another for a type a pre-unification meets
+    /// undecided. Two decided ones that could take a type holding a cell
+    /// to decide, and would decide it differently ([`decide_alike`]),
+    /// would decide it by their place in the union ([`UndecidedTaker`]).
+    /// A walk on copies takes the first, and a trial commits its members
+    /// directly: a trial nested in each would double the walk at every
+    /// level of a union typedef chain. Where none holds it, the last
+    /// admitted answers.
     fn take(
         s: &[Type],
         tiers: [&[&Type]; 2],
@@ -4933,7 +4996,7 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Type,
     ) -> Result<Option<bool>> {
-        // CR claude for claude: [bug/medium] An undecided type that two DECIDED members of a
+        // XCR claude for claude: [bug/medium] An undecided type that two DECIDED members of a
         // union could take is given to the first, so a member is picked by order and a call's
         // verdict follows the order of its parameters. Over `type P<'p, 'q> = [Array<'p>,
         // Array<'q>]`, `let f = |k: fn(q: P<'a, 'b>) -> i64| -> ('a, 'b) never(); f(|q:
@@ -4951,6 +5014,39 @@ impl Type {
         // callback whose parameter holds the union). A fix refuses where two decided members
         // could take a type that holds a cell to decide, naming the annotation; census first.
         // probes: ~/ptmp/cr29/scratch/r21/21t/rev/fp.txt (undecided-into-two-decided-01)
+        // 2026-11-13 claude: Type::take: two decided members that each hold a type holding a
+        // cell to decide, and would decide it differently (decide_alike: each holds the type as
+        // the other decides it), are refused with UndecidedTaker, the refusal a union bound
+        // already gives, naming the undecided side: at a call the binding to annotate, and
+        // under a callback's parameter (the union is the argument's own) the parameters to
+        // declare first; FnType::pre_unify_params leaves the choice to the argument's own
+        // check. base-r24 gave the type to the member first in the sorted union: both probes of
+        // this CR's first form typed ('a: i64, 'b: i64) whichever way the lambda's union was
+        // written, and [v] into [Array<string>, Array<i64>] made v an i64. Newly refused on
+        // purpose: [] or [<>] or {} into a union of two collections of one constructor (l(1,
+        // "s", []) after its deciders, let x: [Array<i64>, Array<string>] = []), an untyped
+        // lambda at two function members; 12 fixtures and one review repro pass a typed empty
+        // collection instead. Census 2967 files: that repro alone. Pins that fail with the
+        // refusal undone:
+        // lang::types::{undecided_element_into_a_union_of_two_decided_arrays_refused,
+        // undecided_element_into_a_typedef_union_after_its_deciders_refused,
+        // wrapper_undecided_element_into_a_union_of_two_decided_arrays_refused,
+        // empty_array_into_a_declared_union_of_two_arrays_refused,
+        // undecided_element_written_into_a_union_of_two_decided_arrays_refused,
+        // callback_parameter_union_of_two_decided_arrays_before_its_deciders_refused,
+        // callback_parameter_union_of_two_decided_arrays_alone_refused,
+        // untyped_lambda_into_a_union_of_two_function_types_refused,
+        // empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders_refused,
+        // empty_array_into_a_typedef_union_of_two_decided_arrays_refused,
+        // typedef_union_of_function_types_untyped_lambda_after_the_deciders_refused,
+        // wrapper_empty_array_into_a_typedef_union_after_its_deciders_refused,
+        // select_before_a_deeper_write_declared_over_an_undecided_element_refused} and
+        // typ::contains::tests::two_decided_members_refuse_an_undecided_type_either_could_take;
+        // their typed twins and undecided_type_into_two_decided_members_that_decide_it_alike
+        // run. Differential (gen2.py, 6 seeds, 29886 programs against base-r24): 153 newly
+        // refused, all by this refusal, none newly accepted, no type or value changed; the
+        // 13030 it accepts agree under GRAPHIX_ELAB_AUDIT=1, --no-fusion and GRAPHIX_PAR=force
+        // as base does. probes: ~/ptmp/cr29/scratch/r24/24d/u2d/
         // 2026-11-14 claude: A referent the arms of a select decide holds such members by
         // construction, and a later write through the reference meets this choice. Over `|x, y,
         // c: bool| { let r = &mut (select c { true => (`K, x), false => (`L, 0) }); let s =
@@ -4984,6 +5080,7 @@ impl Type {
         let mut fixed_t = None;
         for tier in tiers {
             let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
+            let mut decided: SmallVec<[&Type; 2]> = SmallVec::new();
             for m in tier.iter().copied() {
                 if hist.trial || (hist.closed(m) && hist.closed(t)) {
                     if m.contains_int(flags, env, hist, t)? {
@@ -4991,7 +5088,7 @@ impl Type {
                     }
                     continue;
                 }
-                if open.is_empty() && std::ptr::eq(m, *last) {
+                if open.is_empty() && decided.is_empty() && std::ptr::eq(m, *last) {
                     break;
                 }
                 // CR claude for claude: [perf/low] A choice between the members of a
@@ -5059,12 +5156,32 @@ impl Type {
                 if !holds {
                     continue;
                 }
-                if hist.ordered || (!undecided(m) && !(hist.early && undecided(t))) {
+                let member_open = undecided(m);
+                if hist.ordered || !(member_open || undecided(t)) {
                     return Ok(Some(m.contains_int(flags, env, hist, t)?));
                 }
-                if !open.iter().any(|o| one_member(o, m)) {
-                    open.push(m)
+                let takers = match member_open || hist.early {
+                    true => &mut open,
+                    false => &mut decided,
+                };
+                if !takers.iter().any(|o| one_member(o, m)) {
+                    takers.push(m)
                 }
+            }
+            if let [m, rest @ ..] = &decided[..] {
+                let mut alike = true;
+                for o in rest {
+                    alike = alike && decide_alike(m, o, flags, env, hist, t)?
+                }
+                if alike {
+                    return Ok(Some(m.contains_int(flags, env, hist, t)?));
+                }
+                let at = match flags.contains(ContainsFlags::Contra) {
+                    true => TakerUnion::Value,
+                    false => TakerUnion::Holder,
+                };
+                let union = Type::Set(Arc::from_iter(s.iter().cloned()));
+                return Err(UndecidedTaker::new(at, &union, t, &decided));
             }
             let taker = match open[..] {
                 [] => continue,
@@ -8208,6 +8325,58 @@ mod tests {
         let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
         assert!(held.contains(&env, &parsed("null")).unwrap());
         assert!(held.has_unbound());
+    }
+
+    // a type holding a cell to decide that two decided members could
+    // take goes to neither, under a function's parameter too; one that
+    // only one can take, or that they decide alike, goes there, and an
+    // ordered walk and a pre-unification take or pass by
+    #[test]
+    fn two_decided_members_refuse_an_undecided_type_either_could_take() {
+        let env = Env::default();
+        for (union, t, at) in [
+            ("[Array<i64>, Array<string>]", "Array<'e>", TakerUnion::Holder),
+            ("[Array<string>, Array<i64>, null]", "Array<'e>", TakerUnion::Holder),
+            (
+                "[Map<string, i64>, Map<string, bool>]",
+                "Map<string, 'e>",
+                TakerUnion::Holder,
+            ),
+            (
+                "[fn(x: i64) -> i64, fn(x: string) -> i64]",
+                "fn(x: 'e) -> i64",
+                TakerUnion::Holder,
+            ),
+            (
+                "fn(q: Array<'e>) -> i64",
+                "fn(q: [Array<i64>, Array<bool>]) -> i64",
+                TakerUnion::Value,
+            ),
+        ] {
+            let e = match parsed(union).contains(&env, &parsed(t)) {
+                Err(e) => e,
+                Ok(held) => panic!("{union} ⊇ {t}: {held}"),
+            };
+            let taker = e.downcast_ref::<UndecidedTaker>();
+            assert_eq!(taker.map(|u| u.at()), Some(at), "{union}: {e}");
+            assert!(parsed(union).contains_ordered(&env, &parsed(t)).unwrap(), "{union}");
+        }
+        for (union, t, decided) in [
+            ("[Array<i64>, List<string>]", "List<'e>", Some("string")),
+            ("[(i64, i64), (string, string)]", "('e, i64)", Some("i64")),
+            ("[[Array<bool>, `X], [Array<bool>, `Y]]", "Array<'e>", Some("bool")),
+            ("[(Any, [i64, string]), (Any, [i64, bool])]", "('e, i64)", None),
+        ] {
+            let t = parsed(t);
+            assert!(parsed(union).contains(&env, &t).unwrap(), "{union}");
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            t.collect_tvars(&mut tvs);
+            let e = Type::TVar(tvs["e"].clone());
+            assert_eq!(e.deref_cloned(), decided.map(parsed), "{union}");
+        }
+        let t = parsed("Array<'e>");
+        Type::pre_unify_arg(&env, &parsed("[Array<i64>, Array<string>]"), &t).unwrap();
+        assert!(t.has_unbound());
     }
 
     // members that are one type, cell for cell, are one member at the

@@ -141,7 +141,9 @@ parameter. A `_` at the part makes it
 caller's use of the result decides nothing of the name. An impl's target may
 not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
-either, unless the arguments before it decided the members. The parts of
+either. Where the arguments before it decided the members it goes to the
+one member that can hold it; where two can, it is refused, "nothing has
+decided which", as at a union bound (below): annotate it. The parts of
 a single argument are related together, so within one argument the
 deciding parts may stand anywhere (`|x: (P<'a, 'b>, 'a, 'b)|` takes
 `([1], 1, "s")`). A variable standing in such a
@@ -199,9 +201,18 @@ ok type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |y: 'a, x: fn(q: i64) -> E
 no "does not contain Array<[i64, null]>" type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [n])
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let one: [i64, null] = 1; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(one, "s", [n])
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; let g = |v, w, u| f(v, w, u); g(1, "s", [])
+no "nothing has decided which: this argument is undecided at this call; annotate it" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; let e: Array<string> = []; f(1, "s", e)
+no "nothing has decided which" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
+no "nothing has decided which" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; let g = |v, w, u| f(v, w, u); g(1, "s", [])
+no "nothing has decided which: `z` is undecided at this call; annotate `z`" let f = |x: [Array<i64>, Array<string>]| x; let z = never(); let r = f([z]); z <- "t"; r
+ok let f = |x: [Array<i64>, Array<string>]| x; let z: string = never(); let r = f([z]); z <- "t"; r
+no "nothing has decided which" let x: [Array<i64>, Array<string>] = []; x
+ok let e: Array<i64> = []; let x: [Array<i64>, Array<string>] = e; x
+no "declare the parameters that decide it before this one" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |k: fn(q: P<'a, 'b>) -> i64, y: 'a, z: 'b| 0; f(|q: [Array<i64>, Array<bool>]| 0, 1, true)
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, k: fn(q: P<'a, 'b>) -> i64| 0; f(1, true, |q: [Array<i64>, Array<bool>]| 0)
+no "nothing has decided which" let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x| 0)
+ok let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x: [i64, string]| 0)
 ok let f = |x: ('a, i64), z: 'a| x.1; let g = |y| f(y, y.0); g((1, 2))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = 'a: P<'b, 'c> |x: 'a| x; let g = |y| f(y); g([null])
 ok type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string]; let f = 'a: E<'b, 'b>, 'b: Number |x: 'a, y: 'b| x; let h = f(|v| "s", 1); h(2)
@@ -500,7 +511,8 @@ no "undecided at this" { type B<'p> = Abstract<'p>; let x = B(1); x <- B("a"); l
 
 A variable bounded by a union two members of which could hold the
 argument (`'a: [Array<i64>, Array<string>]`, a `[&T, &mut U]`, two
-function types) takes an argument whose type is decided. One still open
+function types), or a parameter or a `let` written as one, takes an
+argument whose type is decided. One still open
 (`[z]` over a `let z = never()`, an untyped parameter, `[]`, an untyped
 lambda) is refused where both members could hold it, "nothing has decided
 which", naming the binding to annotate: which member holds it would

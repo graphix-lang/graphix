@@ -36,7 +36,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
-        Mutability, TVar, Type, UndecidedTaker,
+        Mutability, TVar, TakerUnion, Type, UndecidedTaker,
         settle::{DataPositions, Expanded, Held, Reaching, Unrolling, settle_order},
         tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
     },
@@ -2217,15 +2217,26 @@ fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
     ))
 }
 
-/// A refusal of the argument `n` for holding a type nothing has decided
-/// at a bound two members of which could take it ([`UndecidedTaker`])
-/// names what to annotate, at the argument.
+/// A refusal of the argument `n` for a type nothing has decided at a
+/// union two decided members of which could take it ([`UndecidedTaker`])
+/// names what to annotate, at the argument: the argument where the type
+/// is its own, the parameters that decide the formal's where the union is
+/// the argument's.
 fn undecided_taker<R: Rt>(
     ctx: &CompileCtx<R>,
     n: &Node<R>,
     e: anyhow::Error,
 ) -> anyhow::Error {
     match e.downcast_ref::<UndecidedTaker>() {
+        Some(u) if u.at() == TakerUnion::Value => wrap!(
+            n,
+            anyhow!(
+                "{}: a call's arguments are met in the order of the parameters, so \
+                 declare the parameters that decide it before this one, or give this \
+                 argument's own parameter one member's type",
+                u.fact()
+            )
+        ),
         Some(u) => wrap!(n, anyhow!("{}: {}", u.fact(), undecided_note(ctx, n))),
         None => e,
     }

@@ -6110,12 +6110,12 @@ run!(
 
 /// A select over a payload built as `[x]` ahead of a write of `[[x]]`,
 /// `b` declared as `decl`: each value of `v`.
-fn select_before_a_deeper_write(decl: &str) -> String {
+fn select_before_a_deeper_write(x: &str, decl: &str) -> String {
     format!(
         r#"{{
     type B<'p> = Abstract<'p>;
     let t = sys::time::timer(duration:10.ms, false);
-    let x = never();
+    let x{x} = never();
     let b{decl} = B([x]);
     let v = select b.0 {{ [h, ..] => h, _ => never() }};
     b <- B([[x]]);
@@ -6141,14 +6141,26 @@ const DEEPER_WRITE_HINT: &str = "a use before this write decided b's type from w
 // payload's union, declared, holds both.
 run!(
     select_before_a_deeper_write,
-    select_before_a_deeper_write(""),
+    select_before_a_deeper_write("", ""),
     refused(DEEPER_WRITE_HINT);
+    FuseExpect::None
+);
+
+// Declared so, `[x]` could go to either array of the payload while `x` is
+// undecided: `x` is declared too.
+run!(
+    select_before_a_deeper_write_declared_over_an_undecided_element_refused,
+    select_before_a_deeper_write("", ": B<[Array<i64>, Array<Array<i64>>]>"),
+    refused(
+        "could go to Array<i64> or Array<Array<i64>> of the union [Array<i64>, \
+         Array<Array<i64>>], and nothing has decided which"
+    );
     FuseExpect::None
 );
 
 run!(
     select_before_a_deeper_write_declared,
-    select_before_a_deeper_write(": B<[Array<i64>, Array<Array<i64>>]>"),
+    select_before_a_deeper_write(": i64", ": B<[Array<i64>, Array<Array<i64>>]>"),
     prints("[i64:1, [i64:1]]")
 );
 
@@ -8142,9 +8154,21 @@ run!(
     r#"{
   type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
   let l = |y: 'a, z: 'b, k: T<'a, 'b>| -> i64 1;
-  (l(1, "s", |x: i64| 0), l(1, "s", |x| 0))
+  (l(1, "s", |x: i64| 0), l(1, "s", |x: string| 0), l(1, "s", |x: [i64, string]| 0))
 }"#,
-    prints("[i64:1, i64:1]");
+    prints("[i64:1, i64:1, i64:1]");
+    FuseExpect::None
+);
+// An untyped lambda after the deciders would take its parameter from the
+// member that stands first in the union: it is refused, and typed it runs.
+run!(
+    typedef_union_of_function_types_untyped_lambda_after_the_deciders_refused,
+    r#"{
+  type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
+  let l = |y: 'a, z: 'b, k: T<'a, 'b>| -> i64 1;
+  l(1, "s", |x| 0)
+}"#,
+    refused(TWO_DECIDED_TAKERS);
     FuseExpect::None
 );
 
@@ -8255,6 +8279,161 @@ run!(
 // type, the program runs.
 const AMBIGUOUS_MEMBER: &str =
     "which nothing has decided, and the check picks none by order";
+
+// A type holding a cell to decide that two decided members of a union
+// could take goes to neither: the member that stands first in the union,
+// which is stored sorted, would decide the cell. The refusal names what to
+// annotate, the value where the type is its own and the parameters to
+// declare first where the union is a callback's own parameter; with the
+// cell decided, or the members deciding it alike, the program runs.
+const TWO_DECIDED_TAKERS: &str = "and nothing has decided which";
+
+run!(
+    undecided_element_into_a_union_of_two_decided_arrays_refused,
+    r#"{
+  let f = |x: [Array<string>, Array<i64>]| x;
+  let v = never();
+  let r = f([v]);
+  v <- 2;
+  r
+}"#,
+    refused(
+        "could go to Array<i64> or Array<string> of the union [Array<i64>, Array<string>], \
+         and nothing has decided which: `v` is undecided at this call; annotate `v`"
+    );
+    FuseExpect::None
+);
+run!(
+    typed_element_into_a_union_of_two_decided_arrays,
+    r#"{
+  let f = |x: [Array<string>, Array<i64>]| x;
+  let v: string = never();
+  let r = f([v]);
+  v <- "t";
+  r
+}"#,
+    prints(r#"["t"]"#)
+);
+run!(
+    undecided_element_into_a_typedef_union_after_its_deciders_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  let v = never();
+  let r = f(1, "s", [v]);
+  v <- "t";
+  r
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
+);
+run!(
+    wrapper_undecided_element_into_a_union_of_two_decided_arrays_refused,
+    r#"{
+  let f = |x: [Array<i64>, Array<string>]| x;
+  let g = |y| f([y]);
+  g("s")
+}"#,
+    refused("and nothing has decided which: `y` is undecided at this call; annotate `y`");
+    FuseExpect::None
+);
+run!(
+    empty_array_into_a_declared_union_of_two_arrays_refused,
+    r#"{
+  let x: [Array<i64>, Array<string>] = [];
+  x
+}"#,
+    refused(
+        "and nothing has decided which: annotate the value (bind it to a `let` with its \
+         type written)"
+    );
+    FuseExpect::None
+);
+run!(
+    typed_empty_array_into_a_declared_union_of_two_arrays,
+    r#"{
+  let e: Array<i64> = [];
+  let x: [Array<i64>, Array<string>] = e;
+  x
+}"#,
+    prints("[]")
+);
+run!(
+    undecided_element_written_into_a_union_of_two_decided_arrays_refused,
+    r#"{
+  let x: [Array<i64>, Array<string>] = [1];
+  let v = never();
+  x <- [v];
+  v <- "s";
+  x
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
+);
+run!(
+    callback_parameter_union_of_two_decided_arrays_before_its_deciders_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |k: fn(q: P<'a, 'b>) -> i64, y: 'a, z: 'b| k([y]);
+  f(|q: [Array<i64>, Array<bool>]| 0, 1, true)
+}"#,
+    refused(
+        "could go to Array<i64> or Array<bool> of the union [Array<i64>, Array<bool>], and \
+         nothing has decided which: a call's arguments are met in the order of the \
+         parameters, so declare the parameters that decide it before this one"
+    );
+    FuseExpect::None
+);
+run!(
+    callback_parameter_union_of_two_decided_arrays_after_its_deciders,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, z: 'b, k: fn(q: P<'a, 'b>) -> i64| k([y]);
+  f(1, true, |q: [Array<i64>, Array<bool>]| select q { [] => 0, [_, ..] => 1 })
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    callback_parameter_union_of_two_decided_arrays_alone_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |k: fn(q: P<'a, 'b>) -> i64| -> ('a, 'b) never();
+  f(|q: [Array<i64>, Array<bool>]| 0)
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
+);
+// Members that decide the type alike are no choice: two names holding
+// one array, and a lambda with its types written, whose one open cell is
+// what it throws.
+run!(
+    undecided_type_into_two_decided_members_that_decide_it_alike,
+    r#"{
+  type A = Array<bool>;
+  type P = [A, `X];
+  type Q = [A, `Y];
+  let f = |r: [P, Q]| select r { [] => 0, [_, ..] => 1, `X => 2, `Y => 3 };
+  let g = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 4;
+  let v = never();
+  let r = f([v]);
+  v <- true;
+  (f([]), r, g(|x: [i64, string]| 0))
+}"#,
+    prints("[i64:0, i64:1, i64:4]")
+);
+run!(
+    untyped_lambda_into_a_union_of_two_function_types_refused,
+    r#"{
+  let g = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 4;
+  g(|x| 0)
+}"#,
+    refused(
+        "could go to fn(x: i64) -> i64 or fn(x: string) -> i64 of the union [fn(x: i64) -> \
+         i64, fn(x: string) -> i64], and nothing has decided which"
+    );
+    FuseExpect::None
+);
 
 run!(
     write_into_a_union_of_two_undecided_refused,
@@ -9183,11 +9362,26 @@ run!(
     prints("i64:0")
 );
 run!(
-    empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders,
+    empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let l = |y: 'a, z: 'b, x: P<'a, 'b>| -> i64 0;
   l(1, "s", [])
+}"#,
+    refused(
+        "could go to Array<'a: i64> or Array<'b: string> of the union [Array<'a: i64>, \
+         Array<'b: string>], and nothing has decided which: this argument is undecided at \
+         this call; annotate it"
+    );
+    FuseExpect::None
+);
+run!(
+    typed_empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| -> i64 0;
+  let e: Array<string> = [];
+  l(1, "s", e)
 }"#,
     prints("i64:0")
 );
@@ -9273,10 +9467,11 @@ run!(
     r#"{
   type A = [Array<i64>, Array<string>];
   let f = |x: [A, null]| select x { A as [] => 0, A as [_, ..] => 1, null => 2 };
-  [f([]), f(["a"]), f(null)]
+  let e: Array<i64> = [];
+  [f(e), f(["a"]), f(null)]
 }"#,
     prints("[i64:0, i64:1, i64:2]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 run!(
     empty_array_into_a_typedef_union_of_two_undecided_arrays_refused,
@@ -9289,11 +9484,22 @@ run!(
     FuseExpect::None
 );
 run!(
-    empty_array_into_a_typedef_union_of_two_decided_arrays,
+    empty_array_into_a_typedef_union_of_two_decided_arrays_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let f = |x: P<i64, string>| -> i64 0;
   f([])
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
+);
+run!(
+    typed_empty_array_into_a_typedef_union_of_two_decided_arrays,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: P<i64, string>| -> i64 0;
+  let e: Array<i64> = [];
+  f(e)
 }"#,
     prints("i64:0")
 );
@@ -9401,9 +9607,21 @@ run!(
   let b = 'c: P<'a, 'b> |y: 'a, z: 'b, x: 'c| x;
   let t = 1;
   let s = seq t { let r = l(1, "s", [t]); r };
-  (g(1, "s", [1]), h(1, "s", []), k(1, "s", [1]), b(1, "s", [1]), s)
+  (g(1, "s", [1]), h(1, "s", ["t"]), k(1, "s", [1]), b(1, "s", [1]), s)
 }"#,
-    prints("[[i64:1], [], [i64:1], [i64:1], [i64:1]]")
+    prints(r#"[[i64:1], ["t"], [i64:1], [i64:1], [i64:1]]"#)
+);
+run!(
+    wrapper_empty_array_into_a_typedef_union_after_its_deciders_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  let g = |v, w, u| l(v, w, u);
+  let h = |a, b, c| g(a, b, c);
+  h(1, "s", [])
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
 );
 
 // Labeled arguments are met where their parameters stand, and the

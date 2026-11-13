@@ -8,7 +8,7 @@ use crate::{
     format_with_flags, image,
     typ::{
         Bound, Mutability, TVar, TVarsSeen, Type,
-        contains::{ContainsFlags, ContainsHist, any_part_pair},
+        contains::{ContainsFlags, ContainsHist, UndecidedTaker, any_part_pair},
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
         normalize::NormCx,
@@ -1899,12 +1899,17 @@ impl FnType {
     /// The parameter positions of [`Self::contains`] alone: pushes a
     /// declared signature's parameter types into an argument function
     /// before its body is typechecked. Return and throws are what the
-    /// body determines and are left open.
+    /// body determines and are left open, and so is a declared type two
+    /// decided members of the argument's union could take
+    /// ([`UndecidedTaker`]): the argument's own check meets it.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
         let mut hist = ContainsHist::new();
         self.align(t).0.into_iter().try_for_each(|(s, t)| {
             let flags = ContainsFlags::Commit.into();
-            t.typ.contains_int(flags, env, &mut hist, &s.typ).map(drop)
+            match t.typ.contains_int(flags, env, &mut hist, &s.typ) {
+                Err(e) if e.is::<UndecidedTaker>() => Ok(()),
+                r => r.map(drop),
+            }
         })
     }
 

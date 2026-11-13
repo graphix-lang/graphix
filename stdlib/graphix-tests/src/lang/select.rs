@@ -436,7 +436,8 @@ run!(
   let f = |x: [A, null]| select x { A as [] => 0, A as [_, ..] => 1, null => 2 };
   let g = |x: [L, null]| select x { L as [<>] => 0, L as [<_, ..>] => 1, null => 2 };
   let (a, l): (A, L) = (["a"], [<"b">]);
-  [f([]), f(a), f(null), g([<>]), g(l), g(null)]
+  let (ea, el): (Array<i64>, List<string>) = ([], [<>]);
+  [f(ea), f(a), f(null), g(el), g(l), g(null)]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:1, i64:2, i64:0, i64:1, i64:2]")
 );
@@ -680,7 +681,8 @@ run!(
   let f = |v: [(Array<i64>, i64), (Array<string>, i64)]| select v { ([], _) => 0, ([a, ..], _) => 1 };
   let g = |x: List<i64>| select (x, 0) { ([<>], _) => 0, ([<a, ..>], _) => a };
   let h = |x: Array<i64>| select (x, 0) { ([], _) => 0, ([i.., a], _) => a };
-  f(([], 1)) + f((["s"], 1)) * 10 + g([<5>]) * 100 + h([1, 7]) * 1000
+  let none: Array<i64> = [];
+  f((none, 1)) + f((["s"], 1)) * 10 + g([<5>]) * 100 + h([1, 7]) * 1000
 }"#,
     is(Value::I64(7510));
     FuseExpect::Jit
@@ -719,10 +721,11 @@ run!(
   let i = |x| select x { `A({a: [e, ..], b}) => e + b, `A({a: [], b}) => b };
   let j = |x| select x { `A([<e, ..>]) => e, `A([<>]) => 0 };
   let k = |x: [`A([Array<i64>, Array<string>])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
+  let none: Array<i64> = [];
   [
     f(`A([1, 2])), f(`A([])), g(`A([3, 4, 5])), g(`B), h(`A(([6], 0))), h(`A(([], 8))),
     i(`A({a: [9], b: 1})), i(`A({a: [], b: 11})), j(`A([<12>])), j(`A([<>])),
-    k(`A(["s"])), k(`A([2])), k(`A([]))
+    k(`A(["s"])), k(`A([2])), k(`A(none))
   ]
 }"#,
     |v: Result<&Value>| {
@@ -805,10 +808,11 @@ run!(
     `A(([h, ..], _)) => 1, `A(([], _)) => 0
   };
   let g = |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => h, `A([]) => 0, `A(_) => 2 };
+  let (none, nob): (Array<i64>, Array<bool>) = ([], []);
   [
     a(`A([1, 2, 3])), a(`A([5])), a(`A([])), b(`A([1, 2])), b(`B([5])), b(`A([])), b(`B([])),
-    c(`A(`B([4]))), c(`A(`B([]))), d(`A(["s"])), d(`A([1, 2])), d(`A([1])), d(`A([])),
-    e(`A(([1], 1))), e(`A(([true], "s"))), e(`A(([], "s"))), g(`A([7])), g(`A([])), g(`A(null))
+    c(`A(`B([4]))), c(`A(`B([]))), d(`A(["s"])), d(`A([1, 2])), d(`A([1])), d(`A(none)),
+    e(`A(([1], 1))), e(`A(([true], "s"))), e(`A((nob, "s"))), g(`A([7])), g(`A([])), g(`A(null))
   ]
 }"#,
     |v: Result<&Value>| {
@@ -12135,9 +12139,10 @@ run!(
         let l: L<string> = `C("s", `Nil);
         let u: U<i64> = `C(1, `Nil);
         let deep: U<i64> = `C(1, `C(null, `C(2, `Nil)));
+        let none: Array<string> = [];
         [
             one([7]), one([]),
-            two([1]), two(["s"]), two([]),
+            two([1]), two(["s"]), two(none),
             mixed([1]), mixed("s"),
             named(l), named(`Nil),
             grown(u), grown(`Nil), grown(deep),
@@ -12234,6 +12239,7 @@ run!(
             (Any, i64) as (_, n) => n,
             i64 as m => m
         };
+        let none: Array<string> = [];
         [
             arr([7]), arr("s"), arr([]),
             opt([1, 2]), opt(null), opt([1]),
@@ -12242,7 +12248,7 @@ run!(
             deep([["abc"]]), deep([[]]), deep(4),
             tag([5]), tag(`A(2)), tag(`B("s")),
             top([6]), top("s"),
-            two([8]), two(["abcd"]), two([]),
+            two([8]), two(["abcd"]), two(none),
             cut(("ab", "cde")), cut(("x", 4)), cut(9)
         ]
     }"#,
@@ -12266,9 +12272,10 @@ run!(
         let l: L<string> = `C("s", `Nil);
         let u: U<i64> = `C(1, `Nil);
         let deep: U<i64> = `C(1, `C(null, `C(2, `Nil)));
+        let none: Array<string> = [];
         [
             one([7]), one([]),
-            two([1]), two(["s"]), two([]),
+            two([1]), two(["s"]), two(none),
             mixed([1]), mixed("s"),
             named(l), named(`Nil),
             grown(u), grown(`Nil), grown(deep),

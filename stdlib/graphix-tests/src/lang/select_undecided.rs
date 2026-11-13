@@ -478,7 +478,7 @@ run!(slice_arm_claims_the_member_it_covers, r#"{
     };
     let a: [Array<(`A, i64)>, Array<(`B, string)>] = [(`A, 5)];
     let b: [Array<(`A, i64)>, Array<(`B, string)>] = [(`B, "s")];
-    let e: [Array<(`A, i64)>, Array<(`B, string)>] = [];
+    let e: Array<(`B, string)> = [];
     "[f(a)] [f(b)] [f(e)]"
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a5 bs e"); FuseExpect::Jit);
 
