@@ -189,6 +189,24 @@ impl TVar {
     ///
     /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
+        // CR claude for claude: [bug/medium] A `never()` at a variable a bound holds is
+        // refused where the bound's holder took its argument as a lower bound: `type
+        // O<'t> = ['t, null]; let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: string |x5:
+        // 'a5, x3: 'a3| x5; f(never(), ["s"])` fails "unsatisfiable constraints on 'a4:
+        // Array<'a5: _>", in either order of the parameters, through a wrapper, and with
+        // the union written out (`'a3: ['a4, null]`). `f(never<string>(), ["s"])` runs,
+        // and so does the chain whose first link is no union (`'a3: Array<'a4>`,
+        // `f(never(), [["s"]])`): there 'a4 binds to the argument, and its bound gives
+        // 'a5 `string`. Under the union 'a4 stands above `Array<string>` (LOWER under
+        // GRAPHIX_DBG_BIND; contains::conjuncts_admit only probes the bound, so nothing
+        // reaches 'a5), the terminal settle takes 'a5 first, fed ⊥ alone and above no
+        // lower bound, to ⊥ here, and the union of 'a4's lower bounds is then outside
+        // `Array<_>`. What a cell stands above is not handed to the cells its conjuncts
+        // hold before they settle. base-r23 alike. 5 of 1200 generated programs
+        // (~/ptmp/cr29/scratch/r20/coord/rebase/mix.py, seeds 31 and 32) end this way.
+        // Found on bound-chain-conjunct-cells-01. probes:
+        // ~/ptmp/cr29/scratch/r23/23b/bcc/{b5,b5r,b4,c1,c6,c8}.gx
+        // (never-under-union-bound-01)
         if self.cell().read().facts.contains(CellFact::BottomFed)
             && self
                 .cell_lower()
@@ -215,7 +233,7 @@ impl TVar {
         match self.witness(env)? {
             Ok(w) => Ok(self.bind_witness(w)),
             Err(false) => Ok(()),
-            // CR claude for claude: [bug/medium] A call over a declared chain of
+            // XCR claude for claude: [bug/medium] A call over a declared chain of
             // bounds whose first link is a union typedef with two members of one
             // constructor is refused here, where another order of the parameters or
             // an annotated argument runs it: `type P<'x, 'y> = [Array<'x>, Array<'y>,
@@ -241,6 +259,27 @@ impl TVar {
             // ~/ptmp/cr29/scratch/r20/coord/x1/{i1,i3,i2,i4}.gx,
             // ~/ptmp/cr29/scratch/r20/coord/rebase/d4.gx
             // (bound-chain-conjunct-cells-01)
+            // 2026-11-13 claude: The CR's own probes (x1/{i1,i2,i3,i4}, rebase/d4) run on
+            // base-r23 in every mode (--check, ELAB_AUDIT --expand, NO_SUBST, PAR=force);
+            // pin lang::types::bound_chain_through_a_union_of_two_arrays, which passes
+            // without this commit. What was left is the wrapper: of the four generated
+            // programs p00540 runs on base-r23, p00415 and p00430 are
+            // bound-variable-arg-order-01's, and p00178 (seed 32, a wrapper declaring its
+            // callee's chain) was still refused through the walk this CR asks for. That
+            // walk is the pre-unification of an argument with its formal's open copy
+            // (callsite::typecheck_arg): a declared variable passed on merged with the
+            // copy's cell and kept the copy's bounds, over the copy's cells, so it stood
+            // within its callee's bound twice, once over cells no instance has. An
+            // argument holding no undecided cell is no longer pre-unified with a copy.
+            // Pins that fail with that condition undone (12 mode runs):
+            // lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds
+            // and declared_variable_passed_on_stands_within_its_callees_bound_refused (its
+            // message names 'b4 within both bounds). Over 396 generated wrappers
+            // (mixperm.py, seeds 31 to 38, both parameter orders) 24 differed from their
+            // direct call before and none does now. Not covered: an argument holding a
+            // declared variable beside a function with an open cell still pre-unifies with
+            // the copy; no program found that it refuses. The never() refusal met on the
+            // way is never-under-union-bound-01. probes: ~/ptmp/cr29/scratch/r23/23b/bcc/
             Err(true) => {
                 let cons = self.cell_constraints();
                 format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {

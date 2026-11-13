@@ -944,7 +944,10 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 /// make is not pre-unified with an open copy: its check would commit the
 /// copy's bounds before the other arguments decide their variables. A
 /// binding's type stands already, and takes the copy's shape for the
-/// arguments after it to read.
+/// arguments after it to read. One holding no undecided cell takes
+/// nothing from a copy and is not pre-unified with it: a declared
+/// variable it holds would be one cell with the copy's, within the
+/// copy's bounds, over cells no instance has.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
@@ -986,7 +989,7 @@ fn typecheck_arg<R: Rt>(
     // decided-arg-waits-01. probes: ~/ptmp/cr29/scratch/r21/21t/rev/f1.txt (REPL inputs 8
     // to 16) (literal-element-open-copy-01)
     let unchecked = !named && n.typ().with_deref(|t| t.is_none());
-    if opening.is_none() || !unchecked {
+    if opening.is_none() || (!unchecked && n.typ().has_free()) {
         Type::pre_unify_arg(&ctx.env, opening.as_ref().unwrap_or(typ), n.typ())
             .map_err(refused)?;
     }

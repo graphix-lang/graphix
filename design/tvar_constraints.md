@@ -393,6 +393,19 @@ them. A binding's type stands already (a wrapper's parameter), so it
 pre-unifies and takes the copy's shape, which an argument after it reads
 (`|y| f(y, y.0)` over `|x: ('a, i64), z: 'a|`; pin
 `lang::types::wrapper_parameter_read_by_a_later_argument_of_the_same_call`).
+One holding no undecided cell (a declared variable of the definition the
+call stands in, a written type) takes nothing from a copy and is not
+pre-unified with it (`callsite::typecheck_arg`): a declared variable
+merges with the open cell it meets and keeps that cell's bounds, so one
+that met the copy would stand within the callee's bound twice, once over
+the copy's cells, which no instance has and nothing decides. It meets the
+formal itself where it joins, and stands within its own bound and the
+callee's, over the instance's cells: `h` over `'b0: Q<'b2, 'b1>, 'b2:
+Array<Q<'b4, 'b3>>, 'b3: O<'b4>, .. |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2,
+y3)`, `f` declaring the same chain, takes `h(`B("s"), [], "s")` as `f`
+does (pins
+`lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds`,
+`declared_variable_passed_on_stands_within_its_callees_bound{,_refused}`).
 A formal that is an inferred parameter's cell is opened as what the cell
 is bound to (`Widening::standing`), so an undecided argument waits
 through a wrapper as at the direct call: `g([], 1, "s")` over `let g =

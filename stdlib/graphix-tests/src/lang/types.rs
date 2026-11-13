@@ -8641,6 +8641,82 @@ run!(
     prints("[i64:1, i64:2]")
 );
 
+// An argument holding no undecided cell is not pre-unified with its
+// formal's copy, so a declared variable passed on stands within its own
+// bound and its callee's, over the instance's cells: a wrapper declaring
+// its callee's chain of bounds takes what the callee takes, an undecided
+// argument beside the declared ones included, and refuses what it refuses.
+run!(
+    declared_variables_passed_on_through_a_chain_of_union_bounds,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
+  let k = 'c0: Q<'c2, 'c1>, 'c1: string, 'c2: Array<Q<'c4, 'c3>>, 'c3: O<'c4>, 'c4: string |z3: 'c3, z2: 'c2, z0: 'c0| h(z0, z2, z3);
+  (f(`B("s"), [], "s"), h(`B("s"), [], "s"), k("s", [], `B("s")), h(`A([`B(null)]), [`A("s")], null))
+}"#,
+    prints(
+        r#"[[["B", "s"], []], [["B", "s"], []], [["B", "s"], []], [["A", [["B", null]]], [["A", "s"]]]]"#
+    )
+);
+run!(
+    declared_variables_passed_on_through_recursive_union_bounds,
+    r#"{
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  type L<'a> = [`Nil, `Cons('a, L<'a>)];
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  let f = 'a0: Array<G<'a2, 'a1>>, 'a1: H<'a2, 'a3>, 'a2: Array<G<'a4, 'a3>>, 'a3: H<'a4, 'a5>, 'a4: H<'a5, 'a6>, 'a5: Q<T<'a6>, L<'a6>>, 'a6: [i64, string] |x0: 'a0, x2: 'a2, x3: 'a3, x5: 'a5, x6: 'a6| (x0, x2, x3, x5, x6);
+  let h = 'b0: Array<G<'b2, 'b1>>, 'b1: H<'b2, 'b3>, 'b2: Array<G<'b4, 'b3>>, 'b3: H<'b4, 'b5>, 'b4: H<'b5, 'b6>, 'b5: Q<T<'b6>, L<'b6>>, 'b6: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3, y5: 'b5, y6: 'b6| f(y0, y2, y3, y5, y6);
+  let r = h([], [`Y(`X(`Y(`Y(`Z(`B(`Cons("s", `Nil))))))), `Y(`Z(`Y(`X(`B(`Cons("s", `Nil))))))], `Y(`X(`B(`Cons("s", `Nil)))), `B(`Cons("s", `Nil)), "s");
+  (r.3, r.4)
+}"#,
+    prints(r#"[["B", ["Cons", "s", "Nil"]], "s"]"#)
+);
+run!(
+    declared_variable_passed_on_stands_within_its_callees_bound_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
+  h(`B("s"), [`A(1)], "s")
+}"#,
+    refused("'b4: unbound within [i64, string] & string");
+    FuseExpect::None
+);
+run!(
+    declared_variable_passed_on_stands_within_its_callees_bound,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
+  h(`B("s"), [`A("t")], "s")
+}"#,
+    prints(r#"[["B", "s"], [["A", "t"]]]"#)
+);
+
+// A call over a declared chain of bounds whose first link is a union
+// typedef with two members of one constructor, the second link a union
+// that is recursive or not.
+run!(
+    bound_chain_through_a_union_of_two_arrays,
+    r#"{
+  type O<'t> = ['t, null];
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  type T2<'x> = [`Leaf('x), `Node(Array<'x>)];
+  let f = 'a0: P<'a1, 'a2>, 'a1: T2<'a2>, 'a2: Array<'a4>, 'a4: [i64, string] |x0: 'a0, x1: 'a1, x4: 'a4| 7;
+  let g = 'a0: P<'a1, 'a2>, 'a1: T<'a2>, 'a2: Array<'a4>, 'a4: [i64, string] |x0: 'a0, x1: 'a1, x4: 'a4| 8;
+  let k = 'a0: O<P<'a1, 'a2>>, 'a1: T<'a2>, 'a2: P<'a4, 'a3>, 'a3: P<'a4, 'a4>, 'a4: [i64, string] |x0: 'a0, x1: 'a1, x3: 'a3, x4: 'a4| 9;
+  (f([`Node([])], `Node([]), 1), g([`Node([])], `Node([]), 1), k([`Node([])], `Node([]), [], 1))
+}"#,
+    prints("[i64:7, i64:8, i64:9]")
+);
+
 // An undecided argument's cell that the join put inside its formal's
 // variable is not made that variable: the two stay apart, and the
 // argument is held as a member of what the variable settled to.
