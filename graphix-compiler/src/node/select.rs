@@ -1795,37 +1795,6 @@ fn inner_slices(
     let mut left_out = false;
     let mut kept: SmallVec<[Type; 4]> = SmallVec::new();
     let mut other: SmallVec<[InnerSlice; 2]> = SmallVec::new();
-    // XCR claude for claude: [bug/low] Slice arms at a position that also holds a
-    // member no slice matches are refused as not exhaustive even with an arm for that
-    // member: `|x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0,
-    // `A(null) => 2 }` is refused, "missing match cases: no arm covers `A([null,
-    // Array<i64>])", and so are the tuple form (`|x: ([Array<i64>, null], i64)|` with
-    // `(null, _) => 2`), an unannotated parameter with the three arms, and an array
-    // beside a list with a ladder each. The same arms check and run where the type is
-    // written one variant a member (`[`A(Array<i64>), `A(null)]`) or the last arm is a
-    // catch-all (`A(_)`). base-r23 and lane 23d alike. The position climbs no ladder,
-    // so the slice arms claim nothing; a fix has the ladder stand on the members the
-    // slice fits and its completion cover the member narrowed to them at that
-    // position. probes: ~/ptmp/cr29/scratch/r23/23d/vsc-rev/{r01,r31,s01,s02,s05,
-    // s09}.gx (slice-position-other-member-01)
-    // 2026-11-13 claude: Fixed: inner_slices leaves out a position's member the arm's
-    // pattern admits no value of (StructPatternNode::admits) and hands back the member
-    // narrowed to the rest; nested_slices keys its ladder and dead check by that
-    // narrowed member and covers it when the ladder completes, so the arm for the
-    // member left out (`A(null)) covers what remains. r01, r31, s01, s09 and the
-    // tuple, struct, two-level, or-arm and list-beside-array forms run. The claim also
-    // reads each slice's elements and every other position by covers over their type
-    // (elements_cover, covers) instead of matches_anything: without that the narrowing
-    // newly accepted `A([(a, b), ..]) over `A([Array<[(i64, i64), i64]>, null]) into a
-    // run-time coverage hole, and it closes base-r24's nested form of that hole
-    // (`A(Array<[(i64, i64), i64]>), the top-level form is
-    // slice-element-union-hole-01). Pins, failing with the fix undone:
-    // lang::select::nested_slice_ladder_union_position_other_member_arm,
-    // _other_member_dead_arm_refused,
-    // nested_slice_tuple_element_over_a_union_claims_nothing,
-    // nested_slice_tuple_element_beside_another_member_claims_nothing (the last two
-    // also with only the covers half undone); the skill's cases line for r01 is ok
-    // now. probes: ~/ptmp/cr29/scratch/r24/24h/spom/
     for m in members.iter() {
         if !sp.admits(env, m, false)? {
             left_out = true;
