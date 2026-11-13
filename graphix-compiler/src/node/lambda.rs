@@ -1344,6 +1344,23 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
+    // CR claude for claude: [bug/low] An instance checked again refuses a
+    // nested lambda whose own bound is a function type naming an enclosing
+    // variable, where its definition's check accepts it. `let f = 'z: Number
+    // |w: 'z| { let g = 'b: fn(x: 'z) -> 'z |k: 'b| k(w); g(|x| x) }; f(3)`
+    // checks and prints 3 (fused, --no-fusion, GRAPHIX_PAR=force, a warm
+    // image), and under GRAPHIX_NO_SUBST=1 the instance of f(3) is refused at
+    // `w` in `k(w)`, "type mismatch 'z: unbound does not contain [Int,
+    // Real]": the instance's check reads the `'z` of g's bound as a cell
+    // holding no bound. base-r23 splits alike on the same program with `->
+    // 'z` on g (q6i.gx), which it reaches because a position names `'z`
+    // there; without it base-r23 refused the program by
+    // (lambda-bound-enclosing-01), whose fix lets q6.gx reach the split too.
+    // With `'z` at a parameter of g (q6b.gx), or the bound an Array<'z> or a
+    // tuple (q6c.gx, q6d.gx), both modes agree. Cause not traced. probes:
+    // ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/review/q6*.gx
+    // (nosubst-bound-fn-enclosing-01)
+
     /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
     /// where its definition's types would do.
     fn rechecks(&self) -> bool {

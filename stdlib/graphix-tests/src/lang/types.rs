@@ -3202,6 +3202,19 @@ run!(
     FuseExpect::None
 );
 
+// A nested lambda's own variable stays its own where the bound of an
+// enclosing variable it names, or is bounded by, names the enclosing
+// variable of the same name.
+run!(a_nested_lambdas_own_variable_is_not_the_one_an_enclosing_bound_names, r#"{
+  let f = 'e: Array<'q>, 'q: Number |a: 'e, b: 'q| {
+    let g = 'q: 'e |x: 'q, y: 'e| -> 'q x;
+    let h = 'q: Any |x: 'q, y: 'e| -> 'q x;
+    let u = 'q: 'e |x: 'q| -> 'q x;
+    (g(a, a), h("s", a), b)
+  };
+  f([1], 2)
+}"#, prints(r#"[[i64:1], "s", i64:2]"#); FuseExpect::Jit);
+
 run!(
     a_nested_signature_takes_no_other_type,
     "{ let mk = 'a: Number |k: 'a| |x: 'a| [x, k]; let g = mk(1); g(\"s\") }",
