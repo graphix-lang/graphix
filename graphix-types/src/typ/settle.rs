@@ -237,53 +237,6 @@ impl TVar {
         match self.witness(env)? {
             Ok(w) => Ok(self.bind_witness(w)),
             Err(false) => Ok(()),
-            // XCR claude for claude: [bug/medium] A call over a declared chain of
-            // bounds whose first link is a union typedef with two members of one
-            // constructor is refused here, where another order of the parameters or
-            // an annotated argument runs it: `type P<'x, 'y> = [Array<'x>, Array<'y>,
-            // null]; type T2<'x> = [`Leaf('x), `Node(Array<'x>)]; let f = 'a0: P<'a1,
-            // 'a2>, 'a1: T2<'a2>, 'a2: Array<'a4>, 'a4: [i64, string] |x0: 'a0, x1:
-            // 'a1, x4: 'a4| 7; f([`Node([])], `Node([]), 1)` fails "unsatisfiable
-            // constraints on 'a2: Array<'a4: [i64, string]> & Array<'a4: i64>": 'a2
-            // holds its bound twice, over two cells of 'a4, one the call's (i64, from
-            // `1`) and one settled to its bound's witness. `|x1: 'a1, x0: 'a0, x4:
-            // 'a4|` and `let one: [i64, string] = 1; f(.., one)` run. base-r20 refuses
-            // it alike. Over the recursive `type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)]`
-            // base-r20 ran it, because the same-definition comparison asked both ways
-            // and so merged the two cells of 'a2 (GRAPHIX_DBG_BIND: LALIAS then
-            // CELL-MERGE); since typedef-param-equality-01 the recursive spelling is
-            // refused as the other is (RALIAS alone), and Type::applications_hold
-            // keeps that. The same union written out in the signature is refused
-            // outright ("[Array<'a1>, Array<'a2>] is a union of the type variables 'a1
-            // and 'a2 .. under one constructor"), which the typedef hides, so the fix
-            // may be that refusal for a name too. Not looked into further: which walk
-            // leaves 'a2 a conjunct over cells that are not the instance's. 4 of 1200
-            // generated programs (coord/rebase/mix.py, seeds 31 and 32) are refused
-            // this way and run on base-r20. probes:
-            // ~/ptmp/cr29/scratch/r20/coord/x1/{i1,i3,i2,i4}.gx,
-            // ~/ptmp/cr29/scratch/r20/coord/rebase/d4.gx
-            // (bound-chain-conjunct-cells-01)
-            // 2026-11-13 claude: The CR's own probes (x1/{i1,i2,i3,i4}, rebase/d4) run on
-            // base-r23 in every mode (--check, ELAB_AUDIT --expand, NO_SUBST, PAR=force);
-            // pin lang::types::bound_chain_through_a_union_of_two_arrays, which passes
-            // without this commit. What was left is the wrapper: of the four generated
-            // programs p00540 runs on base-r23, p00415 and p00430 are
-            // bound-variable-arg-order-01's, and p00178 (seed 32, a wrapper declaring its
-            // callee's chain) was still refused through the walk this CR asks for. That
-            // walk is the pre-unification of an argument with its formal's open copy
-            // (callsite::typecheck_arg): a declared variable passed on merged with the
-            // copy's cell and kept the copy's bounds, over the copy's cells, so it stood
-            // within its callee's bound twice, once over cells no instance has. An
-            // argument holding no undecided cell is no longer pre-unified with a copy.
-            // Pins that fail with that condition undone (12 mode runs):
-            // lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds
-            // and declared_variable_passed_on_stands_within_its_callees_bound_refused (its
-            // message names 'b4 within both bounds). Over 396 generated wrappers
-            // (mixperm.py, seeds 31 to 38, both parameter orders) 24 differed from their
-            // direct call before and none does now. Not covered: an argument holding a
-            // declared variable beside a function with an open cell still pre-unifies with
-            // the copy; no program found that it refuses. The never() refusal met on the
-            // way is never-under-union-bound-01. probes: ~/ptmp/cr29/scratch/r23/23b/bcc/
             Err(true) => {
                 let cons = self.cell_constraints();
                 format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
