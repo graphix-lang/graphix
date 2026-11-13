@@ -1763,7 +1763,9 @@ impl Widening {
 
     /// An argument of type `typ` did not fit `formal`: widen the variables
     /// it holds wider and check it, or the mismatch error. False when it
-    /// is neither wider nor narrower than a variable.
+    /// is neither wider nor narrower than a variable. A widening that
+    /// leaves a decided cell below one of its lower bounds
+    /// ([`Self::below_bounds`]) is undone, and the mismatch names both.
     fn widen(
         &mut self,
         env: &Env,
@@ -1792,7 +1794,7 @@ impl Widening {
         // that is neither wider nor narrower defers the argument until a
         // later one widens it, whatever the order
         let probe = ContainsFlags::RigidCheck.into();
-        let mut wider: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        let mut wider: LPooled<Vec<(TVar, Type, Type)>> = LPooled::take();
         let mut incomparable = false;
         for (name, cell) in cells.iter() {
             let (Some(new), Some(old)) =
@@ -1804,18 +1806,64 @@ impl Widening {
                 continue;
             }
             if new.contains_with_flags(probe, env, &old)? {
-                wider.push((cell.clone(), new));
+                wider.push((cell.clone(), old, new));
             } else {
                 incomparable = true;
             }
         }
-        for (cell, t) in wider.drain(..) {
-            cell.bind(t)
+        if !wider.is_empty() {
+            let stood = Self::below_bounds(env, inst)?;
+            for (cell, _, new) in wider.iter() {
+                cell.bind(new.clone())
+            }
+            let mut left = Self::below_bounds(env, inst)?;
+            left.retain(|(tv, i, _)| {
+                !stood.iter().any(|(s, j, _)| s.same_cell(tv) && i == j)
+            });
+            if let Some((_, _, note)) = left.iter().min_by(|a, b| a.2.cmp(&b.2)) {
+                for (cell, old, _) in wider.drain(..) {
+                    cell.bind(old)
+                }
+                let Err(e) = formal.check_contains(env, typ) else { return Ok(true) };
+                bail!("{e}: {note}")
+            }
         }
         if incomparable {
             return Ok(false);
         }
         check()
+    }
+
+    /// Each decided cell `inst` reaches that does not hold one of its lower
+    /// bounds, with the bound's index and what a refusal says of it. A
+    /// widening adds one where a variable the bound holds widened after the
+    /// cell was decided.
+    fn below_bounds(
+        env: &Env,
+        inst: &FnType,
+    ) -> Result<LPooled<Vec<(TVar, usize, CompactString)>>> {
+        let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        inst.reached_cells(&mut reached);
+        let probe = ContainsFlags::RigidCheck.into();
+        let mut below: LPooled<Vec<(TVar, usize, CompactString)>> = LPooled::take();
+        for tv in reached.values() {
+            let Some(held) = tv.binding() else { continue };
+            for (i, l) in tv.cell_lower().iter().enumerate() {
+                if held.contains_with_flags(probe, env, l)? {
+                    continue;
+                }
+                let note = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+                    format_compact!(
+                        "the function builds a value of type {l} into a type an \
+                         argument before this one decided as {held}; annotate that \
+                         argument so its type holds both (bind it to a `let` with its \
+                         type written)"
+                    )
+                });
+                below.push((tv.clone(), i, note))
+            }
+        }
+        Ok(below)
     }
 }
 

@@ -153,8 +153,7 @@ lower bound contains, is no member of the witness: it adds no value to it
 (`settle.rs::joined_lower`). `B([])` met by a definition's `B([z])` at a
 call that decides `z` as `i64` settles the payload to `Array<i64>`, the
 call's settle having bound the empty array's element to ⊥ first; the
-union `[Array<_>, Array<i64>]` is a type the definition's `B<Array<'z>>`
-is no instance of, so the build refused what the check accepted. A bound
+union `[Array<_>, Array<i64>]` holds no other value. A bound
 that holds an open cell stays a member, and so does one nothing contains
 (pins `lang::types::undecided_payload_met_by_a_decided_one_at_a_call_builds`,
 `typ::settle::test::a_witness_leaves_out_a_bound_holding_bottom_that_another_contains`).
@@ -382,6 +381,25 @@ no state but the variable. One neither wider nor narrower than what
 stands is the mismatch where it is written, whatever follows (`f(`A, `B,
 ab)` over three `'a` is refused; `f(ab, `B, `A)` runs): no union is
 made of two arguments.
+
+A widening leaves every decided cell above its lower bounds. A lower
+bound holds its cells live, so widening a variable grows each bound that
+holds it, and a cell an earlier argument decided may hold the bound no
+more: over `|a, z| a <- B([z])` the payload stands above `Array<'z>`,
+`x: B<Array<i64>>` decides it, and `n: [i64, null]` would widen `'z`
+under it; the instance would write a null into an `Array<i64>`. So after
+a widening every decided cell the instance's signature reaches is probed
+against its lower bounds (`Widening::below_bounds`), and one that held
+them before it and no longer does undoes the widening and refuses the
+argument, naming both types and the earlier argument to annotate. The
+same holds a payload a REPL input
+settled (`let x = B([])`, then `f(x, 1)`) and a payload read back into a
+decided parameter (`|a, z| { let b = B(z); a <- b.0; a }` at `x: i64`
+and `n`). A payload still open at the call takes both arguments' bounds
+and settles to their union. Pins:
+`lang::types::{decided_payload_takes_no_wider_argument,empty_declared_payload_takes_no_argument,payload_read_into_a_decided_parameter_takes_no_wider_argument}`,
+their annotated twins, and
+`lang::repl_inputs::settled_payload_takes_nothing_a_function_builds_into_it`.
 
 Before its own check, an argument holding an undecided cell is
 pre-unified with a copy of its formal in which the widenable variables
@@ -2017,6 +2035,12 @@ names takes its own place, not what the bound's holder is placed at
 (`'b: Array<'a> |x: 'b, y: 'a|` at `Array<i64>` and `[i64, string]`; pins
 `lang::functions::bound_naming_a_wider_variable_builds`,
 `lang::types::instance_cells_of_a_chain_of_bounds_are_placed_deepest_first`).
+A cell is placed after the open cells its lower bounds hold as well: the
+payload of `|a, z| a <- B([z])` stands above `Array<'z>`, and at
+`B<[Array<i64>, Array<string>]>` and `string` the union alone would give
+`'z` its first member that holds the bound, which `z`'s own place then
+refuses (pins `lang::types::two_payloads_decided_apart_at_a_call_build`,
+`typ::fntyp::tests::a_cell_a_lower_bound_holds_is_placed_before_its_holder`).
 A variable a bound names that stands only among a union's members has no
 place (`'b: Array<'a> |x: 'b, y: ['a, null]|`), and the holder's bound
 would decide it narrower than the union stands. Where the containment

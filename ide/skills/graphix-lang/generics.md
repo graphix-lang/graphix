@@ -211,6 +211,18 @@ no "i64 does not contain string" type B<'p> = Abstract<'p>; let f = |a, b| { let
 ok type B<'p> = Abstract<'p>; let f = |a: 'a, b: 'b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) }; f(1, "s")
 ```
 
+A function that builds a nominal value over one parameter into another
+(`|a, z| a <- B([z])`) needs the payload its first argument decided to
+hold what it builds. A payload still open at the call (`f(B([1]), "s")`)
+takes both; one already declared takes no argument wider than it holds:
+declare it as wide as the widest argument.
+
+```graphix,cases
+ok type B<'p> = Abstract<'p>; let f = |a, z| { a <- B([z]); a.0 }; f(B([1]), "s")
+no "an argument before this one decided as Array<i64>" type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<i64>> = B([1]); f(x, n)
+ok type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<[i64, null]>> = B([1]); f(x, n)
+```
+
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
 `fn(c: Collection) -> i64`) stands only as a definition's signature: a

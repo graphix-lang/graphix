@@ -1719,6 +1719,22 @@ fn holds_union(
 // 1000 / 2000. probes: ~/ptmp/cr29/scratch/r24/24h/impls-read/arrnotrait{15,17,
 // 19}.gx, generators gen2.py / gen3.py there (`python3 gen2.py arrnotrait N`)
 // (chainbounds-array-valued-01)
+
+// CR claude for claude: [bug/low] A call's check gives a variable a lower bound holds
+// the first member of a declared union that could take the bound. Over `type B<'p> =
+// Abstract<'p>; let f = |a, z| { a <- B([z]); a.0 }; let x: B<[Array<i64>,
+// Array<string>]> = B([1])`, `f(x, 2)` runs and `f(x, "s")` is refused, "type mismatch
+// i64 does not contain string", in either order of the parameters (`|z, a|`): the
+// payload is decided first, its bound `Array<'z>` commits against the union here, and
+// `'z` is `i64`, the member the union's sort puts first, which a string neither fits
+// nor widens. With the payload undeclared (`f(B([1]), "s")`) the call runs. Under
+// GRAPHIX_NO_SUBST the same pick refuses the instance of a wrapper, `let g = |b, u|
+// f(b, u); g(B([1]), "s")`, which the build by substitution runs (12 of the 3168
+// programs of lane 23b's rev2/gen3.py). base-r24 alike. Not decided: leave the variable
+// for its own argument and judge the bound where the variable binds, or refuse the pick
+// naming the parameter to declare. Found fixing construct-lower-instance-01. probes:
+// ~/ptmp/cr29/scratch/r24/24c/cli/{u1,u2,u3}.gx, g3/wrap-arg-arr-i-s.gx
+// (lower-bound-union-pick-01)
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
 /// copies first, so bounds a probe admits apart but no commit holds
 /// together (`(i64, string)` above `('x, 'x)`) refuse the bind and bind

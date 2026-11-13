@@ -2827,6 +2827,46 @@ mod tests {
         );
     }
 
+    /// A cell a lower bound of another holds takes its own place before the
+    /// holder takes its: at a union two of whose members hold the bound,
+    /// the cell's own place says which, in either order of the positions.
+    #[test]
+    fn a_cell_a_lower_bound_holds_is_placed_before_its_holder() {
+        use crate::{
+            env::Env,
+            typ::{PrintFlag, TVar, Type, format_with_flags},
+        };
+        use ahash::AHashMap;
+        use arcstr::ArcStr;
+        let env = Env::default();
+        for (own, at) in [
+            (
+                "fn(a: 'p, z: 'z) -> i64",
+                "fn(a: [Array<i64>, Array<string>], z: string) -> i64",
+            ),
+            (
+                "fn(z: 'z, a: 'p) -> i64",
+                "fn(z: string, a: [Array<i64>, Array<string>]) -> i64",
+            ),
+        ] {
+            let bounded = || {
+                let own = parse_fn_type(own).unwrap();
+                let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                own.collect_tvars(&mut cells);
+                let z = Type::TVar(cells["z"].clone());
+                cells["p"].add_lower(Type::Array(triomphe::Arc::new(z)));
+                (own, cells["z"].clone())
+            };
+            let at = parse_fn_type(at).unwrap();
+            let (placed, z) = bounded();
+            placed.place_cells(&env, &at);
+            let z = format_with_flags(PrintFlag::DerefTVars, || z.to_string());
+            assert_eq!(z, "'z: string", "{own}");
+            let (held, _) = bounded();
+            assert!(held.held_at(&env, &at).is_ok(), "{own}");
+        }
+    }
+
     /// The refusal names the first variable declared whose bound reaches
     /// it, by the shortest path back its bounds' names lead to first:
     /// what a breadth-first walk from each variable in turn finds.
@@ -3705,8 +3745,9 @@ enum Place {
 }
 
 /// Bind each open cell `places` gives to what stands at its place, each
-/// after the open cells its bounds hold, at any depth: a cell a bound
-/// holds takes its own place, not what the bound's holder is placed at.
+/// after the open cells its bounds hold, above and below, at any depth: a
+/// cell a bound holds takes its own place, not what the bound's holder is
+/// placed at.
 /// A cell takes a member's place only where no place of its own binds it.
 fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(Place, &TVar, &Type))) {
     struct Order<'a> {
@@ -3721,7 +3762,7 @@ fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(Place, &TVar, &T
                 return;
             }
             crate::stack::ensure_sufficient(|| {
-                for c in tv.cell_constraints().iter() {
+                for c in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
                     super::contains::find_open_cell(c, true, &mut |held| {
                         self.place(held);
                         false

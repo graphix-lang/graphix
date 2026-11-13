@@ -1283,7 +1283,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
+        // XCR claude for claude: [bug/medium] A build refuses an instance the check accepted
         // where a definition writes a construction over one of its parameters into another
         // parameter and the call passes a construction over another decided payload. `type
         // B<'p> = Abstract<'p>; let f = |a, z| a <- B([z]); f(B([1]), "s")` passes
@@ -1308,6 +1308,24 @@ impl<R: Rt> Construct<R> {
         // own, in nine forms) are refused this way, base-r23 594. probes:
         // ~/ptmp/cr29/scratch/r23/23b/rev2/{d1,d2,d3,d4}.gx, repl1.txt, gen3.py, vb.sh
         // (construct-lower-instance-01)
+        // 2026-11-13 claude: Two halves. (1) The build: an instance's copy places a cell
+        // after the open cells its lower bounds hold (fntyp.rs place_in_order), so the
+        // payload's bound over z is held by z's own type, not by the first member of the
+        // instance's union; d1-d4 and all 378 of gen3.py's programs build and run alike
+        // fused, unfused, forked and under GRAPHIX_NO_SUBST (366; the other 12 are
+        // lower-bound-union-pick-01). Pins that fail without it:
+        // lang::types::two_payloads_decided_apart_at_a_call_build,
+        // typ::fntyp::tests::a_cell_a_lower_bound_holds_is_placed_before_its_holder. (2) The
+        // check: the REPL form, and a payload declared before the call (let x: B<Array<i64>>
+        // = B([1]); f(x, n)), were accepted by a widening of z under a payload already
+        // decided, and rightly refused by the build; Widening::widen now undoes a widening
+        // that leaves a decided cell below one of its lower bounds (below_bounds) and
+        // refuses the argument, naming both types. Pins that fail without it:
+        // lang::types::{decided_payload_takes_no_wider_argument,empty_declared_payload_takes_no_argument,payload_read_into_a_decided_parameter_takes_no_wider_argument},
+        // lang::repl_inputs::settled_payload_takes_nothing_a_function_builds_into_it; their
+        // annotated twins pass. gen4.py (1440 programs): base-r24 180 check ok / build
+        // refused, lane 0 (101 build, 79 refused by the check, each refused by base under
+        // NO_SUBST). Census 0/0. probes: ~/ptmp/cr29/scratch/r24/24c/cli/ (README)
         let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         let defaults = check_hidden_defaults(

@@ -5276,6 +5276,101 @@ run!(
     prints("[]")
 );
 
+// Two payloads a call decides apart are a union at the instance, and the
+// definition's bound over its parameter is held there by that parameter's
+// own type, in either order of the parameters, with the payload returned,
+// and from inside another definition.
+run!(
+    two_payloads_decided_apart_at_a_call_build,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |a, z| { a <- B([z]); a.0 };
+    let g = |z, a| { a <- B([z]); a.0 };
+    let h = |u| { let x = B([]); f(x, u); x.0 };
+    let x: B<[Array<i64>, Array<[i64, null]>]> = B([5]);
+    (f(B([1]), "s"), g(n, B([2])), f(B([]), 3), h(4), f(x, n))
+}"#,
+    prints("[[i64:1], [i64:2], [], [], [i64:5]]")
+);
+
+// A payload an earlier argument decided holds what the function builds
+// into it: a later argument wider than the variable the payload holds
+// widens nothing, and is refused naming the argument to annotate.
+run!(
+    decided_payload_takes_no_wider_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |a, z| { a <- B([z]); a.0 };
+    let x: B<Array<i64>> = B([1]);
+    f(x, n)
+}"#,
+    refused(
+        "type mismatch i64 does not contain [i64, null]: the function builds a value of \
+         type Array<[i64, null]> into a type an argument before this one decided as \
+         Array<i64>; annotate that argument so its type holds both"
+    );
+    FuseExpect::None
+);
+
+run!(
+    decided_payload_wide_enough_takes_the_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |a, z| { a <- B([z]); a.0 };
+    let x: B<Array<[i64, null]>> = B([1]);
+    f(x, n)
+}"#,
+    prints("[i64:1]")
+);
+
+// The same where the payload is declared empty, and where the decided type
+// is the payload read back into a parameter.
+run!(
+    empty_declared_payload_takes_no_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = |a, z| { a <- B([z]); a.0 };
+    let x: B<Array<_>> = B([]);
+    f(x, 1)
+}"#,
+    refused(
+        "the function builds a value of type Array<i64> into a type an argument before \
+         this one decided as Array<_>"
+    );
+    FuseExpect::None
+);
+
+run!(
+    payload_read_into_a_decided_parameter_takes_no_wider_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |a, z| { let b = B(z); a <- b.0; a };
+    let x: i64 = 1;
+    f(x, n)
+}"#,
+    refused(
+        "the function builds a value of type [i64, null] into a type an argument before \
+         this one decided as i64"
+    );
+    FuseExpect::None
+);
+
+run!(
+    payload_read_into_a_parameter_declared_wide_takes_the_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |a, z| { let b = B(z); a <- b.0; a };
+    let x: [i64, null] = 1;
+    f(x, n)
+}"#,
+    prints("i64:1")
+);
+
 // A bound's cell below a union with a decided member is bound to the
 // union where that holds every bound: `x` may hold either member.
 run!(

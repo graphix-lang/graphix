@@ -507,6 +507,37 @@ async fn annotated_callback_result_takes_a_later_use() -> Result<()> {
     .await
 }
 
+/// A payload an earlier input settled holds what a function builds into
+/// it: an argument the settled payload does not hold is refused by the
+/// check, naming the binding to declare.
+#[tokio::test(flavor = "current_thread")]
+async fn settled_payload_takes_nothing_a_function_builds_into_it() -> Result<()> {
+    session(&[
+        Accept("type B<'p> = Abstract<'p>"),
+        Accept("let f = |a, z| { a <- B([z]); a.0 }"),
+        Accept("let x = B([])"),
+        Refuse(
+            "f(x, 1)",
+            "type mismatch _ does not contain i64: it holds the type of `x` (line 1, \
+             column 5 in `let x = B([])`), settled when its input ended; declare x's \
+             type where it is bound: the function builds a value of type Array<i64> \
+             into a type an argument before this one decided as Array<_>",
+        ),
+    ])
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn declared_payload_takes_what_a_function_builds_into_it() -> Result<()> {
+    session(&[
+        Accept("type B<'p> = Abstract<'p>"),
+        Accept("let f = |a, z| { a <- B([z]); a.0 }"),
+        Accept("let x: B<Array<i64>> = B([])"),
+        Produce("f(x, 1)", Value::Array([].into())),
+    ])
+    .await
+}
+
 /// A write as general as a binding of a function settled at ⊥ decides
 /// nothing of an earlier input.
 #[tokio::test(flavor = "current_thread")]
