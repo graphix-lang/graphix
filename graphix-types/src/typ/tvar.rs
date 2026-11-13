@@ -1444,6 +1444,11 @@ pub struct TCell {
     /// What the checks learned of the cell ([`CellFact`]): every copy, merge
     /// and image carries the whole set.
     pub(crate) facts: BitFlags<CellFact>,
+    /// A call's copy of a cell ([`Fresh::Instantiate`]), or a copy of one:
+    /// its name is the copied variable's, which the program wrote for
+    /// another cell. Copies and images carry it; a merge keeps it where
+    /// no variable the program wrote names either cell.
+    pub(crate) call_copy: bool,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
@@ -1586,6 +1591,7 @@ impl Default for TCell {
             constraints: SmallVec::new(),
             lower: SmallVec::new(),
             facts: BitFlags::empty(),
+            call_copy: false,
             rigid_gates: 0,
             level: current_level(),
             task: TASK.get(),
@@ -1909,6 +1915,25 @@ impl TVar {
             false => Some(Type::TVar(TVar::empty_named(self.name.clone()))),
         }
     }
+
+    /// [`Self::written_open`] where the program wrote the variable for this
+    /// cell, which a message may then name as one type: a call's copy of
+    /// the variable its callee declares ([`TCell::call_copy`]) carries a
+    /// name the program wrote for another cell, as every other copy of it
+    /// does.
+    pub fn written_own(&self) -> Option<Type> {
+        match self.call_copy() {
+            true => None,
+            false => self.written_open(),
+        }
+    }
+
+    /// Whether the cell this var stands for is a call's copy
+    /// ([`TCell::call_copy`]).
+    fn call_copy(&self) -> bool {
+        let end = self.open_cell().unwrap_or_else(|| self.clone());
+        end.cell().read().call_copy
+    }
 }
 
 impl fmt::Display for TVar {
@@ -2135,10 +2160,10 @@ impl TVar {
     /// conjuncts and lower bounds, each through `image`, and its facts. No
     /// cell they reach is claimed at the copy's level.
     pub(super) fn copy_bounds_into(&self, copy: &Self, image: impl Fn(&Type) -> Type) {
-        let (constraints, lower, facts) = {
+        let (constraints, lower, facts, call_copy) = {
             let cell = self.cell();
             let c = cell.read();
-            (c.constraints.clone(), c.lower.clone(), c.facts)
+            (c.constraints.clone(), c.lower.clone(), c.facts, c.call_copy)
         };
         let constraints: SmallVec<[Type; 1]> = constraints.iter().map(&image).collect();
         let lower: SmallVec<[Type; 1]> = lower.iter().map(&image).collect();
@@ -2147,6 +2172,7 @@ impl TVar {
         c.constraints.extend(constraints);
         c.lower.extend(lower);
         c.facts |= facts;
+        c.call_copy |= call_copy;
     }
 
     /// Mark a generic cell a written type's own ([`Level::Written`]).
@@ -2766,7 +2792,16 @@ impl TVar {
                 o_cell.data_ptr().addr()
             );
         }
-        let level = s_cell.read().level;
+        let (level, s_copy) = {
+            let s = s_cell.read();
+            (s.level, s.call_copy)
+        };
+        let o_copy = o_cell.read().call_copy;
+        // a call's copy merged with a cell no variable the program wrote
+        // names stays one; a written variable now names the cell
+        let call_copy = (s_copy || o_copy)
+            && (s_copy || self.generated())
+            && (o_copy || other.generated());
         let moved: LPooled<Vec<Type>> =
             to_add.iter().chain(below.iter()).cloned().collect();
         {
@@ -2778,6 +2813,7 @@ impl TVar {
             oc.lower.extend(below.drain(..));
             if !earlier_task(&oc) {
                 oc.facts |= facts;
+                oc.call_copy = call_copy;
             } else if !oc.facts.contains(facts) {
                 written_of(oc.task, "cell", Some(cell_addr(&oc)));
             }
@@ -3143,7 +3179,9 @@ impl TVar {
         let f = match how {
             Fresh::Copy => self.fresh_copy(),
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
-                TVar::empty_named(self.name.clone())
+                let f = TVar::empty_named(self.name.clone());
+                f.cell().write().call_copy = true;
+                f
             }
             Fresh::Scheme(open) if self.level().copied_by(open) => {
                 TVar::empty_generic(self.name.clone())
@@ -3160,7 +3198,8 @@ impl TVar {
     }
 
     /// Make the empty cell `f` this var's copy in `fresh`: the conjuncts,
-    /// lower bounds and binding rebuilt through `walk`, the facts kept.
+    /// lower bounds and binding rebuilt through `walk`, the facts and
+    /// [`TCell::call_copy`] kept.
     fn copy_into<M>(
         &self,
         f: &TVar,
@@ -3177,8 +3216,17 @@ impl TVar {
             f.add_lower(walk(&t, fresh, memo).unwrap_or(t));
         }
         // what the source's checks learned holds of every copy
-        let facts = self.cell().read().facts;
-        f.cell().write().facts |= facts;
+        let (facts, call_copy) = {
+            let cell = self.cell();
+            let c = cell.read();
+            (c.facts, c.call_copy)
+        };
+        {
+            let cell = f.cell();
+            let mut c = cell.write();
+            c.facts |= facts;
+            c.call_copy |= call_copy;
+        }
         if let Some(t) = self.binding() {
             f.bind(walk(&t, fresh, memo).unwrap_or(t));
         }

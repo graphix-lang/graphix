@@ -6158,6 +6158,41 @@ run!(partial_struct_unnamed_cell_met_twice_is_one_number_refused, r#"{
     select v { {a, ..} => array::len(a) }
 }"#, refused("matches two members, { a: Array<i64>, c: ((Array<'_1>, Array<'_1>), Array<'_2>) } and { a: Array<string>, c: ((Array<'_3>, Array<'_3>), Array<'_4>) }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for '_1, '_2, '_3 and '_4 types no binding names, annotated where their values are built"); FuseExpect::None);
 
+// Two calls' copies of the variable their callee declares are two cells
+// no binding names: numbered apart, not written twice as the callee's
+// `'a`, which reads as one type.
+run!(partial_struct_call_copies_of_one_variable_are_numbered_refused, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let v = select b { true => {a: [1], c: f(never())}, false => {a: ["s"], c: f(never())} };
+    select v { {a, ..} => array::len(a) }
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: Array<'_1> } and { a: Array<string>, c: Array<'_2> }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for '_1 and '_2 types no binding names, annotated where their values are built"); FuseExpect::None);
+
+run!(partial_struct_call_copies_through_a_wrapper_are_numbered_refused, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let h = |y| f(y);
+    let v = select b { true => {a: [1], c: h(never())}, false => {a: ["s"], c: h(never())} };
+    select v { {a, ..} => array::len(a) }
+}"#, refused("matches two members, { a: Array<i64>, c: Array<'_1> } and { a: Array<string>, c: Array<'_2> }, told apart"); FuseExpect::None);
+
+// A variable a let's annotation wrote names the call's copy it took.
+run!(partial_struct_call_copies_a_written_variable_took_keep_its_name_refused, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let v: [{a: Array<i64>, c: Array<'q>}, {a: Array<string>, c: Array<'r>}] =
+        select b { true => {a: [1], c: f(never())}, false => {a: ["s"], c: f(never())} };
+    select v { {a, ..} => array::len(a) }
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: Array<'q> } and { a: Array<string>, c: Array<'r> }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field"); FuseExpect::None);
+
+run!(partial_struct_call_copies_annotated_where_built, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] =
+        select b { true => {a: [1], c: f(never())}, false => {a: ["s"], c: f(never())} };
+    select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => array::len(a) }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
 run!(partial_struct_unnamed_empty_cells_annotated_where_built, r#"{
     let b = true;
     let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] =

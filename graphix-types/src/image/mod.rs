@@ -1464,13 +1464,14 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, below, facts, level) = {
+            let (typ, constraints, below, facts, call_copy, level) = {
                 let c = cell.read();
                 let TCell {
                     binding,
                     constraints,
                     lower,
                     facts,
+                    call_copy,
                     rigid_gates,
                     level,
                     task: _,
@@ -1487,12 +1488,20 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (binding.clone(), constraints.to_vec(), lower.to_vec(), *facts, *level)
+                (
+                    binding.clone(),
+                    constraints.to_vec(),
+                    lower.to_vec(),
+                    *facts,
+                    *call_copy,
+                    *level,
+                )
             };
             typ.encode(buf)?;
             slice_encode(&constraints, buf)?;
             slice_encode(&below, buf)?;
             facts.bits().encode(buf)?;
+            call_copy.encode(buf)?;
             level.encode(buf)
         },
     )
@@ -1534,6 +1543,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
             let below: Vec<_> = Pack::decode(sub)?;
             let facts = BitFlags::from_bits(u8::decode(sub)?)
                 .map_err(|_| PackError::InvalidFormat)?;
+            let call_copy = bool::decode(sub)?;
             let level = Pack::decode(sub)?;
             let mut c = cell.write();
             c.level = level;
@@ -1541,6 +1551,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
             c.constraints = constraints.into_iter().collect();
             c.lower = below.into_iter().collect();
             c.facts = facts;
+            c.call_copy = call_copy;
             drop(c);
             Ok(cell)
         },
@@ -2299,7 +2310,8 @@ mod decode_tests {
         }
     }
 
-    /// A cell's facts travel whole: a ⊥ a `_` required stays required.
+    /// A cell's facts travel whole: a ⊥ a `_` required stays required; and
+    /// so does its mark of a call's copy.
     #[test]
     fn a_cell_keeps_its_facts() {
         use crate::typ::tvar::CellFact;
@@ -2307,6 +2319,7 @@ mod decode_tests {
         tv.bind(Type::Bottom);
         let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
         tv.cell().write().facts = all;
+        tv.cell().write().call_copy = true;
         let t = Type::TVar(tv);
         let mut enc = ImageEncoder::new();
         let len = EncodeImage::with(&mut enc, || t.encoded_len());
@@ -2321,6 +2334,7 @@ mod decode_tests {
         let back = read(&mut dec, &image, len).unwrap();
         let Type::TVar(back) = &back else { panic!() };
         assert_eq!(back.cell().read().facts, all);
+        assert!(back.cell().read().call_copy);
     }
 
     /// A read that failed fails again on the same decoder: it left none

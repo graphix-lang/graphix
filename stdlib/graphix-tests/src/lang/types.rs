@@ -5414,6 +5414,36 @@ run!(
     prints(r#"[["A", i64:1], ["B", i64:1]]"#)
 );
 
+// What was built holds two calls' copies of the variable their callee
+// declares, which no binding names: each is a cell of its own, numbered.
+run!(
+    select_arms_at_two_depths_over_two_calls_payloads,
+    arms_at_two_depths(
+        r#"{ let g = |u: 'a| -> Array<'a> []; B([g(never()), g(never())]) }"#,
+        r#"B(["s"])"#
+    ),
+    refused(
+        "the arms decide this scrutinee's type from their patterns, and their binds \
+         cannot hold what was built into it, [Array<string>, Array<[Array<'_1>, \
+         Array<'_2>]>]: annotate that type where it is built, writing for '_1 and '_2 \
+         types no binding names, annotated where their values are built"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_arms_at_two_depths_over_two_calls_payloads_declared,
+    arms_at_two_depths(
+        r#"{
+        let g = |u: 'a| -> Array<'a> [];
+        let b: B<[Array<string>, Array<Array<string>>]> = B([g(never()), g(never())]);
+        b
+    }"#,
+        r#"B(["s"])"#
+    ),
+    prints(r#"[["B", []], ["B", "s"]]"#)
+);
+
 // A write a binding's type cannot hold, over such a referent.
 run!(
     write_wider_than_a_binding_holding_a_referent,

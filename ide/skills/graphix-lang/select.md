@@ -130,7 +130,9 @@ select, and runtime forms. Each rule refuses and names the fix.
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
   `x` and `y` written later. Name every field (`{a, c: _}`), annotate the
   member, or annotate `x` and `y`. The refusal shows a type no binding
-  names (a `[]`'s element) as `'_1`: annotate where the struct is built.
+  names (a `[]`'s element, a call's result) as `'_1`: annotate where the
+  struct is built. Two calls of one generic function are two types,
+  `'_1` and `'_2`, though the function wrote one `'a`.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   A name tests nothing, so an arm may bind such a part, and the bind
@@ -236,6 +238,7 @@ ok let v = true; let s = select v { true => {f: |x: i64| x, n: 1}, false => {f: 
 no "same runtime form" let a = 1; let b = "s"; let v = true; let e: Array<string> = []; let t = select v { true => ([1], &a), false => (e, &b) }; select t { (Array<i64>, &i64) as (x, r) => *r, _ => 0 }
 no "same runtime form" let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }
 no "'_1 and '_2 types no binding names" let b = true; let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a, ..} => 0 }
+no "c: Array<'_1> } and { a: Array<string>, c: Array<'_2> }" let b = true; let f = |x: 'a| -> Array<'a> []; let v = select b { true => {a: [1], c: f(never())}, false => {a: ["s"], c: f(never())} }; select v { {a, ..} => 0 }
 ok let b = true; let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => 1 }
 ok |x: (Any, i64)| -> i64 select x { ((a, b), n) => a + b + n, _ => 0 }
 no "cannot compute Any + i64" |x: Any| select x { [(a, b), _] => a + 1, _ => 2 }

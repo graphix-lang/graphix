@@ -587,8 +587,8 @@ struct Reach {
 
 /// The union of the lower bounds of a scrutinee cell the arms decide, as
 /// written before the arms bound its cells: each cell open then is a
-/// placeholder named as the cell beside it. `None` where it has no
-/// written form.
+/// placeholder named by the cell's place in `cells`. `None` where it has
+/// no written form.
 struct Built {
     typ: Option<Type>,
     cells: SmallVec<[(ArcStr, TVar); 2]>,
@@ -643,8 +643,10 @@ impl Reach {
                         let name = match cells.iter().find(|(_, c)| c.same_cell(tv)) {
                             Some((n, _)) => n.clone(),
                             None => {
-                                cells.push((tv.name.clone(), tv.clone()));
-                                tv.name.clone()
+                                let n: ArcStr =
+                                    format_compact!("{}", cells.len()).as_str().into();
+                                cells.push((n.clone(), tv.clone()));
+                                n
                             }
                         };
                         Some(Type::TVar(TVar::empty_named(name)))
@@ -879,15 +881,16 @@ impl Reach {
             return e;
         }
         let mut holders = Holders::new(env, None);
-        let known: Option<AHashMap<ArcStr, Type>> = built
-            .cells
-            .iter()
-            .map(|(n, tv)| {
-                Some((n.clone(), holders.name_cell(tv).or_else(|| tv.written_open())?))
-            })
-            .collect();
-        match (&built.typ, known) {
-            (Some(typ), Some(known)) => {
+        match &built.typ {
+            Some(typ) => {
+                let known: AHashMap<ArcStr, Type> = built
+                    .cells
+                    .iter()
+                    .map(|(n, tv)| {
+                        let name = holders.name_cell(tv).or_else(|| tv.written_own());
+                        (n.clone(), name.unwrap_or_else(|| holders.number(tv)))
+                    })
+                    .collect();
                 let typ = typ.replace_tvars(&known);
                 let meanings = holders.meanings(at);
                 anyhow!(
@@ -896,7 +899,7 @@ impl Reach {
                      where it is built{meanings}"
                 )
             }
-            _ => anyhow!(
+            None => anyhow!(
                 "the arms decide this scrutinee's type from their patterns, and their \
                  binds cannot hold what was built into it: annotate its type where it is \
                  built"
@@ -3933,7 +3936,7 @@ impl Decisions {
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
     let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
     let mut holders = Holders::new(env, None);
-    // CR claude for claude: [bug/low] Two cells a call picked for one variable of its
+    // XCR claude for claude: [bug/low] Two cells a call picked for one variable of its
     // callee are written under that variable's name, so two members read as holding
     // one type. With `let f = |x: 'a| -> Array<'a> []`, `{a, ..}` over `{a: [1], c:
     // f(never())}` and `{a: ["s"], c: f(never())}` is refused "matches two members, {
@@ -3947,12 +3950,32 @@ fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error 
     // Holders::number does one no binding names, which needs the cell to say a call
     // made it. Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/umrc/p4.gx, q1.gx
     // (undecided-member-instance-name-01)
+    // 2026-11-13 claude: A call's instantiation now marks the cell it makes
+    // (TCell::call_copy, set in TVar::freshen's Fresh::Instantiate arm; copies and
+    // images carry it; a merge keeps it unless a variable the program wrote names
+    // either cell), and TVar::written_own, which undecided_members and
+    // Reach::untyped_binds read in place of written_open, answers none for such a cell,
+    // so it is numbered: p4 now prints Array<'_1> and Array<'_2>; q1, and a let
+    // annotation's 'q and 'r over the two calls, keep their names. untyped_binds keyed
+    // its placeholders by name, so two copies of one variable collapsed into one member
+    // (`[Array<string>, Array<Array<'a>>]` for `B([g(never()), g(never())])`): they are
+    // keyed by cell now, and a cell no binding or written variable names is numbered
+    // there too. TVar::written_open is unchanged: a suggestion that writes a
+    // declaration (`-> Array<'c>`) still writes the callee's name, which declares a
+    // variable there. Pins:
+    // lang::select::partial_struct_call_copies_of_one_variable_are_numbered_refused and
+    // ..._through_a_wrapper_are_numbered_refused (fail with the mark undone),
+    // ..._a_written_variable_took_keep_its_name_refused (fails with the merge rule
+    // undone), lang::types::select_arms_at_two_depths_over_two_calls_payloads (fails
+    // with the mark undone, and with the placeholders keyed by name); twins
+    // ..._call_copies_annotated_where_built, ..._two_calls_payloads_declared;
+    // graphix-types image a_cell_keeps_its_facts.
     let mut written = |t: &Type| {
         t.written_form(&mut |tv| match tv.is_bound() {
             true => None,
             false => holders
                 .name_cell(tv)
-                .or_else(|| tv.written_open())
+                .or_else(|| tv.written_own())
                 .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
         })
     };

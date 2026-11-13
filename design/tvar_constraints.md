@@ -262,10 +262,16 @@ such a let takes the value. The refusal names what was built, which
 annotated decides the cell instead (`Reach::untyped_binds`): a cell open
 when the arms decide is written as the type of the binding it stands
 for (`[Array<'x>, Array<Array<'x>>]`, `'x` the type of `x`), else as
-the variable a program wrote (`node::Holders`, `Type::written_form`); a
-cell with neither has no written form, and the hint then names no type.
-Two payloads of one Graphix-minted abstract type are declared as the
-union of the parameter (`B<[P1, P2]>`), read through one application,
+the variable a program wrote for it (`node::Holders`,
+`TVar::written_own`), else numbered as the two-member refusal below
+numbers one, `'_1`, one number a cell. A call's copy of a variable its
+callee declares is no variable the program wrote for the copy
+(`TCell::call_copy`): `[Array<string>, Array<Array<'_1>>]` where `g(never())`
+over `|u: 'a| -> Array<'a>` built the inner array. A copy merged with a
+cell a written variable names is that variable's again. The hint names
+no type only where what was built has no written form. Two payloads
+of one Graphix-minted abstract type are declared as the union of the
+parameter (`B<[P1, P2]>`), read through one application,
 unless that is the held type already (a parameter decided apart). Only
 a containment refusal of the binds (a
 `TypeMismatch` or an `InfiniteType`) is told so; any other passes
@@ -1403,10 +1409,15 @@ unless what reaches the arm leaves one: annotate the cells, the member,
 or name every field; a program whose cells end up equal is refused
 until annotated. The refusal writes the two members as a program can
 (`select::undecided_members`): an undecided cell as `'x` for the binding
-it waits for, and one no binding names (the element of a `[]`, a read
-through a reference to an unnamed expression) numbered, `'_1`, `'_2`,
-one number a cell (`Holders::number`), told as "types no binding names,
-annotated where their values are built".
+it waits for, one a let's annotation wrote as its variable (`'q`), and
+one no binding names (the element of a `[]`, a read through a reference
+to an unnamed expression, a call's result) numbered, `'_1`, `'_2`, one
+number a cell (`Holders::number`), told as "types no binding names,
+annotated where their values are built". A call's copy of a variable
+its callee declares is one no binding names, though it carries the
+callee's name (`TCell::call_copy`): two calls of `|x: 'a| -> Array<'a>
+[]` give `Array<'_1>` and `Array<'_2>`, never `Array<'a>` twice, which
+reads as one type.
 
 ### Unfolding a pair of definitions
 
