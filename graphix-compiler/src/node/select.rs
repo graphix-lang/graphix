@@ -2911,41 +2911,6 @@ impl<R: Rt> Select<R> {
                 // the scrutinee as it stands, and as its open cells' lower
                 // bounds hold it: no arm decides a declared variable
                 let mut views = iter::once(scrut).chain(lower.as_ref());
-                // XCR claude for claude: [bug/low] A declared variable the scrutinee
-                // holds only through an open cell's lower bounds is not met: meets_rigid
-                // reads the scrutinee as it stands before the arms, an open cell there.
-                // `|x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }`
-                // checks and runs ([3, 1] for `M and `J), and so does `[`J, ..]`, where the
-                // referent the arms decide holds 'a itself (Array<[i64, 'a, `J]>), and
-                // `select W([x, 0]).0` over an abstract's parameter; the plain twin `|x:
-                // 'a| select [x, 0] { [`J, _] => 1, _ => 3 }` is refused "[`J, _] tests
-                // inside a value of 'a". No wrong value found: a tag with a payload there
-                // is refused as a runtime-form collision. Judging it means meeting the
-                // rigid cell in lower_view's reading too (undecided-lower-bound-03 did that
-                // for open cells, Deciding::left_open), with no whole-cell exemption, since
-                // no arm decides a declared variable. Same on base-r20. probes:
-                // ~/ptmp/cr29/scratch/r20/20e/ulb03/rig1.gx, rig2.gx, rig3.gx, twin
-                // rig1t.gx (rigid-lower-bound-01)
-                // 2026-11-12 claude: The select meets a declared variable in the scrutinee
-                // as it stands and as its open cells' lower bounds hold it (lower_view), a
-                // whole open scrutinee included, for an inferred pattern (meets_rigid) and
-                // under a written test (meets_rigid_written): rig1/rig2/rig3 are refused as
-                // the plain twin is, and a tuple, struct or variant below a reference now
-                // names 'a where it named the referent. Census against base-r23: no verdict
-                // and no message changes (2962 files). Pins that fail with the fix undone,
-                // lang::select_undecided:
-                // tag_testing_a_declared_variable_below_a_reference_refused,
-                // tag_testing_a_declared_variable_the_referent_keeps_refused,
-                // tag_testing_a_bounded_variable_below_a_reference_refused,
-                // tag_testing_a_declared_variable_in_a_tuple_below_a_reference_refused,
-                // literal_testing_a_declared_variable_below_a_reference_refused,
-                // tag_testing_a_declared_variable_below_an_abstract_parameter_refused,
-                // written_test_holding_bottom_over_a_variable_below_a_reference_refused,
-                // written_test_holding_its_own_variable_below_a_reference_refused; the
-                // passing twins are written_test_over_a_bounded_variable_below_a_reference,
-                // closed_written_test_over_a_variable_below_a_reference. Found beside it,
-                // not fixed: slice-open-element-later-01. probes:
-                // ~/ptmp/cr29/scratch/r23/23d/rlb/
                 let rigid = |over: &Type| -> Result<()> {
                     match sp.meets_rigid(&ctx.env, &ids, over)? {
                         None => Ok(()),
