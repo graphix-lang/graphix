@@ -2426,38 +2426,6 @@ impl Lambda {
                 explicit_throws,
                 ..FnType::default()
             };
-            // XCR claude for claude: [bug/medium] A nested lambda's own bound
-            // never names an enclosing definition's variable. This alias
-            // walk runs over the positions before `declaring` puts the bounds
-            // on their cells, and `declaring` aliases the bounds' variables
-            // among themselves alone, so in `let f = 'z: Number |w: 'z| -> 'z
-            // { let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g(["s"]);
-            // println(r); w }; f(1)` the `'z` of g's bound is a variable of
-            // its own: base-r23 checks it and prints ["s"], where
-            // design/tvar_constraints.md says a name a definition around a
-            // nested lambda's signature declares, and the signature does not,
-            // is that definition's (`|y: Array<'z>| -> Array<'z> y` in its
-            // place is refused, "Array<'_: unbound within Number> does not
-            // contain Array<string>"). Aliasing the constraints' types with
-            // `known` before `declaring` would name f's `'z`. probes:
-            // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/d1.gx, d2.gx,
-            // d3.gx (lambda-bound-enclosing-01)
-            // 2026-11-12 claude: Fixed with (nested-quantifier-capture-01):
-            // Lambda::compile aliases each bound with the enclosing
-            // definitions' names before declaring, as it does the parameters,
-            // so d1.gx is refused ("does not contain Array<string>") and d3.gx
-            // runs. On base-r23 an instance's alias walk named the enclosing
-            // variable in some shapes, but only by accident: it passed an outer
-            // cell's bound by name (r2.gx), and the scope rule of
-            // nested-quantifier-capture-01 removes that. Pins:
-            // lang::types::a_nested_lambdas_bound_names_the_enclosing_variable
-            // (fails with the aliasing undone),
-            // a_nested_lambdas_bound_takes_the_enclosing_variables_value, and
-            // the cases in ide/skills/graphix-lang/generics.md. On 3000
-            // genlam.py programs, 2 are newly refused: both are this shape,
-            // where the inner bound names the enclosing variable, which is
-            // rigid in the body. probes:
-            // ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/
             let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             enclosing_tvars(ctx, &mut known);
             known.retain(|name, _| {
