@@ -4135,7 +4135,10 @@ impl<R: Rt> Connect<R> {
                 self.spec.id,
                 &held,
                 written,
-                callsite::Narrowing::Copy
+                match generic {
+                    true => callsite::Narrowing::Copy,
+                    false => callsite::Narrowing::Written,
+                }
             )
         )
     }
@@ -4224,7 +4227,7 @@ impl<R: Rt> ConnectDeref<R> {
                             self.spec.id,
                             &t,
                             rhs,
-                            callsite::Narrowing::Copy
+                            callsite::Narrowing::Written
                         )
                     )?;
                 }

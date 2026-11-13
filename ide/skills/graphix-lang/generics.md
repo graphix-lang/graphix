@@ -386,6 +386,23 @@ ok let mk = |j: i64| -> {cb: fn(?#d: 'z, x: i64) -> string} {cb: |#d = 1, x: i64
 no "i64 does not contain string" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let w: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$}; w.cb(#d: "s", 7)
 ```
 
+A binding something writes holds one function type for every reader, so
+a default written to it decides its label's variable: after `let v:
+fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| ..`,
+`'q` is `string`, and a later write of a `#d = 1` or a call `v(#d: 1.5,
+7)` is refused. Write the label's type wide enough for every default
+(`?#d: [i64, string]`). A write through a parameter's `&mut fn(?#d: 'a,
+..)` may not decide the function's own `'a`: write the label's type there
+(`?#d: i64`).
+
+```graphix,cases
+ok let v: fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| cast<string>(d)$; v(7)
+no "string does not contain i64" let v: fn(?#d: 'q, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
+ok let v: fn(?#d: [i64, string], x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
+no "write the default's type in the binding's type" |r: &mut fn(?#d: 'a, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
+ok |r: &mut fn(?#d: i64, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
+```
+
 A generic function's variable that only data holds takes the widest
 argument, in either order, an omitted labeled default included (one
 that is neither wider nor narrower waits for the others to widen it). An

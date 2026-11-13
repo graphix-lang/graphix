@@ -438,22 +438,48 @@ pub(crate) enum Narrowing {
     /// A call's formals: the site's own instantiation, which a default
     /// narrows.
     Site,
-    /// A declaration's type (an annotation, a `<-` target, a return
-    /// type). A function of it that names the value's definitions is
-    /// judged on a copy, which binds nothing of the declaration: a call
-    /// through it judges them again. One that names none (a typedef's
-    /// body writes it) is judged as it stands, since no call will.
+    /// The type of a binding something writes (its annotation, a `<-`
+    /// target, a reference's referent): one type for every reader,
+    /// which a default narrows.
+    Written,
+    /// A declaration nothing writes (an annotation, a return type) or a
+    /// generic binding's copy. A function of it that names the value's
+    /// definitions is judged on a copy, which binds nothing of the
+    /// declaration: a call through it judges them again. One that names
+    /// none (a typedef's body writes it) is judged as it stands, since
+    /// no call will.
     Copy,
+}
+
+impl Narrowing {
+    /// What a default refused as the declaration stands is told, where
+    /// the declaration's function holds an open cell.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Narrowing::Site => None,
+            Narrowing::Written => Some(
+                "a binding something writes holds one function type for every \
+                 reader, so this default must fit its type as it is written: write \
+                 the default's type in the binding's type",
+            ),
+            Narrowing::Copy => Some(
+                "a function read through a typedef's function type is not known \
+                 where it is called, so this default must fit the declared type as \
+                 it is written: write the default's type in the declared type",
+            ),
+        }
+    }
 }
 
 /// What a hidden-default walk carries.
 struct HiddenWalk {
+    narrowing: Narrowing,
     /// The pairs of shared nodes walked already, each held for the walk
     /// so an address stays its node's.
     visited: LPooled<AHashMap<(usize, usize), (Type, Type)>>,
-    /// The copies of a declaration's cells ([`Narrowing::Copy`]), by the
-    /// cell's address; `None` at a call's formals.
-    copies: Option<LPooled<AHashMap<usize, TVar>>>,
+    /// The copies [`Narrowing::Copy`] made of a declaration's cells, by
+    /// the cell's address.
+    copies: LPooled<AHashMap<usize, TVar>>,
 }
 
 /// [`judge_hidden_defaults`] wherever `declared` and `value` both give a
@@ -476,18 +502,10 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     {
         return Ok(());
     }
-    let walk = &mut HiddenWalk {
-        visited: LPooled::take(),
-        copies: (narrowing == Narrowing::Copy).then(LPooled::take),
-    };
+    let walk =
+        &mut HiddenWalk { narrowing, visited: LPooled::take(), copies: LPooled::take() };
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
 }
-
-/// What a default a declaration refuses is told, where the declaration's
-/// function names no definition and holds an open cell.
-const UNNAMED_DEFAULT: &str = "a function read through a typedef's function type is not \
-    known where it is called, so this default must fit the declared type as it is \
-    written: write the default's type in the declared type";
 
 /// Whether a reader of `formal` finds every definition `value` may be:
 /// what holding `value` linked onto a function the declaration keeps.
@@ -589,19 +607,22 @@ fn hidden_defaults_at<R: Rt>(
         hidden_defaults_at(ctx, flags, scope, top_id, d, v, expanded, walk)
     };
     ensure_sufficient(|| match (&d, &v) {
-        (Type::Fn(formal), Type::Fn(fv)) => match &mut walk.copies {
-            Some(copies) if names_definitions(formal, fv) => {
-                let formal = formal.reset_tvars_with(copies);
-                judge_hidden_defaults(ctx, flags, scope, top_id, &formal, fv)
-            }
-            Some(_) if formal.has_unbound() => {
+        (Type::Fn(formal), Type::Fn(fv)) => {
+            let judge = |ctx: &mut CompileCtx<R>, formal: &FnType| {
                 judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
-                    .context(UNNAMED_DEFAULT)
+            };
+            match walk.narrowing {
+                Narrowing::Copy if names_definitions(formal, fv) => {
+                    judge(ctx, &formal.reset_tvars_with(&mut walk.copies))
+                }
+                narrowing => match narrowing.note() {
+                    Some(note) if formal.has_unbound() => {
+                        judge(ctx, formal).context(note)
+                    }
+                    Some(_) | None => judge(ctx, formal),
+                },
             }
-            Some(_) | None => {
-                judge_hidden_defaults(ctx, flags, scope, top_id, formal, fv)
-            }
-        },
+        }
         (Type::Set(_), _) | (_, Type::Set(_)) => {
             let mut formals: LPooled<Vec<Type>> = LPooled::take();
             union_members(&d, &mut formals, &mut |m| opened(&ctx.env, m, &mut 0));

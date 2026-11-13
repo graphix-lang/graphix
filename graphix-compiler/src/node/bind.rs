@@ -1,5 +1,6 @@
 use super::{
     VarRead, WakeBit, audit_quiet,
+    callsite::{Narrowing, check_hidden_defaults},
     coretraits::with_hooks,
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
@@ -651,7 +652,8 @@ impl<R: Rt> Bind<R> {
     /// The binding holds its value's type, unless it forwards it.
     fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if !self.forwards(ctx) {
-            let value = match written(ctx, &self.pattern) {
+            let written = written(ctx, &self.pattern);
+            let value = match written {
                 true => ctx.monomorphic(self.node.typ()),
                 false => self.node.typ().clone(),
             };
@@ -662,16 +664,14 @@ impl<R: Rt> Bind<R> {
             if annotated {
                 let scope = Scope::root();
                 let (flags, top) = (BitFlags::empty(), self.spec.id);
+                let narrowing = match written {
+                    true => Narrowing::Written,
+                    false => Narrowing::Copy,
+                };
                 wrap!(
                     self.node,
-                    super::callsite::check_hidden_defaults(
-                        ctx,
-                        flags,
-                        &scope,
-                        top,
-                        &self.typ,
-                        &value,
-                        super::callsite::Narrowing::Copy
+                    check_hidden_defaults(
+                        ctx, flags, &scope, top, &self.typ, &value, narrowing
                     )
                 )?;
             }

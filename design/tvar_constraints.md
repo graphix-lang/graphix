@@ -1168,9 +1168,19 @@ An image carries each cell's level and each definition's depth.
 - A function value's labeled default that a fn type hides or makes
   optional is judged where the value meets that type
   (`callsite::check_hidden_defaults`). A call's formal is the site's own
-  instantiation, which the default narrows. A declaration (a `let`'s
-  annotation, a `<-` target, a reference write's referent, a declared
-  return type) is judged per function it holds
+  instantiation, which the default narrows. So is the type of a binding
+  something writes (its annotation, a `<-` target, a reference write's
+  referent; `Narrowing::Written`): every reader reads that one type and
+  the bind runs the function written last against it, so the default
+  decides the label's variable where it is written (`let v: fn(?#d: 'q,
+  x: i64) -> string = never(); v <- |#d = "q", ..| ..` holds `'q:
+  string`; a later write of `#d = 1` and a call `v(#d: 1.5, 7)` are
+  refused, and a parameter's `&mut fn(?#d: 'a, ..)` refuses a write
+  whose default decides `'a`, "write the default's type in the binding's
+  type"; pins `lang::functions::default_decides_a_written_bindings_label`
+  and its neighbours). A declaration nothing writes (a `let`'s
+  annotation, a declared return type) and a generic binding's copy at a
+  `<-` are judged per function they hold
   (`callsite::Narrowing::Copy`): one that names the value's definitions,
   by the link `contains` left on it, is judged on a copy and decides
   nothing of the declaration, since every call through it judges the

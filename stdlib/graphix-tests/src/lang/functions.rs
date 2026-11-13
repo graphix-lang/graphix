@@ -3804,6 +3804,105 @@ run!(default_behind_a_typedef_reference_write, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+// A binding something writes is one function type for every reader, so a
+// default its label makes optional decides the label's variable where it
+// is written: at the annotation, the `<-` and the write through a
+// reference.
+run!(default_decides_a_written_bindings_label, r#"
+{
+    let v: fn(?#d: 'q, x: i64) -> string = never();
+    v <- |#d = "q", x: i64| cast<string>(d)$;
+    v(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
+run!(defaults_of_one_type_written_to_a_binding, r#"
+{
+    let v: {cb: fn(?#d: 'q, x: i64) -> string, n: i64} = {cb: |#d = "a", x: i64| cast<string>(d)$, n: 1};
+    v <- once(v) ~ {cb: |#d = "b", x: i64| cast<string>(d)$, n: 2};
+    select v.n { 2 => v.cb(7), _ => never() }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "b"); FuseExpect::None);
+
+run!(defaults_of_one_type_written_through_a_reference, r#"
+{
+    let g: {cb: fn(?#d: 'q, x: i64) -> string, n: i64} = {cb: |#d = "a", x: i64| cast<string>(d)$, n: 1};
+    let r = &mut g;
+    *r <- once(g) ~ {cb: |#d = "b", x: i64| cast<string>(d)$, n: 2};
+    select g.n { 2 => g.cb(7), _ => never() }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "b"); FuseExpect::None);
+
+run!(default_of_another_type_written_to_a_binding, r#"
+{
+    let v: fn(?#d: 'q, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$;
+    let t = 1;
+    v <- t ~ |#d = 1, x: i64| cast<string>(d)$;
+    v(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(written_bindings_label_holds_its_defaults_type, r#"
+{
+    let v: fn(?#d: 'q, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$;
+    let t = 1;
+    v <- t ~ |#d = 2, x: i64| cast<string>(d)$;
+    v(#d: 1.5, 7)
+}
+"#, refused("i64 does not contain f64"); FuseExpect::None);
+
+run!(default_written_through_a_parameters_reference, r#"
+{
+    let set = |r: &mut fn(?#d: 'a, x: i64) -> string, t: Any| {
+        *r <- t ~ |#d = 1, x: i64| cast<string>(d)$;
+        null
+    };
+    let g: fn(?#d: string, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$;
+    set(&mut g, 1);
+    g(7)
+}
+"#, refused("write the default's type in the binding's type"); FuseExpect::None);
+
+run!(default_written_through_a_parameters_reference_written, r#"
+{
+    let set = |r: &mut fn(?#d: i64, x: i64) -> string, t: Any| {
+        *r <- t ~ |#d = 1, x: i64| cast<string>(d)$;
+        null
+    };
+    let g: fn(?#d: i64, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$;
+    set(&mut g, 1);
+    g(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
+
+run!(default_written_behind_a_typedef_decides_its_label, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let v: W<'q> = never();
+    v <- {cb: |#d = "q", x: i64| cast<string>(d)$, n: 1};
+    v.cb(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
+run!(default_written_by_a_function_to_a_binding_it_captures, r#"
+{
+    let v: fn(?#d: 'q, x: i64) -> string = never();
+    let w = |t: Any| { v <- t ~ |#d = "q", x: i64| cast<string>(d)$; null };
+    w(1);
+    v(7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "q"); FuseExpect::None);
+
+run!(default_of_another_type_written_to_a_field, r#"
+{
+    let s: {cb: fn(?#d: 'q, x: i64) -> string, n: i64} = {cb: |#d = "a", x: i64| cast<string>(d)$, n: 1};
+    let r = &mut s.cb;
+    let t = 1;
+    *r <- t ~ |#d = 1, x: i64| cast<string>(d)$;
+    s.cb(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
 // A union member built by the value's constructor holds the value, so a
 // function under it meets the fn type there: a field of an optional
 // struct, a tuple member, an array element of an option, a variant's
