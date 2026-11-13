@@ -594,7 +594,7 @@ impl ContainsHist {
         first
     }
 
-    // CR claude for claude: [risk/low] A deferral that fails drops `commit_pairs` and
+    // XCR claude for claude: [risk/low] A deferral that fails drops `commit_pairs` and
     // keeps the committing verdicts in `provisional`, which typedef-open-expansion-01
     // (lane 20c) added after this was written: `commit_put` holds an open application's
     // pair there while what it assumed stands, `commit_held` reads both, and
@@ -613,13 +613,26 @@ impl ContainsHist {
     // Found reviewing the merge of lane 20b onto 20g. probes:
     // ~/ptmp/cr29/scratch/r20/20b/merge-review/{gen_mix.py,runfs.sh}
     // (defer-provisional-commit-01)
+    // 2026-11-13 claude: A failed deferral now drops the committing verdicts held in
+    // provisional too (ContainsHist::settle_deferred), their keys left in
+    // provisional_order for the marks. The state is reachable, by a question rather than
+    // a pair: a pair proven inside a distribution law's commit rests on the law's
+    // question in progress, so the function-type argument of this CR does not cover it,
+    // and with the deferral failed the pair moved into commit_pairs at the question's
+    // answer. No program is known to read it there: a commit that fails ends its walk
+    // everywhere but contains_tvars's loop over a rigid cell's conjuncts, and 19232 + 558
+    // tests under a throwaway report never failed a deferral holding one. Pin:
+    // typ::contains::tests::a_refused_part_drops_the_pairs_held_on_a_question_in_progress
+    // (fails with the retain undone). probes: ~/ptmp/cr29/scratch/r23/23c/dpc/ (README)
     /// End the deferral [`Self::defer`] marked, the arguments having held
     /// or not: each cell meets every part that waited for it, first the
     /// one that holds every other, so it takes the widest; with none such
     /// they meet it in order, and the first decides it. Then each union
     /// whose choice waited meets its variable. A pair proven
     /// while a part of it waited holds only if the part does: where one
-    /// does not, no proven pair is kept.
+    /// does not, no proven pair is kept, nor one held while what it
+    /// assumed stands: its key stays in `provisional_order`, where the
+    /// assumptions in progress hold their marks.
     pub(super) fn settle_deferred(
         &mut self,
         mark: Option<usize>,
@@ -642,7 +655,10 @@ impl ContainsHist {
             held => held,
         };
         if !matches!(holds, Ok(true)) {
-            self.commit_pairs = Lazy::new()
+            self.commit_pairs = Lazy::new();
+            if let Some(held) = &mut self.provisional.0 {
+                held.retain(|k, _| !k.2.contains(ContainsFlags::Commit))
+            }
         }
         holds
     }
@@ -6458,6 +6474,42 @@ mod tests {
         held.check_contains(&env, &open).unwrap();
         let steps = CONTAINS_STEPS.with(|n| n.get());
         assert!(steps <= 40_000, "a commit took {steps} steps");
+    }
+
+    /// The type of `y` in a `` `T(_, fn(k: fn(x: _, y: _) -> _) -> _) ``.
+    fn callback_y(t: &Type) -> Type {
+        let Type::Variant(_, args, _) = t else { unreachable!() };
+        let Type::Fn(f) = &args[1] else { unreachable!() };
+        let Type::Fn(k) = &f.args[0].typ else { unreachable!() };
+        k.args[1].typ.clone()
+    }
+
+    // The distribution law commits each member's callback against `T`'s.
+    // There `W<'a>` holds `y`'s tuple by its bare member, 'a waiting for
+    // the tuple, after `S` refused it by the law's own question, still in
+    // progress: the pair rests on that question, so it is held while the
+    // question stands. 'a then takes `x`'s i64, which does not hold the
+    // tuple, and the callback is refused.
+    #[test]
+    fn a_refused_part_drops_the_pairs_held_on_a_question_in_progress() {
+        let defs = [
+            ("T", "`T([i64, string], fn(k: fn(x: i64, y: (T, null)) -> i64) -> i64)"),
+            ("S", "[`T(i64, Any), `Q]"),
+            ("W<'a>", "[(S, null), 'a]"),
+        ];
+        let (env, t) = Env::typed_at_root(&defs, "T").unwrap();
+        let k = "fn(k: fn(x: 'a, y: W<'a>) -> i64)";
+        let members = format!("[`T(i64, {k} -> i64), `T(string, {k} -> [i64, null])]");
+        let held = at_root(&env, &members);
+        let commit = BitFlags::from(ContainsFlags::Commit);
+        let mut hist = ContainsHist::new();
+        assert!(!held.contains_int(commit, &env, &mut hist, &t).unwrap());
+        let Type::Set(members) = &held else { unreachable!() };
+        let id = hist.ref_id(&t, &env);
+        let tuple = callback_y(&hist.expand_ref(&t, id, &env, false).unwrap().unwrap());
+        for m in members.iter() {
+            assert!(!hist.commit_held(commit, &callback_y(m), &tuple));
+        }
     }
 
     // The trial gives the first array to `Array<'a>`, deciding 'a, and

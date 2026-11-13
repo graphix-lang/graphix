@@ -535,8 +535,10 @@ The pre-unification of a callback argument with its formal
 (`FnType::pre_unify_params`) defers the same way, so `app(f)` over `h:
 fn(b: i64, k: Any) -> i64` fits as the `let` does. A pair proven while
 a part of it waited holds only if the part does: where a part is refused
-at the end, the walk keeps none of the pairs it proved
-(`ContainsHist::settle_deferred`).
+at the end, the walk keeps none of the pairs it proved, nor those it
+holds while an assumption they rest on stands
+(`ContainsHist::settle_deferred`; pin
+`typ::contains::tests::a_refused_part_drops_the_pairs_held_on_a_question_in_progress`).
 
 ### A union of variables in a signature
 
