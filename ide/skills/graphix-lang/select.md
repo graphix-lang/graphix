@@ -90,9 +90,13 @@ select, and runtime forms. Each rule refuses and names the fix.
   b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused. Write the
   test, `Array<[(i64, i64), string]> as [(a, b), _]`. A rest beside a
   name takes the name's type: `[h, ..] => h + 1` takes an array of `i64`
-  only. A partial struct pattern there has no struct type to complete it
-  and is refused, under a tuple, variant or slice too: `(_, {a, ..})`
-  over `(i64, Any)`. Write the test, `(i64, {a: i64, b: i64}) as (_, {a,
+  only. The same holds inside elements typed above an `Any` part: over
+  `Array<(Any, i64)>`, `[((a, _), n), ..] => a + 1` is refused (`a` is
+  `Any`, `n` is `i64`); write `Array<((i64, i64), i64)> as [((a, _), n),
+  ..]`. A slice of one element (`[((a, _), n)]`) is its own test. A
+  partial struct pattern there has no struct type to complete it and is
+  refused, under a tuple, variant or slice too: `(_, {a, ..})` over
+  `(i64, Any)`. Write the test, `(i64, {a: i64, b: i64}) as (_, {a,
   ..})`. Where the rest of the pattern cannot match the member whose
   part is `Any`, the struct is the other member's and nothing is
   refused: `` (`K, {a, ..}) `` over `` [(`K, {a: i64, b: i64}), (`J,
@@ -181,6 +185,10 @@ ok |x: Any| select x { Array<[(i64, i64), string]> as [(a, b), _] => a + 1, _ =>
 no "cannot compute Any + i64" |x: Any| select x { [(a, b), ..] => a + 1, _ => 2 }
 ok |x: Any| select x { [h, ..] => h + 1, _ => 2 }
 ok |x: Any| select x { Array<(i64, i64)> as [(a, b), ..] => a + 1, _ => 2 }
+no "cannot compute Any + i64" |x: Array<(Any, i64)>| select x { [((a, _), n), ..] => a + 1, _ => 0 }
+ok |x: Array<(Any, i64)>| select x { [((a, _), n), ..] => n + 1, _ => 0 }
+ok |x: Array<(Any, i64)>| select x { [((a, _), n)] => a + n, _ => 0 }
+ok |x: Array<(Any, i64)>| select x { Array<((i64, i64), i64)> as [((a, _), n), ..] => a + 1, _ => 0 }
 no "has no struct type to complete it" |x: (i64, Any)| select x { (_, {a, ..}) => 1, _ => 0 }
 ok |x: (i64, Any)| select x { (i64, {a: i64, b: i64}) as (_, {a, ..}) => a, _ => 0 }
 ok |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x { (`K, {a, ..}) => a, _ => 0 }

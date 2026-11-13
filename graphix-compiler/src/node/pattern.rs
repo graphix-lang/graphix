@@ -1423,12 +1423,19 @@ impl StructPatternNode {
             | Self::SliceSuffix { .. } = self
             {
                 let is_any = |t: &Type| matches!(expand(env, t), Some(Type::Any));
+                let children = self.children();
+                // an element's own test is the slice's only where it is the
+                // one element
+                let shared = (children.len() > 1 || self.rest())
+                    && children.iter().any(|c| c.takes_apart());
                 let mut members: SmallVec<[Type; 8]> = SmallVec::new();
                 let mut own = matched.is_empty();
                 let mut untyped = own && open;
+                let mut part_any = false;
                 for m in matched {
                     match &expand(env, m) {
                         Some(Type::Array(et) | Type::List(et)) if !is_any(et) => {
+                            part_any |= shared && et.holds_any(env);
                             members_or_open(env, &et, &mut members)?
                         }
                         Some(Type::Any | Type::Array(_) | Type::List(_)) => {
@@ -1437,8 +1444,11 @@ impl StructPatternNode {
                         _ => own = true,
                     }
                 }
+                let typed = members.len();
                 let own = match &expand(env, typ) {
-                    Some(Type::Array(et) | Type::List(et)) if own => Some(et.clone()),
+                    Some(Type::Array(et) | Type::List(et)) if own || part_any => {
+                        Some(et.clone())
+                    }
                     _ => None,
                 };
                 if let Some(et) = &own {
@@ -1447,10 +1457,14 @@ impl StructPatternNode {
                     }
                     members_or_open(env, et, &mut members)?
                 }
+                if part_any {
+                    let (typed, own) = members.split_at(typed);
+                    self.hold_names_inside_any(env, typed, own)?
+                }
                 let mut leaves: SmallVec<[Leaf; 4]> = SmallVec::new();
                 let mut parts: AHashMap<BindId, SmallVec<[Type; 4]>> =
                     AHashMap::default();
-                for c in self.children() {
+                for c in children {
                     parts.clear();
                     for m in members.iter() {
                         let admitted = match c {
@@ -1551,6 +1565,100 @@ impl StructPatternNode {
             }
         }
         Ok(())
+    }
+
+    /// This slice's elements where `typed`, the element types of what
+    /// reaches it, type them above a part that is `Any`
+    /// (`Array<(Any, i64)>`). `own` is the predicate's element union, the
+    /// run-time test of every position: an element takes a value of any
+    /// member its structure admits, so a name it takes out of a part that
+    /// is `Any` in such a member is typed by no test, and is `Any`. A
+    /// member that is `Any` itself (a `_`) or an open cell stands for each
+    /// of `typed`. A name the elements' type decided keeps it: only an
+    /// open cell is the arm's to decide.
+    fn hold_names_inside_any(
+        &self,
+        env: &Env,
+        typed: &[Type],
+        own: &[Type],
+    ) -> Result<()> {
+        let mut names: SmallVec<[BindId; 4]> = SmallVec::new();
+        for c in self.children() {
+            for m in own {
+                let over = match expand(env, m) {
+                    Some(Type::Any) | None => typed,
+                    Some(_) => std::slice::from_ref(m),
+                };
+                for t in over {
+                    c.names_inside_any(env, Some(t), &mut names);
+                }
+            }
+        }
+        for id in names {
+            if let Some(b) = env.by_id.get(&id)
+                && b.typ.deref_cloned().is_none()
+            {
+                b.typ.check_contains_ordered(env, &Type::Any)?
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a slice pattern has a rest.
+    fn rest(&self) -> bool {
+        matches!(self, Self::SlicePrefix { .. } | Self::SliceSuffix { .. })
+    }
+
+    /// Whether this pattern tests or binds inside the value it stands
+    /// over.
+    fn takes_apart(&self) -> bool {
+        !matches!(self, Self::Ignore | Self::Literal(_) | Self::Bind(_))
+    }
+
+    /// Push on `out` every name this pattern binds at or inside a part of
+    /// `typ` that is `Any`; `typ` is `None` inside such a part. False,
+    /// with nothing pushed, where no member of `typ` has this pattern's
+    /// shape. An abstract's payload is its type's own.
+    fn names_inside_any(
+        &self,
+        env: &Env,
+        typ: Option<&Type>,
+        out: &mut SmallVec<[BindId; 4]>,
+    ) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            let typ = typ.filter(|t| !matches!(expand(env, t), Some(Type::Any)));
+            match (self, typ) {
+                (Self::Ignore | Self::Literal(_) | Self::Abstract { .. }, _)
+                | (Self::Bind(_), Some(_)) => true,
+                (Self::Bind(id), None) => {
+                    out.push(*id);
+                    true
+                }
+                (_, None) => {
+                    for c in self.children() {
+                        c.names_inside_any(env, None, out);
+                    }
+                    true
+                }
+                (Self::Or { alts }, Some(_)) => alts
+                    .iter()
+                    .fold(false, |any, a| a.names_inside_any(env, typ, out) || any),
+                (_, Some(typ)) => {
+                    let mut any = false;
+                    for (_, ts) in self.member_parts(env, typ, false) {
+                        let from = out.len();
+                        let all = self.children().into_iter().zip(ts).all(|(c, t)| {
+                            t.is_none_or(|(t, _)| c.names_inside_any(env, Some(&t), out))
+                        });
+                        if !all {
+                            out.truncate(from)
+                        }
+                        any |= all;
+                    }
+                    any
+                }
+            }
+        })
     }
 
     /// The id of every [`Leaf::fresh`] name: each capture and every

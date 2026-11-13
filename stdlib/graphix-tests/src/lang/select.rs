@@ -6189,6 +6189,128 @@ run!(
     refused("cannot compute Any + i64")
 );
 
+// Over elements typed above an `Any` part a slice still tests each
+// position against every member of its element union: a name an element
+// takes out of the `Any` part is `Any` wherever another member admits the
+// element's value there.
+run!(
+    slice_bind_inside_an_any_part_beside_a_rest_refused,
+    r#"{
+    let f = |x: Array<(Any, i64)>| select x { [((a, _), n), ..] => a + 1, _ => 0 };
+    let s: Any = ("s", 2);
+    f([(s, 10)])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_inside_an_any_part_beside_a_name_refused,
+    r#"{
+    let f = |x: Array<(Any, i64)>| select x { [((a, _), n), c] => a + 1, _ => 0 };
+    let s: Any = ("s", 2);
+    f([(s, 10), (s, 10)])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_inside_an_any_part_beside_a_wildcard_refused,
+    r#"{
+    let f = |x: (Array<(Any, i64)>, i64)| select x {
+      ([((a, _), n), _], k) => a + k,
+      _ => 0
+    };
+    let s: Any = ("s", 2);
+    f(([(s, 10), (s, 10)], 1))
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_inside_an_any_part_beside_an_untyped_name_refused,
+    r#"{
+    let f = |x: Array<(Any, i64)>| select x { [((a, _), n), (q, m)] => a + 1, _ => 0 };
+    let s: Any = ("s", 2);
+    f([(s, 10), (s, 10)])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    slice_bind_inside_an_any_field_beside_a_rest_refused,
+    r#"{
+    let f = |x: Array<{k: string, v: Any}>| select x {
+      [{k, v: (a, b)}, ..] => a + 1,
+      _ => 0
+    };
+    let s: Any = ("s", 2);
+    f([{k: "a", v: s}])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    list_bind_inside_an_any_part_beside_a_rest_refused,
+    r#"{
+    let f = |x: List<(Any, i64)>| select x { [<((a, _), n), t..>] => a + 1, _ => 0 };
+    let s: Any = ("s", 2);
+    f([<(s, 10)>])
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+// Where no other member admits it the arm's own test types the name: a
+// slice of one element, elements a tag tells apart, two elements of one
+// shape (their names are one type); a name outside the `Any` part keeps
+// the element's type, beside a `_` too, and a written test types every
+// position.
+run!(
+    slice_binds_inside_an_any_part_typed_by_the_test,
+    r#"{
+    let one = |x: Array<(Any, i64)>| select x { [((a, _), n)] => a + n, _ => 0 };
+    let two = |x: Array<(Any, i64)>| select x {
+      [((a, _), n), ((c, _), m)] => a + 1,
+      _ => 0
+    };
+    let tag = |x: Array<(Any, i64)>| select x { [(`A(a), n), (`B(b), m)] => a + 1, _ => 0 };
+    let key = |x: Array<(string, Any)>| select x { [(k, v), ..] => str::len(k), _ => 0 };
+    let wr = |x: Array<(Any, i64)>| select x {
+      Array<((i64, i64), i64)> as [((a, _), n), ..] => a + 1,
+      _ => 0
+    };
+    let out = |x: Array<(Any, (i64, i64))>| select x {
+      [((a, b), (c, d)), (_, _)] => c + d,
+      _ => 0
+    };
+    let p: Any = (1, 2);
+    let s: Any = ("s", 2);
+    let ta: Any = `A(1);
+    let ts: Any = `A("s");
+    let tb: Any = `B(1);
+    [
+      one([(p, 10)]), one([(s, 10)]), two([(p, 1), (p, 1)]), two([(p, 1), (s, 1)]),
+      two([(s, 1), (p, 1)]), tag([(ta, 1), (tb, 1)]), tag([(ts, 1), (tb, 1)]),
+      key([("ab", s)]), wr([(p, 1), (p, 1)]), wr([(p, 1), (s, 1)]),
+      out([(s, (3, 4)), (p, (5, 6))])
+    ]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [11, 0, 2, 0, 0, 2, 0, 2, 2, 0, 7],
+        _ => false,
+    }
+);
+
+run!(
+    slice_binds_inside_an_any_part_beside_a_rest_are_any,
+    r#"{
+    let f = |x: Array<(Any, i64)>| select x { [((a, _), n), ..] => "[a] [n]", _ => "none" };
+    let p: Any = (1, 2);
+    let s: Any = ("s", 2);
+    [f([(p, 10), (s, 10)]), f([(s, 10)]), f([(5, 1)])]
+}"#,
+    prints(r#"["1 10", "s 10", "none"]"#)
+);
+
 // A slice over a union's array member binds its elements at that member's
 // element type, so a generic one is the definition's variable, not a cell
 // of its own the signature then settles to ⊥ (the kernel read it as bottom).

@@ -258,7 +258,19 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `Any` (`[(a, b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused;
   the written test `Array<[(i64, i64), string]> as [(a, b), _]` types
   them; pins `slice_rest_over_any_takes_a_names_type_or_any_value`,
-  `slice_*_beside_a_wildcard_*`, `slice_bind_beside_a_rest_*`). A partial struct pattern over a part
+  `slice_*_beside_a_wildcard_*`, `slice_bind_beside_a_rest_*`). Where
+  the elements are typed above a part that is `Any` (`Array<(Any, i64)>`,
+  `Array<{k: string, v: Any}>`) the same holds of that part
+  (`hold_names_inside_any`): a slice of more than one position tests each
+  against every member of its element union, so a name an element takes
+  out of the `Any` part is `Any` wherever another member admits the
+  element there, a rest, a name or `_` (each the whole element type) or
+  an element whose own part there is `Any` (`[((a, _), n), ..] => a + 1`
+  is refused, `Array<((i64, i64), i64)> as [((a, _), n), ..]` types it).
+  Elements of one shape share their names' types, a slice of one element
+  is its own test, and a tag tells elements apart (pins
+  `slice_bind_inside_an_any_*`, `list_bind_inside_an_any_part_*`,
+  `slice_binds_inside_an_any_part_*`). A partial struct pattern over a part
   that may be `Any`, the scrutinee or a part at any depth (`(_, {a, ..})`
   over `(i64, Any)`), has no struct to complete it, so its test would be
   the exact struct of the fields it names: it is refused where it is

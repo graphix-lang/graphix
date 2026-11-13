@@ -1967,6 +1967,12 @@ impl Type {
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         ShallowScrutinee::new(scrutinee.clone()).discriminant(env, self)
     }
+
+    /// Whether this type is `Any` or holds it where a pattern reads:
+    /// outside every function type and reference.
+    pub fn holds_any(&self, env: &Env) -> bool {
+        holds_any(self, env, &mut ShapeSeen::default())
+    }
 }
 
 /// The scrutinee and its referenced definitions must stay fixed while these facts are used.
