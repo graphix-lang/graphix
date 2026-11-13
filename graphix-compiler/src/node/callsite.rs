@@ -3431,24 +3431,37 @@ impl<R: Rt> CallSite<R> {
             // 9 ms before Eric): one key, once, under a frame in a debug build; quick
             // was not built (debug builds only in a lane).
             if !ctx.fusion.disabled() {
-                let asserted =
-                    !ctx.attr_census.lock().is_empty() || tail_loops.checking();
-                if let Some(apply) = self.callee.apply_mut() {
-                    if let Some(share) = &self.share {
-                        share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
-                    } else if ctx.fusion.available() {
-                        fusion::fuse_instance(ctx, self.top_id, apply, asserted)?;
-                    }
-                }
-                crate::check_attribute_census(ctx)?;
-                if ctx.fusion.available()
-                    && let Some(ApplyView::Lambda(g)) = self.resolved_apply()
-                {
-                    analysis::check_bound_tail_loops(tail_loops, &self.spec, g, ctx);
-                }
+                let recorded = ctx.fusion.stats.failed.len();
+                let fused = self.fuse_bound(ctx, tail_loops);
+                ctx.fusion.keep_new_failures(recorded);
+                fused?;
             }
             Ok(defaults)
         })
+    }
+
+    /// Fuse the instance [`Self::build_bound`] just built, and check the
+    /// assertions the bind reaches.
+    fn fuse_bound(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+        tail_loops: analysis::TailLoops,
+    ) -> Result<()> {
+        let asserted = !ctx.attr_census.lock().is_empty() || tail_loops.checking();
+        if let Some(apply) = self.callee.apply_mut() {
+            if let Some(share) = &self.share {
+                share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
+            } else if ctx.fusion.available() {
+                fusion::fuse_instance(ctx, self.top_id, apply, asserted)?;
+            }
+        }
+        crate::check_attribute_census(ctx)?;
+        if ctx.fusion.available()
+            && let Some(ApplyView::Lambda(g)) = self.resolved_apply()
+        {
+            analysis::check_bound_tail_loops(tail_loops, &self.spec, g, ctx);
+        }
+        Ok(())
     }
 
     /// Elaborate and analyze `apply`, this site's run-time instance of

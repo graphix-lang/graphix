@@ -289,7 +289,9 @@ engine-independent.
   at its type built, else is fused at its first bind
   (`fusion::fuse_instance`, cached by definition and type, an instance
   that fused nothing included, walked again only where an assertion
-  reaches the bind); it does so as its
+  reaches the bind; a lambda in a body is a definition of its own in each
+  instance of the body, so each instance's first bind of it compiles); it
+  does so as its
   runtime does, whatever its site's flags (the package root's have fusion
   off, a site a collection or a builtin builds has none): a runtime whose
   flags disable fusion disables its context's (`FusionCtx::disable`).

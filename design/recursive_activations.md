@@ -131,7 +131,14 @@ its body once however deep it goes, unless an assertion reaches the
 bind, whose check reads the walk. A bind of an instance already cached
 still walks its body, for the fingerprint and to splice the kernels, as a
 slot's does: a call whose function changes every cycle pays that at each
-bind. It fuses as its runtime does, not as its call
+bind. A lambda in a body is a definition of its own in each instance of
+that body (a slot, a level of a node-walked recursion, a function bound
+again), so the cache does not answer its bind there: each instance's
+first bind of it is a compile and a link of its own. A bind's walk adds
+a failure to `FusionStats::failed` only where no bind recorded it before
+for the same expression and reason (`FusionCtx::keep_new_failures`, a
+slot's bind included), so the record does not grow with the binds. It
+fuses as its runtime does, not as its call
 site's flags say: a site the package root compiled (a stdlib function's body) has
 fusion off, and one a collection or a builtin builds has no flags of its
 own; a runtime whose flags disable fusion disables its context's

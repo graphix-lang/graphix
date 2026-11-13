@@ -112,8 +112,9 @@ struct Run {
     /// The (fused kernel runs, JIT wrapper entries) the runtime made
     /// from just before the build.
     invocations: (u64, u64),
-    /// The fusion failures recorded from just before the build to its
-    /// first value.
+    /// The regions fusion tried, and the failures it recorded, from just
+    /// before the build to its first value.
+    attempts: usize,
     failures: usize,
     /// What fusion holds at the first value (its stats' `retained`).
     retained: usize,
@@ -165,9 +166,10 @@ async fn run_code(
         next_update(&mut rx, eid, Instant::now() + Duration::from_secs(5)).await?;
     let invocations = ctx.rt.control().invocations();
     let after = ctx.fusion_stats().await?;
+    let attempts = after.attempted - before.attempted;
     let failures = after.failed.len() - before.failed.len();
     ctx.shutdown().await;
-    Ok(Run { value, regions, invocations, failures, retained: after.retained })
+    Ok(Run { value, regions, invocations, attempts, failures, retained: after.retained })
 }
 
 /// Load `code` as a file and return its first value and the runtime's
@@ -314,8 +316,39 @@ async fn bound_unfused_instance_tried_once() -> Result<()> {
     let deep = run_code(BitFlags::empty(), &[], &code(200), true).await?;
     assert_eq!((&shallow.value, &deep.value), (&Value::I64(5), &Value::I64(200)));
     assert!(shallow.failures > 0, "the unfused body records its failure");
+    assert_eq!(shallow.attempts, deep.attempts);
     assert_eq!(shallow.failures, deep.failures);
     assert_eq!(shallow.retained, deep.retained);
+    Ok(())
+}
+
+/// A lambda in a body is a definition of its own in each instance of the
+/// body, so each level's bind of it is walked: one whose body does not
+/// fuse says why once, however many levels bind it.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_unfused_definitions_report_once() -> Result<()> {
+    let code = |depth: i64| {
+        format!(
+            "{{
+  let rec f = |n: i64| -> i64 select n {{
+    0 => 0,
+    _ => {{
+      let h = select n % 2 {{
+        0 => |x: i64| -> i64 x + count(x),
+        _ => |x: i64| -> i64 x - count(x)
+      }};
+      h(n) + f(n - 1)
+    }}
+  }};
+  f({depth})
+}}"
+        )
+    };
+    let shallow = run_code(BitFlags::empty(), &[], &code(6), true).await?;
+    let deep = run_code(BitFlags::empty(), &[], &code(200), true).await?;
+    assert_eq!((&shallow.value, &deep.value), (&Value::I64(21), &Value::I64(20100)));
+    assert!(shallow.failures > 0, "the unfused bodies record their failures");
+    assert_eq!(shallow.failures, deep.failures);
     Ok(())
 }
 

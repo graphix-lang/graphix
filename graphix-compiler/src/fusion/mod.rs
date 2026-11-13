@@ -30,6 +30,7 @@ use crate::{
     profile::{self, Phase},
     typ::{Brief, FnType, Type},
 };
+use ahash::AHashSet;
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use dashmap::DashMap;
@@ -107,7 +108,8 @@ pub struct FusionStats {
     /// Attempts rejected during discovery, before input collection or emission.
     pub rejected_before_emit: usize,
     /// Per-failure source identity and compile error, across the
-    /// context's compiles.
+    /// context's compiles; the run-time binds add each failure once
+    /// ([`FusionCtx::keep_new_failures`]).
     pub failed: Vec<FusionFailure>,
     /// JIT module rotations: an exhausted module is replaced by a fresh
     /// one, and its ~256MB arena is freed when the last kernel compiled
@@ -421,6 +423,10 @@ pub struct FusionCtx {
     /// kernel spliced anywhere may change one, so any splice forgets them
     /// all ([`kernel_node`]). Shared with the context's compile tasks.
     fingerprints: Arc<parking_lot::Mutex<Fingerprints>>,
+    /// The failures the run-time binds recorded, by expression and reason
+    /// ([`Self::keep_new_failures`]). Shared with the context's compile
+    /// tasks.
+    bound_failures: Arc<parking_lot::Mutex<AHashSet<(ExprId, ArcStr)>>>,
 }
 
 #[derive(Default)]
@@ -469,6 +475,7 @@ impl FusionCtx {
             dead: Vec::new(),
             instances: self.instances.clone(),
             fingerprints: self.fingerprints.clone(),
+            bound_failures: self.bound_failures.clone(),
         }
     }
 
@@ -614,6 +621,23 @@ impl FusionCtx {
         jit.forget(&funcs);
     }
 
+    /// Of the failures a run-time bind recorded from `mark` on, keep those
+    /// no bind recorded before. A body bound again is walked again, and so
+    /// is a lambda in it, a definition of its own in each instance: each
+    /// says why it failed once, however many binds walk it.
+    pub(crate) fn keep_new_failures(&mut self, mark: usize) {
+        let mut seen = self.bound_failures.lock();
+        let failed = &mut self.stats.failed;
+        let mut kept = mark;
+        for i in mark..failed.len() {
+            if seen.insert((failed[i].id, failed[i].reason.clone())) {
+                failed.swap(kept, i);
+                kept += 1;
+            }
+        }
+        failed.truncate(kept);
+    }
+
     /// [`FusionStats::fused`] alone.
     pub fn fused(&self) -> usize {
         self.stats.fused
@@ -702,6 +726,7 @@ impl FusionCtx {
             dead: Vec::new(),
             instances: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             fingerprints: Arc::new(parking_lot::Mutex::new(Fingerprints::default())),
+            bound_failures: Arc::new(parking_lot::Mutex::new(AHashSet::default())),
         }
     }
 }
@@ -1550,6 +1575,30 @@ pub(crate) fn fuse_instance<R: Rt>(
     apply: &mut dyn crate::Apply<R>,
     asserted: bool,
 ) -> anyhow::Result<()> {
+    // CR claude for claude: [perf/medium] The cache below is keyed by `LambdaId`,
+    // and a lambda in a body is a new definition in each instance of that body (a
+    // collection slot, a level of a node-walked recursion, a function bound
+    // again), so its bind there never hits: every instance compiles and links its
+    // own kernels, about 2.5M instructions:u and an arena page (10 KB of peak RSS)
+    // a bind in a debug build, where base-r23 node-walked them. Measured
+    // (instructions:u, debug, base-r23 against every bind fusing): p2.gx (3000
+    // slots, each calling a lambda it selects) 3.19G to 10.95G, peak RSS 124 MB to
+    // 154 MB; p4.gx (each slot calls the closure `mk(k)` returns) 2.89G to 10.69G;
+    // p5.gx (3000 rows each holding a lambda of its own, called through the field)
+    // 2.56G to 13.74G; p1.gx (a function rebound every cycle whose body calls a
+    // lambda it selects, 3000 cycles) 3.14G to 10.69G, and 2.5 s to 15 s of wall
+    // time at 30000 cycles (p1L.gx). The outputs agree in every mode. A slot's
+    // instance already runs kernels built over another instance's definitions of
+    // the same expressions (share::reuse checks the region's root, inputs, return
+    // and RegionPrint, none of which names a LambdaId), so the fix is to key this
+    // cache by the lambda's expression. Two things to settle: the fingerprint
+    // (QopCoverage and FnResolutions carry handler bind ids and callee LambdaIds,
+    // which are an instance's own where the handler or callee is inside the
+    // body), and what holds an entry once the definition that built it is deleted
+    // (forget_def drops it by LambdaId; in p1.gx the old instance is deleted
+    // before the new one binds, so an entry must outlive its builder to be hit,
+    // and it holds its kernels' code while it does). probes:
+    // ~/ptmp/cr29/scratch/r23/23e/bbp-review/ (bound-bind-per-definition-01)
     let key = match apply.view() {
         ApplyView::Lambda(g) => {
             let (coverage, resolutions) = lowering::body_fingerprint(g.body(), ctx);
