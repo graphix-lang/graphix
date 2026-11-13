@@ -78,6 +78,24 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
+// CR claude for claude: [bug/medium] A method whose declared signature holds a variable
+// beside a written member under one constructor, ahead of the position that decides the
+// variable, cannot be implemented: `trait T { val m: fn(self, x: [Array<'a>,
+// Array<string>], y: 'a) -> i64 }; impl T for i64 { let m = |s, x, y| 0 }` is refused,
+// "signature has type variable 'a where implementation has string". So are the method
+// written with the declaration's own types (`|s, x: [Array<'a>, Array<string>], y: 'a|
+// 0`), a default body (`= |s, x, y| 0` with `impl T for i64 {}`), and the typedef form
+// (`x: P<'a, string>, y: O<'a>` over `type P<'p, 'q> = [Array<'p>, Array<'q>]`:
+// "signature has [Array<string>, Array<'a: unbound>], implementation has Array<'a:
+// string>"). With `y` first (`fn(self, y: 'a, x: [Array<'a>, Array<string>])`) it checks
+// and runs, and so does the same signature as a `let` annotation, as a `.gxi` val's, and
+// as the written type of a callback's parameter. The method's own type reaches
+// `implements` with Array<'a> already given to the written member Array<string>; where
+// that happens is not looked into. Lambda::typecheck0_instance met the same choice and
+// places the signature's cells before it contains (open-instance-signature-01).
+// base-r23 alike. Found reviewing open-instance-signature-01. probes:
+// ~/ptmp/cr29/scratch/r23/23b/ois-review/{v9,v8,v1,v13,v11,v14,v15}.gx, gxi1/
+// (method-union-member-order-01)
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface

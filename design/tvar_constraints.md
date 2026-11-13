@@ -1869,7 +1869,9 @@ row, then the containment judges (`Lambda::typecheck0_instance`). The
 containment alone would give `Array<'a>` of `|x0: P<'a, string>, x1: 'a|`
 to the row's `Array<string>`, and the build would refuse every call of
 the inner function at another `'a` (pins
-`lang::types::function_defined_in_an_instance_holds_a_variable_{beside_a_written_member,in_a_written_union,no_argument_decides}`).
+`lang::types::function_defined_in_an_instance_holds_a_variable_{beside_a_written_member,in_a_written_union,no_argument_decides}`,
+and `function_defined_in_an_instance_stays_generic_beside_the_outer_variable`,
+which calls the inner function at two types).
 Where that still has to choose, the cells no position holds, a variable
 only bounds name, are first settled to their bounds, the deepest first
 (`TVar::settle_bounds_first`), as the call's check leaves a variable it

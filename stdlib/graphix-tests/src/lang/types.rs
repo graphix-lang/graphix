@@ -8826,6 +8826,14 @@ run!(
 }"#,
     prints(r#"[["s"], null]"#)
 );
+run!(
+    function_defined_in_an_instance_stays_generic_beside_the_outer_variable,
+    r#"{
+  let o = |t: 'z| { let f = |x0: [Array<'z>, Array<'a>], x1: 'a| (x0, x1); (f(["s"], "s"), f([t], t)) };
+  o(1)
+}"#,
+    prints(r#"[[["s"], "s"], [[i64:1], i64:1]]"#)
+);
 
 // An alias that adds a member, applied to a variable under an invariant
 // constructor: an argument written as the alias over a type that already
