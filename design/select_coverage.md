@@ -14,7 +14,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `Type::open_over_any`; a part is looked through every name of a chain
   of typedefs, `Type::head`),
   an arm that can match none of
-  it, or that tests what an earlier unguarded arm tests, is dead, and the
+  it (by its type test, and by its structure where the test does not
+  hold every part the structure tests: a slice's elements, each one the
+  value must hold, an abstract's payload, the structure under a written
+  test; `Reach::structure_admits`, `StructPatternNode::footprint`), or
+  that tests what an earlier unguarded arm tests, is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member
   (a slice arm claims its lengths of each member whose element type its

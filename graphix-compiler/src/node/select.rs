@@ -890,6 +890,15 @@ impl Reach {
                 }
             }));
         }
+        if checking && !self.structure_admits(env, pat, &pat.structure_predicate)? {
+            let atype = &self.atype;
+            return dead_at(format_with_flags(PrintFlag::DerefTVars, || {
+                anyhow!(
+                    "unreachable arm: no value of {atype} has the parts this pattern \
+                     tests, unused match cases"
+                )
+            }));
+        }
         let wild = pat.matches_every(env, scrut)?;
         let unguarded = pat.guard.is_none();
         self.wildcard |= wild && unguarded;
@@ -923,6 +932,15 @@ impl Reach {
                              {atype}, unused match cases"
                         )
                     }
+                }));
+            }
+            if checking && or_arm && !self.structure_admits(env, pat, sp)? {
+                let atype = &self.atype;
+                return dead_at(format_with_flags(PrintFlag::DerefTVars, || {
+                    anyhow!(
+                        "unreachable or-pattern alternative: no value of {atype} has the \
+                         parts it tests, unused match cases"
+                    )
                 }));
             }
             if let Some((k, exact)) = sp.array_len_range() {
@@ -1135,7 +1153,24 @@ impl Reach {
     fn passes_nothing<R: Rt>(&self, env: &Env, pat: &PatternNode<R>) -> Result<bool> {
         Ok(self.wildcard
             || self.atype == Type::Primitive(BitFlags::empty())
-            || !pat.type_predicate.could_match(env, &self.atype)?)
+            || !pat.type_predicate.could_match(env, &self.atype)?
+            || !self.structure_admits(env, pat, &pat.structure_predicate)?)
+    }
+
+    /// Whether a value of what reaches may pass `sp`, the structure of
+    /// `pat` or of one of its or-alternatives, where `pat`'s type predicate
+    /// could match it. An inferred predicate holds every test of its
+    /// structure but those [`StructPatternNode::tests_past_inferred`] names.
+    fn structure_admits<R: Rt>(
+        &self,
+        env: &Env,
+        pat: &PatternNode<R>,
+        sp: &StructPatternNode,
+    ) -> Result<bool> {
+        match pat.explicit_type_predicate || sp.tests_past_inferred() {
+            true => sp.admits(env, &self.atype, false),
+            false => Ok(true),
+        }
     }
 
     /// Nothing reaches past the last arm: an unguarded arm matches

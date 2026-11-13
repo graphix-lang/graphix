@@ -5901,6 +5901,39 @@ run!(
     FuseExpect::None
 );
 
+// A slice element that admits no member of the element type makes its arm
+// dead, as the same pattern is outside a slice: every element a slice
+// names is one the value must hold.
+run!(slice_element_tag_admitting_no_member_is_dead, "{ let f = |x: Array<[(`A, i64), (`B, string)]>| select x { [(`C, h), ..] => 1, _ => 0 }; f([(`A, 3)]) }",
+    refused("unreachable arm: no value of Array<[(`A, i64), (`B, string)]> has the parts this pattern tests"); FuseExpect::None);
+
+run!(slice_element_bare_tag_admitting_no_member_is_dead, "{ let f = |x: Array<[`A, `B]>| select x { [`A, `C, ..] => 1, _ => 0 }; f([`A]) }",
+    refused("unreachable arm: no value of Array<[`A, `B]> has the parts this pattern tests"); FuseExpect::None);
+
+run!(slice_element_literal_admitting_no_member_is_dead, "{ let f = |x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }; f([(0, \"a\")]) }",
+    refused("unreachable arm: no value of Array<(i64, string)> has the parts this pattern tests"); FuseExpect::None);
+
+run!(slice_suffix_element_admitting_no_member_is_dead, "{ let f = |x: Array<[`A(i64), `B(string)]>| select x { [h.., `C(n)] => 1, _ => 0 }; f([`A(3)]) }",
+    refused("unreachable arm: no value of Array<[`A(i64), `B(string)]> has the parts this pattern tests"); FuseExpect::None);
+
+run!(list_element_admitting_no_member_is_dead, "{ let f = |x: List<[`A, `B]>| select x { [<`C, t..>] => 1, _ => 0 }; f([<`A>]) }",
+    refused("unreachable arm: no value of List<[`A, `B]> has the parts this pattern tests"); FuseExpect::None);
+
+run!(slice_inside_a_tuple_admitting_no_member_is_dead, "{ let f = |x: (Array<Array<[`A, `B]>>, i64)| select x { ([[`C, ..], ..], n) => n, _ => 0 }; f(([[`A]], 1)) }",
+    refused("unreachable arm: no value of (Array<Array<[`A, `B]>>, i64) has the parts this pattern tests"); FuseExpect::None);
+
+run!(slice_or_alternative_admitting_no_member_is_dead, "{ let f = |x: Array<[`A, `B]>| select x { [`C, ..] | [`A, ..] => 1, _ => 0 }; f([`A]) }",
+    refused("unreachable or-pattern alternative: no value of Array<[`A, `B]> has the parts it tests"); FuseExpect::None);
+
+// A written test that holds a member of the scrutinee does not keep alive a
+// structure that admits none of it, and neither does an abstract's
+// parameter a payload pattern rules out.
+run!(written_test_structure_admitting_no_member_is_dead, "{ let f = |x: (i64, `B)| select x { [(string, `A), (i64, `B)] as (h, `A) => str::len(h), _ => 0 }; f((1, `B)) }",
+    refused("unreachable arm: no value of (i64, `B) has the parts this pattern tests"); FuseExpect::None);
+
+run!(abstract_payload_admitting_no_member_is_dead, "{ type W<'a> = Abstract<'a>; let f = |x: W<(`A, i64)>| select x { W((`C, h)) => 1, _ => 0 }; f(W((`A, 3))) }",
+    refused("unreachable arm: no value of W<(`A, i64)> has the parts this pattern tests"); FuseExpect::None);
+
 // Under a written union a bind takes its part of the members the
 // structure admits, as an element's does.
 run!(

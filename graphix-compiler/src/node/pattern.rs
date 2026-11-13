@@ -1298,13 +1298,31 @@ impl StructPatternNode {
                 Self::Literal(v) => {
                     Some(Type::of_literal(v).unwrap_or_else(|_| typ.clone()))
                 }
-                Self::Slice { kind: SliceKind::List, .. }
-                | Self::SlicePrefix { list: true, .. } => {
-                    Some(Type::List(Arc::new(Type::Any)))
-                }
-                Self::Slice { kind: SliceKind::Array, .. }
+                Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
                 | Self::SlicePrefix { .. }
-                | Self::SliceSuffix { .. } => Some(Type::Array(Arc::new(Type::Any))),
+                | Self::SliceSuffix { .. } => {
+                    let list = matches!(
+                        self,
+                        Self::Slice { kind: SliceKind::List, .. }
+                            | Self::SlicePrefix { list: true, .. }
+                    );
+                    // every element it names is one the value must hold
+                    let elements_admit = |ts: &[Option<(Type, usize)>]| {
+                        self.children().into_iter().zip(ts).all(|(c, t)| match t {
+                            Some((t, _)) => !matches!(c.admits(env, t, false), Ok(false)),
+                            None => true,
+                        })
+                    };
+                    let admitted = inferred
+                        || !decided_head(env, typ)
+                        || self
+                            .member_parts(env, typ, false)
+                            .iter()
+                            .any(|(_, ts)| elements_admit(ts));
+                    let any = Arc::new(Type::Any);
+                    admitted
+                        .then(|| if list { Type::List(any) } else { Type::Array(any) })
+                }
                 Self::Or { alts } => match self.child_types(env, typ, inferred) {
                     None => Some(typ.clone()),
                     Some(ts) => union(
@@ -1375,14 +1393,14 @@ impl StructPatternNode {
     }
 
     /// Whether a value of `typ` may pass this pattern's structure test.
-    fn admits(&self, env: &Env, typ: &Type, inferred: bool) -> Result<bool> {
+    pub(super) fn admits(&self, env: &Env, typ: &Type, inferred: bool) -> Result<bool> {
         match self.footprint(env, typ, inferred) {
             Some(fp) => fp.could_match(env, typ),
             None => Ok(false),
         }
     }
 
-    // CR claude for claude: [bug/low] A slice arm whose element admits no member of the
+    // XCR claude for claude: [bug/low] A slice arm whose element admits no member of the
     // scrutinee's element type is not reported dead: `|x: Array<[`A, `B]>| select x {
     // [`C, ..] => 1, _ => 0 }`, `[`C(h), ..]` over `Array<[`A(i64), `B(string)]>` and
     // `[(`C, h), ..]` over `Array<[(`A, i64), (`B, string)]>` check, where the same
@@ -1400,6 +1418,21 @@ impl StructPatternNode {
     // `A) => str::len(h), _ => 0 }` checks and prints 0, where base-r23 refused it by
     // the body's type alone ("string does not contain i64"). probe:
     // ~/ptmp/cr29/scratch/r23/23d/sft-review/dead_tag_concrete_use.gx
+    // 2026-11-13 claude: Fixed: StructPatternNode::footprint finds an array or list
+    // slice admits nothing of a type where no member's element type has a value its
+    // every named element admits (each one the value must hold), and Reach::arm refuses
+    // an arm, or an or-alternative, whose structure admits no value of what reaches it
+    // where its type test could match (Reach::structure_admits, run where the test is
+    // written or the structure tests past its inferred predicate: a slice's elements,
+    // an abstract's payload): 'unreachable arm: no value of T has the parts this
+    // pattern tests'. That closes n1, n6, n7 and the review note's written-test form,
+    // and an abstract payload's (W((`C, h)) over W<(`A, i64)>). Reach::passes_nothing
+    // takes the same test for an instance's second check. Pins, each failing in all
+    // four modes with the fix undone: lang::select::{slice_element_tag,
+    // slice_element_bare_tag, slice_element_literal, slice_suffix_element,
+    // list_element, slice_inside_a_tuple, slice_or_alternative, written_test_structure,
+    // abstract_payload}_admitting_no_member_is_dead. Census: no verdict or message
+    // change. probes: ~/ptmp/cr29/scratch/r24/24h/sed/
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
@@ -2643,6 +2676,20 @@ impl StructPatternNode {
         })
     }
 
+    /// Whether this structure tests a part its inferred predicate does not
+    /// hold: a slice's element (the predicate's element type is the union
+    /// of every element's test) or an abstract's payload (the predicate
+    /// tests the parameters alone).
+    pub(super) fn tests_past_inferred(&self) -> bool {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Abstract { .. } => true,
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
+            | Self::SlicePrefix { .. }
+            | Self::SliceSuffix { .. } => !self.children().is_empty(),
+            _ => self.children().into_iter().any(|c| c.tests_past_inferred()),
+        })
+    }
+
     // CR claude for claude: [bug/low] A written struct pattern that names a field the
     // scrutinee's struct lacks is taken to cover the scrutinee: `|x: {a: i64, c: f64}|
     // select x { [{a: string, b: f64}, {a: i64, c: f64}] as {a: h, b: _} => 0, _ => 1 }`
@@ -2652,6 +2699,14 @@ impl StructPatternNode {
     // `(i64, `B)`, check and run the `_` arm). Same on base-r23. Not traced: this answers
     // by the pattern alone, whatever fields the type has. probe:
     // ~/ptmp/cr29/scratch/r23/23d/sft-review/sc.gx (written-struct-absent-field-cover-01)
+    // 2026-11-13 claude: slice-element-dead-arm-01's fix (Reach::structure_admits)
+    // refuses sc.gx's first arm as dead now, 'unreachable arm: no value of { a: i64, c:
+    // f64 } has the parts this pattern tests', and the tag form `[(string, `A), (i64,
+    // `B)] as (h, `A)` over `(i64, `B)` alike. The cover claim this CR is about still
+    // stands where the arm is live for another member:
+    // ~/ptmp/cr29/scratch/r24/24h/sed/sc2.gx (scrutinee `[{a: i64, c: f64}, {a: string,
+    // b: f64}]`, same arms) is refused 'unreachable arm: the earlier arms already cover
+    // the whole scrutinee' at the `_` arm on base-r24 and on lane 24h.
     /// True when the pattern matches any value of the scrutinee's type:
     /// `Select`'s wildcard test. A variant pattern with an all-bind
     /// payload is irrefutable given its tag matched, but its inferred
