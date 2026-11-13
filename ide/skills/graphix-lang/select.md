@@ -88,6 +88,13 @@ select, and runtime forms. Each rule refuses and names the fix.
   takes apart all of it (`Array<'b> as [(a, b), ..]`). A written test
   that tests the undecided part is refused as a pattern is:
   `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``.
+- Arms that bind one part of a scrutinee the arms decide bind one type
+  there: `(1, a) => .., (2, a) => ..` and `` `A(1, a) => .., `A(2, a) =>
+  .. `` give both `a` the part's one type, since no literal or guard
+  beside a bind narrows it. Using it as an `i64` in one arm and a
+  `string` in the other is refused where the select is written
+  ("string does not contain i64"). Annotate the scrutinee with the
+  union and test the bind inside the arm.
 - A slice arm with a rest over a `never()` let the arms decide leaves the
   other elements' type to later writes, and takes a value of whatever
   they bring at every position. A write that brings a member an element's
@@ -213,6 +220,9 @@ ok let v: Array<[`J(i64), `J(string), `K]> = never(); let z = select v { [`J(n),
 no "takes a value of `J(string) too" let f = 'a: [`J(string), `K] |x: Array<'a>| { let v = never(); let z = select v { [`J(n), ..] => n + 1, _ => 3 }; v <- x; z }; f([`J("s")])
 ok let f = 'a: [`L(string), `K] |x: Array<'a>| { let v = never(); let z = select v { [`J(n), ..] => n + 1, _ => 3 }; v <- x; z }; f([`L("s")])
 no "typed the pattern's binds for W<i64> alone" type W<'a> = Abstract<'a>; let f = |x| { let v = never(); let z = select v { [W(p), ..] => p + 1, _ => 3 }; v <- [x, W(1)]; z }; f(W("s"))
+no "string does not contain i64" let f = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 }; f(`A(1, "q"))
+ok let f = |s| select s { `A(1, a) => a, `A(2, a) => a, _ => never() }; (f(`A(1, "q")), f(`A(2, 5)))
+ok let f = |s: `A(i64, [i64, string])| select s { `A(_, a) => select a { i64 as n => n + 1, string as t => str::len(t) } }; (f(`A(1, 5)), f(`A(2, "q")))
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }

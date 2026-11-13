@@ -8361,6 +8361,103 @@ run!(
     refused("type mismatch string does not contain i64");
     FuseExpect::None
 );
+// Arms that bind one part of one variant tag bind one cell too, where the
+// arms' predicates join as one variant over the union of their cells: each
+// arm's bind receives what the others' do.
+const PAYLOAD_AS_TWO_TYPES: &str = "type mismatch string does not contain i64";
+
+run!(
+    payload_bound_in_two_literal_arms_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 };
+  f(`A(1, "q"))
+}"#,
+    refused(PAYLOAD_AS_TWO_TYPES);
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_literal_arms_beside_another_tag_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), `B(a) => a, _ => 0 };
+  f(`A(2, 5))
+}"#,
+    refused(PAYLOAD_AS_TWO_TYPES);
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_guarded_arms_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s { `A(a) if a > 0 => a + 1, `A(a) if a != "" => str::len(a), _ => 0 };
+  f(`A("q"))
+}"#,
+    refused("cannot compare i64 with string");
+    FuseExpect::None
+);
+run!(
+    nested_payload_bound_in_two_literal_arms_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s { `A(1, `B(a)) => a + 1, `A(2, `B(a)) => str::len(a), _ => 0 };
+  f(`A(1, `B("q")))
+}"#,
+    refused(PAYLOAD_AS_TWO_TYPES);
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_literal_arms_over_a_let_written_later_refused,
+    r#"{
+  let t = sys::time::timer(duration:10.ms, false);
+  let v = never();
+  let z = select v { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 };
+  v <- t ~ `A(1, "q");
+  z
+}"#,
+    refused(PAYLOAD_AS_TWO_TYPES);
+    FuseExpect::None
+);
+// A payload the scrutinee held before the arms is the arms' one cell: the
+// arm that uses it decides what a later write may be.
+run!(
+    payload_bound_in_two_literal_arms_holds_an_undecided_payload,
+    r#"{
+  let t = sys::time::timer(duration:10.ms, false);
+  let x = never();
+  let v = never();
+  v <- t ~ `A(2, x);
+  let z = select v { `A(1, a) => 0, `A(2, a) => a + 1, _ => 0 };
+  x <- t ~ "q";
+  z
+}"#,
+    refused("x is i64, inferred from an earlier use, and cannot hold string");
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_literal_arms_as_one_type,
+    r#"{
+  let f = |s| select s { `A(1, a) => a + 1, `A(2, a) => a + 2, _ => 0 };
+  let g = |s| select s { `A(true, a) => a, `A(false, a) => a + 1 };
+  (f(`A(1, 5)), f(`A(2, 5)), f(`A(3, 5)), g(`A(true, 3)), g(`A(false, 3)))
+}"#,
+    prints("[i64:6, i64:7, i64:0, i64:3, i64:4]")
+);
+// The one cell is one variable of the function: each call decides it.
+run!(
+    payload_bound_in_two_literal_arms_is_one_variable,
+    r#"{
+  let f = |s| select s { `A(1, a) => a, `A(2, a) => a, _ => never() };
+  (f(`A(1, "q")), f(`A(2, 5)))
+}"#,
+    prints(r#"["q", i64:5]"#)
+);
+// An arm that tests the part another binds is no bind of it.
+run!(
+    payload_tested_by_one_arm_and_bound_by_the_next,
+    r#"{
+  let f = |s| select s { `A(null) => 0, `A(a) => a + 1 };
+  let g = |s| select s { `A(`X) => "x", `A(a) => "other" };
+  (f(`A(null)), f(`A(3)), g(`A(`X)), g(`A(`Y)))
+}"#,
+    prints(r#"[i64:0, i64:4, "x", "other"]"#)
+);
 // The arms' one cell holds what an undecided payload gives it once, however
 // many arms bind the part: the check ends, and the part is one type.
 run!(

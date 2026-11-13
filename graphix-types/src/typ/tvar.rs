@@ -5070,7 +5070,10 @@ impl Type {
     /// Whether a union of `self` stands where `pred` has a constructor
     /// (a tuple position, a struct field, a variant payload, an array or
     /// list element), which containment would commit to its first member
-    /// that holds the constructor.
+    /// that holds the constructor, or at a part of a tuple, struct or
+    /// variant where `pred` has an open cell that is one of the union's
+    /// cells ([`Self::binds_beside`]), which containment would leave apart
+    /// from the others.
     fn needs_split(&self, env: &Env, pred: &Type) -> Result<bool> {
         self.needs_split_int(env, pred, &mut NodePairs::default())
     }
@@ -5109,7 +5112,7 @@ impl Type {
     ) -> Result<bool> {
         #[cfg(test)]
         SPLIT_STEPS.with(|n| n.set(n.get() + 1));
-        // CR claude for claude: [bug/high] Arms that bind a payload of one variant tag
+        // XCR claude for claude: [bug/high] Arms that bind a payload of one variant tag
         // keep a cell each, and the check accepts a use of the bind at two types: `let f
         // = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 }; f(`A(1,
         // "q"))` checks as `fn(s: `A(i64, [i64, string])) -> i64` and runs `a + 1` over a
@@ -5139,6 +5142,17 @@ impl Type {
         // scrutinee was an open cell with no lower bound). base-r23 alike. probes:
         // ~/ptmp/cr29/scratch/r23/23d/stb-rev/{a5,a6,a7,a9}.txt (run with rb.sh),
         // rev2.patch (the attempt) (variant-payload-bind-cells-01)
+        // 2026-11-13 claude: Type::binds_beside, in Type::narrow_parts and Type::needs_split: a bind whose cell is one of the cells of the union at its part of a
+        // tuple, struct or variant narrows over those cells (Type::narrow_per_member), so the open ones are one cell and it takes what a bound one holds. A
+        // slice's element set is left as it was (the six pins the attempt broke stand over one), and a member that is no cell, another arm's literal, is left
+        // too: payload-bind-beside-literal-01. Every probe of a5, a6, a7 and a9 that checked and ran wrong is refused where the select is written; `A(1, a) => a,
+        // `A(2, a) => a, _ => never() is fn(s: `A(i64, 'a)) -> 'a and takes two calls at two types. Pins
+        // lang::types::{payload_bound_in_two_literal_arms_used_as_two_types_refused,
+        // payload_bound_in_two_literal_arms_beside_another_tag_used_as_two_types_refused, payload_bound_in_two_guarded_arms_used_as_two_types_refused,
+        // nested_payload_bound_in_two_literal_arms_used_as_two_types_refused, payload_bound_in_two_literal_arms_over_a_let_written_later_refused,
+        // payload_bound_in_two_literal_arms_holds_an_undecided_payload, payload_bound_in_two_literal_arms_is_one_variable} and the unit test
+        // narrowing_a_cell_of_a_payload_union_makes_its_cells_one fail with binds_beside answering None. probes: ~/ptmp/cr29/scratch/r24/24b/vpb/probes.txt (run
+        // with rb.sh)
         if let Type::Set(qs) = p {
             for q in qs.iter() {
                 if self.needs_split_int(env, q, apart)? {
@@ -5150,7 +5164,7 @@ impl Type {
         let Some(t) = self.shape_under(env, p)? else { return Ok(false) };
         let mut any = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
             for (t, p) in parts {
-                if t.needs_split_int(env, p, apart)? {
+                if t.binds_beside(p).is_some() || t.needs_split_int(env, p, apart)? {
                     return Ok(true);
                 }
             }
@@ -5176,6 +5190,75 @@ impl Type {
             }
             _ => Ok(false),
         }
+    }
+
+    /// The cells among the members of the union `self` stands for, where
+    /// the open cell `pred` is one of them and not the only one: an open
+    /// cell as it stands, a bound one as what it holds. The arms'
+    /// predicates joined into that union typed the scrutinee, so each cell
+    /// there is one arm's bind of this part, and receives what the others
+    /// do. A member that is no cell is another arm's test.
+    fn binds_beside(&self, pred: &Type) -> Option<SmallVec<[Type; 8]>> {
+        fn cells(
+            t: &Type,
+            c: &TVar,
+            seen: &mut AddrSet,
+            own: &mut bool,
+            out: &mut SmallVec<[Type; 8]>,
+        ) {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => match tv.open_cell() {
+                    Some(o) => {
+                        if seen.insert(o.cell_addr()) {
+                            *own |= o.same_cell(c);
+                            out.push(Type::TVar(o))
+                        }
+                    }
+                    None => {
+                        if seen.insert(tv.cell_addr()) {
+                            out.push(t.clone())
+                        }
+                    }
+                },
+                Type::Set(ms) => ms.iter().for_each(|m| cells(m, c, seen, own, out)),
+                _ => (),
+            })
+        }
+        // CR claude for claude: [bug/high] A bind beside another arm's literal at one
+        // part of a variant's payload does not hold the literal's type, and the check
+        // accepts a use of the bind that the literal's values reach: `let f = |s| select
+        // s { `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 }; f(`A(1, "x"))` checks as
+        // `fn(s: `A(i64, [i64, string])) -> i64` and runs `a + 1` over a string (it
+        // prints 1); `` `A(1, a) => a, `A(2, true) => 0, _ => 1 `` called with `` `A(1,
+        // false) `` dies fused ("runtime did not respond"; --no-fusion prints false), and
+        // `` `A(1, a) => a, `A(2, null) => 0, _ => 1 `` types `f(`A(1, null)) + 1` as
+        // i64. GRAPHIX_NO_SUBST=1 refuses each. The tuple forms hold the literal's type
+        // in the bind (`(1, a) => a + 1, (2, "x") => 0, _ => 0` is refused, "cannot
+        // compute string + i64"). The arms' predicates join as `` `A(i64, ['a, string])
+        // ``, and this function takes the cells of that union only. Tried: every member
+        // of the union to the bind (Type::narrow_per_member over all of them). It
+        // refuses the three above, but also `` `A(null) => 0, `A(a) => a + 1 ``, ``
+        // `A(`X) => 0, `A(a) => a `` called with `` `A(`Y) `` and `` `Ok(null) =>
+        // "none", `Ok(v) => v, `Err(e) => e ``, which are right today because the
+        // literal's arm, unguarded, takes every value of its type before the bind's arm.
+        // Nothing tells the narrowing so: what reaches the second arm is still ``
+        // `A([null, 'a]) ``, since Type::diff subtracts a variant only by the same type
+        // (diff-product-held-01). What would close it: the difference of two variants
+        // of one tag that differ in one part, taken at that part (`` `A([null, 'a]) ``
+        // less `` `A(null) `` is `` `A('a) ``), and then every member of the union
+        // that still reaches the arm goes to its bind. That difference also narrows a
+        // bind under an annotated payload (`|s: `A([i64, null])| select s { `A(null) =>
+        // 0, `A(a) => a + 1 }`, refused today, "cannot compute [i64, null] + i64"),
+        // which is a change of the language. base-r24 alike. probes:
+        // ~/ptmp/cr29/scratch/r24/24b/vpb/lit.txt (run with rb.sh)
+        // (payload-bind-beside-literal-01)
+        let Type::TVar(c) = pred else { return None };
+        let c = c.open_cell()?;
+        let t @ Type::Set(_) = self.deref_cloned()? else { return None };
+        let mut own = false;
+        let mut out: SmallVec<[Type; 8]> = SmallVec::new();
+        cells(&t, &c, &mut LPooled::take(), &mut own, &mut out);
+        (own && out.len() > 1).then_some(out)
     }
 
     /// `self` looked through its bindings and typedef names to what they
@@ -5221,8 +5304,13 @@ impl Type {
     /// part of `pred` narrows against its part of `self` as a pattern does
     /// against what reaches it ([`Self::narrow_pattern`]), so a union under
     /// a constructor gives a bind the union of its parts over every member
-    /// its pattern can match. An element's set (a slice's elements and
-    /// rest) narrows member by member, as containment of a set does.
+    /// its pattern can match. An open cell of `pred` that is one of the
+    /// cells of the union at its part of a tuple, struct or variant
+    /// narrows over those cells ([`Self::binds_beside`],
+    /// [`Self::narrow_per_member`]): the open ones are one cell, which
+    /// takes what the bound ones hold. An element's set (a slice's
+    /// elements and rest) narrows member by member, as containment of a
+    /// set does.
     fn narrow_parts(&self, env: &Env, pred: &Type, walk: &mut Narrowing) -> Result<bool> {
         ensure_sufficient(|| {
             let Some(p) = pred.deref_cloned() else {
@@ -5233,7 +5321,14 @@ impl Type {
             };
             let mut all = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
                 for (t, p) in parts {
-                    if !t.narrow_pattern_in(env, p, walk)? {
+                    let held = match t.binds_beside(p) {
+                        Some(cells) => {
+                            p.narrow_per_member_in(env, &cells, walk)?;
+                            t.contains_ordered(env, p)?
+                        }
+                        None => t.narrow_pattern_in(env, p, walk)?,
+                    };
+                    if !held {
                         return Ok(false);
                     }
                 }
@@ -5250,7 +5345,14 @@ impl Type {
                     .map(|((_, t, _), (_, p, _))| (t, p))),
                 (Type::Array(e), Type::Array(pe)) | (Type::List(e), Type::List(pe)) => {
                     match pe.deref_cloned() {
-                        Some(Type::Set(ref qs)) => all(&mut qs.iter().map(|q| (&**e, q))),
+                        Some(Type::Set(ref qs)) => {
+                            for q in qs.iter() {
+                                if !e.narrow_pattern_in(env, q, walk)? {
+                                    return Ok(false);
+                                }
+                            }
+                            Ok(true)
+                        }
                         _ => e.narrow_pattern_in(env, pe, walk),
                     }
                 }

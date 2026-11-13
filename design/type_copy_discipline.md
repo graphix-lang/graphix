@@ -60,11 +60,15 @@ member does, so an open cell among them merges with it, and the arms'
 binds of one part end as one cell. Such a cell is not copied for the
 member that holds it at the same part (`own_parts` in
 `Type::narrow_per_member`): the copy would carry its lower bounds back
-into it. Pins:
+into it. Arms that bind one part of one variant tag leave one member,
+their cells a union under the tag, and the same holds inside it: a bind
+whose cell is one of that union's cells is one cell with the open ones
+(`Type::binds_beside`). Pins:
 `lang::select::arm_bind_over_members_*`,
 `or_arm_bind_over_members_calls_their_lambdas`,
 `lang::types::part_bound_in_three_*`,
-`part_bound_in_four_literal_arms_over_an_undecided_payload`.
+`part_bound_in_four_literal_arms_over_an_undecided_payload`,
+`payload_bound_in_two_*`.
 
 ### `reset_tvars` — the legal deep copies
 

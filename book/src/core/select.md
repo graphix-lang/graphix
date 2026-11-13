@@ -541,6 +541,13 @@ refused where it is written. A type test tests what it reads as a
 pattern does: `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) `` is
 refused until `z` is annotated, since `z` might become neither.
 
+Arms that bind the same part of such a scrutinee bind one type there.
+No literal or guard beside a bind narrows it, so in `` |s| select s {
+`A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 } `` both `a` are the
+payload's one type, and the select is refused for using it as an `i64`
+and as a `string`. Annotate `s` with the union the payload may be, and
+test the bind inside the arm.
+
 A slice with a rest over a binding the arms decide leaves the type of
 the other elements to later writes, and at run time it takes a value of
 whatever they bring, at every position. After `let v = never(); let z =

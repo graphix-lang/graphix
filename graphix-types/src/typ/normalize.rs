@@ -982,6 +982,40 @@ pub(super) mod tests {
         assert!(u.stands_for() != v.stands_for());
     }
 
+    /// An arm's cell that is one of the cells of the union at its part of
+    /// a variant is one cell with the open ones and takes what a bound one
+    /// holds; a member of that union that is no cell is left where it is.
+    #[test]
+    fn narrowing_a_cell_of_a_payload_union_makes_its_cells_one() {
+        let env = Env::default();
+        let cell = |n: &str| TVar::empty_named(n.into());
+        let prim = |t: Typ| Type::Primitive(t.into());
+        let payload = |t: Type| {
+            Type::Variant(
+                "A".into(),
+                Arc::from_iter([prim(Typ::I64), t]),
+                WrittenAt::NOWHERE,
+            )
+        };
+        let union = |ts: &[Type]| Type::Set(Arc::from_iter(ts.iter().cloned()));
+        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+        let tvs = [Type::TVar(a.clone()), Type::TVar(b.clone()), Type::TVar(c.clone())];
+        let scrut = payload(union(&tvs));
+        assert!(scrut.narrow_pattern(&env, &payload(tvs[0].clone())).unwrap());
+        assert!(a.open_cell().is_some());
+        assert!(a.stands_for() == b.stands_for() && a.stands_for() == c.stands_for());
+        let (p, q) = (cell("p"), cell("q"));
+        q.bind(prim(Typ::String));
+        let tvs = [Type::TVar(p.clone()), Type::TVar(q.clone())];
+        let scrut = payload(union(&tvs));
+        assert!(scrut.narrow_pattern(&env, &payload(tvs[0].clone())).unwrap());
+        assert_eq!(p.binding(), Some(prim(Typ::String)));
+        let u = cell("u");
+        let scrut = payload(union(&[Type::TVar(u.clone()), prim(Typ::Null)]));
+        assert!(scrut.narrow_pattern(&env, &payload(Type::TVar(u.clone()))).unwrap());
+        assert!(u.open_cell().is_some());
+    }
+
     /// A cell a member holds where the arm's predicate does is its own
     /// part of that member, never a copy merged back into it: each arm's
     /// narrowing leaves the cell the lower bounds it had.

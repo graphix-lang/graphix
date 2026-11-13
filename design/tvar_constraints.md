@@ -840,7 +840,17 @@ binds of another part of a tuple or a struct, however many arms bind it
 slice in each alternative of an or-arm (`` `A([h, ..]) | `B([h, ..]) => h
 ``). One cell is one type: no test of one part narrows another, so arms
 that use the part as two types (`(2, b) => b + 1, (3, b) => str::len(b)`)
-are refused where the function is defined.
+are refused where the function is defined. Arms that bind one part of
+one variant tag (`` `A(1, a) => .., `A(2, a) => .. ``) stay no two
+members: their predicates join as one variant over the union of their
+cells, `` `A(i64, ['a0, 'a1]) ``, which holds each cell by itself. So a
+bind whose cell is one of the cells of the union at its part of a tuple,
+a struct or a variant narrows over those cells as it does over members
+(`Type::binds_beside`, in `Type::narrow_parts`): the open ones are one
+cell, and it takes what a bound one holds (a payload the scrutinee held
+before the arms). A member of that union that is no cell is another
+arm's test (`` `A(null) => .., `A(a) => .. ``), which the bind does not
+take.
 
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
@@ -860,6 +870,7 @@ implementation whose variables stand at the declaration's places passes
 and their twins, `{typedef_union_of_variables,identity_member,option_member,nested_union_typedef}_refused_at_its_use`,
 members that are one type by `lang::types::{slice_arms,slice_elements_bound_in_two_arms,slice_arms_of_a_recursive_function,slice_rest_passed_on,slice_arms_inside_a_tuple_and_a_struct,list_arms}_over_an_unannotated_parameter*`, each beside its written twin, and the unit test `members_that_are_one_type_take_a_type_as_one`,
 a part several arms bind by `lang::types::{part_bound_in_three_slice_arms,part_bound_in_three_literal_arms,slice_in_each_alternative_of_an_or_arm}_over_an_unannotated_parameter`, `part_bound_in_three_{literal,slice}_arms_used_as_two_types_refused`, `part_bound_in_four_literal_arms_over_an_undecided_payload*` and the unit tests `narrowing_a_members_own_cell_{makes_the_open_parts_one,keeps_its_lower_bounds}`,
+a variant's payload several arms bind by `lang::types::{payload_bound_in_two_*,nested_payload_bound_in_two_literal_arms_used_as_two_types_refused,payload_tested_by_one_arm_and_bound_by_the_next}` and the unit test `narrowing_a_cell_of_a_payload_union_makes_its_cells_one`,
 `lang::traits::{trait_method_typedef_union_refused_at_the_call,default_body_typedef_union_refused,impl_method_typedef_union_refused}`,
 `lang::interfaces::{open_union_call_refused,val_implementation_that_would_choose_a_member_refused,val_in_data_implementation_that_would_choose_a_member_refused,val_at_one_variable_implemented_at_two}`.
 
