@@ -566,7 +566,8 @@ no "unreachable arm" |x| select x { null as _ => 0, v => v }
 ok |x: Array<i64>| select (x, 0) { ([], _) => 0, ([a, ..], _) => a }
 ok let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 }; f(`A([1, 2]))
 no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0 }
-no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
+ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
+no "every array length" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A([a, b]) => 3, `A(null) => 2 }
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(_) => 2 }
 ok |x: [`A(Array<i64>), `A(null)]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
 no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }

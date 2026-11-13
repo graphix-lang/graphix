@@ -753,9 +753,9 @@ run!(
     FuseExpect::None
 );
 
-// A member the slice cannot match keeps the position off the ladder: the
-// arms leave its values uncovered. A null, a list beside an array, and a
-// tuple holding its array at another place.
+// A member the slice cannot match stays uncovered where no arm takes it: a
+// null, a list beside an array, and a tuple holding its array at another
+// place.
 run!(
     nested_slice_ladder_union_position_other_member_refused,
     r#"{
@@ -814,6 +814,107 @@ run!(
     |v: Result<&Value>| {
         matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 5, 0, 1, 105, 0, 1, 4, 0, 1, 2, 3, 0, 1, 1, 0, 7, 0, 2])
     };
+    FuseExpect::Jit
+);
+
+// A position's member no slice matches stands off the ladder: the slice arms
+// cover the member less it, and an arm of its own covers the rest. A null
+// beside an array, over a written and an unannotated parameter; a tuple
+// position, a struct field, a list beside an array (a ladder each), a payload
+// two levels down, a tuple member at the position whose array place holds a
+// null, and an or-arm over two variants.
+run!(
+    nested_slice_ladder_union_position_other_member_arm,
+    r#"{
+  let a = |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => h, `A([]) => 0, `A(null) => 2 };
+  let b = |x| select x { `A([h, ..]) => h, `A([]) => 0, `A(null) => 9 };
+  let c = |x: ([Array<i64>, null], i64)| select x { ([h, ..], _) => h, ([], n) => n, (null, _) => 2 };
+  let d = |x: {a: [Array<i64>, null], b: i64}| select x { {a: [h, ..], ..} => h, {a: [], b} => b, {a: null, ..} => 3 };
+  let e = |x: [`A([Array<i64>, List<i64>])]| select x {
+    `A([h, ..]) => h, `A([]) => 0, `A([<h, ..>]) => h + 10, `A([<>]) => 4
+  };
+  let g = |x: [`A([([Array<i64>, null], i64), null])]| select x {
+    `A(([h, ..], _)) => h, `A(([], n)) => n, `A((null, _)) => 5, `A(null) => 6
+  };
+  let i = |x: [`A([(Array<i64>, i64), (null, string)])]| select x {
+    `A(([h, ..], _)) => h, `A(([], n)) => n, `A((null, _)) => 8
+  };
+  let j = |x: [`A([Array<i64>, null]), `B([Array<i64>, null])]| select x {
+    `A([h, ..]) | `B([h, ..]) => h, `A([]) | `B([]) => 0, `A(null) | `B(null) => 7
+  };
+  [
+    a(`A([1, 2])), a(`A([])), a(`A(null)), b(`A([3])), b(`A([])), b(`A(null)),
+    c(([4], 0)), c(([], 1)), c((null, 0)), d({a: [5], b: 0}), d({a: [], b: 2}), d({a: null, b: 0}),
+    e(`A([6])), e(`A([])), e(`A([<7>])), e(`A([<>])),
+    g(`A(([8], 0))), g(`A(([], 3))), g(`A((null, 0))), g(`A(null)),
+    i(`A(([9], 0))), i(`A(([], 4))), i(`A((null, "s"))), j(`B([5])), j(`A([])), j(`B(null))
+  ]
+}"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [
+            1, 0, 2, 3, 0, 9, 4, 1, 2, 5, 2, 3, 6, 0, 17, 4, 8, 3, 5, 6, 9, 4, 8, 5, 0, 7
+        ])
+    };
+    FuseExpect::Jit
+);
+
+// Behind such a ladder an arm matching only lengths it claims is dead, and a
+// member whose arm is missing stays uncovered.
+run!(
+    nested_slice_ladder_union_position_other_member_dead_arm_refused,
+    r#"{
+  let f = |x: [`A([Array<i64>, null])]| select x {
+    `A([h, ..]) => 1, `A([]) => 0, `A([a, b]) => 5, `A(null) => 2
+  };
+  f(`A(null))
+}"#,
+    refused("every array length this slice pattern can match is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_ladder_union_position_other_member_missing_refused,
+    r#"{
+  let f = |x: [`A([([Array<i64>, null], i64), null])]| select x {
+    `A(([h, ..], _)) => h, `A(([], n)) => n, `A(null) => 6
+  };
+  f(`A(null))
+}"#,
+    refused("missing match cases: no arm covers `A([null, ([null, Array<i64>], i64)])");
+    FuseExpect::None
+);
+
+// A nested slice claims its lengths only where its elements take every value
+// of its element type: a tuple of names does not take an `i64` member there.
+run!(
+    nested_slice_tuple_element_over_a_union_claims_nothing,
+    r#"{
+  let f = |x: [`A(Array<[(i64, i64), i64]>)]| select x { `A([(a, b), ..]) => a, `A([]) => 0 };
+  f(`A([3]))
+}"#,
+    refused("missing match cases: no arm covers `A(Array<[i64, (i64, i64)]>)");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_tuple_element_beside_another_member_claims_nothing,
+    r#"{
+  let f = |x: [`A([Array<[(i64, i64), i64]>, null])]| select x {
+    `A([(a, b), ..]) => a, `A([]) => 0, `A(null) => 2
+  };
+  f(`A([3]))
+}"#,
+    refused("missing match cases: no arm covers `A([null, Array<[i64, (i64, i64)]>])");
+    FuseExpect::None
+);
+
+run!(
+    nested_slice_tuple_element_over_its_tuple_claims_its_lengths,
+    r#"{
+  let f = |x: [`A(Array<(i64, i64)>)]| select x { `A([(a, b), ..]) => a + b, `A([]) => 0 };
+  f(`A([(3, 4)])) * 10 + f(`A([]))
+}"#,
+    is(Value::I64(70));
     FuseExpect::Jit
 );
 

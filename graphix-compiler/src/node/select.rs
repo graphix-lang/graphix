@@ -1077,6 +1077,9 @@ impl Reach {
     /// one of its slices matches only lengths earlier arms claimed there;
     /// else, `unguarded`, it claims its lengths of each member it holds
     /// where one slice is all it refutes by, covering a member it completes.
+    /// A member stands as `sp`'s shape narrows it: less what a position
+    /// holds that `sp` admits no value of (`` `A(null) `` of `` `A([Array<i64>,
+    /// null]) `` for `` `A([h, ..]) ``).
     fn nested_slices(
         &mut self,
         env: &Env,
@@ -1095,7 +1098,8 @@ impl Reach {
         let mut claims: SmallVec<[(Type, InnerSlice); 2]> = SmallVec::new();
         for m in members {
             let mut slices: SmallVec<[InnerSlice; 2]> = SmallVec::new();
-            let only = inner_slices(env, sp, &m, &mut SmallVec::new(), &mut slices)?;
+            let inner = inner_slices(env, sp, &m, &mut SmallVec::new(), &mut slices)?;
+            let m = inner.narrowed.unwrap_or(m);
             if dead_check && at.could_match(env, &m)? {
                 any = true;
                 all &= slices.iter().any(|s| {
@@ -1107,7 +1111,7 @@ impl Reach {
                 });
             }
             if unguarded
-                && only
+                && inner.only
                 && slices.len() == 1
                 && at.contains_with_flags(BitFlags::empty(), env, &m)?
                 && let Some(s) = slices.pop()
@@ -1277,7 +1281,8 @@ struct Ladder {
 
 /// The slice-length ladder at one array or list position inside a
 /// tuple, struct or variant member of a scrutinee, which `ladder.member`
-/// names: the lengths there that arms testing nothing else claim.
+/// names as the arms' shape narrows it: the lengths there that arms
+/// testing nothing else claim.
 struct NestedLadder {
     path: SmallVec<[u32; 4]>,
     ladder: Ladder,
@@ -1690,29 +1695,44 @@ fn nests_slice(sp: &StructPatternNode) -> bool {
     })
 }
 
+/// What [`inner_slices`] found of a composite pattern inside a type.
+struct Inner {
+    /// The slices found are all the pattern refutes a value of the type
+    /// by: every other part of it, and every slice's elements, take any
+    /// value of their type.
+    only: bool,
+    /// The type less the members the pattern admits no value of, at this
+    /// position or below; `None` where it leaves none out.
+    narrowed: Option<Type>,
+}
+
+impl Inner {
+    const NONE: Self = Self { only: false, narrowed: None };
+}
+
 /// The slices composite pattern `sp` tests inside `t`, found along
-/// positions whose every member fits the pattern there with the same
-/// slices; true when they are all it refutes a value of `t` by:
-/// everything else is a name or `_`, and every slice's elements are too.
+/// positions whose every member `sp` admits a value of fits the pattern
+/// there with the same slices.
 fn inner_slices(
     env: &Env,
     sp: &StructPatternNode,
     t: &Type,
     path: &mut SmallVec<[u32; 4]>,
     out: &mut SmallVec<[InnerSlice; 2]>,
-) -> Result<bool> {
-    if sp.matches_anything() {
-        return Ok(true);
+) -> Result<Inner> {
+    if sp.covers(env, t, false) {
+        return Ok(Inner { only: true, narrowed: None });
     }
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     if union_members_open(env, t, &mut members)? {
-        return Ok(false);
+        return Ok(Inner::NONE);
     }
-    let [first, rest @ ..] = &members[..] else { return Ok(false) };
     let found = out.len();
-    let mut only = member_slices(env, sp, first, path, out)?;
+    let mut only = true;
+    let mut left_out = false;
+    let mut kept: SmallVec<[Type; 4]> = SmallVec::new();
     let mut other: SmallVec<[InnerSlice; 2]> = SmallVec::new();
-    // CR claude for claude: [bug/low] Slice arms at a position that also holds a
+    // XCR claude for claude: [bug/low] Slice arms at a position that also holds a
     // member no slice matches are refused as not exhaustive even with an arm for that
     // member: `|x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0,
     // `A(null) => 2 }` is refused, "missing match cases: no arm covers `A([null,
@@ -1725,15 +1745,52 @@ fn inner_slices(
     // slice fits and its completion cover the member narrowed to them at that
     // position. probes: ~/ptmp/cr29/scratch/r23/23d/vsc-rev/{r01,r31,s01,s02,s05,
     // s09}.gx (slice-position-other-member-01)
-    for m in rest {
-        other.clear();
-        only &= member_slices(env, sp, m, path, &mut other)?;
-        if other[..] != out[found..] {
-            out.truncate(found);
-            return Ok(false);
+    // 2026-11-13 claude: Fixed: inner_slices leaves out a position's member the arm's
+    // pattern admits no value of (StructPatternNode::admits) and hands back the member
+    // narrowed to the rest; nested_slices keys its ladder and dead check by that
+    // narrowed member and covers it when the ladder completes, so the arm for the
+    // member left out (`A(null)) covers what remains. r01, r31, s01, s09 and the
+    // tuple, struct, two-level, or-arm and list-beside-array forms run. The claim also
+    // reads each slice's elements and every other position by covers over their type
+    // (elements_cover, covers) instead of matches_anything: without that the narrowing
+    // newly accepted `A([(a, b), ..]) over `A([Array<[(i64, i64), i64]>, null]) into a
+    // run-time coverage hole, and it closes base-r24's nested form of that hole
+    // (`A(Array<[(i64, i64), i64]>), the top-level form is
+    // slice-element-union-hole-01). Pins, failing with the fix undone:
+    // lang::select::nested_slice_ladder_union_position_other_member_arm,
+    // _other_member_dead_arm_refused,
+    // nested_slice_tuple_element_over_a_union_claims_nothing,
+    // nested_slice_tuple_element_beside_another_member_claims_nothing (the last two
+    // also with only the covers half undone); the skill's cases line for r01 is ok
+    // now. probes: ~/ptmp/cr29/scratch/r24/24h/spom/
+    for m in members.iter() {
+        if !sp.admits(env, m, false)? {
+            left_out = true;
+            continue;
         }
+        let first = kept.is_empty();
+        let inner = match first {
+            true => member_slices(env, sp, m, path, out)?,
+            false => {
+                other.clear();
+                member_slices(env, sp, m, path, &mut other)?
+            }
+        };
+        if !first && other[..] != out[found..] {
+            out.truncate(found);
+            return Ok(Inner::NONE);
+        }
+        only &= inner.only;
+        left_out |= inner.narrowed.is_some();
+        kept.push(inner.narrowed.unwrap_or_else(|| m.clone()));
     }
-    Ok(only)
+    let narrowed = match kept.len() {
+        0 => return Ok(Inner::NONE),
+        _ if !left_out => None,
+        1 => kept.pop(),
+        _ => Some(Type::Set(Arc::from_iter(kept)).normalize()),
+    };
+    Ok(Inner { only, narrowed })
 }
 
 /// [`inner_slices`] inside `m`, one member of a position's type.
@@ -1743,7 +1800,7 @@ fn member_slices(
     m: &Type,
     path: &mut SmallVec<[u32; 4]>,
     out: &mut SmallVec<[InnerSlice; 2]>,
-) -> Result<bool> {
+) -> Result<Inner> {
     let mut children: SmallVec<[(&StructPatternNode, &Type); 8]> = SmallVec::new();
     match (sp, m) {
         (
@@ -1757,9 +1814,9 @@ fn member_slices(
             | StructPatternNode::SlicePrefix { list: true, .. },
             Type::List(_),
         ) if !path.is_empty() => {
-            let Some(len) = sp.array_len_range() else { return Ok(false) };
+            let Some(len) = sp.array_len_range() else { return Ok(Inner::NONE) };
             out.push(InnerSlice { path: path.clone(), len });
-            return Ok(sp.array_len_coverage(env, None).is_some());
+            return Ok(Inner { only: sp.elements_cover(env, m), narrowed: None });
         }
         (
             StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds },
@@ -1779,15 +1836,38 @@ fn member_slices(
                 (p.map_or(&StructPatternNode::Ignore, |(_, _, p)| p), t)
             }))
         }
-        _ => return Ok(false),
+        _ => return Ok(Inner::NONE),
     }
-    let mut all = true;
+    let mut only = true;
+    let mut parts: SmallVec<[Option<Type>; 8]> = SmallVec::new();
     for (i, (p, t)) in children.into_iter().enumerate() {
         path.push(i as u32);
-        all &= crate::stack::ensure_sufficient(|| inner_slices(env, p, t, path, out))?;
+        let inner =
+            crate::stack::ensure_sufficient(|| inner_slices(env, p, t, path, out))?;
         path.pop();
+        only &= inner.only;
+        parts.push(inner.narrowed);
     }
-    Ok(all)
+    if parts.iter().all(Option::is_none) {
+        return Ok(Inner { only, narrowed: None });
+    }
+    let part = |p: Option<Type>, t: &Type| p.unwrap_or_else(|| t.clone());
+    let parts = parts.into_iter();
+    let narrowed = match m {
+        Type::Tuple(ts) => {
+            Type::Tuple(Arc::from_iter(parts.zip(ts.iter()).map(|(p, t)| part(p, t))))
+        }
+        Type::Variant(tag, ts, at) => Type::Variant(
+            tag.clone(),
+            Arc::from_iter(parts.zip(ts.iter()).map(|(p, t)| part(p, t))),
+            *at,
+        ),
+        Type::Struct(fs) => Type::Struct(Arc::from_iter(
+            parts.zip(fs.iter()).map(|(p, (n, t, at))| (n.clone(), part(p, t), *at)),
+        )),
+        _ => return Ok(Inner::NONE),
+    };
+    Ok(Inner { only, narrowed: Some(narrowed) })
 }
 
 /// The head a composite pattern tests: what groups arms in the

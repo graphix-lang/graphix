@@ -26,14 +26,19 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   length ladders count as coverage, one ladder per array or list member
   (a slice arm claims its lengths of each member whose element type its
   elements cover), and one per slice position inside a tuple, struct or
-  variant member, keyed by its path, along positions whose every member
-  fits the pattern with the same slices (`select.rs::NestedLadder`,
+  variant member, keyed by its path and by the member as the arm's shape
+  narrows it, along positions whose every member the pattern admits a
+  value of fits it with the same slices (`select.rs::NestedLadder`,
   `inner_slices`: a variant's payload over an undecided scrutinee is one
-  array member an arm, `` `A([Array<'a>, Array<'b>]) ``; a position
-  holding a member the slice cannot match, `[Array<i64>, null]`, climbs
-  none): an unguarded arm claims its slice's
+  array member an arm, `` `A([Array<'a>, Array<'b>]) ``; a member the
+  pattern admits no value of (`StructPatternNode::admits`), the `null` of
+  `` `A([Array<i64>, null]) `` under `` `A([h, ..]) ``, is left out, so
+  the ladder stands on `` `A(Array<i64>) ``, its completion covers that,
+  and the arm `` `A(null) `` the rest): an unguarded arm claims its slice's
   lengths there where that slice is all it tests, its elements and every
-  other position names or `_`, and its predicate holds the member; an
+  other position taking any value of their type (`StructPatternNode::covers`:
+  a tuple of names over `[(i64, i64), i64]` does not), and its predicate
+  holds the member; an
   arm is dead where at each member it can match one of its slices
   matches only lengths claimed at that path (`([a, b, ..], _)` after
   `([a, ..], _)`), and a complete ladder covers its member; exact-length slice arms pool their elements' heads per length

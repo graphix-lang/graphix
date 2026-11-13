@@ -344,10 +344,12 @@ its own position, when its arm tests nothing else: `([], _)` and
 `([x, ..], 0)` does, claims no lengths. A position of several array
 types counts as one array, so `` `A([]) `` and `` `A([x, ..]) `` cover
 `` `A([Array<i64>, Array<string>]) ``. One that also holds a value no
-slice matches (`` `A([Array<i64>, null]) ``) counts no lengths: finish
-its arms with a catch-all there (`` `A(_) ``), or write the type one
-variant a member (`` [`A(Array<i64>), `A(null)] ``), where
-`` `A(null) `` is an arm of its own.
+slice matches (`` `A([Array<i64>, null]) ``) counts the lengths of its
+arrays alone: `` `A([]) `` and `` `A([x, ..]) `` cover
+`` `A(Array<i64>) ``, and an arm of its own covers the rest
+(`` `A(null) ``). The slice's elements count only where they take any
+value of the element type: `` `A([(a, b), ..]) `` claims no length of
+`` `A(Array<[(i64, i64), i64]>) ``.
 
 ### List Patterns
 
