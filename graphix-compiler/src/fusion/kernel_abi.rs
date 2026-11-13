@@ -167,7 +167,7 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
     })
 }
 
-// CR claude for claude: [perf/medium] primitive_union's bits expands a typedef once per
+// XCR claude for claude: [perf/medium] primitive_union's bits expands a typedef once per
 // path, so fusing a select over a DAG of named unions (L_i = [L_i-1, M_i-1], M_i =
 // [M_i-1, L_i-1], L0 = [i64, string]) costs 2^n: `let x: L_n = 3; select x { i64 as i
 // => "i", string as s => "s" }`, --no-cache run, instructions: n = 16 1.26G, 18 2.59G
@@ -178,46 +178,104 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 // Type::dispatch_members keeps, would make it linear. probes:
 // ~/ptmp/cr29/scratch/r20/20g/sel16.gx .. sel20.gx, tr16.gx .. tr22.gx, tr40.gx
 // (fusion-primitive-union-dag-01)
+// 2026-11-12 claude: primitive_union's walk (now prim_bits) and abi_kind_d each keep a
+// per-walk memo (Applied, keyed by definition and the parameters applied, compared by
+// ==) of what each named type folds to and classifies to, so each application is
+// expanded once; Freeze shares one fold memo across its primitive_union calls.
+// abi_kind_d's path check is the memo's Expanding mark, and a kind found below a
+// recurrence is not kept (Freeze's rule). --no-cache run, debug, instructions:u,
+// base-r23 -> lane: sel16 1.25 -> 0.80 G, sel18 2.61 -> 0.80, sel20 8.01 -> 0.80, sel40
+// 0.83; tr16 1.49 -> 0.81, tr22 44.07 -> 0.82, tr40 0.84; the non-folding twins (L0 =
+// [i64, Array<i64>], L0 = [`B, `A]) were 2^n in abi_kind_d's member walk too: arr18
+// 5.04 -> 0.80, vv18 4.82 -> 0.80. Pins:
+// fusion::kernel_abi::tests::a_dag_of_named_unions_classifies_and_freezes_once_per_name
+// (fails with the fold memo undone, 41 expansions at n = 4, and with the kind memo
+// alone undone, 49), lang::fusion::native_select_over_a_dag_of_named_unions (jit and
+// jit_par fail with the memo keyed by definition alone). Fused regions of all 129 book
+// examples identical to base-r23; regress 580/0.
+/// What a walk found of each named type it expanded, by its definition
+/// and the parameters applied. Parameters compare by `==`, which reads a
+/// bound cell as its binding and takes two open cells as one: the walks
+/// keyed here read a type through its bindings and an open cell as no
+/// type, so applications `==` alike get one answer.
+struct Applied<V>(Option<LPooled<AHashMap<usize, SmallVec<[(Arc<[Type]>, V); 1]>>>>);
+
+impl<V> Default for Applied<V> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<V: Copy> Applied<V> {
+    fn get(&self, def: usize, params: &[Type]) -> Option<V> {
+        let applied = self.0.as_ref()?.get(&def)?;
+        applied.iter().find(|(ps, _)| **ps == *params).map(|(_, v)| *v)
+    }
+
+    fn set(&mut self, def: usize, params: &Arc<[Type]>, v: V) {
+        let applied = self.0.get_or_insert_with(LPooled::take).entry(def).or_default();
+        match applied.iter_mut().find(|(ps, _)| **ps == **params) {
+            Some((_, old)) => *old = v,
+            None => applied.push((params.clone(), v)),
+        }
+    }
+
+    fn remove(&mut self, def: usize, params: &[Type]) {
+        if let Some(applied) = self.0.as_mut().and_then(|m| m.get_mut(&def)) {
+            applied.retain(|(ps, _)| **ps != *params)
+        }
+    }
+}
+
+/// What each named type a walk expanded folds to ([`prim_bits`]).
+type Folds = Applied<Option<BitFlags<Typ>>>;
+
+#[cfg(test)]
+thread_local! {
+    static EXPANSIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The primitive set `t` is: a primitive, a union whose members all are
+/// one, or a named type whose expansion is, each named type expanded
+/// once however many paths reach it; `None` for anything else (⊥ and an
+/// empty set are no primitive).
+fn prim_bits(t: &Type, folds: &mut Folds) -> Option<BitFlags<Typ>> {
+    crate::stack::ensure_sufficient(|| match &t.deref_cloned()? {
+        Type::Primitive(p) if !p.is_empty() => Some(*p),
+        Type::Set(ms) if !ms.is_empty() => ms
+            .iter()
+            .try_fold(BitFlags::empty(), |acc, m| Some(acc | prim_bits(m, folds)?)),
+        Type::Ref(tr) => {
+            let def = tr.def_key()?;
+            if let Some(bits) = folds.get(def, &tr.params) {
+                return bits;
+            }
+            #[cfg(test)]
+            EXPANSIONS.with(|n| n.set(n.get() + 1));
+            let bits = tr.expand_cell().and_then(|x| prim_bits(&x, folds));
+            folds.set(def, &tr.params, bits);
+            bits
+        }
+        _ => None,
+    })
+}
+
 /// A union with its primitives, unions of them and typedefs naming them
 /// (`Number = [Int, Real]`) folded into the one primitive set they are,
 /// beside its other members; `None` when that changes nothing.
-fn primitive_union(members: &[Type]) -> Option<Type> {
-    fn bits(t: &Type, acc: &mut BitFlags<Typ>) -> bool {
-        // a member with no bits (⊥, an empty set) is no primitive
-        crate::stack::ensure_sufficient(|| match &t.deref_cloned() {
-            Some(Type::Primitive(p)) if !p.is_empty() => {
-                *acc |= *p;
-                true
-            }
-            Some(Type::Set(ms)) if !ms.is_empty() => {
-                let mut part = *acc;
-                let all = ms.iter().all(|m| bits(m, &mut part));
-                if all {
-                    *acc = part
-                }
-                all
-            }
-            Some(Type::Ref(tr)) => {
-                let mut part = *acc;
-                let all = tr.expand_cell().is_some_and(|x| bits(&x, &mut part));
-                if all {
-                    *acc = part
-                }
-                all
-            }
-            _ => false,
-        })
-    }
+fn primitive_union(members: &[Type], folds: &mut Folds) -> Option<Type> {
     let mut acc = BitFlags::empty();
     let mut folded = 0;
     let mut plain = true;
     let mut rest: LPooled<Vec<Type>> = LPooled::take();
     for m in members {
-        if bits(m, &mut acc) {
-            folded += 1;
-            plain &= matches!(m.deref_cloned(), Some(Type::Primitive(_)));
-        } else {
-            rest.push(m.clone())
+        match prim_bits(m, folds) {
+            Some(bits) => {
+                acc |= bits;
+                folded += 1;
+                plain &= matches!(m.deref_cloned(), Some(Type::Primitive(_)));
+            }
+            None => rest.push(m.clone()),
         }
     }
     if folded == 0 || (folded == 1 && plain) {
@@ -240,7 +298,26 @@ fn primitive_union(members: &[Type]) -> Option<Type> {
 /// a `Set`, a `Ref` with an empty resolution cell, or a recursive named
 /// type.
 pub fn abi_kind(t: &Type) -> Option<AbiKind> {
-    abi_kind_d(t, None)
+    abi_kind_d(t, &mut AbiWalk::default())
+}
+
+/// One [`abi_kind`] walk: what each named type it expanded classifies
+/// to, and what each folds to as primitives.
+#[derive(Default)]
+struct AbiWalk {
+    kinds: Applied<Classified>,
+    folds: Folds,
+    /// The classification in progress met a named type its own
+    /// expansion holds: what it found holds on this path alone.
+    recurred: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Classified {
+    /// Its expansion is being classified: met inside it, the type
+    /// recurs, which no kernel encodes.
+    Expanding,
+    Kind(Option<AbiKind>),
 }
 
 /// Whether a value of `t` crosses a kernel's boundary, as a call's
@@ -262,7 +339,7 @@ pub(crate) fn crosses_boundary(t: &Type) -> bool {
     }
 }
 
-fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
+fn abi_kind_d(t: &Type, walk: &mut AbiWalk) -> Option<AbiKind> {
     // The TVar lock is not reentrant: clone out of the guard before recursing.
     let resolved = t.deref_cloned();
     {
@@ -284,18 +361,32 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
                 let ad = a.deref_cloned();
                 return match (cd, ad) {
                     (Some(cd), Some(ad)) => {
-                        cd.fill_hole(&ad).and_then(|r| abi_kind_d(&r, seen))
+                        cd.fill_hole(&ad).and_then(|r| abi_kind_d(&r, walk))
                     }
                     _ => None,
                 };
             }
             Type::Ref(tr) => {
-                if Seen::find(seen, tr).is_some() {
-                    return None;
+                let def = tr.def_key()?;
+                match walk.kinds.get(def, &tr.params) {
+                    Some(Classified::Kind(k)) => return k,
+                    Some(Classified::Expanding) => {
+                        walk.recurred = true;
+                        return None;
+                    }
+                    None => (),
                 }
-                let expanded = tr.expand_cell();
-                let node = Seen::push(seen, tr.clone());
-                return expanded.as_ref().and_then(|c| abi_kind_d(c, Some(&node)));
+                #[cfg(test)]
+                EXPANSIONS.with(|n| n.set(n.get() + 1));
+                walk.kinds.set(def, &tr.params, Classified::Expanding);
+                let outer = std::mem::replace(&mut walk.recurred, false);
+                let k = tr.expand_cell().and_then(|c| abi_kind_d(&c, walk));
+                match walk.recurred {
+                    true => walk.kinds.remove(def, &tr.params),
+                    false => walk.kinds.set(def, &tr.params, Classified::Kind(k)),
+                }
+                walk.recurred |= outer;
+                return k;
             }
             _ => {}
         }
@@ -324,11 +415,11 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             return Some(AbiKind::Value);
         }
         if let Type::Set(members) = resolved {
-            if let Some(p) = primitive_union(members) {
-                return abi_kind_d(&p, seen);
+            if let Some(p) = primitive_union(members, &mut walk.folds) {
+                return abi_kind_d(&p, walk);
             }
             if let Some(succ) = option_result_success(members) {
-                return abi_kind_d(succ, seen).map(|_| AbiKind::Nullable);
+                return abi_kind_d(succ, walk).map(|_| AbiKind::Nullable);
             }
             let all_variants = members
                 .iter()
@@ -341,7 +432,7 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // member before reading it as that member
             let encoded = |m: &Type| {
                 !m.with_deref(|r| matches!(r, Some(Type::Set(_))))
-                    && abi_kind_d(m, seen).is_some_and(|k| k != AbiKind::Unit)
+                    && abi_kind_d(m, walk).is_some_and(|k| k != AbiKind::Unit)
             };
             return members.iter().all(encoded).then_some(AbiKind::Value);
         }
@@ -563,6 +654,7 @@ struct Freeze {
     memo: RefCell<LPooled<AHashMap<u64, SmallVec<[(Arc<TypeRef>, Type); 1]>>>>,
     /// The expansion in progress met a recurring ref.
     recurred: Cell<bool>,
+    folds: RefCell<Folds>,
 }
 
 impl Freeze {
@@ -631,7 +723,8 @@ impl Freeze {
                     Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
                 }
                 Type::Set(members) => {
-                    if let Some(p) = primitive_union(members) {
+                    let folded = primitive_union(members, &mut self.folds.borrow_mut());
+                    if let Some(p) = folded {
                         return self.freeze(&p, seen);
                     }
                     if let Some(succ) = option_result_success(members) {
@@ -1215,15 +1308,21 @@ mod tests {
         assert_eq!(Type::TVar(cell).deref_cloned(), Some(raw));
     }
 
-    /// The type `name` in an env holding `defs` at the root.
+    /// The type `name` in an env holding `defs` at the root, each named
+    /// `Name` or `Name<'a, ..>`.
     fn typed(defs: &[(String, String)], name: &str) -> (crate::env::Env, Type) {
         use crate::expr::{TypeDefBody, parser::parse_type};
         let mut env = crate::env::Env::default();
         for (name, body) in defs {
+            let (name, params) = name.split_once('<').unwrap_or((name, ""));
+            let params = params.trim_end_matches('>').split(',').map(str::trim);
+            let params = params.filter(|p| !p.is_empty()).map(|p| {
+                (TVar::empty_named(ArcStr::from(p.trim_start_matches('\''))), None)
+            });
             env.deftype(
                 &ModPath::root(),
                 name,
-                Arc::from_iter([]),
+                Arc::from_iter(params),
                 &TypeDefBody::Alias(parse_type(body).unwrap()),
                 true,
                 None,
@@ -1271,6 +1370,69 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(freeze_for_abi_normalized(&t).is_some());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// `L<i> = [L<i-1>, M<i-1>]` and `M<i> = [M<i-1>, L<i-1>]` to `L<n>`,
+    /// over `L0` and `M0`, each name taking the parameters `params`.
+    fn union_dag(n: usize, params: &str, l0: &str, m0: &str) -> Vec<(String, String)> {
+        let mut defs = vec![(format!("L0{params}"), l0.into())];
+        defs.push((format!("M0{params}"), m0.into()));
+        for i in 1..=n {
+            let (l, m) = (format!("L{}{params}", i - 1), format!("M{}{params}", i - 1));
+            defs.push((format!("L{i}{params}"), format!("[{l}, {m}]")));
+            defs.push((format!("M{i}{params}"), format!("[{m}, {l}]")));
+        }
+        defs
+    }
+
+    /// Classifying and freezing a DAG of named unions expands each name
+    /// applied to each parameter list a bounded number of times: walked
+    /// as a tree, `L<n>` is 2^n paths.
+    #[test]
+    fn a_dag_of_named_unions_classifies_and_freezes_once_per_name() {
+        let freezes = |t: &Type, flat: &str| {
+            let (_env, flat) = typed(&[], flat);
+            freeze_for_abi_normalized(t) == freeze_for_abi_normalized(&flat)
+        };
+        for n in [4, 8, 16, 32] {
+            for (params, l0, m0, t, flat) in [
+                ("", "[i64, string]", "[string, i64]", "L{n}", "[i64, string]"),
+                (
+                    "",
+                    "[i64, Array<i64>]",
+                    "[Array<i64>, i64]",
+                    "L{n}",
+                    "[i64, Array<i64>]",
+                ),
+                ("", "[`A, `B]", "[`B, `A]", "L{n}", "[`A, `B]"),
+                (
+                    "<'a>",
+                    "['a, string]",
+                    "[string, 'a]",
+                    "[L{n}<i64>, L{n}<bool>]",
+                    "[i64, bool, string]",
+                ),
+                (
+                    "<'a>",
+                    "['a, string]",
+                    "[string, 'a]",
+                    "[L{n}<i64>, M{n}<Array<i64>>]",
+                    "[i64, string, Array<i64>]",
+                ),
+            ] {
+                let t = t.replace("{n}", &n.to_string());
+                let (_env, typ) = typed(&union_dag(n, params, l0, m0), &t);
+                EXPANSIONS.with(|c| c.set(0));
+                assert_eq!(abi_kind(&typ), Some(AbiKind::Value), "{t} over {l0}");
+                let classified = EXPANSIONS.with(|c| c.replace(0));
+                assert!(freezes(&typ, flat), "{t} over {l0} freezes as {flat}");
+                let frozen = EXPANSIONS.with(|c| c.get());
+                assert!(
+                    classified <= 8 * n + 8 && frozen <= 8 * n + 8,
+                    "{t} over {l0}: {classified} expansions to classify, {frozen} to freeze"
+                );
+            }
+        }
     }
 
     /// A union naming union typedefs freezes as the flat union written out.
@@ -1395,7 +1557,7 @@ mod tests {
         let members =
             [levels.last().unwrap().clone(), Type::Primitive(Typ::String.into())];
         let want = Type::Primitive(Typ::I64 | Typ::I32 | Typ::String);
-        assert_eq!(primitive_union(&members), Some(want));
+        assert_eq!(primitive_union(&members, &mut Folds::default()), Some(want));
         drop(members);
         // outermost first, so no drop recurses
         while levels.pop().is_some() {}

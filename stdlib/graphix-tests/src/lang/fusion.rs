@@ -2254,6 +2254,26 @@ run!(typedef_instances_expand_apart, TYPEDEF_INSTANCES_EXPAND_APART, |v: Result<
     matches!(v, Ok(Value::I64(2)))
 });
 
+// A select over a DAG of named unions fuses as the primitives the names
+// reach, each application of a name read as its own: `L2<i64>` holds
+// `i64` and `M2<bool>` holds `bool`.
+run!(native_select_over_a_dag_of_named_unions, r#"{
+  type L0<'a> = ['a, string];
+  type M0<'a> = [string, 'a];
+  type L1<'a> = [L0<'a>, M0<'a>];
+  type M1<'a> = [M0<'a>, L0<'a>];
+  type L2<'a> = [L1<'a>, M1<'a>];
+  type M2<'a> = [M1<'a>, L1<'a>];
+  let f = |x: [L2<i64>, M2<bool>]| -> i64 #[native] select x {
+    i64 as i => i,
+    bool as b => select b { true => 10, false => 20 },
+    string as s => str::len(s)
+  };
+  [f(3), f(true), f("quux")]
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:3, i64:10, i64:4]")
+}; FuseExpect::Jit);
+
 // A labeled formal is passed by its name: a self-recursive lambda with
 // one and a lambda with a labeled callback both fuse.
 const LABELED_FORMALS_FUSE: &str = r#"
