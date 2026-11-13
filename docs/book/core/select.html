@@ -439,7 +439,13 @@ arm that subsumes them.</p>
 its own position, when its arm tests nothing else: <code>([], _)</code> and
 <code>([x, ..], _)</code> cover <code>(Array&lt;i64&gt;, i64)</code>, and <code>([x, y, ..], _)</code> after
 <code>([x, ..], _)</code> is dead. An arm that also tests another position, as
-<code>([x, ..], 0)</code> does, claims no lengths.</p>
+<code>([x, ..], 0)</code> does, claims no lengths. A position of several array
+types counts as one array, so <code>`A([])</code> and <code>`A([x, ..])</code> cover
+<code>`A([Array&lt;i64&gt;, Array&lt;string&gt;])</code>. One that also holds a value no
+slice matches (<code>`A([Array&lt;i64&gt;, null])</code>) counts no lengths: finish
+its arms with a catch-all there (<code>`A(_)</code>), or write the type one
+variant a member (<code>[`A(Array&lt;i64&gt;), `A(null)]</code>), where
+<code>`A(null)</code> is an arm of its own.</p>
 <h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
 <p>Lists (see <a href="./fundamental_types.html#list">Fundamental Types</a>) have
 their own slice-like patterns, written with the list literal's
@@ -610,7 +616,10 @@ Caused by:
     3: the pattern { a, .. } matches two members, { a: Array&lt;i64&gt;, c: 'x } and { a: Array&lt;string&gt;, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
 </code></pre>
 <p>Annotating <code>x</code> and <code>y</code> (<code>let x: i64 = never()</code>) decides them, and naming
-every field, <code>{a, c: _}</code>, matches both members as they are.</p>
+every field, <code>{a, c: _}</code>, matches both members as they are. An undecided
+type no binding names (the element of a <code>[]</code> written in the struct) is
+shown as <code>'_1</code>, <code>'_2</code>: annotate the binding the struct is built into, or
+bind the value and annotate that.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
 <pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
@@ -668,6 +677,8 @@ the arm and delivers its bindings.</p>
 <li><strong>Same binds.</strong> Every alternative must bind exactly the same names, and a
 name's type is the union of its types in the alternatives:
 <code>`A(n) | `B(n)</code> over <code>[`A(i64), `B(string)]</code> binds <code>n: [i64, string]</code>.
+Functions bound under one name are one function type where their
+signatures agree, so the name can be called.
 <code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
 alternative binds <code>x</code>, the first binds nothing).</li>
 <li><strong>One guard per arm.</strong> A guard written after the alternation covers the

@@ -299,7 +299,12 @@ call is a compile error: annotate the argument.</p>
 // ≡ select v { i64 as x =&gt; show(x), Counter as x =&gt; show(x) }
 show(v)
 </code></pre>
-<p>Every member needs an implementation. The call narrows only the <code>self</code>
+<p>Every member needs an implementation. Two spellings of one type are one
+member. Where one member holds another (<code>Array&lt;i64&gt;</code> beside
+<code>Array&lt;[i64, string]&gt;</code>) the narrower is tested first. A value that two
+members share where neither holds the other (<code>[1]</code> in <code>Array&lt;[i64, string]&gt;</code> and <code>Array&lt;[i64, null]&gt;</code>) takes the one that comes first in
+the union as it prints: a union's members are sorted, so that is not the
+order they were written in. The call narrows only the <code>self</code>
 argument, so a trait with a method that takes <code>self</code> anywhere else (as
 another parameter's type, or in the bound of a type variable) cannot be
 called on a union: write the <code>select</code> yourself there.</p>

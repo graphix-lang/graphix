@@ -2172,7 +2172,13 @@ arm that subsumes them.</p>
 its own position, when its arm tests nothing else: <code>([], _)</code> and
 <code>([x, ..], _)</code> cover <code>(Array&lt;i64&gt;, i64)</code>, and <code>([x, y, ..], _)</code> after
 <code>([x, ..], _)</code> is dead. An arm that also tests another position, as
-<code>([x, ..], 0)</code> does, claims no lengths.</p>
+<code>([x, ..], 0)</code> does, claims no lengths. A position of several array
+types counts as one array, so <code>`A([])</code> and <code>`A([x, ..])</code> cover
+<code>`A([Array&lt;i64&gt;, Array&lt;string&gt;])</code>. One that also holds a value no
+slice matches (<code>`A([Array&lt;i64&gt;, null])</code>) counts no lengths: finish
+its arms with a catch-all there (<code>`A(_)</code>), or write the type one
+variant a member (<code>[`A(Array&lt;i64&gt;), `A(null)]</code>), where
+<code>`A(null)</code> is an arm of its own.</p>
 <h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
 <p>Lists (see <a href="core/./fundamental_types.html#list">Fundamental Types</a>) have
 their own slice-like patterns, written with the list literal's
@@ -2343,7 +2349,10 @@ Caused by:
     3: the pattern { a, .. } matches two members, { a: Array&lt;i64&gt;, c: 'x } and { a: Array&lt;string&gt;, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
 </code></pre>
 <p>Annotating <code>x</code> and <code>y</code> (<code>let x: i64 = never()</code>) decides them, and naming
-every field, <code>{a, c: _}</code>, matches both members as they are.</p>
+every field, <code>{a, c: _}</code>, matches both members as they are. An undecided
+type no binding names (the element of a <code>[]</code> written in the struct) is
+shown as <code>'_1</code>, <code>'_2</code>: annotate the binding the struct is built into, or
+bind the value and annotate that.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
 <pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
@@ -2401,6 +2410,8 @@ the arm and delivers its bindings.</p>
 <li><strong>Same binds.</strong> Every alternative must bind exactly the same names, and a
 name's type is the union of its types in the alternatives:
 <code>`A(n) | `B(n)</code> over <code>[`A(i64), `B(string)]</code> binds <code>n: [i64, string]</code>.
+Functions bound under one name are one function type where their
+signatures agree, so the name can be called.
 <code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
 alternative binds <code>x</code>, the first binds nothing).</li>
 <li><strong>One guard per arm.</strong> A guard written after the alternation covers the
@@ -2533,7 +2544,9 @@ waits for that run to complete:</p>
 </code></pre>
 <p>An error inside the inner <code>seq</code> aborts the inner run and, unless a
 <code>try</code> in the outer body takes it, the outer run as well. A nested
-<code>seq</code> costs two cycles more than the same statements written inline.</p>
+<code>seq</code> costs two cycles more than the same statements written inline.
+One with a trigger of its own waits for that trigger in every run of the
+outer <code>seq</code>: a fire it has already run on does not start it again.</p>
 <h2 id="seq-and-seqq-1"><a class="header" href="#seq-and-seqq-1"><code>seq</code> and <code>seqq</code></a></h2>
 <p>The two forms differ in what happens when the trigger fires while a run
 is in progress:</p>
@@ -2934,6 +2947,14 @@ to wait for errors. Write <code>catch(e) failed &lt;- e ~ true</code>, rather th
 <code>catch(e) failed &lt;- true</code>, which writes once when the program starts,
 before any error has arrived, and never when one does. The checker warns
 when a handler never reads its binder.</p>
+<p>Errors raised to one catch in the same cycle arrive one per cycle, in the
+order they were raised. A catch inside a <a href="core/select.html">select</a> arm that falls
+asleep before they have all arrived never hears the rest: nothing that
+waits on its binder (a <code>~</code>, a <code>&lt;-</code>, a <code>count</code>) runs for them. The binder
+still takes each of them, so an expression in the handler that only
+computes from it (<code>"[e]"</code>) shows the last error raised once the arm is
+selected again. A catch outside the arm does not sleep with it, and hears
+every error.</p>
 <p>The catch here covers <code>calc(in0)</code> — and only that block: a catch installed
 inside a block covers the rest of THAT block, nothing outside it. A second
 catch in the same block shadows the first for the statements below it; a
@@ -3359,8 +3380,8 @@ g(3)
 <code>fn&lt;&gt;</code> header lists a declared variable only while the function is
 generic, each call still picking it. One instance prints without the
 header, its variable where it occurs, as an inferred one does. Two
-instances are two variables, so where one type holds both the second
-prints numbered apart, <code>'a1</code>:</p>
+instances are two variables, so where one message shows both the second
+prints numbered apart, <code>'a1</code>, in every type the message prints:</p>
 <pre><code class="language-graphix">〉let mk = |z: i64| 'a: Number |x: 'a| -&gt; 'a x
 〉let h = mk(0)
 〉h
@@ -4533,7 +4554,12 @@ call is a compile error: annotate the argument.</p>
 // ≡ select v { i64 as x =&gt; show(x), Counter as x =&gt; show(x) }
 show(v)
 </code></pre>
-<p>Every member needs an implementation. The call narrows only the <code>self</code>
+<p>Every member needs an implementation. Two spellings of one type are one
+member. Where one member holds another (<code>Array&lt;i64&gt;</code> beside
+<code>Array&lt;[i64, string]&gt;</code>) the narrower is tested first. A value that two
+members share where neither holds the other (<code>[1]</code> in <code>Array&lt;[i64, string]&gt;</code> and <code>Array&lt;[i64, null]&gt;</code>) takes the one that comes first in
+the union as it prints: a union's members are sorted, so that is not the
+order they were written in. The call narrows only the <code>self</code>
 argument, so a trait with a method that takes <code>self</code> anywhere else (as
 another parameter's type, or in the bound of a type variable) cannot be
 called on a union: write the <code>select</code> yourself there.</p>
@@ -5616,8 +5642,9 @@ module, if any, will be deleted. If compilation succeeded the new module will be
 initialized, possibly causing values it exports to update.</p>
 <p>A function taken out of the module and kept somewhere else (<code>saved &lt;- foo::add</code>) is the function of the body it was taken from. After a reload it
 still runs that body's code, over that body's bindings as they last stood, and
-it sees nothing of the new module. Code that should follow a reload calls
-through the module each time, <code>foo::add(x)</code>.</p>
+it sees nothing of the new module: a trait method its code calls is the one that
+body implemented, and a name it uses is what that body imported. Code that should
+follow a reload calls through the module each time, <code>foo::add(x)</code>.</p>
 <p>Obviously the loaded module must match the type signature defined in the dynamic
 mod statement. However, the signature checking only cares that every item
 mentioned in the signature is present in the dynamic module and that the types
@@ -18641,7 +18668,11 @@ first update of a node in a select arm, a callback or a function entered
 after the program starts: the arguments' standing values arrive <code>Stale</code>,
 constants included, so <code>seam_value</code> has them and <code>seam_tick</code> is <code>None</code>
 until one fires. A builtin that advances on events does nothing there
-until an argument fires. A builtin aborts an operation in flight that
+until an argument fires. A <code>Stateless</code> builtin computes from its
+arguments at every update, whether they fired or stand, and gives the
+result <code>Fired</code> when one fired and <code>Stale</code> otherwise: a standing
+argument's value may have changed with no event while the builtin's arm
+slept. A builtin aborts an operation in flight that
 it cannot pause and keeps its last result: the wake does not issue the
 call again (a call that is not cancel-safe, a stream read for one,
 finishes instead, and nothing answers it: a reply made after a sleep is
