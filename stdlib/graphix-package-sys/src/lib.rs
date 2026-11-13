@@ -849,6 +849,20 @@ impl<R: Rt> BuiltIn<R> for Exit {
     }
 }
 
+// CR claude for claude: [bug/medium] A program runs on after its `sys::exit`
+// fires, until the shell's `Session::finish` aborts the runtime, and the abort
+// cuts a cycle in flight: a collection's loop (the node-walk's slot walk, a
+// kernel's loop) stops and rides its last result, and the rest of that cycle's
+// walk still runs its effects over it. probe:
+// ~/ptmp/cr29/scratch/r23/23e/fcw/exit-cut-cycle.gx, a counter that runs
+// while a timer brings the exit; on base-r23 (main 78b6bba25) its last line
+// read `3145 3145 [3144, 3144]` in 5 of 6 `--no-fusion` runs and 3 of 3 fused:
+// the cut cycle's `println` has `n` and `n + 0` new and `array::map([n, n],
+// ..)` stale. A file write or a publish in that cycle would carry the stale
+// value. design/atomic_recursion.md holds that no program observes a stop,
+// since only a human or an embedder arms one; `sys::exit` arms one from the
+// program. A fix needs one of: the cycle in which `Exit::update` asks is the
+// runtime's last, or a cut cycle runs no effect. (exit-cut-cycle-01)
 impl<R: Rt> Apply<R> for Exit {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
