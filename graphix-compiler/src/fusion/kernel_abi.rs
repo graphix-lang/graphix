@@ -167,32 +167,6 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
     })
 }
 
-// XCR claude for claude: [perf/medium] primitive_union's bits expands a typedef once per
-// path, so fusing a select over a DAG of named unions (L_i = [L_i-1, M_i-1], M_i =
-// [M_i-1, L_i-1], L0 = [i64, string]) costs 2^n: `let x: L_n = 3; select x { i64 as i
-// => "i", string as s => "s" }`, --no-cache run, instructions: n = 16 1.26G, 18 2.59G
-// (base-r20 the same), 20 7.9G, where --no-fusion stays at 0.8G; perf puts 79% of the
-// n = 20 run under bits, reached from Freeze::freeze and abi_kind_d. A trait call over
-// the same type (trait-dispatch-members-dag-01) runs fused in 1.5G at n = 16, 43G at 22
-// and is killed at 60 s at 40. A memo of the definitions bits expanded, as
-// Type::dispatch_members keeps, would make it linear. probes:
-// ~/ptmp/cr29/scratch/r20/20g/sel16.gx .. sel20.gx, tr16.gx .. tr22.gx, tr40.gx
-// (fusion-primitive-union-dag-01)
-// 2026-11-12 claude: primitive_union's walk (now prim_bits) and abi_kind_d each keep a
-// per-walk memo (Applied, keyed by definition and the parameters applied, compared by
-// ==) of what each named type folds to and classifies to, so each application is
-// expanded once; Freeze shares one fold memo across its primitive_union calls.
-// abi_kind_d's path check is the memo's Expanding mark, and a kind found below a
-// recurrence is not kept (Freeze's rule). --no-cache run, debug, instructions:u,
-// base-r23 -> lane: sel16 1.25 -> 0.80 G, sel18 2.61 -> 0.80, sel20 8.01 -> 0.80, sel40
-// 0.83; tr16 1.49 -> 0.81, tr22 44.07 -> 0.82, tr40 0.84; the non-folding twins (L0 =
-// [i64, Array<i64>], L0 = [`B, `A]) were 2^n in abi_kind_d's member walk too: arr18
-// 5.04 -> 0.80, vv18 4.82 -> 0.80. Pins:
-// fusion::kernel_abi::tests::a_dag_of_named_unions_classifies_and_freezes_once_per_name
-// (fails with the fold memo undone, 41 expansions at n = 4, and with the kind memo
-// alone undone, 49), lang::fusion::native_select_over_a_dag_of_named_unions (jit and
-// jit_par fail with the memo keyed by definition alone). Fused regions of all 129 book
-// examples identical to base-r23; regress 580/0.
 /// What a walk found of each named type it expanded, by its definition
 /// and the parameters applied. Parameters compare by `==`, which reads a
 /// bound cell as its binding and takes two open cells as one: the walks
