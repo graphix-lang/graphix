@@ -3,6 +3,7 @@
 
 mod harness;
 
+use graphix_compiler::typ::Brief;
 use harness::Client;
 
 const MAIN: &str = "\
@@ -1417,4 +1418,30 @@ fn a_module_block_type_follows_each_check() {
     c.edit("k.gx", "type T = string;\nlet z = 1;\n");
     let d = c.diagnostics("m.gx");
     assert!(d.len() == 1 && d[0].2.contains("L does not contain i64"), "{d:?}");
+}
+
+/// A hover prints a binding's type no further than `Brief::MOST`: what a
+/// select's arms leave of a test written 16 Errors deep shares its levels,
+/// 2^16 paths through 16 nodes.
+#[test]
+fn hover_of_a_shared_type_is_bounded() {
+    let tower = format!("{}`A{}", "Error<".repeat(16), ">".repeat(16));
+    let main = format!(
+        "type T = [Error<T>, Error<U>, `A];
+type U = [Error<T>, Error<U>, `B];
+let x: T = `A;
+let r = select x {{ {tower} as e => 0, `A => 1, e => {{ let w = e; 2 }} }};
+println(\"[r]\")
+"
+    );
+    let mut c = Client::start(&[("main.gx", main.as_str())]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let got = c.hover("main.gx", "let |w = e").unwrap_or_default();
+    assert!(got.contains("w: Error<[Error<[Error<"), "{}", &got[..got.len().min(200)]);
+    assert!(
+        got.len() <= Brief::MOST + Brief::BYTES && got.contains('…'),
+        "{}",
+        got.len()
+    );
 }

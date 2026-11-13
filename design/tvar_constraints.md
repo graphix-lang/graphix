@@ -2574,7 +2574,12 @@ references to different types share the form (`Type::ref_over_any`);
 nothing orders references or hashes them by value (`Ordered`).
 Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`;
 under it a union's members that name one cell or print alike (two cells
-bound to one type) print once. A hint's declaration writes a type as a
+bound to one type) print once. A type that shares its parts prints as a
+tree, 2^depth long, so a print where cells stand (`DerefTVars` or
+`StandingHeaders`) stops at `typ::Brief::MOST` bytes, `…` where it is
+cut, and a computed type a refusal names (a mismatch's two sides, what a
+select's arms leave) prints through `typ::Brief`, cut at `Brief::BYTES`.
+A hint's declaration writes a type as a
 program can (`Type::written_form`): an open cell as `'x` for the binding
 `x` it waits for (`node::Holders`), an unnamed referent's as `'r` for the
 binding `r` holding its reference, else as the variable a program wrote,

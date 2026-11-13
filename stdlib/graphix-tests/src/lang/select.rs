@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::literal;
-use graphix_compiler::CFlag;
+use graphix_compiler::{CFlag, typ::Brief};
 use graphix_package_core::{
     run,
     testing::{FuseExpect, Mode, TestCtx, as_i64s, config, eval, is, prints, refused},
@@ -12060,4 +12060,60 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
         if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0]);
     FuseExpect::Jit
+);
+
+/// A select over `T` whose first arm tests 14 Errors deep, then `arms`:
+/// what reaches the later arms is exact and shares its levels, 2^14 paths
+/// through 14 nodes.
+fn shared_residual(arms: &str) -> String {
+    let tower = format!("{}`A{}", "Error<".repeat(14), ">".repeat(14));
+    format!(
+        "{{
+  type T = [Error<T>, Error<U>, `A];
+  type U = [Error<T>, Error<U>, `B];
+  let x: T = `A;
+  select x {{ {tower} as e => 0, {arms} }}
+}}"
+    )
+}
+
+/// A refusal naming `phrase` in no more than `most` bytes.
+fn refused_within(phrase: &'static str, most: usize) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| match v {
+        Err(e) => {
+            let e = format!("{e:#}");
+            e.contains(phrase) && e.len() <= most
+        }
+        Ok(_) => false,
+    }
+}
+
+// What the arms leave prints as a diagnostic's type, cut where it passes
+// Brief::BYTES, and a later arm's bind prints no further than Brief::MOST.
+run!(
+    shared_residual_missing_cases_is_brief,
+    shared_residual("`A => 1"),
+    refused_within("missing match cases: no arm covers [Error<[Error<", 4 * Brief::BYTES);
+    FuseExpect::None
+);
+
+run!(
+    shared_residual_dead_arm_is_brief,
+    shared_residual("`A => 1, i64 as n => 2, _ => 3"),
+    refused_within("pattern i64 will never match [Error<[Error<", 4 * Brief::BYTES);
+    FuseExpect::None
+);
+
+run!(
+    shared_residual_or_alternative_is_brief,
+    shared_residual("`A | `C => 1, _ => 3"),
+    refused_within("`C will never match [Error<[Error<", 4 * Brief::BYTES);
+    FuseExpect::None
+);
+
+run!(
+    shared_residual_later_bind_is_bounded,
+    shared_residual("`A => 1, e => e + 1"),
+    refused_within("cannot compute Error<[Error<", Brief::MOST + 4 * Brief::BYTES);
+    FuseExpect::None
 );

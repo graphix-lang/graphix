@@ -184,6 +184,9 @@ impl fmt::Display for SetMember<'_> {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if SHOWN.get() == usize::MAX && crate::print_standing() {
+            return write_capped(f, self, Brief::MOST);
+        }
         let _printing = Printing::enter(|| self.clone());
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
     }
@@ -193,48 +196,55 @@ impl fmt::Display for Type {
 /// current flags, tvars dereferenced. A type that shares its parts prints
 /// as a tree, 2^depth long, and the printer stops at the first write
 /// refused; a union's members print into scratch no further than the cap
-/// needs ([`write_deref_set`]).
+/// needs ([`write_deref_set`]). Any other print where cells print as they
+/// stand (a message, the REPL's type, a hover) is cut at [`Brief::MOST`].
 pub struct Brief<'a>(pub &'a Type);
 
 impl Brief<'_> {
     pub const BYTES: usize = 512;
+    pub const MOST: usize = 1 << 16;
 }
 
 impl fmt::Display for Brief<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        struct Capped<'a, 'b> {
-            f: &'a mut fmt::Formatter<'b>,
-            left: usize,
-        }
-        impl Write for Capped<'_, '_> {
-            fn write_str(&mut self, s: &str) -> fmt::Result {
-                if s.len() <= self.left {
-                    self.left -= s.len();
-                    return self.f.write_str(s);
-                }
-                let mut end = self.left;
-                while !s.is_char_boundary(end) {
-                    end -= 1;
-                }
-                self.left = 0;
-                self.f.write_str(&s[..end])?;
-                Err(fmt::Error)
-            }
-        }
-        let mut capped = Capped { f, left: Self::BYTES };
-        let _shown = Restore::replace(&SHOWN, SHOWN.get().min(Self::BYTES));
-        let typ = self.0;
         let flags = PRINT_FLAGS.get() | PrintFlag::DerefTVars;
-        match crate::format_with_flags(flags, || write!(capped, "{typ}")) {
-            Err(_) if capped.left == 0 => capped.f.write_str("…"),
-            r => r,
+        crate::format_with_flags(flags, || write_capped(f, self.0, Self::BYTES))
+    }
+}
+
+/// `typ`'s first `bytes` as printed under the current flags, then `…`
+/// where it was cut.
+fn write_capped(f: &mut fmt::Formatter<'_>, typ: &Type, bytes: usize) -> fmt::Result {
+    struct Capped<'a, 'b> {
+        f: &'a mut fmt::Formatter<'b>,
+        left: usize,
+    }
+    impl Write for Capped<'_, '_> {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            if s.len() <= self.left {
+                self.left -= s.len();
+                return self.f.write_str(s);
+            }
+            let mut end = self.left;
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.left = 0;
+            self.f.write_str(&s[..end])?;
+            Err(fmt::Error)
         }
+    }
+    let mut capped = Capped { f, left: bytes };
+    let _shown = Restore::replace(&SHOWN, SHOWN.get().min(bytes));
+    match write!(capped, "{typ}") {
+        Err(_) if capped.left == 0 => capped.f.write_str("…"),
+        r => r,
     }
 }
 
 thread_local! {
-    /// No less than what the capped print being written ([`Brief`]) still
-    /// shows; unbounded outside one.
+    /// No less than what the capped print being written still shows;
+    /// unbounded outside one.
     static SHOWN: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 

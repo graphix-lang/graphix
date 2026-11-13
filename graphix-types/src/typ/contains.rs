@@ -7050,6 +7050,33 @@ mod tests {
         assert_eq!(format_compact!("{}", Brief(&small)), "i64");
     }
 
+    /// A print where cells print as they stand stops at [`Brief::MOST`]: a
+    /// message that prints a type whole, the REPL's type of an input, a
+    /// hover. Over types without cells it prints as far as the plain print
+    /// does, but for the members `DerefTVars` prints once.
+    #[test]
+    fn a_standing_print_is_bounded() {
+        let [pair, _, _] = shared_unions(16);
+        let [_, tags, alike] = shared_unions(10);
+        let deref: BitFlags<PrintFlag> = PrintFlag::DerefTVars.into();
+        let hover = PrintFlag::ReplacePrims | PrintFlag::StandingHeaders;
+        for (t, merges) in [(pair, false), (tags, false), (alike, true)] {
+            let plain = format!("{t}");
+            assert!(plain.len() > Brief::MOST, "{}", plain.len());
+            for flags in [deref, hover] {
+                let s = format_with_flags(flags, || format!("{t}"));
+                assert!(
+                    s.len() <= Brief::MOST + '…'.len_utf8() && s.ends_with('…'),
+                    "{}",
+                    s.len()
+                );
+                if !(merges && flags == deref) {
+                    assert_eq!(Some(&plain[..Brief::MOST]), s.strip_suffix('…'));
+                }
+            }
+        }
+    }
+
     /// A capped union prints as far as the uncapped print does.
     #[test]
     fn brief_of_a_union_is_its_print_cut() {

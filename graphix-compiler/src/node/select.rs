@@ -23,8 +23,8 @@ use crate::{
     },
     prune::BoundaryRef,
     typ::{
-        AbstractId, ContainsFlags, InfiniteType, NodeKey, Open, ShallowScrutinee, TVar,
-        Type, TypeMismatch,
+        AbstractId, Brief, ContainsFlags, InfiniteType, NodeKey, Open, ShallowScrutinee,
+        TVar, Type, TypeMismatch,
     },
     wrap,
 };
@@ -987,7 +987,7 @@ impl Reach {
             ));
         }
         if checking && !pat.type_predicate.could_match(env, &self.atype)? {
-            let (tp, atype) = (&pat.type_predicate, &self.atype);
+            let (tp, atype) = (&pat.type_predicate, Brief(&self.atype));
             return dead_at(format_with_flags(PrintFlag::DerefTVars, || {
                 if pat.explicit_type_predicate && tp.has_bottom() {
                     anyhow!(
@@ -1039,7 +1039,8 @@ impl Reach {
                     } else {
                         anyhow!(
                             "unreachable or-pattern alternative: {at} will never match \
-                             {atype}, unused match cases"
+                             {}, unused match cases",
+                            Brief(atype)
                         )
                     }
                 }));
@@ -1337,7 +1338,7 @@ impl Reach {
                 break;
             }
         }
-        // CR claude for claude: [bug/medium] A refusal that prints what the arms leave
+        // XCR claude for claude: [bug/medium] A refusal that prints what the arms leave
         // prints a shared type as a tree. What a test written `d` Errors deep leaves of
         // unions that branch (`type T = [Error<T>, Error<U>, `A]; type U = [Error<T>,
         // Error<U>, `B]`, `x: T`, arms `Error<..Error<`A>..> as e => 0, `A => 1`) is
@@ -1355,18 +1356,32 @@ impl Reach {
         // printing is program-visible, or names a shared node once. probes:
         // ~/ptmp/cr29/scratch/r23/23c/dpr/deep12.gx, deep24.gx, deep40.gx
         // (residual-message-tree-01)
+        // 2026-11-13 claude: Type's Display cuts every print where cells stand (DerefTVars or
+        // StandingHeaders: a message, the REPL's -: line, an LSP hover) at Brief::MOST (64 KiB)
+        // through the capped writer Brief already used (print::write_capped), and the select's
+        // refusals that print what the arms leave (missing match cases, pattern .. will never
+        // match, an or-alternative's, a slice ladder's member) print it through Brief (512
+        // bytes). Probes: deep24 checks in 0.78G instructions (base-r24 178.6G; an empty
+        // program 0.75G), deep40 0.82G (base killed at 60 s); a later arm's bind in e + 1 at d
+        // = 40, 0.84G. Pins that fail without it:
+        // lang::select::shared_residual_{missing_cases,dead_arm,or_alternative}_is_brief (the
+        // Brief sites), lang::select::shared_residual_later_bind_is_bounded and
+        // typ::contains::tests::a_standing_print_is_bounded (the cap), graphix-shell tests/lsp
+        // hover_of_a_shared_type_is_bounded (the cap under StandingHeaders: a hover of
+        // 1,064,967 bytes at d = 16 without it). Other messages that print a later arm's bind
+        // (op.rs's cannot compute) stay whole up to the 64 KiB cap.
         format_with_flags(PrintFlag::DerefTVars, || {
             let gap = match open {
                 None => format_compact!(""),
                 Some(l) if l.rest.is_none() => format_compact!(
                     " (the slice arms cover finitely many lengths of {} — it also needs \
                      a rest pattern or a wildcard)",
-                    l.member
+                    Brief(&l.member)
                 ),
                 Some(l) => format_compact!(
                     " (the slice arms leave length {} of {} uncovered)",
                     l.gap().unwrap_or(0),
-                    l.member
+                    Brief(&l.member)
                 ),
             };
             let refutable = match self.refutable_slice {
@@ -1388,7 +1403,7 @@ impl Reach {
             };
             Err(anyhow!(
                 "missing match cases: no arm covers {}{gap}{refutable}{guarded}{settled}",
-                self.atype.normalize()
+                Brief(&self.atype.normalize())
             ))
         })
     }
