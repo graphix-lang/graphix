@@ -1615,66 +1615,6 @@ fn commit_cell_bounds(
     Ok(true)
 }
 
-// XCR claude for claude: [bug/medium] A union bound two of whose members take the value's
-// constructor passes nothing down to the value's open cells, and neither does a read-only
-// reference bound whose referent is a union to a writable reference: the check accepts what the
-// build refuses. `let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r =
-// f([z]); z <- 2.5; println(r)` passes --check and the build refuses the instance ("an instance at
-// fn(v: Array<f64>) -> Array<f64> of a definition typed fn<'a: [Array<i64>, Array<string>]>");
-// alike `'a: [&mut [i64, null], &mut string]` with `f(&mut z)`, and the lone bound `'a: &[i64,
-// null]` with `f(&mut z); z <- "hello"` (commit_parts pairs read-only references only). base-r20
-// alike. Two read-only members do narrow, by another path (`'a: [&[i64, null], &string]` with
-// `f(&z)` holds z within [i64, null, string]). The one case of two that is decided, an undecided
-// writable reference against a read-only and a writable member, goes to the writable member, so
-// `'a: [&[i64, null], &mut string]` with `let g = |z| f(&mut z); *g(5)` is refused ("string does
-// not contain i64") where `|z: i64|` runs. A fix refuses the choice where two members take a value
-// that holds a cell to decide, naming the annotation, or narrows the cell to what the members
-// allow together, and pairs a read-only member with a writable value; it needs a census. probes:
-// ~/ptmp/cr29/scratch/r20/20b/ocd-review/{m7,m8,m1,m11,m13}.gx (union-bound-two-takers-01)
-// 2026-11-11 claude: The follow-up round (r20-x6) closed one case and left the rest: for a
-// function value, of several members that take its constructor the one a probe admits it into has
-// the parts (commit_parts), so a callback takes its parameter's type from the member its result
-// fits (pins
-// lang::types::callback_into_{the_second_member_of_a_union_bound,a_union_bound_takes_the_members_parameter}).
-// That was needed once no member is picked by order at a callback's pre-unification, which is what
-// had typed the parameter before (and refused the second member's callback). Data values are as
-// this CR describes: trying the same rule for every constructor fixed one generated program and
-// split another (g3_p00623 against g3_p00505: an instance refused over a nested T typedef once the
-// empty arrays' elements are narrowed), so it wants its own look. g3_p00623 is the one program of
-// 6650 generated that passes the check and fails the build here and not on r20-staging without
-// lane 20b (which refuses it at the check); the lane before the round split it too. probes:
-// ~/ptmp/cr29/scratch/r20/20b/x6/residual/{g3_p00623,g3_p00505}.gx
-// 2026-11-11 claude: One generated program that ran before the follow-up round is refused by it through this
-// hole: m11_m00620.gx passes [|v| [null]] at 'a2: P<'a3, 'a4> (two array members take the array), nothing
-// reaches 'a3, and its settle then fails, unsatisfiable constraints on 'a3: G<..>; the pre-unification's pick
-// by order had bound it. probe: ~/ptmp/cr29/scratch/r20/20b/x6/residual/m11_m00620.gx
-// 2026-11-12 claude: Review of open-param-let-arg-01 (lane 23b): the same hole with the undecided array a
-// binding read as an array before the call. Over `type P<'x, 'y> = [Array<'x>, Array<'y>, null]` and `let f =
-// 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0`,
-// `let v = never(); let s = array::len(v); let r = f(v, null, [1]); v <- [7]` passes --check and the build
-// refuses the instance at fn(x0: Array<i64>, x1: null, x2: Array<i64>); annotated (`let v: Array<i64> =
-// never()`) the check refuses the call. Under GRAPHIX_NO_SUBST it runs and prints `1 [7]`. base-r23 alike; 12
-// of 1584 generated programs (gen2.py, the len_*_pun3 family). probe: ~/ptmp/cr29/scratch/r23/23b/opl/z/u1.gx
-// 2026-11-13 claude: Fixed in contains::member_with_parts. Of the members that take the value's constructor
-// the one a probe admits it into has the parts (every constructor now, not functions alone), or the one of
-// those that holds the others; where two admit a value holding a cell to decide and neither holds it whatever
-// decides the cell, the check refuses (contains::UndecidedTaker) and the call names the binding to annotate
-// (callsite.rs::undecided_taker). The writable-member pick is gone: m11 is refused at the choice, naming z.
-// commit_parts also pairs a read-only member with a writable value, makes a writable member's referent the
-// value's exactly, and passes a map's key down. m7, m8, m1, m11, u1, an empty array (f([]) with the result
-// read at Array<f64>) and a lambda at two function members are refused at the check; m13 and the annotated
-// twins run; g3_p00623 and m11_m00620 build. Pins that fail with the fix undone:
-// lang::types::union_bound_undecided_writable_reference_is_refused,
-// union_bound_two_array_members_refuse_{an_undecided_element,an_empty_array},
-// union_bound_two_writable_members_refuse_an_undecided_referent,
-// union_bound_two_function_members_refuse_an_undecided_lambda,
-// union_bound_through_a_typedef_refuses_an_undecided_array,
-// union_bound_one_admitting_member_decides_the_cell, reference_bound_reaches_a_writable_referent,
-// writable_reference_bound_{decides_the_referent,referent_accepts}, map_bound_reaches_an_open_key,
-// seq_step_empty_array_into_a_bound_union_two_members_take_is_refused;
-// union_bound_members_decided_alike_take_an_empty_array holds the other edge. Not covered: a walk that is a
-// trial, ordered or a pre-unification passes the choice by, and the same choice at a union that is no bound
-// is undecided-into-two-decided-01. probes: ~/ptmp/cr29/scratch/r23/23b/ubt/
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
