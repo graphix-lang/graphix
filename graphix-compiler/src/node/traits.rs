@@ -756,6 +756,19 @@ impl<R: Rt> Update<R> for Trait<R> {
         // `escaped_dispatch` in
         // ~/ptmp/cr29/scratch/r23/23e/deleted-module-impl-leak-01/escape.rs
         // (escaped-fn-dropped-trait-01)
+        // 2026-11-13 claude: The same for a function made in a dynamic module's
+        // load where the trait and the impl are declared by the interface of a
+        // module that load declares, once an embedder drops the expression: over
+        // the root saved, compile a block whose mod d dynamic source declares mod
+        // inner dynamic with sig { trait Sh { val sh: fn(self) -> i64 }; type C;
+        // impl Sh for C; val mk: fn(x: i64) -> C } and let make = |x: i64|
+        // inner::Sh::sh(inner::mk(x)) + 1, write saved <- d::make, drop the block,
+        // compile saved(3): trait method call through an unknown trait, bottom. A
+        // reload of d keeps it (the replaced load takes what the registries give
+        // back, LoadedBody::give in Module::unregister; pin
+        // lang::modules::a_function_saved_across_a_reload_around_an_interface_module_dispatches_to_its_own);
+        // Module::delete gives the load nothing, so the fix for this one is the
+        // same hand-over at a delete that no unregister came before.
         ctx.env.undeftrait(&self.def);
     }
 

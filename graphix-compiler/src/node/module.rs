@@ -229,6 +229,13 @@ impl SigDecls {
         self.impls.iter().for_each(|im| env.unregister_impl(im));
         self.traits.iter().for_each(|def| env.unrecord_trait(def))
     }
+
+    /// The bindings a dispatch through these declarations names.
+    fn dispatch_bindings(&self) -> impl Iterator<Item = BindId> {
+        let dispatchers = self.traits.iter().flat_map(|def| def.methods.iter());
+        let methods = self.impls.iter().flat_map(|im| im.methods.iter());
+        dispatchers.map(|m| m.dispatcher).chain(methods.map(|(_, id)| *id))
+    }
 }
 
 fn bind_sig(
@@ -248,6 +255,9 @@ fn bind_sig(
     for (i, si) in sig.items.iter().enumerate() {
         bind_sig_item(env, pending, &mut decls, scope, i, si, &si.ori)
             .placed(&si.ori, si.pos)?;
+    }
+    if let Some(body) = &env.lexical.body {
+        body.declare(decls.dispatch_bindings())
     }
     Ok(decls)
 }
@@ -2252,6 +2262,11 @@ impl<R: Rt> Update<R> for Module<R> {
 
     fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.for_each_child_mut(&mut |c| c.unregister(ctx));
+        if let Some(body) = &ctx.env.lexical.body {
+            let SigDecls { traits, impls } = &self.sig_decls;
+            let traits = traits.iter().map(|def| ctx.env.trait_of_record(def));
+            body.give(traits, impls.iter().cloned())
+        }
         self.sig_decls.unregister(&mut ctx.env)
     }
 

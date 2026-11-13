@@ -362,15 +362,27 @@ before the new source compiles (`Module::unregister`), as a body's own
 `trait` and `impl` do, and the module's delete, which follows, leaves the
 new load's: a declared impl is its load's (`ImplDef::same_definition`
 compares the origin, since every load names the declaration's block
-alike). The import tables stay (CR `dropped-import-tables-01`), and a
-function that outlives a dropped static declaration binds at no new call
-site (CR `escaped-fn-dropped-trait-01`). Pins: `lib_tests::leaks::
-a_dropped_module_takes_its_declared_core_impl`,
+alike). The load that reload replaces keeps what the registries gave
+back (`LoadedBody::give`: the record with its defaults, the declared
+impl), so a function made in it still dispatches through the module's
+trait wherever it is first called; its functions pin the interface's
+dispatchers and impl methods from the load's compile
+(`LoadedBody::declare`), and a reload that fails gives nothing
+(`LoadedBody::revive`). The import tables stay (CR
+`dropped-import-tables-01`), and a function that outlives a dropped
+declaration, a static one or one in a load an embedder drops, binds at
+no new call site (CR `escaped-fn-dropped-trait-01`). Pins:
+`lib_tests::leaks::a_dropped_module_takes_its_declared_core_impl`,
 `a_dropped_module_takes_its_declared_trait_and_impl`,
 `a_dropped_interface_module_takes_what_its_interface_declared`,
-`a_dropped_root_module_is_declared_again`, `lang::image::
-a_restored_module_dropped_is_declared_again` and `lang::modules::
-a_reload_around_an_interface_module_declares_its_impl_again`.
+`a_dropped_root_module_is_declared_again`,
+`a_function_saved_across_reloads_around_an_interface_module_keeps_nothing_once_dropped`,
+`lang::image::a_restored_module_dropped_is_declared_again` and
+`lang::modules::
+a_reload_around_an_interface_module_declares_its_impl_again`,
+`a_reload_around_a_declared_core_impl_declares_it_again`,
+`a_function_saved_across_a_reload_around_an_interface_module_dispatches_to_its_own`,
+`a_failed_reload_around_an_interface_module_leaves_its_interface_registered`.
 
 ### A `val`'s type variables
 

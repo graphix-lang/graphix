@@ -2473,6 +2473,132 @@ let make = |x: i64| \[make]""";
     FuseExpect::Jit
 );
 
+// The same for an impl of a core trait the interface declares, which
+// each load's implementation narrows to the methods it writes: every load
+// declares it again and casts by its own, the last by the representation.
+run!(
+    a_reload_around_a_declared_core_impl_declares_it_again,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let body = |k: i64, decl: string, written: string| """let isrc = r#"type C = Abstract<i64>; \[written] let mk = |x: i64| C(x)"#;
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { type C; \[decl] val mk: fn(x: i64) -> C };
+    source isrc
+};
+let make = |x: i64| "[json::write_str(inner::mk(x))$] \[k]" """;
+    let src: string = never();
+    src <- select ep {
+        2 => ep ~ body(1, "impl Cast for C;", "impl Cast for C { let to_value = |c: C| c.0 * 10 };"),
+        6 => ep ~ body(
+            2,
+            "impl Cast for C; impl Display for C;",
+            "impl Cast for C { let to_value = |c: C| c.0 * 100 }; impl Display for C { let fmt = |c: C| \"dd\" };"
+        ),
+        10 => ep ~ body(3, "impl Cast for C;", "impl Cast for C {};"),
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val make: fn(x: i64) -> string };
+        source src
+    };
+    let m = d::make(ep);
+    let log = "";
+    log <- select ep { 5 => ep ~ "[log] [m]", 9 => ep ~ "[log] [m]", _ => never() };
+    select ep { 14 => ep ~ "[log] [m]", _ => never() }
+}"##,
+    is(Value::String(r#" {"C":50} 1 {"C":900} 2 {"C":14} 3"#.into()));
+    FuseExpect::Jit
+);
+
+// A function saved out of a source that declares a module is its load's
+// across the reload of that source: the load keeps the trait and the impl
+// the module's interface declared, which the registries gave back. `saved`
+// is the first load's `make`, first called at 7, after the load at 5
+// failed, and at a new site at 11, after the load at 8 replaced its body:
+// both run the first load's default over its impl.
+run!(
+    a_function_saved_across_a_reload_around_an_interface_module_dispatches_to_its_own,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let body = |make: string| """let isrc = r"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)";
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { trait Sh { val sh: fn(self) -> i64; val tw: fn(self) -> i64 = |s| sh(s) * 2 }; type C; impl Sh for C; val mk: fn(x: i64) -> C };
+    source isrc
+};
+let make = |x: i64| \[make]""";
+    let src: string = never();
+    src <- select ep {
+        2 => ep ~ body("inner::Sh::tw(inner::mk(x)) + 1"),
+        5 => ep ~ body("missing(x)"),
+        8 => ep ~ body("inner::Sh::tw(inner::mk(x)) + 2"),
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val make: fn(x: i64) -> i64 };
+        source src
+    };
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 4 => ep ~ d::make, _ => never() };
+    let xs: Array<i64> = never();
+    xs <- select ep { 7 => ep ~ [0], _ => never() };
+    let ys: Array<i64> = never();
+    ys <- select ep { 11 => ep ~ [0, 1], _ => never() };
+    let a = array::map(xs, |x| saved(x + ep));
+    let b = array::map(ys, |x| saved(x + ep));
+    select ep { 14 => ep ~ "[a] [b] [d::make(ep)]", _ => never() }
+}"##,
+    is(Value::String("[281] [281, 301] 282".into()));
+    FuseExpect::Jit
+);
+
+// A load that failed gives nothing to the load that runs on: its module's
+// interface stands in the registries again. The module reloads its own
+// source when the body's `c` reaches 6, after the load at 5 failed, and
+// `make2`, first called at 13, runs the new source's impl.
+run!(
+    a_failed_reload_around_an_interface_module_leaves_its_interface_registered,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 18 => n + 1, _ => never() };
+    let body = |make: string| """let c = 0;
+c <- select c { n if n < 30 => n + 1, _ => never() };
+let isrc = uniq(select c {
+    n if n < 6 => r"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)",
+    _ => r"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 100 }; let mk = |x: i64| C(x)"
+});
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { trait Sh { val sh: fn(self) -> i64; val tw: fn(self) -> i64 = |s| sh(s) * 2 }; type C; impl Sh for C; val mk: fn(x: i64) -> C };
+    source isrc
+};
+let make = |x: i64| \[make];
+let make2 = |x: i64| \[make] + 1000""";
+    let src: string = never();
+    src <- select ep {
+        2 => ep ~ body("inner::Sh::tw(inner::mk(x)) + 1"),
+        5 => ep ~ body("missing(x)"),
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val make: fn(x: i64) -> i64; val make2: fn(x: i64) -> i64 };
+        source src
+    };
+    let ys: Array<i64> = never();
+    ys <- select ep { 13 => ep ~ [0, 1], _ => never() };
+    let b = array::map(ys, |x| d::make2(x + ep));
+    select ep { 18 => ep ~ "[b] [d::make(ep)]", _ => never() }
+}"##,
+    is(Value::String("[4601, 4801] 3601".into()));
+    FuseExpect::Jit
+);
+
 // A dynamic module `inner` declared in a loaded body that runs on reloads
 // its own source: `saved` is its first body's `f`, which `late` first
 // calls after the reload, and it runs that body's trait, impl and import.

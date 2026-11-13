@@ -280,6 +280,7 @@ async fn held(ctx: &TestCtx) -> Result<[usize; 13]> {
     ])
 }
 
+/// The root binding `name`, which a test writes to drive a program.
 async fn root_bind(ctx: &TestCtx, name: &str) -> Result<BindId> {
     let env = ctx.rt.get_env().await?;
     let root = &graphix_compiler::Scope::root().lexical;
@@ -368,6 +369,25 @@ async fn a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped(
          type C; impl T for C;",
         "type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
          let get = |x: i64| T::e(C(x))",
+    )
+    .await
+}
+
+/// The same where each load declares a module whose interface declares
+/// the trait and the impl: the retired load keeps what that interface
+/// registered while the saved function names it, and no longer.
+async fn a_function_saved_across_reloads_around_an_interface_module_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(
+        mode,
+        "",
+        "let r = mod inner dynamic { sandbox unrestricted; \
+         sig { trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
+         type C; impl T for C; val mk: fn(x: i64) -> C }; \
+         source \\\"type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 }; \
+         let mk = |x: i64| C(x)\\\" }; \
+         let get = |x: i64| inner::T::e(inner::mk(x)) + v",
     )
     .await
 }
@@ -727,6 +747,7 @@ modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped,
+    a_function_saved_across_reloads_around_an_interface_module_keeps_nothing_once_dropped,
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
     both_sides_of_deleted_interface_modules_keep_nothing_once_dropped,
     a_held_function_outlives_a_collected_reader_of_its_val,

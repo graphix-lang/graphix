@@ -763,6 +763,19 @@ struct LoadedState {
     /// The import tables at its module's scope and below as it left
     /// them, once a reload replaced it.
     names: Option<Arc<Map<ModPath, ScopeNames>>>,
+    /// The dispatchers and impl methods the interfaces of the modules
+    /// it declares minted. Their traits and impls stand in the
+    /// registries until a reload replaces the load.
+    declared: SmallVec<[BindId; 4]>,
+    /// Those traits and impls as the registries gave them back, once a
+    /// reload replaced it.
+    given: Option<Given>,
+}
+
+#[derive(Debug, Default)]
+struct Given {
+    traits: SmallVec<[Arc<TraitDef>; 1]>,
+    impls: SmallVec<[Arc<ImplDef>; 2]>,
 }
 
 impl LoadedBody {
@@ -782,26 +795,54 @@ impl LoadedBody {
         self.state.write().impls.push(im)
     }
 
+    /// The interface of a module the load declares minted `ids` for
+    /// dispatch: its traits' dispatchers and its impls' methods.
+    pub fn declare(&self, ids: impl Iterator<Item = BindId>) {
+        self.state.write().declared.extend(ids)
+    }
+
+    /// A reload is replacing the load, and the registries give back what
+    /// the interface of a module it declares registered.
+    pub fn give(
+        &self,
+        traits: impl Iterator<Item = Arc<TraitDef>>,
+        impls: impl Iterator<Item = Arc<ImplDef>>,
+    ) {
+        let new = Given { traits: traits.collect(), impls: impls.collect() };
+        let mut st = self.state.write();
+        let given = st.given.get_or_insert_default();
+        given.traits.extend(new.traits);
+        given.impls.extend(new.impls)
+    }
+
     /// A reload replaced the load: `names` are its import tables.
     pub fn retire(&self, names: Map<ModPath, ScopeNames>) {
         self.state.write().names = Some(Arc::new(names))
     }
 
     /// The reload that would have replaced the load failed: its import
-    /// tables are the registry's again.
+    /// tables and what its modules' interfaces declared are the
+    /// registry's again.
     pub fn revive(&self) {
-        self.state.write().names = None
+        let mut st = self.state.write();
+        st.names = None;
+        st.given = None
     }
 
     fn trait_def(&self, id: TraitId) -> Option<Arc<TraitDef>> {
-        self.chain()
-            .find_map(|b| b.state.read().traits.iter().find(|t| t.id == id).cloned())
+        self.chain().find_map(|b| {
+            let st = b.state.read();
+            let given = st.given.iter().flat_map(|g| g.traits.iter());
+            st.traits.iter().chain(given).find(|t| t.id == id).cloned()
+        })
     }
 
     fn impls(&self, trait_id: TraitId, own: &mut Vec<Arc<ImplDef>>) {
         for b in self.chain() {
             let st = b.state.read();
-            own.extend(st.impls.iter().filter(|im| im.trait_id == trait_id).cloned())
+            let given = st.given.iter().flat_map(|g| g.impls.iter());
+            let all = st.impls.iter().chain(given);
+            own.extend(all.filter(|im| im.trait_id == trait_id).cloned())
         }
     }
 
@@ -824,6 +865,7 @@ impl LoadedBody {
             for im in st.impls.iter() {
                 im.methods.into_iter().for_each(|(_, id)| f(*id))
             }
+            st.declared.iter().copied().for_each(&mut *f)
         }
     }
 }
@@ -1744,6 +1786,15 @@ impl Env {
     pub fn unrecord_trait(&mut self, def: &Arc<TraitDef>) {
         if self.trait_defs.get(&def.id).is_some_and(|d| d.same_definition(def)) {
             self.trait_defs.remove(&def.id);
+        }
+    }
+
+    /// `def` as the record holds it, with the defaults its implementation
+    /// compiled, where `def` is the definition of record.
+    pub fn trait_of_record(&self, def: &Arc<TraitDef>) -> Arc<TraitDef> {
+        match self.trait_defs.get(&def.id) {
+            Some(rec) if rec.same_definition(def) => rec.clone(),
+            Some(_) | None => def.clone(),
         }
     }
 
