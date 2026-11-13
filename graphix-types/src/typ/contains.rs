@@ -151,6 +151,13 @@ pub(super) struct ContainsHist {
     /// The keys of `provisional` in the order they were reached: an
     /// assumption's verdicts are those reached after it was made.
     provisional_order: Lazy<Vec<MemoKey>>,
+    /// Per pair [`Self::assuming`] took in progress, in the order taken:
+    /// its own place while it is in progress, then the place of the pair
+    /// its answer rests on (`usize::MAX` for none). A verdict held in
+    /// `provisional` reads the pair it rests on through these
+    /// ([`resting`]), so an answer that rests on a pair further out
+    /// rewrites none of them.
+    assumed: Lazy<Vec<usize>>,
     /// Committing pairs proven to hold, by both sides' identities and the
     /// flags: what the proof bound stays bound for the rest of the call,
     /// so the same pair met again holds without walking it (a DAG's
@@ -183,10 +190,6 @@ pub(super) struct ContainsHist {
     /// holding no cell and no function type ([`Self::normal_union`]):
     /// what it keeps of a node read nothing a walk can write.
     norm: Option<NormCx>,
-    /// How many function types hold quantifier cells rigid on this path
-    /// (`FnType::contains_int`): a verdict reached under one depends on
-    /// the gate, so the probe memo is neither read nor filled.
-    pub(super) gated: u32,
     /// The cells whose closed parts wait for the end of a function's
     /// arguments ([`Self::defer`]), the innermost function's last.
     deferring: SmallVec<[Deferred; 2]>,
@@ -195,6 +198,11 @@ pub(super) struct ContainsHist {
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
+    /// The walk places a union's members in an order a trial placed them
+    /// all in ([`Type::place_in_order`]): that trial took each union below
+    /// with two members holding open cells as written, and so does this
+    /// placement, with no trial of its own.
+    as_tried: bool,
     /// A union's first member that holds a type takes it (a walk that
     /// binds copies alone, a select's patterns), where any other walk
     /// refuses a choice between two ([`AmbiguousMember`]).
@@ -210,6 +218,16 @@ pub(super) struct ContainsHist {
     /// In a trial: the pairs the walk it was made in was expanding and
     /// assuming, on the trial's copies ([`Self::seed`]).
     assumed_above: SmallVec<[(Type, Type); 2]>,
+}
+
+/// The verdicts a walk held before it took cells rigid
+/// ([`ContainsHist::gate`]).
+pub(super) struct Ungated {
+    probe_pairs: Lazy<AHashMap<MemoKey, (u64, bool)>>,
+    probe_standing: Lazy<AHashMap<MemoKey, Standing>>,
+    provisional: Lazy<AHashMap<MemoKey, Provisional>>,
+    provisional_order: Lazy<Vec<MemoKey>>,
+    commit_pairs: Lazy<AHashSet<MemoKey>>,
 }
 
 /// A verdict memo's key: both sides' identities ([`ContainsHist::pair_key`],
@@ -317,9 +335,10 @@ impl DeferIndex {
     }
 }
 
-/// What a verdict assumed of the walk in progress: the depth of the
-/// shallowest pair in progress it took to hold, the shallowest entries of
-/// `in_progress` it took to hold and to fail (`usize::MAX` for none).
+/// What a verdict assumed of the walk in progress: the place in
+/// [`ContainsHist::assumed`] of the shallowest pair in progress it took
+/// to hold, the shallowest entries of `in_progress` it took to hold and
+/// to fail (`usize::MAX` for none).
 #[derive(Clone, Copy)]
 struct Rests {
     pairs: usize,
@@ -414,6 +433,7 @@ impl ContainsHist {
             probe_pins: Lazy::new(),
             provisional: Lazy::new(),
             provisional_order: Lazy::new(),
+            assumed: Lazy::new(),
             commit_pairs: Lazy::new(),
             apps: Lazy::new(),
             app_cells: Lazy::new(),
@@ -424,10 +444,10 @@ impl ContainsHist {
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
             norm: None,
-            gated: 0,
             deferring: SmallVec::new(),
             defer_index: None,
             trial: false,
+            as_tried: false,
             ordered: false,
             early: false,
             identical: IdenticalMemo::default(),
@@ -469,8 +489,11 @@ impl ContainsHist {
         for (t0, t1) in self.assumed_above.iter().chain(expanding) {
             let (c0, c1) = (copy(t0), copy(t1));
             let key = (trial.ref_id(&c0, env), trial.ref_id(&c1, env));
-            let depth = trial.hist.len();
-            trial.hist.entry(key).or_insert(depth);
+            if let Entry::Vacant(e) = trial.hist.entry(key) {
+                let assumed = trial.assumed.get_mut();
+                e.insert(assumed.len());
+                assumed.push(assumed.len())
+            }
             trial.assumed_above.push((c0, c1))
         }
     }
@@ -682,6 +705,38 @@ impl ContainsHist {
         found
     }
 
+    /// The walk goes on with cells held rigid (a function type's open
+    /// quantifiers, a union member taking a type as it stands): a verdict
+    /// reached so depends on the hold, so until [`Self::ungate`] the walk
+    /// keeps its verdicts in memos of their own, and reads none of those
+    /// it held before, which are returned.
+    pub(super) fn gate(&mut self) -> Ungated {
+        Ungated {
+            probe_pairs: mem::replace(&mut self.probe_pairs, Lazy::new()),
+            probe_standing: mem::replace(&mut self.probe_standing, Lazy::new()),
+            provisional: mem::replace(&mut self.provisional, Lazy::new()),
+            provisional_order: mem::replace(&mut self.provisional_order, Lazy::new()),
+            commit_pairs: mem::replace(&mut self.commit_pairs, Lazy::new()),
+        }
+    }
+
+    /// The hold [`Self::gate`] began is over: its verdicts are dropped,
+    /// and those held before it stand again.
+    pub(super) fn ungate(&mut self, outer: Ungated) {
+        let Ungated {
+            probe_pairs,
+            probe_standing,
+            provisional,
+            provisional_order,
+            commit_pairs,
+        } = outer;
+        self.probe_pairs = probe_pairs;
+        self.probe_standing = probe_standing;
+        self.provisional = provisional;
+        self.provisional_order = provisional_order;
+        self.commit_pairs = commit_pairs;
+    }
+
     /// Whether `t` reaches no open cell, through bindings: a commit over
     /// two closed sides binds nothing, so it is the probe. Within a walk a
     /// closed node stays closed (cells only bind), and one found open
@@ -807,7 +862,7 @@ impl ContainsHist {
         if p.epoch != writes {
             return None;
         }
-        self.rests = self.rests.join(p.rests);
+        self.rests = self.rests.join(self.rests_now(p.rests));
         Some(p.verdict)
     }
 
@@ -863,8 +918,8 @@ impl ContainsHist {
     /// since may rest on it: one that agrees with a wrong assumption is
     /// dropped (a disagreeing probe stands, by monotonicity; a commit
     /// bound what it bound under the assumption, and is dropped), the rest
-    /// take from `update` what the answer rested on, and each then settled
-    /// is held for good.
+    /// take what the answer rested on, a pair's from `assumed` and a
+    /// question's from `update`, and each then settled is held for good.
     fn answer_assumption(
         &mut self,
         mark: usize,
@@ -886,15 +941,19 @@ impl ContainsHist {
         }
         let mut order = mem::take(self.provisional_order.get_mut());
         let map = self.provisional.get_mut();
+        let assumed = self.assumed.get_mut();
         let mut kept = mark;
         for i in mark..order.len() {
             let k = order[i];
             let Some(p) = map.get_mut(&k) else { continue };
+            #[cfg(test)]
+            VERDICTS_ANSWERED.with(|n| n.set(n.get() + 1));
             let commit = k.2.contains(ContainsFlags::Commit);
             if wrong == Some(p.verdict) || (commit && wrong.is_some()) {
                 map.remove(&k);
                 continue;
             }
+            p.rests.pairs = resting(assumed, p.rests.pairs);
             update(&mut p.rests);
             match commit {
                 true if p.rests.own(usize::MAX) => {
@@ -930,10 +989,20 @@ impl ContainsHist {
         }
     }
 
-    /// Start a verdict that may be memoized: its height, and the outer
-    /// verdict's assumptions, set aside.
+    /// Start a verdict that may be memoized: its height, the place the
+    /// next pair it assumes takes, and the outer verdict's assumptions,
+    /// set aside.
     fn enter_verdict(&mut self) -> (usize, Rests) {
-        (self.len(), mem::replace(&mut self.rests, Rests::NOTHING))
+        let height = self.assumed.get().map_or(0, |a| a.len());
+        (height, mem::replace(&mut self.rests, Rests::NOTHING))
+    }
+
+    /// `rests`, a held verdict's, as the pairs answered since leave it.
+    fn rests_now(&mut self, rests: Rests) -> Rests {
+        match &mut self.assumed.0 {
+            Some(assumed) => Rests { pairs: resting(assumed, rests.pairs), ..rests },
+            None => rests,
+        }
     }
 
     /// End it: what the verdict assumed, which the outer verdict takes
@@ -1020,10 +1089,10 @@ impl ContainsHist {
         if self.commit_pairs.get().is_some_and(|m| m.contains(&k)) {
             return true;
         }
-        let Some(p) = self.provisional.get().and_then(|m| m.get(&k)) else {
+        let Some(p) = self.provisional.get().and_then(|m| m.get(&k)).copied() else {
             return false;
         };
-        self.rests = self.rests.join(p.rests);
+        self.rests = self.rests.join(self.rests_now(p.rests));
         true
     }
 
@@ -1061,25 +1130,33 @@ impl ContainsHist {
     }
 
     /// Decide `key` by `f`, assuming it holds meanwhile: a pair met
-    /// again inside its own proof is `true` (coinduction), and the depth
-    /// of that assumption is what the verdict meeting it rests on.
+    /// again inside its own proof is `true` (coinduction), and that
+    /// assumption is what the verdict meeting it rests on. An answer that
+    /// holds resting on a pair further out settles no verdict reached
+    /// since: each reads through `assumed` what it rests on now, and is
+    /// looked at once, when the outermost pair it rests on is answered.
     fn assuming(
         &mut self,
         key: RefPair,
         f: impl FnOnce(&mut Self) -> Result<bool>,
     ) -> Result<bool> {
-        if let Some(&depth) = self.hist.get(&key) {
-            self.rests.pairs = self.rests.pairs.min(depth);
+        if let Some(&at) = self.hist.get(&key) {
+            self.rests.pairs = self.rests.pairs.min(at);
             return Ok(true);
         }
-        let depth = self.hist.len();
-        self.hist.insert(key, depth);
+        let assumed = self.assumed.get_mut();
+        let at = assumed.len();
+        assumed.push(at);
+        self.hist.insert(key, at);
         let outer = mem::replace(&mut self.rests.pairs, usize::MAX);
         let mark = self.provisional_order.get().map_or(0, |o| o.len());
         let r = f(self);
         self.hist.remove(&key);
-        let rest = beyond(&mut self.rests.pairs, depth, outer);
-        self.answer_assumption(mark, true, &r, |p| answered(&mut p.pairs, depth, rest));
+        let rest = beyond(&mut self.rests.pairs, at, outer);
+        self.assumed.get_mut()[at] = rest;
+        if rest == usize::MAX || !matches!(r, Ok(true)) {
+            self.answer_assumption(mark, true, &r, |_| ());
+        }
         r
     }
 
@@ -1162,6 +1239,23 @@ fn answered(at: &mut usize, depth: usize, rest: usize) {
     if (depth..usize::MAX).contains(at) {
         *at = rest
     }
+}
+
+/// The pair in progress that a verdict which took the pair at `at` rests
+/// on now ([`ContainsHist::assumed`]), `usize::MAX` for none; each place
+/// passed is left one step nearer its answer.
+fn resting(assumed: &mut [usize], mut at: usize) -> usize {
+    while at != usize::MAX {
+        let next = assumed[at];
+        if next == at {
+            break;
+        }
+        if next != usize::MAX {
+            assumed[at] = assumed[next]
+        }
+        at = next
+    }
+    at
 }
 
 /// A union whose open member's cell another member mentions, as
@@ -3247,23 +3341,21 @@ impl Type {
             {
                 return Ok(true);
             }
-            if hist.gated == 0 && hist.commit_held(flags, self, t) {
+            if hist.commit_held(flags, self, t) {
                 return Ok(true);
             }
             let (height, outer) = hist.enter_verdict();
             let r = self.contains_dispatch(flags, env, hist, t);
             let rests = hist.leave_verdict(outer);
             let r = r?;
-            if r && hist.gated == 0 {
+            if r {
                 hist.commit_put((flags, self, t), height, rests);
             }
             return Ok(r);
         }
         // a probe binds nothing: its verdict under its flags is memoized
         let probe = probe_flags(flags);
-        if hist.gated == 0
-            && let Some(r) = hist.probe_get(probe, self, t)
-        {
+        if let Some(r) = hist.probe_get(probe, self, t) {
             return Ok(r);
         }
         let (height, outer) = hist.enter_verdict();
@@ -3275,9 +3367,7 @@ impl Type {
         };
         let rests = hist.leave_verdict(outer);
         let r = r?;
-        if hist.gated == 0 {
-            hist.probe_put((probe, self, t), r, height, rests);
-        }
+        hist.probe_put((probe, self, t), r, height, rests);
         Ok(r)
     }
 
@@ -3875,7 +3965,8 @@ impl Type {
             // none.
             (t0 @ Self::Set(s0), Self::Set(s1)) => {
                 let holding = |m: &&Type| !is_unbound_tvar(m) && m.has_unbound();
-                if !commit || hist.trial || s0.iter().filter(holding).nth(1).is_none() {
+                let placed = hist.trial || hist.as_tried;
+                if !commit || placed || s0.iter().filter(holding).nth(1).is_none() {
                     return Self::place_each(flags, env, hist, t0, s0, s1);
                 }
                 Self::place_in_order(
@@ -4513,7 +4604,7 @@ impl Type {
         let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
         hold_rigid(m, &mut gates);
         hold_rigid(t, &mut gates);
-        hist.gated += 1;
+        let outer = hist.gate();
         let r = on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
             m.contains_int(flags, env, trial, &t)
         })
@@ -4521,7 +4612,7 @@ impl Type {
             true => m.contains_int(flags, env, hist, t).map(Some),
             false => Ok(None),
         });
-        hist.gated -= 1;
+        hist.ungate(outer);
         r
     }
 
@@ -4612,6 +4703,27 @@ impl Type {
                 if open.is_empty() && std::ptr::eq(m, *last) {
                     break;
                 }
+                // CR claude for claude: [perf/low] A choice between the members of a
+                // union asks a walk on copies for each member that admits the type, at
+                // every such union the walk meets, and each of those walks what is below
+                // it: over a recursive definition with two members of one head (`type
+                // D0<'a0, 'a1, 'a2> = [Error<D0<'a0, 'a1, null>>, Error<D0<'a1, 'a0, 'a2>>,
+                // `Y(D0<'a1, 'a2, 'a0>)]`, its textual twin F0, and `fn(z: Any, k: F0<Any,
+                // i64, Any>) -> Any` holding `|z: 'q0, k: D0<'q0, 'q1, 'q2>| z`) the commit
+                // takes 5.3M contains steps: 1516 walks on copies from here take 3.6M of
+                // them, the walk itself 9k commit steps and 1.7M probe steps, since a probe
+                // verdict over cells stands only until the next cell is written.
+                // --no-cache --check takes 21.4G instructions for it (an empty program
+                // 0.74G), 22.8G for s2311_0224_two.gx and 4.3G for s2311_0289_two.gx. The
+                // placement a trial allows (ContainsHist::as_tried) cannot take this
+                // choice as its trial did: two undecided members that could take the type
+                // are refused (AmbiguousMember), which only the walk itself judges.
+                // Untried: a walk on copies' verdict kept by its pair while no cell
+                // either side reaches is written, so a union met again asks none; one walk
+                // on copies a union that reports every member's verdict. probes:
+                // ~/ptmp/cr29/scratch/r23/23c/oact/{s2311_0140_two,s2311_0224_two,
+                // s2311_0289_two}.gx, generator ~/ptmp/cr29/scratch/r20/20c/x1/gen2.py
+                // (MODE=perm, seed 2311) (take-member-trials-01)
                 let holds = on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
                     m.contains_int(flags, env, trial, &t)
                 })?;
@@ -4872,7 +4984,7 @@ impl Type {
         })
     }
 
-    // CR claude for claude: [perf/low] A commit over open applications of a recursive
+    // XCR claude for claude: [perf/low] A commit over open applications of a recursive
     // definition is walked once per application per trial, not once: every union with
     // two members holding open cells runs these trials on copies in a walk of their own,
     // which knows nothing the outer walk proved, so n applications reaching each other
@@ -4959,10 +5071,43 @@ impl Type {
     // finish in 30 s now end, 8 of them with base-r20's verdict where base-r20 ended;
     // the five twins named above are still killed at 15 s. Probes:
     // ~/ptmp/cr29/scratch/r20/coord/x1/review/{k1,k1twin,k1w,k2,k3,k4,o6_p00560,o5_p00327}.gx.
+    // 2026-11-13 claude: Three causes, each fixed here. (1) The trials: a ContainsHist::trial
+    // that places a union's members took every union below with two members holding open cells
+    // as written, so the placement it allows does too (ContainsHist::as_tried) and asks no
+    // trial of its own; where neither order holds on copies the placement asks its trials as
+    // before. typ::contains::tests::permuted_steps("F", n): 2862 / 38045 / 904051 steps
+    // before, 673 / 2555 / 12681 now for 6 / 24 / 120 applications (106 n). (2) The scan: a
+    // held verdict reads the pair it rests on through ContainsHist::assumed
+    // (contains::resting), and an answer resting on a pair further out rewrites none, so each
+    // is looked at once: 7372 looks at held verdicts for 24 applications with the scan at
+    // every answer, 700 without. (3) Found beside them, why the generated twins did not end: a
+    // walk with cells held rigid (Type::takes_as_it_stands, FnType::contains_int's
+    // quantifiers) kept no verdict at all (ContainsHist::gated), so two members of one head
+    // over a recursive definition took every path through its applications; it now keeps them
+    // in memos of the hold's own (ContainsHist::gate), dropped at its end: 3753577 steps
+    // before, 18697 now. --no-cache --check instructions, base-r23 then this commit: permx5.gx
+    // 6.26G / 0.80G, permx6.gx 480G / 1.09G, permx7.gx (5040 applications) not tried / 3.27G
+    // (an empty program 0.74G); ast_3_6.gx 14.67G / 5.68G, real2a.gx 3.41G / 2.89G; ch/c3c.gx
+    // 494G / 0.88G; guicheck 41.35G / 40.09G. Differential against base-r23: 2400 programs of
+    // gen2.py (MODE all, amb, big, perm; seed 2311) and 900 of genv.py under --check, 1200 of
+    // them built and run: no verdict and no message differs, and the 7 base-r23 does not
+    // finish in 30 s end with their one-definition twins' verdicts; census of both repos
+    // against the lane's tip before: 0 verdicts, 0 messages of 2964 files. Pins that fail
+    // without it:
+    // typ::contains::tests::open_applications_of_a_recursive_definition_are_walked_once (1),
+    // a_held_verdict_is_answered_once (2), a_walk_over_held_cells_keeps_its_verdicts (3), and
+    // lang::types::six_parameters_of_two_recursive_typedefs_with_one_body_check,
+    // two_members_of_one_head_over_a_recursive_typedef_check, whose programs base-r23 does not
+    // check in 40 s. What is left of the twins' cost is the choice between a union's members,
+    // a new CR at Type::take (take-member-trials-01). Probes and scripts:
+    // ~/ptmp/cr29/scratch/r23/23c/oact/ (README).
     /// `place` over the members `s1` in the first of two orders that
     /// places them all on copies, each walk on copies starting from
     /// `trial`: as written, then deepest first; as written where neither
-    /// does.
+    /// does. A [`ContainsHist::trial`] that places them took every union
+    /// below with two members holding open cells as written, so the
+    /// placement it allows does too (`as_tried`), asking no trial of its
+    /// own for them.
     fn place_in_order(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -4999,7 +5144,11 @@ impl Type {
             let mut on_copies = trial();
             hist.seed(&mut on_copies, &mut known, env, inherit);
             if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
-                return place(flags, env, hist, t0, s0, order);
+                let tried = hist.as_tried || on_copies.trial;
+                let outer = mem::replace(&mut hist.as_tried, tried);
+                let r = place(flags, env, hist, t0, s0, order);
+                hist.as_tried = outer;
+                return r;
             }
         }
         place(flags, env, hist, t0, s0, s1)
@@ -6344,17 +6493,54 @@ mod tests {
 
     // An application answered inside a pair still in progress is kept
     // while that pair stands, so a sibling meeting it does not walk it
-    // again: a probe walks each of the `n!` pairs once, a commit once per
-    // trial a union with two open members runs on copies. A walk that
-    // forgets an answered pair takes every path through them.
+    // again: a probe walks each of the `n!` pairs once, a commit twice,
+    // in the trial of the outermost union with two open members and in
+    // the placement that trial allows. A walk that forgets an answered
+    // pair takes every path through them, and a trial at every such
+    // union walks the pairs once per pair.
     #[test]
     fn open_applications_of_a_recursive_definition_are_walked_once() {
-        for n in [3, 4] {
+        for n in [3, 4, 5] {
             let apps: usize = (1..=n).product();
             let (commit, probe) = permuted_steps("F", n);
             assert!(probe <= 64 * apps, "n={n}: a probe took {probe} steps");
-            assert!(commit <= 100 * apps * apps, "n={n}: a commit took {commit} steps");
+            assert!(commit <= 128 * apps, "n={n}: a commit took {commit} steps");
         }
+    }
+
+    // A verdict reached inside pairs in progress is looked at when the
+    // outermost pair it rests on is answered, not at the answer of each
+    // pair between: the applications of a permuting definition reach
+    // each other, so every verdict of the walk rests on the first pair
+    // until the walk's end.
+    #[test]
+    fn a_held_verdict_is_answered_once() {
+        for n in [4, 5] {
+            let apps: usize = (1..=n).product();
+            VERDICTS_ANSWERED.with(|n| n.set(0));
+            let (commit, _) = permuted_steps("F", n);
+            let answered = VERDICTS_ANSWERED.with(|n| n.get());
+            assert!(answered <= commit, "n={n}: {answered} looks at held verdicts");
+            assert!(answered <= 64 * apps, "n={n}: {answered} looks at held verdicts");
+        }
+    }
+
+    // A union member that takes a type as it stands is walked with every
+    // cell held rigid, and the verdicts reached under that hold are kept
+    // while it lasts: two members of one head over a recursive definition
+    // are a choice at every application, and a walk that keeps nothing
+    // there takes every path through the applications.
+    #[test]
+    fn a_walk_over_held_cells_keeps_its_verdicts() {
+        let body = "[`Y(D<'a0, 'a1, null>), `Y(D<'a1, 'a2, 'a0>), \
+                    `U(fn(x0: 'a0, x1: 'a1, x2: 'a2) -> i64)]";
+        let (env, _) = Env::typed_at_root(&[("D<'a0, 'a1, 'a2>", body)], "i64").unwrap();
+        let open = at_root(&env, "fn(k: D<'q0, 'q1, 'q2>) -> i64");
+        let held = at_root(&env, "fn(k: D<Any, Any, Any>) -> i64");
+        CONTAINS_STEPS.with(|n| n.set(0));
+        held.check_contains(&env, &open).unwrap();
+        let steps = CONTAINS_STEPS.with(|n| n.get());
+        assert!(steps <= 40_000, "a commit took {steps} steps");
     }
 
     // Two applications of one definition are compared by their arguments,
@@ -7482,4 +7668,5 @@ thread_local! {
     static HEAD_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DEFER_INDEXED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DEFER_AUDIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static VERDICTS_ANSWERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

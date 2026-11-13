@@ -1628,10 +1628,11 @@ impl FnType {
             false => self,
         };
         let gates = this.open_quantifier_gates();
-        let gated = u32::from(!gates.is_empty());
-        hist.gated += gated;
+        let outer = (!gates.is_empty()).then(|| hist.gate());
         let r = this.contains_gated(flags, env, hist, t);
-        hist.gated -= gated;
+        if let Some(outer) = outer {
+            hist.ungate(outer)
+        }
         drop(gates);
         r
     }

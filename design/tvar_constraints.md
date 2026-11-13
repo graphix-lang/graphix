@@ -1531,8 +1531,10 @@ steps (pins
 `typ::contains::tests::applications_of_one_definition_compare_by_their_arguments`
 at 6 and 12 parameters,
 `lang::types::{six,twelve}_parameters_of_one_recursive_typedef_check`,
-`typ::variance::test`). Two definitions with one body are still walked
-(`open-app-commit-trials-01`).
+`typ::variance::test`). Two definitions with one body are walked, each
+application twice: once by the trial of the outermost union with two
+members holding open cells and once by the placement it allows
+(`design/type_operation_scaling.md`).
 
 ### A trial starts from the questions in progress
 
@@ -1701,7 +1703,9 @@ to and never refuse.
   bound naming two variables), the member that fits first alone may decide
   them so a later one fits nowhere: the other union's members go in as
   written, else deepest first, whichever order places them all on copies
-  (`Type::place_each`).
+  (`Type::place_each`). The walk on copies takes every such union below
+  it as written, and so does the placement in an order it held
+  (`Type::place_in_order`).
 - A builtin reads a quantifier only through the values of the arguments
   that hold it. At a call, a quantifier of a builtin's signature that the
   result and throws do not hold, and that no argument the call passes or

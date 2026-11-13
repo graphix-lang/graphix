@@ -10515,6 +10515,41 @@ run!(
     FuseExpect::None
 );
 
+// Two definitions with one body are compared by their expansions, whose
+// applications over six open cells are the cells' 720 orders, each
+// reaching every other: the union of an expansion asks one trial of an
+// order for its members, and the placement that trial allows walks the
+// applications below with no trial of their own.
+run!(
+    six_parameters_of_two_recursive_typedefs_with_one_body_check,
+    r#"{
+  type D<'a0, 'a1, 'a2, 'a3, 'a4, 'a5> = [`N, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2, 'a3, 'a4, 'a5>), `Y(D<'a1, 'a2, 'a3, 'a4, 'a5, 'a0>)];
+  type F<'a0, 'a1, 'a2, 'a3, 'a4, 'a5> = [`N, `X(fn(x: 'a0) -> i64, F<'a1, 'a0, 'a2, 'a3, 'a4, 'a5>), `Y(F<'a1, 'a2, 'a3, 'a4, 'a5, 'a0>)];
+  let outer = |k: D<'q0, 'q1, 'q2, 'q3, 'q4, 'q5>, z: 'q0| z;
+  let g: fn(k: F<Any, Any, Any, Any, Any, Any>, z: i64) -> i64 = outer;
+  g(`N, 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+// Two members of one head are a choice at every application of a
+// recursive definition: the member that takes a type as it stands is
+// walked with every cell held, and that walk keeps the verdicts it
+// reaches, where one that keeps none takes every path through the
+// applications.
+run!(
+    two_members_of_one_head_over_a_recursive_typedef_check,
+    r#"{
+  type D<'a0, 'a1, 'a2> = [`Y(D<'a0, 'a1, null>), Error<D<'a1, 'a0, 'a2>>, `Y(D<'a1, 'a2, 'a0>), `U(fn(x0: 'a0, x1: 'a1, x2: 'a2) -> i64)];
+  let outer = |k: D<'q1, 'q1, 'q2>, z: i64| z;
+  let g: fn(k: D<Any, Any, i64>, z: i64) -> i64 = outer;
+  g(`U(|x0, x1, x2| 0), 1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
 // A cell two arguments of one definition share holds what both ask.
 run!(
     a_cell_two_arguments_of_one_typedef_share_takes_both,

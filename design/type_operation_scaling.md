@@ -341,7 +341,38 @@ can keep the original member slice.
   parameters, `n + 1` probe and `3n + 6` commit steps),
   `lang::types::twelve_parameters_of_one_recursive_typedef_check`.
   Two definitions with one body, and a parameter in a union with a
-  choice, are still walked (`open-app-commit-trials-01`).
+  choice, are walked by their expansions.
+- A commit walks the applications such expansions reach twice. The
+  outermost union with two members holding open cells asks a trial of
+  an order for its members (`Type::place_in_order`); that trial takes
+  every such union below it as written, so the placement it allows
+  does too (`ContainsHist::as_tried`) and asks no trial of its own. A
+  trial at each such union walks what is below it once per union: 63
+  n² steps for `n` applications reaching each other, 106 n with the
+  one. Where neither order holds on copies the placement asks a trial
+  at each such union below. Pins `typ::contains::tests::
+  open_applications_of_a_recursive_definition_are_walked_once`,
+  `lang::types::
+  six_parameters_of_two_recursive_typedefs_with_one_body_check` (720
+  applications).
+- A verdict reached inside pairs in progress rests on the outermost
+  of them, a place in `ContainsHist::assumed`. A pair answered resting
+  on one further out leaves that pair's place in its own and rewrites
+  no held verdict: each reads what it rests on through the places
+  (`contains::resting`) and is looked at once, when the outermost pair
+  it rests on is answered, where a look at every answer between is a
+  step per verdict per pair in progress. Pin `typ::contains::tests::
+  a_held_verdict_is_answered_once`.
+- A walk that holds cells rigid (a function type's open quantifiers,
+  a union member taking a type as it stands) keeps the verdicts it
+  reaches under the hold in memos of their own (`ContainsHist::gate`),
+  dropped when the hold ends: none outlives the hold and none from
+  outside is read under it. With no memo under a hold, two members of
+  one head over a recursive definition, a choice at every application,
+  take every path through the applications. Pins
+  `typ::contains::tests::a_walk_over_held_cells_keeps_its_verdicts`
+  (40 000 steps, 3.7 M with no memo), `lang::types::
+  two_members_of_one_head_over_a_recursive_typedef_check`.
 - The trial of a union with a bare open member starts with the pairs
   its walk is expanding in progress, on its copies
   (`ContainsHist::seed`), so it meets their recursion by assumption. A
