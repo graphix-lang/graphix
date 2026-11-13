@@ -1479,6 +1479,23 @@ run!(
     FuseExpect::None
 );
 
+// A decided cell prints in the form its first handle printed in: bare
+// where the parameter's generated name comes first, under the callee's
+// name where that comes first.
+run!(
+    a_decided_cell_merged_with_a_callee_prints_bare_throughout,
+    r#"{ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] }; let n: fn(x: Array<string>) -> i64 = m; n }"#,
+    refused_renumbered("fn(x: Array<string>) -> i64 does not contain fn(x: Array<string>) -> [Array<'_0: unbound>, Array<string>]");
+    FuseExpect::None
+);
+
+run!(
+    a_decided_cell_merged_with_a_callee_prints_named_throughout,
+    r#"{ let pair = |x| { let r = array::concat([x], [x]); (r, x) }; let n: i64 = pair("s"); n }"#,
+    refused("i64 does not contain (Array<'a: string>, 'a: string)");
+    FuseExpect::None
+);
+
 // A header scopes its variable: two generic functions in one printed type
 // each list their own `'a`.
 run!(

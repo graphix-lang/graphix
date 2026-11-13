@@ -5951,7 +5951,7 @@ const PAYLOAD_CYCLE_THROUGH_A_TYPEDEF: &str = r#"
 run!(
     payload_cycle_through_a_typedef,
     PAYLOAD_CYCLE_THROUGH_A_TYPEDEF,
-    holds_itself("b is B<i64>", "and cannot hold B<{ v: '");
+    refused("b is B<i64> and cannot hold B<{ v: i64 }>");
     FuseExpect::None
 );
 
@@ -6409,9 +6409,8 @@ const PAYLOAD_CYCLE_THROUGH_A_TYPEDEF_NAMED_TWICE: &str = r#"
 run!(
     payload_cycle_through_a_typedef_named_twice,
     PAYLOAD_CYCLE_THROUGH_A_TYPEDEF_NAMED_TWICE,
-    holds_itself(
-        "b is B<i64> and cannot hold B<[null, P<'",
-        "no finite type holds both: declare a named recursive type for b"
+    refused(
+        "b is B<i64> and cannot hold B<[null, P<i64>]>; no finite type holds both: declare a named recursive type for b"
     );
     FuseExpect::None
 );

@@ -1946,7 +1946,8 @@ impl fmt::Display for TVar {
                 };
                 // a generated cell's binding, or else what it settles to,
                 // is all a reader needs of it
-                match (&typ, self.generated(), &below[..]) {
+                let held = (typ.is_some() || !below.is_empty()) && prints_held(self);
+                match (&typ, held, &below[..]) {
                     (Some(t), true, _) => return write!(f, "{t}"),
                     (None, true, [l]) => return write!(f, "{l}"),
                     (None, true, [l, ls @ ..]) => {
@@ -3489,6 +3490,8 @@ impl HeldQuantifiers {
 #[derive(Default)]
 struct Shown {
     names: AHashMap<usize, ArcStr>,
+    /// The cells the message printed as what they hold ([`prints_held`]).
+    held: AHashSet<usize>,
     /// The names of `names`, each one cell's.
     taken: AHashSet<ArcStr>,
     /// Every name the message showed a cell under, and every name a type
@@ -3540,12 +3543,14 @@ impl Shown {
 
     fn clear(&mut self) {
         if self.names.capacity() > Self::KEPT
+            || self.held.capacity() > Self::KEPT
             || self.used.capacity() > Self::KEPT
             || self.unwalked.capacity() > Self::KEPT
         {
             *self = Self::default()
         } else {
             self.names.clear();
+            self.held.clear();
             self.taken.clear();
             self.used.clear();
             self.unwalked.clear()
@@ -3619,6 +3624,32 @@ pub(super) fn printed_name(tv: &TVar) -> ArcStr {
             s.show(addr, name.clone());
             name
         }
+    })
+}
+
+/// Whether `tv`, whose cell holds a binding or lower bounds, prints as
+/// what it holds rather than under a name: a generated variable does.
+/// Where cells print as they stand ([`crate::print_standing`]) the first
+/// handle of a cell the message prints decides for every other, so a
+/// cell that a copy named after a callee's variable ([`TVar::named_as`])
+/// never prints both bare and under that name.
+fn prints_held(tv: &TVar) -> bool {
+    if !crate::print_standing() || PRINT_DEPTH.get() == 0 {
+        return tv.generated();
+    }
+    let addr = tv.cell_addr();
+    SHOWN.with_borrow_mut(|s| {
+        if s.held.contains(&addr) {
+            return true;
+        }
+        if s.names.contains_key(&addr) {
+            return false;
+        }
+        let held = tv.generated();
+        if held {
+            s.held.insert(addr);
+        }
+        held
     })
 }
 

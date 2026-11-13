@@ -2308,7 +2308,12 @@ former consumer derives from the cells:
   first name it prints under whatever name a later binding reaches it by:
   a parameter's cell a callee's instance merged into prints under the
   parameter's name in the result too, where a copy left the callee's
-  variable's name on it (`TVar::named_as`). A union prints once a member
+  variable's name on it (`TVar::named_as`). A cell that holds a type
+  prints in one form through the message too, the form its first handle
+  printed in: bare as what it holds where that handle's name is
+  generated, as `'a: T` where it is written (`tvar::prints_held`),
+  so `fn(x: string) -> Array<string>`, never `-> Array<'a: string>`
+  beside a bare `x`. A union prints once a member
   that prints as an earlier one does (`print::write_deref_set`), in a
   hover as in a message: one cell twice is one member. A name numbered apart is
   new to the message: no cell or header showed it, and no type the
@@ -2341,7 +2346,10 @@ former consumer derives from the cells:
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
   `a_refused_write_to_a_generic_binding_prints_its_header`,
   `a_parameter_cell_merged_with_a_callee_prints_under_one_name`,
-  `a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name`; the hover's:
+  `a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name`,
+  `a_decided_cell_merged_with_a_callee_prints_bare_throughout`,
+  `a_decided_cell_merged_with_a_callee_prints_named_throughout`,
+  `lang::types::payload_cycle_through_a_typedef`; the hover's:
   `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`,
   `a_hover_numbers_an_instance_past_a_header_name`,
   `a_cell_merged_with_a_callee_hovers_under_one_name`.
