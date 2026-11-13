@@ -50,10 +50,13 @@ structure is returned SHARED, never copied.
   the same `part_key` memo.
 - A named type applied to parameters is a shared node like any composite
   (`node_addr`: its `Arc<TypeRef>`), so every walk that visits a node once
-  takes a chain `T<T<..>>` a level at a time. Two walks give it no key:
-  `ReadWalk`, which remembers no named type's copy, and
-  `Type::copied_in_two_places`, which counts an application wherever it
-  is met, since its count depends on the definitions being expanded.
+  takes a chain `T<T<..>>` a level at a time, and a read's copy of one
+  (`ReadWalk`) is one copy to every read through the same `ReadCopies`
+  and its own to a later read, as a function type's is (pin
+  `typ::fntyp::tests::a_read_copy_is_its_own_to_a_later_read`). One walk
+  gives it no key: `Type::copied_in_two_places`, which counts an
+  application wherever it is met, since its count depends on the
+  definitions being expanded.
 - A search for a part (`Type::holds`: `holds_abstract`, `holds_ref`,
   `holds_bottom` and the rest) keeps what it found under each shared node
   (`cast::Verdicts::search_once`). An application is one of them: its
