@@ -5343,6 +5343,16 @@ impl Type {
     // choice is refused naming what to annotate. probes:
     // ~/ptmp/cr29/scratch/r23/23b/alias/w.txt (one program a line, run by hp.sh; w/h1.gx
     // to h23.gx) (invariant-union-two-solutions-01)
+    // 2026-11-12 claude: The check and the build agree in the default mode only. A
+    // substituted instance loses the argument's spelling, so an instance checked again
+    // (GRAPHIX_NO_SUBST=1) takes the other solution: `let nest = |w: &mut Opt<'a>| ->
+    // &mut 'a never(); let wrap = |n| nest(n); let n0: Opt<Opt<i64>> = null; let x: &mut
+    // Opt<i64> = wrap(&mut n0)` checks and runs, and under GRAPHIX_NO_SUBST=1 wrap's
+    // instance is refused, "&mut [i64, null] does not contain &mut 'a: i64"; `B<Opt<'a>>`
+    // and a wrapper typed `|n: &mut Opt<'q>|` alike. 240 of 2688 accepted programs that
+    // call through a wrapper split this way, on base-r23 and the lane alike, none in the
+    // default mode (see union-nosubst-order-01 for the kind). probes:
+    // ~/ptmp/cr29/scratch/r23/23b/alias-review/ns1.gx to ns5.gx, gen.py, res.lane
     /// Containment both ways: an invariant position.
     fn equal_int(
         &self,

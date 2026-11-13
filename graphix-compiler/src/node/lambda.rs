@@ -1405,6 +1405,20 @@ impl Typing {
         // whole to its members a type apiece (what union-prim-member-whole-01 proposes)
         // leaves both probes and both pins building. probes:
         // ~/ptmp/cr29/scratch/r23/23b/alias/ (README)
+        // 2026-11-12 claude: Review: the stale claim holds. base-r23 and the lane pass --check
+        // and build inst3.gx and inst4.gx fused, --no-fusion, forked (GRAPHIX_PAR=force), from a
+        // warm image, under GRAPHIX_ELAB_AUDIT=1 and as REPL inputs. Over 3840 more programs,
+        // the call made through a wrapper (none, |n| nest(n), a typed formal, a block, two
+        // wrappers, the callee defined inside, a written holder; four aliases, three
+        // constructors), base-r23 and the lane give one verdict apiece and the build refuses
+        // none the check accepts. One correction to the note above: the &mut pin can fail. With
+        // the deferral off and FnType::for_each_place placing nothing (cell placing as a whole,
+        // not only its typedef-argument arm) this CR's message comes back for both forms and
+        // both pins fail in all four modes; either one alone builds both. The &mut form's result
+        // holds 'a at a place of its own, which the Abstract form's B<'a> has only through the
+        // typedef arm. Under GRAPHIX_NO_SUBST=1 a wrapper's instance is still refused (noted on
+        // invariant-union-two-solutions-01). probes: ~/ptmp/cr29/scratch/r23/23b/alias-review/
+        // (README)
         match InstanceTypes::new(ctx, tables.clone(), def, typ) {
             Some(types) => Ok(Some(types)),
             None => crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
