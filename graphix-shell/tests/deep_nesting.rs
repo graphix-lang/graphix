@@ -1672,6 +1672,35 @@ fn a_dag_of_parametrized_named_unions_checks_in_polynomial_time() {
     assert!(!out.status.success() && stderr.contains(&refusal), "{stderr}");
 }
 
+/// A call whose signature holds typedefs that name each other, applied
+/// over open variables (every `T<i><'a, 'm>` names every `T<j>`, in both
+/// orders of its parameters), checks and elaborates in time polynomial in
+/// their number, where the paths through them are its factorial: the walks
+/// of a signature's positions pass an application met again by.
+#[test]
+#[cfg(target_os = "linux")]
+fn typedefs_naming_each_other_over_open_variables_check_in_polynomial_time() {
+    const DEFS: usize = 12;
+    let mut types = String::new();
+    for i in 0..DEFS {
+        let mut members = format!("`L{i}('a)");
+        for j in 0..DEFS {
+            members.push_str(&format!(", `V{i}_{j}(T{j}<'a, 'm>, T{j}<'m, 'a>)"));
+        }
+        types.push_str(&format!("type T{i}<'a, 'm> = [{members}];\n"));
+    }
+    for call in [
+        "let f = |x: 'a| -> T0<'a, 'm> `L0(x);\nf(0)\n",
+        "let f = |x: 'a, y: T0<'a, 'm>| -> T0<'a, 'm> `L0(x);\nf(0, `L0(1))\n",
+    ] {
+        completes_within(
+            &["--expand", "--no-fusion", "--no-cache"],
+            &format!("{types}{call}"),
+            3 * BILLION,
+        )
+    }
+}
+
 /// A type test for one recursive union over a value of another, each
 /// returning to itself through `Error` or `Array`, checks in the time of
 /// a program without it: the difference the arm leaves is built of the

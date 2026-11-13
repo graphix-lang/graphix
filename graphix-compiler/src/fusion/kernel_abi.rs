@@ -606,6 +606,22 @@ pub(crate) fn shallow_same(a: &Type, b: &Type) -> bool {
     }
 }
 
+// CR claude for claude: [perf/medium] The freeze takes every path through typedefs
+// that name each other: `memo` keeps a ref only where its expansion met no recurring
+// ref, and `Seen::frozen` only beside the refs frozen under one parent, so a definition
+// on a cycle is frozen once for each path that reaches it. K definitions `type
+// T<i><'a, 'm> = [`L<i>('a), `M<i>('m, T<i><'a, 'm>), `V<i>_<v>(T<i+1><..>, T<i+2><..>)
+// for v in 0..4]`, the two parameters swapped in alternate payloads, then `let lit = |x:
+// 'a| -> T0<'a, 'm> `L0(x); let e0 = lit(0)`: --no-cache --expand, debug, instructions,
+// K = 4 / 5 / 6 / 7 1.47 / 5.16 / 23.5 / 131.7 G on lane 23c with
+// data-positions-paths-01 fixed (base-r23 1.63 / 6.09 / 27.9 G at 4 / 5 / 6), where
+// --expand --no-fusion is 0.78 G at each; that CR's own dp7.gx takes 10.1 G against
+// 0.79 G. perf at K = 6 puts 74% under Freeze::freeze_inner, from try_freeze_for_abi
+// under emit_let_node. What a ref inside a cycle freezes to depends on the refs open
+// around it, so a memo for those is keyed by the open refs its expansion met, as
+// settle::Unrolling::passes keeps a position walk's. probes:
+// ~/ptmp/cr29/scratch/r23/23c/dpp/g_perm_{4,5,6,7}.gx, dp7.gx, gen.py
+// (freeze-recursive-paths-01)
 /// One freeze's walk.
 #[derive(Default)]
 struct Freeze {
