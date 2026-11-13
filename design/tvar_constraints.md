@@ -701,7 +701,16 @@ one member, chosen by rules that read the union alone:
   relates things in, and a definition's check and an instance's need not
   share it. An undecided member reaches an open cell no declaration holds
   rigid (`undecided`); a decided member that holds the type takes it
-  before any undecided one. Where every open cell the member and the
+  before any undecided one, and decides it: `h({v: null}, [y])` over `|x0:
+  {v: 'a}, x1: P<'a, 'b>|` (`P` with a `null` member beside its arrays)
+  makes an unannotated `y` null, however the union's members are written
+  or named, so a wrapper `|y| ..` takes a null alone, and `|y: (i64,
+  i64)|` goes to `Array<'b>` (pins
+  `lang::types::undecided_element_goes_to_the_decided_member_beside_an_undecided_one`,
+  `undecided_element_a_decided_member_took_holds_no_other_type_refused`,
+  `undecided_element_a_decided_member_took_in_the_other_member_order_refused`,
+  `written_element_goes_to_the_undecided_member_beside_a_decided_one`).
+  Where every open cell the member and the
   type reach is held rigid, and every one their conjuncts and lower
   bounds reach, and none is one an earlier task left open
   (`decides_no_cell`), a commit decides nothing, so it is the probe: the
@@ -2334,6 +2343,27 @@ finds no member of `[null, ⊥]` for a string (pins
 `lang::types::instance_cell_only_union_members_hold_takes_its_members_place`,
 `instance_cell_under_a_recursive_typedefs_members_takes_its_members_place`,
 `instance_cells_under_a_unions_member_take_a_typedefs_arguments`).
+Before any of that, a cell the definition leaves open is the instance's
+cell wherever that one is open too, at a place of the cell's own
+(`Type::place_open_cells`): the call's check left it open, so no member of
+a union beside it takes it. `f(never(), 1.5)` over `|k: fn(q: P<'b, 'a>)
+-> i64, y: 'a| k`, inside a wrapper, is held at `fn(q: P<'b, f64>) -> i64`
+with `'b` open, where the containment alone gives `Array<'b>` to the
+decided `Array<f64>` (a decided member takes an undecided type first) and
+types the instance at `P<f64, f64>`. The instance's result joins its
+call's the same way (`CallSite::setup_static_bind`): the cells both leave
+open are one cell at each place, then the call's result holds the
+instance's; a call whose result reaches no open cell (`Type::prove_ground`)
+has none to share and walks nothing. So the build decides nothing the
+check left open and refuses no union two of whose members are open on both
+sides (unit test
+`typ::fntyp::tests::an_open_cell_is_held_at_the_instances_open_cell`,
+pins `lang::types::instance_result_holding_two_undecided_members_is_its_calls`,
+`graphix-shell/tests/shell/elab_audit.rs::an_instance_leaves_open_what_its_call_left_open`).
+Every placing walk takes a pair of shared nodes once among a union's
+members and once outside one (`fntyp::Places`): a result that is a DAG of
+pairs costs its nodes, where a walk of its paths never ends (unit test
+`typ::fntyp::tests::placing_walks_a_pair_of_shared_nodes_once`).
 A function an instance defines takes its signature from its row of the
 enclosing definition's check the same way: its cells are placed at the
 row, its written parameters then take the row's

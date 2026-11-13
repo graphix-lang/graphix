@@ -600,8 +600,12 @@ reports:
 
 - the type-directed builtin hooks above.
 
-The unify-back at `setup_static_bind` never narrowed a site. Once the
-audit is clean it becomes a finding that every fuzz lane records.
+The unify-back at `setup_static_bind` narrows no site: an instance holds
+open what its call's check left open, and its result's open cells are the
+call's (`Type::place_open_cells`, `design/tvar_constraints.md`, An
+instance holds its signature cell by cell; pin
+`graphix-shell/tests/shell/elab_audit.rs`). Once the audit is clean it
+becomes a finding that every fuzz lane records.
 
 ## Steps
 

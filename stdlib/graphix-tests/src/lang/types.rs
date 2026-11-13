@@ -8595,6 +8595,63 @@ run!(
 }"#,
     prints("[i64:1, i64:0, i64:1]")
 );
+// A decided member that can take an undecided type takes it before an
+// undecided one and decides it, whatever the members' order or names:
+// the wrapper's parameter is the decided member's element. A parameter
+// with its type written goes to the member that holds that type.
+run!(
+    undecided_element_goes_to_the_decided_member_beside_an_undecided_one,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let h = |x0: {v: 'a}, x1: P<'a, 'b>| x1;
+  let f = |y| h({v: null}, [y]);
+  f(null)
+}"#,
+    prints("[null]")
+);
+run!(
+    undecided_element_a_decided_member_took_holds_no_other_type_refused,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let h = |x0: {v: 'a}, x1: P<'a, 'b>| x1;
+  let f = |y| h({v: null}, [y]);
+  f((1, 2))
+}"#,
+    refused("null does not contain (i64, i64)");
+    FuseExpect::None
+);
+run!(
+    undecided_element_a_decided_member_took_in_the_other_member_order_refused,
+    r#"{
+  type P<'x, 'y> = [Array<'y>, Array<'x>, null];
+  let h = |x0: {v: 'b}, x1: P<'b, 'a>| x1;
+  let f = |y| h({v: null}, [y]);
+  f((1, 2))
+}"#,
+    refused("null does not contain (i64, i64)");
+    FuseExpect::None
+);
+run!(
+    written_element_goes_to_the_undecided_member_beside_a_decided_one,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let h = |x0: {v: 'a}, x1: P<'a, 'b>| x1;
+  let f = |y: (i64, i64)| h({v: null}, [y]);
+  f((1, 2))
+}"#,
+    prints("[[i64:1, i64:2]]")
+);
+run!(
+    undecided_element_into_a_typedef_union_before_its_decider_refused,
+    r#"{
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  let h = |x1: P<'a, 'b>, x0: {v: 'a}| x1;
+  let f = |y| h([y], {v: null});
+  f((1, 2))
+}"#,
+    refused("declare the parameters that decide them before this one");
+    FuseExpect::None
+);
 // An equality decides both members of the union by what must hold it.
 run!(
     arithmetic_over_a_union_of_two_undecided,
@@ -10114,6 +10171,33 @@ run!(
   g(["s"], null)
 }"#,
     prints(r#"[["s"], null]"#)
+);
+// An instance's result is its call's own: the cells both leave open are
+// one cell at each place, where the union's two undecided members could
+// each take either.
+run!(
+    instance_result_holding_two_undecided_members_is_its_calls,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |k: fn(q: P<'b, 'a>) -> i64| k;
+  let g = |t| f(never());
+  let r = g(1);
+  7
+}"#,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+run!(
+    instance_result_holding_an_undecided_member_beside_a_decided_one_is_called,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |k: fn(q: P<'b, 'a>) -> i64, y: 'a| k;
+  let g = |t| f(|q| 7, t);
+  let r = g(1.5);
+  r([1.5])
+}"#,
+    is(Value::I64(7));
+    FuseExpect::None
 );
 run!(
     instance_cell_under_a_recursive_typedefs_members_takes_its_members_place,

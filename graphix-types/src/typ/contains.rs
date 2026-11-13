@@ -4949,7 +4949,7 @@ impl Type {
         r
     }
 
-    // CR claude for claude: [bug/medium] An undecided type that a decided member and an
+    // XCR claude for claude: [bug/medium] An undecided type that a decided member and an
     // undecided member of one union could both take goes to the decided one, which decides
     // the type's own cell: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; let h = |x0: {v:
     // 'a}, x1: P<'a, 'b>| 0; let f = |y| h({v: null}, [y]); f((1, 2))` is refused at the call
@@ -4978,6 +4978,30 @@ impl Type {
     // -> i64 to fn(q: P<'b: f64, f64>) -> i64'. The direct call does not. base-r24 and lane
     // 24d after undecided-into-two-decided-01 alike; 6 of 13030 accepted programs of gen2.py
     // (family g0390, shape nest). probes: ~/ptmp/cr29/scratch/r24/24d/u2d/{ub1,ub2}.gx
+    // 2026-11-13 claude: The check's pick stands, by Eric's D36 (11-13: order freedom
+    // dropped, soundness the bar): a decided member takes an undecided type before an
+    // undecided one by the members' own state, whatever their order or names (probes a1-a4:
+    // the union written both ways, the variables renamed, one verdict), check and build
+    // agree, and the annotation passes (|y: (i64, i64)| goes to Array<'b>); the other
+    // parameter order is refused at the definition. Pins
+    // lang::types::undecided_element_goes_to_the_decided_member_beside_an_undecided_one,
+    // undecided_element_a_decided_member_took_holds_no_other_type_refused,
+    // .._in_the_other_member_order_refused,
+    // written_element_goes_to_the_undecided_member_beside_a_decided_one,
+    // undecided_element_into_a_typedef_union_before_its_decider_refused. Fixed: the pick at
+    // the build. FnType::held_at first makes each open cell of the definition's copy the
+    // instance's open cell at its own place, and CallSite::setup_static_bind does the same
+    // for the instance's result before the unify-back (Type::place_open_cells), so the build
+    // decides nothing the check left open (ub1.gx: no narrowing under GRAPHIX_ELAB_AUDIT) and
+    // no longer refuses a result two of whose members are open on both sides, which base-r24
+    // did after an accepting check ('let f = |k: fn(q: P<'b, 'a>) -> i64| k; let g = |t|
+    // f(never()); g(1)'). Fail with the fix undone:
+    // lang::types::instance_result_holding_two_undecided_members_is_its_calls (every mode,
+    // without the unify-back's placement),
+    // typ::fntyp::tests::an_open_cell_is_held_at_the_instances_open_cell (without held_at's),
+    // graphix-shell tests/shell elab_audit::an_instance_leaves_open_what_its_call_left_open
+    // (without either). Not fixed: the same choice where a call omits a lambda default
+    // (default-typedef-union-bind-01). probes: ~/ptmp/cr29/scratch/r24/24d/udm/ (README)
     /// Commit `t` into the member of the union `s` that takes it, of those
     /// a probe admits it into, a tier at a time; `None` with no member. A
     /// probe judges each part apart, so it admits `fn(i: 'c) -> 'c` into

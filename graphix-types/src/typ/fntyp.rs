@@ -3230,6 +3230,58 @@ mod tests {
         }
     }
 
+    /// A definition's open cell is the instance's open cell at its place,
+    /// where a decided member of the union beside it could take it too.
+    #[test]
+    fn an_open_cell_is_held_at_the_instances_open_cell() {
+        use crate::typ::{
+            PrintFlag, Type,
+            cast::tests::{parsed, typed},
+            format_with_flags,
+        };
+        let (env, _) = typed(&[("P<'p, 'q>", "[Array<'p>, Array<'q>]")], "null");
+        let sig = |t: &str| match &parsed(&env, t) {
+            Type::Fn(ft) => ft.clone(),
+            t => panic!("{t} is a function type"),
+        };
+        let def = sig("fn(k: fn(q: P<'b, 'a>) -> i64, y: 'a) -> fn(q: P<'b, 'a>) -> i64");
+        let instance =
+            sig("fn(k: fn(q: P<'u, f64>) -> i64, y: f64) -> fn(q: P<'u, f64>) -> i64");
+        let (own, _) = def.held_at(&env, &instance).unwrap();
+        let held = format_with_flags(PrintFlag::DerefTVars, || own.rtype.to_string());
+        assert_eq!(held, "fn(q: P<'b: unbound, 'a: f64>) -> i64");
+    }
+
+    /// Placing walks each pair of shared nodes once: a tuple of two of the
+    /// one below it, sixty deep, is sixty pairs.
+    #[test]
+    fn placing_walks_a_pair_of_shared_nodes_once() {
+        use crate::{
+            env::Env,
+            typ::{TVar, Type},
+        };
+        use arcstr::literal;
+        use triomphe::Arc;
+        let chain = |leaf: &TVar| {
+            (0..60).fold(Type::TVar(leaf.clone()), |t, _| {
+                Type::Tuple(Arc::from_iter([t.clone(), t]))
+            })
+        };
+        let (own, at) =
+            (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("u")));
+        let env = Env::default();
+        chain(&own).place_open_cells(&env, &chain(&at));
+        at.bind(Type::Bottom);
+        assert!(
+            matches!(own.binding(), Some(t) if t.with_deref(|t| matches!(t, Some(Type::Bottom))))
+        );
+        let (own, at) =
+            (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("u")));
+        at.bind(Type::Bottom);
+        chain(&own).place_cells(&env, &chain(&at));
+        assert!(matches!(own.binding(), Some(Type::Bottom)));
+    }
+
     /// The refusal names the first variable declared whose bound reaches
     /// it, by the shortest path back its bounds' names lead to first:
     /// what a breadth-first walk from each variable in turn finds.
@@ -4310,6 +4362,14 @@ fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(Place, &TVar, &T
     }
 }
 
+/// Make the open cell `tv` the open cell `at`, where that is what stands
+/// at a place of its own.
+fn place_at_open(env: &Env, place: Place, tv: &TVar, at: &Type) {
+    if place == Place::Own && at.with_deref(|at| at.is_none()) {
+        place_cell(env, tv, at)
+    }
+}
+
 /// Whether the union `at` holds a member for each member of `own`, in
 /// `own`'s order, as a copy of `own` does: an open cell's is whatever
 /// stands there, any other member's is built by the same constructor.
@@ -4332,6 +4392,79 @@ fn members_stand_alike(own: &[Type], at: &[Type]) -> bool {
     own.len() == at.len() && own.iter().zip(at.iter()).all(|(own, at)| alike(own, at))
 }
 
+/// The walk of two types built alike that gives each open cell of the
+/// first what stands at its place in the second, a pair of shared nodes
+/// once among a union's members and once outside every union.
+struct Places<'a> {
+    env: &'a Env,
+    member: bool,
+    seen: [LPooled<AHashSet<(usize, usize)>>; 2],
+    f: &'a mut dyn FnMut(Place, &TVar, &Type),
+}
+
+impl<'a> Places<'a> {
+    fn new(env: &'a Env, f: &'a mut dyn FnMut(Place, &TVar, &Type)) -> Self {
+        Places { env, member: false, seen: [LPooled::take(), LPooled::take()], f }
+    }
+
+    fn types(&mut self, own: &Type, at: &Type) {
+        if let (Some(a), Some(b)) = (super::node_addr(own), super::node_addr(at))
+            && !self.seen[usize::from(self.member)].insert((a, b))
+        {
+            return;
+        }
+        crate::stack::ensure_sufficient(|| match (own, at) {
+            (Type::TVar(tv), _) => match tv.binding() {
+                Some(b) => self.types(&b, at),
+                None => {
+                    let place = if self.member { Place::Member } else { Place::Own };
+                    (self.f)(place, tv, at)
+                }
+            },
+            (_, Type::TVar(tv)) => {
+                if let Some(b) = tv.binding() {
+                    self.types(own, &b)
+                }
+            }
+            (Type::Set(own), Type::Set(at)) if members_stand_alike(own, at) => {
+                let outer = std::mem::replace(&mut self.member, true);
+                for (own, at) in own.iter().zip(at.iter()) {
+                    self.types(own, at)
+                }
+                self.member = outer
+            }
+            (Type::Set(_), _) | (_, Type::Set(_)) => (),
+            (Type::Fn(f0), Type::Fn(f1)) => self.signatures(f0, f1),
+            (Type::Ref(r0), Type::Ref(r1)) => {
+                if r0.same_definition(r1, self.env) && r0.params.len() == r1.params.len()
+                {
+                    for (own, at) in r0.params.iter().zip(r1.params.iter()) {
+                        self.types(own, at)
+                    }
+                }
+            }
+            (own, at) => {
+                any_part_pair(own, at, &mut |own, at| {
+                    self.types(own, at);
+                    false
+                });
+            }
+        })
+    }
+
+    /// [`Self::types`] over two signatures, position by position.
+    fn signatures(&mut self, own: &FnType, at: &FnType) {
+        for (own, at) in own.align(at).0 {
+            self.types(&own.typ, &at.typ)
+        }
+        if let (Some(own), Some(at)) = (&own.vargs, &at.vargs) {
+            self.types(own, at)
+        }
+        self.types(&own.rtype, &at.rtype);
+        self.types(&own.throws, &at.throws)
+    }
+}
+
 impl Type {
     /// Bind each open cell of `self` to what stands at its place in `at`,
     /// ⊥ included, wherever the two types are built alike
@@ -4340,82 +4473,40 @@ impl Type {
     /// ([`members_stand_alike`]); a cell the members of any other union
     /// alone hold is left open.
     pub fn place_cells(&self, env: &Env, at: &Self) {
-        place_in_order(env, |f| self.for_each_place(env, at, f))
+        place_in_order(env, |f| Places::new(env, f).types(self, at))
     }
 
-    /// Each open cell of `self` with what stands at its place in `at`,
-    /// wherever the two types are built alike.
-    fn for_each_place(
-        &self,
-        env: &Env,
-        at: &Self,
-        f: &mut dyn FnMut(Place, &TVar, &Self),
-    ) {
-        crate::stack::ensure_sufficient(|| match (self, at) {
-            (Self::TVar(tv), _) => match tv.binding() {
-                Some(b) => b.for_each_place(env, at, f),
-                None => f(Place::Own, tv, at),
-            },
-            (_, Self::TVar(tv)) => {
-                if let Some(b) = tv.binding() {
-                    self.for_each_place(env, &b, f)
-                }
-            }
-            (Self::Set(own), Self::Set(at)) if members_stand_alike(own, at) => {
-                for (own, at) in own.iter().zip(at.iter()) {
-                    own.for_each_place(env, at, &mut |_, tv, at| f(Place::Member, tv, at))
-                }
-            }
-            (Self::Set(_), _) | (_, Self::Set(_)) => (),
-            (Self::Fn(f0), Self::Fn(f1)) => f0.for_each_place(env, f1, f),
-            (Self::Ref(r0), Self::Ref(r1)) => {
-                if r0.same_definition(r1, env) && r0.params.len() == r1.params.len() {
-                    for (own, at) in r0.params.iter().zip(r1.params.iter()) {
-                        own.for_each_place(env, at, f)
-                    }
-                }
-            }
-            (own, at) => {
-                any_part_pair(own, at, &mut |own, at| {
-                    own.for_each_place(env, at, f);
-                    false
-                });
-            }
-        })
+    /// Make each open cell of `self` the open cell that stands at a place
+    /// of its own in `at`, wherever the two types are built alike: two
+    /// copies of one type hold one cell where both leave it open,
+    /// whichever member of a union beside it could take it.
+    pub fn place_open_cells(&self, env: &Env, at: &Self) {
+        Places::new(env, &mut |place, tv, at| place_at_open(env, place, tv, at))
+            .types(self, at)
     }
 }
 
 impl FnType {
-    /// [`Type::for_each_place`] over two signatures, position by position.
-    fn for_each_place(
-        &self,
-        env: &Env,
-        at: &Self,
-        f: &mut dyn FnMut(Place, &TVar, &Type),
-    ) {
-        for (own, at) in self.align(at).0 {
-            own.typ.for_each_place(env, &at.typ, f)
-        }
-        if let (Some(own), Some(at)) = (&self.vargs, &at.vargs) {
-            own.for_each_place(env, at, f)
-        }
-        self.rtype.for_each_place(env, &at.rtype, f);
-        self.throws.for_each_place(env, &at.throws, f)
-    }
-
     /// [`Type::place_cells`] over two signatures.
     pub fn place_cells(&self, env: &Env, at: &Self) {
-        place_in_order(env, |f| self.for_each_place(env, at, f))
+        place_in_order(env, |f| Places::new(env, f).signatures(self, at))
     }
 
     /// Place, each at a place of its own, the cells whose bounds hold no
     /// open cell ([`decides_others`]), which decide no other.
     fn place_free_cells(&self, env: &Env, at: &Self) {
-        self.for_each_place(env, at, &mut |place, tv, at| {
+        Places::new(env, &mut |place, tv, at| {
             if place == Place::Own && !decides_others(tv) {
                 place_cell(env, tv, at)
             }
         })
+        .signatures(self, at)
+    }
+
+    /// [`Type::place_open_cells`] over two signatures.
+    fn place_open_cells(&self, env: &Env, at: &Self) {
+        Places::new(env, &mut |place, tv, at| place_at_open(env, place, tv, at))
+            .signatures(self, at)
     }
 
     /// Contain, at its place in `at`, each formal that holds no open cell
@@ -4435,7 +4526,10 @@ impl FnType {
 
     /// `self`, a definition's signature, as an instance at `instance`
     /// holds it, and the copy of each open cell by its address: every cell
-    /// the instance's own and bound to the instance's type. Where the
+    /// the instance's own and bound to the instance's type. A cell the
+    /// instance leaves open at the cell's own place is that cell first
+    /// ([`Type::place_open_cells`]): no member of a union beside it
+    /// decides what the call's check left open. Where the
     /// containment would have to choose a union's member before the
     /// positions that decide it, each cell takes what stands at its own
     /// place first, after the cells its bounds hold
@@ -4496,7 +4590,8 @@ impl FnType {
                 tv.settle_bounds_first(env, &mut placed)
             }
         };
-        let own = held(&|_, _| ())
+        let own = held(&|own, _| own.place_open_cells(env, instance))
+            .or_else(|_| held(&|_, _| ()))
             .or_else(|_| held(&|own, _| own.place_cells(env, instance)))
             .or_else(|_| {
                 held(&|own, known| {
