@@ -1957,36 +1957,6 @@ impl FnType {
                 }
             }
             indexed = tvar_map.paired_len();
-            // XCR claude for claude: [bug/low] This pairs a signature variable no cell is
-            // paired with yet with the implementation's variable of its name, in the
-            // first pass, before a later bound pairs it, so an implementation that is its
-            // signature with the names moved round is refused: `val f: fn<'a: Array<'z>,
-            // 'b: Array<'a>, 'z: i64>(x: 'b) -> 'b;` over `let f = 'a: Array<'q>, 'q:
-            // Array<'r>, 'r: i64 |x: 'a| -> 'a x` ("the implementation requires 'b:
-            // Array<'q>, which the signature does not declare"; with 'p for the
-            // implementation's 'a it passes), and `fn<'a: [`P, `Q], 'b: ['a, `X]>(x: 'b)
-            // -> 'b` over `'b: [`P, `Q], 'a: ['b, `X] |x: 'a| -> 'a x` (a union that
-            // cannot pair). Taking the same-named variable only in a pass that pairs
-            // nothing without it would accept both. Nothing in lang::{interfaces, traits,
-            // modules, quantified, cast_trait} fails with this arm removed, so what it is
-            // for has no pin: find that first. On base-r20 and lane 20d alike. probes:
-            // ~/ptmp/cr29/scratch/r20/20d/ibo-rv/{n3,n4,n5}/main.gx (iface-same-name-01)
-            // 2026-11-12 claude: What the arm was for: nothing it could do right. It
-            // looked up only impl_fn.sig_tvars(), the variables at the implementation's
-            // positions (args, vargs, rtype, throws; no conjuncts), and the position walk
-            // pairs every open cell there with the signature's type at its place, so the
-            // same-named variable it took was always a cell already standing for another
-            // signature type (n3, n4). Traced: zero hits over the whole stdlib's
-            // interface and trait checks; census of both repos unchanged against base-r23
-            // and the lane's previous tip; graphix-tests lib 18986/0 with it off.
-            // Deleted, so a bound pairs through the pairing alone (design/traits.md
-            // already says so). Pins in lang::interfaces:
-            // a_chain_of_bounds_with_the_names_moved_round_holds,
-            // a_union_bound_with_the_names_moved_round_holds and
-            // a_chain_of_bounds_with_the_names_moved_round_must_be_declared fail with the
-            // arm back; a_union_bound_with_the_names_moved_round_must_be_declared holds
-            // either way. Trait methods with the names moved round passed before and
-            // still do.
             match paired_to.get_mut(&sig_tv.cell_addr()) {
                 None => LPooled::<Vec<&TVar>>::take(),
                 Some(places) => {
