@@ -4949,59 +4949,6 @@ impl Type {
         r
     }
 
-    // XCR claude for claude: [bug/medium] An undecided type that a decided member and an
-    // undecided member of one union could both take goes to the decided one, which decides
-    // the type's own cell: `type P<'x, 'y> = [Array<'x>, Array<'y>, null]; let h = |x0: {v:
-    // 'a}, x1: P<'a, 'b>| 0; let f = |y| h({v: null}, [y]); f((1, 2))` is refused at the call
-    // of f, "null does not contain (i64, i64)": at the join Array<null> took [y] and bound y
-    // to null, where Array<'b> holds it for every y. The direct form (`let y = never();
-    // h({v: null}, [y]); y <- (1, 2)`) is refused with a hint to declare y: [null, (i64,
-    // i64)]. base-r20, r20-staging without lane 20b and r20-staging 557beb5ed run both
-    // (takes_as_it_stands held the member's cells alone and gave y's cell to Array<'b>, the
-    // pick r20-x6 removed because between two undecided members it went by order). Check and
-    // build agree; the refusal is a mismatch at the wrapper's call, far from the choice. 4 of
-    // 800 generated wrappers, none of the census's 2955 files. A fix to try: where no member
-    // takes the type with the cells of both held, the one undecided member that holds it
-    // with its own cells held takes it (two such are the choice AmbiguousMember refuses),
-    // outside a pre-unification, whose argument is not checked yet; then the differential
-    // (genw.py beside the round's generators) and a census, since it moves what the join
-    // gives an empty array beside one decided member (`f([], never(), 1)` over `'a: P<'b,
-    // 'c> |x: 'a, y: 'b, z: 'c|`). probes:
-    // ~/ptmp/cr29/scratch/r20/20b/x6rev/um/{um1,um3,um5}.gx,
-    // ~/ptmp/cr29/scratch/r20/20b/x6rev/gen2-w1/{w00087,w00018,w00135,w00580}.gx, generator
-    // ~/ptmp/cr29/scratch/r20/20b/x6rev/genw.py (undecided-into-decided-member-01)
-    // 2026-11-13 claude: The same pick is made at the build, after the check: 'type P<'p, 'q>
-    // = [Array<'p>, Array<'q>]; let f = |x0: fn(q: P<'b, 'a>) -> i64, y0: 'a| x0; let g = |t|
-    // f(never(), 1.5); g(1)' checks with 'b undecided, and the instance's unify-back
-    // (CallSite::setup_static_bind) gives the site's Array<'b> to the decided Array<f64>:
-    // GRAPHIX_ELAB_AUDIT=1 says 'narrowed the site's return from fn(q: P<'b: unbound, f64>)
-    // -> i64 to fn(q: P<'b: f64, f64>) -> i64'. The direct call does not. base-r24 and lane
-    // 24d after undecided-into-two-decided-01 alike; 6 of 13030 accepted programs of gen2.py
-    // (family g0390, shape nest). probes: ~/ptmp/cr29/scratch/r24/24d/u2d/{ub1,ub2}.gx
-    // 2026-11-13 claude: The check's pick stands, by Eric's D36 (11-13: order freedom
-    // dropped, soundness the bar): a decided member takes an undecided type before an
-    // undecided one by the members' own state, whatever their order or names (probes a1-a4:
-    // the union written both ways, the variables renamed, one verdict), check and build
-    // agree, and the annotation passes (|y: (i64, i64)| goes to Array<'b>); the other
-    // parameter order is refused at the definition. Pins
-    // lang::types::undecided_element_goes_to_the_decided_member_beside_an_undecided_one,
-    // undecided_element_a_decided_member_took_holds_no_other_type_refused,
-    // .._in_the_other_member_order_refused,
-    // written_element_goes_to_the_undecided_member_beside_a_decided_one,
-    // undecided_element_into_a_typedef_union_before_its_decider_refused. Fixed: the pick at
-    // the build. FnType::held_at first makes each open cell of the definition's copy the
-    // instance's open cell at its own place, and CallSite::setup_static_bind does the same
-    // for the instance's result before the unify-back (Type::place_open_cells), so the build
-    // decides nothing the check left open (ub1.gx: no narrowing under GRAPHIX_ELAB_AUDIT) and
-    // no longer refuses a result two of whose members are open on both sides, which base-r24
-    // did after an accepting check ('let f = |k: fn(q: P<'b, 'a>) -> i64| k; let g = |t|
-    // f(never()); g(1)'). Fail with the fix undone:
-    // lang::types::instance_result_holding_two_undecided_members_is_its_calls (every mode,
-    // without the unify-back's placement),
-    // typ::fntyp::tests::an_open_cell_is_held_at_the_instances_open_cell (without held_at's),
-    // graphix-shell tests/shell elab_audit::an_instance_leaves_open_what_its_call_left_open
-    // (without either). Not fixed: the same choice where a call omits a lambda default
-    // (default-typedef-union-bind-01). probes: ~/ptmp/cr29/scratch/r24/24d/udm/ (README)
     /// Commit `t` into the member of the union `s` that takes it, of those
     /// a probe admits it into, a tier at a time; `None` with no member. A
     /// probe judges each part apart, so it admits `fn(i: 'c) -> 'c` into
