@@ -3936,40 +3936,6 @@ impl Decisions {
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
     let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
     let mut holders = Holders::new(env, None);
-    // XCR claude for claude: [bug/low] Two cells a call picked for one variable of its
-    // callee are written under that variable's name, so two members read as holding
-    // one type. With `let f = |x: 'a| -> Array<'a> []`, `{a, ..}` over `{a: [1], c:
-    // f(never())}` and `{a: ["s"], c: f(never())}` is refused "matches two members, {
-    // a: Array<i64>, c: Array<'a> } and { a: Array<string>, c: Array<'a> }, told apart
-    // by types not decided at this select; annotate those types, ..": each `'a` is
-    // another call's cell, no binding names either, and the program wrote `'a` only in
-    // `f`. TVar::written_open answers by the name alone. A variable a let's annotation
-    // wrote (`let v: [{a: Array<i64>, c: 'q}, {a: Array<string>, c: 'r}] = ..`, refused
-    // with 'q and 'r) is not rigid either and keeps its name, so the rigid mark does
-    // not tell the two apart. A fix: number a cell an instantiation made, as
-    // Holders::number does one no binding names, which needs the cell to say a call
-    // made it. Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/umrc/p4.gx, q1.gx
-    // (undecided-member-instance-name-01)
-    // 2026-11-13 claude: A call's instantiation now marks the cell it makes
-    // (TCell::call_copy, set in TVar::freshen's Fresh::Instantiate arm; copies and
-    // images carry it; a merge keeps it unless a variable the program wrote names
-    // either cell), and TVar::written_own, which undecided_members and
-    // Reach::untyped_binds read in place of written_open, answers none for such a cell,
-    // so it is numbered: p4 now prints Array<'_1> and Array<'_2>; q1, and a let
-    // annotation's 'q and 'r over the two calls, keep their names. untyped_binds keyed
-    // its placeholders by name, so two copies of one variable collapsed into one member
-    // (`[Array<string>, Array<Array<'a>>]` for `B([g(never()), g(never())])`): they are
-    // keyed by cell now, and a cell no binding or written variable names is numbered
-    // there too. TVar::written_open is unchanged: a suggestion that writes a
-    // declaration (`-> Array<'c>`) still writes the callee's name, which declares a
-    // variable there. Pins:
-    // lang::select::partial_struct_call_copies_of_one_variable_are_numbered_refused and
-    // ..._through_a_wrapper_are_numbered_refused (fail with the mark undone),
-    // ..._a_written_variable_took_keep_its_name_refused (fails with the merge rule
-    // undone), lang::types::select_arms_at_two_depths_over_two_calls_payloads (fails
-    // with the mark undone, and with the placeholders keyed by name); twins
-    // ..._call_copies_annotated_where_built, ..._two_calls_payloads_declared;
-    // graphix-types image a_cell_keeps_its_facts.
     let mut written = |t: &Type| {
         t.written_form(&mut |tv| match tv.is_bound() {
             true => None,
