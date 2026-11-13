@@ -1854,8 +1854,8 @@ impl Widening {
                 }
                 let note = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                     format_compact!(
-                        "the function builds a value of type {l} into a type an \
-                         argument before this one decided as {held}; annotate that \
+                        "the function builds a value of type {l} into a type another \
+                         argument of this call decided as {held}; annotate that \
                          argument so its type holds both (bind it to a `let` with its \
                          type written)"
                     )

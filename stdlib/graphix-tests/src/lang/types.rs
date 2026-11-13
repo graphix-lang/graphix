@@ -5308,10 +5308,41 @@ run!(
 }"#,
     refused(
         "type mismatch i64 does not contain [i64, null]: the function builds a value of \
-         type Array<[i64, null]> into a type an argument before this one decided as \
+         type Array<[i64, null]> into a type another argument of this call decided as \
          Array<i64>; annotate that argument so its type holds both"
     );
     FuseExpect::None
+);
+
+// The payload is met before an argument written ahead of it, and the
+// refusal names it as the call's other argument.
+run!(
+    decided_payload_written_after_takes_no_wider_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |z, a| { a <- B([z]); a.0 };
+    let x: B<Array<i64>> = B([1]);
+    f(n, x)
+}"#,
+    refused(
+        "type mismatch i64 does not contain [i64, null]: the function builds a value of \
+         type Array<[i64, null]> into a type another argument of this call decided as \
+         Array<i64>; annotate that argument so its type holds both"
+    );
+    FuseExpect::None
+);
+
+run!(
+    decided_payload_written_after_wide_enough_takes_the_argument,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |z, a| { a <- B([z]); a.0 };
+    let x: B<Array<[i64, null]>> = B([1]);
+    f(n, x)
+}"#,
+    prints("[i64:1]")
 );
 
 run!(
@@ -5337,8 +5368,8 @@ run!(
     f(x, 1)
 }"#,
     refused(
-        "the function builds a value of type Array<i64> into a type an argument before \
-         this one decided as Array<_>"
+        "the function builds a value of type Array<i64> into a type another argument of \
+         this call decided as Array<_>"
     );
     FuseExpect::None
 );
@@ -5353,8 +5384,8 @@ run!(
     f(x, n)
 }"#,
     refused(
-        "the function builds a value of type [i64, null] into a type an argument before \
-         this one decided as i64"
+        "the function builds a value of type [i64, null] into a type another argument of \
+         this call decided as i64"
     );
     FuseExpect::None
 );

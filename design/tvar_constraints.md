@@ -391,13 +391,14 @@ under it; the instance would write a null into an `Array<i64>`. So after
 a widening every decided cell the instance's signature reaches is probed
 against its lower bounds (`Widening::below_bounds`), and one that held
 them before it and no longer does undoes the widening and refuses the
-argument, naming both types and the earlier argument to annotate. The
-same holds a payload a REPL input
+argument, naming both types and the other argument to annotate (a
+payload is met before an argument written ahead of it: `f(n, x)` over
+`|z, a|`). The same holds a payload a REPL input
 settled (`let x = B([])`, then `f(x, 1)`) and a payload read back into a
 decided parameter (`|a, z| { let b = B(z); a <- b.0; a }` at `x: i64`
 and `n`). A payload still open at the call takes both arguments' bounds
 and settles to their union. Pins:
-`lang::types::{decided_payload_takes_no_wider_argument,empty_declared_payload_takes_no_argument,payload_read_into_a_decided_parameter_takes_no_wider_argument}`,
+`lang::types::{decided_payload_takes_no_wider_argument,decided_payload_written_after_takes_no_wider_argument,empty_declared_payload_takes_no_argument,payload_read_into_a_decided_parameter_takes_no_wider_argument}`,
 their annotated twins, and
 `lang::repl_inputs::settled_payload_takes_nothing_a_function_builds_into_it`.
 

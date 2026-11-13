@@ -219,7 +219,7 @@ declare it as wide as the widest argument.
 
 ```graphix,cases
 ok type B<'p> = Abstract<'p>; let f = |a, z| { a <- B([z]); a.0 }; f(B([1]), "s")
-no "an argument before this one decided as Array<i64>" type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<i64>> = B([1]); f(x, n)
+no "another argument of this call decided as Array<i64>" type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<i64>> = B([1]); f(x, n)
 ok type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<[i64, null]>> = B([1]); f(x, n)
 ```
 

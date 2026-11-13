@@ -521,7 +521,7 @@ async fn settled_payload_takes_nothing_a_function_builds_into_it() -> Result<()>
             "type mismatch _ does not contain i64: it holds the type of `x` (line 1, \
              column 5 in `let x = B([])`), settled when its input ended; declare x's \
              type where it is bound: the function builds a value of type Array<i64> \
-             into a type an argument before this one decided as Array<_>",
+             into a type another argument of this call decided as Array<_>",
         ),
     ])
     .await
