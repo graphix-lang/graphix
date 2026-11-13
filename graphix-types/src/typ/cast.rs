@@ -2050,59 +2050,6 @@ impl ShallowScrutinee {
             .as_ref()
     }
 
-    // XCR claude for claude: [bug/high] An inferred predicate narrower than its member under
-    // an `Any` part is shallowed as if it held the member whole. Over `(Any, i64)` the arm
-    // `((a, b), n) => a + b + n` checks: the body decides the cells under the `Any`, so the
-    // arm is a run-time test of `((i64, i64), i64)`. But this answers `(Any, Any)` for it
-    // (GXDBG_SHALLOW: `((i64, i64), i64) => (Any, Any)`), and the structure test alone
-    // admits `(("s", "t"), 1)`: the node-walk logs an arith error, the fused run panics
-    // "kernel param `a`: runtime String("s") does not match the compiled Scalar(I64) slot".
-    // `|x: (Any, i64)| -> [string, null] select x { ([h, ..], n) => { let q: string = h; q
-    // }, _ => null }` over `([3], 2)` prints 3 under --no-fusion and panics fused. Same
-    // under a struct field (`{a: Any}`) and a variant payload (`` `S(Any) ``). A top-level
-    // `Any` scrutinee and a second member (`[(Array<i64>, i64), (Any, string)]`) keep the
-    // deep walk and answer right. Same on base-r20. A fix: no shallow test for a predicate
-    // that is narrower than the member it meets at a position the member holds `Any` (or
-    // `facts` answers None for a member holding `Any` below its top, if the cost on
-    // Any-payload scrutinees is acceptable); pin both engines. probes:
-    // ~/ptmp/cr29/scratch/r20/20e/review/h10.gx, h4.gx, h8.gx, h9.gx, h11.gx, e7.gx, e5.gx; right:
-    // h5.gx, h6.gx (shallow-any-part-01)
-    // 2026-11-10 claude: An array element reaches it too, and with no Any written (not traced to
-    // this function; the same panic). `|x: Array<Any>| select x { [(a, b), _] => a + 1, _ => 2 }`
-    // over `[("s", 2), 0]` checks, panics fused (kernel param `a`: runtime String("s") does not
-    // match the compiled Scalar(I64) slot) and logs an arith error under --no-fusion. The arms of
-    // a select over a reference decide its referent `Array<Any>` from `[(a, b), _]` beside `_`, so
-    // `|x| { let r = &mut [x, 0]; select *r { [(a, b), _] => a + 1, _ => 2 } }` with `f(("s", 2))`
-    // does the same, x annotated `(string, i64)` or not, as does `select W([x, 0]).0` over an
-    // abstract parameter. Same on base-r20. probes:
-    // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/any1.gx, u1.gx, u2.gx
-    // 2026-11-12 claude: Fixed in three places. (1) ShallowScrutinee::discriminant: where a member
-    // holds Any below its top (outside function types and references, holds_any), shallowify keeps
-    // the predicate's part at a position where the member's part holds Any and the predicate's
-    // does not hold all of it, so ((i64, i64), i64) over (Any, i64) seals ((i64, i64), Any); the
-    // CR's seven probes answer right in both engines. Pins that fail without it:
-    // lang::select::destructure_under_an_any_part_tests_the_arms_types,
-    // destructure_under_an_any_part_beside_a_typed_member,
-    // slice_rest_over_any_takes_a_names_type_or_any_value,
-    // typ::cast::tests::shallow_discriminant_keeps_a_part_narrower_than_any. (2) The note's array
-    // cases are not the shallow test: a slice's test admits any member of its element union at
-    // every position, and a _ (or a rest beside no name) makes that union Any, so the deep test
-    // passes them too. Where nothing types the elements (Any, Array<Any>, a scrutinee the arms
-    // decide) StructPatternNode::hold_untyped_elements makes such a rest Any and every cell the
-    // union leaves open Any: any1, u1, u2 are refused (cannot compute Any + i64), the written test
-    // Array<[(i64, i64), string]> as [(a, b), _] is the twin. Pins that fail without it:
-    // slice_bind_beside_a_wildcard_*_refused (5), slice_name_beside_a_wildcard_over_any_refused,
-    // list_bind_beside_a_wildcard_over_any_refused, slice_bind_beside_a_rest_over_any*_refused
-    // (2); slice_beside_a_wildcard_that_matches_nothing_is_dead fails without its gate. (3) A
-    // partial struct pattern over an Any part of a typed scrutinee passed a wider struct only
-    // through the shallow test (the old pin nested_partial_struct_under_a_typed_tuple; it missed
-    // for any field but the struct's first and inside a function, and a + 1 over {a: "s", b: 2}
-    // panicked fused): it is refused as over an Any scrutinee, in
-    // StructurePattern::unique_completion. Pins that fail without it:
-    // nested_partial_struct_over_an_any_part_refused, partial_struct_over_any_elements_refused;
-    // twin nested_partial_struct_under_a_written_test_over_an_any_part. Left open, base-r23 alike:
-    // abstract-payload-any-01, any-cell-bound-undecided-01. Probes and a 374-program differential:
-    // ~/ptmp/cr29/scratch/r23/23c/sap/ (README).
     pub fn discriminant(&self, env: &Env, predicate: &Type) -> Option<Type> {
         let mut preds: LPooled<Vec<Type>> = LPooled::take();
         flatten_union_members(predicate, env, &mut preds)?;
