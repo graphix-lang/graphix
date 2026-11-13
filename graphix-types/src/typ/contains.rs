@@ -5296,6 +5296,16 @@ impl Type {
         // by base-r22 and split there too, the other 10 newly accepted orders of the
         // same shapes (this one, and choice-widen-order-01's). probes:
         // ~/ptmp/cr29/scratch/r21/21t/d32/nsb/{b1,b2,b3}.gx, nscmp.out
+        // 2026-11-12 claude: Two more splits of this kind, which the default build
+        // takes since open-instance-signature-01 (a cell only a union's members hold
+        // is placed member for member): 'type P<'p, 'q> = [Array<'p>, Array<'q>]; type
+        // O<'t> = ['t, null]; let f = |x: P<'a, string>, y: O<'a>| (x, y); let g = |u,
+        // v| f(u, v); g(["s"], null)' and the recursive G<'b>/H<'b> wrapper at never()
+        // check and run, and under GRAPHIX_NO_SUBST=1 the instance of g is refused,
+        // "([Array<string>, Array<_>], [null, _]) does not contain (Array<string>,
+        // [null, 'a: string])": its own check gives the callee's Array<'a> to the
+        // decided Array<string>. Before and after that fix alike. probes:
+        // ~/ptmp/cr29/scratch/r23/23b/ois/{o5,u5min}.gx, nest/{n1,n4,n5,n6}.gx
         let mut undecided_free = s0
             .iter()
             .zip(&free)
