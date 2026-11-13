@@ -849,6 +849,22 @@ impl Reach {
         }
     }
 
+    // CR claude for claude: [bug/low] A cover that takes one member of a union at a
+    // product's position leaves the product whole in what reaches the next arm, so an
+    // arm after arms that cover such a union member by member is never found dead:
+    // `|x: [`A([i64, string])]| select x { `A(i64) as `A(n) => n, `A(string) as `A(s)
+    // => 0, _ => 3 }` checks and runs, as do the tuple form (`(null, _)`, `(i64, i64)
+    // as (n, _)`, `_` over `([i64, null], i64)`) and slice ladders beside a null
+    // (`` `A([h, ..]), `A([]), `A(null), `A(_) `` over `` `A([Array<i64>, null]) ``,
+    // whose covers since slice-position-other-member-01 are `` `A(Array<i64>) `` and
+    // `` `A(null) ``). Exhaustiveness reads `covered` by containment, so no select is
+    // refused that should check; only the dead arm is missed. Type::diff takes a
+    // product out whole or not at all (setops::held_by_shape); a residual narrowed at
+    // the position was tried for diff-product-held-01 and cost the recursive-union
+    // budget, so a fix wants a residual taken only where the subtrahend differs from
+    // the minuend at one position and takes whole members of the union there.
+    // base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/residual/{g01,g02,g03,
+    // d04,d05,n03}.gx (product-member-residual-01)
     /// Take away what `t` covers from what reaches the arms after.
     fn cover(&mut self, env: &Env, t: Type) -> Result<()> {
         self.atype = self.atype.diff(env, &t)?;
@@ -956,6 +972,28 @@ impl Reach {
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
                 if unguarded {
+                    // CR claude for claude: [bug/high] A slice whose element is a tuple or
+                    // struct of names claims its lengths of an array member whose element
+                    // type is a union holding other members, so the check accepts a select
+                    // that has no arm for a value: `let f = |x: Array<[(i64, i64), i64]>|
+                    // select x { [(a, b), ..] => 1, [] => 0 }; f([3])` passes --check and
+                    // the run logs "no arm matches [i64:3]: a coverage hole in the check",
+                    // and `Array<[(i64, i64), (i64, i64, i64)]>` with `f([(1, 2, 3)])`
+                    // alike; `|x: Array<(i64, i64)>|` is the twin that runs. base-r24
+                    // alike. array_len_coverage reads an element pattern by
+                    // matches_anything, which takes a tuple of names as irrefutable
+                    // whatever the element type is, and the inferred predicate holds each
+                    // element over its own member, so `at` contains the member. The same
+                    // hole inside a tuple, struct or variant position is closed (the
+                    // nested ladder reads elements by elements_cover since
+                    // slice-position-other-member-01). What would close it: without a
+                    // written test, claim a member only where sp.elements_cover holds of
+                    // it (any_member only under `explicit`); tried, h12/h15 are then
+                    // refused and five twins run, but the refusal's hint then says the
+                    // ladder "needs a rest pattern" where it has one: refutable_slice
+                    // wants setting where a member's elements are not covered. probes:
+                    // ~/ptmp/cr29/scratch/r24/24h/spom/hole/{h12,h15,k02}.gx
+                    // (slice-element-union-hole-01)
                     let any_member = sp.array_len_coverage(env, explicit).is_some();
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
                     for l in self.ladders.iter_mut() {
@@ -1465,6 +1503,20 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
+// CR claude for claude: [bug/low] `true` and `false` arms at a variant's payload
+// position whose union holds an array or a list never cover the bool member, so
+// the select is refused though an arm takes every value: `|x: [`A([bool,
+// Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A(Array<i64>) as `A(a)
+// => 2 }` and the slice form (`` `A([a, ..]) => 2, `A([]) => 3 `` for the last arm)
+// say "missing match cases: no arm covers `A([bool, Array<i64>])". The tuple form
+// (`(true, _)`, `(false, _)`, `(Array<i64>, i64) as (a, _)` over `([bool,
+// Array<i64>], i64)`) runs, since a written test cuts a tuple into parts
+// (PartPool), and so does `[bool, (i64, i64)]` at the position, whose tuple is a
+// head (Head::Composite). An array or list member has no head here, so the
+// position's heads are None and the pool never completes; a `null` arm covers its
+// member by StructPatternNode::matched_part and a bool pair has no such path.
+// base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/bool/{b05,b06,b08}.gx,
+// b07.gx (the tuple twin) (bool-beside-collection-cover-01)
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, at most one tuple or struct holding no open
 /// cell, [`Head::Rest`] for its other primitives and [`Head::Open`] for
@@ -2865,6 +2917,20 @@ impl<R: Rt> Update<R> for Select<R> {
         Ok(())
     }
 
+    // CR claude for claude: [bug/low] An instance checked again (GRAPHIX_NO_SUBST=1)
+    // refuses a select whose arm the instance's type rules out where that arm reads a
+    // part of its bind: `let c = 'c: Collection, 'b: (i64, i64) |x: ('c<'b>, i64)| ->
+    // i64 select x { ([h, ..], n) => h.0 + n, ([<h, ..>], n) => h.0 + n, _ => 0 };
+    // c(([(3, 4)], 1))` checks and prints 4, and under GRAPHIX_NO_SUBST=1 the build
+    // refuses `h.0` in the list arm, "reading a tuple needs its type known here:
+    // annotate the binding"; the list call alike in the array arm, and either arm alone
+    // builds. The pin lang::select::nested_slice_element_bind_typed fails this way in
+    // all four modes under GRAPHIX_NO_SUBST=1. base-r24 alike. Not traced: the arm the
+    // instance's 'c rules out leaves its bind untyped in the second check, where the
+    // definition's check typed it from 'b. An instance takes its definition's types by
+    // default, so only the debug A/B splits. probes:
+    // ~/ptmp/cr29/scratch/r24/24h/spom/nosubst/{ns5,ns6,ns7}.gx, ns2.gx (one arm, builds)
+    // (nosubst-ruled-out-arm-bind-01)
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
