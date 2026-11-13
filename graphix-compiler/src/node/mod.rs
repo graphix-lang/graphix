@@ -4125,6 +4125,19 @@ impl<R: Rt> Connect<R> {
         // select's meet (union-set-alternative-meet-01 left it); base-r20 alike. probes:
         // ~/ptmp/cr29/scratch/r20/20f/{connect_set,connect_set2,connect_set3,connect_sel1}.gx
         // (connect-union-defaults-01)
+        // 2026-11-13 claude: a2a2044e8 (typedef-return-defaults-01) judges a lambda written
+        // to a binding as the binding's type stands (callsite::Narrowing::Written, passed
+        // below where the binding is not generic), so the write decides the open #d. The four
+        // probes are refused at the check on the lane: connect_sel1 at the write, with both
+        // notes; connect_set, connect_set2 and connect_set3 at the call that omits the label,
+        // "in: 1: type mismatch string does not contain i64", which blames the first lambda's
+        // default and names no annotation (00769c243 refused them the same way). Left for
+        // this CR: that message (the write decides #d from "q", and the default of the lambda
+        // the binding was born with is judged only when a call omits it), pins of the four
+        // probes, and whether such a binding should be told at the write to declare `[fn(?#d:
+        // [i64, string], x: i64) -> string, null]`. No program of
+        // ~/ptmp/cr29/scratch/r23/23b/trd2/gen.py (4188, unions with null among them) passes
+        // the check and fails the bind on the lane.
         let scope = Scope::root();
         wrap!(
             self,

@@ -1558,6 +1558,32 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     // message changed. One program that ran is refused now: let w: W<'p> =
                     // {cb: |#d = 1, ..| ..}; w.cb(#d: "s", 7) (the typedef's body written out
                     // in the annotation keeps it). probes: ~/ptmp/cr29/scratch/r23/23b/trd/
+                    // 2026-11-13 claude: Second fixer (the first ended before its report).
+                    // 00769c243 checked: the CR probes pass --check and fail the bind on
+                    // base-r23 and are refused at the definition or run on the lane; its nine
+                    // pins fail in all four modes with names_definitions answering true;
+                    // census 0 verdicts, 0 messages. More than the one program above is
+                    // refused that ran: `-> W<'z>` over `#d = 1` is refused whatever reads
+                    // it, so `let w: W<i64> = mk(0)` and a `w.cb(#d: "s", 7)` that never
+                    // omits the label, both of which base-r23 ran, need `-> W<i64>`. It left
+                    // the written bindings open: the link names_definitions reads lives only
+                    // while the write is checked (the value written is a monomorphic copy),
+                    // so `let v: W<'q> = never(); v <- {cb: |#d = "q", ..| ..}; v.cb(7)` and
+                    // every written-out twin still passed the check and failed the bind.
+                    // a2a2044e8 judges the type of a binding something writes as it stands
+                    // (callsite::Narrowing::Written at Bind::check_value, Connect and
+                    // ConnectDeref). Pins
+                    // lang::functions::default_written_behind_a_typedef_decides_its_label,
+                    // default_decides_a_written_bindings_label,
+                    // default_of_another_type_written_to_a_binding,
+                    // default_of_another_type_written_to_a_field,
+                    // default_written_by_a_function_to_a_binding_it_captures,
+                    // default_written_through_a_parameters_reference,
+                    // written_bindings_label_holds_its_defaults_type and the
+                    // defaults_of_one_type_written_* pair: each of the three sites has pins
+                    // that fail with it back on Narrowing::Copy. 4188 generated programs pass
+                    // the check and fail the bind 492 times on base-r23, 366 at 00769c243, 0
+                    // at a2a2044e8. probes: ~/ptmp/cr29/scratch/r23/23b/trd2/ (README)
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,
