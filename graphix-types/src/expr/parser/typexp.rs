@@ -201,7 +201,7 @@ pub(super) fn fntype(i: &mut Input) -> R<FnType> {
     fnshared(i).map(Arc::unwrap_or_clone)
 }
 
-// CR claude for claude: [bug/medium] Some nests of quantified function types
+// XCR claude for claude: [bug/medium] Some nests of quantified function types
 // do not finish parsing, or printing. `graphix --no-cache --check
 // parse_hang.gx` (one `let` annotated with a 2.7 KB function type: signatures
 // nested several deep, each declaring up to three of four names, their bounds
@@ -218,6 +218,25 @@ pub(super) fn fntype(i: &mut Input) -> R<FnType> {
 // generator is r20h_diff_tmp.rs beside the probes (seeds 124606 and 15940).
 // probes: ~/ptmp/cr29/scratch/r20/20h/rank2-print-01/review/parse_hang.gx,
 // print_hang.gx (nested-signature-hang-01)
+// 2026-11-12 claude: Circular, not exponential: both probes parse to cells
+// whose bound reaches its own cell. The names pass check_bounds_acyclic; an
+// enclosing declaration's alias walk then merges a nested signature's
+// quantifier with the variable whose bound holds that signature
+// (nested-quantifier-capture-01), and seed_conjuncts put the bound on the
+// merged cell with no occurs check, so the printer re-entered the signature
+// without end and the enclosing parse's walks did not return. seed_conjuncts
+// now refuses a conjunct that reaches the cell it would bound
+// (FnType::declaring and seed_conjuncts return Result; the parser,
+// Lambda::compile and impl_head pass it on), so both probes are refused at the
+// parse (fmt 50 M instructions, --check 0.8 G). Pins that fail without the
+// check: typ::fntyp::tests::a_seeded_bound_reaching_its_cell_is_refused,
+// a_nest_parses_to_cells_no_bound_of_which_reaches_its_cell (the minimized
+// probes). Until the capture is fixed the refusal's message ('c's bound reaches
+// 'c) is not true of the source, and a nest whose cells are merged that way is
+// refused where fmt printed some of them (generator of r20h, seeds 1..130000
+// under 3000 bytes: 1083 refused, 0 hang, against 10 hangs, 527 misprints and
+// 352 stable prints without the check). probes:
+// ~/ptmp/cr29/scratch/r23/23c/nsh/ (README)
 fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     keyword(i, "fn")?;
     let _nest = ParseDepth::enter();
@@ -265,10 +284,12 @@ fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
         i.g.note_reason(end, None, || format_compact!("{e}"));
         i.because(why)
     };
-    if let Err(e) = check_bounds_acyclic(&constraints) {
-        return Err(refuse(i, e, "a quantifier whose bound reaches it"));
-    }
-    let ft = ft.declaring(&constraints);
+    let declared =
+        check_bounds_acyclic(&constraints).and_then(|()| ft.declaring(&constraints));
+    let ft = match declared {
+        Ok(ft) => ft,
+        Err(e) => return Err(refuse(i, e, "a quantifier whose bound reaches it")),
+    };
     if let Err(e) = ft.check_quantifiers_held() {
         return Err(refuse(i, e, "a declared quantifier the signature does not hold"));
     }

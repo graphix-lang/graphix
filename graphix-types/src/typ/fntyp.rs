@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
@@ -567,6 +567,14 @@ impl Drop for Walking {
     }
 }
 
+/// The refusal of a bound of `'q` that reaches `'q`, as `path` says it does.
+fn recursive_bound(q: &ArcStr, path: &str) -> anyhow::Error {
+    anyhow!(
+        "{path}: a bound may not reach its own variable; a recursive bound is a \
+         recursive type (`type T = [i64, Array<T>]`, `'{q}: T`)"
+    )
+}
+
 /// Refuse a bound that reaches its own variable: directly (`'a: 'a`), under
 /// a constructor (`'a: Array<'a>`) or through another declared variable's
 /// bound (`'a: 'b, 'b: 'a`). A recursive bound is a recursive type.
@@ -614,10 +622,7 @@ pub fn check_bounds_acyclic(constraints: &[(TVar, Type)]) -> Result<()> {
                 true => format_compact!("'{q}'s bound names '{q}"),
                 false => format_compact!("'{q}'s bound reaches '{q} through '{via}"),
             };
-            bail!(
-                "{path}: a bound may not reach its own variable; a recursive \
-                 bound is a recursive type (`type T = [i64, Array<T>]`, `'{q}: T`)"
-            )
+            return Err(recursive_bound(q, &path));
         }
         if !std::mem::replace(&mut seen[n], true) {
             todo.extend(named_by(n).map(|m| (m, via)));
@@ -690,11 +695,13 @@ fn on_cycles(start: &[usize], edges: &[(usize, usize)]) -> LPooled<Vec<bool>> {
 
 /// Seed each conjunct on its quantifier's cell in `known`, aliasing every
 /// conjunct's own variables onto the quantifiers before any cell holds a
-/// conjunct, so no alias's occurs check walks a chain of bounds.
+/// conjunct, so no alias's occurs check walks a chain of bounds. A
+/// conjunct that reaches the cell it would bound is refused, as an alias
+/// that closes a cycle is: no cell holds itself through its bounds.
 pub fn seed_conjuncts<'a>(
     known: &mut AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
-) {
+) -> Result<()> {
     seed_conjuncts_aliasing(known, &[], constraints, Aliasing::Every)
 }
 
@@ -705,15 +712,22 @@ fn seed_conjuncts_aliasing<'a>(
     own: &[ArcStr],
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
     how: Aliasing,
-) {
+) -> Result<()> {
     let constraints: LPooled<Vec<(&TVar, Type)>> = constraints.into_iter().collect();
     let passed = tvar::ConjunctsPassed::within(own);
     for (_, tc) in constraints.iter() {
         tc.alias_tvars_in(known, &passed, how);
     }
     for (tv, tc) in constraints.iter() {
-        known[&tv.name].add_cell_constraint(tc.normalize());
+        let q = &known[&tv.name];
+        let tc = tc.normalize();
+        if tvar::would_cycle_inner(&q.cell(), &tc) {
+            let path = format_compact!("'{0}'s bound reaches '{0}", q.name);
+            return Err(recursive_bound(&q.name, &path));
+        }
+        q.add_cell_constraint(tc);
     }
+    Ok(())
 }
 
 /// `known` and, until nothing new arrives, the cells the bounds of its
@@ -753,12 +767,13 @@ impl FnType {
     /// `self` declaring `constraints`: its quantifiers are their names
     /// in source order (a `+`-bound variable is one quantifier), and every
     /// same-named tvar of the signature and of a conjunct is the
-    /// quantifier's, whose cell holds the conjuncts. Inside another
+    /// quantifier's, whose cell holds the conjuncts; refused where a
+    /// conjunct reaches its own cell ([`seed_conjuncts`]). Inside another
     /// signature's parse ([`ParseDepth`]) only its own quantifiers are
     /// aliased, every other name by the enclosing declarations
     /// ([`Aliasing`]), and the cells it names from outside itself are
     /// recorded for the parse's walks.
-    pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Arc<Self> {
+    pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Result<Arc<Self>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
         for (tv, _) in constraints.iter() {
@@ -777,7 +792,7 @@ impl FnType {
             how,
         );
         let constraints = constraints.iter().map(|(tv, tc)| (tv, tc.clone()));
-        seed_conjuncts_aliasing(&mut known, &ft.quantifiers, constraints, how);
+        seed_conjuncts_aliasing(&mut known, &ft.quantifiers, constraints, how)?;
         if nested {
             known.clear();
             ft.collect_tvars(&mut known);
@@ -785,7 +800,7 @@ impl FnType {
             let free = (ft.clone(), free.collect());
             DECLARED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, free));
         }
-        ft
+        Ok(ft)
     }
 
     /// The tvar cells reachable from args / vargs / rtype / throws,
@@ -2568,6 +2583,87 @@ mod tests {
                 element(&copy),
                 "{walk}: {copy}"
             );
+        }
+    }
+
+    /// A bound that reaches the cell it is seeded on is refused, whatever
+    /// the names said before the cells were aliased.
+    #[test]
+    fn a_seeded_bound_reaching_its_cell_is_refused() {
+        use super::seed_conjuncts;
+        use crate::{expr::parser::parse_type, typ::TVar};
+        use ahash::AHashMap;
+        let seed = |bounds: &[(&str, &str)]| {
+            let declared: Vec<_> = bounds
+                .iter()
+                .map(|(q, b)| (TVar::empty_named((*q).into()), parse_type(b).unwrap()))
+                .collect();
+            let mut known: AHashMap<_, _> =
+                declared.iter().map(|(q, _)| (q.name.clone(), q.clone())).collect();
+            let bounds = declared.iter().map(|(q, b)| (q, b.clone()));
+            seed_conjuncts(&mut known, bounds).map(|()| known)
+        };
+        for (bounds, q) in [
+            (&[("a", "Array<'a>")][..], "a"),
+            (&[("a", "fn(x: 'a) -> i64")], "a"),
+            (&[("a", "Array<'b>"), ("b", "(i64, 'a)")], "b"),
+            (&[("a", "'b"), ("b", "Number"), ("b", "fn() -> 'a")], "b"),
+        ] {
+            let msg = seed(bounds).unwrap_err().to_string();
+            let want = format!("'{q}'s bound reaches '{q}: a bound may not reach");
+            assert!(msg.starts_with(&want), "{bounds:?}: {msg}");
+        }
+        let known = seed(&[("a", "Array<'b>"), ("b", "Number"), ("c", "'a")]).unwrap();
+        for q in ["a", "b", "c"] {
+            assert_eq!(known[q].cell_constraints().len(), 1, "'{q}");
+        }
+    }
+
+    /// Whether a bound of a cell that `ft` reaches, by position or through
+    /// bounds, reaches that cell.
+    fn holds_a_recursive_bound(ft: &super::FnType) -> bool {
+        use crate::typ::{TVar, Type, tvar::would_cycle_inner};
+        use ahash::AHashSet;
+        fn cells(t: &Type, seen: &mut AHashSet<usize>, out: &mut Vec<TVar>) {
+            match t {
+                Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
+                    out.push(tv.clone());
+                    for c in tv.cell_constraints() {
+                        cells(&c, seen, out)
+                    }
+                }
+                Type::TVar(_) => (),
+                Type::Fn(ft) if seen.insert(triomphe::Arc::as_ptr(ft) as usize) => {
+                    ft.for_each_type(&mut |t| cells(t, seen, out))
+                }
+                Type::Fn(_) => (),
+                t => t.for_each_child(&mut |c| cells(c, seen, out)),
+            }
+        }
+        let mut reached = vec![];
+        ft.for_each_type(&mut |t| cells(t, &mut AHashSet::default(), &mut reached));
+        reached.iter().any(|tv| {
+            let cell = tv.cell();
+            tv.cell_constraints().iter().any(|c| would_cycle_inner(&cell, c))
+        })
+    }
+
+    /// A nest of quantified signatures is refused or parses to cells no
+    /// bound of which reaches its own cell, so every walk of it returns:
+    /// its print, and the parse of what encloses it. In these two no bound
+    /// names its own variable.
+    #[test]
+    fn a_nest_parses_to_cells_no_bound_of_which_reaches_its_cell() {
+        const PRINTED: &str = "fn<'c: fn<'c: i64>(x0: fn() -> 'a throws i64, q0: 'c) -> \
+            i64>() -> fn<'b: 'a>(x0: fn<'a: 'c>(q0: 'a) -> 'b) -> i64";
+        const PARSED: &str = "fn<'c: fn<'c: 'z>(q2: 'c) -> fn<'b: i64>(x1: 'z, q1: 'b) -> \
+            i64>() -> fn<'b: fn<'a: 'z>(q0: 'a) -> i64>(x1: fn<'z: fn() -> fn<'b: \
+            i64>(x2: 'c, q0: 'b) -> i64>(x0: 'b) -> i64 throws 'z) -> i64";
+        for src in [PRINTED, PARSED] {
+            if let Ok(ft) = parse_fn_type(src) {
+                assert!(!holds_a_recursive_bound(&ft), "{src}");
+                assert!(!ft.to_string().is_empty());
+            }
         }
     }
 

@@ -700,7 +700,9 @@ fn typexp() -> impl Strategy<Value = Type> {
                             }
                         }
                     }
-                    Type::Fn(ft.declaring(&declared))
+                    // nor one that reaches its own cell once seeded
+                    let undeclared = Arc::new(ft.clone());
+                    Type::Fn(ft.declaring(&declared).unwrap_or(undeclared))
                 })
         ]
     })

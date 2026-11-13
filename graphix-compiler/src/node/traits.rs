@@ -983,7 +983,7 @@ pub(crate) fn impl_head(
     seed_conjuncts(
         &mut known,
         head.constraints.iter().map(|(tv, tc)| (tv, tc.scope_refs(scope))),
-    );
+    )?;
     let holes = target.holes();
     if trait_def.hole {
         if holes != 1 || !matches!(target.decompose(), Some((_, Type::Hole))) {

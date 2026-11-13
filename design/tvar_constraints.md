@@ -260,10 +260,18 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   before any cell holds it: checking a call against such a bound binds
   the variable to a type holding itself, a check without end. A
   recursive bound is a recursive type (`type T = [i64, Array<T>]`, `'a:
-  T`). So no cell the parser builds holds itself, and the syntax codec
-  refuses one that does rather than write it without its bound. Pins:
-  `lang::types::a_quantifier_bounded_by_itself_is_refused` and its
+  T`). That check reads names, before the cells are aliased, and a nest
+  of quantified signatures can leave one cell under two names it held
+  apart; so `seed_conjuncts` asks the cells too, and refuses a conjunct
+  that reaches the cell it would bound (`FnType::declaring`,
+  `traits::impl_head`), as an alias that closes a cycle is skipped. So
+  no cell the parser builds holds itself, every walk of its cells
+  returns (a print, an enclosing signature's parse), and the syntax
+  codec refuses one that does rather than write it without its bound.
+  Pins: `lang::types::a_quantifier_bounded_by_itself_is_refused` and its
   neighbours, `parser::test::a_bound_reaching_its_own_variable_is_refused`,
+  `typ::fntyp::tests::a_seeded_bound_reaching_its_cell_is_refused`,
+  `a_nest_parses_to_cells_no_bound_of_which_reaches_its_cell`,
   `serialize::test::a_cell_holding_itself_does_not_pack`.
 - A definition's gate keeps what its body bound: the signature is the
   scheme, relations between its positions included (`|x| [x, x]` is

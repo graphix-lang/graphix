@@ -2440,7 +2440,7 @@ impl Lambda {
             for (_, tc) in constraints.iter() {
                 tc.alias_tvars(&mut known);
             }
-            let ft = ft.declaring(&constraints);
+            let ft = ft.declaring(&constraints)?;
             ft.check_quantifiers_held()?;
             ft
         };
