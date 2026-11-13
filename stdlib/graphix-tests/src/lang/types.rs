@@ -8458,6 +8458,60 @@ run!(
 }"#,
     prints(r#"[i64:0, i64:4, "x", "other"]"#)
 );
+// The same holds where the scrutinee is no parameter of its own: a variant
+// built over one, a parameter an earlier select's arms typed, and the bind
+// of an outer arm.
+run!(
+    payload_bound_in_two_literal_arms_of_a_built_variant_used_as_two_types_refused,
+    r#"{
+  let f = |x| select `A(1, x) { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 };
+  f("q")
+}"#,
+    refused(PAYLOAD_AS_TWO_TYPES);
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_literal_arms_of_a_second_select_used_as_two_types_refused,
+    r#"{
+  let f = |s| {
+    let u = select s { `A(1, a) => 0, `A(2, b) => 1, _ => 2 };
+    let w = select s { `A(3, c) => c + 1, `A(4, d) => str::len(d), _ => 0 };
+    (u, w)
+  };
+  f(`A(3, "q"))
+}"#,
+    refused(PAYLOAD_AS_TWO_TYPES);
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_literal_arms_over_an_outer_arms_bind_used_as_two_types_refused,
+    r#"{
+  let f = |s| select s {
+    `P(x, 1) => select x { `A(4, d) => str::len(d), `A(5, e) => e + 1, _ => 0 },
+    `P(y, _) => 0
+  };
+  f(`P(`A(5, "q"), 1))
+}"#,
+    refused("cannot compute string + i64");
+    FuseExpect::None
+);
+run!(
+    payload_bound_in_two_literal_arms_of_other_scrutinees_as_one_type,
+    r#"{
+  let f = |x| select `A(1, x) { `A(1, a) => a + 1, `A(2, a) => a + 2, _ => 0 };
+  let g = |s| {
+    let u = select s { `A(1, a) => 0, `A(2, b) => 1, _ => 2 };
+    let w = select s { `A(3, c) => c + 1, `A(4, d) => d + 2, _ => 0 };
+    (u, w)
+  };
+  let h = |s| select s {
+    `P(x, 1) => select x { `A(4, d) => d, `A(5, e) => e + 1, _ => 0 },
+    `P(y, _) => 0
+  };
+  (f(5), g(`A(1, 0)), g(`A(4, 4)), h(`P(`A(4, 7), 1)), h(`P(`A(5, 7), 2)))
+}"#,
+    prints("[i64:6, [i64:0, i64:0], [i64:2, i64:6], i64:7, i64:0]")
+);
 // The arms' one cell holds what an undecided payload gives it once, however
 // many arms bind the part: the check ends, and the part is one type.
 run!(

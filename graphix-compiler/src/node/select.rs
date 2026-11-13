@@ -738,6 +738,31 @@ impl Reach {
             // goes to a member that holds it deciding no cell before one that decides
             // one. probes: ~/ptmp/cr29/scratch/r23/23d/lvr-rev/{r1.txt,r4.txt} (run with
             // rb.sh), r1.txt lines 3 to 5 (lower-bound-first-member-01)
+            // CR claude for claude: [bug/low] Two undecided values that meet in one
+            // part of a variant scrutinee are made one type by arms that bind that
+            // part beside literals, and the refusal names no annotation: `let f = |x,
+            // y, c| { let u = select c { true => x, false => y }; select `A(1, u) {
+            // `A(1, a) => "[a]", `A(2, a) => "[a]", _ => "" } }; f(1, "s", true)` says
+            // "type mismatch i64 does not contain string", `f` being `fn(x: 'a, y: 'a,
+            // c: bool) -> string`. The tuple and struct forms (`select (1, u) { (1, a)
+            // => .., (2, a) => .. }`) check as `fn(x: 'a, y: 'b, c: bool)` and print
+            // "1", and so do `|x: 'a, y: 'b, c: bool|` and the select with `` `A(_, a)
+            // `` for its second arm. Two lets over `never()` written into one binding
+            // (`v <- `A(1, x); v <- `A(2, y)`, then `x <- t ~ 1; y <- t ~ "s"`) say "y
+            // is i64, inferred from an earlier use, and cannot hold string; declare y:
+            // [i64, string]", which runs when written. base-r24 refused each too, by
+            // another message ("i64 could go to '_N or '_N of the union ['_N, '_N],
+            // which nothing has decided .. write the type of the parameter"), `f`
+            // being `fn(x: ['_N, '_N], y: ['_N, '_N], c: bool) -> string`: the settle
+            // below gave each of the scrutinee's two cells the union of the arms' two,
+            // where a tuple's members each take the scrutinee's union whole, and since
+            // variant-payload-bind-cells-01 the arms' cells are one (Type::binds_beside),
+            // so the scrutinee's are. Not traced beyond the types printed. What would
+            // likely close it: a part of the arms' joined predicate that is only their
+            // binds decides nothing of the scrutinee's part here, and each arm's bind
+            // takes that part as it stands when the arm narrows. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/vpb-rev/{r2.txt,r6.txt} (run with rb.sh)
+            // (outer-cells-take-arm-cells-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let _ = itype.contains_ordered(env, scrut);
