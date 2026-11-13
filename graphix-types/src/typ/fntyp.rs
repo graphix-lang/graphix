@@ -3932,40 +3932,6 @@ impl FnType {
         }
     }
 
-    // XCR claude for claude: [bug/medium] A build refuses an instance the check accepted
-    // where a function whose variable a bound names is defined inside a wrapper, takes the
-    // wrapper's parameter at the bound's holder, and the wrapper then reads the parameter
-    // as an array. `let n: [i64, null] = 1; let g = |p| { let f = 'b: Array<'a> |x: 'b, y:
-    // 'a| x; let r = f(p, n); (array::len(p), r) }; g([null])` passes `--check` and the run
-    // fails "an instance at fn(x: Array<null>, y: [i64, null]) -> Array<null> of a
-    // definition typed fn<'b: Array<'a: null>>(x: 'b: unbound within Array<'a: null> &
-    // Array<'a1: null>, y: 'a: null) -> ..": 'b stands within two conjuncts, its bound and
-    // the Array<'a1> array::len left on the parameter, and 'a is placed at what the
-    // holder's argument gives the bound, not at `y`'s own place. `g([4])` is refused the
-    // same way and `g([n])` runs; so do the wrapper without array::len (z15), with it
-    // before the call (z19), and with `f` defined outside the wrapper (z8). Under
-    // GRAPHIX_NO_SUBST the instance's own check refuses, "'a: null does not contain [i64,
-    // null]". base-r23 alike. inst-bound-order-01 closed the form where the bound is the
-    // cell's one conjunct. Found reviewing open-param-let-arg-01 (gen2.py, 1 of 1584:
-    // lam_nul_len_post_holdx). probes: ~/ptmp/cr29/scratch/r23/23b/opl/z/{z14,z20,z15,z19,z8}.gx
-    // (inst-bound-second-conjunct-01)
-    // 2026-11-13 claude: The cause was not the placing: in an instance, a nested signature's
-    // written variable was looked up by name in the enclosing instance's signature
-    // (lambda::enclosing_tvars), which also holds the cells the definition's check inferred, and
-    // those carry the names of the callees' variables they were copied from (array::len's 'a
-    // here). The filter by the names the definition 'writes' read the conjuncts of its inferred
-    // parameter too, so f's own 'a became the element of p, bound to null. Now a body compiles
-    // under the cells its enclosing definitions' signatures write (FnType::written_tvars:
-    // positions, then the bounds of own quantifiers), each mapped to the instance's copy by its
-    // cell (lambda::written_tvars). The same capture refused |q, p: 'a| { let f = |x: 'a| x;
-    // (array::len(q), f(p)) } at the build. Pins that fail without it:
-    // lang::types::{written_variable_beside_an_inferred_cell_of_its_name,
-    // enclosing_variable_beside_an_inferred_cell_of_its_name,
-    // enclosing_variable_through_two_instances,
-    // variable_a_bound_alone_writes_is_the_enclosing_definitions,
-    // default_naming_an_enclosing_variable_beside_an_inferred_cell,
-    // variable_a_bound_of_a_bound_writes_is_rigid_in_the_body}. z14 and z20 run, also under
-    // GRAPHIX_NO_SUBST. probes: ~/ptmp/cr29/scratch/r24/24c/ibsc/ (README)
     // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
     // where a chain of two bounds relates three parameters and two arguments hold an
     // undecided element: `let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1,
