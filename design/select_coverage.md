@@ -338,7 +338,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `Any` (`[(a, b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused;
   the written test `Array<[(i64, i64), string]> as [(a, b), _]` types
   them; pins `slice_rest_over_any_takes_a_names_type_or_any_value`,
-  `slice_*_beside_a_wildcard_*`, `slice_bind_beside_a_rest_*`). Where
+  `slice_*_beside_a_wildcard_*`, `slice_bind_beside_a_rest_*`). A rest
+  the arms leave open over a scrutinee they decide is judged again at the
+  settle, against what a later write made of it: a member an element's
+  structure admits and its type does not hold is refused
+  (`PendingSettle::ElementBinds`, `design/tvar_constraints.md`,
+  Undecided types at a select). Where
   the elements are typed above a part that is `Any` (`Array<(Any, i64)>`,
   `Array<{k: string, v: Any}>`) the same holds of that part
   (`hold_names_inside_any`): a slice of more than one position tests each

@@ -1609,6 +1609,39 @@ the product distribution law applies, since a rigid cell is a constant
 to it; only where that fails does the committing cover run, which may
 decide them as the arms need.
 
+A slice's rest is the one cell of the arms' own that is a member of a
+type they test: over a scrutinee the arms decide (`let v = never();
+select v { [`J(n), ..] => n + 1, _ => 3 }`) the element type is
+`` [`J('n), 'rest] ``, the rest left for a later write, and the slice's
+run-time test passes a value of whatever the rest becomes at every
+position. An element's structure takes such a value by its tags, arities
+and literals alone, so a member the rest came to hold that the structure
+admits and the element's type does not hold (`v <- [`J("s"), `K]` after
+the body made `n` an `i64`: the write puts `` `J(string) `` in the rest)
+would reach the binds as a type they were never typed over. Each element
+of a slice that is not a name or `_`, standing over an element type with
+a member still open where its arm is checked, is therefore judged again
+at the statement's settle (`PendingSettle::ElementBinds`, `lib.rs::
+element_binds`): for each member of the element type as settled that the
+element's structure admits (`StructPatternNode::footprint` of the
+element's own type: every position it does not test `Any`, an abstract
+pattern every instance of its type), the element's type, whose cells are
+its binds', must hold the member, or the part of it the structure takes
+(`Type::matching_type`), every cell still open held as one type of its
+own (`Type::contains_holding`); else the pattern is refused, naming the
+member: annotate the scrutinee where it is built, which types the binds
+over every member (`n: [i64, string]`). A member the structure cannot
+take (`` `K ``, a tuple of another arity, a part that cannot hold a
+literal the element tests) passes, and so does one the write put in the
+element's own type, a bind still undecided at the write taking its part
+(`[`J(n), ..] => "[n]"`). The open member may be a cell the scrutinee
+held that a destructuring element left open, too (`[(a, b), ..] => a + 1`
+over `[e]`, then `e <- ("s", 1)`). A rest still open at the settle is
+refused by the runtime-form judgment beside it (`PendingSettle::Told`).
+Pins:
+`lang::select_undecided::slice_element_*`, `list_element_*`,
+`slice_suffix_element_*`; the skill's `select.md` cases.
+
 A partial struct pattern's completion is the arm's run-time test, so
 members its left-out fields tell apart only by undecided cells are two
 members (`strictly_identical`), refused as any ambiguous completion is,

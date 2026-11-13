@@ -5,7 +5,7 @@ use crate::{
     env::Env,
     expr::{
         AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, UndecidedMembers,
-        WrittenAt, union_members, union_members_with,
+        WrittenAt, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
     node::{Held, Holders, compiler, list, prune::Prune},
@@ -80,6 +80,18 @@ impl Pack for StructWidth {
             (true, n) => Self::AtLeast(n),
         })
     }
+}
+
+/// A test a select arm makes for `test` among `among`.
+pub(super) struct Tested {
+    pub(super) test: Type,
+    pub(super) among: Type,
+    /// What the structure of a slice's element admits
+    /// ([`StructPatternNode::footprint`]), where `among`, the element type
+    /// the slice stands over, holds a member nothing has decided (a rest
+    /// the arms brought): the element binds a value of whatever that
+    /// member becomes wherever its structure takes one.
+    pub(super) open_shape: Option<Type>,
 }
 
 #[derive(Debug)]
@@ -1370,7 +1382,7 @@ impl StructPatternNode {
         env: &Env,
         pred: &Type,
         typ: &Type,
-        out: &mut SmallVec<[(Type, Type); 4]>,
+        out: &mut SmallVec<[Tested; 4]>,
     ) {
         crate::stack::ensure_sufficient(|| {
             let children = self.children();
@@ -1388,7 +1400,12 @@ impl StructPatternNode {
                 for ((c, t), p) in children.iter().zip(&ts).zip(&parts) {
                     let (Some((t, _)), Some((p, _))) = (t, p) else { continue };
                     if slice && !matches!(c, Self::Bind(_) | Self::Ignore) {
-                        out.push((t.clone(), p.clone()))
+                        let open = union_members_open(env, p, &mut SmallVec::new());
+                        let open_shape = match open {
+                            Ok(true) => c.footprint(env, t, true),
+                            Ok(false) | Err(_) => None,
+                        };
+                        out.push(Tested { test: t.clone(), among: p.clone(), open_shape })
                     }
                     c.element_tests(env, t, p, out)
                 }
@@ -1414,7 +1431,8 @@ impl StructPatternNode {
     // lifted (written-literal-narrowing-01, r24-a). probes:
     // ~/ptmp/cr29/scratch/r24/24h/sed-review/ (slice-element-literal-dead-arm-01)
     /// What this pattern's structure test admits of `typ`: `typ` with
-    /// every position the structure does not test as `Any`, and a union
+    /// every position the structure does not test as `Any` (an abstract
+    /// pattern tests its type, never the parameters), and a union
     /// as the members it admits a value of; `None` where it admits no
     /// value of `typ`. An or-alternative is taken by its structure alone,
     /// so a value of another alternative's type this admits would bind
@@ -1526,7 +1544,13 @@ impl StructPatternNode {
                 let fields = fields.collect::<Option<SmallVec<[_; 8]>>>()?;
                 Some(Type::Struct(Arc::from_iter(fields)))
             }
-            _ => parts().map(|_| m.clone()),
+            _ => parts().map(|_| match m {
+                Type::Abstract { id, params } => Type::Abstract {
+                    id: *id,
+                    params: params.iter().map(|_| Type::Any).collect(),
+                },
+                m => m.clone(),
+            }),
         }
     }
 

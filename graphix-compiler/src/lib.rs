@@ -64,7 +64,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 pub use enumflags2::BitFlags;
-use expr::{Attr, Expr, Told};
+use expr::{Attr, Expr, Told, union_members};
 use futures::channel::mpsc;
 use log::{info, warn};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -2962,6 +2962,11 @@ pub(crate) enum PendingSettle {
     /// members with one runtime form, open cells read as any type they
     /// may yet bind.
     Told { test: Type, rest: Type, spec: Arc<Expr> },
+    /// A select arm's slice element typed `test`, whose structure admits
+    /// `shape`, over the element type `elems`, a member of it open at the
+    /// select: `test`, which typed the element's binds, holds what the
+    /// element takes of every member.
+    ElementBinds { test: Type, shape: Type, elems: Type, spec: Arc<Expr> },
 }
 
 /// What a [`PendingSettle::Discernible`] judges.
@@ -3088,6 +3093,9 @@ impl PendingSettle {
                     (discernible(env, typ, what), spec)
                 }
                 PendingSettle::Told { test, rest, spec } => (told(env, test, rest), spec),
+                PendingSettle::ElementBinds { test, shape, elems, spec } => {
+                    (element_binds(env, test, shape, elems), spec)
+                }
                 PendingSettle::Site { ftype, text, spec, .. } => {
                     (site_bounds(env, ftype, *text), spec)
                 }
@@ -3259,7 +3267,7 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
     Ok(())
 }
 
-// CR claude for claude: [bug/high] A slice arm over a scrutinee wholly undecided at
+// XCR claude for claude: [bug/high] A slice arm over a scrutinee wholly undecided at
 // its select types its binds by the element it tests, and a later write gives the
 // element type a second member of the tested form, which the arm then matches with
 // binds of the wrong type. `let x = `J("s"); let v = never(); let z = select v {
@@ -3295,6 +3303,25 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
 // (`[`J(n), ..]`) the lambda is refused ("may share `J(i64)'s runtime form: annotate
 // it"). Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/rlb/review/g1.gx,
 // g3.gx, g5.gx, g6.gx, ty.gx
+// 2026-11-13 claude: The wildcard forms (`[`J(n), _]`, the review note's calls) are
+// refused on base-r24 already, "cannot compute Any + i64" (hold_untyped_elements;
+// pin lang::select::slice_bind_beside_a_wildcard_the_arms_decide_refused, and now
+// lang::select_undecided::slice_element_beside_a_wildcard_over_a_let_the_arms_decide_refused).
+// The rest forms (`[`J(n), ..]`, `t..`, a suffix, a list, under a tuple or variant,
+// `[(n, m), ..]`, `[{a}, ..]`, `[W(p), ..]`, a later `Array<Any>`) still checked and
+// ran wrong: fixed by a judgment at the statement's settle,
+// PendingSettle::ElementBinds (element_binds below): a slice element over an element
+// type with a member open where its arm is checked must hold, in the type that typed
+// its binds, every member of the settled element type its structure admits
+// (StructPatternNode::footprint, an abstract pattern now every instance of its
+// type). Refusal: "this pattern takes a value of `J(string) too, a type its
+// scrutinee was given after this select ..: annotate the scrutinee's type where it
+// is built". Pins lang::select_undecided::slice_element_*, list_element_*,
+// slice_suffix_element_* (13 refusals fail in every mode with the judgment off, the
+// abstract one with the footprint change undone; twins that run beside them), the
+// skill's select.md cases. Census base-r24 vs fix: 2967 files, no verdict or message
+// change. probes: ~/ptmp/cr29/scratch/r24/24b/soel/{a,b,c,d,e,f}.txt (cmp.sh FILE:
+// base and lane verdict a line)
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
@@ -3328,6 +3355,42 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
         }
         Err(why.untold("this pattern"))
     })
+}
+
+/// Whether `test`, which typed a slice element's binds, holds what the
+/// element takes of each member of `elems`, the element type its slice
+/// stands over as the frame settled it: the part of the member `shape`,
+/// what the element's structure admits, holds. A member decided after
+/// the select (a write to a scrutinee the arms decided) is one the binds
+/// never met.
+fn element_binds(env: &Env, test: &Type, shape: &Type, elems: &Type) -> Result<()> {
+    let holds = |t: &Type| {
+        let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+        typ::settle::position_cells(test, &mut cells);
+        typ::settle::position_cells(t, &mut cells);
+        let open: SmallVec<[typ::TVar; 4]> =
+            cells.drain().filter_map(|(_, tv)| tv.open_cell()).collect();
+        test.contains_holding(env, t, &open)
+    };
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, elems, &mut members)?;
+    for m in members.iter() {
+        if matches!(m, Type::Bottom) || !shape.could_match(env, m)? || holds(m)? {
+            continue;
+        }
+        let taken = shape.matching_type(env, m)?;
+        if !taken.is_uninhabited() && !holds(&taken)? {
+            return format_with_flags(PrintFlag::DerefTVars, || {
+                let (test, m) = (test.resolve_tvars(), m.resolve_tvars());
+                bail!(
+                    "this pattern takes a value of {m} too, a type its scrutinee was \
+                     given after this select typed the pattern's binds for {test}: \
+                     annotate the scrutinee's type where it is built"
+                )
+            });
+        }
+    }
+    Ok(())
 }
 
 fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {

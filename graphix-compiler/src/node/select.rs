@@ -3,7 +3,7 @@ use super::{
     compiler::compile,
     pattern::{
         ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
-        rigid_refusal, undecided_members, written_refusal,
+        Tested, rigid_refusal, undecided_members, written_refusal,
     },
     wake::{self, ArmMask, TrackedFires},
 };
@@ -3341,8 +3341,11 @@ impl<R: Rt> Select<R> {
                 .at(&site);
             }
             if checking {
-                let mut tests: SmallVec<[(Type, Type); 4]> =
-                    smallvec![(pat.type_predicate.clone(), reaching.clone())];
+                let mut tests: SmallVec<[Tested; 4]> = smallvec![Tested {
+                    test: pat.type_predicate.clone(),
+                    among: reaching.clone(),
+                    open_shape: None,
+                }];
                 if !pat.explicit_type_predicate {
                     pat.structure_predicate.element_tests(
                         &ctx.env,
@@ -3352,7 +3355,20 @@ impl<R: Rt> Select<R> {
                     );
                 }
                 let spec = Arc::new(site.clone());
-                for (test, among) in tests {
+                for Tested { test, among, open_shape } in tests {
+                    if let Some(shape) = open_shape {
+                        let (test, elems, spec) =
+                            (test.clone(), among.clone(), spec.clone());
+                        super::defer_judgment(
+                            ctx,
+                            crate::PendingSettle::ElementBinds {
+                                test,
+                                shape,
+                                elems,
+                                spec,
+                            },
+                        );
+                    }
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
                     let collision = match pat.explicit_type_predicate {
                         true => test.rep_collision_written(&ctx.env, &rest),

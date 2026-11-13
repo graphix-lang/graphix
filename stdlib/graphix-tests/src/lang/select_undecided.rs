@@ -1880,3 +1880,177 @@ run!(undecided_part_through_an_intermediate_binding, r#"{
     };
     f([(5, 1)], true)
 }"#, refused(PART_OF_X); FuseExpect::None);
+
+// A slice over a scrutinee the arms decide leaves its rest open, and its
+// run-time test passes whatever the rest becomes at every position: a
+// member written after the select that an element's structure takes is
+// one the element's binds were never typed over.
+const WRITTEN_LATER: &str = "too, a type its scrutinee was given after this select";
+
+run!(slice_element_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+    v <- [`J("s"), `K];
+    z
+}"#, refused("this pattern takes a value of `J(string) too, a type its scrutinee was given after this select typed the pattern's binds for `J(i64): annotate the scrutinee's type where it is built"); FuseExpect::None);
+
+run!(slice_element_beside_a_member_written_later_it_does_not_take, r#"{
+    let v = never();
+    let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+    v <- [`J(1), `K];
+    z
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+run!(slice_element_binds_a_member_of_an_annotated_scrutinee, r#"{
+    let v: Array<[`J(i64), `J(string), `K]> = never();
+    let z = select v {
+        [`J(n), ..] => select n { i64 as i => i + 1, string as s => str::len(s) },
+        _ => 3
+    };
+    v <- [`J("abc"), `K];
+    z
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(slice_element_binds_a_member_written_later_inside_a_union_refused, r#"{
+    let v = never();
+    let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+    v <- [`J(1), `J("s")];
+    z
+}"#, refused("this pattern takes a value of `J([i64, string]) too"); FuseExpect::None);
+
+run!(slice_element_binds_a_tuple_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [(n, m), ..] => n + 1, _ => 3 };
+    v <- [("s", 1), (1, 1)];
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+run!(slice_element_binds_a_struct_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [{a}, ..] => a + 1, _ => 3 };
+    v <- [{a: "s"}, {a: 1}];
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+run!(list_element_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [<`J(n), ..>] => n + 1, _ => 3 };
+    v <- [<`J("s"), 0>];
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+run!(slice_suffix_element_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [.., `J(n)] => n + 1, _ => 3 };
+    v <- [`K, `J("s")];
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+run!(slice_element_beside_a_named_rest_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [`J(n), t..] => n + 1, _ => 3 };
+    v <- [`J("s"), `K];
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+run!(slice_element_capture_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [x@ `J(n), ..] => n + 1, _ => 3 };
+    v <- [`J("s"), `K];
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+run!(slice_element_under_a_tuple_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { (1, [`J(n), ..]) => n + 1, _ => 3 };
+    v <- (1, [`J("s"), `K]);
+    z
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+// A literal the element tests takes only the members that may hold it.
+run!(slice_element_beside_a_literal_binds_a_member_written_later_refused, r#"{
+    let v = never();
+    let z = select v { [(n, 1), ..] => n + 1, _ => 3 };
+    v <- [("s", 1), (1, 1)];
+    z
+}"#, refused("this pattern takes a value of ([i64, string], i64) too"); FuseExpect::None);
+
+run!(slice_element_beside_a_literal_a_member_written_later_cannot_hold, r#"{
+    let v = never();
+    let z = select v { [(n, 1), ..] => n + 1, _ => 3 };
+    v <- [(1, 1), ("s", `K)];
+    z
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+run!(slice_element_binds_what_an_any_written_later_holds_refused, r#"{
+    let v = never();
+    let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+    let a: Array<Any> = [`J("s")];
+    v <- a;
+    z
+}"#, refused("this pattern takes a value of Any too"); FuseExpect::None);
+
+// An abstract pattern takes every instance of its type: only the slice's
+// type test reads the parameters.
+run!(slice_element_binds_an_abstract_instance_written_later_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let v = never();
+    let z = select v { [W(p), ..] => p + 1, _ => 3 };
+    v <- [W("s"), W(1)];
+    z
+}"#, refused("this pattern takes a value of W<string> too"); FuseExpect::None);
+
+run!(slice_element_binds_the_abstract_instance_it_typed, r#"{
+    type W<'a> = Abstract<'a>;
+    let v = never();
+    let z = select v { [W(p), ..] => p + 1, _ => 3 };
+    v <- [W(1), `K];
+    z
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+run!(slice_element_binds_a_member_written_later_in_a_function_refused, r#"{
+    let f = |u: i64| {
+        let v = never();
+        let z = select v { [`J(n), ..] => n + u, _ => 3 };
+        v <- [`J("s"), `K];
+        z
+    };
+    f(1)
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+// A bind the arm's body leaves undecided takes the later member's part.
+run!(slice_element_bind_undecided_at_the_write_takes_its_part, r#"{
+    let v = never();
+    let z = select v { [`J(n), ..] => "[n]", _ => "" };
+    v <- [`J("s"), `J(1), `K];
+    z
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::Jit);
+
+run!(slice_element_binds_a_declared_variable_written_later_refused, r#"{
+    let f = |x: 'a| {
+        let v = never();
+        let z = select v { [`J(n), ..] => n + 1, _ => 3 };
+        v <- [`J(x), `K];
+        z
+    };
+    f("s")
+}"#, refused(WRITTEN_LATER); FuseExpect::None);
+
+// An element that only takes apart a type written later is typed by its
+// body, and judged the same way.
+run!(slice_element_takes_apart_an_element_written_later_refused, r#"{
+    let e = never();
+    let v = [e];
+    let z = select v { [(a, b), ..] => a + 1, _ => 0 };
+    e <- ("s", 1);
+    z
+}"#, refused("this pattern takes a value of (string, i64) too"); FuseExpect::None);
+
+// With a `_` among its elements the slice tests none of them: the bind
+// is `Any` where it is typed, whatever is written later.
+run!(slice_element_beside_a_wildcard_over_a_let_the_arms_decide_refused, r#"{
+    let v = never();
+    let z = select v { [`J(n), _] => n + 1, _ => 3 };
+    v <- [`J("s"), 0];
+    z
+}"#, refused("cannot compute Any + i64"); FuseExpect::None);

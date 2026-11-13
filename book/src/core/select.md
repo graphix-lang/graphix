@@ -541,6 +541,16 @@ refused where it is written. A type test tests what it reads as a
 pattern does: `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) `` is
 refused until `z` is annotated, since `z` might become neither.
 
+A slice with a rest over a binding the arms decide leaves the type of
+the other elements to later writes, and at run time it takes a value of
+whatever they bring, at every position. After `let v = never(); let z =
+select v { [`J(n), ..] => n + 1, _ => 3 }`, `n` is an `i64`, and
+``v <- [`J(1), `K]`` checks. ``v <- [`J("s"), `K]`` brings a member the
+pattern takes that `n` was not typed over, so the pattern is refused
+("takes a value of `` `J(string) `` too") until `v` is annotated:
+``let v: Array<[`J(i64), `J(string), `K]> = never()`` makes `n` an
+`[i64, string]`.
+
 For the same reason, two members whose left-out fields differ only in
 types not decided yet are two members, and a partial pattern over both
 is refused:
