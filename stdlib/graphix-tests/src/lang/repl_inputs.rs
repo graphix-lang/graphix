@@ -14,6 +14,7 @@ use graphix_package_core::{
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 
+#[derive(Clone)]
 enum Step {
     Accept(&'static str),
     /// Refused, with an error that contains the message.
@@ -637,6 +638,29 @@ async fn select_judgment_holds_across_inputs() -> Result<()> {
             "e1 is Array<_>, settled when its input ended, and cannot hold Array<i64>; \
              declare e1: Array<i64> where it is bound",
         ),
+    ])
+    .await
+}
+
+/// A ladder of three slice arms over an unannotated parameter leaves the
+/// arms' one element cell open, with no link to an arm's copy: it stands
+/// in the result's union where the written twin's variable does, so a
+/// later input reads both results alike.
+#[tokio::test(flavor = "current_thread")]
+async fn slice_arms_result_reads_as_the_written_twins_in_a_later_input() -> Result<()> {
+    let read = Produce("array::map(r, |v| v + 1)", Value::Array([Value::I64(4)].into()));
+    session(&[
+        Accept("let f = |x| select x { [a, b, t..] => t, [a, t..] => t, [] => [] }"),
+        Accept("let r = f([1, 2, 3])"),
+        read.clone(),
+    ])
+    .await?;
+    session(&[
+        Accept(
+            "let f = |x: Array<'e>| select x { [a, b, t..] => t, [a, t..] => t, [] => [] }",
+        ),
+        Accept("let r = f([1, 2, 3])"),
+        read,
     ])
     .await
 }

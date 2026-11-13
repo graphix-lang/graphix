@@ -727,7 +727,13 @@ never by a factor at each arm, and the check of a ladder of slice arms
 costs what its arms hold (pins
 `lang::types::slice_arms_over_an_unannotated_parameter_copy_no_chain_of_cells`,
 units `narrowing_slice_arms_over_their_one_cell_copies_nothing`,
-`narrowing_nested_slice_arms_copies_no_chain_of_links`). The
+`narrowing_nested_slice_arms_copies_no_chain_of_links`). A cell that is
+not copied stays open, with no link to a copy, so it stands among the
+members of a union where its written twin's variable does (an open cell
+sorts before one bound to another), and a later input reads the result
+of a ladder of three such arms as it reads the twin's (pin
+`lang::repl_inputs::slice_arms_result_reads_as_the_written_twins_in_a_later_input`).
+The
 elements of the arms' slices share a cell that way, and so do the arms'
 binds of another part of a tuple or a struct, however many arms bind it
 (`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..`), literal arms'

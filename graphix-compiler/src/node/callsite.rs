@@ -1901,6 +1901,26 @@ impl Widening {
     // Widening::widen probes the argument whole against the open formal, and
     // that probe binds the variable at the first part. probes:
     // ~/ptmp/cr29/scratch/r20/20b/fao/{c3,c5}.gx (widen-within-arg-order-01)
+    // 2026-11-13 claude: Review of slice-arms-check-cost-01: two members of one
+    // argument's union meet a variable the same way, and a member an earlier
+    // input settled at bottom is enough. In the REPL `let f = |x| select x { []
+    // => [], [a, ..] => [a] }`, `let r = f([1])`, then `array::len(r)` (or
+    // `array::map(r, |v| v + 1)`, `array::concat(r, [2])`) is refused, "type
+    // mismatch Array<'a: _> does not contain [Array<_>, Array<i64>]: it holds
+    // the type of `r` .., settled when its input ended; declare r's type where
+    // it is bound": the variable copies the first member's settled bottom (the
+    // open cell against a bound one in contains.rs, TT-LEFTCOPY under
+    // GRAPHIX_DBG_BIND) and the next member is then a mismatch. With the arms
+    // in the other order r is [Array<i64>, Array<_>] and each runs; the written
+    // parameter `|x: Array<'e>|` does the same in both orders, and base-r23
+    // alike. A select over r and `let g = |a: Array<i64>| a; g(r)` run in both
+    // orders. In one script, with no settled cell: `let b = true; let n: [i64,
+    // null] = 1; let r = select b { true => (1, [n]), false => ("a", [1]) };
+    // select r { (_, a) => array::len(a) }` is refused, "Array<'a: i64> does
+    // not contain [Array<i64>, Array<[i64, null]>]". What decides the order of
+    // such members is union-order-forward-link-01. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/sacc-rev/ord/{o02,o03,o06,o07}.repl,
+    // smo/{r1,r5}.repl (run with repl3.sh DIR), smo/w2.gx
     /// An argument of type `typ` did not fit `formal`: widen the variables
     /// it holds wider and check it, or the mismatch error. False when it
     /// is neither wider nor narrower than a variable, to be checked once

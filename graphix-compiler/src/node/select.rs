@@ -725,6 +725,18 @@ impl Reach {
             // (setops::one_type) kept as one member once the first arm's narrowing has made
             // their cells one. probes: ~/ptmp/cr29/scratch/r23/23d/sacc/{gen.py,gen2.py,m.sh},
             // rest50u_def.gx, g_nested_10.gx (slice-arms-member-cost-01)
+            // 2026-11-13 claude: Review of slice-arms-check-cost-01: other shapes of the same
+            // growth, user instructions of `--no-cache --check` in a debug build (`gen3.py N
+            // SHAPE` through grow.sh): a slice in a slice in a slice (nest3, `[[[a0, .., t..],
+            // u..], v..] => t`) 12 arms 4.66 G, 16 arms 19.2 G, 20 arms 65 G; a slice of fixed
+            // length inside (nestfix) 20 arms 36 G; a slice in each element (arrelem) 20 arms 32
+            // G; a tuple in each element (tupelem) 24 arms 11 G. A struct field, two slices in a
+            // tuple, a variant, a guard, a literal element and `w@` stay under 1.1 G at 12 arms.
+            // Before that fix each nested shape was killed at 6 arms (40 s), and of 1200
+            // generated functions of 2 to 5 arms 11 did not finish in 40 s (killed/), two arms
+            // enough: `|x| select x { [v1, v2, v3, v4, v5..] => v3, [v1, [[v2, v3], v4, ..],
+            // v5..] => [v5], v1 => v1 }`. probes:
+            // ~/ptmp/cr29/scratch/r23/23d/sacc-rev/{gen3.py,grow.sh,g_nest3_20.gx,killed/}
             // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
             // over an unannotated parameter is refused at the call, where the same slices
             // in arms of their own and the written parameter run: `let f = |x| select x {

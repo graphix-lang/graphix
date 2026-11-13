@@ -2020,6 +2020,34 @@ impl PartialOrd for TVar {
     }
 }
 
+// CR claude for claude: [bug/low] The order of a union's members turns on which of
+// two merged cells holds the forward link, and a later input's verdict turns on
+// that order. An open cell compares equal to any other open cell and a cell
+// forwarded to an open one compares as bound, after them, so a function over an
+// unannotated parameter whose arms' narrowing left the parameter's element cell
+// forwarded to a copy (Type::narrow_per_member) holds its result's members in
+// another order than its written twin. In the REPL `let f = |x| select x { [a, ..]
+// => [a], [] => [] }` prints `fn(x: Array<'_0>) -> [Array<'_1>, Array<'_0>]` where
+// `|x: Array<'e>|` prints `[Array<'e>, Array<'_2>]`; after `let r = f([1])` a later
+// `array::map(r, |v| v + 1)` (or `array::len(r)`) is refused, "type mismatch
+// Array<'a: _> does not contain [Array<_>, Array<i64>]: it holds the type of `r`
+// .., settled when its input ended; declare r's type where it is bound", and runs
+// over the twin (the variable takes the first member's settled bottom:
+// widen-within-arg-order-01). base-r23 ran it; of lane 23d's saved binaries
+// graphix-ndbg runs it and stb/graphix-v2 and every later one refuse, so
+// variant-slice-coverage-01 or slice-tuple-bind-cells-01 changed which cell
+// forwards (not bisected further). Three arms (`[a, b, t..] => t, [a, t..] => t,
+// [] => []`) went the other way: base-r23 and the lane before
+// slice-arms-check-cost-01's fix refused the later read, and since that fix it
+// runs (pin
+// lang::repl_inputs::slice_arms_result_reads_as_the_written_twins_in_a_later_input).
+// One script runs both forms. Of 1200 generated slice-arm functions 18 print their
+// result's members in another order since that fix, with no verdict change in the
+// script. What would likely fix it: Ord, Eq and Hash read through a forward link to
+// the cell it stands for (TVar::stands_for), so a forwarded cell sorts as the open
+// cell it is. probes: ~/ptmp/cr29/scratch/r23/23d/sacc-rev/reg/{q1,q2,q3,q4}.repl,
+// ord/, tw/ (run with repl3.sh DIR), g11.diffs, g12.diffs
+// (union-order-forward-link-01)
 impl Ord for TVar {
     fn cmp(&self, other: &Self) -> Ordering {
         let (c0, c1) = (self.cell(), other.cell());
@@ -3015,6 +3043,22 @@ impl TVar {
         self.read().cell.data_ptr().addr()
     }
 
+    // CR claude for claude: [readability/low] One cell prints under two names in one
+    // inferred signature. In the REPL `let m = |x| select x { [a, t..] =>
+    // array::concat(t, t), [] => [] }` prints `fn(x: Array<'_1: unbound>) ->
+    // [Array<'_2: unbound>, Array<'a: unbound>]`, which reads as a result unrelated
+    // to `x`, where base-r23 printed `fn(x: Array<'a: unbound>) -> [Array<'a:
+    // unbound>, Array<'_1: unbound>]`; `m([1, 2])` is `[Array<_>, Array<'a: i64>]`, so
+    // the cell is one, and a copy of the function, a call through a struct field, an
+    // annotation and a cached image all hold it as one (an/n1.repl, n2.gx, n3.gx).
+    // Since slice-arms-check-cost-01's fix a longer ladder shows it too: `[a, b, c,
+    // d, t..] => array::concat(t, t), [a, b, c] => b, [a, b, t..] => array::len(t),
+    // [a, t..] => a, [] => 4` prints `[i64, '_0: unbound, Array<'a: unbound>]` where
+    // it printed `Array<'a: '_0: unbound>`. Likely cause: a copy names a forwarding
+    // var's image after the var (TVar::freshen), so the callee's quantifier name
+    // stays on the parameter's cell once the link is gone. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/sacc-rev/al/a1.repl, an/ (run with repl3.sh DIR)
+    // (one-cell-two-names-01)
     /// `self`'s cell under `like`'s name when a program wrote that name: a
     /// parameter's cell merged into a declared quantifier's keeps the
     /// quantifier's name in a copy, since a signature finds its
