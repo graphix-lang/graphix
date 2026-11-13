@@ -1462,6 +1462,23 @@ run!(
     FuseExpect::None
 );
 
+// A parameter's cell merged with a callee's instance keeps the callee's
+// name on the result in a copy: the cell prints under the parameter's
+// name throughout the signature.
+run!(
+    a_parameter_cell_merged_with_a_callee_prints_under_one_name,
+    r#"{ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] }; let n: i64 = m; n }"#,
+    refused_renumbered("i64 does not contain fn(x: Array<'_0: unbound>) -> [Array<'_1: unbound>, Array<'_0: unbound>]");
+    FuseExpect::None
+);
+
+run!(
+    a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name,
+    r#"{ let f = |x| select x { [a, b, c, d, t..] => array::concat(t, t), [a, b, c] => b, [a, b, t..] => array::len(t), [a, t..] => a, [] => 4 }; let n: string = f; n }"#,
+    refused_renumbered("string does not contain fn(x: Array<'_0: unbound>) -> [i64, '_0: unbound, Array<'_0: unbound>]");
+    FuseExpect::None
+);
+
 // A header scopes its variable: two generic functions in one printed type
 // each list their own `'a`.
 run!(

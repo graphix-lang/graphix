@@ -7053,7 +7053,7 @@ mod tests {
     /// A print where cells print as they stand stops at [`Brief::MOST`]: a
     /// message that prints a type whole, the REPL's type of an input, a
     /// hover. Over types without cells it prints as far as the plain print
-    /// does, but for the members `DerefTVars` prints once.
+    /// does, but for the members a standing print prints once.
     #[test]
     fn a_standing_print_is_bounded() {
         let [pair, _, _] = shared_unions(16);
@@ -7070,7 +7070,7 @@ mod tests {
                     "{}",
                     s.len()
                 );
-                if !(merges && flags == deref) {
+                if !merges {
                     assert_eq!(Some(&plain[..Brief::MOST]), s.strip_suffix('…'));
                 }
             }

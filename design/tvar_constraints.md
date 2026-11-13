@@ -2304,7 +2304,13 @@ former consumer derives from the cells:
   variables; a cell a header lists is that header's until the signature
   ends (`tvar::quantifiers_apart`), under whatever name a binding reaches
   it by, and its header takes no name the message already shows another
-  cell under, so no two cells showing share one. A name numbered apart is
+  cell under, so no two cells showing share one. Any other cell keeps the
+  first name it prints under whatever name a later binding reaches it by:
+  a parameter's cell a callee's instance merged into prints under the
+  parameter's name in the result too, where a copy left the callee's
+  variable's name on it (`TVar::named_as`). A union prints once a member
+  that prints as an earlier one does (`print::write_deref_set`), in a
+  hover as in a message: one cell twice is one member. A name numbered apart is
   new to the message: no cell or header showed it, and no type the
   message has printed, the one printing included, holds it, so a name
   those types declare never moves for it and a name a header listed stays
@@ -2333,9 +2339,12 @@ former consumer derives from the cells:
   `lang::interfaces::a_signature_and_its_implementation_print_a_name_both_write_alike`,
   `a_signature_through_a_type_reference_prints_a_name_both_write_alike`,
   `a_returned_functions_variable_keeps_its_header_in_the_scheme`,
-  `a_refused_write_to_a_generic_binding_prints_its_header`; the hover's:
+  `a_refused_write_to_a_generic_binding_prints_its_header`,
+  `a_parameter_cell_merged_with_a_callee_prints_under_one_name`,
+  `a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name`; the hover's:
   `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`,
-  `a_hover_numbers_an_instance_past_a_header_name`.
+  `a_hover_numbers_an_instance_past_a_header_name`,
+  `a_cell_merged_with_a_callee_hovers_under_one_name`.
   A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and

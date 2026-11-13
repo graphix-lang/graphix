@@ -4,6 +4,7 @@
 mod harness;
 
 use graphix_compiler::typ::Brief;
+use graphix_package_core::testing::renumbered;
 use harness::Client;
 
 const MAIN: &str = "\
@@ -159,6 +160,32 @@ let trio = (k, h, mk(1));
         "let |trio",
         "trio: (fn(x: 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1, fn(x: 'a2) -> 'a2)",
     );
+}
+
+/// A parameter's cell a callee's instance merged into hovers under one
+/// name wherever the signature shows it, and a union holding one type
+/// twice hovers as that type, as a message prints them.
+#[test]
+fn a_cell_merged_with_a_callee_hovers_under_one_name() {
+    const SRC: &str = "\
+let one = |x| array::concat([x], [x]);
+let pair = |x| { let r = array::concat([x], [x]); (r, x) };
+let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] };
+0
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let hovers = [
+        ("one", "fn(x: '_0) -> Array<'_0>"),
+        ("pair", "fn(x: '_0) -> (Array<'_0>, '_0)"),
+        ("m", "fn(x: Array<'_0>) -> [Array<'_1>, Array<'_0>]"),
+    ];
+    for (name, typ) in hovers {
+        let got = c.hover("main.gx", &format!("let |{name} "));
+        let sig = got.as_deref().and_then(|h| h.lines().nth(1)).map(renumbered);
+        assert_eq!(sig.as_deref(), Some(&*format!("{name}: {typ}")), "{got:?}");
+    }
 }
 
 #[test]

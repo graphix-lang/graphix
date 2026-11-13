@@ -352,9 +352,7 @@ impl Type {
                 )?;
                 write!(f, " }}")
             }
-            Self::Set(s) if PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) => {
-                write_deref_set(f, s)
-            }
+            Self::Set(s) if crate::print_standing() => write_deref_set(f, s),
             Self::Set(s) => {
                 write!(f, "[")?;
                 write_list(f, set_members(s).into_iter().map(SetMember))?;
@@ -365,10 +363,11 @@ impl Type {
     }
 }
 
-/// A set whose cells print as what they hold: a member identical to an
-/// earlier one (two names of one cell), or printing as it does where
-/// either holds a cell (two cells bound to one type), prints once, and a
-/// lone member prints bare. A member prints into scratch only as far as
+/// A set printed where cells print as they stand
+/// ([`crate::print_standing`]): a member identical to an earlier one (two
+/// names of one cell), or printing as it does where either holds a cell
+/// (two cells bound to one type), prints once, and a lone member prints
+/// bare. A member prints into scratch only as far as
 /// the farther of what [`SHOWN`] reaches and the longest member kept,
 /// past which it prints like none of them: a member whose text passes
 /// that is kept as far as it printed, and once the kept text passes

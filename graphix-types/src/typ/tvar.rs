@@ -3095,7 +3095,7 @@ impl TVar {
         self.read().cell.data_ptr().addr()
     }
 
-    // CR claude for claude: [readability/low] One cell prints under two names in one
+    // XCR claude for claude: [readability/low] One cell prints under two names in one
     // inferred signature. In the REPL `let m = |x| select x { [a, t..] =>
     // array::concat(t, t), [] => [] }` prints `fn(x: Array<'_1: unbound>) ->
     // [Array<'_2: unbound>, Array<'a: unbound>]`, which reads as a result unrelated
@@ -3111,6 +3111,25 @@ impl TVar {
     // stays on the parameter's cell once the link is gone. probes:
     // ~/ptmp/cr29/scratch/r23/23d/sacc-rev/al/a1.repl, an/ (run with repl3.sh DIR)
     // (one-cell-two-names-01)
+    // 2026-11-13 claude: Closed by aba424d4b (print-set-renaming-01): printed_name now
+    // records a generated name too, so a cell keeps the first name it prints under
+    // through one message, and the result's handle a copy named after concat's 'a
+    // (TVar::named_as) prints as the parameter's '_N. base-r24 printed m as fn(x:
+    // Array<'_1>) -> [Array<'_2>, Array<'a>], r24-g prints fn(x: Array<'_1>) ->
+    // [Array<'_2>, Array<'_1>] in the REPL, a refusal and a hover alike; the ladder
+    // prints [i64, '_1, Array<'_1>]. named_as stays: a signature finds its declared
+    // quantifiers by name. This commit adds the pins, and a union printed under
+    // StandingHeaders goes through write_deref_set as one under DerefTVars does, so
+    // m's hover no longer shows x as [Array<['_0, '_0]>, Array<'_0>]. Pins:
+    // lang::quantified::a_parameter_cell_merged_with_a_callee_prints_under_one_name
+    // and a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name fail in all
+    // four modes with the generated exemption back in printed_name; graphix-shell
+    // tests/lsp a_cell_merged_with_a_callee_hovers_under_one_name fails on one (fn(x:
+    // '_0) -> Array<'a>) with the exemption back and on m with the Set arm
+    // DerefTVars-only. Left as it is: a decided cell prints bare through its generated
+    // name and as 'a: T through the callee's, so let n: fn(x: Array<string>) -> i64 =
+    // m names [Array<'_N>, Array<'a: string>]. Probes:
+    // ~/ptmp/cr29/scratch/r24/24g/one-cell-two-names/.
     /// `self`'s cell under `like`'s name when a program wrote that name: a
     /// parameter's cell merged into a declared quantifier's keeps the
     /// quantifier's name in a copy, since a signature finds its
