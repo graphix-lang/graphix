@@ -469,43 +469,6 @@ pub(super) enum Named {
     Unknown,
 }
 
-// XCR claude for claude: [bug/medium] A module's typedef that shadows an import
-// which an earlier typedef of the module already named escapes this check, and a
-// walk over the type then never ends. With `type M<'a> = Array<'a>` in the parent,
-// `use super::M; type N<'a> = [`Nil, `Cons('a, M<'a>)]; type M<'a> = N<Array<'a>>`
-// is accepted: N's walk peeks M as the import, finds no cycle and settles N
-// regular, the local M's walk skips the settled N, and N<i64> unfolds to
-// N<Array<i64>> and on (`--check` killed at 30 s, on base-r20 too; without the
-// `use` M is refused). The alias look-through reads the same peek:
-// `type T<'a> = [`N, `C(Opt<'a>, T<Opt<'a>>)]` above a local Opt that shadows an
-// imported one stores T's argument as the imported Opt's body, while the Opt
-// beside it means the local one (T<i64> then holds what neither Opt alone
-// allows). A block refuses a name its later statement declares (Unseen::Later);
-// a module scope has no such rule for a name it takes from an import and then
-// declares. Either refuse the later typedef (or the earlier use), or resolve a
-// module's typedef names once all of them are declared. probes:
-// ~/ptmp/cr29/scratch/r20/20c/ag/shadow-hang/, shadow-alias/
-// (typedef-import-shadow-01)
-// 2026-11-12 claude: A module's body and a script now record the type names they
-// declare as a block does (Env::open_block, Lexical::block_names), and a recorded
-// name the lexical maps do not hold yet is Unseen::Later at a module level too
-// (Env::type_name_at): never the import's or the prelude's. A typedef above the
-// declaration reads the name as not defined yet, so N stays pending and M's own
-// walk refuses the cycle (shadow-hang: 'recursive type M grows its parameter', 0.2
-// s), and the alias is one not defined above (shadow-alias: 'through Opt, which is
-// not defined above'). The same rule refuses a function above the declaration that
-// names the type (it was checked at the import's type and filled to the module's:
-// base-r23 aborts in arcstr on 'use super::M; let f = |a: M| a; type M = i64; let
-// y = f(1)' under jit_par), and the note of a later block type is given at a
-// module level. Pins that fail with env.rs reverted:
-// lang::types::typedef_names_its_modules_later_type_over_an_import,
-// _over_the_prelude, alias_shadowing_an_import_below_its_application_refused,
-// lang::block_types::module_type_in_a_signature_above_its_declaration_refused
-// (aborts), module_type_in_a_body_above_its_declaration_refused,
-// script_type_in_a_signature_above_its_declaration_refused,
-// a_later_block_type_beside_another_warns. Census of both repos against the lane's
-// tip before it: verdict=0 message=0. Not closed: a use below the typedef
-// (typedef-use-below-01).
 pub(super) fn definition(tr: &TypeRef, env: &Env) -> Named {
     if let Some(d) = tr.resolve_peek(env) {
         return Named::Def(d);
