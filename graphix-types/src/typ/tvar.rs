@@ -6,8 +6,8 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
-        TVarsSeen, Type,
+        Bound, ContainsFlags, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS,
+        PrintFlag, RefKey, TVarsSeen, Type,
         contains::{ContainsHist, cell_admits, find_open_cell, holds_cell},
         fntyp::Aliasing,
         node_addr,
@@ -4842,7 +4842,7 @@ impl Type {
         let narrowed = if self.needs_split(env, pred)? {
             self.narrow_parts(env, pred, walk)?
         } else {
-            self.contains_ordered(env, pred)?
+            walk.contains(env, self, pred)?
         };
         if narrowed && pred.has_unbound() {
             self.open_over_any(env, pred)?
@@ -5199,10 +5199,10 @@ impl Type {
     fn narrow_parts(&self, env: &Env, pred: &Type, walk: &mut Narrowing) -> Result<bool> {
         ensure_sufficient(|| {
             let Some(p) = pred.deref_cloned() else {
-                return self.contains_ordered(env, pred);
+                return walk.contains(env, self, pred);
             };
             let Some(t) = self.shape_under(env, &p)? else {
-                return self.contains_ordered(env, pred);
+                return walk.contains(env, self, pred);
             };
             let mut all = |parts: &mut dyn Iterator<Item = (&Type, &Type)>| {
                 for (t, p) in parts {
@@ -5227,7 +5227,7 @@ impl Type {
                         _ => e.narrow_pattern_in(env, pe, walk),
                     }
                 }
-                _ => self.contains_ordered(env, pred),
+                _ => walk.contains(env, self, pred),
             }
         })
     }
@@ -5908,7 +5908,9 @@ impl Type {
 /// nothing, so its verdict is the same on every path that meets it, and a
 /// predicate that shares its parts is narrowed once per pair of nodes.
 struct Narrowing {
-    closure: ContainsHist,
+    /// The one containment walk of every pair the narrowing contains
+    /// ([`Self::contains`]).
+    contains: ContainsHist,
     held: NodePairs,
     failed: NodePairs,
     /// The pairs of shared nodes being narrowed ([`Self::pair`]), each
@@ -5924,7 +5926,7 @@ struct Narrowing {
 impl Narrowing {
     fn new() -> Self {
         Narrowing {
-            closure: ContainsHist::new(),
+            contains: ContainsHist::ordered(),
             held: NodePairs::default(),
             failed: NodePairs::default(),
             open: LPooled::take(),
@@ -5934,14 +5936,27 @@ impl Narrowing {
 
     fn key(&mut self, t: &Type, pred: &Type) -> Option<(NodeKey, NodeKey)> {
         let k = self.held.key(t, pred)?;
-        (self.closure.closed(t) && self.closure.closed(pred)).then_some(k)
+        (self.contains.closed(t) && self.contains.closed(pred)).then_some(k)
     }
 
     /// A pair [`Self::key`] keys, by its sides' structure
     /// ([`super::RefHist::param_id`]): a named type's unfolding is built
     /// anew at each visit, and is the pair the narrowing left.
     fn pair(&mut self, env: &Env, t: &Type, pred: &Type) -> (usize, usize) {
-        (self.closure.param_id(t, env), self.closure.param_id(pred, env))
+        (self.contains.param_id(t, env), self.contains.param_id(pred, env))
+    }
+
+    /// `t ⊇ pred` as [`Type::contains_ordered`] decides it, in the one walk:
+    /// a pair of parts that holds no cell is contained once, whichever
+    /// member and alternative meet it.
+    fn contains(&mut self, env: &Env, t: &Type, pred: &Type) -> Result<bool> {
+        self.contains.next_relation();
+        let r =
+            t.contains_int(ContainsFlags::Commit.into(), env, &mut self.contains, pred);
+        if graphix_dbg_bind() {
+            eprintln!("CONTAINS-ORDERED {t} >= {pred} -> {r:?}");
+        }
+        r
     }
 }
 

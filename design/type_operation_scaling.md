@@ -102,9 +102,14 @@ structure is returned SHARED, never copied.
   normalized in a pass of its own, as the cells stand. What the pass
   keeps of a name is its form as the name's resolution stood (two
   references to one definition merge once both are filled): the same
-  type either way. Pins: `typ::contains::tests::
+  type either way. A distribution's pool of `Closure::Plain` parts is kept
+  by the parts' `RefHist::ref_id`s (`ContainsHist::pool`): the pool asked
+  for again is the same node, so what was asked of it is the probe memo's,
+  where a pool built anew is a new pair at every question (2x the steps
+  over two families of six recursive error unions). Pins: `typ::contains::tests::
   a_walk_normalizes_the_nodes_its_pools_share_once`,
-  `a_union_over_a_cell_is_normalized_at_each_question`.
+  `a_union_over_a_cell_is_normalized_at_each_question`,
+  `a_distribution_pools_the_same_parts_once`.
 - `would_cycle_seen` (the occurs check) is a pure existence query: the
   visited set is permanent (explored-without-finding never needs
   re-exploring) and holds composite node addresses as well as cells.
@@ -285,6 +290,15 @@ structure is returned SHARED, never copied.
   are none between two of its probes, and its first error ends it (pin
   `typ::contains::tests::
   a_narrowing_over_names_recurring_through_errors_probes_each_pair_once`).
+  A select's narrowing (`Type::narrow_pattern`) contains every member and
+  alternative it pairs in one walk (`tvar::Narrowing::contains`): it
+  writes cells between two of those relations (a part left open over
+  `Any`, the union a bind takes), so a commit's verdicts are dropped
+  between them (`ContainsHist::next_relation`) and a probe's, stamped
+  with `cell_writes`, stand. A walk of its own for each relation asked
+  each the questions the others had answered: a test of a union of one
+  family over a value of another, twelve names, took 25x the steps (pin
+  `typ::contains::tests::a_narrowing_contains_its_pairs_through_one_walk`).
   Its memo keys a part by `RefHist::ref_id`, whose shape ids read a name
   as the definition it means in the env, its cell filled or not
   (`setops::union_identical_in`): a probe kept leaves names unfilled that

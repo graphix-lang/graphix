@@ -188,6 +188,8 @@ pub(super) struct ContainsHist {
     /// holding no cell and no function type ([`Self::normal_union`]):
     /// what it keeps of a node read nothing a walk can write.
     norm: Option<NormCx>,
+    /// The unions [`Self::pool`] built, by the ids of the parts they pool.
+    pools: Lazy<AHashMap<SmallVec<[usize; 8]>, Type>>,
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
@@ -352,6 +354,7 @@ impl ContainsHist {
             closed: Lazy::new(),
             closed_pins: Lazy::new(),
             norm: None,
+            pools: Lazy::new(),
             trial: false,
             as_tried: false,
             chose: false,
@@ -449,6 +452,24 @@ impl ContainsHist {
         self.commit_pairs = commit_pairs;
     }
 
+    /// A walk several relations share begins the next. The pairs a commit
+    /// proved are dropped, as a walk of the relation's own would hold none:
+    /// its caller writes cells between two relations. What carries over is
+    /// a probe's verdicts, each stamped with [`cell_writes`], and what no
+    /// cell changes.
+    pub(super) fn next_relation(&mut self) {
+        debug_assert!(self.in_progress.is_empty() && self.unfolding.is_empty());
+        if let Some(held) = &mut self.commit_pairs.0 {
+            held.clear()
+        }
+        if let Some(held) = &mut self.provisional.0 {
+            held.clear()
+        }
+        if let Some(order) = &mut self.provisional_order.0 {
+            order.clear()
+        }
+    }
+
     /// Whether the walk's verdict is the check's own: neither a trial nor
     /// ordered, and over types their own checks have made.
     fn decides(&self) -> bool {
@@ -532,6 +553,28 @@ impl ContainsHist {
         } else {
             Type::normal_union(members, &mut NormCx::take())
         }
+    }
+
+    /// [`Self::normal_union`] of `parts`, the one node for every union of
+    /// parts of the same ids ([`RefHist::ref_id`]) holding no cell and no
+    /// function type: its verdicts are memoized by its node.
+    fn pool<'a>(
+        &mut self,
+        env: &Env,
+        parts: impl Iterator<Item = &'a Type> + Clone,
+    ) -> Type {
+        let plain = parts.clone().all(|p| self.closure(p, false) == Closure::Plain);
+        let key = match plain {
+            true => parts.clone().map(|p| self.ref_id(p, env)).collect(),
+            false => None,
+        };
+        let Some(key) = key else { return self.normal_union(parts) };
+        if let Some(pool) = self.pools.get().and_then(|m| m.get(&key)) {
+            return pool.clone();
+        }
+        let pool = self.normal_union(parts);
+        self.pools.get_mut().insert(key, pool.clone());
+        pool
     }
 
     /// Cached probe verdict for `(t0, t1)` under `flags`
@@ -4611,7 +4654,7 @@ impl Type {
     /// covers every other position in full. Decided by probes over a
     /// cell-free scrutinee; a committing walk then commits every
     /// candidate's covering positions and the pooled one.
-    // CR claude for claude: [perf/medium] One arm that tests a recursive union of
+    // XCR claude for claude: [perf/medium] One arm that tests a recursive union of
     // another family costs 20G instructions and more where each family has six
     // typedefs: over `x: T0`, T0..T5 and U0..U5 unions of Errors, Arrays and tuples
     // of each other (gen3.py seed 421's typedefs), `select x { Error<U1> as u0 => 0,
@@ -4627,6 +4670,27 @@ impl Type {
     // (matching-type-probe-walks-01) ends it. probes:
     // ~/ptmp/cr29/scratch/r23/23c/dpr-rev/cover6.gx (one arm), g421.gx, gen3.py
     // (cover-distribution-family-cost-01)
+    // 2026-11-13 claude: base-r24 already checked cover6.gx in 1.70G (an empty program
+    // 0.75G), g421.gx in 8.75G and gen3's 800 in at most 9.8G (round 23's walks). What
+    // was left was this law's: each pool was built anew (normal_union), so no question
+    // about it was ever met again by the probe memo, and each relation of a select's
+    // narrowing ran a ContainsHist of its own, 38 for one arm (narrow_per_member_in ->
+    // narrow_member -> contains_ordered), each asking the others' questions (16600
+    // distribution questions for `Array<U2> as`, 790 distinct). ContainsHist::pool
+    // keeps a pool of Closure::Plain parts by the parts' ref_ids, and
+    // tvar::Narrowing::contains asks every relation of one narrowing in one ordered
+    // walk, ContainsHist::next_relation dropping commit verdicts between them.
+    // --no-cache --check instructions:u base-r24 -> lane: cover6 1.70 -> 1.01G, `U1 as`
+    // 2.79 -> 1.01G, `Array<U2> as` 3.55 -> 1.04G, `Error<T1> as` 1.27 -> 0.99G, g421
+    // 8.75 -> 2.30G; gen3's 800: total 970 -> 836G, max 9.78 -> 3.61G, over 2G 78 ->
+    // 36, all 800 outputs identical. The law is 10-12% of what is left (diff and
+    // matching_type the rest). Pins:
+    // typ::contains::tests::a_distribution_pools_the_same_parts_once (15162 steps
+    // without the pool memo, bound 10000),
+    // a_narrowing_contains_its_pairs_through_one_walk (183684 steps for U1 over T0
+    // without the shared walk; 117372 at n=16 without the pool memo). Census 2967 files
+    // 0/0; guicheck base 39.53G, lane 39.51G. probes: ~/ptmp/cr29/scratch/r24/24f/cdf/
+    // (README)
     fn set_covers_by_distribution(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -4760,7 +4824,7 @@ impl Type {
                 distributing = Some(j);
             }
         }
-        let pool = distributing.map(|j| hist.normal_union(cands.iter().map(|c| &c[j])));
+        let pool = distributing.map(|j| hist.pool(env, cands.iter().map(|c| &c[j])));
         if let (Some(j), Some(pool)) = (distributing, &pool)
             && !pool.contains_int(probe, env, hist, &targs[j])?
         {
@@ -6100,6 +6164,88 @@ mod tests {
                 let (t, r) = (at_root(&env, test), at_root(&env, reaching));
                 CONTAINS_STEPS.with(|n| n.set(0));
                 assert!(!t.matching_type(&env, &r).unwrap().is_uninhabited());
+                let steps = CONTAINS_STEPS.with(|n| n.get());
+                let bound = 400 * n * n;
+                assert!(
+                    steps <= bound,
+                    "n={n}: {test} over {reaching} took {steps} steps"
+                );
+            }
+        }
+    }
+
+    /// Two families of six names each, unions of errors and arrays of
+    /// their own family's names, each union tagged by its family: no
+    /// value of one family's names is the other's.
+    fn tagged_families() -> [(&'static str, &'static str); 12] {
+        [
+            ("T0", "[Error<T4>, Array<T2>, Error<T0>, Error<[Error<T3>, T2]>, `A0]"),
+            ("T1", "[Error<[T3, T5]>, Error<T5>, Error<Error<T5>>, `A1]"),
+            (
+                "T2",
+                "[Error<T5>, Error<[T5, T3]>, Error<[Error<T1>, T0]>, Error<[T4, T3]>, `A2]",
+            ),
+            (
+                "T3",
+                "[Error<[T1, T2]>, Error<T4>, Error<[T5, T0]>, Error<Error<Error<T2>>>, `A3]",
+            ),
+            ("T4", "[Error<T0>, Error<Error<Error<T1>>>, Error<T4>, `A4]"),
+            ("T5", "[Error<Array<T4>>, Array<T3>, `P0(T5), `A5]"),
+            ("U0", "[Error<U4>, Array<U2>, Error<U0>, Error<[Error<U3>, U2]>, `B0]"),
+            ("U1", "[Error<[U3, U5]>, Error<U5>, Error<Error<U5>>, `B1, Error<U2>]"),
+            (
+                "U2",
+                "[Error<U5>, Error<[U5, U3]>, Error<[Error<U1>, U0]>, Error<[U4, U3]>, `B2]",
+            ),
+            ("U3", "[Error<U4>, Error<[U5, U0]>, Error<Error<Error<U2>>>, `B3]"),
+            ("U4", "[Error<U0>, Error<Error<Error<U1>>>, Error<U4>, `B4, `Z1]"),
+            ("U5", "[Error<Array<U4>>, Array<U3>, Array<U2>, `B5]"),
+        ]
+    }
+
+    // The distribution law pools the parts of a union's candidates, and a
+    // pool of parts of the same ids is one node: a question about it met
+    // again is its memoized verdict, not a walk over a new union.
+    #[test]
+    fn a_distribution_pools_the_same_parts_once() {
+        let (env, _) = Env::typed_at_root(&tagged_families(), "T0").unwrap();
+        for (a, b, bound) in [
+            ("[T3, T5]", "Error<U2>", 10_000),
+            ("T2", "U2", 9_000),
+            ("T1", "Error<U4>", 10_000),
+        ] {
+            let (a, b) = (at_root(&env, a), at_root(&env, b));
+            CONTAINS_STEPS.with(|n| n.set(0));
+            assert!(!a.contains(&env, &b).unwrap(), "{a} ⊇ {b}");
+            let steps = CONTAINS_STEPS.with(|n| n.get());
+            assert!(steps <= bound, "{a} ⊇ {b} took {steps} steps");
+        }
+    }
+
+    // A select's narrowing contains each member and alternative it pairs
+    // through one walk, so a pair of names they share is contained once,
+    // whichever of them meets it.
+    #[test]
+    fn a_narrowing_contains_its_pairs_through_one_walk() {
+        let (env, _) = Env::typed_at_root(&tagged_families(), "T0").unwrap();
+        let t0 = at_root(&env, "T0");
+        for test in ["U1", "Array<U2>", "Error<U1>", "Error<T1>"] {
+            let narrowed = at_root(&env, test).matching_type(&env, &t0).unwrap();
+            CONTAINS_STEPS.with(|n| n.set(0));
+            assert!(t0.narrow_pattern(&env, &narrowed).unwrap(), "{test}");
+            let steps = CONTAINS_STEPS.with(|n| n.get());
+            assert!(steps <= 15_000, "{test} over T0 took {steps} steps");
+        }
+        for n in [4, 8, 16] {
+            let defs = error_families(n);
+            let defs: Vec<(&str, &str)> =
+                defs.iter().map(|(a, b)| (&**a, &**b)).collect();
+            let (env, _) = Env::typed_at_root(&defs, "X0").unwrap();
+            for (test, reaching) in [("X0", "Y0"), ("[X1, Y1]", "[X0, Y0]")] {
+                let (t, r) = (at_root(&env, test), at_root(&env, reaching));
+                let narrowed = t.matching_type(&env, &r).unwrap();
+                CONTAINS_STEPS.with(|n| n.set(0));
+                assert!(r.narrow_pattern(&env, &narrowed).unwrap());
                 let steps = CONTAINS_STEPS.with(|n| n.get());
                 let bound = 400 * n * n;
                 assert!(
