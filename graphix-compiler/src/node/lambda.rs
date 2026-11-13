@@ -2409,22 +2409,6 @@ impl Lambda {
                 explicit_throws,
                 ..FnType::default()
             };
-            // CR claude for claude: [bug/medium] A nested lambda's own bound
-            // never names an enclosing definition's variable. This alias
-            // walk runs over the positions before `declaring` puts the bounds
-            // on their cells, and `declaring` aliases the bounds' variables
-            // among themselves alone, so in `let f = 'z: Number |w: 'z| -> 'z
-            // { let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g(["s"]);
-            // println(r); w }; f(1)` the `'z` of g's bound is a variable of
-            // its own: base-r23 checks it and prints ["s"], where
-            // design/tvar_constraints.md says a name a definition around a
-            // nested lambda's signature declares, and the signature does not,
-            // is that definition's (`|y: Array<'z>| -> Array<'z> y` in its
-            // place is refused, "Array<'_: unbound within Number> does not
-            // contain Array<string>"). Aliasing the constraints' types with
-            // `known` before `declaring` would name f's `'z`. probes:
-            // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/d1.gx, d2.gx,
-            // d3.gx (lambda-bound-enclosing-01)
             // a variable the definitions around this one declare, and this
             // one does not, is theirs
             let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
