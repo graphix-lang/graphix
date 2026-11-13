@@ -2343,62 +2343,6 @@ fn emit_structure_cond(
     Ok(scond)
 }
 
-// XCR claude for claude: [bug/high] A written test's binds take their local
-// kind from its frozen predicate, and a read of a bind takes the bind's own
-// narrowed type, which can disagree: `|v: [Array<string>, i64]| #[native]
-// select v { Array<['b, null]> as [x, ..] => str::len(x), _ => 0 }` freezes
-// to `Array<[⊥, null]>`, so `x` is a Value local (borrowed at each read,
-// emit_ref_node) while `x: string`, whose consumer takes the read as an owned
-// clone (node_composite_source) and drops it: the run prints `[3, 0, 0]` and
-// aborts, "free(): chunks in smallbin corrupted" (base 78b6bba25 alike; the
-// node-walk is right). Either a bind's kind follows its own type where the
-// value's test proves it (an element read as a string), or emit_ref_node
-// gives the representation the read's type declares for a Value local, as
-// widen_to_declared_repr does for a scalar. A pattern bind at a written ⊥
-// part is the one shape known. probe:
-// ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/written-test-bind-kind.gx
-// (written-test-bind-kind-01)
-// 2026-11-12 claude: A second shape, with no ⊥ and no #[native]: `|v: [Array<string>,
-// i64]| select v { Array<[string, null]> as [x, ..] => str::len(x), _ => 0 }` prints
-// [3, 0, 0] fused and aborts, "corrupted double-linked list" (base 78b6bba25 alike):
-// the frozen part `[string, null]` is wider than the member part `string` the bind is
-// typed by. The same test over a rigid `[Array<'a>, i64]` aborts too. probes:
-// ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/review/r3.gx, r2_g.gx.
-// A predicate with no frozen form (emit_member_cond's member path) lays its binds out by
-// the member's own parts and does not reach this.
-// 2026-11-13 claude: (fixing instance-arm-liveness-01) A third shape, with a live arm
-// and no ⊥, under GRAPHIX_NO_SUBST=1 alone: an instance checked again narrows a bind to
-// its own member's part while the kernel lays it out by the frozen predicate's. `'a:
-// [`V(bool), `W(i64), `V(i64)] |x: 'a| select x { [`V(bool), `W(i64), `V(i64)] as `V(h)
-// => `H(h), _ => `N }` at g(`V(true)) panics in the link, "arg 1 has type i64, expected
-// i8": the predicate freezes to `V([bool, i64]) and h is bool. So do a payload that is a
-// union (`W(h) over `W([f64, bool, `A]) at an instance of one member) and `{ let u = h;
-// .. }` over such a bind (cranelift's "declared type of variable doesn't match"). About
-// 1 generated program in 250 (dgen.py, lane_ns column); none without GRAPHIX_NO_SUBST,
-// where the bind keeps its definition's union. probes:
-// ~/ptmp/cr29/scratch/r24/24a/r27v.gx, ns_plain_r353.gx, ns_or_r424.gx,
-// ns_union_part_r240.gx
-// 2026-11-13 claude: (review of instance-arm-liveness-01) Kernels that base-r24 left to
-// the node-walk over a dead arm now fuse, so under GRAPHIX_NO_SUBST=1 the third shape's
-// panic reaches programs base ran: 3 of 587 generated ones (dgen2.py), each a live arm
-// of that shape (`V(h, _) over `V(bool, `B) and `V(null, `B); `W(h) over a union
-// payload), whose one-arm form panics on base-r24 too. Nothing runs GRAPHIX_NO_SUBST but
-// a debugging session. probes: ~/ptmp/cr29/scratch/r24/24a/review/ns3.gx, ns4.gx,
-// ns_guardmid_r186.gx
-// 2026-11-13 claude: A read of a local gives the form its reader's type declares
-// (read_local_as in fusion/emit/nodes.rs, for emit_ref_node and for a capture handed to
-// another kernel, marshal_args): a Value local read as a string is an owned clone, as a
-// scalar or a composite that form; a String local read as a value is borrowed (it
-// leaked: a kernel instance-arm-liveness-01 newly fuses, 100 MB over 100k calls); kinds
-// with no conversion de-fuse. All three shapes' probes agree with the node-walk,
-// GRAPHIX_NO_SUBST=1 included (dgen2.py 493 + 487, dgen.py 501 programs: no panic, no
-// disagreement). Pins that fail with the fix undone:
-// lang::select::written_test_bind_reads_in_the_form_of_its_own_type (the test binary
-// aborts, free(): chunks in smallbin corrupted),
-// written_test_scalar_bind_reads_as_its_scalar (the link panics, jit and jit_par); the
-// leak by the leakcheck witness select-written-test-binds (147 kB/s without, flat with).
-// No test runs GRAPHIX_NO_SUBST: its shape is the scalar pin's conversion. probes:
-// ~/ptmp/cr29/scratch/r24/24a/wtbk/
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:
