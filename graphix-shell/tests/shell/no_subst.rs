@@ -66,10 +66,17 @@ fn an_instance_checked_again_meets_its_arguments_in_the_same_order() {
     let typedef = "type P<'p, 'q> = [Array<'p>, Array<'q>];\n\
          let f = |y: 'a, z: 'b, x: P<'a, 'b>| x;\n";
     let programs = [
-        ("let g = |v, w, u| f(v, w, u);\ng(1, \"s\", [])\n", "[]"),
+        (
+            "let g = |v, w, u| f(v, w, u);\nlet e: Array<i64> = [];\ng(1, \"s\", e)\n",
+            "[]",
+        ),
         ("let g = |v, w, u| f(v, w, u);\ng(1, \"s\", [1])\n", "[1]"),
         ("let h = |v: 'a, w: 'b, u: P<'a, 'b>| f(v, w, u);\nh(1, \"s\", [1])\n", "[1]"),
-        ("let g = |u| { let (q, r, p) = u; f(q, r, p) };\ng((1, \"s\", []))\n", "[]"),
+        (
+            "let g = |u| { let (q, r, p) = u; f(q, r, p) };\n\
+             let e: Array<i64> = [];\ng((1, \"s\", e))\n",
+            "[]",
+        ),
     ];
     for (program, expected) in programs {
         let program = format!("{typedef}{program}");

@@ -5725,6 +5725,23 @@ impl Type {
         // Array<['c, null]>` written in both places the same, on the lane before that
         // fix too (the bound form was refused at the check then). probes:
         // ~/ptmp/cr29/scratch/r24/24c/buba/g3/p0563-{b,t}.gx
+        // 2026-11-13 claude: Since undecided-into-two-decided-01 (093fa4399) an
+        // instance checked again is refused far more often: a variable its call left
+        // undecided is ⊥ in the instance, a decided member beside the other one, so
+        // the callee's own open cell could go to either (UndecidedTaker). 'let f = |a,
+        // b, c: bool| select c { true => [a], false => [b] }; let h = |t, u| f(u,
+        // never(), t); h(true, 1.5)' and 'type P<'p, 'q> = [Array<'p>, Array<'q>]; let
+        // f = |x: 'a, y: 'b| -> P<'a, 'b> [x]; let g = |t| f(t, never()); g(1.5)' run
+        // by default and on base-r24 under GRAPHIX_NO_SUBST=1, where the lane refuses
+        // them, 'Array<'b: unbound> could go to Array<f64> or Array<_> of the union
+        // [Array<f64>, Array<_>], and nothing has decided which'. Of the 6302 programs
+        // of genu.py (seeds 9301, 9302 wide, 9303) the lane accepts, 1866 differ under
+        // NO_SUBST, before and after undecided-into-decided-member-01's fix alike;
+        // against base-r24 (4001 accepted of seeds 9301 and 9302 wide) 545 differ on
+        // the lane alone and 618 on both. The default build, where an instance
+        // takes its definition's types, runs every one of them. probes:
+        // ~/ptmp/cr29/scratch/r24/24d/udm-rev/{u3,p10,p11}.gx, diff-pre/sound.txt,
+        // diff-base/sound-summary.txt
         let mut undecided_free = s0
             .iter()
             .zip(&free)
