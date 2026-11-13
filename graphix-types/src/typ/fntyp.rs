@@ -2104,6 +2104,20 @@ impl FnType {
             // implementation has [Int, Real]"). On base-r20 and lane 20d alike. probes:
             // ~/ptmp/cr29/scratch/r20/20d/ibo-rv/{f1,f2,g1,g3,g6,k4}/main.gx
             // (iface-bound-shape-01)
+            // 2026-11-12 claude: Review of iface-same-name-01: the same open pair lets
+            // the check accept through the Some(sig_type) arm of FnType::sig_bounds
+            // (impl_tc.contains_with_flags under RigidCheck), not only through declared.
+            // `val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;` over `let f =
+            // 'c: Array<'q>, 'q: Number |x: 'c| -> i64 0` passes --check with
+            // `m::f([[1]])` in main, and the run fails "an instance at fn(x:
+            // Array<Array<i64>>) -> i64 of a definition typed ..": the implementation
+            // cell 'c stands for Array<'b>, and its flexible 'q (Number) takes the rigid
+            // 'b (Array<'z>) without its conjuncts. The same with `'q: Array<'r>, 'r:
+            // i64` called at `[[1.0]]`. Until iface-same-name-01 deleted the same-name
+            // arm, the check refused that second program, by chance, when the
+            // implementation spelled its variable 'b ("requires 'z: Array<'r>"); a fix
+            // here pins it under both spellings. On base-r23 and lane 23g alike. probes:
+            // ~/ptmp/cr29/scratch/r23/23g/iface-same-name-01/review/{r1,r2,r3,r4}/main.gx
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
