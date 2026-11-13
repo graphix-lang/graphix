@@ -905,6 +905,26 @@ fn rebuilt(
     })
 }
 
+// CR claude for claude: [perf/medium] A cell written between two visits of one pair of
+// shared nodes makes every Meets entry stale, so alternatives whose shared parts sit on
+// both sides of a function part still meet once per path. `let x{i} = (x{i-1}, (|q| q,
+// x), x{i-1}); let y{i} = (y{i-1}, (|q| q, y), y{i-1});` over `x0 = (|q| q, x)`, `y0 =
+// (|q| q, y)` (`x: i64`, `y: Any`), then `let r = select b { true => x{n}, false =>
+// y{n} }`: --check (--no-cache, instructions:u, an empty program 0.75G) 1.19/4.43/48.59G
+// at 10/12/14 links on r24-f at 922a10ba6 (base-r24 4.38G at 12). A struct link `{a:
+// x{i-1}, b: |q| q, c: x{i-1}}`, whose fields sort the function between, 1.17/4.34G at
+// 10/12. The function part last, `(x{i-1}, x{i-1}, (|q| q, x))`, takes 0.79G at 12, and
+// a middle part with no function, `(1, x)`, 0.76G. Meets::get reads an entry only while
+// cell_writes() is what it was when the entry was made, and the meet of the middle
+// part's functions writes cells (meet_open_fns binds a fresh instance's cells and the
+// occurrences' own), so the entry the first part made for (x{i-1}, y{i-1}) is stale at
+// the third. Unit twin: a triple DAG with a fresh `fn(q: 'c) -> 'c` pair between the
+// shared parts takes 5118 meets and 24564 cell writes at 10 links; a tuple of leaves
+// there, 130 meets. A fix needs a test finer than the thread's write count: an entry
+// stands while no cell its alternatives reach was written (as Closure and
+// probe_standing let a contains probe verdict stand). probes:
+// ~/ptmp/cr29/scratch/r24/24f/review/{m10,m12,m14,s10,s12,t12,mn12}.gx, gen3.py
+// (meet-memo-writes-01)
 /// The meets of one [`Type::meet_alternatives`] walk past
 /// [`NodePairs::EAGER`] steps, by the nodes the alternatives hold (a bound
 /// cell as the node it holds), each with the [`cell_writes`] it was made
