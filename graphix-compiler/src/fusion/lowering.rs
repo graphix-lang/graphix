@@ -721,6 +721,17 @@ impl ResolveCx {
         }
     }
 
+    // CR claude for claude: [risk/low] An entry holds where its deps (the refs it met on
+    // the path) are on the path, but nothing checks that the refs it expanded are off it,
+    // so `expand_refs` unrolls a type by where it met it before: over `type A = [`A,
+    // `X(B)]` and `type B = [`B, `Y(A)]`, `(A, B)` expands its B to `[`B, `Y([`A, `X([`B,
+    // `Y(A)])])]` where B alone is `[`B, `Y([`A, `X(B)])]` (A's entry, stored with no
+    // deps, holds B expanded). Both are B and no wrong answer is shown; it would matter
+    // where two sites must freeze one type alike (freeze_in_env's fallback feeding a
+    // kernel's slot). `node_lookup` keys its entries the same way. Keying an entry by the
+    // refs it met and which of those were open, as kernel_abi's Freeze does, makes it
+    // exact. probe: ~/ptmp/cr29/scratch/r24/24f/freeze-recursive-paths-review/
+    // lowering_memo_probe.rs (resolve-memo-open-refs-01)
     fn lookup(&self, key: &TypeRef, seen: Option<&Seen>) -> Option<Option<Type>> {
         let memo = self.memo.borrow();
         let e = memo.get(&expand_key_fp(key))?.iter().find(|e| {
