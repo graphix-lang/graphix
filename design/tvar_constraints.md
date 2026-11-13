@@ -2065,9 +2065,23 @@ A type written in a body names the variables of the definitions around
 it (`lambda::body_annotation`); a labeled default is written in its
 definition's signature, so its types name the variables of the
 definitions around that one (`LambdaDef::in_signature`). An instance's
-body compiles under its definition's signature as the instance holds it
-(`lambda::instance_sig`: each variable copied under its name and bound to
-the instance's type). A default compiled at a call's bind takes its types
+body compiles under the variables its definition's signature writes
+(`FnType::written_tvars`: those its positions name and, through them,
+those the bounds of its own quantifiers name), each the instance's copy
+of that cell, bound to the instance's type (`lambda::written_tvars`,
+through the map `lambda::instance_cells` returns). The copy is found by
+its cell, never by its name: an instance's signature also holds the
+cells its definition's check inferred, and those carry the names of the
+callees' variables they were copied from (`array::len`'s `'a` in `|q, p:
+'a| { let f = |x: 'a| x; (array::len(q), f(p)) }`), so a name can stand
+for two cells there (pins
+`lang::types::{written_variable_beside_an_inferred_cell_of_its_name,enclosing_variable_beside_an_inferred_cell_of_its_name,enclosing_variable_through_two_instances,variable_a_bound_alone_writes_is_the_enclosing_definitions,default_naming_an_enclosing_variable_beside_an_inferred_cell}`,
+`lang::image::a_restored_nested_definition_names_its_enclosing_variables`).
+A name only the bound of a bound writes (`'a2` in `'a0: Array<'a1>, 'a1:
+Array<'a2> |x: 'a0|`) is the definition's variable in its check and in
+an instance alike, rigid in the body as any other (pins
+`lang::types::variable_a_bound_of_a_bound_writes_{is_the_enclosing_definitions,is_rigid_in_the_body}`).
+A default compiled at a call's bind takes its types
 from its definition's check, as an instance's body does: the definition's
 `DefTable` records the rows of the defaults its check compiled
 (`DefTable::record_defaults`), and the bind types the default's nodes from
@@ -2830,9 +2844,10 @@ references name the target is told the recursive type alone
   a definition or the top level merges into it, which claims it there
   (`tvar::Level::Written`; `lambda::body_annotation`, `enclosing_tvars`; a labeled
   default's, the definitions' around its own, `LambdaDef::in_signature`;
-  in an instance, the instance's types under the definition's names,
-  `lambda::instance_sig`, the names its signature writes alone, never one
-  a body's annotation gave a cell its check reached); a quantifier
+  in an instance, the instance's copy of each cell its definition's
+  signature writes, `lambda::written_tvars`, never a cell its check
+  inferred, whatever name a callee's variable or a body's annotation gave
+  it); a quantifier
   a definition or a written `fn<..>` declares must be held by its
   signature (a parameter, the return, the throws, a held quantifier's
   bound), else it is refused (`FnType::check_quantifiers_held`), and a

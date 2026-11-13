@@ -583,6 +583,23 @@ async fn a_restored_function_prints_its_source() -> Result<()> {
     Ok(())
 }
 
+/// A definition an instance defined carries the variables the
+/// definitions around it declare: restored, an instance built at run time
+/// names them in its body.
+#[tokio::test]
+async fn a_restored_nested_definition_names_its_enclosing_variables() -> Result<()> {
+    let program = r#"let g = |q, p: 'a| {
+  let f = |x: 'a| -> 'a { let v: 'a = x; v };
+  array::map(q, |e| (e, f(p)))
+};
+let r = g([1, 2], "s");
+"[r]""#;
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    assert_eq!(cold, [Value::from(r#"[(1, "s"), (2, "s")]"#)]);
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
 /// A definition that constructs carries its parameter's lower bound in
 /// its signature: restored, each call's context still decides it.
 #[tokio::test]

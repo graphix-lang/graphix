@@ -3880,6 +3880,103 @@ run!(
     FuseExpect::Jit
 );
 
+// A nested signature's own variable stays its own in an instance whose
+// signature holds an inferred cell of that name: the parameter's element,
+// which `array::len` and the call of `f` named `'a`.
+run!(
+    written_variable_beside_an_inferred_cell_of_its_name,
+    r#"{
+  let n: [i64, null] = 1;
+  let g = |p| {
+    let f = 'b: Array<'a> |x: 'b, y: 'a| x;
+    let r = f(p, n);
+    let t = f(["s"], "u");
+    (array::len(p), r, t)
+  };
+  (g([null]), g([4]))
+}"#,
+    prints(r#"[[i64:1, [null], ["s"]], [i64:1, [i64:4], ["s"]]]"#);
+    FuseExpect::Jit
+);
+
+// A variable an enclosing definition's signature writes is that
+// definition's in an instance too, found by its cell: the instance's
+// signature holds an inferred cell of its name first.
+run!(
+    enclosing_variable_beside_an_inferred_cell_of_its_name,
+    r#"{
+  let g = |q, p: 'a| { let f = |x: 'a| x; (array::len(q), f(p)) };
+  (g([null], "s"), g([1], null))
+}"#,
+    prints(r#"[[i64:1, "s"], [i64:1, null]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    enclosing_variable_through_two_instances,
+    r#"{
+  let g = |q, p: 'a| {
+    let h = |r, s: 'a| { let f = |x: 'a| -> 'a x; (array::len(r), f(s)) };
+    (array::len(q), h(q, p), h([p], p))
+  };
+  (g([null], "s"), g([1.0], 3))
+}"#,
+    prints(r#"[[i64:1, [i64:1, "s"], [i64:1, "s"]], [i64:1, [i64:1, i64:3], [i64:1, i64:3]]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    variable_a_bound_alone_writes_is_the_enclosing_definitions,
+    r#"{
+  let g = 'b: Array<'a> |x: 'b, q| {
+    let f = |y: 'a| -> 'a y;
+    (array::len(q), x, f(x[0]$))
+  };
+  (g([1], [null]), g(["s"], [2.0]))
+}"#,
+    prints(r#"[[i64:1, [i64:1], i64:1], [i64:1, ["s"], "s"]]"#);
+    FuseExpect::Jit
+);
+
+// A name only the bound of a bound writes is the enclosing definition's
+// variable, as one a parameter's bound writes: a call picks it, so it is
+// rigid in the body.
+run!(
+    variable_a_bound_of_a_bound_writes_is_the_enclosing_definitions,
+    r#"{
+  let g = 'a0: Array<'a1>, 'a1: Array<'a2> |x: 'a0| {
+    let f = |y: 'a2| y;
+    f(x[0]$[0]$)
+  };
+  (g([["s"]]), g([[1]]))
+}"#,
+    prints(r#"["s", i64:1]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    variable_a_bound_of_a_bound_writes_is_rigid_in_the_body,
+    r#"{
+  let g = 'a0: Array<'a1>, 'a1: Array<'a2> |x: 'a0| {
+    let f = |y: 'a2| y;
+    f(1)
+  };
+  g([["s"]])
+}"#,
+    refused("'a2: unbound does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    default_naming_an_enclosing_variable_beside_an_inferred_cell,
+    r#"{
+  let g = |q, p: 'a| { let f = |#d: 'a = p, y: i64| d; (array::len(q), f(1)) };
+  g([null], "s")
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
 // A written type's own variable that an enclosing definition's parameter
 // merges into is that parameter, live in the enclosing definition.
 run!(

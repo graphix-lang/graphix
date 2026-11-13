@@ -36,9 +36,13 @@ A function written inside another names the outer one's variables, in its
 parameters, return type and bounds alike, unless it declares the name
 itself. One it declares is its own, whatever an outer bound names: inside
 `'a: Number, 'z: Array<'a> |w: 'z|`, a `'a: Any |x: 'z, y: 'a| -> 'a`
-returns its own `'a`, never an element of `x`.
+returns its own `'a`, never an element of `x`. The outer one's variables
+are those its signature writes: in a parameter, the return type, or a
+bound of one of those, however many bounds deep.
 
 ```graphix,cases
+ok let g = 'a0: Array<'a1>, 'a1: Array<'a2> |x: 'a0| { let f = |y: 'a2| y; f(x[0]$[0]$) }; g([["s"]])
+no "does not contain i64" let g = 'a0: Array<'a1>, 'a1: Array<'a2> |x: 'a0| { let f = |y: 'a2| y; f(1) }; g([["s"]])
 no "does not contain Array<string>" let f = 'z: Number |w: 'z| -> 'z { let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g(["s"]); w }; f(1)
 ok let f = 'z: Number |w: 'z| { let g = 'b: Array<'z> |y: 'b| -> 'b y; g([w]) }; f(1)
 ok let f = 'a: Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z, y: 'a| -> 'a y; g(w, "s") }; f([1])

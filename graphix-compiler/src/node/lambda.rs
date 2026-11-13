@@ -596,23 +596,21 @@ pub struct InstanceTypes {
     tables: Tables,
     known: Known,
     open: IntSet<LambdaId>,
-    sig: Arc<FnType>,
 }
 
-/// The definition's signature `def` as the instance at `instance` holds
-/// it, with the copy of each open cell: each bound to the instance's type
-/// ([`FnType::held_at`]). `None` when the instance's signature does not
-/// hold the definition's.
-fn instance_sig<R: Rt>(
+/// The copy the instance at `instance` holds of each open cell of its
+/// definition's signature `def`, by the cell's address: each bound to the
+/// instance's type ([`FnType::held_at`]). `None` when the instance's
+/// signature does not hold the definition's.
+fn instance_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
     instance: &FnType,
-) -> Option<(Arc<FnType>, AHashMap<usize, TVar>)> {
+) -> Option<AHashMap<usize, TVar>> {
     // every open cell of the signature is the instance's own copy, a cell
     // no closed gate owns included, so the check binds nothing another
     // instance reads
-    let (sig, known) = def.held_at(&ctx.env, instance).ok()?;
-    Some((Arc::new(sig), known))
+    def.held_at(&ctx.env, instance).ok().map(|(_, known)| known)
 }
 
 impl InstanceTypes {
@@ -632,7 +630,6 @@ impl InstanceTypes {
             tables: tables.clone(),
             known: Known::default(),
             open: ctx.rec_defs.clone(),
-            sig: def.typ.clone(),
         })
     }
 
@@ -645,8 +642,8 @@ impl InstanceTypes {
         instance: &FnType,
     ) -> Option<Self> {
         let open = ctx.rec_defs.clone();
-        let (sig, known) = instance_sig(ctx, def, instance)?;
-        Some(Self { tables, known: SArc::new(Mutex::new(known)), open, sig })
+        let known = instance_cells(ctx, def, instance)?;
+        Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
     }
 
     /// A row read from this definition's check, renamed through the
@@ -785,35 +782,35 @@ fn written_own(known: &AHashMap<ArcStr, TVar>, enclosing: &AHashSet<ArcStr>) -> 
 }
 
 /// The variables the definitions around the body being compiled declare,
-/// by name, the innermost's where two share one: those each definition's
-/// signature writes, never a cell its check named after a body's written
-/// type (a result bound to a let's annotated type).
+/// by name, the innermost's where two share one ([`BodyCompile::declared`]).
 pub(super) fn enclosing_tvars<R: Rt>(
     ctx: &CompileCtx<R>,
     known: &mut AHashMap<ArcStr, TVar>,
 ) {
     if let Some(body) = &ctx.body {
-        for typ in body.declared.iter().rev() {
-            let written = typ
-                .lambda_ids
-                .own()
-                .and_then(|id| ctx.lambda_defs.get(&id))
-                .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
-                .map(|d| {
-                    let mut names: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                    d.typ.collect_tvars(&mut names);
-                    names
-                });
-            let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            typ.collect_tvars(&mut named);
-            for (name, tv) in named.drain() {
-                let writes = written.as_ref().is_none_or(|w| w.contains_key(&name));
-                if !name.starts_with('_') && writes {
-                    known.entry(name).or_insert(tv);
-                }
-            }
+        for tv in body.declared.iter().rev() {
+            known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
         }
     }
+}
+
+/// The variables the signature `def` writes ([`FnType::written_tvars`]),
+/// as a body compiled under it names them: the definition's own cells,
+/// or, through `known` (an instance's map of its definition's cells), the
+/// instance's copies. One the instance holds as a type, not a cell, is
+/// left out.
+fn written_tvars(
+    def: &FnType,
+    known: Option<&AHashMap<usize, TVar>>,
+) -> LPooled<Vec<TVar>> {
+    let held = |tv: TVar| match known {
+        None => Some(tv),
+        Some(known) => match &Type::TVar(tv).rename_with(known) {
+            Type::TVar(tv) => Some(tv.clone()),
+            _ => None,
+        },
+    };
+    def.written_tvars().drain(..).filter_map(|(_, tv)| held(tv)).collect()
 }
 
 /// The body compiling now: what it shares, and whether this compile is
@@ -823,8 +820,9 @@ pub(crate) struct BodyCompile {
     pub(crate) share: BodyShare,
     pub(crate) checking: bool,
     pub(crate) types: Option<InstanceTypes>,
-    /// The signatures of the definitions around the body, innermost last.
-    pub(crate) declared: Arc<[Arc<FnType>]>,
+    /// The variables the signatures of the definitions around the body
+    /// write, innermost last, each the cell this compile holds for it.
+    pub(crate) declared: Arc<[TVar]>,
 }
 
 impl BodyShared {
@@ -904,7 +902,7 @@ impl<R: Rt> LambdaDef<R> {
         body: DefBody,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
-        enclosing: Arc<[Arc<FnType>]>,
+        enclosing: Arc<[TVar]>,
     ) -> Self {
         let init = make_init(
             id,
@@ -1013,9 +1011,10 @@ pub enum DefOrigin {
         body: DefBody,
         flags: BitFlags<CFlag>,
         spec: Expr,
-        /// The signatures of the definitions lexically around the literal,
-        /// innermost last, as the compile that met the literal held them.
-        enclosing: Arc<[Arc<FnType>]>,
+        /// The variables the definitions lexically around the literal
+        /// declare, innermost last, as the compile that met the literal
+        /// held them ([`BodyCompile::declared`]).
+        enclosing: Arc<[TVar]>,
     },
     Runtime,
 }
@@ -1631,16 +1630,22 @@ impl<R: Rt> GXLambda<R> {
         };
         // what a type the body writes names: the instance's variables,
         // under the definition's names
-        let sig = match (&types, &typing) {
-            (Some(types), _) => types.sig.clone(),
-            (None, Typing::Substituted(_, def)) => {
-                instance_sig(ctx, def, &typ).map_or_else(|| typ.clone(), |(sig, _)| sig)
+        let written = match (&types, &typing) {
+            (Some(types), Typing::Substituted(_, def)) => {
+                written_tvars(def, Some(&types.known.lock()))
             }
-            (None, _) => typ.clone(),
+            (None, Typing::Substituted(_, def)) => match instance_cells(ctx, def, &typ) {
+                Some(known) => written_tvars(def, Some(&known)),
+                None => LPooled::take(),
+            },
+            (_, _) => written_tvars(&typ, None),
         };
         let build = |ctx: &mut CompileCtx<R>, _: &[StructPatternNode]| {
             let outer = ctx.body.as_mut().map(|b| {
-                let declared = b.declared.iter().cloned().chain([sig]).collect();
+                let declared = match written.is_empty() {
+                    true => b.declared.clone(),
+                    false => b.declared.iter().chain(written.iter()).cloned().collect(),
+                };
                 (
                     mem::replace(&mut b.types, types.clone()),
                     mem::replace(&mut b.declared, declared),
@@ -1999,7 +2004,7 @@ pub(crate) fn make_init<R: Rt>(
     def_argspec: Arc<[Arg]>,
     def_spec: Arc<Expr>,
     body: DefBody,
-    enclosing: Arc<[Arc<FnType>]>,
+    enclosing: Arc<[TVar]>,
     table: SArc<DefTables>,
     shared: BodyShare,
 ) -> InitFn<R> {
