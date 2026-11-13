@@ -9373,7 +9373,7 @@ run!(
         type U<'a> = [`Nil, `C('a, U<Opt<'a>>)];
         let one = |v: Array<i64>| #[native] select v { Array<Opt<'b>> as [x, ..] => x, _ => 0 };
         let two = |v: [Array<i64>, Array<string>]| select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
-        let mixed = |v: [Array<i64>, string]| select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
+        let mixed = |v: [Array<i64>, string]| #[native] select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
         let named = |v: [L<i64>, L<string>]| select v { L<Opt<'b>> as `C(x, t) => 1, _ => 0 };
         let grown = |v: [U<i64>, U<string>]| select v { U<Opt<'b>> as `C(x, t) => 1, _ => 0 };
         let nested = |v: [Array<i64>, Array<string>]| select v { Array<Opt<Opt<'b>>> as [x, ..] => 1, _ => 0 };
@@ -9392,6 +9392,49 @@ run!(
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
         if as_i64s(a) == [7, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0]);
+    FuseExpect::Jit
+);
+
+// A written test holding `Any` reads its value as the one composite
+// member of the scrutinee its type may pass and holds whole, as its
+// written-out twin reads its own frozen form. Over two such members
+// nothing says which, and a test that cuts its member (`string` of `[i64,
+// string]`) binds narrower than the member reads.
+run!(
+    written_test_alias_reads_the_member_it_passes,
+    r#"{
+        type Opt<'b> = ['b, null];
+        type P<'a> = ('a, i64);
+        let arr = |v: [Array<i64>, string]| #[native] select v { Array<Opt<'b>> as [x, ..] => x, _ => 0 };
+        let opt = |v: [Array<i64>, null]| #[native] select v { Array<Opt<'b>> as [x, y, ..] => x + y, _ => 0 };
+        let tup = |v: [P<i64>, string]| #[native] select v { P<Opt<'b>> as (x, y) => x * y, _ => 0 };
+        let fld = |v: [{f: i64, g: string}, string]| #[native] select v { {f: Opt<'b>, g: string} as {f, g} => f + str::len(g), _ => 0 };
+        let deep = |v: [Array<Array<string>>, i64]| #[native] select v { Array<Array<Opt<'b>>> as [[s, ..], ..] => str::len(s), _ => 0 };
+        let tag = |v: [`A(i64), Array<i64>, `B(string)]| #[native] select v { Array<Opt<'b>> as [x, ..] => x, `A(n) => n * 10, _ => 0 };
+        let top = |v: [Array<i64>, string]| #[native] select v { Array<Any> as [x, ..] => x, _ => 0 };
+        let two = |v: [Array<i64>, Array<string>]| select v {
+            Array<Opt<'b>> as [x, ..] => select x { i64 as n => n, s => str::len(s) },
+            _ => 0
+        };
+        let cut = |v: [(string, [i64, string]), i64]| select v {
+            (Opt<'b>, string) as (x, s) => str::len(x) + str::len(s),
+            (Any, i64) as (_, n) => n,
+            i64 as m => m
+        };
+        [
+            arr([7]), arr("s"), arr([]),
+            opt([1, 2]), opt(null), opt([1]),
+            tup((2, 3)), tup("s"),
+            fld({f: 1, g: "ab"}), fld("s"),
+            deep([["abc"]]), deep([[]]), deep(4),
+            tag([5]), tag(`A(2)), tag(`B("s")),
+            top([6]), top("s"),
+            two([8]), two(["abcd"]), two([]),
+            cut(("ab", "cde")), cut(("x", 4)), cut(9)
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [7, 0, 0, 3, 0, 0, 6, 0, 3, 0, 3, 0, 0, 5, 20, 0, 6, 0, 8, 4, 0, 5, 4, 9]);
     FuseExpect::Jit
 );
 

@@ -1549,7 +1549,7 @@ fn emit_arm_cond<R: Rt>(
     Ok((tcond, scond))
 }
 
-// CR claude for claude: [perf/low] A written test with an alias applied to its own
+// XCR claude for claude: [perf/low] A written test with an alias applied to its own
 // variable de-fuses where its written-out twin fuses. Over `type Opt<'b> = ['b, null]`,
 // `|v: [Array<i64>, string]| #[native] select v { Array<Opt<'b>> as [x, ..] => 1, _ =>
 // 0 }` is refused, "select type predicate Array<Opt<Any>> doesn't freeze concrete": the
@@ -1563,6 +1563,17 @@ fn emit_arm_cond<R: Rt>(
 // member. The pin to flip: lang::select::written_test_alias_over_its_own_variable's
 // `mixed`, the one fused select of its twin that carries no #[native].
 // (written-alias-test-defuses-01)
+// 2026-11-12 claude: emit_member_cond: a written predicate with no composite frozen
+// form (its own variable read as Any under a named type, or a written Any) reads the
+// value as the one member of the scrutinee its type may pass (composite_member over the
+// predicate alone), where the predicate holds the whole member (holds_what_it_meets),
+// so every bind's own type is the member's part and its local kind agrees; the test
+// stays graphix_value_is_a over the unfrozen predicate. Pins:
+// lang::select::written_test_alias_over_its_own_variable (mixed now #[native]) and
+// written_test_alias_reads_the_member_it_passes fail in jit/jit_par with the change
+// undone; with the holds rule undone the latter's cut select fuses and the test process
+// aborts (a String bind read from a Value local). The written-out twin's own bind-kind
+// crash is written-test-bind-kind-01.
 /// An arm's written type test against `scrut`: `None` for an inferred
 /// predicate, or one every value of the scrutinee's type passes.
 fn emit_type_test<R: Rt>(
@@ -2365,6 +2376,21 @@ fn emit_structure_cond(
     Ok(scond)
 }
 
+// CR claude for claude: [bug/high] A written test's binds take their local
+// kind from its frozen predicate, and a read of a bind takes the bind's own
+// narrowed type, which can disagree: `|v: [Array<string>, i64]| #[native]
+// select v { Array<['b, null]> as [x, ..] => str::len(x), _ => 0 }` freezes
+// to `Array<[⊥, null]>`, so `x` is a Value local (borrowed at each read,
+// emit_ref_node) while `x: string`, whose consumer takes the read as an owned
+// clone (node_composite_source) and drops it: the run prints `[3, 0, 0]` and
+// aborts, "free(): chunks in smallbin corrupted" (base 78b6bba25 alike; the
+// node-walk is right). Either a bind's kind follows its own type where the
+// value's test proves it (an element read as a string), or emit_ref_node
+// gives the representation the read's type declares for a Value local, as
+// widen_to_declared_repr does for a scalar. A pattern bind at a written ⊥
+// part is the one shape known. probe:
+// ~/ptmp/cr29/scratch/r23/23g/written-alias-test-defuses-01/written-test-bind-kind.gx
+// (written-test-bind-kind-01)
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:
@@ -2373,8 +2399,13 @@ fn emit_structure_cond(
 /// as the empty array, which every read of it survives. An option's or
 /// a result's composite is the one array the value may be; any other
 /// member is tested by type, a `written` predicate strictly, an inferred
-/// one as the node-walk's shape test reads it. `None` where the
-/// scrutinee is no such value or the member no composite.
+/// one as the node-walk's shape test reads it. A predicate with no
+/// composite frozen form (`Any` where a written one's own variable stands
+/// under a named type, a wildcard in an inferred one) reads the value as
+/// the one composite member of the scrutinee it may pass; a written one
+/// passes it by its type alone and holds the whole of it, so its binds
+/// have the member's types. `None` where the scrutinee is no such value or
+/// the member no composite.
 fn emit_member_cond(
     cx: &mut BodyCx,
     sp: &StructPatternNode,
@@ -2400,12 +2431,19 @@ fn emit_member_cond(
                 let cd = clean_disc(cx.b, disc);
                 (cx.b.ins().icmp_imm_s(IntCC::Equal, cd, value_disc::ARRAY), inner, true)
             }
-            (_, Some(pred)) if written => {
+            (_, pred) if written => {
+                let any_structure = StructPatternNode::Ignore;
+                let held = || holds_what_it_meets(cx.ctx.type_env, pred_typ, scrut_typ);
+                let member = pred.or_else(|| {
+                    composite_member(cx, &any_structure, Some(pred_typ), scrut_typ)
+                        .filter(|_| held())
+                });
+                let Some(member) = member else { return Ok(None) };
                 let typ = cx.interned_type(&pred_typ.resolve_tvars())?;
                 let call = cx.call_helper("graphix_value_is_a", &[typ, disc, payload])?;
-                (cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0), pred, true)
+                (cx.b.ins().icmp_imm_s(IntCC::NotEqual, call[0], 0), member, true)
             }
-            (_, pred) if !written => {
+            (_, pred) => {
                 let (pred, unique) = match pred {
                     Some(pred) => (pred, false),
                     None => match composite_member(cx, sp, Some(pred_typ), scrut_typ) {
@@ -2421,7 +2459,6 @@ fn emit_member_cond(
                 };
                 (test, pred, exact || unique)
             }
-            (_, _) => return Ok(None),
         };
     let empty = cx.call_helper("graphix_valarray_empty_borrowed", &[])?[0];
     let ptr = cx.b.ins().select(test, payload, empty);
