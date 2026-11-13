@@ -1276,8 +1276,9 @@ impl FnType {
     // display-open-auto-01.
     /// Replace auto type variables (`'_23`) that stand open with one
     /// constraint by that constraint, for display; a decided one prints as
-    /// what it was decided to be. Call before `Type::resolve_tvars`, which
-    /// discards the cells.
+    /// what it was decided to be, and one whose cell a declared variable
+    /// stands for prints as that variable. Call before
+    /// `Type::resolve_tvars`, which discards the cells.
     pub fn replace_auto_constrained(&self) -> Self {
         // CR claude for claude: [bug/low] A hover prints an open auto variable two
         // ways, neither the one a message prints, and one reads as another type.
@@ -1295,12 +1296,32 @@ impl FnType {
         // this fold. Base-r24 alike. probe: in ~/ptmp/cr29/scratch/r24/24g/
         // display-auto-bound, `python3 lsp_hover.py <graphix> hov open.gx 'let |k '`
         // (hover and outline), and `--check hov/kk.gx` (display-open-auto-01)
+        // 2026-11-13 claude: A local whose inferred return merged into an enclosing
+        // def's declared variable folds the same way and reads as another type: in
+        // `let g2 = 'a: Number |x: 'a| { let inner = |y: i64| x; inner(1) }` the
+        // hover of inner is `fn(y: i64) -> Number`, where it returns `'a`, and a
+        // mismatch over inner prints `fn(y: i64) -> '_8346: unbound within Number`.
+        // The merge points the auto variable's link at the declared cell itself, and
+        // a cell keeps no name, so nothing in inner's signature says the cell is
+        // `'a`; replace_auto_constrained skips a cell a declared variable of the
+        // same signature stands for, which covers g2 itself but not inner. probe:
+        // ~/ptmp/cr29/scratch/r24/24g/display-auto-bound-review/rt2.gx (hover `let
+        // |inner `) and rt2bad.gx (--check).
         let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+        let mut sig = self.sig_tvars();
+        let declared: LPooled<AHashSet<usize>> = sig
+            .values()
+            .filter(|tv| !tv.generated())
+            .filter_map(TVar::open_cell)
+            .map(|open| open.cell_addr())
+            .collect();
         // Read the cells directly: auto names are never declared, so
         // `constraint_view` cannot see them.
-        for (name, tv) in self.sig_tvars().drain() {
-            if name.starts_with('_')
+        for (name, tv) in sig.drain() {
+            if tv.generated()
                 && let Some(open) = tv.open_cell()
+                && open.generated()
+                && !declared.contains(&open.cell_addr())
                 && let [tc] = &open.cell_constraints()[..]
             {
                 known.insert(name, tc.clone());

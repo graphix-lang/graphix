@@ -2392,13 +2392,15 @@ former consumer derives from the cells:
   `deep_nesting::a_nested_lambda_bounded_by_an_enclosing_variable_checks_at_once`.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
   directly (inference declares no header) and folds into its bound only a
-  cell that stands open: a decided one prints as what it was decided to
-  be, as a message prints it. A hover, an outline and a completion, the
-  REPL's included, print a binding's type through one function,
-  `graphix_lsp::display_type`. Pins: `lsp::a_decided_variable_hovers_as_its_type`,
+  cell that stands open and that no declared variable stands for: a
+  decided one prints as what it was decided to be, and one merged into a
+  declared variable (an inferred return `'a: Number |x: 'a| x`, an
+  inferred argument) as that variable, as a message prints it. A hover,
+  an outline and a completion, the REPL's included, print a binding's
+  type through one function, `graphix_lsp::display_type`. Pins:
+  `lsp::a_decided_variable_hovers_as_its_type`,
   `completion::tests::a_completion_describes_a_binding_as_a_hover_does`.
-  `sig_matches_int`'s
-  impl-constraint check is SATISFACTION — the
+  `sig_matches_int`'s impl-constraint check is SATISFACTION — the
   signature's concrete choice must be admitted by the impl's inferred
   constraint — not structural equality, which spuriously rejected a
   concretely typed `.gxi` signature over an inferred-generic impl.

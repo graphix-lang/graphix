@@ -100,7 +100,9 @@ let hs = array::map([1], |r| h);
 }
 
 /// A variable a call decided hovers, and outlines, as the type it was
-/// decided to be, as a message prints it, whatever bound it carries.
+/// decided to be, as a message prints it, whatever bound it carries; one
+/// a declared variable's cell holds, an inferred return's or an inferred
+/// argument's, as that variable.
 #[test]
 fn a_decided_variable_hovers_as_its_type() {
     const SRC: &str = "\
@@ -109,6 +111,9 @@ let n = |q: i64| h(q);
 let nested = |q: i64| { let inner = 'a: Number |x: 'a| -> 'a x; inner(q) };
 let two = |q: i64| { let inner = 'a: Number + Singleton |x: 'a| -> 'a x; inner(q) };
 let named = |q: i64| { let r = h(q); r };
+let id = 'a: Number |x: 'a| x;
+let kept = 'a: Number |x: 'a| { let r = x; r };
+let same = 'a: Number |y, x: 'a| { let z: 'a = y; x };
 0
 ";
     let mut c = Client::start(&[("main.gx", SRC)]);
@@ -119,6 +124,9 @@ let named = |q: i64| { let r = h(q); r };
         ("nested", "fn(q: i64) -> i64"),
         ("two", "fn(q: i64) -> i64"),
         ("named", "fn(q: i64) -> i64"),
+        ("id", "fn<'a: Number>(x: 'a) -> 'a"),
+        ("kept", "fn<'a: Number>(x: 'a) -> 'a"),
+        ("same", "fn<'a: Number>(y: 'a, x: 'a) -> 'a"),
     ];
     for (name, typ) in decided {
         hover_is(&mut c, &format!("let |{name} "), &format!("{name}: {typ}"));
