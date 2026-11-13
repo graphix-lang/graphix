@@ -857,36 +857,6 @@ pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
     try_freeze_for_abi_normalized(t).ok()
 }
 
-// XCR claude for claude: [risk/low] The selective retry refuses a type the
-// unconditional retry freezes: `App(Set([Hole, TVar a := Hole]), A)`, a
-// constructor union one of whose members is a cell bound to the hole.
-// Type::fill_hole fills the bare hole and leaves the one inside the cell, so
-// the filled union's second member freezes Unsupported, which is not retried;
-// `resolve_tvars().normalize()` first makes both members holes, the union
-// collapses and the application freezes to `A`. Fusion is lost, no answer is
-// wrong; no program is known to hold the type. The proptest
-// tests::selective_retry_matches_unconditional_retry finds it at random (seeds
-// are fresh each run): once in round 20's gate of lane 20h, 1 run in 3000 of
-// the test alone after that, and its seed fails the same on main 82569fed3.
-// Either fill_hole looks through a bound cell, or a freeze that fails on a
-// filled constructor is NonCanonical. The seed is not in
-// proptest-regressions/fusion/kernel_abi.txt (it would fail every gate): it is
-// `cc c3b87ec6923fa53de409cdb05d795bbf86ed5d39c84aea87e47c8fe1f50c0078`, kept
-// with the gate's log in ~/ptmp/cr29/scratch/r20/20h/finisher/.
-// (freeze-ctor-cell-hole-01)
-// 2026-11-12 claude: Freeze::freeze_inner now refuses a Type::Hole as
-// NonCanonical, not Unsupported: a hole is no value's type, so one the freeze
-// meets is a constructor's hole that its application's fill (Type::with_deref
-// through app_filled and fill_hole) left in a cell, and the normalized retry
-// fills it. fill_hole is unchanged (it is the typechecker's). The App arms this
-// CR names were dead: with_deref already fills a bound constructor's
-// application, so freeze_inner's arm only met one it cannot fill (now
-// Type::App(..) => Err(NonCanonical)) and abi_kind_d's twin always gave None
-// (removed). Pins: tests::constructor_union_with_hole_cell_normalizes, and the
-// seed c3b87ec6 now in proptest-regressions/fusion/kernel_abi.txt, which
-// selective_retry_matches_unconditional_retry replays every run; both fail with
-// the Hole arm removed. 6M random cases of that proptest pass; graphix-fuzz
-// regress and fusecheck clean.
 pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeError> {
     super::TypeMemo::frozen(t, || match try_freeze_for_abi(t) {
         Err(FreezeError::NonCanonical) => {
