@@ -315,6 +315,8 @@ ok let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1,
 no "i64 does not contain string" let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r("s") }
 no "a call takes one function type" let b = true; let t = select b { true => `A(|x: string| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
 no "the functions met here share one #d" let b = true; let t = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
+no "the functions met here share one #d" let b = true; let t = `W(select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }); select t { `W(`A(r) | `B(r)) => r(7) }
+ok let b = true; let t: [`A(fn(?#d: [i64, string], x: i64) -> i64), `B(fn(?#d: [i64, string], x: i64) -> i64)] = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
 ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
 ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
 ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)

@@ -260,13 +260,15 @@ impl LambdaIds {
     }
 
     /// A node that reaches every id `nodes` reach, which none of them
-    /// reaches back.
+    /// reaches back. It links what each node links as well as the node,
+    /// so it outlives a node that is itself a join.
     pub fn joining(nodes: &[&LambdaIds]) -> LambdaIds {
         let joined = LambdaIds::default();
         {
             let mut inner = joined.0.write();
             for n in nodes {
                 inner.links.insert(n.as_link());
+                inner.links.extend(n.0.read().links.iter().cloned());
             }
         }
         joined
@@ -2954,6 +2956,25 @@ mod tests {
             !s.contains("'_"),
             "auto tvars should not leak into pretty output, got: {s}"
         );
+    }
+
+    /// A join of a join reaches the definitions the inner join reached
+    /// after the inner join is gone.
+    #[test]
+    fn a_join_outlives_the_join_it_joins() {
+        use super::LambdaIds;
+        use crate::LambdaId;
+        let defs: [LambdaIds; 3] = std::array::from_fn(|_| {
+            let node = LambdaIds::default();
+            node.set_id(LambdaId::new());
+            node
+        });
+        let inner = LambdaIds::joining(&[&defs[0], &defs[1]]);
+        let outer = LambdaIds::joining(&[&inner, &defs[2]]);
+        drop(inner);
+        let ids = outer.ids();
+        assert!(defs.iter().all(|d| d.own().is_some_and(|id| ids.contains(&id))));
+        assert!(defs.iter().all(|d| d.ids().len() == 1));
     }
 
     /// An implicit throws slot (an unbound auto TVar) is not printed.

@@ -1214,6 +1214,13 @@ impl Type {
     // members could take is that it goes to neither (contains.rs::AmbiguousMember).
     // Same on base-r23 for the field read. probes:
     // ~/ptmp/cr29/scratch/r23/23d/obfm/{o1,o2,o3,o5}.gx (fn-meet-first-member-01)
+    // 2026-11-12 claude: (review of or-bind-fn-meet-01) An or-arm's name now meets
+    // its parts in the order its alternatives are written before the order of its
+    // scrutinee's members, since merge_leaves meets them first: over `A(|x| x),
+    // `B(|y| y + 1), `C(|z| "[z]!") the arm `A(r) | `C(r) | `B(r) makes |x| x the
+    // string function and `A(r) | `B(r) | `C(r) the i64 one. probe:
+    // ~/ptmp/cr29/scratch/r23/23d/obfm-review/o6.gx (o3.gx of the fixer's probes is
+    // its twin)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A generic member meets through a fresh

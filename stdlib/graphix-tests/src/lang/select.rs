@@ -4901,6 +4901,104 @@ run!(
     FuseExpect::None
 );
 
+// The met function is every one of its definitions wherever the
+// alternatives stand: under a constructor, in a slice or a list, where two
+// of them read one member, and where a member's own join meets another's.
+run!(
+    or_name_judges_every_default_under_a_constructor,
+    r#"{
+        let k = |b: bool| {
+            let t = `W(select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x + 1) });
+            select t { `W(`A(r) | `B(r)) => r(7) }
+        };
+        k(false)
+    }"#,
+    refused("the functions met here share one #d");
+    FuseExpect::None
+);
+
+run!(
+    or_name_judges_every_default_in_a_slice,
+    r#"{
+        let k = |b: bool| {
+            let t = [select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x + 1) }];
+            select t { [`A(r) | `B(r), ..] => r(7), _ => 0 }
+        };
+        k(false)
+    }"#,
+    refused("the functions met here share one #d");
+    FuseExpect::None
+);
+
+run!(
+    or_name_judges_every_default_in_a_list,
+    r#"{
+        let k = |b: bool| {
+            let t = [<select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x + 1) }>];
+            select t { [<`A(r) | `B(r), ..>] => r(7), _ => 0 }
+        };
+        k(false)
+    }"#,
+    refused("the functions met here share one #d");
+    FuseExpect::None
+);
+
+run!(
+    or_name_judges_every_default_of_one_member,
+    r#"{
+        let k = |n: i64| {
+            let t = (|#d = 1, x: i64| x, |#d = "q", x: i64| x + 1, n);
+            select t { (r, _, 0) | (_, r, _) => r(7) }
+        };
+        k(1)
+    }"#,
+    refused("the functions met here share one #d");
+    FuseExpect::None
+);
+
+run!(
+    or_name_judges_every_default_a_member_joined,
+    r#"{
+        let k = |b: bool, n: i64| {
+            let t = select b {
+                true => `A(|#d = 1, x: i64| x, |#d = "q", x: i64| x + 1, n),
+                false => `B(|#d = 2, x: i64| x + 2)
+            };
+            select t { `A(r, _, 0) | `A(_, r, _) | `B(r) => r(7) }
+        };
+        k(true, 1)
+    }"#,
+    refused("the functions met here share one #d");
+    FuseExpect::None
+);
+
+// The annotation the refusal names: one function type whose label holds
+// every default, and each definition runs its own.
+run!(
+    or_name_defaults_under_one_written_type,
+    r#"{
+        type F = fn(?#d: [i64, string], x: i64) -> i64;
+        let k = |b: bool, n: i64| {
+            let t: [`A(F), `B(F)] = select b {
+                true => `A(|#d = 1, x: i64| x),
+                false => `B(|#d = "q", x: i64| x + 1)
+            };
+            let w: [`W([`A(F), `B(F)])] = `W(t);
+            let es: Array<[`A(F), `B(F)]> = [t];
+            let one: (F, F, i64) = (|#d = 1, x: i64| x + 2, |#d = "q", x: i64| x + 3, n);
+            let name = select t { `A(r) | `B(r) => r(7) };
+            let payload = select w { `W(`A(r) | `B(r)) => r(7) };
+            let element = select es { [`A(r) | `B(r), ..] => r(7), _ => 0 };
+            let member = select one { (r, _, 0) | (_, r, _) => r(7) };
+            [name, payload, element, member, select t { `A(r) | `B(r) => r(#d: 5, 7) }]
+        };
+        array::concat(k(true, 0), k(false, 1))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [7, 7, 7, 9, 7, 8, 8, 8, 10, 8]);
+    FuseExpect::None
+);
+
 // A wake keeps a `<-` target's last write but recomputes the target's
 // destructured siblings.
 const WAKE_RECOMPUTES_A_TARGETS_SIBLINGS: &str = r#"

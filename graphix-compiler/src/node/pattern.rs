@@ -327,7 +327,8 @@ struct PayloadReps<'a> {
 // on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/obfm/{a29c,a29d}.gx
 // (or-name-open-parts-call-01)
 /// `leaves` gathered over several members or alternatives, each name
-/// once, at the union of its types.
+/// once, at the union of its types, their functions met
+/// ([`Type::union_of_alternatives`]).
 fn merge_leaves(
     env: &Env,
     all: SmallVec<[Leaf; 4]>,
@@ -343,7 +344,10 @@ fn merge_leaves(
     for (id, fresh, ts) in by_id {
         let typ = match &ts[..] {
             [t] => t.clone(),
-            ts => Type::union(env, &ts.iter().collect::<SmallVec<[&Type; 2]>>())?,
+            ts => Type::union_of_alternatives(
+                env,
+                &ts.iter().collect::<SmallVec<[&Type; 2]>>(),
+            )?,
         };
         out.push(Leaf { id, typ, fresh })
     }
@@ -1433,7 +1437,7 @@ impl StructPatternNode {
                             let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
                             b.typ.check_contains_ordered(
                                 env,
-                                &Type::union_exact(env, &ts)?,
+                                &Type::union_exact_of_alternatives(env, &ts)?,
                             )?
                         }
                     }

@@ -69,16 +69,23 @@ select x {
   (`StructPatternNode::leaves`), each shared name's cell being fresh
   (`fresh_ids`). A call through the name takes one function type, so
   the functions among its parts meet as a field read's and a select's
-  arms do (`PatternNode::wholes_by_member`,
-  `Type::union_exact_of_alternatives`, `design/tvar_constraints.md`):
-  over `` `A(|x| x, 1) `` and `` `B(|y| y + 1, "s") ``, `` `A(r, n) |
-  `B(r, n) => r(2) `` calls either, and the open `|x| x` is the `i64`
-  function from there on, called or not. The met function is every one
-  of its definitions, so a call that omits a label judges each one's
-  default. Functions that do not meet stay two members, and a call
-  through the name is refused, naming them (pins
-  `or_name_meets_its_functions`, `or_name_is_its_met_function`,
-  `or_name_judges_every_default`,
+  arms do (`Type::union_exact_of_alternatives`,
+  `design/tvar_constraints.md`), at each join that types the name:
+  across the members its arm matches (`PatternNode::wholes_by_member`),
+  across the alternatives over one member (`merge_leaves`) and across
+  the members of a slice's element
+  (`StructPatternNode::hold_slice_members`). Over `` `A(|x| x, 1) `` and
+  `` `B(|y| y + 1, "s") ``, `` `A(r, n) | `B(r, n) => r(2) `` calls
+  either, and the open `|x| x` is the `i64` function from there on,
+  called or not. The met function is every one of its definitions, a
+  join of joins included (`LambdaIds::joining`), so a call that omits a
+  label judges each one's default, and the annotation the refusal names
+  is one written function type whose label holds every default.
+  Functions that do not meet stay two members, and a call through the
+  name is refused, naming them (pins `or_name_meets_its_functions`,
+  `or_name_is_its_met_function`, `or_name_judges_every_default` and its
+  `_under_a_constructor`, `_in_a_slice`, `_in_a_list`, `_of_one_member`
+  and `_a_member_joined` forms, `or_name_defaults_under_one_written_type`,
   `or_name_holds_the_functions_that_do_not_meet`).
 - **A shadowed alternative is a dead-arm error** (the house select
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
