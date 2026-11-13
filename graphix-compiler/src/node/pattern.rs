@@ -2712,6 +2712,14 @@ impl StructPatternNode {
     // ~/ptmp/cr29/scratch/r24/24h/sed/sc2.gx (scrutinee `[{a: i64, c: f64}, {a: string,
     // b: f64}]`, same arms) is refused 'unreachable arm: the earlier arms already cover
     // the whole scrutinee' at the `_` arm on base-r24 and on lane 24h.
+    // 2026-11-13 claude: (review of instance-arm-liveness-01) The same answer accepts a
+    // select that misses at run time: `|x: [{t: i64, w: i64}, {u: i64, v: i64}]| select x
+    // { [{t: i64, w: i64}, {u: i64, v: i64}] as {t: h, w: _} => h }` checks, the one arm
+    // taken to cover the union, and at {u: 5, v: 6} both engines say "no arm matches: a
+    // coverage hole in the check" (base-r24's node-walk alike; its kernel read the fields
+    // by index and printed 5). A second written arm for the other member is refused
+    // "unreachable arm". So this is check accepted, run failed, not only a wrong refusal.
+    // probe: ~/ptmp/cr29/scratch/r24/24a/review/h1.gx
     /// True when the pattern matches any value of the scrutinee's type:
     /// `Select`'s wildcard test. A variant pattern with an all-bind
     /// payload is irrefutable given its tag matched, but its inferred

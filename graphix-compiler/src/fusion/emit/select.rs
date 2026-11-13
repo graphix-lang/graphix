@@ -1310,9 +1310,10 @@ pub(super) fn emit_select_arms<R: Rt>(
         }
         let is_last = i == last;
         let has_guard = pat.guard.is_some();
-        // The final-arm miss trap is sound only when a miss is
-        // impossible; typecheck forbids a guarded final arm.
-        if is_last && has_guard {
+        // typecheck forbids a guarded final arm. A guarded arm is the last
+        // live one where every arm below it is dead at this scrutinee: a
+        // value its guard refuses matches no arm, as in the node-walk.
+        if has_guard && i + 1 == n {
             bail!(
                 "emit_clif: guard on the final select arm — the chain could miss \
                  every arm"
@@ -2425,6 +2426,13 @@ fn emit_structure_cond(
 // where the bind keeps its definition's union. probes:
 // ~/ptmp/cr29/scratch/r24/24a/r27v.gx, ns_plain_r353.gx, ns_or_r424.gx,
 // ns_union_part_r240.gx
+// 2026-11-13 claude: (review of instance-arm-liveness-01) Kernels that base-r24 left to
+// the node-walk over a dead arm now fuse, so under GRAPHIX_NO_SUBST=1 the third shape's
+// panic reaches programs base ran: 3 of 587 generated ones (dgen2.py), each a live arm
+// of that shape (`V(h, _) over `V(bool, `B) and `V(null, `B); `W(h) over a union
+// payload), whose one-arm form panics on base-r24 too. Nothing runs GRAPHIX_NO_SUBST but
+// a debugging session. probes: ~/ptmp/cr29/scratch/r24/24a/review/ns3.gx, ns4.gx,
+// ns_guardmid_r186.gx
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:

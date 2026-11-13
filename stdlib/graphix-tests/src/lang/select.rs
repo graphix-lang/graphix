@@ -6350,6 +6350,26 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, -1, -1, -1, 3, -1, 3, -1, 4, 3, 101])
 );
 
+// A guarded arm above arms that are dead at an instance, by their type or
+// by their structure, is the last arm of that instance's kernel.
+run!(
+    guarded_arm_above_arms_dead_at_an_instance_fuses,
+    r#"{
+    type U = [{t: i64, w: i64}, {u: i64, v: i64}];
+    type V = [`A(i64), `B(i64)];
+    let lim = 3;
+    let f = 'a: U |x: 'a| -> i64 #[native] select x { U as {t: h, w: _} => h, U as _ if lim > 0 => 0, U as {u: h, v: _} => h * 10 };
+    let g = 'a: U |x: 'a| -> i64 #[native] select x { U as {t: h, w: _} => h, U as _ if lim > 5 => 0, U as {u: h, v: _} => h * 10 };
+    let j = 'a: V |x: 'a| -> i64 #[native] select x { `A(i64) as `A(h) => h, V as _ if lim > 0 => 0, `B(i64) as `B(h) => h * 10 };
+    let k = 'a: V |x: 'a| -> i64 #[native] select x { `A(i64) as `A(h) => h, V as `A(n) | `B(n) if n > 5 => 0, `B(i64) as `B(h) => h * 10 };
+    [
+        f({t: 1, w: 2}), f({u: 1, v: 2}), g({t: 1, w: 2}), g({u: 1, v: 2}),
+        j(`A(1)), j(`B(2)), k(`A(1)), k(`A(9)), k(`B(2)), k(`B(9))
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 1, 10, 1, 0, 1, 9, 20, 0])
+);
+
 // A pattern that takes apart an `Any` part is a run-time test of the
 // types its arm decides there: no value of another type reaches the arm.
 run!(

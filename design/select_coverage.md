@@ -271,7 +271,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   an instance's scrutinee may be one member of a written test's type,
   one the test's structure rules out. A value read as the one composite
   member a structure admits is tested to be that member wherever the
-  arm's own test passes every value (`emit_member_cond`). A
+  arm's own test passes every value (`emit_member_cond`). A guarded arm
+  may be the last one such a kernel emits, the arms below it dead at
+  the instance: a value its guard refuses matches no arm, as in the
+  node-walk. A
   slice inside a
   tuple, struct, variant or or-pattern takes those members from each
   reaching member's part at its position, so a name over the element of
