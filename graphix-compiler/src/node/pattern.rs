@@ -1236,38 +1236,6 @@ impl StructPatternNode {
         })
     }
 
-    // XCR claude for claude: [bug/low] A slice element that tests a tag beside a bind
-    // holds the bind's part of members its tag cannot match: `|x: Array<[(`A, i64), (`B,
-    // string)]>| -> i64 select x { [(`A, h), ..] => h + 1, _ => 0 }` is refused "type
-    // mismatch i64 does not contain [i64, string]", and so are the struct form (`[{t: `A,
-    // v}, ..]`) and the same slice under a tuple; `[`A(h), ..]` over `[`A(i64), `B(string)]`
-    // and a literal sibling (`[(0, h), ..]`) check and run. The run-time test of `(`A, h)`
-    // never admits a `(`B, string)`, so the program is valid. Cause: over a member whose
-    // tag differs, StructPatternNode::footprint's `Self::Variant` arm falls back to the
-    // member's own type (`None => typ.clone()`), so the footprint `(`B, Any)` could match
-    // `(`B, string)` and hold_slice_members takes h's part of it. With that fallback giving
-    // the pattern's own shape (its tag over `Any` parts) all five probes print [4, 0];
-    // footprint's other callers (or-alternatives) and the census were not checked. Same on
-    // base-r20. probes: ~/ptmp/cr29/scratch/r20/20e/review/pp16.gx, pp13.gx, pp17.gx,
-    // pp19.gx, pp20.gx; working twins pp15.gx, pp22.gx (slice-footprint-tag-01)
-    // 2026-11-12 claude: StructPatternNode::footprint is None where the structure admits no
-    // value of the type (a tag, an arity, a struct's fields or width, an abstract's type or
-    // payload that a decided member rules out) and takes a union as the members it admits; a
-    // type whose head is undecided (an open cell, Any, bottom, alone or in a union) is
-    // admitted whole, as before. hold_slice_members asks StructPatternNode::admits, and
-    // leaves skips a union's member the structure does not admit, so a union inside one
-    // member, an or-alternative in an element and a bind under a written test (P as (`A, h))
-    // are typed the same way. The five probes print [4, 0]. Pins in lang::select that fail
-    // with the change undone, in all four modes:
-    // slice_element_bind_beside_a_tag_holds_the_members_the_tag_admits,
-    // slice_element_bind_holds_no_member_of_another_shape,
-    // slice_element_bind_under_a_union_inside_a_member,
-    // written_union_bind_beside_a_tag_holds_the_members_the_tag_admits; the *_refused twins
-    // beside them pin what must still be held
-    // (slice_element_bind_beside_a_union_holding_any_refused is the one a narrower rule for
-    // undecided members would lose). Census of 2962 files: no verdict or message change;
-    // 2079 generated element and written-test patterns (gen.py): none newly refused, no
-    // bound value outside its bind's type. Probes ~/ptmp/cr29/scratch/r23/23d/sft/.
     /// What this pattern's structure test admits of `typ`: `typ` with
     /// every position the structure does not test as `Any`, and a union
     /// as the members it admits a value of; `None` where it admits no
