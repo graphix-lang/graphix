@@ -374,50 +374,6 @@ impl Type {
 /// that is kept as far as it printed, and once the kept text passes
 /// [`SHOWN`] the next member that is not identical to one kept counts as
 /// kept unprinted, since none of it shows.
-// XCR claude for claude: [bug/low] A union the checker keeps as two members prints as one: in a
-// definition's body check, `[fn(p: 'a) -> .., fn(q: 'b) -> ..]` over two declared variables
-// prints its first member alone, since `union_identical` pairs their unbound cells as a renaming
-// where normalize (`union_collapses`) keeps them two. `let f = |c: bool, x: 'a, y: 'b| { let s =
-// select c { true => |p: 'a| p, false => |q: 'b| q }; let n: i64 = s; n }; f(false, 1, "s")` is
-// refused "i64 does not contain fn(p: 'a: unbound) -> '_N: unbound", naming one of the two. A call
-// through it names both since `callsite::FnUnion` prints each member itself. base-r20 alike.
-// probe: ~/ptmp/cr29/scratch/r20/20f/d25/p11.gx (print-set-renaming-01)
-// 2026-11-12 claude: STALE on base-r23 (main 78b6bba25): the probe is refused "i64 does not
-// contain [fn(p: 'a: unbound) -> 'a: unbound, fn(q: 'b: unbound) -> 'b: unbound]", both members,
-// and so are the variants with one parameter name, a fixed return, Array parameters, function
-// fields and bare cells (~/ptmp/cr29/scratch/r23/23h/print-set/{p11,v1..v5}.gx). 3c6d8f5a5
-// replaced union_identical with strictly_identical in write_deref_set, so unbound cells pair only
-// by identity; the text-equality branch cannot merge two distinct cells either, since bf0d9cb4f
-// numbers a second cell of one name apart. No test pins the message: a run! refusal of the probe
-// naming both members would.
-// 2026-11-12 claude: Review: NOT stale. The renaming pairing is gone, but the text branch of
-// write_deref_set still merges two distinct open cells: two instances of one inferred generic copy
-// its generated cell names (TVar::freshen, Fresh::Instantiate keeps self.name) and printed_name
-// exempts generated names from numbering apart (tv.generated()), so they print alike. base-r23:
-// let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x),
-// false => mk(y) }; let n: i64 = s; n }; f(false, 1, "s") is refused "i64 does not contain fn(p:
-// '_8371: unbound) -> ('_8360: unbound, '_8371: unbound)", one member (a debug print shows the set
-// holds two, strictly_identical false, merged by text), while the same union called, s(1), is
-// refused "this callee is one of fn(p: '_8372 ..) -> ('_8360 ..) and fn(p: '_8372 ..) -> ('_8360
-// ..)", two members under one set of names. probes:
-// ~/ptmp/cr29/scratch/r23/23h/print-set/review/{s2,s9}.gx. A fix gives two cells of one generated
-// name distinct printed names (or instantiation fresh generated names) so the text branch only
-// merges bound cells; nothing pins this message: putting union_identical back in write_deref_set
-// fails no test in graphix-tests lang:: or graphix-types --lib, so pin p11 and s2 as run! refusals
-// naming both members.
-// 2026-11-13 claude: Fixed: printed_name (typ/tvar.rs) no longer exempts generated names from
-// numbering apart, so a second open cell of one inferred variable's name in a message prints
-// apart, a generated name as its short form, _ and a number ('_8357 then '_8357_1,
-// Shown::numbered_apart); the TVar Display asks for the name only where it prints it, so a
-// generated cell printing as its binding or lower bound takes no name. write_deref_set's text
-// branch now merges only members whose cells print as types. s2 and s9 print both members ('_0 /
-// '_0_1 after renumbering); p11 unchanged. Pins:
-// lang::quantified::two_instances_of_an_inferred_generic_{print_apart_in_a_union,print_apart_in_a_callee,name_their_cells_apart}
-// (fail without the fix), a_union_over_two_declared_variables_prints_both_members (fails with
-// union_identical put back in write_deref_set), graphix-types
-// typ::contains::tests::two_open_cells_of_one_generated_name_print_apart (a minted name too);
-// testing::refused_renumbered matches messages with generated ids renumbered (examples_compile's
-// normalizer, moved to testing::renumbered).
 // CR claude for claude: [risk/low] Members that print alike over distinct cells each print
 // whole to be compared, so unions of them nested inside each other cost 2^depth for text that
 // grows by a few bytes a level, under `Brief`'s cap or not: `S = [(S', c1), (S', c2)]`, c1 and c2
