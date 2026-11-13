@@ -67,6 +67,10 @@ pub enum ContainsFlags {
     /// position that meets it, where a bind at an argument fixes it below
     /// what a later position needs.
     LowerInArgs,
+    /// The rigid cells are a fixed signature's variables, whose bounds its
+    /// callers read: an open cell merges into one only where its own
+    /// conjuncts admit it, since the rigid cell may take on none.
+    Sealed,
 }
 
 /// What a trial on copies takes from the walk it is made in
@@ -212,12 +216,13 @@ pub(super) struct ContainsHist {
 /// reached under, a probe's as [`probe_flags`] keeps them.
 type MemoKey = (NormKey, NormKey, BitFlags<ContainsFlags>);
 
-/// The flags a probe's verdict is kept under: a plain or a rigid probe
-/// asks the same in either polarity, any other reads its polarity
-/// ([`takes_lower`]).
+/// The flags a probe's verdict is kept under: a plain or a rigid probe,
+/// sealed or not, asks the same in either polarity, any other reads its
+/// polarity ([`takes_lower`]).
 fn probe_flags(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     let plain = flags & !ContainsFlags::Contra;
-    match plain.is_empty() || plain == ContainsFlags::RigidCheck {
+    let rigid = plain & !ContainsFlags::Sealed;
+    match plain.is_empty() || rigid == ContainsFlags::RigidCheck {
         true => plain,
         false => flags,
     }
@@ -1267,11 +1272,14 @@ fn nesting(t: &Type, depths: &mut AddrMap<usize>) -> usize {
 /// a rigid cell rigid wherever the decision will, so a member it admits
 /// does not fail on that cell.
 fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
-    let lower = flags
-        & (ContainsFlags::Lower | ContainsFlags::IntoMember | ContainsFlags::LowerInArgs);
+    let kept = flags
+        & (ContainsFlags::Lower
+            | ContainsFlags::IntoMember
+            | ContainsFlags::LowerInArgs
+            | ContainsFlags::Sealed);
     match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
-        true => lower | ContainsFlags::RigidCheck,
-        false => lower,
+        true => kept | ContainsFlags::RigidCheck,
+        false => kept,
     }
 }
 
@@ -1895,8 +1903,12 @@ impl Type {
         }
         // the bound holds whatever types the declaring side's variables take
         let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-        hold_rigid(self, &mut gates);
-        c.contains_with_flags(ContainsFlags::RigidCheck.into(), env, self)
+        hold_rigid_through_bounds(self, &mut LPooled::take(), &mut gates);
+        c.contains_with_flags(
+            ContainsFlags::RigidCheck | ContainsFlags::Sealed,
+            env,
+            self,
+        )
     }
 }
 
@@ -1906,6 +1918,32 @@ pub(super) fn hold_rigid(t: &Type, gates: &mut Vec<RigidGate>) {
         gates.push(tv.open_rigid());
         false
     });
+}
+
+/// [`hold_rigid`], and every open cell the conjuncts of a held cell reach,
+/// to any depth: a declaring side's variables are each its callers' to
+/// pick, one named only in a bound too. `held` is the cells held so far.
+pub(super) fn hold_rigid_through_bounds(
+    t: &Type,
+    held: &mut AddrSet,
+    gates: &mut Vec<RigidGate>,
+) {
+    let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+    let reach = |t: &Type, todo: &mut Vec<TVar>| {
+        find_open_cell(t, true, &mut |tv| {
+            todo.push(tv.clone());
+            false
+        });
+    };
+    reach(t, &mut todo);
+    while let Some(tv) = todo.pop() {
+        if held.insert(tv.cell_addr()) {
+            for c in tv.cell_constraints().iter() {
+                reach(c, &mut todo)
+            }
+            gates.push(tv.open_rigid());
+        }
+    }
 }
 
 /// A trial: `f` over copies of `ts` that share one cell map, each rigid
@@ -4207,6 +4245,16 @@ impl Type {
                 {
                     return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
                 }
+                if flags.contains(ContainsFlags::Sealed) {
+                    let held = match (t0.is_rigid(), t1.is_rigid()) {
+                        (false, true) => conjuncts_admit(t0, flags, env, hist, tt1)?,
+                        (true, false) => conjuncts_admit(t1, flags, env, hist, tt0)?,
+                        _ => true,
+                    };
+                    if !held {
+                        return Ok(false);
+                    }
+                }
                 // an open cell below is bounded by what bounds `t0`, as a
                 // merge would have it; under `Lower` a declared one is merged
                 if lower(t1.is_rigid()) {
@@ -4647,7 +4695,7 @@ impl Type {
         if cands.len() < 2 {
             return Ok(false);
         }
-        let probe = BitFlags::from(ContainsFlags::RigidCheck);
+        let probe = (flags & ContainsFlags::Sealed) | ContainsFlags::RigidCheck;
         let mut distributing: Option<usize> = None;
         for j in 0..targs.len() {
             let mut full = true;

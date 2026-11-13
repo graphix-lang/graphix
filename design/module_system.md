@@ -367,6 +367,24 @@ select, a call's result, a read under a written annotation) is
 annotated, so the declaration may be wider than it, and keeps its
 value's types, which no call copies.
 
+The implementation's bounds are judged once the pairing is done
+(`FnType::sig_bounds`). A conjunct a signature bound matches pairs the
+variables inside it, as a position does; one of another shape pairs
+nothing (the implementation's bound may be the wider). Each conjunct is
+then read in
+the signature's terms, a paired cell as the signature's type at its
+place and any other open cell as a copy whose conjuncts are read so,
+with every signature variable rigid, one only its bounds name too, since
+each is the caller's to pick: it must follow from a bound of the
+signature variable its cell stands for (`Type::implies`), or hold the
+signature's type at its place. An open cell that meets a signature
+variable takes on nothing of it (`ContainsFlags::Sealed`): it stands for
+the variable only where its own conjuncts admit it, so ``val f: fn<'a:
+[i64, string], 'b: ['a, `X]>(x: 'b) -> 'b`` over ``'p: [i64, f64], 'q:
+['p, `X, `Y]`` is refused and over ``'p: [i64, string]`` holds (pins:
+`lang::interfaces`, `an_unpaired_variable_*`,
+`a_variable_inside_a_positions_bound_*`, `a_paired_variable_*`).
+
 What is written through a val lands on the implementation, the pair
 being one variable, and every use takes the implementation's generic
 variables at its own types; so a val something writes must fit its

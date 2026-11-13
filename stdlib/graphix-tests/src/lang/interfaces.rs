@@ -1642,6 +1642,150 @@ run!(
     "/test/m.gx" => "let f = 'b: [i64, f64], 'a: ['b, `X] |x: 'a| -> 'a x"
 ; FuseExpect::None);
 
+// An implementation variable a bound leaves unpaired stands for a
+// signature variable only where its own bound admits every type the
+// signature's admits: the signature's bounds are fixed, its callers read
+// them.
+run!(
+    an_unpaired_variable_in_a_wider_union_bound_must_be_declared,
+    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, f64], 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_in_a_wider_union_bound_holds,
+    is(Value::String("s".into())),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+);
+
+run!(
+    an_unpaired_variable_under_a_constructor_must_be_declared,
+    refused("the implementation requires 'b: [null, Array<'p>], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_under_a_constructor_holds,
+    prints("[\"s\"]"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
+);
+
+run!(
+    an_unpaired_variable_in_a_tuple_must_be_declared,
+    refused("the implementation requires 'b: [null, (i64, 'p)], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: (i64, 'a)>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [(i64, 'p), null] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_against_a_position_must_be_admitted,
+    refused("signature has concrete type Array<'a>, which the implementation constraint [null, Array<'p>] does not admit"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: Array<'a>) -> Array<'a>;",
+    "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_against_a_position_holds,
+    prints("[\"s\"]"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: Array<'a>) -> Array<'a>;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
+);
+
+// The variable inside a signature's bound is as much the caller's as one
+// at a position, whatever the implementation names its own.
+run!(
+    a_variable_inside_a_positions_bound_must_be_admitted,
+    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    "/test.gx" => "mod m; let result = m::f([[1]])",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Number |x: 'c| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_inside_a_positions_bound_of_a_bound_must_be_admitted,
+    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    "/test.gx" => "mod m; let result = m::f([[1.0]])",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: i64 |x: 'c| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_inside_a_positions_bound_of_a_bound_named_as_the_signature_must_be_admitted,
+    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    "/test.gx" => "mod m; let result = m::f([[1.0]])",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
+    "/test/m.gx" => "let f = 'b: Array<'q>, 'q: Array<'r>, 'r: i64 |x: 'b| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_inside_a_positions_bound_of_a_bound_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f([[1]])",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Number |x: 'c| -> i64 0"
+);
+
+run!(
+    a_variable_three_bounds_inside_a_position_must_be_admitted,
+    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    "/test.gx" => "mod m; let result = m::f([[[1.0]]])",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Array<'y>, 'y: Number>(x: Array<'b>) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Array<'s>, 's: i64 |x: 'c| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_three_bounds_inside_a_position_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f([[[1.0]]])",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Array<'y>, 'y: Number>(x: Array<'b>) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Array<'s>, 's: Number |x: 'c| -> i64 0"
+);
+
+run!(
+    a_variable_inside_a_bounds_variables_bound_must_be_declared,
+    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'z: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Array<'r>, 'r: [i64, f64], 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    a_variable_inside_a_bounds_variables_bound_holds,
+    prints("[\"s\"]"),
+    "/test.gx" => "mod m; let result = m::f([\"s\"])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'z: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Array<'r>, 'r: [i64, string], 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
+);
+
+// An implementation variable paired at one position is that signature
+// type wherever the implementation's bounds name it.
+run!(
+    a_paired_variable_in_a_bound_is_its_signature_type,
+    refused("signature has concrete type Array<'z>, which the implementation constraint Array<'r> does not admit"),
+    "/test.gx" => "mod m; let result = m::f([1], 1.5)",
+    "/test/m.gxi" => "val f: fn<'z: Number, 'w: Number>(x: Array<'z>, y: 'w) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'r>, 'r: Number |x: 'c, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_paired_variable_in_an_unpaired_variables_bound_is_its_signature_type,
+    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    "/test.gx" => "mod m; let result = m::f([[1]], 1.5)",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number, 'w: Number>(x: Array<'b>, y: 'w) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Number |x: 'c, y: 'r| -> i64 0"
+; FuseExpect::None);
+
 // A cell carrying several conjuncts of one shape has each paired with
 // the signature's bound, so every variable inside them is judged.
 run!(

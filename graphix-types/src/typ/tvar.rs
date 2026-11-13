@@ -2112,6 +2112,24 @@ impl TVar {
         f
     }
 
+    /// Give `copy`, an empty cell a probe alone reads, this cell's
+    /// conjuncts and lower bounds, each through `image`, and its facts. No
+    /// cell they reach is claimed at the copy's level.
+    pub(super) fn copy_bounds_into(&self, copy: &Self, image: impl Fn(&Type) -> Type) {
+        let (constraints, lower, facts) = {
+            let cell = self.cell();
+            let c = cell.read();
+            (c.constraints.clone(), c.lower.clone(), c.facts)
+        };
+        let constraints: SmallVec<[Type; 1]> = constraints.iter().map(&image).collect();
+        let lower: SmallVec<[Type; 1]> = lower.iter().map(&image).collect();
+        let cell = copy.cell();
+        let mut c = cell.write();
+        c.constraints.extend(constraints);
+        c.lower.extend(lower);
+        c.facts |= facts;
+    }
+
     /// Mark a generic cell a written type's own ([`Level::Written`]).
     #[doc(hidden)]
     pub fn own_written(&self) {

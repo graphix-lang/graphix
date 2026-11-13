@@ -2025,13 +2025,35 @@ impl FnType {
         let mut param_bounds = LPooled::take();
         self.for_each_part(&mut |t, _| param_bounds_of(env, t, &mut param_bounds));
         // A call through the signature is checked by the signature alone:
-        // every conjunct of every impl cell must admit the signature's
-        // concrete choice, or follow from the conjuncts of the signature
-        // variable it stands for.
-        // the signature's variables held rigid while `declared` judges, from
-        // its first call to the next judgment of another kind
-        let sig_rigid: RefCell<Option<LPooled<Vec<RigidGate>>>> = RefCell::new(None);
-        let release_sig = || drop(sig_rigid.borrow_mut().take());
+        // every conjunct of every impl cell, in the signature's terms, must
+        // admit the signature's concrete choice, or follow from the
+        // conjuncts of the signature variable it stands for. The
+        // signature's variables are every caller's to pick: they fit only
+        // through their own conjuncts.
+        let mut sig_rigid: LPooled<Vec<RigidGate>> = LPooled::take();
+        let mut held = LPooled::take();
+        self.for_each_part(&mut |t, _| {
+            super::contains::hold_rigid_through_bounds(t, &mut held, &mut sig_rigid)
+        });
+        // each implementation cell in the signature's terms: a paired one
+        // is the signature's type at its place, another open one a copy
+        // whose own conjuncts are in those terms
+        let mut image: LPooled<AHashMap<usize, Type>> =
+            tvar_map.paired_since(0).map(|(addr, t)| (addr, t.clone())).collect();
+        let copies: LPooled<Vec<(&TVar, TVar)>> = impl_cells
+            .iter()
+            .filter(|(_, tv)| {
+                !tv.is_bound() && !tv.is_rigid() && !image.contains_key(&tv.cell_addr())
+            })
+            .map(|(_, tv)| (tv, tv.fresh_copy()))
+            .collect();
+        for (tv, copy) in copies.iter() {
+            image.insert(tv.cell_addr(), Type::TVar(copy.clone()));
+        }
+        let in_sig = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
+        for (tv, copy) in copies.iter() {
+            tv.copy_bounds_into(copy, in_sig);
+        }
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
@@ -2042,16 +2064,7 @@ impl FnType {
             if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
                 sig_tcs.extend(bounds.iter().cloned());
             }
-            // the conjunct in the signature's terms, whose variables are
-            // each caller's to pick
-            let in_sig = impl_tc.swap_cells(&|a| tvar_map.sig_type(a).cloned());
-            sig_rigid.borrow_mut().get_or_insert_with(|| {
-                let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-                self.for_each_part(&mut |t, _| {
-                    super::contains::hold_rigid(t, &mut gates)
-                });
-                gates
-            });
+            let in_sig = in_sig(impl_tc);
             // CR claude for claude: [bug/medium] An implementation bound of another shape
             // than the signature's pairs nothing, and this asks `implies` of a conjunct
             // that still holds an open implementation cell, which a probe lets stand for
@@ -2088,6 +2101,30 @@ impl FnType {
             // implementation spelled its variable 'b ("requires 'z: Array<'r>"); a fix
             // here pins it under both spellings. On base-r23 and lane 23g alike. probes:
             // ~/ptmp/cr29/scratch/r23/23g/iface-same-name-01/review/{r1,r2,r3,r4}/main.gx
+            // 2026-11-12 claude: Partly fixed. The open pair: under the new
+            // ContainsFlags::Sealed (Type::implies and FnType::sig_bounds' Some(sig_type)
+            // arm) an open cell merges into a rigid one only where its own conjuncts
+            // admit it, since a fixed signature's variable takes on no conjunct; the
+            // signature is held rigid through its bounds to any depth
+            // (contains::hold_rigid_through_bounds, in both judgments), and every
+            // implementation conjunct is read in the signature's terms, a paired cell as
+            // its signature type and another open one as a copy whose conjuncts are read
+            // so (TVar::copy_bounds_into), in the Some arm too, which read the impl's own
+            // cells as free. f1 g1 g3 g6 and the review's r1-r4 are refused at the check,
+            // f2 and the valid twins hold; also refused now: a paired impl variable
+            // inside an impl bound (s1, s3) and a signature variable three bounds deep
+            // (t1, t2). Pins in lang::interfaces (an_unpaired_variable_*,
+            // a_variable_inside_a_positions_bound_*,
+            // a_variable_three_bounds_inside_a_position_*,
+            // a_variable_inside_a_bounds_variables_bound_*, a_paired_variable_*): each
+            // refusal pin fails with its part undone. Census 0/0 vs base-r23. Left: the
+            // second half (k4, a bound union that cannot pair member by member, still a
+            // hard refusal). Making that union pair nothing, as a bound of another shape
+            // does, is small (the bounds pass's SigPairs::settle dropping a group that
+            // cannot pair, which SigPairs::search leaves unpaired) but newly accepts an
+            // unsound program (u1) through sig-unpaired-apart-01's hole, which base
+            // reaches already by other shapes (u2): fix that first. probes:
+            // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/ (README)
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2098,6 +2135,25 @@ impl FnType {
                  does not declare"
             )
         };
+        // CR claude for claude: [bug/medium] An implementation variable no position or
+        // bound pairs is judged apart in each conjunct that names it, each judgment a
+        // probe that lets it stand for another signature variable, and a bound that
+        // holds no union of two cannot be both: `val f: fn<'a: [i64, string] +
+        // Singleton, 'c: [i64, string] + Singleton, 'b: ['a, `X], 'd: ['c, `X]>(x: 'b, y:
+        // 'd) -> i64;` over `let f = 'p: [i64, string] + Singleton, 'q: ['p, `X, `Y], 'r:
+        // ['p, `X, `Y] |x: 'q, y: 'r| -> i64 0` passes --check with `m::f("s", 1)`, and
+        // the run fails "an instance at fn(x: string, y: i64) -> i64 of a definition
+        // typed ..". Without `+ Singleton` it is valid ('p is [i64, string]) and runs,
+        // so committing the first judgment's choice would refuse a valid program: the
+        // copy of 'p would take each signature variable it meets as a lower bound, and
+        // its conjuncts judge their union. This hole holds iface-bound-shape-01's second
+        // half: a bound union that cannot pair member by member is a hard refusal
+        // (SigPairs::settle in the bounds pass), and pairing nothing there instead
+        // reaches this hole (`'b: [`A(i64), 'a], 'd: [`A(i64), 'c]` over `'q: [`A(Number),
+        // 'p], 'r: [`A(Number), 'p]`, the same Singletons, is refused on base only by
+        // that hard refusal). On base-r23 and lane 23g alike. probes:
+        // ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/{u1,u2,u3,k4}/main.gx (README)
+        // (sig-unpaired-apart-01)
         for (_, tv) in impl_cells.iter() {
             match tvar_map.sig_type(tv.cell_addr()) {
                 None => (),
@@ -2127,20 +2183,14 @@ impl FnType {
                             }
                         }
                     }
-                    release_sig();
                     for impl_tc in tv.cell_constraints() {
-                        let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-                        // the signature's variables are every caller's to
-                        // pick: they fit only through their own conjuncts
-                        super::contains::hold_rigid(sig_type, &mut gates);
-                        let ok = impl_tc
+                        let ok = in_sig(&impl_tc)
                             .contains_with_flags(
-                                ContainsFlags::RigidCheck.into(),
+                                ContainsFlags::RigidCheck | ContainsFlags::Sealed,
                                 env,
                                 sig_type,
                             )
                             .unwrap_or(false);
-                        drop(gates);
                         if !ok {
                             bail!(
                                 "signature has concrete type {sig_type}, which the \

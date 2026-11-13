@@ -115,7 +115,12 @@ holds, `contains::rigid_holds_by_lower`, and an open cell below a rigid
 survivor merges into it, since it can be no other type: `W<'c> ⊇ W(x)`
 under a rigid `'c` makes `x` `'c`; one whose merge is refused, the
 occurs check's case, stays below it, a lower bound); a copy, an image
-and a level claim carry the list. The witness
+and a level claim carry the list. A rigid cell so takes on the
+conjuncts of an open cell merged into it, which its definition's
+signature then carries; a judgment against a signature whose bounds are
+fixed (`Type::implies`, an interface's bounds: `ContainsFlags::Sealed`)
+merges an open cell into a rigid one only where the open cell's own
+conjuncts admit it. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
