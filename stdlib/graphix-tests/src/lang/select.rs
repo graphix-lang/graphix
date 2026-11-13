@@ -5320,6 +5320,48 @@ run!(partial_struct_parameter_cells_are_two_members, r#"{
     f(true, 1, 2)
 }"#, refused("told apart by types not decided at this select"); FuseExpect::None);
 
+// A member's cell no binding names (a read through a reference to an
+// unnamed expression, an empty array's element, a call's result) is
+// written numbered, one number a cell.
+run!(partial_struct_unnamed_read_cells_are_numbered_refused, r#"{
+    let b = false;
+    let w = "w";
+    let rx = &never();
+    let ry = &never();
+    let v = select b { true => {a: [1], c: *rx}, false => {a: ["s"], c: *ry} };
+    select v { {a: Array<string>, c: string} as s => s.c, {a, ..} => w }
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: '_1 } and { a: Array<string>, c: '_2 }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for '_1 and '_2 types no binding names, annotated where their values are built"); FuseExpect::None);
+
+run!(partial_struct_unnamed_read_cells_annotated_where_built, r#"{
+    let b = false;
+    let w = "w";
+    let rx: &i64 = &never();
+    let v = select b { true => {a: [1], c: *rx}, false => {a: ["s"], c: w} };
+    select v { {a: Array<string>, c: string} as s => s.c, {a, ..} => w }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "w"); FuseExpect::Jit);
+
+run!(partial_struct_unnamed_cell_beside_a_named_one_refused, r#"{
+    let b = true;
+    let x = never();
+    let rx = &never();
+    let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: *rx} };
+    select v { {a, ..} => array::len(a) }
+}"#, refused("matches two members, { a: Array<i64>, c: 'x } and { a: Array<string>, c: '_1 }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 3, column 9) and for '_1 a type no binding names, annotated where its value is built"); FuseExpect::None);
+
+run!(partial_struct_unnamed_cell_met_twice_is_one_number_refused, r#"{
+    let b = true;
+    let pair = |x: 'a| (x, x);
+    let v = select b { true => {a: [1], c: (pair([]), [])}, false => {a: ["s"], c: (pair([]), [])} };
+    select v { {a, ..} => array::len(a) }
+}"#, refused("matches two members, { a: Array<i64>, c: ((Array<'_1>, Array<'_1>), Array<'_2>) } and { a: Array<string>, c: ((Array<'_3>, Array<'_3>), Array<'_4>) }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for '_1, '_2, '_3 and '_4 types no binding names, annotated where their values are built"); FuseExpect::None);
+
+run!(partial_struct_unnamed_empty_cells_annotated_where_built, r#"{
+    let b = true;
+    let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] =
+        select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} };
+    select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => array::len(a) }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
 // An empty array's element nothing decides is a type of its own at the
 // select; naming every field matches both members.
 run!(partial_struct_empty_cells_a_definition_returns_are_two_members, r#"{

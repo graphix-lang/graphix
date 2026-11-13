@@ -2606,11 +2606,13 @@ type Cells<'a> = LPooled<AHashMap<usize, SmallVec<[&'a env::Bind; 2]>>>;
 /// The bindings a hint names for the cells a type it writes waits for,
 /// by the cell each stands for, those [`Holders::nameable`] admits. The
 /// cell of a reference's referent no binding names goes by the bindings
-/// holding the reference.
+/// holding the reference. `numbered` holds the cells no binding names
+/// that a hint wrote, each `'_n` by its place there.
 pub(crate) struct Holders<'a> {
     by_cell: Cells<'a>,
     by_referent: Cells<'a>,
     named: SmallVec<[(TVar, &'a env::Bind, Role); 2]>,
+    numbered: SmallVec<[usize; 2]>,
 }
 
 impl<'a> Holders<'a> {
@@ -2641,7 +2643,7 @@ impl<'a> Holders<'a> {
             }
         }
         by_referent.retain(|cell, _| unnamed.contains(cell));
-        Self { by_cell, by_referent, named: SmallVec::new() }
+        Self { by_cell, by_referent, named: SmallVec::new(), numbered: SmallVec::new() }
     }
 
     /// The cell the reference type `t` refers to.
@@ -2732,6 +2734,20 @@ impl<'a> Holders<'a> {
         }
     }
 
+    /// The cell `tv` stands for, which no binding names, as `'_1`, `'_2`
+    /// and so on in the order a hint meets them.
+    pub(crate) fn number(&mut self, tv: &TVar) -> Type {
+        let cell = tv.stands_for();
+        let i = match self.numbered.iter().position(|c| *c == cell) {
+            Some(i) => i,
+            None => {
+                self.numbered.push(cell);
+                self.numbered.len() - 1
+            }
+        };
+        Type::TVar(TVar::empty_named(format_compact!("_{}", i + 1).as_str().into()))
+    }
+
     /// The binding to annotate where the cell `tv` stands for is a part of
     /// a binding's type where the select `at` tests it, named: among the
     /// bindings [`Self::nameable`] admits whose type holds the cell outside
@@ -2779,14 +2795,16 @@ impl<'a> Holders<'a> {
     }
 
     /// What each name stands for: `, writing for 'x the type of `x`
-    /// (line 3, column 5)`, or `the type `r` refers to`.
+    /// (line 3, column 5)`, or `the type `r` refers to`, and last `for '_1
+    /// and '_2 types no binding names`.
     pub(crate) fn meanings(&self, at: &Origin) -> CompactString {
         let mut out = CompactString::new("");
+        let lead = |i: usize| match i {
+            0 => ", writing for ",
+            _ => " and for ",
+        };
         for (i, (name, b, role)) in self.named.iter().enumerate() {
-            let sep = match i {
-                0 => ", writing for ",
-                _ => " and for ",
-            };
+            let sep = lead(i);
             let (name, at) = (&name.name, BoundAt(b, Some(at)));
             out.push_str(&match role {
                 Role::Typ => {
@@ -2797,6 +2815,20 @@ impl<'a> Holders<'a> {
                 }
             });
         }
+        let n = self.numbered.len();
+        for i in 0..n {
+            let sep = match i {
+                0 => lead(self.named.len()),
+                i if i + 1 == n => " and ",
+                _ => ", ",
+            };
+            out.push_str(&format_compact!("{sep}'_{}", i + 1));
+        }
+        out.push_str(match n {
+            0 => "",
+            1 => " a type no binding names, annotated where its value is built",
+            _ => " types no binding names, annotated where their values are built",
+        });
         out
     }
 }

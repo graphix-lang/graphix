@@ -567,7 +567,10 @@ Caused by:
 ```
 
 Annotating `x` and `y` (`let x: i64 = never()`) decides them, and naming
-every field, `{a, c: _}`, matches both members as they are.
+every field, `{a, c: _}`, matches both members as they are. An undecided
+type no binding names (the element of a `[]` written in the struct) is
+shown as `'_1`, `'_2`: annotate the binding the struct is built into, or
+bind the value and annotate that.
 
 ### Variant Patterns
 

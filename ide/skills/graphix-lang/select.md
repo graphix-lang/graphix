@@ -85,7 +85,8 @@ select, and runtime forms. Each rule refuses and names the fix.
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
   `x` and `y` written later. Name every field (`{a, c: _}`), annotate the
-  member, or annotate `x` and `y`.
+  member, or annotate `x` and `y`. The refusal shows a type no binding
+  names (a `[]`'s element) as `'_1`: annotate where the struct is built.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   A name tests nothing, so an arm may bind such a part, and the bind
@@ -155,4 +156,6 @@ no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &
 ok let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, "s") }; select t { (r, n) => 0 }
 ok let b = true; let t = select b { true => (`A, |x: i64| x), false => (`B, |y: string| y) }; select t { (`A, f) => "[f(1)]", (`B, g) => g("s") }
 no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (r, n) => r(n) }
+no "'_1 and '_2 types no binding names" let b = true; let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a, ..} => 0 }
+ok let b = true; let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => 1 }
 ```

@@ -602,6 +602,18 @@ impl<R: Rt> Bind<R> {
         self.forwards(ctx) && written(ctx, &self.pattern)
     }
 
+    // CR claude for claude: [bug/low] A destructuring let's two-member refusal is the
+    // select's, its cells printed raw. `let {a, ..} = v` over `{a: [1], c: x}` and `{a:
+    // ["s"], c: y}`, `x` and `y` lets over `never()`, is refused "the pattern { a, .. }
+    // matches two members, { a: Array<i64>, c: '_8347: unbound } and { a: Array<string>,
+    // c: '_8349: unbound }, told apart by types not decided at this select; annotate
+    // those types, or the member you mean, e.g. `T as { a, .. }`, or name every field":
+    // there is no select, a let takes no `T as` test (its annotation is `let {a, ..}: T
+    // = v`), and the cells go unnamed where a select's refusal says 'x and 'y
+    // (select::undecided_members, which neither let site calls: this one and
+    // Bind::compile's completion pass UndecidedMembers through as it came). A fix: tell
+    // it through undecided_members in the let's own words. Same on base-r23. probes:
+    // ~/ptmp/cr29/scratch/r23/23d/umrc/l2.gx, l1.gx (let-undecided-members-raw-01)
     /// Complete a pattern that leaves struct fields out against the
     /// value's type.
     fn complete_partial(&mut self, ctx: &mut CompileCtx<R>, ptyp: Type) -> Result<()> {

@@ -3637,7 +3637,7 @@ struct Decisions {
     held: AHashMap<usize, Type>,
 }
 
-// CR claude for claude: [bug/low] A member's undecided cell that no binding names is
+// XCR claude for claude: [bug/low] A member's undecided cell that no binding names is
 // printed raw. With `let rx = &never(); let ry = &never()`, `{a, ..}` over `{a: [1],
 // c: *rx}` and `{a: ["s"], c: *ry}` is refused "the pattern { a, .. } matches two
 // members, { a: Array<i64>, c: '_8664: unbound } and { a: Array<string>, c: '_8666:
@@ -3649,15 +3649,44 @@ struct Decisions {
 // reference read there too, or write the members with no name for such a cell.
 // Same on base-r20. probe: ~/ptmp/cr29/scratch/r20/20e/ulb02/d1.gx
 // (undecided-member-raw-cell-01)
+// 2026-11-12 claude: undecided_members numbers a cell no binding names ('_1, '_2,
+// one number a cell, Holders::number) and says so ("types no binding names,
+// annotated where their values are built"), so a named cell beside one keeps its
+// name; the read through a reference to an unnamed expression has no cell of the
+// reference's to name (`&never()` is `&_`, the cell is the read's own). Pins that
+// fail without it:
+// lang::select::partial_struct_unnamed_read_cells_are_numbered_refused,
+// partial_struct_unnamed_cell_beside_a_named_one_refused,
+// partial_struct_unnamed_cell_met_twice_is_one_number_refused; the annotated twins
+// partial_struct_unnamed_read_cells_annotated_where_built and
+// partial_struct_unnamed_empty_cells_annotated_where_built pass. Left open:
+// (undecided-member-instance-name-01), (let-undecided-members-raw-01).
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
-/// the undecided cells are.
+/// the undecided cells are, a cell no binding names numbered.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
     let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
     let mut holders = Holders::new(env, None);
+    // CR claude for claude: [bug/low] Two cells a call picked for one variable of its
+    // callee are written under that variable's name, so two members read as holding
+    // one type. With `let f = |x: 'a| -> Array<'a> []`, `{a, ..}` over `{a: [1], c:
+    // f(never())}` and `{a: ["s"], c: f(never())}` is refused "matches two members, {
+    // a: Array<i64>, c: Array<'a> } and { a: Array<string>, c: Array<'a> }, told apart
+    // by types not decided at this select; annotate those types, ..": each `'a` is
+    // another call's cell, no binding names either, and the program wrote `'a` only in
+    // `f`. TVar::written_open answers by the name alone. A variable a let's annotation
+    // wrote (`let v: [{a: Array<i64>, c: 'q}, {a: Array<string>, c: 'r}] = ..`, refused
+    // with 'q and 'r) is not rigid either and keeps its name, so the rigid mark does
+    // not tell the two apart. A fix: number a cell an instantiation made, as
+    // Holders::number does one no binding names, which needs the cell to say a call
+    // made it. Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/umrc/p4.gx, q1.gx
+    // (undecided-member-instance-name-01)
     let mut written = |t: &Type| {
         t.written_form(&mut |tv| match tv.is_bound() {
             true => None,
-            false => holders.name_cell(tv).or_else(|| tv.written_open()),
+            false => holders
+                .name_cell(tv)
+                .or_else(|| tv.written_open())
+                .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
         })
     };
     let (Some(a), Some(b)) = (written(&u.members[0]), written(&u.members[1])) else {

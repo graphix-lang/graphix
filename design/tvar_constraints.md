@@ -1272,7 +1272,12 @@ members its left-out fields tell apart only by undecided cells are two
 members (`strictly_identical`), refused as any ambiguous completion is,
 unless what reaches the arm leaves one: annotate the cells, the member,
 or name every field; a program whose cells end up equal is refused
-until annotated.
+until annotated. The refusal writes the two members as a program can
+(`select::undecided_members`): an undecided cell as `'x` for the binding
+it waits for, and one no binding names (the element of a `[]`, a read
+through a reference to an unnamed expression) numbered, `'_1`, `'_2`,
+one number a cell (`Holders::number`), told as "types no binding names,
+annotated where their values are built".
 
 ### Unfolding a pair of definitions
 
