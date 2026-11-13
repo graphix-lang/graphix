@@ -153,6 +153,11 @@ another shape than the signature's (``'q: ['p, `X, `Y]`` under ``'b: ['a,
 `X]``) is judged by what its own variables admit: `'p` stands for `'a`
 only where `'p`'s bound holds every type `'a`'s does (`'p: Singleton`
 only where `'a` declares `Singleton` or a bound that implies it). A
+variable only bounds name is one type wherever they name it. Named at two
+places of the signature it is its own bound's type, which must hold both
+(`'p: [i64, string]`, `'p: Any`); with no bound that is one type (none, a
+predicate alone, a union under `Singleton`) it is refused: name it at a
+parameter, as the signature does. A
 trait method,
 an impl's or a default, is judged the same way:
 
@@ -163,6 +168,8 @@ no "requires 'b: ['p, `X, `Y], which the signature does not declare" trait T { v
 ok trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: [i64, string], 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
 no "requires 'b: ['p, `X, `Y], which the signature does not declare" trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: Singleton, 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
 ok trait T { val m: fn<'a: [i64, string] + Singleton, 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: Singleton, 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")
+no "'p is one type wherever a bound names it" trait T { val m: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 }; impl T for i64 { let m = 'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 }; T::m(1, (1, "s"), (1, 1))
+ok trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 }; impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 }; T::m(1, (1, "s"), (1, 1))
 ```
 
 A `val`'s type variable stands only inside a function type, where each

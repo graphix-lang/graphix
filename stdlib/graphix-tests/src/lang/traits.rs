@@ -5538,3 +5538,25 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// A method's variable only its bounds name is one type, as a val's
+// implementation's is.
+run!(
+    method_variable_in_two_bounds_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 };
+        impl T for i64 { let m = 'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 };
+        let result = T::m(1, (1, "s"), (1, 1))
+    "#
+; FuseExpect::None);
+
+run!(
+    method_variable_in_two_bounds_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 };
+        impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 };
+        let result = T::m(1, (1, "s"), (1, 1))
+    "#
+);

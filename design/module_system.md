@@ -492,6 +492,55 @@ Singleton``, never for ``'a: [i64, string]`` (pins: `lang::interfaces`,
 `an_unpaired_variable_*`, `a_variable_inside_a_positions_bound_*`,
 `a_paired_variable_*`).
 
+A variable only bounds name has no place of its own at an instance, which
+decides it where a bound naming it is held, by what stands there, or as
+what its own bounds settle it to (`FnType::held_at`,
+`TVar::settle_bounds_first`). The judgment decides it the same way: judged
+apart in each bound, it stood for two types that no one instance holds
+(``'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p)``
+under ``'b: (i64, 'a), 'd: (i64, 'c)``, each of `'a` and `'c` a
+`Singleton`). Each bound, read in the signature's terms, is walked beside
+the part of the signature its holder stands for (`fntyp::Meetings`), which
+gives every place the variable is named at and whether an instance holds
+exactly that type there. A position's type is exact. What a holder
+variable's bound holds is not, since a caller's pick of the holder may be
+narrower, and neither is what a union's bare member takes of the other
+side's members, which it takes as one type. A place the walk cannot follow
+(a function argument built another way, a name it does not expand) counts
+as two.
+
+- Named at one place, the variable is what stands there.
+- Named at more, it is that type where every place is exact and holds the
+  same type.
+- Otherwise it is the witness of its own bounds (`TVar::bounds_witness`:
+  the bound every other bound of it contains), read into every bound that
+  names it, each of which must then hold what its holder stands for: ``'p:
+  [i64, string]`` above is `[i64, string]`, and ``'p: Any`` is `Any`.
+- With no witness (no bound, a predicate alone, a union under `Singleton`
+  or `OneNumber`) the implementation is refused, "is one type wherever a
+  bound names it", naming two of the places: the variable is to be named
+  at a parameter, as the signature does, or given a bound that is one
+  type.
+
+A bound of the signature's own shape pairs its variable and is no place of
+its own, so an implementation that restates the signature holds. The
+pairing is a place, one under each holder variable whose bound paired it,
+where a bound of another shape names the variable too, or where two
+holders paired it and a position of the signature reaches the paired
+variable through no bound of theirs: a caller's pick elsewhere then
+decides that variable, and the holders' picks may differ beneath it. A
+variable its own bound does not admit where it is named stands nowhere,
+and stays a copy each bound judges apart, which refuses the bound.
+
+The order a call decides its variables in is not modelled, so some
+implementations every instance of which is held are refused: a variable
+with no witness at two places of one signature variable that the first of
+them decides (`sig-one-type-order-01`). Pins: `lang::interfaces`
+`an_unpaired_variable_*_is_one_type` with their twins
+(`*_is_its_own_bound`, `*_holds`), `a_variable_paired_by_*`,
+`an_unpaired_variable_in_an_argument_must_be_admitted`;
+`lang::traits::method_variable_in_two_bounds_*`.
+
 What is written through a val lands on the implementation, the pair
 being one variable, and every use takes the implementation's generic
 variables at its own types; so a val something writes must fit its

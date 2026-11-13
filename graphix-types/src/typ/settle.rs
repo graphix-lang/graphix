@@ -317,8 +317,19 @@ impl TVar {
             return;
         }
         self.weld_lower();
-        if let Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) = self.own_witness(env) {
+        if let Some(w) = self.bounds_witness(env) {
             self.bind_witness(w)
+        }
+    }
+
+    /// What [`Self::settle_bounds_first`] binds the cell to, its
+    /// [own witness]; `None` where it leaves the cell open.
+    ///
+    /// [own witness]: Self::own_witness
+    pub(super) fn bounds_witness(&self, env: &Env) -> Option<Type> {
+        match self.own_witness(env) {
+            Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) => Some(w),
+            _ => None,
         }
     }
 

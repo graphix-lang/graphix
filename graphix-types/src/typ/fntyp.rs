@@ -12,6 +12,7 @@ use crate::{
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
         normalize::NormCx,
+        setops::strictly_identical,
         tvar::{self, Fresh, Level, RigidGate},
     },
 };
@@ -19,7 +20,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_derive::Pack;
@@ -2026,6 +2027,7 @@ impl FnType {
         tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
+        let at_positions = tvar_map.paired_len();
         // every cell the walk may have mapped: an unannotated parameter's
         // is bound, and the cells its binding holds carry the conjuncts
         let impl_cells = {
@@ -2156,20 +2158,268 @@ impl FnType {
         // whose own conjuncts are in those terms
         let mut image: LPooled<AHashMap<usize, Type>> =
             tvar_map.paired_since(0).map(|(addr, t)| (addr, t.clone())).collect();
+        // a cell a bound paired has no place of its own either: the
+        // signature variable is its caller's pick of the bound's holder
+        let by_bound: LPooled<AHashMap<usize, Type>> = tvar_map
+            .paired_since(at_positions)
+            .map(|(addr, t)| (addr, t.clone()))
+            .collect();
         let copies: LPooled<Vec<(&TVar, TVar)>> = impl_cells
             .iter()
             .filter(|(_, tv)| {
-                !tv.is_bound() && !tv.is_rigid() && !image.contains_key(&tv.cell_addr())
+                let addr = tv.cell_addr();
+                !tv.is_bound()
+                    && !tv.is_rigid()
+                    && (!image.contains_key(&addr) || by_bound.contains_key(&addr))
             })
             .map(|(_, tv)| (tv, tv.fresh_copy()))
             .collect();
         for (tv, copy) in copies.iter() {
             image.insert(tv.cell_addr(), Type::TVar(copy.clone()));
         }
-        let in_sig = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
-        for (tv, copy) in copies.iter() {
-            tv.copy_bounds_into(copy, in_sig);
+        {
+            let placed = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
+            for (tv, copy) in copies.iter() {
+                tv.copy_bounds_into(copy, placed);
+            }
         }
+        // A cell only bounds name is one type at an instance: what stands
+        // where the bound naming it is held, or, named at two places, what
+        // its own bounds settle it to ([`TVar::bounds_witness`]). Each
+        // cell's part of the signature and whether an instance holds
+        // exactly that there, and the cells that are their witness.
+        let holds = |own: &Type, at: &Type| {
+            let sealed = ContainsFlags::RigidCheck | ContainsFlags::Sealed;
+            own.contains_with_flags(sealed, env, at).unwrap_or(false)
+        };
+        let slot: LPooled<AHashMap<usize, usize>> = copies
+            .iter()
+            .enumerate()
+            .flat_map(|(i, (tv, copy))| [(tv.cell_addr(), i), (copy.cell_addr(), i)])
+            .collect();
+        let paired = |i: usize| {
+            by_bound.get(&copies[i].0.cell_addr()).map(|at| (at.clone(), false))
+        };
+        // a caller's pick of something other than `holders` decides the
+        // signature's `sig_tv`: a position reaches it through no bound of
+        // theirs
+        let pinned = |sig_tv: &TVar, holders: &[usize]| {
+            let open = |t: &Type, todo: &mut Vec<TVar>| {
+                super::contains::find_open_cell(t, true, &mut |tv| {
+                    todo.push(tv.clone());
+                    false
+                });
+            };
+            let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+            let mut seen: LPooled<AddrSet> = LPooled::take();
+            self.for_each_type(&mut |t| open(t, &mut todo));
+            while let Some(tv) = todo.pop() {
+                if tv.same_cell(sig_tv) {
+                    return true;
+                }
+                if seen.insert(tv.cell_addr()) && !holders.contains(&tv.cell_addr()) {
+                    tv.cell_constraints().iter().for_each(|c| open(c, &mut todo))
+                }
+            }
+            false
+        };
+        let mut stands: LPooled<Vec<Option<(Type, bool)>>> =
+            (0..copies.len()).map(paired).collect();
+        let mut settled: LPooled<Vec<bool>> = copies.iter().map(|_| false).collect();
+        // a cell stands where the cells whose bounds name it do, so each
+        // round places the cells one bound further in
+        for _ in 0..2 * copies.len() {
+            let placed = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
+            let mut places: LPooled<Vec<SmallVec<[(Type, bool); 2]>>> =
+                copies.iter().map(|_| SmallVec::new()).collect();
+            // the bound being walked paired its cells: it is the
+            // signature's own, and no place of theirs but the pairing,
+            // which stands under each variable holding such a bound
+            let as_signature = Cell::new(false);
+            let mut holders: LPooled<Vec<SmallVec<[usize; 2]>>> =
+                copies.iter().map(|_| SmallVec::new()).collect();
+            let mut meet = |tv: &TVar, at: &Type, exact: bool| {
+                if let Some(i) = slot.get(&tv.cell_addr())
+                    && !(as_signature.get() && paired(*i).is_some())
+                    && !matches!(at, Type::TVar(at) if at.same_cell(tv))
+                {
+                    places[*i].push((at.clone(), exact))
+                }
+            };
+            for (_, tv) in impl_cells.iter() {
+                let addr = tv.cell_addr();
+                let (at, exact) = match (slot.get(&addr), tvar_map.sig_type(addr)) {
+                    (Some(i), _) if let Some((at, exact)) = &stands[*i] => (at, *exact),
+                    (None, Some(at)) => (at, true),
+                    _ => continue,
+                };
+                for (j, impl_tc) in tv.cell_constraints().iter().enumerate() {
+                    as_signature.set(met.contains(&(addr, j)));
+                    if as_signature.get()
+                        && let Type::TVar(holder) = at
+                    {
+                        super::contains::find_open_cell(impl_tc, true, &mut |tv| {
+                            if let Some(i) = slot.get(&tv.cell_addr())
+                                && paired(*i).is_some()
+                                && !holders[*i].contains(&holder.cell_addr())
+                            {
+                                holders[*i].push(holder.cell_addr())
+                            }
+                            false
+                        });
+                    }
+                    let own = placed(impl_tc);
+                    let mut meetings = Meetings {
+                        env,
+                        holds: &holds,
+                        met: &mut meet,
+                        exact,
+                        expansions: 8,
+                    };
+                    match at {
+                        Type::TVar(sig_tv) => {
+                            let mut sig_tcs = sig_tv.cell_constraints();
+                            if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
+                                sig_tcs.extend(bounds.iter().cloned());
+                            }
+                            for s in sig_tcs.iter() {
+                                if s.implies(env, &own)? {
+                                    meetings.exact = false;
+                                    meetings.go(&own, s);
+                                    break;
+                                }
+                            }
+                        }
+                        at if holds(&own, at) => meetings.go(&own, at),
+                        _ => (),
+                    }
+                }
+            }
+            let mut now: LPooled<Vec<Option<(Type, bool)>>> = LPooled::take();
+            let mut witnessed: LPooled<Vec<(usize, Type)>> = LPooled::take();
+            for (i, (tv, _)) in copies.iter().enumerate() {
+                if settled[i] {
+                    now.push(stands[i].clone());
+                    continue;
+                }
+                // one place: the bound that paired it, under holders whose
+                // picks alone decide the variable it is paired with or
+                // under one; one place a walk found; or the same type held
+                // exactly at each
+                let one = |at: &Type| {
+                    places[i].iter().all(|(m, exact)| *exact && strictly_identical(at, m))
+                };
+                let alone = |pair: &Type| match pair {
+                    _ if holders[i].len() < 2 => true,
+                    Type::TVar(sig_tv) => !pinned(sig_tv, &holders[i]),
+                    _ => false,
+                };
+                let pair = by_bound.get(&tv.cell_addr());
+                now.push(match (pair, &places[i][..]) {
+                    (None, []) => None,
+                    (Some(pair), []) if alone(pair) => Some((pair.clone(), false)),
+                    (None, [(at, exact)]) => Some((at.clone(), *exact)),
+                    (None, [(at, _), ..]) if one(at) => Some((at.clone(), true)),
+                    (Some(first), rest) | (None, [(first, _), rest @ ..]) => {
+                        match tv.bounds_witness(env) {
+                            Some(w) => {
+                                let w = placed(&w);
+                                witnessed.push((i, w.clone()));
+                                Some((w, true))
+                            }
+                            // CR claude for claude: [bug/low] The refusal below takes some
+                            // implementations every instance of which is held: a variable with
+                            // no witness named at two places of ONE signature variable, where the
+                            // first of those places (in parameter order) is the first position of
+                            // the signature that reaches the variable, so a call decides it there
+                            // and every later place holds a part of it. `val f: fn<'a: [i64,
+                            // string], 'b: (i64, 'a), 'd: (i64, 'a)>(x: 'b, y: 'd) -> i64;` over
+                            // `let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y:
+                            // 'r| -> i64 0` (o3), `val f: fn<'a: [i64, string] + Singleton, 'd:
+                            // Array<'a>>(x: Array<'a>, y: 'd) -> i64;` over `'p: NoError, 'q:
+                            // Array<'p>, 'r: Array<'p>` (o2) and `'b: (i64, 'a), 'd: fn(x: 'a, y:
+                            // Number) -> i64` over `'q: (Number, 'p), 'r: fn(x: 'p, y: i64) ->
+                            // i64` (o1) passed --check and ran on base-r24, and are refused "is
+                            // one type wherever a bound names it" since sig-unpaired-apart-01's
+                            // fix, which cannot tell them from their twins that fail at the
+                            // instance: the same bounds with `z: 'a` as a first parameter and
+                            // `m::f(u, (1, 1), (1, "s"))`, `u: [i64, string]`, where the holders'
+                            // picks differ beneath a variable an earlier argument decided. A fix
+                            // models that order: the places carry the position they are reached
+                            // from, and two places of one signature variable hold where the
+                            // earliest of them is the first position that reaches the variable
+                            // (FnType::sig_bounds's `pinned` asks the like of a pairing's
+                            // holders). Each has a rewrite today: the variable named at a
+                            // parameter, as the signature does, or a bound of one type (`'p: [i64,
+                            // string] + NoError`). In 2500 generated interfaces
+                            // (~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/gen.py, seeds 1 2
+                            // 3 5 7) this takes about 1 in 50 that base-r24 ran at every pick.
+                            // probes: ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/{o1,o2,o3}/main.gx
+                            // (sig-one-type-order-01)
+                            None => {
+                                let mut other = rest.iter().map(|(m, _)| m).rev();
+                                let other = other.find(|m| !strictly_identical(first, m));
+                                bail!(
+                                    "the implementation's {tv} is one type wherever a \
+                                     bound names it: the signature holds it at more than \
+                                     one place ({first}, {}), and no bound of its own says \
+                                     which type it is; name it at a parameter, as the \
+                                     signature does, or give it a bound that is one type",
+                                    other.unwrap_or(first)
+                                )
+                            }
+                        }
+                    }
+                });
+            }
+            let same = |a: &Option<(Type, bool)>, b: &Option<(Type, bool)>| match (a, b) {
+                (Some((a, x)), Some((b, y))) => x == y && strictly_identical(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            };
+            let done = now.iter().zip(stands.iter()).all(|(a, b)| same(a, b));
+            stands = now;
+            for (i, w) in witnessed.drain(..) {
+                settled[i] = true;
+                image.insert(copies[i].0.cell_addr(), w);
+            }
+            if done {
+                break;
+            }
+        }
+        // a cell that stands nowhere stays its copy, which each bound
+        // naming it judges apart
+        for ((tv, copy), at) in copies.iter().zip(stands.iter()) {
+            if let Some((at, _)) = at {
+                image.insert(tv.cell_addr(), at.clone());
+                image.insert(copy.cell_addr(), at.clone());
+            }
+        }
+        for _ in 0..copies.len() {
+            let stood = copies.iter().zip(stands.iter()).filter(|(_, at)| at.is_some());
+            for ((tv, copy), _) in stood {
+                let at =
+                    image[&tv.cell_addr()].swap_cells(&|addr| image.get(&addr).cloned());
+                image.insert(tv.cell_addr(), at.clone());
+                image.insert(copy.cell_addr(), at);
+            }
+        }
+        let in_sig = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
+        let stood = |tv: &TVar| match slot.get(&tv.cell_addr()) {
+            Some(i) if stands[*i].is_none() => None,
+            _ => image.get(&tv.cell_addr()),
+        };
+        // the cell of `t` named at two places
+        let one_type = |t: &Type| {
+            let twice =
+                |tv: &TVar| slot.get(&tv.cell_addr()).is_some_and(|i| settled[*i]);
+            match super::contains::find_open_cell(t, true, &mut |tv| twice(tv)) {
+                None => CompactString::default(),
+                Some(tv) => format_compact!(
+                    ": {tv} is one type wherever a bound names it, {}",
+                    stood(&tv).unwrap_or(&Type::Bottom)
+                ),
+            }
+        };
         // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
         // or a bound of the typedef parameter it fills, implies it
         let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
@@ -2303,6 +2553,22 @@ impl FnType {
             // `` beside the wider member (x12), a function member and a function bound
             // called narrower (y4n, z3). probes:
             // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/ (README)
+            // 2026-11-13 claude: Round 24 (lane 24e, fixer of sig-unpaired-apart-01):
+            // that hole is closed at the judgment (FnType::sig_bounds gives a variable
+            // only bounds name one type), so the held-back k4-drop.patch no longer
+            // reaches it. With the patch applied over that fix (not committed): u1, y6
+            // and z1 are refused at the check; k4 k5 u1n w1 x6 x7b x11 x12 y2n z3 check
+            // and run; k6 k7 w2 w4 w5 x1 x7 x13 y1 y2 y4 y5 z1b z2 are refused as before.
+            // Two of its valid shapes are refused by the new rule and not by the patch:
+            // w3 (`'p: [i64, string] + Singleton` under two holders of one signature
+            // variable) and y4n (a function member naming `'p` at its argument and its
+            // result), both of the class written up as sig-one-type-order-01. So the
+            // patch's pins hold as written
+            // (a_variable_in_two_union_bounds_that_cannot_pair_holds is u1n), u1 and y6
+            // are its refusal pins by the message 'is one type wherever a bound names
+            // it', and it waits on nothing of sig-unpaired-apart-01. probes:
+            // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/ (README, the table under
+            // 'with k4-drop.patch')
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2310,10 +2576,11 @@ impl FnType {
             }
             bail!(
                 "the implementation requires {sig_tv}: {impl_tc}, which the signature \
-                 does not declare"
+                 does not declare{}",
+                one_type(impl_tc)
             )
         };
-        // CR claude for claude: [bug/medium] An implementation variable no position or
+        // XCR claude for claude: [bug/medium] An implementation variable no position or
         // bound pairs is judged apart in each conjunct that names it, each judgment a
         // probe that lets it stand for another signature variable, and a bound that
         // holds no union of two cannot be both: `val f: fn<'a: [i64, string] +
@@ -2353,8 +2620,37 @@ impl FnType {
         // as u3 is, are the pins that go with applying it once this is closed at the
         // judgment. probes:
         // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/{v1,v2,u1,u1n}/main.gx
+        // 2026-11-13 claude: Round 24 (lane 24e fixer): closed at the judgment, by another
+        // rule than the union this CR proposed, which accepts programs no instance holds
+        // (`'p: NoError` over two parts: the instance unifies the variable at the first
+        // place it is named). FnType::sig_bounds now gives each variable only bounds name
+        // one type, as an instance does: a walk of each bound beside the part of the
+        // signature its holder stands for (fntyp::Meetings) finds every place it is named
+        // at; one place, or the same type held exactly at each, is that type; at more it
+        // is the witness of its own bounds (TVar::bounds_witness, what
+        // TVar::settle_bounds_first binds it to), which every bound naming it must then
+        // hold, and with no witness the implementation is refused, 'is one type wherever a
+        // bound names it'. A variable a bound paired is counted too where another bound
+        // names it, or two holders paired it under a signature variable a position reaches
+        // apart from them. u2 v1 p1 p2 and the unpaired z5 z7 z10 z11 of
+        // iface-predicate-member-01 are refused at the check; u3 v2 and the twins hold and
+        // run. Also closed, all on base-r24: a variable in a bound and a function argument
+        // (c1), a variable its bound's shape paired and another bound names (bp1, fr1),
+        // one signature variable under two holders an earlier argument decided (s13). 14
+        // refusal pins in lang::interfaces (an_unpaired_variable_*_is_one_type,
+        // an_unpaired_variables_own_bound_must_hold_each_place,
+        // a_variable_paired_by_*_is_one_type) and
+        // lang::traits::method_variable_in_two_bounds_is_one_type fail in all 4 modes with
+        // fntyp.rs undone (56 runs), the other 18 pins hold both ways. Census 0 verdict /
+        // 0 message of 2967 against base-r24; guicheck 39,549,479,668 before,
+        // 39,531,259,789 after. A differential of 2500 generated interfaces (gen.py, seeds
+        // 1 2 3 5 7): of the 403 this build accepts none fails at an instance at any pick
+        // (126 of the 670 base-r24 accepts fail at the generated call alone); it newly
+        // refuses about 1 in 50 that base-r24 ran at every pick, written up as
+        // sig-one-type-order-01. probes, generator and scripts:
+        // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/ (README)
         for (_, tv) in impl_cells.iter() {
-            match tvar_map.sig_type(tv.cell_addr()) {
+            match stood(tv) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
                     for impl_tc in tv.cell_constraints() {
@@ -2397,6 +2693,16 @@ impl FnType {
                     // iface-bound-shape-01 reaches it by a union of the bound's length (z1 there).
                     // probes:
                     // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/{z7,z7n,z7m,z10,z11,z1}/main.gx
+                    // 2026-11-13 claude: Round 24 (lane 24e, fixer of sig-unpaired-apart-01): the unpaired
+                    // form in the note above is refused at the check since that fix: a bare member takes of
+                    // the other side's members only those its own bounds admit, each asked apart, so z5 z7
+                    // z10 z11 no longer hand `'p` the union whole (z7: "the implementation requires 'b: ['p,
+                    // `Y, `Z], which the signature does not declare"); z7n holds and runs, z7m is refused as
+                    // before. The paired form this CR opens with (p9: a signature variable a member of a
+                    // concrete type's union) is unchanged. A variable that fix settles to a union holding
+                    // signature variables (a bare member taking two members of a bound, `['a, `X]`) is judged
+                    // by this arm too, a predicate asked of the union as it stands. probes:
+                    // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/{z5,z7,z7n,z7m,z10,z11}/main.gx
 
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside
@@ -2429,7 +2735,8 @@ impl FnType {
                         if !ok {
                             bail!(
                                 "signature has concrete type {sig_type}, which the \
-                                 implementation constraint {impl_tc} does not admit"
+                                 implementation constraint {impl_tc} does not admit{}",
+                                one_type(&impl_tc)
                             )
                         }
                     }
@@ -3768,6 +4075,158 @@ fn param_bounds_of(env: &Env, t: &Type, out: &mut AddrMap<SmallVec<[Type; 1]>>) 
         Type::Fn(ft) => ft.for_each_part(&mut |t, _| param_bounds_of(env, t, out)),
         t => t.for_each_child(&mut |c| param_bounds_of(env, c, out)),
     })
+}
+
+/// The walk of an implementation's bound `own`, read in its signature's
+/// terms, beside the part of the signature `at` it holds: each open cell
+/// of `own` with what stands at its place.
+struct Meetings<'a> {
+    env: &'a Env,
+    /// whether a type holds another, the signature's variables rigid
+    holds: &'a dyn Fn(&Type, &Type) -> bool,
+    /// a cell, what stands at its place, and `exact`
+    met: &'a mut dyn FnMut(&TVar, &Type, bool),
+    /// an instance holds exactly `at` here: no caller picks a narrower
+    /// type, and no other member of a union takes part of it
+    exact: bool,
+    /// how many more names the walk expands
+    expansions: usize,
+}
+
+impl Meetings<'_> {
+    fn go(&mut self, own: &Type, at: &Type) {
+        crate::stack::ensure_sufficient(|| self.go_inner(own, at))
+    }
+
+    /// Each open cell of `own` not in `placed` stands somewhere in `at`,
+    /// at two places for all the walk knows.
+    fn unplaced(&mut self, own: &Type, at: &Type, placed: &AddrSet) {
+        super::contains::find_open_cell(own, true, &mut |tv| {
+            if !placed.contains(&tv.cell_addr()) {
+                (self.met)(tv, at, false);
+                (self.met)(tv, at, false)
+            }
+            false
+        });
+    }
+
+    fn inexact(&mut self, own: &Type, at: &Type) {
+        let exact = std::mem::replace(&mut self.exact, false);
+        self.go(own, at);
+        self.exact = exact
+    }
+
+    fn go_inner(&mut self, own: &Type, at: &Type) {
+        if let Type::TVar(tv) = at
+            && let Some(b) = tv.binding()
+        {
+            return self.go(own, &b);
+        }
+        let flexible =
+            |m: &Type| matches!(m, Type::TVar(tv) if !tv.is_bound() && !tv.is_rigid());
+        match (own, at) {
+            (Type::TVar(tv), _) => match tv.binding() {
+                Some(b) => self.go(&b, at),
+                None => (self.met)(tv, at, self.exact),
+            },
+            // a member that holds a part takes it, a bare cell what no
+            // member does, as one type; a union of primitives is a part
+            // for each
+            (Type::Set(ms), _) => {
+                let mut ats: SmallVec<[Type; 4]> = SmallVec::new();
+                let mut part = |a: &Type| match a {
+                    Type::Primitive(p) if p.len() > 1 => {
+                        ats.extend(p.iter().map(|b| Type::Primitive(b.into())))
+                    }
+                    a => ats.push(a.clone()),
+                };
+                match at {
+                    Type::Set(ms) => ms.iter().for_each(&mut part),
+                    at => part(at),
+                }
+                let mut rest: SmallVec<[&Type; 4]> = SmallVec::new();
+                for a in ats.iter() {
+                    // the one member that can hold all of `at` holds it
+                    let whole = ats.len() == 1
+                        && ms.iter().filter(|m| (self.holds)(m, a)).nth(1).is_none();
+                    match ms.iter().find(|m| !flexible(m) && (self.holds)(m, a)) {
+                        Some(m) if whole => self.go(m, a),
+                        Some(m) => self.inexact(m, a),
+                        None => rest.push(a),
+                    }
+                }
+                for m in ms.iter().filter(|m| flexible(m)) {
+                    let mut prims = BitFlags::empty();
+                    let mut held: SmallVec<[Type; 4]> = SmallVec::new();
+                    for a in rest.iter().filter(|a| (self.holds)(m, a)) {
+                        match a {
+                            Type::Primitive(p) => prims |= *p,
+                            a => held.push((*a).clone()),
+                        }
+                    }
+                    if !prims.is_empty() {
+                        held.push(Type::Primitive(prims))
+                    }
+                    match held.len() {
+                        0 => (),
+                        1 => self.inexact(m, &held[0]),
+                        _ => self.inexact(m, &Type::Set(Arc::from_iter(held))),
+                    }
+                }
+            }
+            // a signature variable is held through one of its bounds
+            (_, Type::TVar(tv)) => {
+                let bounds = tv.cell_constraints();
+                if let Some(c) = bounds.iter().find(|c| (self.holds)(own, c)) {
+                    self.inexact(own, c)
+                }
+            }
+            (_, Type::Set(ats)) => ats.iter().for_each(|a| self.go(own, a)),
+            // an argument's sides swap: a cell there stands where the two
+            // are built alike
+            (Type::Fn(f0), Type::Fn(f1)) => {
+                self.go(&f0.rtype, &f1.rtype);
+                self.go(&f0.throws, &f1.throws);
+                let args =
+                    f0.align(f1).0.into_iter().map(|(own, at)| (&own.typ, &at.typ));
+                for (own, at) in args.chain(f0.vargs.as_ref().zip(f1.vargs.as_ref())) {
+                    let mut placed: LPooled<AddrSet> = LPooled::take();
+                    own.for_each_place(self.env, at, &mut |_, tv, at| {
+                        placed.insert(tv.cell_addr());
+                        (self.met)(tv, at, self.exact)
+                    });
+                    self.unplaced(own, at, &placed)
+                }
+            }
+            (Type::Ref(r0), Type::Ref(r1))
+                if r0.same_definition(r1, self.env)
+                    && r0.params.len() == r1.params.len() =>
+            {
+                for (own, at) in r0.params.iter().zip(r1.params.iter()) {
+                    self.go(own, at)
+                }
+            }
+            (Type::Ref(_), _) | (_, Type::Ref(_)) => {
+                let named = |t: &Type| match t {
+                    Type::Ref(_) => t.lookup_ref_probe(self.env).map(|(_, t)| t),
+                    _ => Some(t.clone()),
+                };
+                match (named(own), named(at)) {
+                    (Some(own), Some(at)) if self.expansions > 0 => {
+                        self.expansions -= 1;
+                        self.go(&own, &at)
+                    }
+                    _ => self.unplaced(own, at, &AddrSet::default()),
+                }
+            }
+            (own, at) => {
+                any_part_pair(own, at, &mut |own, at| {
+                    self.go(own, at);
+                    false
+                });
+            }
+        }
+    }
 }
 
 /// Whether two members of a union are open cells, and not one cell.

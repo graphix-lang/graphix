@@ -1854,6 +1854,263 @@ run!(
     "/test/m.gx" => "let f = 'p: Singleton, 'q: [Array<'p>, null] |x: 'q| -> i64 0"
 );
 
+// An implementation variable only bounds name is one type at an instance:
+// what stands where the bound naming it is held, or, named at two places,
+// what its own bounds settle it to, which must then hold both. One whose
+// bounds settle nothing (none, a predicate alone, a union under
+// `Singleton`) is refused at two places, unless the signature holds the
+// same type exactly at both.
+run!(
+    an_unpaired_variable_in_two_bounds_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_in_two_bounds_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_in_two_union_bounds_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f(\"s\", 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: ['a, `X], 'd: ['c, `X]>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: ['p, `X, `Y], 'r: ['p, `X, `Y] |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_in_two_union_bounds_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f(\"s\", 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: ['a, `X], 'd: ['c, `X]>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: ['p, `X, `Y], 'r: ['p, `X, `Y] |x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_twice_in_one_bound_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((\"s\", 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: ('a, 'c)>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [('p, 'p), null] |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_twice_in_one_bound_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((\"s\", 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: ('a, 'c)>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [('p, 'p), null] |x: 'q| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_twice_against_a_position_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place (i64, string), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"))",
+    "/test/m.gxi" => "val f: fn(x: (i64, string)) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [('p, 'p), null] |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_twice_against_a_position_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"))",
+    "/test/m.gxi" => "val f: fn(x: (i64, string)) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [('p, 'p), null] |x: 'q| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_with_a_predicate_alone_in_two_bounds_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_with_a_predicate_and_a_type_in_two_bounds_is_the_type,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + NoError, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_with_no_bound_in_two_bounds_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_bounded_any_in_two_bounds_is_any,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: Any, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
+);
+
+// Two callers' picks of one signature variable's holders may differ: only a
+// position holds the variable's type exactly.
+run!(
+    an_unpaired_variable_at_one_variable_in_two_bounds_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (1, 1), (1, \"s\"))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: (i64, 'a), 'd: (i64, 'a)>(z: 'a, x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |z, x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_at_one_variable_at_two_positions_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (1, 1), (1, \"s\"))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(z: 'a, x: (i64, 'a), y: (i64, 'a)) -> i64;",
+    "/test/m.gx" => "let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |z, x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_in_a_bound_and_an_argument_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), |x: i64, y: Number| x + 1)",
+    "/test/m.gxi" => "val f: fn<'a: Any, 'c: Any, 'b: (i64, 'a), 'd: fn(x: 'c, y: Number) -> i64>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'q: (Number, 'p), 'r: fn(x: 'p, y: i64) -> i64 |x: 'q, y: 'r| -> i64 y(x.1, 0)"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_at_a_position_and_an_argument_holds,
+    is(Value::I64(3)),
+    "/test.gx" => "mod m; let result = m::f((1, 2), |x: i64, y: Number| x + 1)",
+    "/test/m.gxi" => "val f: fn<'a: Any>(x: (i64, 'a), y: fn(x: 'a, y: Number) -> i64) -> i64;",
+    "/test/m.gx" => "let f = 'q: (Number, 'p), 'r: fn(x: 'p, y: i64) -> i64 |x: 'q, y: 'r| -> i64 y(x.1, 0)"
+);
+
+run!(
+    an_unpaired_variable_named_once_in_an_argument_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f(|x: i64, y: Number| x)",
+    "/test/m.gxi" => "val f: fn<'c: [i64, string], 'd: fn(x: 'c, y: Number) -> i64>(y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'r: fn(x: 'p, y: i64) -> i64 |y: 'r| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_two_bounds_in_is_one_type,
+    refused("the implementation's 'r is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, [\"s\"]), (1, [1]))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, Array<'a>), 'd: (i64, Array<'c>)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'r: [i64, string] + Singleton, 's: Array<'r>, 't: Array<'r>, 'q: (Number, 's), 'u: (Number, 't) |x: 'q, y: 'u| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_two_bounds_in_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, [\"s\"]), (1, [1]))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, Array<'a>), 'd: (i64, Array<'c>)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'r: [i64, string], 's: Array<'r>, 't: Array<'r>, 'q: (Number, 's), 'u: (Number, 't) |x: 'q, y: 'u| -> i64 0"
+);
+
+run!(
+    an_unpaired_variable_inside_a_named_bound_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "type T<'x> = (Number, 'x); val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: T<'p>, 'r: T<'p> |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_variable_inside_a_named_bound_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
+    "/test/m.gxi" => "type T<'x> = (Number, 'x); val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: T<'p>, 'r: T<'p> |x: 'q, y: 'r| -> i64 0"
+);
+
+// The bound an unpaired variable settles to holds every place it is named
+// at, or the implementation is refused.
+run!(
+    an_unpaired_variables_own_bound_must_hold_each_place,
+    refused("the implementation requires 'd: fn(x: 'p, y: i64) -> i64, which the signature does not declare: 'p is one type wherever a bound names it, [i64, string]"),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), |x: i64, y: Number| x + 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: fn(x: 'c, y: Number) -> i64>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: fn(x: 'p, y: i64) -> i64 |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+// A bound of the signature's own shape pairs its variable, and is no
+// second place: an implementation that restates the signature holds. The
+// pairing is one place beside a bound of another shape that names the
+// variable, since a caller's pick of the bound's holder may be narrower.
+run!(
+    a_variable_paired_by_two_bounds_of_the_signatures_shape_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, 1), (1, 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'a)>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: (i64, 'p), 'r: (i64, 'p) |x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    a_variable_paired_by_a_bound_and_named_in_another_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is; name it at a parameter, as the signature does, or give it a bound that is one type"),
+    "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (\"s\", 1), [[1]])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ('a, i64)>(z: 'a, x: 'b, y: Array<Array<'a>>) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ('p, i64), 'r: [Array<[Array<'p>, null]>, null] |z, x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_paired_by_a_bound_and_named_in_another_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (\"s\", 1), [[1]])",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ('a, i64)>(z: 'a, x: 'b, y: Array<Array<'a>>) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: ('p, i64), 'r: [Array<[Array<'p>, null]>, null] |z, x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    a_variable_paired_by_a_bound_and_named_in_a_functions_result_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is; name it at a parameter, as the signature does, or give it a bound that is one type"),
+    "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (\"s\", 1), |x: i64| 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ('a, i64), 'd: fn(x: i64) -> 'a>(z: 'a, x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ('p, i64), 'r: fn(x: i64) -> ['p, null] |z, x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_paired_by_a_bound_and_named_in_a_functions_result_is_its_own_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (\"s\", 1), |x: i64| 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ('a, i64), 'd: fn(x: i64) -> 'a>(z: 'a, x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: ('p, i64), 'r: fn(x: i64) -> ['p, null] |z, x: 'q, y: 'r| -> i64 0"
+);
+
+// A variable its bound does not admit where an argument names it stands
+// nowhere, and the argument's bound is refused as it is of any other.
+run!(
+    an_unpaired_variable_in_an_argument_must_be_admitted,
+    refused("signature has concrete type fn(x: 'a, y: Number) -> i64, which the implementation constraint fn(x: 'p, y: i64) -> i64 does not admit"),
+    "/test.gx" => "mod m; let result = m::f(|x: i64, y: Number| 0)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: fn(x: 'a, y: Number) -> i64) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: fn(x: 'p, y: i64) -> i64 |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+// What a bare variable takes of a union's members is one type.
+run!(
+    an_unpaired_variable_taking_two_members_of_a_union_bound_holds,
+    is(Value::String("s".into())),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: NoError, 'q: ['p, `Y, `Z] |x: 'q| -> 'q x"
+);
+
+run!(
+    an_unpaired_number_variable_in_a_nullable_bound_holds,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn<'b: [i64, null]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: Number, 'q: ['p, null] |x: 'q| -> 'q x"
+);
+
 // A cell carrying several conjuncts of one shape has each paired with
 // the signature's bound, so every variable inside them is judged.
 run!(
