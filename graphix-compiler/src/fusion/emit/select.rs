@@ -1549,31 +1549,6 @@ fn emit_arm_cond<R: Rt>(
     Ok((tcond, scond))
 }
 
-// XCR claude for claude: [perf/low] A written test with an alias applied to its own
-// variable de-fuses where its written-out twin fuses. Over `type Opt<'b> = ['b, null]`,
-// `|v: [Array<i64>, string]| #[native] select v { Array<Opt<'b>> as [x, ..] => 1, _ =>
-// 0 }` is refused, "select type predicate Array<Opt<Any>> doesn't freeze concrete": the
-// arm's predicate reads its own variable as Any under a named type's argument
-// (Type::blind_named_args, Select::typecheck1) and freeze_node_typ takes no Any, where
-// `Array<['b, null]> as [x, ..]` fuses, its variable a cell bound to bottom that
-// freezes. Both run right in every mode; the alias spelling runs in the node-walk.
-// emit_member_cond asks the frozen predicate only for the member's layout, and tests
-// by graphix_value_is_a over the unfrozen one, so a predicate whose unfrozen parts are
-// all Any under a named type's argument could take its layout from the scrutinee's
-// member. The pin to flip: lang::select::written_test_alias_over_its_own_variable's
-// `mixed`, the one fused select of its twin that carries no #[native].
-// (written-alias-test-defuses-01)
-// 2026-11-12 claude: emit_member_cond: a written predicate with no composite frozen
-// form (its own variable read as Any under a named type, or a written Any) reads the
-// value as the one member of the scrutinee its type may pass (composite_member over the
-// predicate alone), where the predicate holds the whole member (holds_what_it_meets),
-// so every bind's own type is the member's part and its local kind agrees; the test
-// stays graphix_value_is_a over the unfrozen predicate. Pins:
-// lang::select::written_test_alias_over_its_own_variable (mixed now #[native]) and
-// written_test_alias_reads_the_member_it_passes fail in jit/jit_par with the change
-// undone; with the holds rule undone the latter's cut select fuses and the test process
-// aborts (a String bind read from a Value local). The written-out twin's own bind-kind
-// crash is written-test-bind-kind-01.
 /// An arm's written type test against `scrut`: `None` for an inferred
 /// predicate, or one every value of the scrutinee's type passes.
 fn emit_type_test<R: Rt>(
