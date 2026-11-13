@@ -1910,7 +1910,6 @@ impl FnType {
         tvar_map: &mut SigPairs,
         hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
-        let impl_tvs = sorted_tvars(impl_fn.sig_tvars().drain());
         // every cell the walk may have mapped: an unannotated parameter's
         // is bound, and the cells its binding holds carry the conjuncts
         let impl_cells = {
@@ -1948,9 +1947,7 @@ impl FnType {
         let mut paired_to: LPooled<AHashMap<usize, SmallVec<[usize; 1]>>> =
             LPooled::take();
         let mut indexed = 0;
-        // the impl cells the signature's was matched with, else the
-        // same-named variable: either form of a bound (`'c: C`, `c: C`)
-        // names its variable its own way
+        // the impl cells the signature's variable is paired with
         let mut matched = |tvar_map: &SigPairs, sig_tv: &TVar| {
             for (addr, t) in tvar_map.paired_since(indexed) {
                 if let Type::TVar(s) = t
@@ -1960,15 +1957,7 @@ impl FnType {
                 }
             }
             indexed = tvar_map.paired_len();
-            let mut matched: LPooled<Vec<&TVar>> =
-                match paired_to.get_mut(&sig_tv.cell_addr()) {
-                    None => LPooled::take(),
-                    Some(places) => {
-                        places.sort_unstable();
-                        places.iter().map(|i| &impl_cells[*i].1).collect()
-                    }
-                };
-            // CR claude for claude: [bug/low] This pairs a signature variable no cell is
+            // XCR claude for claude: [bug/low] This pairs a signature variable no cell is
             // paired with yet with the implementation's variable of its name, in the
             // first pass, before a later bound pairs it, so an implementation that is its
             // signature with the names moved round is refused: `val f: fn<'a: Array<'z>,
@@ -1982,12 +1971,29 @@ impl FnType {
             // modules, quantified, cast_trait} fails with this arm removed, so what it is
             // for has no pin: find that first. On base-r20 and lane 20d alike. probes:
             // ~/ptmp/cr29/scratch/r20/20d/ibo-rv/{n3,n4,n5}/main.gx (iface-same-name-01)
-            if matched.is_empty()
-                && let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
-            {
-                matched.push(&impl_tvs[i].1);
+            // 2026-11-12 claude: What the arm was for: nothing it could do right. It
+            // looked up only impl_fn.sig_tvars(), the variables at the implementation's
+            // positions (args, vargs, rtype, throws; no conjuncts), and the position walk
+            // pairs every open cell there with the signature's type at its place, so the
+            // same-named variable it took was always a cell already standing for another
+            // signature type (n3, n4). Traced: zero hits over the whole stdlib's
+            // interface and trait checks; census of both repos unchanged against base-r23
+            // and the lane's previous tip; graphix-tests lib 18986/0 with it off.
+            // Deleted, so a bound pairs through the pairing alone (design/traits.md
+            // already says so). Pins in lang::interfaces:
+            // a_chain_of_bounds_with_the_names_moved_round_holds,
+            // a_union_bound_with_the_names_moved_round_holds and
+            // a_chain_of_bounds_with_the_names_moved_round_must_be_declared fail with the
+            // arm back; a_union_bound_with_the_names_moved_round_must_be_declared holds
+            // either way. Trait methods with the names moved round passed before and
+            // still do.
+            match paired_to.get_mut(&sig_tv.cell_addr()) {
+                None => LPooled::<Vec<&TVar>>::take(),
+                Some(places) => {
+                    places.sort_unstable();
+                    places.iter().map(|i| &impl_cells[*i].1).collect()
+                }
             }
-            matched
         };
         let view = self.constraint_view();
         let bounds = || view.iter().enumerate().filter(|(_, (_, tc))| *tc != Type::Any);

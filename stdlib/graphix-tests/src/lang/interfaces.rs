@@ -1608,6 +1608,40 @@ run!(
     "/test/m.gx" => "let f = 'p: Array<'r>, 'q: Array<'p>, 'r: [i64, string, f64] |x: 'q| -> 'q x"
 );
 
+// A bound pairs the implementation's variables with the signature's
+// through the pairing alone: the names each side gives them say nothing.
+run!(
+    a_chain_of_bounds_with_the_names_moved_round_holds,
+    prints("[[i64:1]]"),
+    "/test.gx" => "mod m; let result = m::f([[1]])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'b: Array<'a>, 'z: i64>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'a: Array<'q>, 'q: Array<'r>, 'r: i64 |x: 'a| -> 'a x"
+);
+
+run!(
+    a_union_bound_with_the_names_moved_round_holds,
+    is(Value::String("P".into())),
+    "/test.gx" => "mod m; let result = m::f(`P)",
+    "/test/m.gxi" => "val f: fn<'a: [`P, `Q], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'b: [`P, `Q], 'a: ['b, `X] |x: 'a| -> 'a x"
+);
+
+run!(
+    a_chain_of_bounds_with_the_names_moved_round_must_be_declared,
+    refused("the implementation requires 'z: [i64, f64], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f([[\"s\"]])",
+    "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'a: Array<'q>, 'q: Array<'r>, 'r: [i64, f64] |x: 'a| -> 'a x"
+; FuseExpect::None);
+
+run!(
+    a_union_bound_with_the_names_moved_round_must_be_declared,
+    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'b: [i64, f64], 'a: ['b, `X] |x: 'a| -> 'a x"
+; FuseExpect::None);
+
 // A cell carrying several conjuncts of one shape has each paired with
 // the signature's bound, so every variable inside them is judged.
 run!(
