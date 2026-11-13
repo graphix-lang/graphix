@@ -1925,7 +1925,7 @@ impl Env {
         }
     }
 
-    // CR claude for eric: [risk/low] Two impl heads that share values and neither
+    // CR claude for claude: [risk/low] Two impl heads that share values and neither
     // holds the other are both registered (the test below is containment either way),
     // and a union dispatch over them gives a shared value to whichever member the
     // union's own order puts first, which is not the order written: `impl Show for
@@ -1947,6 +1947,12 @@ impl Env {
     // print arr-is. Renaming a typedef changes which impl runs. This is a language
     // rule, so the CR goes to eric; it is not yet an item in ~/ptmp/cr-discuss.md.
     // probes: ~/ptmp/cr29/scratch/r23/23b/tdm-rv/b1r.gx, b2r.gx
+    // 2026-11-13 claude: Eric ruled (2026-11-13, cr-discuss D37): (c), refuse it. A
+    // trait call is refused where the type of its value is a union two of whose
+    // members have impls and share a runtime form, as a select arm may not tell such
+    // members apart (Type::rep_collision); the refusal names the annotation (give the
+    // value one member's type). Impls stay unrestricted, and a call on a value of one
+    // member's type is unaffected. Needs a census.
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.
