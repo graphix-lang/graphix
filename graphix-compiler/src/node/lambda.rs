@@ -1345,40 +1345,6 @@ impl Typing {
         matches!(self, Typing::Substituted(..)) && dbgenv::graphix_no_subst()
     }
 
-    // XCR claude for claude: [bug/medium] A call that passes `never()` to a function
-    // whose formal holds three links of a chain of bare union bounds passes --check
-    // and its build refuses the instance: `let f = 'a0: ['a1, null], 'a1: ['a2, null],
-    // 'a2: ['a3, null], 'a3: Number |x: ('a0, 'a1, 'a2)| x; f(never())` runs to "an
-    // instance at fn(x: ([null, [null, Number]], [null, Number], [null, Number])) ->
-    // .. of a definition typed fn<'a0: [null, 'a1: ..". GRAPHIX_ELAB_AUDIT reports
-    // instance-signature at `x`; GRAPHIX_NO_SUBST=1 builds and runs it, so the check
-    // is right and InstanceTypes::new refuses a signature it should take. Two links
-    // build, and so do three with a decided argument (`f((1, 1, 1))`), with the
-    // argument annotated (`let v: (i64, i64, i64) = never(); f(v)`), with `|x: 'a0|`
-    // alone, and with the bounds written through a typedef (`type M<'x> = ['x,
-    // null]`, `'a0: M<'a1>`); other members (`['a1, string]`, `['a2, bool]`) are
-    // refused alike. The instance's `'a0` prints as the nested union the bounds
-    // settle it to, `[null, [null, Number]]`. base-r20 and the round 20 lane build
-    // alike. Found reviewing chainbounds-elab-quadratic-01. probes:
-    // ~/ptmp/cr29/scratch/r20/20g/rev/{m9x,c1,c2,c3,c4,c5,c6}.gx
-    // (inst-bare-union-never-01)
-    // 2026-11-12 claude: The CR's own probes (m9x, c1..c6) already build on base-r21,
-    // base-r22 and base-r23 (round 20's instance fixes; not traced to one commit).
-    // The family still split one step over, on base-r23 and the lane alike: with
-    // another member in a later link ('a3: ['a4, bool], x: ('a0, 'a2)) and with five
-    // links of different members (x: ('a0, .., 'a4)). Two causes
-    // in FnType::held_at, both fixed: a cell only bounds hold settled to a copy of the
-    // placed cell its bound names (TVar::witness copies generic cells, and the
-    // instance's copy is generic), so the placed cell's type never reached it, now
-    // TVar::settle_bounds_first keeps the conjunct's own cells; and the placing took
-    // cells whose bounds hold no open cell first and the rest in signature order, one
-    // level deep, now fntyp::place_in_order places each cell after the cells its
-    // bounds hold. Pins
-    // lang::types::instance_cell_only_bounds_hold_names_a_placed_cell (fails with the
-    // shared witness undone; it also holds the CR's m9x) and
-    // instance_cells_of_a_chain_of_bounds_are_placed_deepest_first (fails with the
-    // ordered placing undone). Probes and the generators:
-    // ~/ptmp/cr29/scratch/r23/23b/ibun/
     fn instance_types<R: Rt>(
         &self,
         ctx: &CompileCtx<R>,
