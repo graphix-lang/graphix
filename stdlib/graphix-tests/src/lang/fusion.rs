@@ -36,6 +36,67 @@ run!(bound_function_value_rebinds, r#"
 }
 "#, prints("[i64:20, i64:18, i64:20, i64:18, i64:20]"); FuseExpect::None);
 
+// A function bound again takes the kernels its first bind built, after
+// the instance that built them and its lambda are deleted.
+run!(bound_function_rebinds_over_a_deleted_builder, r#"
+{
+    let oa = |n: i64| -> i64 { let h = |x: i64| -> i64 x + n; h(n) };
+    let ob = |n: i64| -> i64 { let h = |x: i64| -> i64 x * n; h(n) };
+    let fs = [oa, ob];
+    let i = array::iter([0, 1, 0, 1, 0, 1]);
+    let f = fs[i]$;
+    array::group(f(i + 3), |n, _| n == 6)
+}
+"#, prints("[i64:6, i64:16, i64:6, i64:16, i64:6, i64:16]"); FuseExpect::None);
+
+// Each slot's definition of a lambda takes the kernels the first slot's
+// bind built, and its raise reaches the slot's own handler.
+run!(
+    bound_definitions_raise_to_their_slots_handler,
+    r#"
+{
+    let r = array::map(array::init(8, |i| i), |k| {
+        let res = -1;
+        let h = select k % 2 {
+            0 => |x: i64| -> i64 select x % 4 { 0 => error(`Bad(x))?, _ => x },
+            _ => |x: i64| -> i64 x * 10
+        };
+        let v = { catch(e) res <- select e.0.error { `Bad(b) => b + 100 }; h(k) };
+        res <- v;
+        res
+    });
+    filter(r, |a| array::len(array::filter(a, |x| x == -1)) == 0)
+}
+"#,
+    prints("[i64:100, i64:10, i64:2, i64:30, i64:104, i64:50, i64:6, i64:70]")
+);
+
+// ..and a handler in the lambda's own body is its definition's.
+run!(
+    bound_definitions_raise_to_their_own_handler,
+    r#"
+{
+    let r = array::map(array::init(8, |i| i), |k| {
+        let h = select k % 2 {
+            0 => |x: i64| -> i64 {
+                let got = -1;
+                let v = {
+                    catch(e) got <- select e.0.error { `Bad(b) => b + 100 };
+                    select x % 4 { 0 => error(`Bad(x))?, _ => x }
+                };
+                got <- v;
+                got
+            },
+            _ => |x: i64| -> i64 x * 10
+        };
+        h(k)
+    });
+    filter(r, |a| array::len(array::filter(a, |x| x == -1)) == 0)
+}
+"#,
+    prints("[i64:100, i64:10, i64:2, i64:30, i64:104, i64:50, i64:6, i64:70]")
+);
+
 run!(neg_value_shapes, r#"
 {
     let d = decimal:1.5;
@@ -111,9 +172,11 @@ struct Run {
     /// The (fused kernel runs, JIT wrapper entries) the runtime made
     /// from just before the build.
     invocations: (u64, u64),
-    /// The regions fusion tried, and the failures it recorded, from just
+    /// The regions fusion tried, the regions a slot or a bind took from
+    /// an earlier walk's kernels, and the failures it recorded, from just
     /// before the build to its first value.
     attempts: usize,
+    reused: usize,
     failures: usize,
     /// What fusion holds at the first value (its stats' `retained`).
     retained: usize,
@@ -165,9 +228,18 @@ async fn run_code(
     let invocations = ctx.rt.control().invocations();
     let after = ctx.fusion_stats().await?;
     let attempts = after.attempted - before.attempted;
+    let reused = after.reused - before.reused;
     let failures = after.failed.len() - before.failed.len();
     ctx.shutdown().await;
-    Ok(Run { value, regions, invocations, attempts, failures, retained: after.retained })
+    Ok(Run {
+        value,
+        regions,
+        invocations,
+        attempts,
+        reused,
+        failures,
+        retained: after.retained,
+    })
 }
 
 /// Load `code` as a file and return its first value and the runtime's
@@ -347,6 +419,89 @@ async fn bound_unfused_definitions_report_once() -> Result<()> {
     assert_eq!((&shallow.value, &deep.value), (&Value::I64(21), &Value::I64(20100)));
     assert!(shallow.failures > 0, "the unfused bodies record their failures");
     assert_eq!(shallow.failures, deep.failures);
+    Ok(())
+}
+
+/// A lambda in a body is a definition of its own in each instance of the
+/// body; a level's bind of it takes the kernels the first level's built.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_definitions_of_one_lambda_share_kernels() -> Result<()> {
+    let code = |depth: i64| {
+        format!(
+            "{{
+  let rec f = |n: i64| -> i64 select n {{
+    0 => 0,
+    _ => {{
+      let h = select n % 2 {{ 0 => |x: i64| -> i64 x + 1, _ => |x: i64| -> i64 x - 1 }};
+      h(n) + f(n - 1)
+    }}
+  }};
+  f({depth})
+}}"
+        )
+    };
+    let shallow = run_code(BitFlags::empty(), &[], &code(6), true).await?;
+    let deep = run_code(BitFlags::empty(), &[], &code(200), true).await?;
+    assert_eq!((&shallow.value, &deep.value), (&Value::I64(21), &Value::I64(20100)));
+    assert_eq!(shallow.attempts, deep.attempts);
+    // a level takes its own body's region and its lambda's
+    assert_eq!(deep.reused - shallow.reused, 2 * (200 - 6));
+    Ok(())
+}
+
+/// A body whose call of its own lambda resolves statically is the same
+/// body in every instance: a function bound again takes the kernels its
+/// first bind built.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_body_calling_its_own_lambda_shares_kernels() -> Result<()> {
+    let code = |n: i64| {
+        format!(
+            "{{
+  let oa = |n: i64| -> i64 {{ let h = |x: i64| -> i64 x + n; h(n) }};
+  let ob = |n: i64| -> i64 {{ let h = |x: i64| -> i64 x * n; h(n) }};
+  let fs = [oa, ob];
+  let r = array::map(array::init({n}, |i| i), |k| {{ let g = fs[k % 2]$; g(k) }});
+  array::fold(r, 0, |a, x| a + x)
+}}"
+        )
+    };
+    let few = run_code(BitFlags::empty(), &[], &code(4), true).await?;
+    let many = run_code(BitFlags::empty(), &[], &code(40), true).await?;
+    assert_eq!((&few.value, &many.value), (&Value::I64(14), &Value::I64(11420)));
+    assert_eq!(few.attempts, many.attempts);
+    assert_eq!(many.reused - few.reused, 40 - 4);
+    Ok(())
+}
+
+/// Definitions of one lambda in instances of a body at two types share
+/// nothing where what they capture differs: each type's binds build their
+/// own kernels, and both run them.
+#[tokio::test(flavor = "current_thread")]
+async fn bound_definitions_capturing_two_types_build_apart() -> Result<()> {
+    let code = |a: &str, b: &str| {
+        format!(
+            "{{
+  let e = |k| {{
+    let r = array::map(array::init(4, |i| i), |j| {{
+      let h = select j % 2 {{
+        0 => |x: i64| -> i64 x + cast<i64>(k)$,
+        _ => |x: i64| -> i64 x - cast<i64>(k)$
+      }};
+      h(j)
+    }});
+    array::fold(r, 0, |s, x| s + x)
+  }};
+  e({a}) + e({b})
+}}"
+        )
+    };
+    let one = run_code(BitFlags::empty(), &[], &code("3", "4"), true).await?;
+    let two = run_code(BitFlags::empty(), &[], &code("3", "4.5"), true).await?;
+    assert_eq!((&one.value, &two.value), (&Value::I64(12), &Value::I64(12)));
+    // the second type's first bind of each lambda builds where the first
+    // type's second instance reuses
+    assert_eq!(two.attempts, one.attempts + 2);
+    assert_eq!(two.reused + 2, one.reused);
     Ok(())
 }
 

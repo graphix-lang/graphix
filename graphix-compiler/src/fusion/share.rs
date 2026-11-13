@@ -235,6 +235,7 @@ pub(crate) fn reuse<R: Rt>(
         let decorated = super::discover_lambda_calls(node, None, ctx);
         ctx.attr_absorbed.lock().extend(decorated.decorated.iter().map(|n| n.spec().id));
     }
+    ctx.fusion.stats.reused += 1;
     FusionAttempt::Fused(fused)
 }
 

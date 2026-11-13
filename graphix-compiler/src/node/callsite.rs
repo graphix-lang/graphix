@@ -3012,7 +3012,7 @@ impl<R: Rt> CallSite<R> {
             })?;
             if !ctx.fusion.disabled() {
                 let recorded = ctx.fusion.stats.failed.len();
-                let fused = self.fuse_bound(ctx, tail_loops);
+                let fused = self.fuse_bound(ctx, f, tail_loops);
                 ctx.fusion.keep_new_failures(recorded);
                 fused?;
             }
@@ -3020,11 +3020,12 @@ impl<R: Rt> CallSite<R> {
         })
     }
 
-    /// Fuse the instance [`Self::build_bound`] just built, and check the
-    /// assertions the bind reaches.
+    /// Fuse the instance of `f` [`Self::build_bound`] just built, and
+    /// check the assertions the bind reaches.
     fn fuse_bound(
         &mut self,
         ctx: &mut CompileCtx<R>,
+        f: &LambdaDef<R>,
         tail_loops: analysis::TailLoops,
     ) -> Result<()> {
         let asserted = !ctx.attr_census.lock().is_empty() || tail_loops.checking();
@@ -3032,7 +3033,7 @@ impl<R: Rt> CallSite<R> {
             if let Some(share) = &self.share {
                 share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx))?;
             } else if ctx.fusion.available() {
-                fusion::fuse_instance(ctx, self.top_id, apply, asserted)?;
+                fusion::fuse_instance(ctx, self.top_id, f, apply, asserted)?;
             }
         }
         crate::check_attribute_census(ctx)?;

@@ -285,13 +285,14 @@ engine-independent.
   its failure is reported, once; unchecked where fusion does not run).
   Every run-time bind fuses, so a function value costs what a named call
   does: a collection slot's instance takes its prototype's kernels, and
-  any other instance takes the kernels an earlier bind of its definition
-  at its type built, else is fused at its first bind
-  (`fusion::fuse_instance`, cached by definition and type, an instance
-  that fused nothing included, walked again only where an assertion
-  reaches the bind; a lambda in a body is a definition of its own in each
-  instance of the body, so each instance's first bind of it compiles); it
-  does so as its
+  any other instance takes the kernels an earlier bind of a definition of
+  its lambda expression built, else is fused at its first bind
+  (`fusion::fuse_instance`, cached where every definition of the
+  expression shares it, by type, captures and body, an instance that
+  fused nothing included, walked again only where an assertion reaches
+  the bind; a lambda in a body is a definition of its own in each
+  instance of the body, and the instances' binds of it share the cache,
+  `recursive_activations.md`); it does so as its
   runtime does, whatever its site's flags (the package root's have fusion
   off, a site a collection or a builtin builds has none): a runtime whose
   flags disable fusion disables its context's (`FusionCtx::disable`).

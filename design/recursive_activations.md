@@ -122,19 +122,27 @@ the compiles after it. Where fusion does not run (`--no-fusion`, a
 dynamic module) only the gate is checked, as `#[native]` is not. Every
 run-time bind fuses, so a function value costs what a call naming its
 definition does: a collection slot's instance takes its prototype's
-kernels; any other takes the kernels an earlier bind of its definition
-at its type built (`FusionCtx::instances`, keyed by definition and
-type), else its body is fused at this bind (`fusion::fuse_instance`).
-An instance whose walk fused nothing is cached as such and not walked
-again, so a node-walked recursion that binds an instance per level tries
-its body once however deep it goes, unless an assertion reaches the
-bind, whose check reads the walk. A bind of an instance already cached
-still walks its body, for the fingerprint and to splice the kernels, as a
-slot's does: a call whose function changes every cycle pays that at each
-bind. A lambda in a body is a definition of its own in each instance of
-that body (a slot, a level of a node-walked recursion, a function bound
-again), so the cache does not answer its bind there: each instance's
-first bind of it is a compile and a link of its own. A bind's walk adds
+kernels; any other takes the kernels an earlier bind of a definition of
+its lambda expression built, else its body is fused at this bind
+(`fusion::fuse_instance`). A lambda in a body is a definition of its own
+in each instance of that body (a slot, a level of a node-walked
+recursion, a function bound again), and those definitions share one
+cache (`BodyShared::bound`, held by what every compile of the enclosing
+body shares), so the cache lives while the enclosing definition does: an
+instance's bind takes the kernels an earlier instance's built, after
+that instance is deleted too. It is keyed by what decides the kernels
+(`fusion::BoundKey`): the instance's type, its captures' types (an
+enclosing instance at another type gives the same lambda type other
+captures) and its body's fingerprint named by source, a callee by its
+lambda expression and a handler by the raise the walk first meets it
+at, so a raise to another instance's handler is redirected as a slot's
+is (`fusion/share.rs`). An instance whose walk fused nothing is cached
+as such and not walked again, so a node-walked recursion that binds an
+instance per level tries its body once however deep it goes, unless an
+assertion reaches the bind, whose check reads the walk. A bind of an
+instance already cached still walks its body, for the fingerprint and to
+splice the kernels, as a slot's does: a call whose function changes
+every cycle pays that at each bind. A bind's walk adds
 a failure to `FusionStats::failed` only where no bind recorded it before
 for the same expression and reason (`FusionCtx::keep_new_failures`, a
 slot's bind included), so the record does not grow with the binds. It

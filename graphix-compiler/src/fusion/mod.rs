@@ -20,8 +20,8 @@ pub(crate) mod share;
 pub use kernel::FusedKernel;
 
 use crate::{
-    AddrSet, ApplyView, BindId, CompileCtx, LambdaId, LambdaInstanceId, Node, NodeView,
-    PrintFlag, Refs, Rt, Update,
+    AddrSet, ApplyView, BindId, CompileCtx, LambdaDef, LambdaId, LambdaInstanceId, Node,
+    NodeView, PrintFlag, Refs, Rt, Update,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
@@ -105,6 +105,9 @@ pub struct FusionStats {
     pub attempted: usize,
     /// Regions that compiled and were spliced in.
     pub fused: usize,
+    /// Regions a collection slot or a run-time bind took from the kernels
+    /// an earlier walk built, spliced over its own inputs.
+    pub reused: usize,
     /// Attempts rejected during discovery, before input collection or emission.
     pub rejected_before_emit: usize,
     /// Per-failure source identity and compile error, across the
@@ -134,6 +137,7 @@ impl FusionStats {
         let Self {
             attempted,
             fused,
+            reused,
             rejected_before_emit,
             failed,
             jit_generations,
@@ -144,6 +148,7 @@ impl FusionStats {
         } = other;
         self.attempted += attempted;
         self.fused += fused;
+        self.reused += reused;
         self.rejected_before_emit += rejected_before_emit;
         self.failed.extend(failed);
         self.jit_generations += jit_generations;
@@ -357,6 +362,44 @@ const LINK_BATCH: usize = 256;
 pub(crate) type KernelCacheKey =
     (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions);
 
+/// What a run-time bind's kernels are kept by among the definitions of
+/// its lambda expression ([`BoundKernels`]): its type, its captures'
+/// types and its body's fingerprint named by source
+/// ([`lowering::Naming::Source`]), so that the definition each instance
+/// of an enclosing body makes takes the kernels the first one's bind
+/// built.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct BoundKey {
+    typ: FnType,
+    captures: Box<[Type]>,
+    coverage: lowering::QopCoverage,
+    resolutions: lowering::FnResolutions,
+}
+
+impl BoundKey {
+    fn of<R: Rt>(def: &LambdaDef<R>, g: &GXLambda<R>, ctx: &CompileCtx<R>) -> Self {
+        let mut captures: LPooled<Vec<Type>> = LPooled::take();
+        def.captured_ids(&mut |id| {
+            if let Some(b) = ctx.env.by_id.get(&id) {
+                captures.push(b.typ.resolve_tvars())
+            }
+        });
+        let (coverage, resolutions) =
+            lowering::body_fingerprint(g.body(), ctx, lowering::Naming::Source);
+        Self {
+            typ: g.typ().resolve_tvars(),
+            captures: captures.drain(..).collect(),
+            coverage,
+            resolutions,
+        }
+    }
+}
+
+/// Each run-time bound instance's kernels, `None` where its walk fused
+/// nothing. Every definition of one lambda expression in one enclosing
+/// body shares them (`BodyShared::bound`), so they live while one does.
+pub(crate) type BoundKernels = BTreeMap<BoundKey, Option<share::SlotShare>>;
+
 enum JitSlot {
     Unbuilt,
     Built(emit::Jit),
@@ -415,10 +458,6 @@ pub struct FusionCtx {
     pub(crate) share: Option<share::Share>,
     /// Definitions deleted since the last link, whose kernels it forgets.
     dead: Vec<LambdaId>,
-    /// Each run-time bound instance's kernels, by definition and type;
-    /// `None` where its walk fused nothing.
-    instances:
-        Arc<parking_lot::Mutex<BTreeMap<KernelCacheKey, Option<share::SlotShare>>>>,
     /// Each instance's body fingerprint, as a walk now would find it: a
     /// kernel spliced anywhere may change one, so any splice forgets them
     /// all ([`kernel_node`]). Shared with the context's compile tasks.
@@ -454,7 +493,7 @@ impl FusionCtx {
             }
             f.generation
         };
-        let print = lowering::body_fingerprint(g.body(), ec);
+        let print = lowering::body_fingerprint(g.body(), ec, lowering::Naming::Instance);
         let mut f = self.fingerprints.lock();
         if f.generation == generation {
             f.by_instance.insert(g.instance_id(), print.clone());
@@ -473,7 +512,6 @@ impl FusionCtx {
             top_id: self.top_id,
             share: None,
             dead: Vec::new(),
-            instances: self.instances.clone(),
             fingerprints: self.fingerprints.clone(),
             bound_failures: self.bound_failures.clone(),
         }
@@ -677,7 +715,6 @@ impl FusionCtx {
 
     /// The definition `id` was deleted: the next link forgets its kernels.
     pub(crate) fn forget_def(&mut self, id: LambdaId) {
-        self.instances.lock().retain(|(def, ..), _| *def != id);
         if self.records_dead() {
             self.dead.push(id)
         }
@@ -724,7 +761,6 @@ impl FusionCtx {
             top_id: None,
             share: None,
             dead: Vec::new(),
-            instances: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             fingerprints: Arc::new(parking_lot::Mutex::new(Fingerprints::default())),
             bound_failures: Arc::new(parking_lot::Mutex::new(AHashSet::default())),
         }
@@ -1565,17 +1601,19 @@ fn calls_a_function<R: Rt>(node: &Node<R>) -> bool {
     calls
 }
 
-/// Fuse `apply`, an instance bound at run time, or give it the kernels an
-/// earlier bind of its definition at its type built. An instance whose
-/// walk fused nothing is walked again only when `asserted`: an assertion
-/// the bind reaches is checked by the walk.
+/// Fuse `apply`, an instance of `def` bound at run time, or give it the
+/// kernels an earlier bind of a definition of its lambda expression built
+/// at its [`BoundKey`]. An instance whose walk fused nothing is walked
+/// again only when `asserted`: an assertion the bind reaches is checked
+/// by the walk.
 pub(crate) fn fuse_instance<R: Rt>(
     ctx: &mut CompileCtx<R>,
     top_id: ExprId,
+    def: &LambdaDef<R>,
     apply: &mut dyn crate::Apply<R>,
     asserted: bool,
 ) -> anyhow::Result<()> {
-    // CR claude for claude: [perf/medium] The cache below is keyed by `LambdaId`,
+    // XCR claude for claude: [perf/medium] The cache below is keyed by `LambdaId`,
     // and a lambda in a body is a new definition in each instance of that body (a
     // collection slot, a level of a node-walked recursion, a function bound
     // again), so its bind there never hits: every instance compiles and links its
@@ -1599,15 +1637,37 @@ pub(crate) fn fuse_instance<R: Rt>(
     // before the new one binds, so an entry must outlive its builder to be hit,
     // and it holds its kernels' code while it does). probes:
     // ~/ptmp/cr29/scratch/r23/23e/bbp-review/ (bound-bind-per-definition-01)
+    // 2026-11-13 claude: Fixed: the run-time bind cache moved from FusionCtx to
+    // BodyShared::bound, which every definition of one lambda expression in one
+    // enclosing body shares and which lives while the enclosing definition does,
+    // keyed by fusion::BoundKey: the instance's type, its captures' types (an
+    // enclosing instance at another type gives the same lambda type other
+    // captures) and body_fingerprint under Naming::Source (a callee or a lambda
+    // argument by its lambda expression, a handler by its order of first
+    // appearance, so a raise to another instance's handler is redirected by
+    // share::reuse as a slot's is). instructions:u, debug, base-r24 to this fix:
+    // p1 10.52G to 3.29G, p2 10.80G to 3.17G (peak RSS 155 to 129 MB), p4 10.58G
+    // to 3.00G, p5 13.65G to 2.67G; p7.gx (a function rebound every cycle whose
+    // body calls its own lambda statically) 17.8G to 2.52G, and its peak RSS no
+    // longer grows with the rebinds (base-r24 91 MB at 3000, 150 MB at 9000; here
+    // 69 MB at both: the LambdaId key carried the inner lambda's id in its
+    // fingerprint, so each rebind added an entry under the outer definition).
+    // Pins, each failing with the LambdaId key:
+    // lang::fusion::bound_definitions_of_one_lambda_share_kernels (attempts 17
+    // against 211), bound_body_calling_its_own_lambda_shares_kernels (14 against
+    // 50), bound_definitions_capturing_two_types_build_apart (also fails with the
+    // captures left out of the key, where the second type's binds take the first's
+    // table and node-walk). The shared tables' raises:
+    // bound_definitions_raise_to_their_slots_handler and
+    // bound_definitions_raise_to_their_own_handler fail in the jit modes with
+    // share::reuse's redirect removed;
+    // bound_function_rebinds_over_a_deleted_builder. FusionStats::reused is new.
+    // probes: ~/ptmp/cr29/scratch/r24/24f/
     let key = match apply.view() {
-        ApplyView::Lambda(g) => {
-            let (coverage, resolutions) = lowering::body_fingerprint(g.body(), ctx);
-            Some((g.id(), Arc::new(apply.typ().resolve_tvars()), coverage, resolutions))
-        }
+        ApplyView::Lambda(g) => Some(BoundKey::of(def, g, ctx)),
         _ => None,
     };
-    let cached =
-        key.as_ref().and_then(|key| ctx.fusion.instances.lock().get(key).cloned());
+    let cached = key.as_ref().and_then(|key| def.shared.lock().bound.get(key).cloned());
     match cached {
         Some(Some(cached)) => {
             return share::fuse_slot(ctx, &cached, top_id, |ctx| apply.fuse(ctx));
@@ -1631,7 +1691,7 @@ pub(crate) fn fuse_instance<R: Rt>(
     }
     let shared = result?;
     if let Some(key) = key {
-        ctx.fusion.instances.lock().insert(key, shared);
+        def.shared.lock().bound.insert(key, shared);
     }
     Ok(())
 }

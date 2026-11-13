@@ -4,7 +4,8 @@
 //! emitters consume.
 
 use crate::{
-    ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, Rt,
+    ApplyView, BindId, CompileCtx, LambdaDef, LambdaId, LambdaInstanceId, Node, NodeView,
+    PrintFlag, Refs, Rt,
     effects::NoLoop,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath},
@@ -944,7 +945,7 @@ fn expand_ref_node<'a>(
 }
 
 /// The catch-coverage fingerprint of a lambda instance's body: each
-/// `?`/`$` site's resolved handler bind in walk order (`u64::MAX` =
+/// `?`/`$` site's resolved handler in walk order (`u64::MAX` =
 /// handler-less), over every node its kernel runs, inline collection
 /// callbacks and statically called bodies included. Part of the kernel
 /// cache key, because a kernel bakes its handler ids into its deliver
@@ -953,50 +954,75 @@ pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 
 /// The lambda-resolution fingerprint of a lambda instance's body: per
 /// statically-resolved call site its kernel runs, callee bodies
-/// included, the callee's `LambdaId` and the identity of each fn-typed
-/// argument forwarded (`u64::MAX` when unresolvable). Part of the kernel
-/// cache key, because a kernel bakes those resolutions as CLIF calls.
+/// included, the callee's definition and that of each fn-typed argument
+/// forwarded (`u64::MAX` when unresolvable). Part of the kernel cache
+/// key, because a kernel bakes those resolutions as CLIF calls.
 pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
+
+/// What a fingerprint names a definition and a handler by.
+#[derive(Clone, Copy)]
+pub(crate) enum Naming {
+    /// The instance's own: a definition by its id, a handler by its bind
+    /// and top.
+    Instance,
+    /// What every compile of the body names alike: a definition by its
+    /// lambda expression, a handler by its order of first appearance
+    /// among the walk's raises.
+    Source,
+}
 
 pub(crate) fn body_fingerprint<R: Rt>(
     body: &Node<R>,
     ec: &CompileCtx<R>,
+    naming: Naming,
 ) -> (QopCoverage, FnResolutions) {
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
+    let mut handlers: LPooled<Vec<(BindId, ExprId)>> = LPooled::take();
+    let def = |id: LambdaId| match naming {
+        Naming::Instance => id.inner(),
+        Naming::Source => ec
+            .lambda_defs
+            .get(&id)
+            .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+            .map_or(u64::MAX, |d| d.source.inner()),
+    };
     fusion::for_each_reachable_node(body, &mut |n| match n.view() {
-        NodeView::Qop(q) if q.raises() => match q.handler().map(|h| h.id()) {
-            Some((bind, top)) => {
+        NodeView::Qop(q) if q.raises() => match (q.handler().map(|h| h.id()), naming) {
+            (Some((bind, top)), Naming::Instance) => {
                 cov.push(bind.inner());
                 cov.push(top.inner());
             }
-            None => cov.push(u64::MAX),
+            (Some(h), Naming::Source) => {
+                let first = handlers.iter().position(|k| *k == h).unwrap_or_else(|| {
+                    handlers.push(h);
+                    handlers.len() - 1
+                });
+                cov.push(first as u64)
+            }
+            (None, _) => cov.push(u64::MAX),
         },
         NodeView::CallSite(cs) => {
-            let Some(crate::ApplyView::Lambda(callee)) = cs.resolved_apply() else {
+            let Some(ApplyView::Lambda(callee)) = cs.resolved_apply() else {
                 return;
             };
-            res.push(callee.id().inner());
+            res.push(def(callee.id()));
             each_arg_node(cs, &mut |a: &Node<R>| {
                 if !a.typ().is_function(&ec.env) {
                     return;
                 }
                 let id = match a.view() {
-                    NodeView::Lambda(l) => l.lambda_id::<R>().map(|id| id.inner()),
+                    NodeView::Lambda(l) => l.lambda_id::<R>(),
                     NodeView::Ref(r) => ec
                         .bind_to_lambda
                         .get(&r.id)
-                        .and_then(|v| {
-                            v.downcast_ref::<crate::LambdaDef<R>>().map(|d| d.id.inner())
-                        })
+                        .and_then(|v| v.downcast_ref::<LambdaDef<R>>().map(|d| d.id))
                         // A forwarded fn formal's `bind_to_lambda` entry
                         // is gone by fingerprint time; the snapshot keeps it.
-                        .or_else(|| {
-                            ec.fn_forward_resolutions.get(&r.id).map(|id| id.inner())
-                        }),
+                        .or_else(|| ec.fn_forward_resolutions.get(&r.id).copied()),
                     _ => None,
                 };
-                res.push(id.unwrap_or(u64::MAX));
+                res.push(id.map_or(u64::MAX, def));
             });
         }
         _ => (),

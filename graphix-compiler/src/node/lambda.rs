@@ -748,6 +748,9 @@ pub struct BodyShared {
     /// A collection intrinsic's prototype call, by the expression id
     /// every compile of the intrinsic gives it.
     pub(crate) prototype: Option<ExprId>,
+    /// The kernels the run-time binds of the definition's instances built
+    /// (`fusion::fuse_instance`).
+    pub(crate) bound: crate::fusion::BoundKernels,
 }
 
 /// A type written in a body: its same-named variables are one variable,
