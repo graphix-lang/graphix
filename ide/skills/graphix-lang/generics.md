@@ -110,11 +110,11 @@ to annotate. It shows up two ways. A `let` over `never()` that took a
 select of two undecided values (`u <- select c { true => x, false => y
 }`) and is then written a value: declare `u` (`let u: [i64, string] =
 never()`), or `x` and `y`. And a typedef that unions its parameters
-(`type E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: an
-argument either variable could take waits for the call's other arguments
-to decide them, wherever its parameter stands, and is refused where two
-members could still take it, so write one variable (`E<'a, 'a>`) or give
-the function a parameter that decides one.
+(`type E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: a
+call's arguments are met in the order of the parameters, so an argument
+either variable could take is refused unless the parameters before it
+decided them. Declare the deciding parameters first (`|y: 'a, x: E<'a,
+'b>|`), or write one variable (`E<'a, 'a>`).
 Members that are one type are one member and need nothing: an
 unannotated parameter a select takes apart with slice patterns (`[h,
 t..]`, two arms that bind elements, a recursive `len(t)`) is typed as one
@@ -125,20 +125,14 @@ whichever arm a value takes: arms that use it as two (`b + 1` in one,
 `str::len(b)` in another) are refused. An impl's target may
 not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
-either: it waits for the other parameters to decide the members, and is
-refused where none does. The wait is one call's arguments': the parts of
-a single argument are met in order, a tuple's as written and a struct's
-fields by name (`|x: (P<'a, 'b>, 'a, 'b)|` refuses `([1], 1, "s")`), so
-put the deciding parts first or make them parameters. Three more calls
-are still refused though another argument decides the members. A
-literal whose element meets the union (a map literal, an array of
-arrays or of tuples) and a call or block passed where a callback's
-result is the union: bind the argument with a `let` first. And an
-argument that needs a variable wider than another argument gives it
-(`[n]` over `n: [i64, null]` beside `1`), where the order of the
-parameters still decides: give the other argument the wide type (`let
-one: [i64, null] = 1`). A callback is given to the member its result
-fits.
+either, unless the arguments before it decided the members. The parts of
+a single argument are related together, so within one argument the
+deciding parts may stand anywhere (`|x: (P<'a, 'b>, 'a, 'b)|` takes
+`([1], 1, "s")`). A variable standing in such a
+union does not widen: the first argument that meets it decides it, and
+an argument that needs it wider (`[n]` over `n: [i64, null]` after `1`)
+is refused, so give the earlier argument the wide type (`let one: [i64,
+null] = 1`). A callback is given to the member its result fits.
 
 ```graphix,cases
 no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
@@ -148,7 +142,7 @@ ok let f = |c, a, b| { let u = select c { true => a, false => b }; u + 1 }; f(tr
 no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>| 0; f(1)
 ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'a>| 0; f(1)
 ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: E<'a, 'b>| 0; f(1, 2)
-ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
+no "declare the parameters that decide them before this one" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
 ok let f = |x| select x { [h, t..] => h, [] => 0 }; (f([4, 5]), f(["a"]))
 ok let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5])
 ok let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
@@ -164,23 +158,24 @@ ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) =
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], 1, "s")
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], 1, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(1, "s", [1])
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], never(), never())
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w); h([1], 1, "s")
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, 'a, 'b)| x; f(([1], 1, "s"))
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(never(), never(), [1])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; let h = |v: 'a, w: 'b, u: P<'a, 'b>| f(v, w, u); h(1, "s", [1])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, 'a, 'b)| x; f(([1], 1, "s"))
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, P<'b, 'a>)| x; f(([1], ["s"]))
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: ('a, 'b, P<'a, 'b>)| x; f((1, "s", [1]))
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {p: P<'a, 'b>, a: 'a, b: 'b}| 0; f({p: [1], a: 1, b: "s"})
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {y: 'a, z: 'b, a: P<'a, 'b>}| 0; f({y: 1, z: "s", a: [1]})
-no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: Map<string, E<'a, 'b>>| 0; f("s", {"k" => 1.5})
-ok type E<'p, 'q> = ['p, 'q]; let f = |x: Map<string, E<'a, 'b>>, y: 'a| 0; let m = {"k" => 1.5}; f(m, "s")
-no "picks none by order" type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |x: fn(q: i64) -> E<'a, 'b>, y: 'a| 0; f(id(|q: i64| 1.5), "s")
-ok type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |x: fn(q: i64) -> E<'a, 'b>, y: 'a| 0; let k = id(|q: i64| 1.5); f(k, "s")
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([n], 1, "s")
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let one: [i64, null] = 1; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([n], one, "s")
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {y: 'a, z: 'b, a: P<'a, 'b>}| 0; f({y: 1, z: "s", a: [1]})
+ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: Map<string, E<'a, 'b>>| 0; f("s", {"k" => 1.5})
+no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: Map<string, E<'a, 'b>>, y: 'a| 0; f({"k" => 1.5}, "s")
+ok type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |y: 'a, x: fn(q: i64) -> E<'a, 'b>| 0; f("s", id(|q: i64| 1.5))
+no "does not contain Array<[i64, null]>" type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [n])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let one: [i64, null] = 1; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(one, "s", [n])
+no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [])
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; let g = |u, v, w| f(u, v, w); g([], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; let g = |v, w, u| f(v, w, u); g(1, "s", [])
 ok let f = |x: ('a, i64), z: 'a| x.1; let g = |y| f(y, y.0); g((1, 2))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = 'a: P<'b, 'c> |x: 'a| x; let g = |y| f(y); g([null])
 ok type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string]; let f = 'a: E<'b, 'b>, 'b: Number |x: 'a, y: 'b| x; let h = f(|v| "s", 1); h(2)
@@ -424,20 +419,28 @@ ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c: C<[i64, string]>
 no "write the body's type, `-> C<i64>`" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<'z> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
 ```
 
-A generic function's variable that only data holds takes the widest
-argument, in either order, an omitted labeled default included (one
-that is neither wider nor narrower waits for the others to widen it). An
-argument or omitted default whose type is still open (a `str::parse`, a
-`let` over `never()`, `[]`) takes what the others decide:
-`opt::or_default(str::parse(s)$, 0)` reads an `i64`, and
-`f(str::parse(s), 1)` over `|x: 'a, y: 'a|` is refused, "annotate it"
-(`'a` is `i64`, which holds no parse error): annotate the read. What the
-others decide must also fit what the open one's other uses ask of it, an
-operator that read it or the values written where it is read from: `|p,
-q| { let s = p + q; array::push(["s"], p) }` is refused, since a string
-is no number.
+A call's arguments are met in the order of the parameters, then the
+labeled defaults it omits, and nothing waits for a later one. A generic
+function's variable that only data holds widens to a decided argument
+wider than the ones before it, so decided arguments settle it alike in
+any order; one neither wider nor narrower than what stands is refused
+(`f(1, "s")` over `|x: 'a, y: 'a|`), whatever follows: write the widest
+first, or annotate. An argument or omitted default whose type is still
+open (a `str::parse`, a `let` over `never()`, `[]`) takes the variable as
+the ones before it left it, and the variable widens no more:
+`opt::or_default(str::parse(s)$, 0)` reads an `i64`, `f(str::parse(s),
+1)` over `|x: 'a, y: 'a|` runs (the read is the Result that holds the
+`1`), and `f(1, str::parse(s))` is refused, "annotate it" (`'a` is
+`i64`, which holds no parse error): annotate the read, or pass it first. What stands
+must also fit what the open one's other uses ask of it, an operator that
+read it or the values written where it is read from: `|p, q| { let s = p
++ q; array::push(["s"], p) }` is refused, since a string is no number.
 
 ```graphix,cases
+ok let f = |x: 'a, y: 'a| -> 'a y; let n: [i64, null] = null; (f(1, n), f(n, 1))
+no "'a: i64 does not contain string" let f = |x: 'a, y: 'a| -> 'a y; f(1, "s")
+no "an undecided argument before this one met 'a" let f = |x: 'a, y: 'a, z: 'a| -> 'a z; let v = never(); let n: [i64, null] = null; f(v, 1, n)
+ok let f = |x: 'a, y: 'a, z: 'a| -> 'a z; let v = never(); let n: [i64, null] = null; f(n, v, 1)
 no "undecided at this" |p, q| { let s = p + q; array::push(["s"], p) }
 ok |p, q| { let s = p + q; array::push([1], p) }
 no "undecided at this" { type B<'p> = Abstract<'p>; let x = B(1); x <- B("a"); let v = x.0; array::push([10], v) }
@@ -480,27 +483,29 @@ ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`Pa
 ```
 
 A generic function held at a written function type (an annotated `let`,
-a callback parameter, a field, a write) decides its variables the same
-way: one that only data holds takes the widest of the written positions,
-in either order, and with none that holds the others it is refused, as a
-call is. One a callback also holds takes the first position's type: write
-the function type's earlier position as wide as the later ones need. So
-does one a recursive typedef passes on to itself (`l: L<'y>` over `type
-L<'a> = [`Nil, `Cons('a, L<'a>)]`).
+a callback parameter, a field, a write) meets the type's positions in
+the order written, and its variable takes the first position's type:
+the later ones must fit it, and nothing widens. Write the function
+type's earlier position as wide as the later ones need, or wrap the
+function in a lambda with its parameters written (`|b: i64, k: Any| f(b,
+k)`), whose call widens. A trait
+default's label typed by a bound over `self` stands before `self`: write
+it as the declared variable (`|#k: 'b, s|`), or leave it unwritten.
 
 ```graphix,cases
-ok let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f; g(1, 2)
+no "does not contain fn(b: 'y: i64, k: 'y: i64)" let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f; g(1, 2)
+ok let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = |b: i64, k: Any| f(b, k); g(1, 2)
 ok let f = |k: 'y, b: 'y| 0; let g: fn(k: Any, b: i64) -> i64 = f; g(2, 1)
-ok let f = |b: 'y, k: 'y| 0; let app = |h: fn(b: i64, k: Any) -> i64| h(1, 2); app(f)
+ok let f = |k: 'y, b: 'y| 0; let app = |h: fn(k: Any, b: i64) -> i64| h(2, 1); app(f)
 no "does not contain fn(b: 'y: i64, k: 'y: i64)" let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: string) -> i64 = f; g(1, "s")
 no "-> i64 does not contain" let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null)
 no "does not contain fn(b: 'y: i64" let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: i64, k: Any, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
 ok let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: Any, k: i64, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
 ok type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |k: 'y, l: L<'y>| -> 'y k; let g: fn(k: [i64, null], l: L<i64>) -> [i64, null] = f; g(null, `Nil)
 no "does not contain fn(l: L<'y: i64>" type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |l: L<'y>, k: 'y| -> 'y k; let g: fn(l: L<i64>, k: [i64, null]) -> [i64, null] = f; g(`Nil, null)
-ok type T<'a> = [`Leaf('a), `Node(T<i64>)]; let f = |t: T<'y>, k: 'y| -> 'y k; let g: fn(t: T<i64>, k: [i64, null]) -> [i64, null] = f; g(`Leaf(1), null)
+ok type T<'a> = [`Leaf('a), `Node(T<i64>)]; let f = |k: 'y, t: T<'y>| -> 'y k; let g: fn(k: [i64, null], t: T<i64>) -> [i64, null] = f; g(null, `Leaf(1))
 ok let g = 'b: [i64, null] |x: 'b| { let h: fn(s: i64, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 0; h(1, x) }; g(null)
-ok let g = 'b: [i64, null] |x: 'b| { let h: fn(v: 'b, s: i64) -> i64 = |v: ['a, null], s: 'a| 0; h(x, 1) }; g(null)
+no "does not contain fn(v: [null, 'b" let g = 'b: [i64, null] |x: 'b| { let h: fn(v: 'b, s: i64) -> i64 = |v: ['a, null], s: 'a| 0; h(x, 1) }; g(null)
 ```
 
 ## Abstract comparisons

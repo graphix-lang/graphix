@@ -87,8 +87,7 @@ structure is returned SHARED, never copied.
   an application holds a cell, and a committing walk copies a cached
   expansion only where a copy differs from it: where it holds a cell or a
   function type (`Closure::Plain` is neither). A function's containment
-  asks whether a position holds a union of open cells, or a cell the
-  arguments widen (`FnType::order_free_cells`), only of a position
+  asks whether a position holds a union of open cells only of a position
   `closure` finds open, so a chain of function types is walked once, not
   once a link. Pins: `typ::contains::tests::
   function_types_are_keyed_by_their_parts`, `deep_nesting::

@@ -343,263 +343,185 @@ cells. Bound cells stay bound: a def-time unification is a settled
 fact, and erasing it made the static type lie about the runtime value
 (the JIT marshal-panic class).
 
-### A call's widening
+### A call's arguments are met in order
+
+A call checks its arguments in the order of the callee's parameters,
+each against its formal as the arguments before it left it, then the
+labeled defaults the call omits, in the order they are declared. Nothing
+waits for a later argument (Eric 11-13, D36: soundness is the bar, and
+"the same verdict in every parameter order" is not a requirement). One
+exception stands: a formal holding a variable under an abstract type, a
+type application or a writable reference is checked before the others
+(`callsite::holds_invariantly`), since that position fixes the variable
+exactly. It is kept on purpose (Eric 11-13): a label always stands
+before the positionals, so `db::cursor::new(#prefix: [db], t)` could not
+put the tree that fixes the key type first.
 
 A fresh instance's variable that only data positions hold
-(`callsite::widenable`) settles to the widest argument, whatever the
-order the call writes them in (`callsite::Widening`). Only arguments
-holding no undecided cell outside function types take part in that join,
-the defaults the call omits included, joined as written ones
-(`Widening::join_default`); a lambda's open cells are not undecided data
-(`Type::has_free_in_data`), so `({a: n, k: |x| x}, 1)` over `|x: {a: 'a,
-k: fn(x: i64) -> i64}, y: 'a|` joins at once. An argument holding an
-undecided cell (a read target, a `let` over `never()`, `[]`'s element)
-pre-unifies with a copy of its formal in
-which those variables are open and every other cell is the formal's own
-(`Widening::opening`), so it decides none of them, and decides the
-others, a variable a callback after it reads included, as it meets
-them. Only the copy's own cells are opened: a widenable variable the
-formal reaches through another variable's bound alone (`z: fn(q: 'a1) ->
-i64` under `'a1: Array<'a3>`) is the formal's cell, and stays as the
-arguments before it settled it (pins
-`lang::types::callback_into_a_union_bound_beside_a_function_over_the_bounded_variable`,
-`variable_settled_before_a_function_over_its_holder_takes_no_other_type_refused`).
-The argument is checked at the end of the argument loop, when the join is
-known (`CallSite::check_waiting`); its cells take what the join leaves
-them. What it took from the copy is the formal's own by then: before the
-check, each cell of the copy that nothing decided is made the formal's
-cell it copies (`callsite::rejoin`), a variable only a bound holds
-included, so the call has one type for each variable and the instance is
-built at it (`f([], never())` over `'a0: [Array<P<'a1, 'a2>>, null], 'a1:
-P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3|`). A copy's cell
-that the formal's cell reaches stays apart (`TVar::rejoin`): in `|y|
-h([y, 1], (y, 2))` over `|a: Array<'a>, b: ('a, i64)|` the join put `y`'s
-cell inside `'a`, and the two as one cell would be an infinite type (pin
+(`callsite::widenable`) widens: a decided argument (one holding no
+undecided cell outside function types, `Type::has_free_in_data`; a
+lambda's open cells are not undecided data) that does not fit its formal
+is probed once against the formal with those variables open
+(`Widening::widen`), and a variable it holds wider is rebound to its
+type. So two decided arguments settle a variable alike in either order
+(`f(1, n)` and `f(n, 1)` over `|x: 'a, y: 'a|`, `n: [i64, null]`), with
+no state but the variable. One neither wider nor narrower than what
+stands is the mismatch where it is written, whatever follows (`f(`A, `B,
+ab)` over three `'a` is refused; `f(ab, `B, `A)` runs): no union is
+made of two arguments.
+
+Before its own check, an argument holding an undecided cell is
+pre-unified with a copy of its formal in which the widenable variables
+are open and every other cell is the formal's own (`Widening::opening`,
+`Type::pre_unify_copy`), so the pre-unification refuses no argument
+wider than the ones before it; a formal holding no widenable variable is
+pre-unified as it stands. An expression whose type its own check has yet
+to make (a seq step's captured argument, a field read) is not
+pre-unified with the copy. Neither is an argument holding no undecided
+cell (a declared variable of the definition the call stands in, a
+written type), nor a part of one that holds a declared variable and no
+undecided cell: a declared variable merges with the open cell it meets
+and keeps that cell's bounds, so one that met the copy would stand
+within the callee's bound twice, once over the copy's cells, which no
+instance has and nothing decides. It meets the formal itself, and stands
+within its own bound and the callee's, over the instance's cells (pins
+`lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds`,
+`declared_variable_passed_on_stands_within_its_callees_bound{,_refused}`,
+`declared_variables_passed_on_through_an_inner_function_and_a_callback`,
+`declared_variables_passed_on_beside_callbacks{,_take_decided_arguments}`).
+What an undecided argument took from the copy is made the formal's own
+before the argument meets the formal: each cell of the copy that nothing
+decided becomes the formal's cell it copies (`callsite::rejoin`,
+`TVar::rejoin`), so no copy stays in the argument's type or in a
+wrapper's signature (pin
+`lang::types::wrapper_of_a_bound_over_another_variable_infers_no_bound_on_that_variable`).
+A copy that the formal's cell reaches stays apart: in `|y| h([y, 1], (y,
+2))` over `|a: Array<'a>, b: ('a, i64)|` the two as one cell would be an
+infinite type (pin
 `lang::types::undecided_argument_inside_what_its_formals_variable_settled_to`).
 So does a copy that holds a bound it was not made with beside a decided
 cell: the pre-unification made it one cell with the argument's, which
 brought the bound (the lower bounds of a binding's open payload, `let v =
 x.0`; the conjunct an operator left on a parameter, `p + q`, `a[p]`), and
-the check that follows binds it only where what the join decided fits
-those bounds. A copy is made with its formal's cell's own bounds (a
-declared `'a: Number`), which what the join decided already fits, so the
-count of each kind is what tells them apart (`tvar::Bounds`; pins
+the check that follows binds it only where what stands fits those bounds.
+A copy is made with its formal's cell's own bounds (a declared `'a:
+Number`), so the count of each kind is what tells them apart
+(`tvar::Bounds`; pins
 `lang::functions::undecided_binding_above_a_lower_bound_{refused,it_holds_joins}`,
 `undecided_parameter_within_a_conjunct_{refused,it_fits_joins}`).
-An argument expression whose type its own check has yet to make (a seq step's
-captured argument, a field read) is not pre-unified with the copy: its
-check would commit the copy's bounds before the other arguments decide
-them. A binding's type stands already (a wrapper's parameter), so it
-pre-unifies and takes the copy's shape, which an argument after it reads
-(`|y| f(y, y.0)` over `|x: ('a, i64), z: 'a|`; pin
-`lang::types::wrapper_parameter_read_by_a_later_argument_of_the_same_call`).
-One holding no undecided cell (a declared variable of the definition the
-call stands in, a written type) takes nothing from a copy and is not
-pre-unified with it (`callsite::typecheck_arg`): a declared variable
-merges with the open cell it meets and keeps that cell's bounds, so one
-that met the copy would stand within the callee's bound twice, once over
-the copy's cells, which no instance has and nothing decides. It meets the
-formal itself where it joins, and stands within its own bound and the
-callee's, over the instance's cells: `h` over `'b0: Q<'b2, 'b1>, 'b2:
-Array<Q<'b4, 'b3>>, 'b3: O<'b4>, .. |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2,
-y3)`, `f` declaring the same chain, takes `h(`B("s"), [], "s")` as `f`
-does (pins
-`lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds`,
-`declared_variable_passed_on_stands_within_its_callees_bound{,_refused}`,
-`declared_variables_passed_on_through_an_inner_function_and_a_callback`).
-A part of an argument that is pre-unified is passed over the same way
-where it holds a declared variable and no undecided cell
-(`Type::pre_unify_copy`), so a declared variable passed on beside a
-callback, `f((y0, |v| v), {k: |v| v, v: y2}, [(y3, |v| v)])`, meets the
-formal as one passed on bare does (pins
-`declared_variables_passed_on_beside_callbacks{,_take_decided_arguments}`,
-`declared_variable_passed_on_beside_a_callback_stands_within_its_callees_bound{,_refused}`).
-A part that holds neither (a written type beside an undecided cell) still
-decides the copy for the parts beside it.
-A formal that is an inferred parameter's cell is opened as what the cell
-is bound to (`Widening::standing`), so an undecided argument waits
-through a wrapper as at the direct call: `g([], 1, "s")` over `let g =
-|u, v, w| f(u, v, w)` and `let f = |x: P<'a, 'b>, y: 'a, z: 'b|` (pin
-`lang::types::wrapper_empty_array_into_a_typedef_union_is_decided_by_the_other_parameters`).
-An omitted default
-holding an undecided cell waits the same way,
-checked at its formal once the join is known, whichever label comes
-first. A written argument or an omitted default that is neither wider
-nor narrower than what the others gave a variable waits too, and is
-checked once they have widened it.
+
+A variable does not widen where a function type of the signature holds
+it (the first argument decides it, a callback's parameter being typed by
+it), nor where it stands in a union beside another undecided member
+(`Held::member`): which member takes a type turns on what the cells are,
+so the first argument that meets it decides it, and an argument that
+needs it wider is the mismatch (`f(1, "s", [n])` over `|y: 'a, z: 'b, x:
+P<'a, 'b>|`; write the earlier argument as wide, `let one: [i64, null] =
+1`).
+
+An argument or omitted default holding an undecided cell outside
+function types (a read target, a `let` over `never()`, `[]`'s element)
+at a formal holding a widenable variable takes the formal as it stands
+(`Widening::take`): first, it decides the variable with what follows
+(`f(str::parse("5"), 1)` runs: the read is the Result that holds the
+`1`); after a decided argument it must fit what that left (`f(1,
+str::parse("5"))` is refused). Every widenable variable the formal
+reaches then widens no more (`Widening::pin`): a cell outside the call
+may now be one of them, or be bound to a type holding one, and whatever
+read that cell since (a later callback capturing the binding) read it as
+the variable stood, so widening it after would type that read wrong.
+`f(v, 1, n)` over three `'a` with `v` a `let` over `never()` is refused
+at `n`, "an undecided argument before this one met 'a .. pass the widest
+argument first, or annotate the undecided one", and `f(n, v, 1)` runs.
+This is the one place a wait was closing a hole; it is a refusal now.
 
 A decided argument that two undecided members of its formal's union
 could take (`AmbiguousMember`, below: A union's member takes a type by
-rule) waits as well (Eric 11-11, D32): the call's other arguments may
-decide the members. It meets its formal where it is written
-(`Widening::join`: it fits, or widens, or is neither wider nor narrower,
-or meets the choice, `Joined::Choice`), and one that met the choice
-joins again once the written arguments and the omitted defaults have
-(`CallSite::join_choosing`), as an argument written after them would,
-before the undecided arguments are checked: a member the others decided
-takes it, or the one member still open does, or it widens a variable.
-Several such arguments join in rounds, while one of them joins, in the
-order they stand, so one whose member another of them decides by
-holding it does not depend on which stands first (`f([1], 5, "s")` over
-`|x: P<'a, 'b>, y: E<'a, 'c>, z: 'c|`). One
-that two members could still take when a round places none is refused,
-with the choice's message, naming the parameter to write. So `f([1], 1,
-"s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|` (`type P<'p, 'q> = [Array<'p>,
-Array<'q>]`) runs as `|y: 'a, z: 'b, x: P<'a, 'b>|` does, a wrapper with
-its parameters written checks (`|u: P<'a, 'b>, v: 'a, w: 'b| f(u, v,
-w)`: the declared `'a` and `'b` are decided by `v` and `w`), and an
-instance checked again (`GRAPHIX_NO_SUBST`), which holds a decided
-argument where its definition held an undecided cell, accepts what the
-definition's check did; `f([1], never(), never())` and `f([1])` over
-`|x: P<'a, 'b>|` stay refused (pins
-`lang::types::decided_argument_into_a_typedef_union_*`,
-`annotated_wrapper_of_a_typedef_union_function`,
-`two_decided_arguments_into_typedef_unions_*`, the shell's
-`no_subst::an_instance_checked_again_waits_for_the_arguments_that_decide_a_union`).
-A part of the argument before the choice has met its formal by then (in
-`(1, [1])` over `('c, P<'a, 'b>)` the `1` decided `'c` where the argument
-is written), and the parts of one argument are still met in their order,
-a tuple's as written and a struct's fields by name
-(`choice-within-arg-order-01`). An omitted default that meets the choice
-is checked with the waiting defaults, after every argument.
+rule) is refused where it is written, the message naming the remedy:
+"declare the parameters that decide them before this one, or write the
+type of the parameter" (`callsite::ambiguous_parameter`). With the
+deciding parameters first the member they decided takes it, or the one
+member still open (`f(1, "s", [1])` over `|y: 'a, z: 'b, x: P<'a, 'b>|`;
+`f([1], 1, "s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|` is refused). The
+order is the call's whoever writes it: an inferred wrapper, a declared
+bound, a seq step, a recursive call. The parts of one argument are
+related together: its pre-unification (`Type::pre_unify_arg`) leaves a
+part that meets the choice to the argument's own check, by which time
+the other parts have decided the members, so `f(([1], 1, "s"))` over
+`|x: (P<'a, 'b>, 'a, 'b)|` runs, and a literal's element meets the union
+as the arguments before the literal left it (`f("s", {"k" => 1.5})` over
+`|y: 'a, x: Map<string, E<'a, 'b>>|`).
 
-The wait covers the argument whose own check ends at a decided type and
-whose choice the others decide by holding it. Four calls are outside it,
-and there the order of the parameters, or the form of the argument,
-still decides (the skill's `generics.md` holds a `graphix,cases` line
-for the first, third and fourth):
-
-- An argument that needs a decided member's variable wider (`f([n], 1,
-  "s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|`, `n: [i64, null]`): the
-  widening probe (`Widening::widen`) opens every widenable variable of
-  the formal, so the members the others decided are a choice again, and
-  the refusal says "which nothing has decided" of members that are.
-  Written between the deciders the same argument meets one open member
-  and is placed (`choice-widen-order-01`). Two waiting arguments meet it
-  among themselves: `f([1], [n], "s", "t")` over `|x1: P<'a, 'b>, x2:
-  P<'b, 'c>, y: 'a, z: 'c|` is refused and runs with `x2` before `x1`.
-- An argument written where one member is still open beside a decided
-  one is placed there at once, no choice, and a later argument that
-  decides that member otherwise is a mismatch, where the same argument
-  written first or last waits and runs (`f("s", [1], "t")` over `|y: 'a,
-  x: R<'a, 'b, 'c>, z: 'b|`, `type R<'p, 'q, 'r> = [Array<'p>, Array<'q>,
-  'r]`; noted on `choice-widen-order-01`).
-- An argument whose own check meets the formal: an expression that is
-  pre-unified with a formal the call did not open (a call or a block at
-  a callback parameter, `f(id(|q: i64| 1.5), "s")` over `|x: fn(q: i64)
-  -> E<'a, 'b>, y: 'a|`) meets the choice inside its check, before `y`
-  (`decided-arg-waits-01`).
-- A literal whose element meets the open copy of the formal (a map
-  literal's value, an array of arrays or of tuples): refused in every
-  order, the other arguments deciding or not
-  (`literal-element-open-copy-01`). Bound with a `let` first, each of
-  the last two runs.
-
-Order can then decide only between a
-value and a refusal, never between two types: where the join does not
-hold the argument (`f(str::parse(s), 1)` over `|x: 'a, y: 'a|`: `'a` is
-`i64`, which holds no parse error), the mismatch is refused, in either
-order, and where some decision of the argument's cells outside function
-types could fit (`callsite::annotation_may_fit`: on copies, it fits the
+Where a refusal is of an undecided argument and some decision of its
+cells could fit (`callsite::annotation_may_fit`: on copies, it fits the
 formal with the variables fresh and what it gives each holds or is held
 by what the call gave it), the refusal says "annotate it", naming the
 bindings the argument, or the omitted default, reads whose types are
-undecided (`callsite::undecided_note`, `undecided_binds`); `f(1, [])` is a
-plain mismatch. Two
-undecided arguments at one variable: the second meets what the first
-gave it, and its refusal says the same.
+undecided (`callsite::undecided_note`, `undecided_binds`); `f(1, [])` is
+a plain mismatch. At a formal holding no widenable variable, where a
+wider decision of a variable an earlier argument of this call decided
+could hold the undecided argument, the refusal names that argument,
+"annotate that argument as wide as this one"
+(`callsite::decided_elsewhere`): `f(1, str::parse(s), |v| 0)` over `|x:
+'a, y: 'a, k: fn(v: 'a) -> i64|` is refused so, and
+`f(str::parse(s), 1, |v| 0)` runs.
 
-An argument with an undecided cell and nothing else at its variable
-(`id(u)`) takes the variable as it is: one cell, decided by whichever
-use comes first, as any cell is. A variable a callback also holds is
-not widenable: the first argument decides it, an undecided one
-included, so `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v:
-'a) -> i64|` runs and `f(1, str::parse(s), |v| 0)` is refused. Annotating
-the undecided argument widens nothing there, so where a wider decision
-of the variable could hold it (`annotation_may_fit` over the variables
-an earlier argument of this call decided: written ones, that the formal
-holds outside function types), the refusal names the argument that
-decided it, "annotate that argument as wide as this one"
-(`callsite::decided_elsewhere`); `f(1, [], |v| 0)`, an undecided
-argument at a formal with no variable or at a callback formal, and one
-at a variable decided before the call (by an earlier call of one
-instance, as in a seq step, or a `let rec` body) are plain mismatches. An argument or an omitted default whose type holds a function
-type with open cells does not widen either (`Widening::widen` skips a
-type with an unbound cell): it fits the variable as the arguments before
-it left it, or is refused, so order decides between a value and a
-refusal there: `f({n: 1, k}, {n: w, k})` over `|x: 'a, y: 'a|` with `w:
-[i64, null]` is refused, naming nothing, and `f({n: w, k}, {n: 1, k})`
-runs; an omitted default is met after every written argument.
+Pins: `lang::functions::{widest_arg_either_order, widest_arg_first,
+widest_arg_last_refused, undecided_argument_first_decides,
+undecided_argument_last_refused, open_argument_takes_the_variable_as_it_stands,
+open_argument_before_a_wider_one_refused,
+omitted_undecided_default_takes_what_stands,
+omitted_undecided_default_before_a_wider_one_refused}`,
+`lang::types::{argument_into_a_typedef_union_is_decided_by_the_parameters_before_it,
+argument_into_a_typedef_union_before_its_deciders_refused,
+variable_in_a_typedef_union_does_not_widen_refused,
+literal_element_into_a_typedef_union_after_its_deciders,
+wrappers_of_a_typedef_union_function}`, the shell's
+`no_subst::an_instance_checked_again_meets_its_arguments_in_the_same_order`.
 
 ### A function held at a function type
 
 A function type that must hold a function (an annotated `let`, a
-callback's formal, a field, a write) holds it position by position
-(`FnType::contains_gated`), and a variable of the function still open
-there is decided by what the positions give it. A variable that no
-function type of the function's signature holds, nor a union beside
-another undecided member (`FnType::order_free_cells`, over
-`settle::DataPositions`), takes the widest of the types the argument
-positions give it, whatever their order, as a call's arguments decide
-it. Each part holding no undecided cell that the variable must hold
-waits for the end of the arguments (`ContainsHist::defer`, `defers`);
-there the variable meets the part that holds every other one first, then
-the rest (`ContainsHist::settle_deferred`), and only then are the result
-and the throws related. So `let g: fn(b: i64, k: Any) -> i64 = f` over
-`let f = |b: 'y, k: 'y| 0` takes `'y` as `Any`, as it does with `k`
-written first, and a narrower written result (`-> 'y` held at `-> i64`
-beside `k: [i64, null]`) is refused in either order. Two parts of one
-position (`('y, 'y)` held at `(i64, Any)`) are two parts.
+callback's formal, a field, a write) holds it position by position, in
+the order written, then the result and the throws
+(`FnType::contains_gated`). A variable of the function still open there
+is decided by the first position that meets it, and the later positions
+must fit that: nothing waits (Eric 11-13, D36). So `let g: fn(b: [i64,
+null], k: i64) -> [i64, null] = f` over `let f = |b: 'y, k: 'y| -> 'y k`
+takes `'y` as `[i64, null]`, and `fn(b: i64, k: [i64, null])` is
+refused, "does not contain fn(b: 'y: i64, k: 'y: i64) -> 'y: i64": the
+written type's earlier position is as wide as its later ones need, or
+the function is wrapped in a lambda with its parameters written (`|b:
+i64, k: [i64, null]| f(b, k)`), whose call widens (A call's arguments
+are met in order). Two parts of one position (`('y, 'y)` held
+at `([i64, null], i64)`) are two positions. A position that holds the
+variable exactly (a writable reference, a nominal type's or a
+constructor application's parameter) decides it as any other does, where
+it is written, and a position holding a union of the function's
+variables is met where it is written too, as a call's argument is.
 
-- With no part that holds the others (`fn(b: i64, k: string)`) the parts
-  meet the variable in the order written and the second is refused, in
-  either order, as a call's arguments are.
-- A part holding an undecided cell does not wait: it meets the variable
-  where it is written, and the parts that waited then meet what it left.
-- A position that holds the variable exactly (a writable reference, a
-  nominal type's or a constructor application's parameter) binds it when
-  it is met, and the parts that waited must fit that: `fn(k: i64, p:
-  &mut [i64, null])` holds `|k: 'y, p: &mut 'y|` in either order.
-- A rigid variable (a declared one, or a quantifier of the type) that a
-  position gives a union holding a waiting variable as a member meets the
-  union after the variables have met their parts
-  (`ContainsHist::defers_member_choice`): the member takes it whole, or
-  the members take its bound's parts, by what the variable has become.
-  So with `'b: [i64, null]`, `fn(s: i64, v: 'b)` holds `|s: 'a, v: ['a,
-  null]|` in either order (`'a` is `i64`, and `[i64, null]` holds `'b`
-  by its bound), and `fn(v: 'b, w: 'b)` holds `|v: ['a, null], w: 'a|`
-  (`'a` is `'b`). A trait's default written at its bound over `self`
-  (`|s, x: [self, null]|` under `fn<'b: [self, null]>(self, x: 'b)`) is
-  the first. Pins:
-  `lang::functions::written_fn_type_union_beside_a_declared_variable_*`,
-  `lang::traits::default_method_parameter_*`.
-- A variable a function type holds, a callback's parameter or result, is
-  decided by the first position that meets it, as at a call (above): the
-  held type writes its earlier position as wide as the later ones need.
-  A typedef application met inside its own expansion (`S<'b, 'a>` in
-  `S<'a, 'b>`) counts as holding its parameters so, its expansion being
-  unwalked. A variable in a union beside another undecided member
-  (`['b, Array<'b>]`) is decided in order too: which member takes a type
-  depends on what the cells are.
-- A variable in an application of a typedef that reaches itself waits
-  as any other does where the typedef holds it as data: two applications
-  over an open variable are related through their expansions, so over
-  `type T<'a> = [`Leaf('a), `Node(T<i64>)]`, `fn(t: T<i64>, k: [i64,
-  null])` holds `|t: T<'y>, k: 'y|` in either order. One the typedef
-  passes on to its own application (`type L<'a> = [`Nil, `Cons('a,
-  L<'a>)]`) is met inside its own expansion, the case above, and keeps
-  the first position: `fn(k: [i64, null], l: L<i64>)` holds `|k: 'y, l:
-  L<'y>|` and the same with `l` written first is refused (pins
-  `lang::functions::written_fn_type_recursive_typedef_*`).
+A rigid variable (a declared one, or a quantifier of the type) that a
+position gives a union holding an open variable as a member is held by
+the member whole, or by its bound's parts, as the positions before it
+left the member. So with `'b: [i64, null]`, `fn(s: i64, v: 'b)` holds
+`|s: 'a, v: ['a, null]|` (`'a` is `i64`, and `[i64, null]` holds `'b` by
+its bound) and `fn(v: 'b, w: 'b)` holds `|v: ['a, null], w: 'a|`; `fn(v:
+'b, s: i64)` over `|v: ['c, null], s: 'c|` is refused, the union met
+before the position that decides its member. A trait's default written
+at its bound over `self` (`|s, x: [self, null]|` under `fn<'b: [self,
+null]>(self, x: 'b)`) is the first form. A label stands before `self`,
+so a default's label is written as the declared variable (`|#k: 'b,
+s|`), or left unwritten. Pins:
+`lang::functions::written_fn_type_{first_position_decides,
+wider_later_position_refused, exact_position_first,
+exact_position_after_a_narrower_one_refused,
+union_beside_a_declared_variable,
+union_before_its_members_position_refused}`,
+`lang::traits::default_method_{parameter_written_at_the_declared_bound,
+label_written_at_the_bound_before_self_refused}`.
 
 The pre-unification of a callback argument with its formal
-(`FnType::pre_unify_params`) defers the same way, so `app(f)` over `h:
-fn(b: i64, k: Any) -> i64` fits as the `let` does. A pair proven while
-a part of it waited holds only if the part does: where a part is refused
-at the end, the walk keeps none of the pairs it proved, nor those it
-holds while an assumption they rest on stands
-(`ContainsHist::settle_deferred`; pin
-`typ::contains::tests::a_refused_part_drops_the_pairs_held_on_a_question_in_progress`).
+(`FnType::pre_unify_params`) meets the positions the same way.
 
 ### A union of variables in a signature
 
@@ -700,15 +622,14 @@ one member, chosen by rules that read the union alone:
   members, however alike (`[Array<'a>, Array<'b>]`,
   `[Array<['a, 'b]>, Array<'a>]`). The same count says whether a union has
   two undecided members for an undecided type to take whole
-  (`place_members`) and whether a signature's position waits for the
-  others (`fntyp::holds_open_union`), so `['a, 'a]` is `'a` to each.
+  (`place_members`), so `['a, 'a]` is `'a` there.
 
 A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
 ⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`
 (`type P<'p, 'q> = [Array<'p>, Array<'q>]`) is refused, and runs where
-the other parameters decide the members, as a decided argument does (`f([1],
-1, "s")` over `|x: P<'a, 'b>, y: 'a, z: 'b|`): at a call the choice waits
-for the other arguments, whatever their order (A call's widening). Nothing gives an argument to a
+the parameters before it decide the members, as a decided argument does
+(`f(1, "s", [])` over `|y: 'a, z: 'b, x: P<'a, 'b>|`; A call's arguments
+are met in order). Nothing gives an argument to a
 member before it is decided: a pre-unification that meets the choice
 leaves it to the argument's own check (`Type::pre_unify_arg`), a decided
 member beside another that could take the undecided argument included
@@ -723,8 +644,7 @@ a nested function or a seq step is refused where the direct call is, at
 the check, never at the instance (pins
 `lang::types::{wrapper,nested_function}_into_a_bound_union_of_two_undecided_refused`
 and their twins, `empty_array_into_a_typedef_union_of_two_undecided_arrays_refused`,
-`seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters`,
-`never_argument_beside_one_deciding_a_bound_union`,
+`seq_step_empty_array_into_a_bound_union_after_its_deciders`,
 `wrapper_argument_into_a_bound_union_beside_a_decided_member`,
 `literal_into_the_second_member_of_a_named_union`).
 
@@ -1945,30 +1865,30 @@ cells (`crate::holds_generic` refuses it). Pins: `lang::quantified`
 `lang::functions::generic_function_*`.
 
 `instance_sig` holds an instance's signature to a copy of the
-definition's by `FnType` containment, which decides a parameter or a
-result typed by a union of two open cells only after every other position
-(`fntyp::holds_open_union`): the positions that hold each member alone
-decide it, a parameter's or the result's, and the union then holds what
-they left. One cell standing twice is no such union: `Array<['a, 'a]>`,
-what a slice arm binding two elements leaves an unannotated parameter, is
-decided where it stands, before the result (pins
+definition's by `FnType` containment, the parameters in the order
+written, then the result: a result typed by a union of two open cells
+meets what the parameters that hold each member alone decided, and a
+parameter typed so is met where it is written, as the call that made the
+instance met its argument. One cell standing twice is no such union:
+`Array<['a, 'a]>`, what a slice arm binding two elements leaves an
+unannotated parameter, is decided where it stands, before the result
+(pins
 `lang::types::slice_arm_returning_two_elements_over_an_unannotated_parameter`,
 `slice_arm_returning_two_elements_takes_an_array_of_two_undecided`, and
 `slice_arms_over_an_unannotated_parameter_{read_from_a_field,closing_over_an_outer_one}`:
 a function a field holds is bound at run time, where an instance that does
 not type gives its call no value).
 A written function type holds no such union (below, A union of
-variables in a signature), so only an inferred one meets that order (`|c,
-a, b| select c { true => a, false => b }`), and a type that either member
-could take is refused by both orders alike (A union's member takes a type
-by rule).
+variables in a signature), so only an inferred one meets it (`|c, a, b|
+select c { true => a, false => b }`), and a type that either member
+could take is refused (A union's member takes a type by rule).
 
 **An instance holds its signature cell by cell.** The instance's
 signature is the definition's at the types the call's check decided, and
 the call may have decided a union's members from other positions than the
-containment meets first: an undecided argument (`never()`, `[]`) waits for
-the others, and a union a typedef hides (`E<'a, 'b>`) is not held back as
-a written one is. So where the containment fails, the instance's copy
+containment meets first: the call meets its arguments in the order of
+the parameters, and a union a typedef hides (`E<'a, 'b>`) is not held back
+as a written one is. So where the containment fails, the instance's copy
 takes each cell from what stands at its own place in the instance's
 signature, wherever the two are built alike (`Type::place_cells`: a named
 type's parameters, an array's element, a tuple's, a struct's, a function's
@@ -2754,29 +2674,26 @@ references name the target is told the recursive type alone
   declared variable is closed: such a default fits its parameter whole, for
   every instance of the variable (an unannotated parameter takes its type),
   and a site outside that definition judges it over a copy of the scheme
-  (`callsite::Judge`). A call's type variable that only
-  data positions or read-only references hold settles to the widest of the
-  arguments holding no undecided cell and the defaults the call omits,
-  whatever the order; an argument or an omitted default holding an
-  undecided cell outside function types (a read target, a `let` over
-  `never()`, `[]`'s element; never a lambda's, `Type::has_free_in_data`)
-  decides its formal's other variables at once, waits for that join and
-  takes the variable it settles, and is refused where the join, or an undecided argument before it, decided
-  the variable and does not hold it, "annotate it", naming the bindings it
-  reads, where a decision of its cells could fit (`Widening::opening`,
-  `check_waiting`); a written argument or an omitted default neither wider
-  nor narrower waits for the others to widen it, and a decided argument
-  that two undecided members of its formal's union could take waits for
-  the others to decide them, refused where two still could
-  (`CallSite::join_choosing`). One a
+  (`callsite::Judge`). A call's arguments are met in the order of the
+  parameters, then the defaults it omits, and nothing waits (A call's
+  arguments are met in order): a type variable that only data positions
+  or read-only references hold widens to a decided argument wider than
+  the ones before it; one neither wider nor narrower is the mismatch; an
+  argument or an omitted default holding an undecided cell outside
+  function types (a read target, a `let` over `never()`, `[]`'s element;
+  never a lambda's, `Type::has_free_in_data`) takes its formal as it
+  stands, and the variables it met widen no more (`Widening::take`,
+  `pin`); a decided argument that two undecided members of its formal's
+  union could take is refused where it is written, naming the remedy
+  (`callsite::ambiguous_parameter`). One a
   callback holds settles to the first argument, and one an abstract
   type, a type application or a writable reference holds is fixed there, those
   arguments checked first whatever the order the call writes (a
   transparent typedef is its expansion)
   (`callsite.rs::Widening`, `holds_invariantly`); a function held at a
-  function type decides such a variable the same way, by the widest of
-  the positions that hold it, whatever their order
-  (`FnType::order_free_cells`, `ContainsHist::settle_deferred`); a function type with
+  function type meets the type's positions in the order written, and
+  the first that meets a variable decides it
+  (`FnType::contains_gated`); a function type with
   type variables of its own (a written `fn<'b: C>(..)`, a trait as a
   parameter's type, `fn(c: Collection)`, a constructor-trait quantifier)
   stands only as a declared signature's top (an interface `val`'s, a

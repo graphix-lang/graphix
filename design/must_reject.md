@@ -123,26 +123,27 @@ writing a parameter `x: 'a` to an outer `let y = never()` (`y <- x`).
 parameter type is concrete: substitute a literal of a disjoint type.
 (b) The parameter is a variable shared with another argument whose
 type is concrete: substitute a literal whose type neither contains nor
-is contained by that argument's. Rule: containment for (a); for (b) the
-widest-argument rule refuses when no argument's type contains all the
-others, and a variable a callback or reference holds keeps the first
-argument's type, so both paths refuse (`callsite.rs::Widening`). Skip:
-labeled defaults, variadic positions, a parameter typed `Any`, a first
-argument whose type its uses decide (a `let` over `never()`, or a value
-holding one, `[n]`: the call decides it after every other argument, so
-it meets nothing). Built:
+is contained by that argument's. Rule: containment for (a); for (b) a
+call's arguments are met in the order of the parameters, and one
+neither wider nor narrower than what the ones before it gave the
+variable is refused where it stands; a variable a callback or reference
+holds keeps the first argument's type, so both paths refuse
+(`callsite.rs::Widening`). Skip: labeled defaults, variadic positions, a
+parameter typed `Any`, a first argument whose type its uses decide (a
+`let` over `never()`, or a value holding one, `[n]`: it takes whatever
+the mutated argument gives the variable, so it meets nothing). Built:
 (b), two or more positionals of one variable, the second mutated and
-every other one there a concrete primitive (each takes part in the
-widest-argument rule), the literal disjoint from them all, right site
-the call; (a) is family 4's argument case.
+every other one there a concrete primitive, the literal disjoint from
+them all, right site the call; (a) is family 4's argument case.
 
 `open-arg`, at (b)'s sites where the variable stands in no function,
-abstract type, application or writable reference: the FIRST argument
+abstract type, application or writable reference: the SECOND argument
 there becomes `str::parse("1")`, whose type the call leaves undecided.
-Rule: an argument holding an undecided cell takes the variable the
-other arguments join to, whatever its place, and is refused, "annotate
-it", where the join does not hold it (`callsite::undecided_note`): a
-primitive join holds no parse error (a join admitting `error` is
+Rule: an argument holding an undecided cell takes its formal as the
+arguments before it left it, and is refused, "annotate it", where that
+does not hold it (`callsite::undecided_note`): a primitive holds no
+parse error (the first argument made so would decide the variable and
+run; a variable the others give a type admitting `error` is
 skipped, and so is a variable with a primitive bound, `'a: Number`, or
 `Singleton`, which no union meets: either refuses the parse's result before
 the rule). Built, right site the call.
@@ -398,8 +399,8 @@ trait method, a `let` annotation's function type), pinned by
 `lang::traits::trait_method_variable_union_refused`. The choice-point
 rule behind it (a type two undecided members of a union could take goes
 to neither, `AmbiguousMember`, `design/tvar_constraints.md`; a call's
-decided argument waits for the other arguments to decide them first,
-`CallSite::join_choosing`) is not
+argument is refused so unless the arguments before it decided the
+members) is not
 generated either: it refuses at the use, not at the mutated definition;
 pins `lang::types::*_refused_at_its_use`,
 `write_into_a_union_of_two_undecided_refused`.

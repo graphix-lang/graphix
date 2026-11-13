@@ -860,8 +860,6 @@ thread_local! {
     /// ([`OwnWrites`]).
     static OWN_WRITES: RefCell<Option<Record>> = const { RefCell::new(None) };
     static CELL_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static LINKS: RefCell<Links> =
-        const { RefCell::new(Links { watchers: 0, log: Vec::new() }) };
 }
 
 /// How many writes this thread has made to cells and to vars' links: a
@@ -875,61 +873,6 @@ pub(super) fn cell_writes() -> u64 {
 #[inline]
 fn count_write() {
     CELL_WRITES.with(|n| n.set(n.get() + 1))
-}
-
-/// A change to whether a cell's binding is a var ([`LinkWatch`]).
-#[derive(Debug, Clone, Copy)]
-pub(super) enum LinkChange {
-    /// The cell at this address was bound to no var and now is: every var
-    /// standing for it ([`TVar::stands_for`]) stands for the end of its
-    /// binding now.
-    Made(usize),
-    /// A binding to a var was replaced or cleared.
-    Undone,
-}
-
-/// The [`LinkChange`]s this thread's binding writes made while a walk
-/// watched.
-struct Links {
-    watchers: u32,
-    log: Vec<LinkChange>,
-}
-
-/// A walk's view of the [`LinkChange`]s this thread's binding writes make
-/// from its start on: only a link moves a var to another cell, so a walk
-/// that keeps vars by the cells they stand for reads what changed here.
-pub(super) struct LinkWatch {
-    read: usize,
-    on_this_thread: std::marker::PhantomData<*const ()>,
-}
-
-impl LinkWatch {
-    pub(super) fn start() -> Self {
-        LINKS.with_borrow_mut(|links| {
-            links.watchers += 1;
-            LinkWatch { read: links.log.len(), on_this_thread: std::marker::PhantomData }
-        })
-    }
-
-    /// The next change after the last one this watch read.
-    pub(super) fn next(&mut self) -> Option<LinkChange> {
-        LINKS.with_borrow(|links| {
-            let link = *links.log.get(self.read)?;
-            self.read += 1;
-            Some(link)
-        })
-    }
-}
-
-impl Drop for LinkWatch {
-    fn drop(&mut self) {
-        LINKS.with_borrow_mut(|links| {
-            links.watchers -= 1;
-            if links.watchers == 0 {
-                links.log.clear()
-            }
-        })
-    }
 }
 
 /// A cell's lock: each write counts toward [`cell_writes`] and takes the
@@ -1673,21 +1616,8 @@ impl TCell {
         TCell { binding: Some(typ), ..TCell::default() }
     }
 
-    /// Bind the cell, or clear its binding with `None`, telling the
-    /// watching walks ([`LinkWatch`]) of a binding to a var made or undone.
+    /// Bind the cell, or clear its binding with `None`.
     pub(crate) fn set_binding(&mut self, binding: Option<Type>) {
-        let link = match (&self.binding, &binding) {
-            (Some(Type::TVar(_)), _) => Some(LinkChange::Undone),
-            (_, Some(Type::TVar(_))) => Some(LinkChange::Made(cell_addr(self))),
-            _ => None,
-        };
-        if let Some(link) = link {
-            LINKS.with_borrow_mut(|links| {
-                if links.watchers > 0 {
-                    links.log.push(link)
-                }
-            })
-        }
         self.binding = binding
     }
 

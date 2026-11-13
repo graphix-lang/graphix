@@ -12,7 +12,6 @@ use crate::{
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
         normalize::NormCx,
-        settle::{DataPositions, Held},
         tvar::{self, Fresh, Level, RigidGate},
     },
 };
@@ -31,11 +30,11 @@ use smallvec::SmallVec;
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
-    collections::{VecDeque, hash_map::Entry},
+    collections::VecDeque,
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
     mem::discriminant,
-    ops::{ControlFlow, Range},
+    ops::ControlFlow,
     sync::{Arc as SArc, Weak},
     thread::LocalKey,
 };
@@ -1679,88 +1678,22 @@ impl FnType {
         let mut positions: SmallVec<[Option<(&Type, &Type, _)>; 8]> =
             pairs.iter().map(|(s, t)| Some((&t.typ, &s.typ, args))).collect();
         positions.extend(vargs.map(|(tv, sv)| Some((tv, sv, args))));
-        let arguments = positions.len();
         positions.push(Some((&self.rtype, &t.rtype, flags)));
         positions.push(None);
         positions.push(Some((&self.throws, &t.throws, flags)));
-        // a union of open cells is decided by the positions that decide
-        // its members alone, wherever they are written: each position's
-        // round is fixed before any position binds a cell
-        let later: SmallVec<[bool; 8]> = positions
-            .iter()
-            .map(|p| {
-                p.is_some_and(|(c, t, _)| {
-                    (!hist.closed(c) && holds_open_union(c))
-                        || (!hist.closed(t) && holds_open_union(t))
-                })
-            })
-            .collect();
-        let hold = |hist: &mut ContainsHist, of: Range<usize>, round: bool| {
-            for p in of.filter(|i| later[*i] == round).map(|i| &positions[i]) {
-                let holds = match p {
-                    Some((c, t, flags)) => c.contains_int(*flags, env, hist, t)?,
-                    None => {
-                        self.bounds_hold(flags, env, hist)?
-                            && t.bounds_hold(flags, env, hist)?
-                    }
-                };
-                if !holds {
-                    return Ok(false);
+        for p in positions.iter() {
+            let holds = match p {
+                Some((c, t, flags)) => c.contains_int(*flags, env, hist, t)?,
+                None => {
+                    self.bounds_hold(flags, env, hist)?
+                        && t.bounds_hold(flags, env, hist)?
                 }
+            };
+            if !holds {
+                return Ok(false);
             }
-            Ok(true)
-        };
-        // a variable of `t` no function type holds takes the widest of the
-        // closed types the arguments give it, whatever their order
-        let mark = match flags.contains(ContainsFlags::Commit) {
-            true => {
-                let cells = t.order_free_cells(env, hist);
-                hist.defer(cells)
-            }
-            false => None,
-        };
-        let held = hold(hist, 0..arguments, false);
-        Ok(hist.settle_deferred(mark, env, held)?
-            && hold(hist, arguments..positions.len(), false)?
-            && hold(hist, 0..positions.len(), true)?)
-    }
-
-    /// The open cells an argument holds that no function type of the
-    /// signature holds, nor a union beside another undecided member, in
-    /// the order the signature writes them: a value of a wider type is
-    /// well typed wherever the signature holds one as data, and a
-    /// position that holds one exactly decides it whenever it is met.
-    fn order_free_cells(
-        &self,
-        env: &Env,
-        hist: &mut ContainsHist,
-    ) -> SmallVec<[TVar; 2]> {
-        let mut cells = SmallVec::new();
-        let mut open = |t: &Type| !hist.closed(t) && t.has_free_in_data();
-        if !self.args.iter().any(|a| open(&a.typ))
-            && !self.vargs.as_ref().is_some_and(&mut open)
-        {
-            return cells;
         }
-        let mut found: LPooled<AHashMap<usize, bool>> = LPooled::take();
-        let mut positions = DataPositions::new(env).telling_members();
-        self.for_each_type(&mut |t| {
-            positions.walk(t, Held::default(), &mut |tv, held| {
-                if tv.is_bound() || tv.is_rigid() || tv.earlier_task() {
-                    return;
-                }
-                let waits = !held.function && !held.member;
-                match found.entry(tv.cell_addr()) {
-                    Entry::Occupied(mut e) => *e.get_mut() &= waits,
-                    Entry::Vacant(e) => {
-                        e.insert(waits);
-                        cells.push(tv.clone())
-                    }
-                }
-            })
-        });
-        cells.retain(|tv| found[&tv.cell_addr()]);
-        cells
+        Ok(true)
     }
 
     /// Rigid gates on a scheme's quantifiers no call has picked: what each
@@ -1808,13 +1741,10 @@ impl FnType {
     /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
         let mut hist = ContainsHist::new();
-        let cells = t.order_free_cells(env, &mut hist);
-        let mark = hist.defer(cells);
-        let held = self.align(t).0.into_iter().try_for_each(|(s, t)| {
+        self.align(t).0.into_iter().try_for_each(|(s, t)| {
             let flags = ContainsFlags::Commit.into();
             t.typ.contains_int(flags, env, &mut hist, &s.typ).map(drop)
-        });
-        hist.settle_deferred(mark, env, held.map(|()| true)).map(drop)
+        })
     }
 
     pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<SigMatch> {

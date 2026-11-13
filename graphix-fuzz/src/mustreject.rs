@@ -1287,20 +1287,21 @@ fn with_first_statement(
 
 /// Family 3. A call whose callee takes two or more positionals of one
 /// variable, every argument there but the second a concrete primitive,
-/// gets a second argument of a type none of theirs relates to: with no
-/// argument containing the others the widest-argument rule refuses, and a
-/// variable a callback holds keeps the first (`callsite.rs::Widening`). A
-/// call where one of them has a type its uses decide (`open_init`) is
-/// skipped. Right site: the call.
+/// gets a second argument of a type none of theirs relates to: an
+/// argument neither wider nor narrower than what the ones before it gave
+/// the variable is refused where it stands, and a variable a callback
+/// holds keeps the first (`callsite.rs::Widening`). A call where one of
+/// them has a type its uses decide (`open_init`) is skipped. Right site:
+/// the call.
 ///
 /// `open-arg`, at the same sites where the variable stands in no function,
-/// abstract type, application or writable reference: the FIRST argument
+/// abstract type, application or writable reference: the SECOND argument
 /// there becomes `str::parse("1")`, whose type the call leaves undecided:
-/// it takes the variable the other arguments decide, a primitive, which
-/// cannot hold the parse's error, so it is refused whatever its place,
-/// asking for an annotation (`callsite.rs::undecided_note`). A variable
-/// with a primitive or `Singleton` bound is skipped: the bound refuses the
-/// result first.
+/// it takes the variable as the argument before it left it, a primitive,
+/// which cannot hold the parse's error, so it is refused, asking for an
+/// annotation (`callsite.rs::undecided_note`). The first argument made so
+/// would decide the variable and run. A variable with a primitive or
+/// `Singleton` bound is skipped: the bound refuses the result first.
 fn shared_var(
     root: &Expr,
     pre: &[Expr],
@@ -1363,15 +1364,14 @@ fn shared_var(
             {
                 continue;
             }
-            Family::OpenArg => a,
             _ => b,
         };
         let si = stmts
             .iter()
             .find(|(_, at, _)| (*at..*at + sizes[*at]).contains(&i))
             .map_or(0, |(si, ..)| *si);
-        // every other argument of the variable takes part in the widest-argument
-        // rule; one whose type this call decided meets nothing
+        // every other argument of the variable must be decided; one whose
+        // type this call decided meets nothing
         let held = (0..params.len())
             .filter(|c| *c != replaced && same(params[a], params[*c]))
             .map(|c| {

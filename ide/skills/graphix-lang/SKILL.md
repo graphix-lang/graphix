@@ -470,14 +470,19 @@ ok let init: [i64, null] = null; array::fold([1], init, |acc, x| x)
 ok let h = |x: 'a| {v: x}; h(1).v
 ```
 
-A generic function's variable that only data holds takes the widest
-argument, in either order; an argument still undecided (a `str::parse`, a
-`let` over `never()`, `[]`) takes what the others decide, or is refused,
-"annotate it": annotate the read. `generics.md` has the rest.
+A call's arguments are met in the order of the parameters, and nothing
+waits for a later one. A generic function's variable that only data holds
+widens to a decided argument wider than the ones before it, so two decided
+arguments settle it alike in either order. An argument still undecided (a
+`str::parse`, a `let` over `never()`, `[]`) takes the variable as the
+arguments before it left it: first, it decides it with what follows; after
+a decided one it must fit that, or is refused, "annotate it": annotate the
+read. `generics.md` has the rest.
 
 ```graphix,cases
 ok let s = "1"; opt::or_default(str::parse(s)$, 0)
-no "undecided at this" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
+ok let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
+no "undecided at this" let f = |x: 'a, y: 'a| -> 'a y; f(1, str::parse("1"))
 ```
 
 ## Select

@@ -2143,8 +2143,9 @@ const USER_VARIADIC: &str = r#"
 
 run!(user_variadic_refused, USER_VARIADIC, refused("is for builtins only"); FuseExpect::None);
 
-// A type variable only data arguments hold settles to the widest
-// argument, whatever the order.
+// A type variable only data arguments hold widens to an argument wider
+// than the ones before it, so two decided arguments settle it alike in
+// either order.
 const WIDEST_ARG_EITHER_ORDER: &str = r#"
 {
   let n: [u64, null] = null;
@@ -2164,8 +2165,19 @@ const LIST_CONS_WIDER_TAIL: &str = r#"
 
 run!(list_cons_wider_tail, LIST_CONS_WIDER_TAIL, prints("[u64:0, u64:1, null]"));
 
-// Two arguments neither of which holds the other wait for a later
-// argument that holds both.
+// Arguments are met in order and nothing waits: an argument that holds
+// the ones after it settles the variable, and two neither of which holds
+// the other are refused where the second stands, whatever follows.
+const WIDEST_ARG_FIRST: &str = r#"
+{
+  let f = |x: 'a, y: 'a, z: 'a| -> 'a y;
+  let ab: [`A, `B] = `A;
+  f(ab, `B, `A)
+}
+"#;
+
+run!(widest_arg_first, WIDEST_ARG_FIRST, prints("\"B\""));
+
 const WIDEST_ARG_LAST: &str = r#"
 {
   let f = |x: 'a, y: 'a, z: 'a| -> 'a y;
@@ -2174,7 +2186,7 @@ const WIDEST_ARG_LAST: &str = r#"
 }
 "#;
 
-run!(widest_arg_last, WIDEST_ARG_LAST, prints("\"B\""));
+run!(widest_arg_last_refused, WIDEST_ARG_LAST, refused("type mismatch 'a: `A does not contain `B"); FuseExpect::None);
 
 // A lambda in parentheses is a lambda: its binding generalizes.
 run!(
@@ -2220,7 +2232,7 @@ run!(
     FuseExpect::None
 );
 
-// No argument holds the others: refused, in either order.
+// Neither argument holds the other: refused, in either order.
 run!(
     no_widest_arg_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; (f(`A, `B), f(`B, `A)) }"#,
@@ -2236,14 +2248,14 @@ run!(
     FuseExpect::None
 );
 
-// An argument whose type is undecided takes the variable the closed
-// arguments decide, whatever the order; where that refuses it, the
-// refusal asks for an annotation, in either order.
+// An argument whose type is undecided takes its formal as the arguments
+// before it left it. First, it decides the variable with what follows;
+// after a decided one it must fit that, and the refusal asks for an
+// annotation.
 run!(
-    undecided_argument_first_refused,
+    undecided_argument_first_decides,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("5"), 1) }"#,
-    refused("this argument is undecided at this call; annotate it");
-    FuseExpect::None
+    prints("i64:1")
 );
 
 run!(
@@ -2254,10 +2266,9 @@ run!(
 );
 
 run!(
-    undecided_binding_first_named,
+    undecided_binding_first_decides,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; let p = str::parse("5"); f(p, 1) }"#,
-    refused("`p` is undecided at this call; annotate `p`");
-    FuseExpect::None
+    prints("i64:1")
 );
 
 run!(
@@ -2593,18 +2604,18 @@ run!(
 );
 
 // Two undecided arguments at one variable: the second meets what the
-// first gave it, so either order asks for an annotation.
+// first gave it.
 run!(
     two_undecided_arguments_first_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("5"), str::parse("6")$) }"#,
-    refused("this argument is undecided at this call; annotate it");
+    refused("an undecided argument before this one met 'a");
     FuseExpect::None
 );
 
 run!(
     two_undecided_arguments_last_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a x; f(str::parse("6")$, str::parse("5")) }"#,
-    refused("this argument is undecided at this call; annotate it");
+    refused("an undecided argument before this one met 'a");
     FuseExpect::None
 );
 
@@ -2625,40 +2636,53 @@ run!(
     FuseExpect::None
 );
 
-// An omitted default that neither holds nor is held by what the others
-// gave the variable waits for the rest to widen it, as a written one does,
-// whichever label comes first.
+// An omitted default is met after the written arguments, as one written
+// last: neither wider nor narrower than what they gave the variable, it
+// is the mismatch.
 run!(
-    omitted_incomparable_default_waits,
-    r#"{
-  let f = |#a: 'a = "s", #b: Array<'a> = [1, "s"], y: 'a| -> 'a y;
-  let g = |#z: 'a = "s", #b: Array<'a> = [1, "s"], y: 'a| -> 'a y;
-  (f(1), f(#a: "s", #b: [1, "s"], 1), g(1))
-}"#,
-    prints("[i64:1, i64:1, i64:1]")
+    omitted_incomparable_default_refused,
+    r#"{ let f = |#a: 'a = "s", y: 'a| -> 'a y; f(1) }"#,
+    refused("type mismatch 'a: i64 does not contain string");
+    FuseExpect::None
 );
 
-// An omitted default holding an undecided cell waits as a written one
-// does, and takes what the others settle, whichever label comes first.
+// An omitted default holding an undecided cell takes the variable as the
+// arguments and the defaults before it left it, and the variable widens
+// no more: a wider default declared after it is refused.
 run!(
-    omitted_undecided_default_waits,
-    r#"(
-  { let u = str::parse("abc")$; let n: [i64, string] = 2;
-    let f = |#a: 'a = u, #b: 'a = n, y: 'a| -> 'a y; (f(1), u) },
-  { let u = str::parse("abc")$; let n: [i64, string] = 2;
-    let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y; (f(1), u) }
-)"#,
-    prints(r#"[[i64:1, "abc"], [i64:1, "abc"]]"#)
+    omitted_undecided_default_takes_what_stands,
+    r#"{
+  let u = str::parse("abc")$;
+  let n: [i64, string] = 2;
+  let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y;
+  (f(1), u)
+}"#,
+    prints(r#"[i64:1, "abc"]"#)
 );
+
 run!(
-    omitted_undecided_default_waits_for_a_later_write,
-    r#"(
-  { let u = never(); let n: [i64, null] = null;
-    let f = |#a: 'a = u, #b: 'a = n, y: 'a| -> 'a y; let r = f(1); u <- null; r },
-  { let u = never(); let n: [i64, null] = null;
-    let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y; let r = f(1); u <- null; r }
-)"#,
-    prints("[i64:1, i64:1]")
+    omitted_undecided_default_before_a_wider_one_refused,
+    r#"{
+  let u = str::parse("abc")$;
+  let n: [i64, string] = 2;
+  let f = |#a: 'a = u, #b: 'a = n, y: 'a| -> 'a y;
+  (f(1), u)
+}"#,
+    refused("an undecided argument before this one met 'a");
+    FuseExpect::None
+);
+
+run!(
+    omitted_undecided_default_takes_what_stands_before_a_later_write,
+    r#"{
+  let u = never();
+  let n: [i64, null] = null;
+  let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y;
+  let r = f(1);
+  u <- null;
+  r
+}"#,
+    prints("i64:1")
 );
 
 // An omitted default's refusal names the undecided bindings it reads, as
@@ -3229,17 +3253,17 @@ run!(trait_call_in_a_default, TRAIT_CALL_IN_A_DEFAULT, |v: Result<&Value>| {
             && a[1] == s("int 5"))
 }; FuseExpect::Jit);
 
-// A variable settles to the widest argument whatever the order, a
-// formal holding two of them included.
+// A variable widens to each wider argument in turn, a formal holding two
+// of them included.
 const WIDEST_ARGUMENT_ANY_ORDER: &str = r#"
 {
     let g = |a: ('x, 'y), b: ('x, 'y), c: ('x, 'y)| (a, b, c);
     let i: [i64, f64] = 1;
-    g((1, 1), (i, 2.0), (3, i))
+    g((1, 1), (i, 2), (3, i))
 }
 "#;
 
-run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, prints("[[i64:1, i64:1], [i64:1, f64:2.], [i64:3, i64:1]]"); FuseExpect::Jit);
+run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, prints("[[i64:1, i64:1], [i64:1, i64:2], [i64:3, i64:1]]"); FuseExpect::Jit);
 
 // A default omitted through a fn type that names the label is judged by
 // that type: the call runs the instance with the fn type's parameter, so
@@ -5072,94 +5096,115 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(20)))
 );
 
-// A data-only variable settles to the widest argument whatever the order,
-// an argument whose type is an open cell included.
+// An argument whose type is an open cell takes the variable as it
+// stands, and the variable widens no more: a wider argument before it
+// runs, one after it is refused.
 run!(
-    widening_waits_for_an_open_argument,
+    open_argument_takes_the_variable_as_it_stands,
+    r#"{
+  let pick = |x: 'a, y: 'a, z: 'a| -> Array<'a> [x, y, z];
+  let v: [i64, null] = null;
+  let h = |z| pick(v, z, i64:1);
+  h(null)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[null, null, i64:1]")
+);
+
+run!(
+    open_argument_before_a_wider_one_refused,
     r#"{
   let pick = |x: 'a, y: 'a, z: 'a| -> Array<'a> [x, y, z];
   let v: [i64, null] = null;
   let h = |z| pick(i64:1, z, v);
   h(null)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, null, null]")
+    refused("an undecided argument before this one met 'a");
+    FuseExpect::None
 );
 
 // The same with the open cell nested inside the argument.
 run!(
-    widening_waits_for_a_nested_open_argument,
+    nested_open_argument_takes_the_variable_as_it_stands,
+    r#"{
+  let pick = |x: Array<'a>, y: Array<'a>, z: Array<'a>| -> Array<Array<'a>> [x, y, z];
+  let v: [i64, null] = null;
+  let h = |z| pick([v], [z], [i64:1]);
+  h(null)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[null], [null], [i64:1]]")
+);
+
+run!(
+    nested_open_argument_before_a_wider_one_refused,
     r#"{
   let pick = |x: Array<'a>, y: Array<'a>, z: Array<'a>| -> Array<Array<'a>> [x, y, z];
   let v: [i64, null] = null;
   let h = |z| pick([i64:1], [z], [v]);
   h(null)
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[[i64:1], [null], [null]]")
+    refused("an undecided argument before this one met 'a");
+    FuseExpect::None
 );
 
-// A generic function held at a written function type: a variable only
-// data holds takes the widest of the types the written arguments give it,
-// whatever their order, as a call's arguments decide it.
+// A generic function held at a written function type meets the type's
+// positions in the order written, and nothing waits: a variable takes the
+// first position's type and the later ones must fit it, two parts of one
+// position being two positions. The written type's earlier position is as
+// wide as its later ones need.
 run!(
-    written_fn_type_widest_position_either_order,
-    r#"{
-  let f = |b: 'y, k: 'y| -> 'y k;
-  let g: fn(b: i64, k: [i64, null]) -> [i64, null] = f;
-  let h: fn(b: [i64, null], k: i64) -> [i64, null] = f;
-  (g(1, null), h(null, 2))
-}"#,
-    prints("[null, i64:2]")
-);
-
-// Two positions neither of which holds the other wait for one that holds
-// both, and two parts of one position are two positions.
-run!(
-    written_fn_type_widest_position_last,
+    written_fn_type_first_position_decides,
     r#"{
   let f = |b: 'y, k: 'y, j: 'y| -> 'y k;
   let p = |t: ('y, 'y)| -> 'y t.0;
-  let g: fn(b: i64, k: null, j: [i64, null]) -> [i64, null] = f;
-  let q: fn(t: (i64, [i64, null])) -> [i64, null] = p;
-  (g(1, null, 2), q((3, null)))
+  let g: fn(b: [i64, null], k: null, j: i64) -> [i64, null] = f;
+  let q: fn(t: ([i64, null], i64)) -> [i64, null] = p;
+  (g(1, null, 2), q((3, 4)))
 }"#,
     prints("[null, i64:3]")
+);
+
+run!(
+    written_fn_type_wider_later_position_refused,
+    r#"{ let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> [i64, null] = f; g(1, null) }"#,
+    refused("does not contain fn(b: 'y: i64, k: 'y: i64) -> 'y: i64");
+    FuseExpect::None
 );
 
 // The same wherever the function meets the written type: a callback
 // argument, a struct's field, a write.
 run!(
-    written_fn_type_widest_position_everywhere,
+    written_fn_type_first_position_everywhere,
     r#"{
   let f = |b: 'y, k: 'y| -> 'y k;
-  let app = |h: fn(b: i64, k: [i64, null]) -> [i64, null]| h(1, null);
-  let s: {h: fn(b: i64, k: [i64, null]) -> [i64, null]} = {h: f};
-  let w: fn(b: i64, k: [i64, null]) -> [i64, null] = never();
+  let app = |h: fn(b: [i64, null], k: i64) -> [i64, null]| h(null, 1);
+  let s: {h: fn(b: [i64, null], k: i64) -> [i64, null]} = {h: f};
+  let w: fn(b: [i64, null], k: i64) -> [i64, null] = never();
   w <- f;
   (app(f), (s.h)(1, 2), w(1, 3))
 }"#,
-    prints("[null, i64:2, i64:3]")
+    prints("[i64:1, i64:2, i64:3]")
 );
 
 // A declared variable of the enclosing definition is a closed type there.
 run!(
-    written_fn_type_widest_position_declared,
+    written_fn_type_first_position_declared,
     r#"{
   let outer = |a: 'a, n: ['a, null]| {
     let f = |b: 'y, k: 'y| -> 'y k;
-    let g: fn(b: 'a, k: ['a, null]) -> ['a, null] = f;
-    g(a, n)
+    let g: fn(b: ['a, null], k: 'a) -> ['a, null] = f;
+    g(n, a)
   };
   outer(1, null)
 }"#,
-    prints("null")
+    prints("i64:1")
 );
 
-// The widest position types the result too: a narrower written result is
-// refused, in either order.
+// The first position types the result too: a narrower written result is
+// refused.
 run!(
-    written_fn_type_widest_position_types_the_result,
-    r#"{ let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null) }"#,
-    refused("fn(b: i64, k: [i64, null]) -> i64 does not contain fn(b: 'y: [i64, null]");
+    written_fn_type_first_position_types_the_result,
+    r#"{ let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: [i64, null], k: i64) -> i64 = f; g(1, 2) }"#,
+    refused("fn(b: [i64, null], k: i64) -> i64 does not contain fn(b: 'y: [i64, null]");
     FuseExpect::None
 );
 
@@ -5185,35 +5230,48 @@ run!(
     FuseExpect::None
 );
 
-// A union's member beside closed members holds the variable as data.
+// A union's member beside closed members holds the variable as data, and
+// decides it where it is the first position.
 run!(
-    written_fn_type_widest_position_in_a_union,
+    written_fn_type_position_in_a_union,
     r#"{
   let f = |b: ['y, null], k: 'y| -> 'y k;
   let f2 = |k: 'y, b: ['y, null]| -> 'y k;
-  let g: fn(b: [i64, null], k: [i64, string]) -> [i64, string] = f;
-  let h: fn(k: i64, b: [i64, null, string]) -> [i64, string] = f2;
-  (g(1, "s"), h(2, "t"))
+  let g: fn(b: [i64, null], k: i64) -> i64 = f;
+  let h: fn(k: [i64, string], b: [i64, null, string]) -> [i64, string] = f2;
+  (g(1, 5), h(2, "t"))
 }"#,
-    prints(r#"["s", i64:2]"#)
+    prints("[i64:5, i64:2]")
 );
 
 // A position that holds the variable exactly (a writable reference, a
-// nominal type) decides it wherever it is written, and the others fit it
-// or the type is refused, in either order.
+// nominal type) decides it as any other does, where it is written: first,
+// the others fit it; after a narrower one it is refused.
 run!(
-    written_fn_type_exact_position_decides,
+    written_fn_type_exact_position_first,
     r#"{
   type B<'a> = Abstract<'a>;
-  let f = |k: 'y, p: &mut 'y| -> 'y k;
-  let f2 = |k: 'y, b: B<'y>| -> 'y k;
+  let f = |p: &mut 'y, k: 'y| -> 'y k;
+  let f2 = |b: B<'y>, k: 'y| -> 'y k;
   let x: [i64, null] = null;
   let b: B<[i64, null]> = B(null);
-  let g: fn(k: i64, p: &mut [i64, null]) -> [i64, null] = f;
-  let h: fn(k: i64, b: B<[i64, null]>) -> [i64, null] = f2;
-  (g(1, &mut x), h(2, b))
+  let g: fn(p: &mut [i64, null], k: i64) -> [i64, null] = f;
+  let h: fn(b: B<[i64, null]>, k: i64) -> [i64, null] = f2;
+  (g(&mut x, 1), h(b, 2))
 }"#,
     prints("[i64:1, i64:2]")
+);
+
+run!(
+    written_fn_type_exact_position_after_a_narrower_one_refused,
+    r#"{
+  let f = |k: 'y, p: &mut 'y| -> 'y k;
+  let x: [i64, null] = null;
+  let g: fn(k: i64, p: &mut [i64, null]) -> [i64, null] = f;
+  g(1, &mut x)
+}"#,
+    refused("does not contain fn(k: 'y: i64, p: &mut 'y: i64) -> 'y: i64");
+    FuseExpect::None
 );
 
 run!(
@@ -5224,7 +5282,7 @@ run!(
   let g: fn(k: [i64, null], p: &mut i64) -> [i64, null] = f;
   g(null, &mut x)
 }"#,
-    refused("does not contain fn(k: 'y: i64, p: &mut 'y: i64) -> 'y: i64");
+    refused("does not contain fn(k: 'y: [i64, null], p: &mut 'y: [i64, null]) -> 'y: [i64, null]");
     FuseExpect::None
 );
 
@@ -5279,30 +5337,34 @@ run!(
     FuseExpect::None
 );
 
-// A variable an application of a typedef holds as data waits as any
-// other does, the typedef reaching itself or not: two applications over
-// an open variable are related through their expansions. Directly,
-// through another typedef, through mutual recursion and as a callback
-// argument, in either order.
+// A variable an application of a typedef holds as data is decided in
+// order as any other, the typedef reaching itself or not: two applications
+// over a variable are related through their expansions.
 run!(
-    written_fn_type_recursive_typedef_variable_widest_position,
+    written_fn_type_typedef_variable_after_its_position,
     r#"{
   type T<'a> = [`Leaf('a), `Node(T<i64>)];
   type W<'a> = {inner: T<'a>};
-  type A<'a> = [`L('a), `N(B<i64>)];
-  type B<'a> = [`M('a), `O(A<i64>)];
   let f = |k: 'y, t: T<'y>| -> 'y k;
-  let fr = |t: T<'y>, k: 'y| -> 'y k;
-  let fw = |w: W<'y>, k: 'y| -> 'y k;
-  let fa = |a: A<'y>, k: 'y| -> 'y k;
+  let fw = |k: 'y, w: W<'y>| -> 'y k;
   let g: fn(k: [i64, null], t: T<i64>) -> [i64, null] = f;
-  let gr: fn(t: T<i64>, k: [i64, null]) -> [i64, null] = fr;
-  let gw: fn(w: W<i64>, k: [i64, null]) -> [i64, null] = fw;
-  let ga: fn(a: A<i64>, k: [i64, null]) -> [i64, null] = fa;
-  let app = |h: fn(t: T<i64>, k: [i64, null]) -> [i64, null]| h(`Leaf(1), 4);
-  (g(null, `Leaf(1)), gr(`Leaf(1), 1), gw({inner: `Leaf(1)}, 2), ga(`L(1), 3), app(fr))
+  let gw: fn(k: [i64, null], w: W<i64>) -> [i64, null] = fw;
+  let app = |h: fn(k: [i64, null], t: T<i64>) -> [i64, null]| h(4, `Leaf(1));
+  (g(null, `Leaf(1)), gw(2, {inner: `Leaf(1)}), app(f))
 }"#,
-    prints("[null, i64:1, i64:2, i64:3, i64:4]")
+    prints("[null, i64:2, i64:4]")
+);
+
+run!(
+    written_fn_type_typedef_variable_before_a_wider_position_refused,
+    r#"{
+  type T<'a> = [`Leaf('a), `Node(T<i64>)];
+  let fr = |t: T<'y>, k: 'y| -> 'y k;
+  let gr: fn(t: T<i64>, k: [i64, null]) -> [i64, null] = fr;
+  gr(`Leaf(1), 1)
+}"#,
+    refused("does not contain fn(t: T<'y: i64>, k: 'y: i64) -> 'y: i64");
+    FuseExpect::None
 );
 
 // A variable the typedef passes on to its own application keeps the
@@ -5331,40 +5393,33 @@ run!(
     FuseExpect::None
 );
 
-// A function of many variables: each still takes its widest position,
-// one the walk made a single cell with another variable too (the call's
-// own `'p` meets `'y`, or `'y` and `'z` both, before their closed parts).
+// A rigid variable going into a union whose member is a variable is held
+// by the member, or by its bound's parts, as the positions before it left
+// the member: the position that decides the member is written first.
 run!(
-    written_fn_type_widest_position_among_many_variables,
-    r#"{
-  let f = |a0: 'a, a1: 'b, a2: 'c, a3: 'd, a4: 'e, a5: 'f, a6: 'g, a7: 'h, b: 'y, k: 'y| -> 'y k;
-  let fm = |a0: 'a, a1: 'b, a2: 'c, a3: 'd, a4: 'e, a5: 'f, a6: 'g, a7: 'h, m: 'y, b: 'y, k: 'y| -> 'y k;
-  let fz = |a0: 'a, a1: 'b, a2: 'c, a3: 'd, a4: 'e, a5: 'f, a6: 'g, a7: 'h, m: 'y, n: 'z, b: 'y, k: 'z| -> ('y, 'z) (b, k);
-  let g: fn(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, b: i64, k: [i64, null]) -> [i64, null] = f;
-  let app = |h: fn(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, m: 'p, b: i64, k: [i64, null]) -> [i64, null], x: 'p|
-    h(0, 0, 0, 0, 0, 0, 0, 0, x, 1, null);
-  let appz = |h: fn(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, m: 'p, n: 'p, b: i64, k: [i64, null]) -> ([i64, null], [i64, null]), x: 'p|
-    h(0, 0, 0, 0, 0, 0, 0, 0, x, x, 1, null);
-  (g(0, 0, 0, 0, 0, 0, 0, 0, 1, null), app(fm, null), appz(fz, null))
-}"#,
-    prints("[null, null, [i64:1, null]]")
-);
-
-// A rigid variable going into a union whose member is a variable that waits
-// is held once that variable has met its other positions: by the member,
-// or by its bound's parts, whatever the order of the positions.
-run!(
-    written_fn_type_union_beside_a_declared_variable_either_order,
+    written_fn_type_union_beside_a_declared_variable,
     r#"{
   let g = 'b: [i64, null] |x: 'b| {
     let h: fn(s: i64, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 1;
-    let hr: fn(v: 'b, s: i64) -> i64 = |v: ['c, null], s: 'c| 2;
     let hw: fn(v: 'b, w: 'b) -> i64 = |v: ['d, null], w: 'd| 3;
-    h(1, x) + hr(x, 1) + hw(x, x)
+    h(1, x) + hw(x, x)
   };
   [g(2), g(null)]
 }"#,
-    prints("[i64:6, i64:6]")
+    prints("[i64:4, i64:4]")
+);
+
+run!(
+    written_fn_type_union_before_its_members_position_refused,
+    r#"{
+  let g = 'b: [i64, null] |x: 'b| {
+    let hr: fn(v: 'b, s: i64) -> i64 = |v: ['c, null], s: 'c| 2;
+    hr(x, 1)
+  };
+  [g(2), g(null)]
+}"#,
+    refused("does not contain fn(v: [null, 'b");
+    FuseExpect::None
 );
 
 run!(
@@ -5380,17 +5435,17 @@ run!(
     FuseExpect::None
 );
 
-// A lambda an instance builds takes its parameters from the row first: a
-// variable under a typedef's union in an earlier parameter is decided by
-// every parameter that holds it, not by the first.
+// A lambda an instance builds takes its parameters from the row in order:
+// a variable under a typedef's union is decided by the positions before
+// it.
 run!(
-    instance_lambda_typedef_union_before_its_variable,
+    instance_lambda_typedef_union_parameters,
     r#"{
   type O<'x> = ['x, null];
   let g = 'b: [i64, null] |x: 'b| {
     let h: fn(v: 'b, w: 'b) -> i64 = |v: O<'a>, w: 'a| 1;
-    let k: fn(v: 'b, s: i64) -> i64 = |v: Option<'c>, s: 'c| 2;
-    h(x, x) + k(x, 1)
+    let k: fn(s: i64, v: 'b) -> i64 = |s: 'c, v: Option<'c>| 2;
+    h(x, x) + k(1, x)
   };
   [g(2), g(null)]
 }"#,

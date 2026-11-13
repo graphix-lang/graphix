@@ -7165,10 +7165,11 @@ run!(
     FuseExpect::None
 );
 run!(
-    typedef_union_of_variables_decided_by_a_later_parameter,
-    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>, y: 'a| -> 'a y; f([1], 2) }"#,
+    typedef_union_of_variables_decided_by_an_earlier_parameter,
+    r#"{ type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: Array<E<'a, 'b>>| -> 'a y; f(2, [1]) }"#,
     prints("i64:2")
 );
+
 run!(
     typedef_union_at_a_written_type,
     r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<i64, 'a>>, y: 'a| -> 'a y; f([1], 2) }"#,
@@ -7331,10 +7332,11 @@ run!(
     FuseExpect::None
 );
 run!(
-    nested_union_typedef_decided_by_a_later_parameter,
-    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, Array<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
+    nested_union_typedef_decided_by_an_earlier_parameter,
+    r#"{ type M<'x> = Array<'x>; let f = |y: 'c, x: [M<'c>, Array<'d>]| -> 'c y; f(2, [1]) }"#,
     prints("i64:2")
 );
+
 run!(
     nested_data_union_of_variables_in_an_annotation_refused,
     r#"{ let v: [Array<'r>, Array<'q>] = [1]; v }"#,
@@ -7435,26 +7437,27 @@ run!(
     FuseExpect::None
 );
 run!(
-    typedef_union_of_function_types_decided_by_the_other_parameters,
+    typedef_union_of_function_types_decided_by_the_parameters_before,
     r#"{
   type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
-  let f = |k: T<'a, 'b>, y: 'a, z: 'b| -> i64 0;
   let l = |y: 'a, z: 'b, k: T<'a, 'b>| -> i64 1;
-  (f(|x: i64| 0, 1, "s"), l(1, "s", |x: i64| 0), f(|x| 0, 1, "s"))
+  (l(1, "s", |x: i64| 0), l(1, "s", |x| 0))
 }"#,
-    prints("[i64:0, i64:1, i64:0]");
+    prints("[i64:1, i64:1]");
     FuseExpect::None
 );
+
 run!(
     typedef_union_of_function_types_no_decided_member_takes_refused,
     r#"{
   type T<'c, 'd> = [fn(x: 'c) -> i64, fn(x: 'd) -> i64];
-  let f = |k: T<'a, 'b>, y: 'a, z: 'b| -> i64 0;
-  f(|x: f64| 0, 1, "s")
+  let l = |y: 'a, z: 'b, k: T<'a, 'b>| -> i64 0;
+  l(1, "s", |x: f64| 0)
 }"#,
     refused("type mismatch T<'a: i64, 'b: string> does not contain fn(x: f64) -> i64");
     FuseExpect::None
 );
+
 run!(
     function_types_as_typedef_arguments_refused_at_their_use,
     r#"{
@@ -7466,15 +7469,16 @@ run!(
     FuseExpect::None
 );
 run!(
-    function_types_as_typedef_arguments_decided_by_the_other_parameters,
+    function_types_as_typedef_arguments_decided_by_the_parameters_before,
     r#"{
   type E<'p, 'q> = ['p, 'q];
-  let f = |k: E<fn(x: 'c) -> i64, fn(x: 'd) -> i64>, y: 'c, z: 'd| -> i64 0;
-  f(|x: string| 0, 1, "s")
+  let f = |y: 'c, z: 'd, k: E<fn(x: 'c) -> i64, fn(x: 'd) -> i64>| -> i64 0;
+  f(1, "s", |x: string| 0)
 }"#,
     prints("i64:0");
     FuseExpect::None
 );
+
 run!(
     function_types_as_typedef_arguments_at_a_written_type,
     r#"{
@@ -7520,16 +7524,17 @@ run!(
     FuseExpect::None
 );
 run!(
-    named_function_types_as_typedef_arguments_decided_by_the_other_parameters,
+    named_function_types_as_typedef_arguments_decided_by_the_parameters_before,
     r#"{
   type T<'a> = {v: 'a};
   type E<'p, 'q> = ['p, 'q];
-  let f = |k: E<T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>>, y: 'c, z: 'd| -> i64 0;
-  f({v: |x: i64| 0}, 1, "s")
+  let f = |y: 'c, z: 'd, k: E<T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>>| -> i64 0;
+  f(1, "s", {v: |x: i64| 0})
 }"#,
     prints("i64:0");
     FuseExpect::None
 );
+
 run!(
     data_union_of_function_types_in_an_annotation_refused,
     r#"{ let k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64] = |x: i64| 0; 0 }"#,
@@ -8247,14 +8252,15 @@ run!(
     prints("i64:0")
 );
 run!(
-    empty_array_into_a_typedef_union_of_two_arrays_is_decided_by_the_other_parameters,
+    empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a, z: 'b| -> i64 0;
-  f([], 1, "s")
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| -> i64 0;
+  l(1, "s", [])
 }"#,
     prints("i64:0")
 );
+
 run!(
     undecided_argument_into_a_typedef_union_is_decided_by_the_result,
     r#"{
@@ -8361,20 +8367,6 @@ run!(
     prints("i64:0")
 );
 
-// Through an inferred wrapper as at the direct call: the wrapper's
-// parameter took the union, so an empty array waits there for the other
-// arguments to decide the members, and is refused where none does.
-run!(
-    wrapper_empty_array_into_a_typedef_union_is_decided_by_the_other_parameters,
-    r#"{
-  type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
-  let g = |u, v, w| f(u, v, w);
-  let h = |a, b, c| g(a, b, c);
-  (g([], 1, "s"), h([], 1, "s"))
-}"#,
-    prints("[[], []]")
-);
 run!(
     wrapper_empty_array_into_a_typedef_union_nothing_decides_refused,
     r#"{
@@ -8387,22 +8379,33 @@ run!(
     FuseExpect::None
 );
 
-// A decided argument that two undecided members of its parameter's union
-// could take waits for the call's other arguments too, and joins once
-// they have decided the members, so no order of the parameters decides
-// the call: one member then takes it, or it is refused where two still
-// could.
+// A call's arguments are met in the order of the parameters, and nothing
+// waits: an argument at a union of the callee's variables goes to the
+// member the arguments before it decided, or to the one member still
+// open. Before the arguments that would decide two open members it is
+// refused, naming the remedy.
 run!(
-    decided_argument_into_a_typedef_union_is_decided_by_the_other_parameters,
+    argument_into_a_typedef_union_is_decided_by_the_parameters_before_it,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let m = |y: 'a, x: P<'a, 'b>, z: 'b| x;
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  (m(1, [1], "s"), l(1, "s", [1]), l(1, "s", ["t"]), l(1, 3, [2]))
+}"#,
+    prints(r#"[[i64:1], [i64:1], ["t"], [i64:2]]"#)
+);
+
+run!(
+    argument_into_a_typedef_union_before_its_deciders_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
-  let m = |y: 'a, x: P<'a, 'b>, z: 'b| x;
-  let l = |y: 'a, z: 'b, x: P<'a, 'b>| x;
-  (f([1], 1, "s"), m(1, [1], "s"), l(1, "s", [1]), f(["t"], 1, "s"), f([2], 1, 3))
+  f([1], 1, "s")
 }"#,
-    prints(r#"[[i64:1], [i64:1], [i64:1], ["t"], [i64:2]]"#)
+    refused("declare the parameters that decide them before this one");
+    FuseExpect::None
 );
+
 run!(
     decided_argument_into_a_typedef_union_no_parameter_decides_refused,
     r#"{
@@ -8414,14 +8417,15 @@ run!(
     FuseExpect::None
 );
 run!(
-    decided_argument_into_a_typedef_union_takes_the_member_left_open,
+    argument_into_a_typedef_union_takes_the_member_left_open,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a, z: 'c| x;
-  f([1], "s", 2)
+  let l = |y: 'a, x: P<'a, 'b>| x;
+  l("s", [1])
 }"#,
     prints(r#"[i64:1]"#)
 );
+
 run!(
     decided_argument_into_a_typedef_union_no_member_holds_it_refused,
     r#"{
@@ -8433,68 +8437,80 @@ run!(
     FuseExpect::None
 );
 run!(
-    decided_argument_into_a_typedef_union_of_bare_variables,
+    argument_into_a_typedef_union_of_bare_variables,
     r#"{
   type E<'p, 'q> = ['p, 'q];
-  let f = |x: E<'a, 'b>, y: 'a| x;
   let l = |y: 'a, x: E<'a, 'b>| x;
-  (f(1, 2), l(2, 1))
+  (l(2, 1), l("s", 1))
 }"#,
     prints("[i64:1, i64:1]")
 );
-// The wait is the call's, whoever writes it: a wrapper with the
-// parameters written, an inferred one (whose instance holds a decided
-// argument where its definition held an undecided cell), a labeled
-// argument, a declared bound, a seq step.
+
 run!(
-    annotated_wrapper_of_a_typedef_union_function,
+    argument_into_a_typedef_union_of_bare_variables_first_refused,
     r#"{
-  type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
-  let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w);
-  let k = |v: 'a, w: 'b, u: P<'a, 'b>| f(u, v, w);
-  (h([1], 1, "s"), k(1, "s", [1]), h([], 1, "s"))
+  type E<'p, 'q> = ['p, 'q];
+  let f = |x: E<'a, 'b>, y: 'a| x;
+  f(1, 2)
 }"#,
-    prints("[[i64:1], [i64:1], []]")
+    refused("i64 could go to 'a: unbound or 'b: unbound of the union");
+    FuseExpect::None
 );
+
+// The order is the call's, whoever writes it: an inferred wrapper, one
+// with the parameters written, a declared bound, a seq step.
 run!(
-    decided_argument_into_a_typedef_union_other_callers,
+    wrappers_of_a_typedef_union_function,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
-  let g = |u, v, w| f(u, v, w);
-  let l = |#x: P<'a, 'b>, y: 'a, z: 'b| x;
-  let b = 'c: P<'a, 'b> |x: 'c, y: 'a, z: 'b| x;
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  let g = |v, w, u| l(v, w, u);
+  let h = |a, b, c| g(a, b, c);
+  let k = |v: 'a, w: 'b, u: P<'a, 'b>| l(v, w, u);
+  let b = 'c: P<'a, 'b> |y: 'a, z: 'b, x: 'c| x;
   let t = 1;
-  let s = seq t { let r = f([t], 1, "s"); r };
-  (g([1], 1, "s"), l(#x: [1], 1, "s"), b([1], 1, "s"), s)
+  let s = seq t { let r = l(1, "s", [t]); r };
+  (g(1, "s", [1]), h(1, "s", []), k(1, "s", [1]), b(1, "s", [1]), s)
 }"#,
-    prints("[[i64:1], [i64:1], [i64:1], [i64:1]]")
+    prints("[[i64:1], [], [i64:1], [i64:1], [i64:1]]")
 );
-// The defaults the call omits decide the members as written arguments do.
+
+// Labeled arguments are met where their parameters stand, and the
+// defaults a call omits after the arguments it writes, so an omitted
+// default decides no member for a written argument.
 run!(
-    decided_argument_into_a_typedef_union_is_decided_by_omitted_defaults,
+    argument_into_a_typedef_union_is_decided_by_labeled_arguments,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let f = |#y: 'a = 1, #z: 'b = "s", x: P<'a, 'b>| x;
-  (f([1]), f(#y: 2, [3]), f(#z: "q", #y: 2, ["r"]))
+  (f(#y: 2, #z: "q", [3]), f(#z: "q", #y: 2, ["r"]))
 }"#,
-    prints(r#"[[i64:1], [i64:3], ["r"]]"#)
+    prints(r#"[[i64:3], ["r"]]"#)
 );
-// Two arguments that each meet a choice join in any order: the one the
-// other arguments decide joins first, and what it decides places the
-// other.
+
 run!(
-    two_decided_arguments_into_typedef_unions_join_in_any_order,
+    argument_into_a_typedef_union_before_the_omitted_defaults_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |#y: 'a = 1, #z: 'b = "s", x: P<'a, 'b>| x;
+  f([1])
+}"#,
+    refused("Array<i64> could go to Array<'a: unbound> or Array<'b: unbound> of the union");
+    FuseExpect::None
+);
+
+// What one such argument decides places the next.
+run!(
+    arguments_into_typedef_unions_decide_each_other_in_order,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   type E<'p, 'q> = ['p, 'q];
-  let f = |x: P<'a, 'b>, y: E<'a, 'c>, z: 'c| (x, y);
-  let l = |y: E<'a, 'c>, x: P<'a, 'b>, z: 'c| (x, y);
-  (f([1], 5, "s"), l(5, [1], "s"))
+  let l = |z: 'c, y: E<'a, 'c>, x: P<'a, 'b>| (x, y);
+  l("s", 5, [1])
 }"#,
-    prints("[[[i64:1], i64:5], [[i64:1], i64:5]]")
+    prints("[[i64:1], i64:5]")
 );
+
 run!(
     two_decided_arguments_into_typedef_unions_neither_decided_refused,
     r#"{
@@ -8506,57 +8522,72 @@ run!(
     refused(AMBIGUOUS_MEMBER);
     FuseExpect::None
 );
-// An argument a member holds only once another argument has widened the
-// member's variable joins after that argument, wherever it stands.
+// A variable standing in a union beside another undecided member does
+// not widen: the first argument that meets it decides it, so that
+// argument is written as wide as the later ones need.
 run!(
-    decided_argument_into_a_typedef_union_widens_its_member_in_any_order,
+    variable_in_a_typedef_union_is_decided_by_the_first_argument,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let n: [i64, null] = null;
-  let f = |y: 'a, z: 'b, x: P<'a, 'b>, w: 'a| x;
-  let l = |y: 'a, z: 'b, w: 'a, x: P<'a, 'b>| x;
-  let m = |x: P<'a, 'b>, y: 'a, z: 'b, w: 'a| x;
-  (f(1, "s", [n], n), l(1, "s", n, [n]), m([n], 1, "s", n))
+  let one: [i64, null] = 1;
+  let f = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  f(one, "s", [n])
 }"#,
-    prints("[[null], [null], [null]]")
+    prints("[null]")
 );
-// Of three members the one the other arguments leave open takes the
-// argument, or the one they decided that holds it; two left open are
-// the choice still, wherever the parameter stands.
+
 run!(
-    decided_argument_into_a_three_member_typedef_union,
+    variable_in_a_typedef_union_does_not_widen_refused,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let n: [i64, null] = null;
+  let f = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  f(1, "s", [n])
+}"#,
+    refused("type mismatch P<'a: i64, 'b: string> does not contain Array<[i64, null]>");
+    FuseExpect::None
+);
+
+// A literal's element meets the union as the arguments before it left
+// it, as a bound value does.
+run!(
+    literal_element_into_a_typedef_union_after_its_deciders,
+    r#"{
+  type E<'p, 'q> = ['p, 'q];
+  let id = |q| q;
+  let f = |y: 'a, x: Map<string, E<'a, 'b>>| 0;
+  let g = |y: 'a, x: Array<Array<E<'a, 'b>>>| 1;
+  let h = |y: 'a, x: fn(q: i64) -> E<'a, 'b>| 2;
+  (f("s", {"k" => 1.5}), g("s", [[1.5]]), h("s", id(|q: i64| 1.5)))
+}"#,
+    prints("[i64:0, i64:1, i64:2]")
+);
+
+// Of three members the one the arguments before it leave open takes the
+// argument, or the one they decided that holds it; two left open are the
+// choice still.
+run!(
+    argument_into_a_three_member_typedef_union,
     r#"{
   type P3<'p, 'q, 'r> = [Array<'p>, Array<'q>, Array<'r>];
-  let f = |x: P3<'a, 'b, 'c>, y: 'a, z: 'b| x;
-  let l = |y: 'a, x: P3<'a, 'b, 'c>, z: 'b| x;
-  (f([1], "s", 1.5), l("s", [1], 1.5), f([1], "s", 1))
+  let l = |y: 'a, z: 'b, x: P3<'a, 'b, 'c>| x;
+  (l("s", 1.5, [1]), l("s", 1, [1]))
 }"#,
-    prints("[[i64:1], [i64:1], [i64:1]]")
+    prints("[[i64:1], [i64:1]]")
 );
+
 run!(
-    decided_argument_into_a_three_member_typedef_union_two_left_open_refused,
+    argument_into_a_three_member_typedef_union_two_left_open_refused,
     r#"{
   type P3<'p, 'q, 'r> = [Array<'p>, Array<'q>, Array<'r>];
-  let f = |x: P3<'a, 'b, 'c>, y: 'a| x;
-  f([1], "s")
+  let l = |y: 'a, x: P3<'a, 'b, 'c>| x;
+  l("s", [1])
 }"#,
     refused("Array<i64> could go to Array<'b: unbound> or Array<'c: unbound> of the union");
     FuseExpect::None
 );
-// Three arguments that each meet a choice, in a ring, join in rounds
-// once one written argument decides a member of one of them; none
-// decided, each is refused.
-run!(
-    three_decided_arguments_into_typedef_unions_join_in_rounds,
-    r#"{
-  type P<'p, 'q> = [Array<'p>, Array<'q>];
-  type E<'p, 'q> = ['p, 'q];
-  let f = |x1: P<'a, 'b>, x2: E<'b, 'c>, x3: E<'c, 'a>, y: 'c| (x1, x2, x3);
-  let l = |x3: E<'c, 'a>, x2: E<'b, 'c>, x1: P<'a, 'b>, y: 'c| (x1, x2, x3);
-  (f([1], "s", 2, 1.5), l(2, "s", [1], 1.5))
-}"#,
-    prints(r#"[[[i64:1], "s", i64:2], [[i64:1], "s", i64:2]]"#)
-);
+
 run!(
     three_decided_arguments_into_typedef_unions_none_decided_refused,
     r#"{
@@ -8568,51 +8599,54 @@ run!(
     refused(AMBIGUOUS_MEMBER);
     FuseExpect::None
 );
-// The member the wait gives the argument is the one the result reads:
-// a test of the result's members, and a result typed by the variable of
-// the member left open.
+// The member the argument went to is the one the result reads: a test of
+// the result's members, and a result typed by the variable of the member
+// left open.
 run!(
-    decided_argument_into_a_typedef_union_result_members,
+    argument_into_a_typedef_union_result_members,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;
-  let r = f([1], 1, "s");
+  let l = |y: 'a, z: 'b, x: P<'a, 'b>| x;
+  let r = l(1, "s", [1]);
   select r { Array<i64> as a => a[0]$ + 1, Array<string> as s => 0 }
 }"#,
     prints("i64:2")
 );
+
 run!(
-    decided_argument_into_a_typedef_union_decides_the_open_member_for_the_result,
+    argument_into_a_typedef_union_decides_the_open_member_for_the_result,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a| -> Array<'b> [];
-  let r: Array<i64> = f([1], "s");
-  let q: Array<string> = f([1], 1);
+  let l = |y: 'a, x: P<'a, 'b>| -> Array<'b> [];
+  let r: Array<i64> = l("s", [1]);
+  let q: Array<string> = l(1, [1]);
   (r, q)
 }"#,
     prints("[[], []]")
 );
+
 run!(
-    decided_argument_into_a_typedef_union_open_member_result_mismatch_refused,
+    argument_into_a_typedef_union_open_member_result_mismatch_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |x: P<'a, 'b>, y: 'a| -> Array<'b> [];
-  let r: Array<string> = f([1], "s");
+  let l = |y: 'a, x: P<'a, 'b>| -> Array<'b> [];
+  let r: Array<string> = l("s", [1]);
   r
 }"#,
     refused("type mismatch Array<string> does not contain Array<'b: i64>");
     FuseExpect::None
 );
-// A recursive call shares its definition's cells and waits the same.
+
+// A recursive call shares its definition's cells and is met the same.
 run!(
-    recursive_call_decided_argument_into_a_typedef_union,
+    recursive_call_argument_into_a_typedef_union,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let rec f = |x: P<'a, 'b>, y: 'a, z: 'b, n: i64| -> i64 select n {
+  let rec f = |y: 'a, z: 'b, x: P<'a, 'b>, n: i64| -> i64 select n {
     0 => 0,
-    _ => f([y], y, z, n - 1) + 1
+    _ => f(y, z, [y], n - 1) + 1
   };
-  f([1], 1, "s", 3)
+  f(1, "s", [1], 3)
 }"#,
     prints("i64:3")
 );
@@ -8807,22 +8841,22 @@ run!(
     prints("[i64:2, i64:3]")
 );
 
-// An undecided argument takes its formal's variables as the other
-// arguments settle them, the ones only bounds hold included, so the
-// instance is built at one type for each: a seq step's call, an argument
-// of never() beside the one that decides a member.
+// An undecided argument takes its formal's variables as the arguments
+// before it settled them, the ones only bounds hold included, so the
+// instance is built at one type for each.
 run!(
-    seq_step_empty_array_into_a_bound_union_is_decided_by_the_other_parameters,
+    seq_step_empty_array_into_a_bound_union_after_its_deciders,
     r#"{
   type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x2: 'a2, x1: 'a1, x0: 'a0| x0;
   let t = 1;
-  seq t { let a = f([], ["s"], ["s"]); a }
+  seq t { let a = f(["s"], ["s"], []); a }
 }"#,
     prints("[]")
 );
-// Where the other arguments decide two members apart that both take it,
-// the undecided argument is refused, and a typed one runs.
+// An undecided argument at a bound two members of which could take it is
+// refused, and a typed one after the arguments that decide the members
+// runs.
 run!(seq_step_empty_array_into_a_bound_union_two_members_take_is_refused, r#"{
   type P<'x, 'y> = [Array<'x>, Array<'y>, null];
   let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
@@ -8833,47 +8867,12 @@ run!(
     seq_step_typed_empty_array_into_a_bound_union_two_members_take,
     r#"{
   type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+  let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x2: 'a2, x1: 'a1, x0: 'a0| x0;
   let t = 1;
   let e: Array<null> = [];
-  seq t { let a = f(e, null, ["s"]); a }
+  seq t { let a = f(["s"], null, e); a }
 }"#,
     prints("[]")
-);
-run!(
-    never_argument_beside_one_deciding_a_bound_union,
-    r#"{
-  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
-  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3| [x3];
-  f([], never());
-  0
-}"#,
-    prints("i64:0");
-    FuseExpect::None
-);
-run!(
-    never_let_argument_beside_one_deciding_a_bound_union,
-    r#"{
-  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
-  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: P<'a2, 'a3>, 'a2: T<'a3>, 'a3: i64 |x0: 'a0, x3: 'a3| [x3];
-  let v = never();
-  f([], v);
-  0
-}"#,
-    prints("i64:0");
-    FuseExpect::None
-);
-run!(
-    several_undecided_arguments_into_bound_unions_join,
-    r#"{
-  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-  type Q<'x, 'y> = [`A('x), `B('y)];
-  let f = 'a0: Q<'a1, 'a2>, 'a1: Q<'a2, 'a3>, 'a2: [Array<P<'a3, 'a4>>, null], 'a3: [Array<P<'a4, 'a5>>, null], 'a4: Q<'a5, 'a6>, 'a5: Q<'a6, 'a7>, 'a6: [('a7, 'a7), null], 'a7: Number |x0: 'a0, x1: 'a1, x3: 'a3, x4: 'a4, x5: 'a5| [x5];
-  f(`A(`B([])), `B([]), [], never(), `B(u8:3))
-}"#,
-    prints(r#"[["B", u8:3]]"#)
 );
 
 // An instance's cell that no position holds is what its bounds settle it
@@ -8888,18 +8887,6 @@ run!(
 }"#,
     prints("[[]]")
 );
-run!(
-    instance_cell_at_a_bottom_place_is_bottom,
-    r#"{
-  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-  type R<'x, 'y> = [Array<('x, 'y)>, null];
-  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: R<'a2, 'a3>, 'a2: R<'a3, 'a3>, 'a3: i64 |x0: 'a0, x2: 'a2, x3: 'a3| x0;
-  let v0 = [];
-  f(v0, never(), 1)
-}"#,
-    prints("[]")
-);
-
 // A cell only bounds hold settles to a bound naming a cell that has a
 // place as that cell, which is then what stands at its place.
 run!(
@@ -9022,7 +9009,7 @@ run!(
     FuseExpect::None
 );
 run!(
-    field_read_keeps_a_signature_union_of_functions_with_the_union_first,
+    field_read_of_a_signature_union_of_functions_with_the_union_first_refused,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
   let s = {fld: |x: F2<'a, 'b>, y: 'a, z: 'b| (x, y, z)};
@@ -9030,7 +9017,7 @@ run!(
   let r = j(|q: i64| 0, 1, "s");
   (r.1, r.2)
 }"#,
-    prints(r#"[i64:1, "s"]"#);
+    refused("declare the parameters that decide them before this one");
     FuseExpect::None
 );
 run!(
@@ -10266,10 +10253,10 @@ run!(
     union_bound_through_a_typedef_takes_a_decided_array,
     r#"{
     type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-    let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x0: 'a0, x1: 'a1, x2: 'a2| x0;
+    let f = 'a0: P<'a2, 'a1>, 'a1: P<'a3, 'a2>, 'a2: P<'a3, 'a3>, 'a3: [i64, string] |x2: 'a2, x1: 'a1, x0: 'a0| x0;
     let v: Array<null> = never();
     let s = array::len(v);
-    let r = f(v, null, [1]);
+    let r = f([1], null, v);
     v <- [null];
     (s, r)
 }"#,
@@ -10302,8 +10289,8 @@ run!(
     union_bound_members_decided_alike_take_an_empty_array,
     r#"{
     type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-    let f = 'a: P<'b, 'c> |x: 'a, y: 'b, z: 'c| x;
-    let r = f([], 1, 2);
+    let f = 'a: P<'b, 'c> |y: 'b, z: 'c, x: 'a| x;
+    let r = f(1, 2, []);
     array::len(array::push(r, 3))
 }"#,
     is(Value::I64(1))
@@ -10311,8 +10298,8 @@ run!(
 
 run!(union_bound_members_decided_alike_bound_an_empty_array, r#"{
     type P<'x, 'y> = [Array<'x>, Array<'y>, null];
-    let f = 'a: P<'b, 'c> |x: 'a, y: 'b, z: 'c| x;
-    let r = f([], 1, 2);
+    let f = 'a: P<'b, 'c> |y: 'b, z: 'c, x: 'a| x;
+    let r = f(1, 2, []);
     array::len(array::push(r, "s"))
 }"#, refused("does not contain string"); FuseExpect::None);
 
@@ -12449,7 +12436,7 @@ run!(
   v <- "s";
   r
 }"#,
-    refused("within [null, 'a: i64] and cannot hold string");
+    refused("v is i64, inferred from an earlier use, and cannot hold string");
     FuseExpect::None
 );
 
@@ -12479,9 +12466,9 @@ run!(
     written_element_into_a_named_union_of_a_bound_over_two_open_variables,
     r#"{
   type E<'p, 'q> = ['p, 'q];
-  let f = 'tx: Array<E<'b, 'a>> |x: 'tx, y: 'b| x;
+  let f = 'tx: Array<E<'b, 'a>> |y: 'b, x: 'tx| x;
   let x: Array<[string, i64]> = ["t"];
-  f(x, "s")
+  f("s", x)
 }"#,
     prints(r#"["t"]"#)
 );
@@ -12498,5 +12485,31 @@ run!(
   k
 }"#,
     refused("bool does not contain fn(u: [null, 'a: unbound]) -> { v: [null, 'a: unbound] }");
+    FuseExpect::None
+);
+
+// An undecided argument at two variables with disjoint bounds makes them
+// one cell under both bounds where it is met, so the argument that would
+// decide one of them is refused at the check, never at the instance.
+run!(
+    undecided_argument_at_two_variables_of_disjoint_bounds_refused,
+    r#"{
+  let f = 'b: Number, 'c: string |x0: 'c, x1: 'b, x2: 'b| (x0, x1, x2);
+  let h = |v| f(v, v, 1);
+  h(2)
+}"#,
+    refused("unbound within Number & string does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    undecided_binding_at_two_variables_of_disjoint_bounds_refused,
+    r#"{
+  let f = 'b: Number, 'c: string |x0: 'c, x1: 'b, x2: 'b| (x0, x1, x2);
+  let v = never();
+  let r = f(v, v, 1);
+  r
+}"#,
+    refused("unbound within Number & string does not contain i64");
     FuseExpect::None
 );

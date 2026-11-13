@@ -58,18 +58,18 @@ fn an_instance_checked_again_fits_what_a_lower_bound_holds() {
 }
 
 /// An instance that checks its body again holds a decided argument where
-/// its definition held an undecided cell or a declared variable: one that
-/// two undecided members of a union could take waits for the call's other
-/// arguments there too.
+/// its definition held an undecided cell or a declared variable, and
+/// meets its arguments in the same order: the ones before a union's
+/// argument decide its members there too.
 #[test]
-fn an_instance_checked_again_waits_for_the_arguments_that_decide_a_union() {
+fn an_instance_checked_again_meets_its_arguments_in_the_same_order() {
     let typedef = "type P<'p, 'q> = [Array<'p>, Array<'q>];\n\
-         let f = |x: P<'a, 'b>, y: 'a, z: 'b| x;\n";
+         let f = |y: 'a, z: 'b, x: P<'a, 'b>| x;\n";
     let programs = [
-        ("let g = |u, v, w| f(u, v, w);\ng([], 1, \"s\")\n", "[]"),
-        ("let g = |u, v, w| f(u, v, w);\ng([1], 1, \"s\")\n", "[1]"),
-        ("let h = |u: P<'a, 'b>, v: 'a, w: 'b| f(u, v, w);\nh([1], 1, \"s\")\n", "[1]"),
-        ("let g = |u| { let (p, q, r) = u; f(p, q, r) };\ng(([], 1, \"s\"))\n", "[]"),
+        ("let g = |v, w, u| f(v, w, u);\ng(1, \"s\", [])\n", "[]"),
+        ("let g = |v, w, u| f(v, w, u);\ng(1, \"s\", [1])\n", "[1]"),
+        ("let h = |v: 'a, w: 'b, u: P<'a, 'b>| f(v, w, u);\nh(1, \"s\", [1])\n", "[1]"),
+        ("let g = |u| { let (q, r, p) = u; f(q, r, p) };\ng((1, \"s\", []))\n", "[]"),
     ];
     for (program, expected) in programs {
         let program = format!("{typedef}{program}");

@@ -3873,8 +3873,10 @@ run!(
     "#
 ; FuseExpect::None);
 
-// A default's parameter written at the bound over `self`, whatever the
-// order of the parameters, and a result written there.
+// A default's parameter written at the bound over `self`, after `self`,
+// and a result written there. A label stands before `self`, where the
+// bound's `self` is not decided yet: it is written as the declared
+// variable, or left unwritten.
 run!(
     default_method_parameter_written_at_the_declared_bound,
     prints("[i64:3, i64:0, i64:5, i64:0, i64:2, null, i64:1, i64:0]"),
@@ -3886,7 +3888,7 @@ run!(
         };
         trait U { val u: fn<'b: [self, null]>(self, x: 'b) -> [self, null] = |s, x: [self, null]| x };
         trait V {
-            val v: fn<'b: [self, null]>(#k: 'b, self) -> i64 = |#k: [self, null], s|
+            val v: fn<'b: [self, null]>(#k: 'b, self) -> i64 = |#k: 'b, s|
                 select k { null as _ => 0, _ => 1 }
         };
         impl T for i64 { let k = |s| s };
@@ -3899,6 +3901,19 @@ run!(
         ]
     "#
 );
+
+run!(
+    default_method_label_written_at_the_bound_before_self_refused,
+    refused("does not contain fn(#k: [null, 'self"),
+    "/test.gx" => r#"
+        trait V {
+            val v: fn<'b: [self, null]>(#k: 'b, self) -> i64 = |#k: [self, null], s|
+                select k { null as _ => 0, _ => 1 }
+        };
+        impl V for i64 {};
+        let result = V::v(#k: 2, 1)
+    "#
+; FuseExpect::None);
 
 run!(
     default_method_parameter_of_another_type_than_the_bound_refused,

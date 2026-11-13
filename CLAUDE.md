@@ -346,10 +346,13 @@ a change elsewhere most often breaks.
   (`contains.rs::AmbiguousMember`): the relation's site names what to
   annotate. Only a select's own pattern walks keep the first member
   (`Type::contains_ordered`).
-- **Widening:** a call's variable that only data positions hold settles to
-  the widest of the decided arguments and omitted defaults, whatever the
-  order; an undecided argument waits for that join and is refused, "annotate
-  it", where the join does not hold it (`callsite.rs::Widening`).
+- **A call's arguments are met in the order of the parameters, then the
+  defaults it omits; nothing waits for a later argument**, and no rule may
+  be added to make a verdict independent of that order: soundness is the
+  bar. A variable only data positions hold widens to a decided argument
+  wider than the ones before it; an undecided argument takes the formal as
+  it stands, and the variables it met widen no more
+  (`callsite.rs::Widening`).
 - A merge takes the lower of its two cells' levels (`TVar::merge_one`), so a
   relation against a scheme instantiates it first.
 - **Sound by construction:** a hole in the type system is closed by a local
