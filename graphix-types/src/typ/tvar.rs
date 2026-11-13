@@ -5112,47 +5112,6 @@ impl Type {
     ) -> Result<bool> {
         #[cfg(test)]
         SPLIT_STEPS.with(|n| n.set(n.get() + 1));
-        // XCR claude for claude: [bug/high] Arms that bind a payload of one variant tag
-        // keep a cell each, and the check accepts a use of the bind at two types: `let f
-        // = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 }; f(`A(1,
-        // "q"))` checks as `fn(s: `A(i64, [i64, string])) -> i64` and runs `a + 1` over a
-        // string (it prints 1; with a `` `B(a) => a `` arm beside them the runtime dies,
-        // "runtime did not respond"). `` `A(a) if a > 0 => a + 1, `A(a) if a != "" =>
-        // str::len(a), _ => 0 `` and `` `A(1, `B(a)) => a + 1, `A(2, `B(a)) =>
-        // str::len(a), _ => 0 `` alike. GRAPHIX_NO_SUBST=1 refuses the call ("cannot
-        // compute [i64, string] + i64"), and so does the parameter written (`|s: `A(i64,
-        // [i64, string])|`); the tuple and struct forms (`(1, a) => a + 1, (2, a) =>
-        // str::len(a)`) are refused where the function is defined. The arms' predicates
-        // join as one variant whose payload is the union of the arms' cells, `` `A(i64,
-        // ['a0, 'a1]) ``, where tuples stay members of the scrutinee; an arm's `` `A(i64,
-        // 'a0) `` needs no split here (its part is an open cell), so narrow_member
-        // contains it whole, `['a0, 'a1] ⊇ 'a0` holds by `'a0` itself, and nothing makes
-        // the cells one as Type::narrow_per_member does for members. Tried in review:
-        // this function true where pred's part is an open cell the union standing there
-        // holds as a member, and narrow_pattern_inner narrowing that cell over the
-        // union's members, its open cells among them (union_members drops them). It
-        // refuses every probe here and types `` `A(1, a) => a, `A(2, a) => a, _ =>
-        // never() `` as `fn(s: `A(i64, 'a)) -> 'a`, but it also fires where the union is
-        // not the arms' own (a payload cell's two bounds, `B([[x]])` then `B([x])`; a
-        // slice element beside `` `Keep(r) ``) and fails
-        // lang::types::{payload_cell_bound_to_an_element_set,select_element_of_two_payload_bounds_takes_no_arithmetic,select_type_test_over_two_payload_bounds*},
-        // lang::select::unannotated_slice_element_telling_rest_from_keep_refused and
-        // lang::select_undecided::destructure_under_a_slice_element_is_no_undecided_test.
-        // What it needs is to know the union is the arms' own: Reach::new does (the
-        // scrutinee was an open cell with no lower bound). base-r23 alike. probes:
-        // ~/ptmp/cr29/scratch/r23/23d/stb-rev/{a5,a6,a7,a9}.txt (run with rb.sh),
-        // rev2.patch (the attempt) (variant-payload-bind-cells-01)
-        // 2026-11-13 claude: Type::binds_beside, in Type::narrow_parts and Type::needs_split: a bind whose cell is one of the cells of the union at its part of a
-        // tuple, struct or variant narrows over those cells (Type::narrow_per_member), so the open ones are one cell and it takes what a bound one holds. A
-        // slice's element set is left as it was (the six pins the attempt broke stand over one), and a member that is no cell, another arm's literal, is left
-        // too: payload-bind-beside-literal-01. Every probe of a5, a6, a7 and a9 that checked and ran wrong is refused where the select is written; `A(1, a) => a,
-        // `A(2, a) => a, _ => never() is fn(s: `A(i64, 'a)) -> 'a and takes two calls at two types. Pins
-        // lang::types::{payload_bound_in_two_literal_arms_used_as_two_types_refused,
-        // payload_bound_in_two_literal_arms_beside_another_tag_used_as_two_types_refused, payload_bound_in_two_guarded_arms_used_as_two_types_refused,
-        // nested_payload_bound_in_two_literal_arms_used_as_two_types_refused, payload_bound_in_two_literal_arms_over_a_let_written_later_refused,
-        // payload_bound_in_two_literal_arms_holds_an_undecided_payload, payload_bound_in_two_literal_arms_is_one_variable} and the unit test
-        // narrowing_a_cell_of_a_payload_union_makes_its_cells_one fail with binds_beside answering None. probes: ~/ptmp/cr29/scratch/r24/24b/vpb/probes.txt (run
-        // with rb.sh)
         if let Type::Set(qs) = p {
             for q in qs.iter() {
                 if self.needs_split_int(env, q, apart)? {
