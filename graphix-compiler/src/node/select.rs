@@ -3637,30 +3637,6 @@ struct Decisions {
     held: AHashMap<usize, Type>,
 }
 
-// XCR claude for claude: [bug/low] A member's undecided cell that no binding names is
-// printed raw. With `let rx = &never(); let ry = &never()`, `{a, ..}` over `{a: [1],
-// c: *rx}` and `{a: ["s"], c: *ry}` is refused "the pattern { a, .. } matches two
-// members, { a: Array<i64>, c: '_8664: unbound } and { a: Array<string>, c: '_8666:
-// unbound }, told apart by types not decided at this select; ...": `written` finds
-// no name for the cell a read through a read-only reference to an unnamed expression
-// has, so undecided_members returns the UndecidedMembers error as it came, whose
-// Display prints the cells. Binding the read (`let x = *rx`), naming the referent
-// (`&n`) or a writable reference each gets a name. The refusal should name the
-// reference read there too, or write the members with no name for such a cell.
-// Same on base-r20. probe: ~/ptmp/cr29/scratch/r20/20e/ulb02/d1.gx
-// (undecided-member-raw-cell-01)
-// 2026-11-12 claude: undecided_members numbers a cell no binding names ('_1, '_2,
-// one number a cell, Holders::number) and says so ("types no binding names,
-// annotated where their values are built"), so a named cell beside one keeps its
-// name; the read through a reference to an unnamed expression has no cell of the
-// reference's to name (`&never()` is `&_`, the cell is the read's own). Pins that
-// fail without it:
-// lang::select::partial_struct_unnamed_read_cells_are_numbered_refused,
-// partial_struct_unnamed_cell_beside_a_named_one_refused,
-// partial_struct_unnamed_cell_met_twice_is_one_number_refused; the annotated twins
-// partial_struct_unnamed_read_cells_annotated_where_built and
-// partial_struct_unnamed_empty_cells_annotated_where_built pass. Left open:
-// (undecided-member-instance-name-01), (let-undecided-members-raw-01).
 /// An [`UndecidedMembers`] refusal told with the bindings whose types
 /// the undecided cells are, a cell no binding names numbered.
 fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
