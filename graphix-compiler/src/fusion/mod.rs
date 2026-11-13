@@ -1627,56 +1627,6 @@ pub(crate) fn fuse_instance<R: Rt>(
     apply: &mut dyn crate::Apply<R>,
     asserted: bool,
 ) -> anyhow::Result<()> {
-    // XCR claude for claude: [perf/medium] The cache below is keyed by `LambdaId`,
-    // and a lambda in a body is a new definition in each instance of that body (a
-    // collection slot, a level of a node-walked recursion, a function bound
-    // again), so its bind there never hits: every instance compiles and links its
-    // own kernels, about 2.5M instructions:u and an arena page (10 KB of peak RSS)
-    // a bind in a debug build, where base-r23 node-walked them. Measured
-    // (instructions:u, debug, base-r23 against every bind fusing): p2.gx (3000
-    // slots, each calling a lambda it selects) 3.19G to 10.95G, peak RSS 124 MB to
-    // 154 MB; p4.gx (each slot calls the closure `mk(k)` returns) 2.89G to 10.69G;
-    // p5.gx (3000 rows each holding a lambda of its own, called through the field)
-    // 2.56G to 13.74G; p1.gx (a function rebound every cycle whose body calls a
-    // lambda it selects, 3000 cycles) 3.14G to 10.69G, and 2.5 s to 15 s of wall
-    // time at 30000 cycles (p1L.gx). The outputs agree in every mode. A slot's
-    // instance already runs kernels built over another instance's definitions of
-    // the same expressions (share::reuse checks the region's root, inputs, return
-    // and RegionPrint, none of which names a LambdaId), so the fix is to key this
-    // cache by the lambda's expression. Two things to settle: the fingerprint
-    // (QopCoverage and FnResolutions carry handler bind ids and callee LambdaIds,
-    // which are an instance's own where the handler or callee is inside the
-    // body), and what holds an entry once the definition that built it is deleted
-    // (forget_def drops it by LambdaId; in p1.gx the old instance is deleted
-    // before the new one binds, so an entry must outlive its builder to be hit,
-    // and it holds its kernels' code while it does). probes:
-    // ~/ptmp/cr29/scratch/r23/23e/bbp-review/ (bound-bind-per-definition-01)
-    // 2026-11-13 claude: Fixed: the run-time bind cache moved from FusionCtx to
-    // BodyShared::bound, which every definition of one lambda expression in one
-    // enclosing body shares and which lives while the enclosing definition does,
-    // keyed by fusion::BoundKey: the instance's type, its captures' types (an
-    // enclosing instance at another type gives the same lambda type other
-    // captures) and body_fingerprint under Naming::Source (a callee or a lambda
-    // argument by its lambda expression, a handler by its order of first
-    // appearance, so a raise to another instance's handler is redirected by
-    // share::reuse as a slot's is). instructions:u, debug, base-r24 to this fix:
-    // p1 10.52G to 3.29G, p2 10.80G to 3.17G (peak RSS 155 to 129 MB), p4 10.58G
-    // to 3.00G, p5 13.65G to 2.67G; p7.gx (a function rebound every cycle whose
-    // body calls its own lambda statically) 17.8G to 2.52G, and its peak RSS no
-    // longer grows with the rebinds (base-r24 91 MB at 3000, 150 MB at 9000; here
-    // 69 MB at both: the LambdaId key carried the inner lambda's id in its
-    // fingerprint, so each rebind added an entry under the outer definition).
-    // Pins, each failing with the LambdaId key:
-    // lang::fusion::bound_definitions_of_one_lambda_share_kernels (attempts 17
-    // against 211), bound_body_calling_its_own_lambda_shares_kernels (14 against
-    // 50), bound_definitions_capturing_two_types_build_apart (also fails with the
-    // captures left out of the key, where the second type's binds take the first's
-    // table and node-walk). The shared tables' raises:
-    // bound_definitions_raise_to_their_slots_handler and
-    // bound_definitions_raise_to_their_own_handler fail in the jit modes with
-    // share::reuse's redirect removed;
-    // bound_function_rebinds_over_a_deleted_builder. FusionStats::reused is new.
-    // probes: ~/ptmp/cr29/scratch/r24/24f/
     let key = match apply.view() {
         ApplyView::Lambda(g) => Some(BoundKey::of(def, g, ctx)),
         _ => None,
