@@ -130,6 +130,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   Exhaustiveness holds those cells rigid on copies first
   (`Type::contains_holding`), so a part only names and `_` meet covers
   whatever it becomes, else where the cover decides them. What reaches
+  the next arm (`Type::diff`) loses a tuple, struct or variant only
+  whole, where what an arm covers holds every position of it by shape
+  (`setops::held_by_shape`: `Any` or the same type there, through parts
+  of one shape at any depth, its own union there member by member and
+  its own name read through), so `` `A((a, _)) `` takes all of
+  `` `A(P) `` with `type P = (i64, i64)`. What reaches
   the next arm (`Type::diff`) and `could_match` unfold a pair of
   named types' definitions (arguments ignored) once on a path, a pair
   with a side that is no named type uncounted; met again, diff

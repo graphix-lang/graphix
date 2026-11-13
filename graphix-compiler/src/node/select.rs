@@ -1040,7 +1040,7 @@ impl Reach {
                     }
                 }
             } else if sp.covers(env, at, !pat.explicit_type_predicate) {
-                // CR claude for claude: [bug/low] An arm behind a names-only tuple in a
+                // XCR claude for claude: [bug/low] An arm behind a names-only tuple in a
                 // variant's payload is not found dead: `|x: [`A((i64, i64))]| select x {
                 // `A((a, _)) => 0, _ => 1 }` checks and runs, and so do `A((_, b)) => 1`
                 // and `A(_) => 1` as the second arm, though the first arm alone is
@@ -1050,6 +1050,23 @@ impl Reach {
                 // _))` behind `A(_)`. base-r23 and lane 23d alike. Not diagnosed. probes:
                 // ~/ptmp/cr29/scratch/r23/23d/vsc-rev/{m04,m06,m12,m13,m14,m15,m16,m17,
                 // m18}.gx (variant-tuple-payload-dead-01)
+                // 2026-11-13 claude: Diagnosed: Type::diff took a tuple, struct or
+                // variant out of what reaches the next arm only where the arm's predicate
+                // equalled it position by position (setops same_resolved), reading Any at
+                // a payload's top position alone, so the predicate of `A((a, _)), `A(('a,
+                // Any)), left `A((i64, i64)) in; and `A(p) over `A(P) with type P = (i64,
+                // i64) left it too ('p is bound to the expansion). setops::held_by_shape
+                // now reads a position held by shape: Any or the same type, through parts
+                // of one shape at any depth, a union of the minuend member by member, a
+                // name of the minuend read through. The later arms of m06, m15, m17 are
+                // refused, m18 checks; an arm after the payload arm that is live takes
+                // only what is left. Pins:
+                // lang::select::variant_tuple_payload_names_cover_its_member,
+                // _leave_no_second_payload_arm, _leave_no_whole_payload_arm,
+                // _leave_the_other_members, variant_named_payload_bind_covers_its_member,
+                // struct_field_tuple_names_cover_its_member (24 mode runs fail with the
+                // old positional check),
+                // typ::setops::tests::diff_takes_a_product_held_at_every_position.
                 match wild {
                     true => self.atype = self.atype.diff(env, at)?,
                     false => self.cover(env, at.clone())?,

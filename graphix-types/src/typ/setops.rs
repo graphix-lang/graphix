@@ -1643,28 +1643,24 @@ impl Type {
             // base-r23 and lane 23b alike. A product the subtrahend contains could
             // answer the empty type, as an Array does. probes:
             // ~/ptmp/cr29/scratch/r23/23b/tdm-rv/u5.gx, u6.gx (diff-product-held-01)
-            (Type::Tuple(t0), Type::Tuple(t1)) => {
-                if same_resolved(t0.iter(), t1.iter()) {
-                    Ok(Type::Primitive(BitFlags::empty()))
-                } else {
-                    Ok(self.clone())
-                }
-            }
-            (Type::Struct(t0), Type::Struct(t1)) => {
-                let same = t0.len() == t1.len()
-                    && t0.iter().zip(t1.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1)
-                    && same_resolved(
-                        t0.iter().map(|(_, t, _)| t),
-                        t1.iter().map(|(_, t, _)| t),
-                    );
-                if same {
-                    Ok(Type::Primitive(BitFlags::empty()))
-                } else {
-                    Ok(self.clone())
-                }
-            }
-            (Type::Variant(tg0, t0, _), Type::Variant(tg1, t1, _)) => {
-                if tg0 == tg1 && same_resolved(t0.iter(), t1.iter()) {
+            // 2026-11-13 claude: variant-tuple-payload-dead-01's fix
+            // (setops::held_by_shape) reads a product position as held where the
+            // subtrahend there is Any or the same type, through parts of one shape at
+            // any depth, with a union or a name on the minuend's side read through; a
+            // union on the subtrahend's side (i64 in [i64, string], this CR's u5.gx)
+            // is not read, so u5.gx still checks. Tried first for that CR: a
+            // position's full difference (diff_int) per product position, empty
+            // meaning held. It is right but
+            // typ::setops::tests::residuals_over_two_families_of_recursive_unions_stay_shallow's
+            // four_a_side family then spent the whole 1000-pair budget
+            // (setops::WALK_PAIRS) on every arm, against 95/56/33 before: products
+            // inside recursive unions of two families multiply the paths, all cut at
+            // an ancestor so nothing is kept. A union on the subtrahend's side wants a
+            // walk that stops at the first member not held, not a residual.
+            (Type::Tuple(_), Type::Tuple(_))
+            | (Type::Struct(_), Type::Struct(_))
+            | (Type::Variant(..), Type::Variant(..)) => {
+                if held_by_shape(env, self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     Ok(self.clone())
@@ -2010,8 +2006,47 @@ fn same_normal(t0: &Type, t1: &Type) -> bool {
     t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
 }
 
-/// Positional [`same_normal`]. `Any` in the subtrahend covers anything.
-fn same_resolved<'a, 'b>(
+/// Whether every value of `t0` is one of `t1` by their shapes alone: `t1`
+/// is `Any` or `t0` itself, read through bound cells, or the two are
+/// tuples, structs or variants of one shape whose parts are held so. A
+/// union `t0` is held where each of its members is, and a name `t0` stands
+/// for is read through where `t1` takes it apart; `t1`'s names are not, so
+/// the walk ends within `t1`.
+fn held_by_shape(env: &Env, t0: &Type, t1: &Type) -> bool {
+    if is_any(t1) || t0 == t1 {
+        return true;
+    }
+    let product =
+        |t: &Type| matches!(t, Type::Tuple(_) | Type::Struct(_) | Type::Variant(..));
+    ensure_sufficient(|| match (t0.deref_cloned(), t1.deref_cloned()) {
+        (Some(t0), Some(t1)) if product(&t1) => match (&t0, &t1) {
+            (Type::Ref(_), _) => matches!(
+                t0.lookup_ref_with(env, false),
+                Ok(Some(t)) if held_by_shape(env, &t, &t1)
+            ),
+            (Type::Set(ms), _) => ms.iter().all(|m| held_by_shape(env, m, &t1)),
+            (Type::Tuple(p0), Type::Tuple(p1)) => held_at_each(env, p0.iter(), p1.iter()),
+            (Type::Variant(tag0, p0, _), Type::Variant(tag1, p1, _)) => {
+                tag0 == tag1 && held_at_each(env, p0.iter(), p1.iter())
+            }
+            (Type::Struct(f0), Type::Struct(f1)) => {
+                f0.len() == f1.len()
+                    && f0.iter().zip(f1.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1)
+                    && held_at_each(
+                        env,
+                        f0.iter().map(|(_, t, _)| t),
+                        f1.iter().map(|(_, t, _)| t),
+                    )
+            }
+            _ => false,
+        },
+        _ => same_normal(t0, t1),
+    })
+}
+
+/// Positional [`held_by_shape`].
+fn held_at_each<'a, 'b>(
+    env: &Env,
     t0: impl IntoIterator<Item = &'a Type>,
     t1: impl IntoIterator<Item = &'b Type>,
 ) -> bool {
@@ -2020,11 +2055,7 @@ fn same_resolved<'a, 'b>(
     loop {
         match (t0.next(), t1.next()) {
             (None, None) => return true,
-            (Some(a), Some(b)) => {
-                if !is_any(b) && a != b && !same_normal(a, b) {
-                    return false;
-                }
-            }
+            (Some(a), Some(b)) if held_by_shape(env, a, b) => (),
             _ => return false,
         }
     }
@@ -2218,6 +2249,26 @@ pub(crate) mod tests {
         ] {
             let d = Type::Primitive(p | Typ::I64).diff(&env, &any(t)).unwrap();
             assert_eq!(d.to_string(), "i64", "{p:?} - {t}");
+        }
+    }
+
+    // A tuple, struct or variant goes whole where its subtrahend holds each of
+    // its positions, through a name and at any depth, and stays whole where a
+    // position keeps a value.
+    #[test]
+    fn diff_takes_a_product_held_at_every_position() {
+        let (env, _) = typed(&[("P", "(i64, i64)")], "null");
+        for (t0, t1, left) in [
+            ("`A((i64, i64))", "`A((i64, Any))", "[]"),
+            ("[`A(P), `B]", "`A((Any, i64))", "`B"),
+            ("(`A((i64, i64)), i64)", "(`A((Any, i64)), Any)", "[]"),
+            ("{a: i64, b: (i64, i64)}", "{a: i64, b: (Any, i64)}", "[]"),
+            ("`A([(i64, i64), (i64, string)])", "`A((i64, Any))", "[]"),
+            ("`A((i64, [i64, null]))", "`A((i64, i64))", "`A((i64, [i64, null]))"),
+            ("(i64, i64)", "(i64, string)", "(i64, i64)"),
+        ] {
+            let d = parsed(&env, t0).diff(&env, &parsed(&env, t1)).unwrap();
+            assert_eq!(d.to_string(), left, "{t0} - {t1}");
         }
     }
 

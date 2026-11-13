@@ -5931,6 +5931,30 @@ run!(written_test_structure_admitting_no_member_is_dead, "{ let f = |x: (i64, `B
 run!(abstract_payload_admitting_no_member_is_dead, "{ type W<'a> = Abstract<'a>; let f = |x: W<(`A, i64)>| select x { W((`C, h)) => 1, _ => 0 }; f(W((`A, 3))) }",
     refused("unreachable arm: no value of W<(`A, i64)> has the parts this pattern tests"); FuseExpect::None);
 
+// An arm whose payload pattern takes every value of its member covers the
+// member, whatever tuple, struct or name holds the payload: an arm after it
+// is dead, and one after it that is not takes only what is left.
+run!(variant_tuple_payload_names_cover_its_member, "{ let f = |x: [`A((i64, i64))]| select x { `A((a, _)) => a, _ => 0 }; f(`A((1, 2))) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(variant_tuple_payload_names_leave_no_second_payload_arm, "{ let f = |x: [`A((i64, i64))]| select x { `A((a, _)) => a, `A((_, b)) => b }; f(`A((1, 2))) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(variant_tuple_payload_names_leave_no_whole_payload_arm, "{ let f = |x: [`A((i64, i64))]| select x { `A((a, _)) => a, `A(_) => 0 }; f(`A((1, 2))) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(variant_named_payload_bind_covers_its_member, "{ type P = (i64, i64); let f = |x: [`A(P)]| select x { `A(p) => p.0, _ => 0 }; f(`A((1, 2))) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(struct_field_tuple_names_cover_its_member, "{ let f = |x: [`A({a: i64, b: (i64, i64)})]| select x { `A({a, b: (c, _)}) => a + c, _ => 0 }; f(`A({a: 1, b: (2, 3)})) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
+
+run!(
+    variant_tuple_payload_names_leave_the_other_members,
+    "{ let f = |x: [`A((i64, i64)), `B(string)]| select x { `A((a, _)) => a, v => select v { `B(s) => str::len(s) } }; [f(`A((3, 4))), f(`B(\"ab\"))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2])
+);
+
 // Under a written test a slice element's literal rules out no member for a
 // bind, as a literal outside a slice does: an instance's scrutinee may be
 // the member alone.
