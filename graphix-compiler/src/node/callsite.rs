@@ -3050,52 +3050,6 @@ impl<R: Rt> CallSite<R> {
         self.prepare_bind(ctx, scope, flags, f, &mut refs)?;
         let mut defaults = SmallVec::new();
         refs.with_external_refs(|id| defaults.push(id));
-        // XCR claude for claude: [bug/medium] A function held in data whose parameter is a
-        // typedef union of two function types over its variables checks at a wrong type
-        // and fails to build: `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
-        // let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)}; s.fld(1, "s", |q: i64|
-        // 0)` passes --check, typed `(fn(q: 'b: string) -> i64, 'a: i64, 'b: string)`
-        // (the argument is fn(q: i64) -> i64: the union's two members stand as one, of
-        // the other variable), and the run fails "binding the callee failed: a run-time
-        // bind at s.fld(..) did not type: an instance at fn(y: i64, z: string, x: F2<i64,
-        // string>) -> (fn(q: string) -> i64, i64, string) of a definition typed .. ->
-        // ([fn(q: 'a) -> i64, fn(q: 'b) -> i64], 'a, 'b)"; GRAPHIX_ELAB_AUDIT reports
-        // instance-signature. The same function bound by a `let` and called directly is
-        // typed `[fn(q: 'a: i64) -> i64, fn(q: 'b: string) -> i64]` and runs, and so does
-        // the field with the union written out (`x: [fn(q: i64) -> i64, fn(q: string) ->
-        // i64]`), with one variable (`F2<'a, string>`) or returning `y` alone. base-r22
-        // alike with the union's parameter last; since decided-arg-waits-01 the call with
-        // it first passes the check too and fails the same way (65 of the 12769 newly
-        // accepted programs of that CR's review differential, all of this shape; 95
-        // programs base-r22 accepts split alike). Not looked into: the first suspect is
-        // the call's copy of a signature read through a field, where the result's union
-        // becomes one member. probes: ~/ptmp/cr29/scratch/r21/21t/rev/rb.txt (REPL inputs
-        // 1, 2, 5, 7, 8) (runtime-bind-fn-union-01)
-        // 2026-11-12 claude: Cause: a field or tuple read types its field by Type::union
-        // of one alternative (data::struct_field_type), whose welding normalize reached
-        // into the function's signature and collapsed the union the typedef's expansion
-        // had kept as two members, pairing the signature's own variables as a renaming: a
-        // generic pair dropped a member with nothing merged (the check's wrong result
-        // type, and the instance the build refused; also unsound: the result was callable
-        // at the other variable's type), a live pair merged the two variables (a select
-        // of two copies of the function refused a call its binding takes). Fix: a welding
-        // normalize keeps the members of a union standing inside a function type's
-        // signature as they stand (normalize::NormCx::in_signature); only the
-        // alternatives a union joins, and their parts outside signatures, pair cells.
-        // Pins, failing with in_signature made a pass-through:
-        // lang::types::{field_read_keeps_a_signature_union_of_functions_over_its_variables,
-        // field_read_keeps_a_signature_union_of_functions_with_the_union_first,
-        // tuple_read_keeps_a_signature_union_of_functions_over_its_variables,
-        // select_of_copies_keeps_a_signature_union_of_functions_over_its_variables,
-        // field_read_result_of_a_signature_union_of_functions_is_no_one_function,
-        // select_of_copies_leaves_a_signature_union_of_functions_to_its_call_refused}
-        // (four modes each) and
-        // typ::normalize::tests::a_union_of_alternatives_keeps_a_signature_union_of_renamings.
-        // Newly refused, as the call of the binding is before and after: a select of two
-        // copies of a function returning its parameter of such a union, called with an
-        // argument both members could take (the twin pin
-        // select_of_copies_of_a_signature_union_of_functions_over_one_variable passes).
-        // Probes ~/ptmp/cr29/scratch/r23/23b/rbf/.
         let context =
             |spec: &Expr| format_compact!("a run-time bind at {spec} did not type");
         // a site its check never typed sees the callee as a call would
