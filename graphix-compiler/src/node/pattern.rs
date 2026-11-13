@@ -2826,31 +2826,6 @@ impl<R: Rt> PatternNode<R> {
         tag: crate::Tag,
         held: bool,
     ) -> SmallVec<[(BindId, Option<(TagValue, u64)>); 4]> {
-        // XCR claude for claude: [perf/low] A guard consulted while its scrutinee stands (another
-        // input of the guard fired, or the select was walked for any other reason) binds
-        // quietly, and the standing insert marks every reader of the bind
-        // (RtView::store_insert_standing_var), so each block statement of the guard that
-        // reads a bind is walked where the same statement reading the scrutinee is skipped.
-        // lang::prune's `walks`, Interp, `{ let t = once(3); let lim = array::iter([5, 1, 5,
-        // 1]); select t { x if { let y = x; y > lim } => x, _ => 0 } }`: 667 walks and 4
-        // skips, against 663 and 8 with `let y = t`; equal with the mark left out of
-        // store_insert_standing_var (which breaks other readers: not the fix). No extra
-        // cycle, and values are right. The retract puts the store back, so the store cannot
-        // say whether the readers hold this value: a guard that ran at its last consult
-        // under an unmoved stale scrutinee read the same leaves then, and needs no mark.
-        // lang::prune::a_guard_reading_its_moved_bind_is_not_passed_by_its_arm asserts only
-        // the statement's reaches for this reason. (guard-bind-stand-mark-01)
-        // 2026-11-12 claude: Still real on r23-e (the probe: 670 walks and 4 skips against
-        // 666 and 8). A guard consulted again while its scrutinee stands unmoved, having run at
-        // the select's last run with no wake between (Select::update's held), is bound through
-        // ExecCtx::restand, the standing entry without the mark (RtView::store_restand_var): its
-        // readers took these leaves then, and a reader outside the guard reads what the retract
-        // puts back. The probe and its twin now both walk 666 and skip 8, and a guard reading
-        // only its bind is skipped whole (657 and 8, was 661 and 4). Pins, failing with held
-        // forced false: lang::prune::a_guard_holding_its_bind_skips_as_its_scrutinee_twin and
-        // a_guard_reading_its_moved_bind_is_not_passed_by_its_arm, which now asserts the block
-        // statement's walks and skips equal its twin's. Rule in design/walk_pruning.md, Order
-        // within a cycle.
         let mut saved = SmallVec::new();
         self.structure_predicate
             .ids(&mut |id| saved.push((id, ctx.rt.store_get(&id).cloned())));
