@@ -2081,6 +2081,13 @@ A name only the bound of a bound writes (`'a2` in `'a0: Array<'a1>, 'a1:
 Array<'a2> |x: 'a0|`) is the definition's variable in its check and in
 an instance alike, rigid in the body as any other (pins
 `lang::types::variable_a_bound_of_a_bound_writes_{is_the_enclosing_definitions,is_rigid_in_the_body}`).
+A lambda no binding names is its one instance, so a variable it declares
+stands bound in its signature and has no copy: its body compiles under a
+cell of that name bound to the type, and the name never reaches a
+variable of the same name a definition further out declares (`'a` in
+`|p: 'a, n: i64| array::map([n], 'a: Any |s: 'a| { let v: 'a = s; v })`
+is the callback's `i64`, never `p`'s type; pins
+`lang::types::{one_instance_lambdas_variable_shadows_in_a_nested_signature,one_instance_lambdas_variable_shadows_in_a_body_annotation,one_instance_lambdas_variable_shadows_in_a_default,returned_lambdas_variable_shadows_at_a_run_time_bind}`).
 A default compiled at a call's bind takes its types
 from its definition's check, as an instance's body does: the definition's
 `DefTable` records the rows of the defaults its check compiled

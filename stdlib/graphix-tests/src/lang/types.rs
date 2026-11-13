@@ -3977,6 +3977,63 @@ run!(
     FuseExpect::Jit
 );
 
+// A lambda no binding names is its one instance, so the variable it
+// declares stands bound in its signature. In an instance of the
+// definition around it the name is still the lambda's, never that
+// definition's variable of the same name.
+run!(
+    one_instance_lambdas_variable_shadows_in_a_nested_signature,
+    r#"{
+  let g = |p: 'a, n: i64| {
+    let r = array::map([(p, n)], 'a: Any |s: 'a| { let f = |x: 'a| -> 'a x; f(s) });
+    (p, r)
+  };
+  (g("s", 1), g(null, 2))
+}"#,
+    prints(r#"[["s", [["s", i64:1]]], [null, [[null, i64:2]]]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    one_instance_lambdas_variable_shadows_in_a_body_annotation,
+    r#"{
+  let g = |p: 'a, n: i64| {
+    let r = array::map([n], 'a: Any |s: 'a| { let v: 'a = s; v });
+    (p, r)
+  };
+  (g("s", 1), g(null, 2))
+}"#,
+    prints(r#"[["s", [i64:1]], [null, [i64:2]]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    one_instance_lambdas_variable_shadows_in_a_default,
+    r#"{
+  let g = |p: 'a, n: i64| {
+    let r = array::map([n], 'a: Any |s: 'a| { let f = |#d: 'a = s, y: i64| d; f(1) });
+    (p, r)
+  };
+  (g("s", 1), g(null, 2))
+}"#,
+    prints(r#"[["s", [i64:1]], [null, [i64:2]]]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    returned_lambdas_variable_shadows_at_a_run_time_bind,
+    r#"{
+  let g = |p: 'a, n: i64| {
+    let mk = |z| 'a: Any |s: 'a| { let f = |x: 'a| -> 'a { let v: 'a = x; v }; f(s) };
+    let h = mk(0);
+    (p, h(n))
+  };
+  (g("s", 1), g(null, 2))
+}"#,
+    prints(r#"[["s", i64:1], [null, i64:2]]"#);
+    FuseExpect::None
+);
+
 // A written type's own variable that an enclosing definition's parameter
 // merges into is that parameter, live in the enclosing definition.
 run!(

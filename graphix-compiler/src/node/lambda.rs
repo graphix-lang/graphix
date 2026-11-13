@@ -669,6 +669,24 @@ impl InstanceTypes {
     /// definition's check widened (`d.domain` born `string` where the
     /// check unified it with a formal's `[Array<i64>, string]`): the
     /// instance's knowledge stands.
+    // CR claude for claude: [risk/medium] A node of an instance born with a closed
+    // type its definition's row does not contain keeps the born type, and fused code
+    // then reads the value at the wrong representation. Type::take_row answers true
+    // wherever `typ` holds no open cell, whatever the row is (its last arm), so a born
+    // `string` against a row `i64` stands. One naming bug has reached this: on main
+    // be2c16a05 `let g = |p: 'a, n: i64| { let r = array::map([n], 'a: Any |s: 'a| {
+    // let v: 'a = s; v }); (p, array::len(r), r) }; println("[g("s", 1)]")` passes
+    // `--check`, prints ("s", 1, [1]) under --no-fusion, and fused aborts with
+    // "misaligned pointer dereference: address must be a multiple of 0x8 but is 0x1"
+    // in arcstr: the instance's `v` was born with `g`'s `'a` (string) for the
+    // callback's own (i64), and the kernel read the i64 as a string. That naming is
+    // fixed (lang::types::one_instance_lambdas_variable_shadows_in_a_body_annotation),
+    // but the next one would be read wrong again instead of refused. The born type
+    // may be narrower than the row, never disjoint from it: a settle that refuses the
+    // instance where the row does not contain a closed born type (as instance_types
+    // refuses a signature) makes this a refusal. It is one containment per such node
+    // per instance, so measure the build of the GUI examples before adding it. probe:
+    // ~/ptmp/cr29/scratch/r24/24c/ibsc-rev/b12.gx (instance-born-type-unchecked-01)
     pub(crate) fn settle(&mut self, id: ExprId, typ: &Type) -> bool {
         self.typ(id).is_some_and(|t| typ.take_row(&t))
     }
@@ -797,20 +815,22 @@ pub(super) fn enclosing_tvars<R: Rt>(
 /// The variables the signature `def` writes ([`FnType::written_tvars`]),
 /// as a body compiled under it names them: the definition's own cells,
 /// or, through `known` (an instance's map of its definition's cells), the
-/// instance's copies. One the instance holds as a type, not a cell, is
-/// left out.
+/// instance's copies. One the definition holds bound to a type (a lambda
+/// no binding names is its one instance) is a cell of its name bound to
+/// that type as the instance holds it, so the name never reaches a
+/// variable a definition further out declares alike.
 fn written_tvars(
     def: &FnType,
     known: Option<&AHashMap<usize, TVar>>,
 ) -> LPooled<Vec<TVar>> {
     let held = |tv: TVar| match known {
-        None => Some(tv),
-        Some(known) => match &Type::TVar(tv).rename_with(known) {
-            Type::TVar(tv) => Some(tv.clone()),
-            _ => None,
+        None => tv,
+        Some(known) => match &Type::TVar(tv.clone()).rename_with(known) {
+            Type::TVar(tv) => tv.clone(),
+            t => TVar::named(tv.name.clone(), t.clone()),
         },
     };
-    def.written_tvars().drain(..).filter_map(|(_, tv)| held(tv)).collect()
+    def.written_tvars().drain(..).map(|(_, tv)| held(tv)).collect()
 }
 
 /// The body compiling now: what it shares, and whether this compile is
