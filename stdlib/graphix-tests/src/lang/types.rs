@@ -6446,6 +6446,57 @@ run!(
     is(Value::I64(2))
 );
 
+// The dropped bound's name still holds its parameter to the parameter's
+// bound, once the cells are one.
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_holds_the_parameters_bound,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  let f = 'a: N<'b> |x: 'a, y: 'b| y;
+  let h = |v| f(v, v);
+  h("s")
+}"#,
+    refused("Number does not contain string");
+    FuseExpect::None
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_holds_the_parameters_bound_written,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  let f = 'a: N<'b> |t: ('b, 'a)| t.1;
+  let v = never();
+  let r = f((v, v));
+  v <- "s";
+  r
+}"#,
+    refused("Number and cannot hold string");
+    FuseExpect::None
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_within_the_parameters_bound,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  let f = 'a: N<'b> |x: 'a, y: 'b| y;
+  let h = |v| f(v, v);
+  h(3)
+}"#,
+    is(Value::I64(3))
+);
+run!(
+    bare_cycle_through_a_bounds_typedef_parameter_holds_the_merged_cell,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  type I<'t> = 't;
+  type E<'p, 'q> = ['p, 'q];
+  let f = 'a: N<I<'b>>, 'b: E<'c, 'c>, 'c: [Number, null] |x0: 'c, x1: 'a, x2: 'b| (x0, x1, x2);
+  let w = never();
+  let r = f(w, w, 1);
+  w <- 2;
+  r.1
+}"#,
+    is(Value::I64(2))
+);
+
 const BARE_CYCLE_WRITTEN_THROUGH_A_REFERENCE: &str = r#"
 {
     type B<'p> = Abstract<'p>;

@@ -1497,6 +1497,40 @@ impl TypeRef {
         }
     }
 
+    // CR claude for claude: [bug/medium] The check accepts and the build refuses a call
+    // that leaves undecided a variable whose bound names a typedef with a bounded
+    // parameter, where another argument breaks that parameter's bound. `type N<'t:
+    // Number> = ['t, null]; let f = 'a: N<'b> |x: 'b, y: Array<'a>| x; f("s", [])`
+    // passes --check and the build fails "an instance at fn(x: string, y:
+    // Array<N<string>>) -> string of a definition typed fn<'a: N<'b: unbound>>(..)"; so
+    // does `'a: Result<'b, `E>` called with `f(error(`Q), [])` (Result's NoError). A
+    // name's parameters take their bounds only where a relation looks the name up, and
+    // nothing looks up the bound of a variable no decided argument meets: 'b is string
+    // with N<'b> standing as 'a's conjunct, and the instance places 'a at N<string>. A
+    // wrapper `let h = |v| f(v, []); h("s")` is refused the same way, and runs under
+    // GRAPHIX_NO_SUBST=1. With `y` decided the check refuses, "'_N: unbound within Number
+    // does not contain string", and `f(1, [])` runs. base-r24 alike. A fix may hold each
+    // quantifier's bound to its names' parameter bounds where the call copies the
+    // signature. Found reviewing bare-cycle-named-bound-01: a bare cycle's merge holds
+    // them for the bounds it drops (contains.rs merge_bare_cycle). probes:
+    // ~/ptmp/cr29/scratch/r24/24c/bcnb/{m2,m12,m14}.gx, m13.gx (runs)
+    // (named-bound-param-unheld-01)
+    // CR claude for claude: [bug/low] A bounded parameter's bound decides, or refuses,
+    // an undecided argument that is not a bare open variable. `type N<'t: Number> = ['t,
+    // null]; type I<'t> = 't; let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y); let h = |v|
+    // f(v, null); let z: i64 = h(2).0` is refused, "i64 does not contain [Int, Real]": h
+    // is fn(v: [Int, Real]) -> .., where under `'a: N<'b>` it is fn(v: '_N: unbound
+    // within Number) -> .. and the program prints 2. The lookup of N<I<'b>> relates the
+    // bound to the argument (`bound.check_contains(env, arg)` below), which binds 'b to
+    // Number where a bare 'b takes Number as a conjunct; a variable whose cell is bound
+    // to an open one (`tv.is_bound()`) goes the same way. With the name in a parameter,
+    // `|x: 'b, y: N<I<'b>>|`, h(2) is refused, "Number does not contain I<'b:
+    // unbound>". base-r24 alike. A bare cycle's dropped bound is held the same way
+    // (contains.rs merge_bare_cycle), so `'a: N<I<'b>>, 'b: Number |x0: 'a, x1: 'b, x2:
+    // 'b|` called `f(w, w, v)` over two `never()` lets gives every part [Int, Real], and
+    // `let z: i64 = r.0` is refused where base-r24 ran it. probes:
+    // ~/ptmp/cr29/scratch/r24/24c/bcnb/{i1,i2,i3,t2,p00107}.gx
+    // (named-bound-arg-decides-01)
     /// Hold the arguments to `def`'s parameter bounds, as an expansion
     /// does: an open argument cell takes its bound when `commit`, any
     /// other argument must meet it, refused by error when `commit`, else

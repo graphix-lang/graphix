@@ -1959,8 +1959,9 @@ type Reach<'a> = (&'a TVar, &'a Type, Toward);
 /// The cells on a cycle through cells and unions alone, each type's bare
 /// paths to its cell and the cell, are one type: the open ones merge, each
 /// first dropping its bounds that are cells of the cycle, and each bound
-/// one is the merged cell. Two declared vars of the def under check are
-/// not one type.
+/// one is the merged cell, which the names of the dropped bounds then
+/// hold to their parameters' bounds. Two declared vars of the def under
+/// check are not one type.
 fn merge_bare_cycle(
     flags: BitFlags<ContainsFlags>,
     env: &Env,
@@ -2004,9 +2005,10 @@ fn merge_bare_cycle(
             None => return Ok(true),
         },
     };
+    let mut dropped: LPooled<Vec<Type>> = LPooled::take();
     if commit {
         for o in open.iter() {
-            o.drop_bounds_on(&cells, &|b| bound_members(env, b))?;
+            o.drop_bounds_on(&cells, &|b| bound_members(env, b, false), &mut dropped)?;
         }
     }
     for o in open.iter() {
@@ -2036,13 +2038,19 @@ fn merge_bare_cycle(
                 return Ok(false);
             }
         }
+        // only once the cells are one: a parameter's bound may decide the
+        // cell it is held to
+        for d in dropped.iter() {
+            bound_members(env, d, true)?;
+        }
     }
     Ok(true)
 }
 
 /// The members of the bound `b`, a union's or `b` alone, each name over
-/// cells as the members of what it names.
-fn bound_members(env: &Env, b: &Type) -> Result<SmallVec<[Type; 8]>> {
+/// cells as the members of what it names, its parameters held to their
+/// bounds where `commit`.
+fn bound_members(env: &Env, b: &Type, commit: bool) -> Result<SmallVec<[Type; 8]>> {
     fn names(_: &Env, m: &Type) -> bool {
         matches!(m, Type::Ref(tr) if !tr.params.iter().all(|p| p.tvar_free()))
     }
@@ -2050,7 +2058,7 @@ fn bound_members(env: &Env, b: &Type) -> Result<SmallVec<[Type; 8]>> {
         Type::Set(ms) => &ms[..],
         b => std::slice::from_ref(b),
     };
-    Type::unfolded_members(env, members, false, names)
+    Type::unfolded_members(env, members, commit, names)
 }
 
 /// How two distinct open cells unify.

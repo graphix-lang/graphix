@@ -1793,7 +1793,10 @@ Where two cells meet (`contains_tvars`):
   the union it names, so under `'a: O<'b>` over `type O<'t> = ['t,
   null]` the bound goes as `['b, null]` does, and a lower bound `O<'b>`
   leaves `null`. `'a` holding `'b` is then `'b`'s type, decided or not,
-  and a `null` declared for it is refused (pins
+  and a `null` declared for it is refused. The dropped name still holds
+  its parameters to their bounds, as every lookup of it does: under `'a:
+  N<'b>` over `type N<'t: Number> = ['t, null]` the merged cell stands
+  within `Number` (pins
   `lang::types::bare_cycle_through_a_bounds_*`,
   `typ::contains::tests::bare_cycle_through_a_typedefs_parameter_*`).
   Each bound cell on the cycle is the merged cell (`'r = [T, 'r]` gives

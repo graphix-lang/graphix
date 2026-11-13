@@ -2663,11 +2663,12 @@ impl TVar {
     /// member of a union lower bound, and each conjunct union holding one,
     /// a name as the union `members` writes it out: merged with those
     /// cells, the cell is each of them, so `'r ⊇ [T, 'r]` holds by `T`
-    /// and `'r ⊆ [T, 'r]` always.
+    /// and `'r ⊆ [T, 'r]` always. `dropped` takes each bound that goes.
     pub(super) fn drop_bounds_on(
         &self,
         on: &AddrSet,
         members: &dyn Fn(&Type) -> Result<SmallVec<[Type; 8]>>,
+        dropped: &mut Vec<Type>,
     ) -> Result<()> {
         let cell = self.cell();
         let (lower, cons) = {
@@ -2689,7 +2690,9 @@ impl TVar {
                 0 | 1 => kept.extend(rest.pop()),
                 _ => kept.push(Type::Set(Arc::from_iter(rest.drain(..)))),
             }
+            dropped.push(l);
         }
+        dropped.extend(cons.iter().filter(|c| holds_cell_of(on, c)).cloned());
         let mut c = cell.write();
         if decided(&c) {
             c.lower = kept;
