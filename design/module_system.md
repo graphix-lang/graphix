@@ -281,6 +281,38 @@ again. A forked branch that retires a binding stops naming it the val's
 there and then, and so does each branch that merges it, so a first call
 later in the reload's own cycle reads the retired binding too.
 
+**A load keeps what it registered.** The registries hold one record of
+a trait, one impl of a trait for a type and one import table a scope, and
+the two bodies name them alike (a trait and an abstract type are their
+paths), so a reload gives each to the new source (`Trait::unregister`,
+`Impl::unregister`, `Env::clear_names_under`). A function made in the
+retired body compiles its body in that body's lexical view whenever it is
+first called, so the view carries the load (`Lexical::body`, one
+`LoadedBody` shared by every definition made in the load): the traits it
+declares, with their own dispatchers and defaults; the impls it writes,
+with the bindings of the methods they write; and, from the reload on,
+the import tables under the module's scope as it left them.
+`Env::trait_def`, `impls_of`, `find_impl` and name resolution read the
+load's own first and the registries after. A call in a loaded body
+therefore resolves to the body's own method binding from the start, a
+method the impl leaves out to the body's own default, never to the
+declared entry's binding (the val's side, which the next body joins): an
+instance alive across the reload runs on over the methods it was made
+with, and one made later finds them. Their bindings are kept as captures
+are: every function made in the load pins the load's dispatchers,
+defaults and impl methods (`LoadedBody::dispatch_bindings`, at
+`Lambda::update`), a dispatcher deleted while pinned is orphaned as a
+binding is (`ExecCtx::delete_dispatcher`), and they go with the last such
+function. Outside the body a call resolves to the declared entry as
+before, and the core traits, which the runtime consults by a value's
+type, read the registries alone: a value prints and compares by the impl
+registered now. Pins: `lang::modules::
+a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
+`.._dispatches_past_a_declared_impl`,
+`.._dispatches_an_outside_trait_to_its_own_impl`, `.._keeps_its_imports`
+and `lib_tests::leaks::
+a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped`.
+
 At a deletion the val's binding is deleted with the body's, as a
 `let`'s is (`ExecCtx::delete_binding`), and the pair is what one plain
 `let` would be. Where values name each of the two (a function the body

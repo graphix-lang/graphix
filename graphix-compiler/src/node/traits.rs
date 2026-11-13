@@ -19,7 +19,9 @@ use super::{
 use crate::{
     BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
     SourcePosition, TagValue, Update, bailat,
-    env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef, TraitMethodSig},
+    env::{
+        Env, Glob, ImplDef, Map, TraitDef, TraitMethodDef, TraitMethodRef, TraitMethodSig,
+    },
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
         ImplExpr, ImplHead, LambdaExpr, ModPath, Name, Origin, Pattern, SelectExpr,
@@ -601,6 +603,16 @@ impl<R: Rt> Trait<R> {
                 defaults_by_name.push((CompactString::from(n), *id));
             }
         }
+        if let Some(body) = &ctx.env.lexical.body {
+            let methods = def.methods.iter().map(|m| {
+                let default = defaults_by_name
+                    .iter()
+                    .find_map(|(n, id)| (n.as_str() == m.name.as_str()).then_some(*id));
+                TraitMethodDef { default, ..m.clone() }
+            });
+            let methods = Arc::from_iter(methods);
+            body.declare_trait(Arc::new(TraitDef { methods, ..(*def).clone() }))
+        }
         // the node keeps its own declaration: deleting it removes the
         // dispatchers it minted, and the record only when it is the record
         ctx.env.set_trait_defaults(def.id, defaults_by_name.drain(..));
@@ -663,7 +675,7 @@ impl<R: Rt> Update<R> for Trait<R> {
     /// or not an impl or a call takes it, as each impl's method is.
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck1(ctx))?;
-        let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
+        let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
         for m in record.methods.iter().filter(|m| !m.requires.is_empty()) {
             let Some(id) = m.default else { continue };
             let Some(def) = ctx
@@ -685,7 +697,7 @@ impl<R: Rt> Update<R> for Trait<R> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
-        let Some(record) = ctx.env.trait_def(self.def.id).cloned() else { return Ok(()) };
+        let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
         // every written name in a method's signature must name something by
         // the check's end, and it writes no union of two of its variables
         for m in record.methods.iter() {
@@ -718,6 +730,9 @@ impl<R: Rt> Update<R> for Trait<R> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.defaults.delete(ctx);
+        for m in self.def.methods.iter() {
+            ctx.delete_dispatcher(m.dispatcher)
+        }
         ctx.env.undeftrait(&self.def);
     }
 
@@ -729,7 +744,7 @@ impl<R: Rt> Update<R> for Trait<R> {
     /// leaves it.
     fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.defaults.unregister(ctx);
-        ctx.env.undeftrait(&self.def);
+        ctx.env.unrecord_trait(&self.def);
     }
 
     fn typ(&self) -> &Type {
@@ -982,7 +997,7 @@ impl<R: Rt> Impl<R> {
                 Some(id) => id,
                 None => bailat!(spec, "no trait `{}` in scope", im.head.trait_name),
             };
-        let trait_def = ctx.env.trait_def(trait_id).cloned().ok_or_else(|| {
+        let trait_def = ctx.env.trait_def(trait_id).ok_or_else(|| {
             anyhow!("trait {} has no definition", im.head.trait_name).at(&spec)
         })?;
         if ctx.env.ide.is_lsp() {
@@ -1094,6 +1109,9 @@ impl<R: Rt> Impl<R> {
             .register_impl(def.clone())
             .at(&spec)?
             .map(|declared| narrow_to_implementation(ctx, declared, &def));
+        if let Some(body) = &ctx.env.lexical.body {
+            body.implement(def.clone())
+        }
         Ok(Self::with(spec, def, fulfils, trait_def, body, Vec::new()))
     }
 
@@ -1354,7 +1372,7 @@ impl<R: Rt> CallSite<R> {
         ctx: &mut CompileCtx<R>,
         tm: TraitMethodRef,
     ) -> Result<Option<Node<R>>> {
-        let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
+        let Some(def) = ctx.env.trait_def(tm.trait_id) else {
             bailat!(self.spec, "trait method call through an unknown trait")
         };
         let m = &def.methods[tm.index];

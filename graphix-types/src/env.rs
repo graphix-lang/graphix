@@ -732,6 +732,100 @@ pub struct Lexical {
     /// too: through `Env::block_types` where an earlier compile declared
     /// it, else it is refused, never an outer type of the name.
     pub block_names: Map<ModPath, Map<CompactString, ()>>,
+    /// The load of a dynamic module's source this view is inside, whose
+    /// own traits, impls and imports it reads before the registries'.
+    pub body: Option<Arc<LoadedBody>>,
+}
+
+/// What one load of a dynamic module's source registered, shared by the
+/// lexical view of every definition made in it. The registries name one
+/// trait record, one impl of a trait for a type and one import table a
+/// scope, and a reload gives each to the source that replaces this one;
+/// a function made here still compiles its body against these, whenever
+/// it is first called.
+#[derive(Debug)]
+pub struct LoadedBody {
+    /// The load around the module, when it is declared in one.
+    outer: Option<Arc<LoadedBody>>,
+    state: RwLock<LoadedState>,
+}
+
+#[derive(Debug, Default)]
+struct LoadedState {
+    /// Each trait it declares, with its own dispatchers and defaults.
+    traits: SmallVec<[Arc<TraitDef>; 1]>,
+    /// Each impl it writes, by the bindings of the methods it writes.
+    impls: SmallVec<[Arc<ImplDef>; 2]>,
+    /// The import tables at its module's scope and below as it left
+    /// them, once a reload replaced it.
+    names: Option<Arc<Map<ModPath, ScopeNames>>>,
+}
+
+impl LoadedBody {
+    pub fn under(outer: Option<Arc<LoadedBody>>) -> Arc<Self> {
+        Arc::new(Self { outer, state: RwLock::default() })
+    }
+
+    fn chain(&self) -> impl Iterator<Item = &LoadedBody> {
+        iter::successors(Some(self), |b| b.outer.as_deref())
+    }
+
+    pub fn declare_trait(&self, def: Arc<TraitDef>) {
+        self.state.write().traits.push(def)
+    }
+
+    pub fn implement(&self, im: Arc<ImplDef>) {
+        self.state.write().impls.push(im)
+    }
+
+    /// A reload replaced the load: `names` are its import tables.
+    pub fn retire(&self, names: Map<ModPath, ScopeNames>) {
+        self.state.write().names = Some(Arc::new(names))
+    }
+
+    /// The reload that would have replaced the load failed: its import
+    /// tables are the registry's again.
+    pub fn revive(&self) {
+        self.state.write().names = None
+    }
+
+    fn trait_def(&self, id: TraitId) -> Option<Arc<TraitDef>> {
+        self.chain()
+            .find_map(|b| b.state.read().traits.iter().find(|t| t.id == id).cloned())
+    }
+
+    fn impls(&self, trait_id: TraitId, f: &mut impl FnMut(&Arc<ImplDef>)) {
+        for b in self.chain() {
+            b.state
+                .read()
+                .impls
+                .iter()
+                .filter(|im| im.trait_id == trait_id)
+                .for_each(&mut *f)
+        }
+    }
+
+    fn names_at(&self, level: &str) -> Option<ScopeNames> {
+        self.chain().find_map(|b| b.state.read().names.as_ref()?.get(level).cloned())
+    }
+
+    /// The bindings a dispatch in this load can reach: its traits'
+    /// dispatchers and defaults and its impls' methods. A function made
+    /// here keeps them as it keeps what it captures.
+    pub fn dispatch_bindings(&self, f: &mut impl FnMut(BindId)) {
+        for b in self.chain() {
+            let st = b.state.read();
+            for t in st.traits.iter() {
+                for m in t.methods.iter() {
+                    f(m.dispatcher);
+                    m.default.into_iter().for_each(&mut *f)
+                }
+            }
+            for im in st.impls.iter() {
+                im.methods.into_iter().for_each(|(_, id)| f(*id))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1181,7 +1275,10 @@ impl Env {
         if !inside {
             return Ok(None);
         }
-        let Some(sn) = self.names.get(level) else { return Ok(None) };
+        let retired = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
+        let Some(sn) = retired.as_ref().or_else(|| self.names.get(level)) else {
+            return Ok(None);
+        };
         if depth > MAX_IMPORT_DEPTH {
             bail!("import chain too deep resolving `{n}` (import cycle?)")
         }
@@ -1628,6 +1725,9 @@ impl Env {
         def
     }
 
+    /// Take the declaration `def` out of scope and out of the record.
+    /// Its dispatchers stay bound: whoever deletes the declaration
+    /// decides whether a value still names them.
     pub fn undeftrait(&mut self, def: &Arc<TraitDef>) {
         if let Some(m) = self.lexical.traits.get_mut_cow(&def.scope) {
             m.remove_cow(&CompactString::from(def.name.as_str()));
@@ -1635,19 +1735,23 @@ impl Env {
                 self.lexical.traits.remove_cow(&def.scope);
             }
         }
-        for m in def.methods.iter() {
-            self.trait_methods.remove(&m.dispatcher);
-            self.poly_binds.remove(&m.dispatcher);
-            self.unbind_variable(m.dispatcher);
-        }
         self.lexical.modules.remove_cow(&def.path);
+        self.unrecord_trait(def)
+    }
+
+    /// Give the definition of record back where `def` is it, so another
+    /// declaration of the trait registers as the first did.
+    pub fn unrecord_trait(&mut self, def: &Arc<TraitDef>) {
         if self.trait_defs.get(&def.id).is_some_and(|d| d.same_definition(def)) {
             self.trait_defs.remove(&def.id);
         }
     }
 
-    pub fn trait_def(&self, id: TraitId) -> Option<&Arc<TraitDef>> {
-        self.trait_defs.get(&id)
+    /// The trait `id` as this view sees it: the declaration of the load
+    /// it is inside, else the definition of record.
+    pub fn trait_def(&self, id: TraitId) -> Option<Arc<TraitDef>> {
+        let own = self.lexical.body.as_ref().and_then(|b| b.trait_def(id));
+        own.or_else(|| self.trait_defs.get(&id).cloned())
     }
 
     /// Register an implementation. One impl per (trait, target): an
@@ -1773,17 +1877,35 @@ impl Env {
     /// registered, less a sibling's undeclared ones ([`Self::hidden_impls`]).
     #[doc(hidden)]
     pub fn impls_of(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
-        let list = self.impls.get(&trait_id)?;
+        let list = self.impls_all(trait_id)?;
         if !list.iter().any(|im| self.impl_hidden(im)) {
-            return Some(list.clone());
+            return Some(list);
         }
         Some(Arc::new(list.iter().filter(|im| !self.impl_hidden(im)).cloned().collect()))
     }
 
     /// Every impl of `trait_id`, hidden ones included (see
-    /// [`Self::impl_hidden`]).
-    pub(crate) fn impls_all(&self, trait_id: TraitId) -> Option<&Arc<Vec<Arc<ImplDef>>>> {
-        self.impls.get(&trait_id)
+    /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
+    /// source the impls it writes come first, in place of the registered
+    /// ones of their heads: its own entry, the interface's declaration it
+    /// fulfils, or the entry of the source that replaced it.
+    pub(crate) fn impls_all(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
+        let registered = self.impls.get(&trait_id);
+        let Some(body) = &self.lexical.body else { return registered.cloned() };
+        let mut own: LPooled<Vec<(Arc<ImplDef>, Option<AbstractId>)>> = LPooled::take();
+        body.impls(trait_id, &mut |im| {
+            own.push((im.clone(), self.head_abstract(&im.target)))
+        });
+        if own.is_empty() {
+            return registered.cloned();
+        }
+        let stands_for = |r: &Arc<ImplDef>| {
+            let head = self.head_abstract(&r.target);
+            own.iter().any(|(o, h)| Arc::ptr_eq(o, r) || (head.is_some() && *h == head))
+        };
+        let rest =
+            registered.into_iter().flat_map(|l| l.iter()).filter(|r| !stands_for(r));
+        Some(Arc::new(own.iter().map(|(o, _)| o).chain(rest).cloned().collect()))
     }
 
     /// An impl a sibling module's body added undeclared, hidden from the
@@ -2133,6 +2255,17 @@ impl Env {
     /// Drop every import table at `scope` or any descendant.
     pub fn clear_names_under(&mut self, scope: &ModPath) {
         self.names.retain(|s, _| !scope_is_under(s, scope));
+    }
+
+    /// Every import table at `scope` or any descendant, and one at
+    /// `scope` itself whether or not it imports anything.
+    pub fn names_under(&self, scope: &ModPath) -> Map<ModPath, ScopeNames> {
+        let mut names = Map::new();
+        names.insert_cow(scope.clone(), ScopeNames::default());
+        for (s, sn) in self.names.iter().filter(|(s, _)| scope_is_under(s, scope)) {
+            names.insert_cow(s.clone(), sn.clone());
+        }
+        names
     }
 
     pub fn deftype(

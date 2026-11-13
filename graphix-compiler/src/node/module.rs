@@ -2,7 +2,10 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, LambdaId, Node, Notify, PendingImport, PrintFlag,
     Refs, Rt, Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
-    env::{Env, Glob, ImplDef, ImportEntry, Lexical, Map, UseAnchor, scope_params},
+    env::{
+        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, UseAnchor,
+        scope_params,
+    },
     errf,
     expr::{
         At, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext,
@@ -337,7 +340,7 @@ fn bind_sig_item(
             let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)? else {
                 bail!("no trait `{}` in scope", im.trait_name)
             };
-            let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
+            let trait_def = env.trait_def(trait_id).expect("trait def");
             let (target, params) =
                 traits::impl_head(env, &scope.lexical, &trait_def, im, true)?;
             // named by its place in the interface, which every load of
@@ -1180,7 +1183,6 @@ fn check_sig_items<R: Rt>(
                         let trait_def = ctx
                             .env
                             .trait_def(trait_id)
-                            .cloned()
                             .expect("bound by bind_sig");
                         check_impl_head(
                             &ctx.env,
@@ -1308,7 +1310,7 @@ pub fn check_script_sig<R: Rt>(
                 let Some(entry) = ctx.env.impl_entry(tid, &target).map_err(at)? else {
                     return Err(missing());
                 };
-                let trait_def = ctx.env.trait_def(tid).cloned().expect("a trait's def");
+                let trait_def = ctx.env.trait_def(tid).expect("a trait's def");
                 let (st, sp) = traits::impl_head(&ctx.env, scope, &trait_def, im, true)
                     .map_err(at)?;
                 check_impl_head(
@@ -1644,9 +1646,14 @@ impl<R: Rt> Module<R> {
         let _aside =
             StaticCallees::set_aside(&ctx.static_callees, holders.take_holders(), vars);
         // `names` is a global registry: a recompile must scrub the
-        // previous source's imports or they accumulate
+        // previous source's imports or they accumulate, and the replaced
+        // body keeps its own
+        if let Some(body) = &env.body {
+            body.retire(ctx.env.names_under(&self.scope.lexical))
+        }
         ctx.env.clear_names_under(&self.scope.lexical);
         let env = self.env.clone();
+        self.env.body = Some(LoadedBody::under(env.body.clone()));
         let sig_env = match &self.body {
             Body::Static => None,
             Body::Dynamic { sig_env, .. } => Some(sig_env.clone()),
@@ -1877,6 +1884,9 @@ impl<R: Rt> Module<R> {
     /// replace it failed, so it runs on.
     fn put_back(&mut self, body: SetAside<R>) {
         let SetAside { env, nodes, lets, catches, proxy, runs } = body;
+        if let Some(body) = &env.body {
+            body.revive()
+        }
         self.env = env;
         self.nodes = nodes;
         self.lets = lets;
@@ -1885,7 +1895,7 @@ impl<R: Rt> Module<R> {
         self.runs = runs;
     }
 
-    // CR claude for claude: [bug/medium] A function saved from a dynamic module
+    // XCR claude for claude: [bug/medium] A function saved from a dynamic module
     // whose body dispatches a trait method cannot be first called after a
     // reload. Ruling D33 (a) makes it a closure over the body it was made in
     // (escaped-closure-alias-bottom-01), but the retired body's trait went with
@@ -1904,6 +1914,27 @@ impl<R: Rt> Module<R> {
     // definitions and impl entries while a value names its functions, as its
     // bindings are kept, and bind its dispatch to its own body's methods.
     // (retired-body-trait-dispatch-01)
+    // 2026-11-12 claude: A load of a dynamic module's source keeps what it
+    // registered for the functions made in it (Lexical::body, a LoadedBody every
+    // definition of the load shares): its trait declarations with their own
+    // dispatchers and defaults, its impls with the methods they write, and from
+    // the reload on its import tables. Env::trait_def, impls_of/find_impl and
+    // name resolution read the load's own first, so a body's call resolves to its
+    // own method binding (never the declared entry's, which the next body joins)
+    // and a late bind finds trait, impl and imports; every function made in the
+    // load pins the load's dispatchers, defaults and impl methods, and a pinned
+    // dispatcher is orphaned as a binding is (ExecCtx::delete_dispatcher). t1-t3
+    // print late=[10, 11] / [114, 115] and t2/t3's alive stays the first body's.
+    // Fail without it, in all four modes:
+    // lang::modules::a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods,
+    // .._dispatches_past_a_declared_impl,
+    // .._dispatches_an_outside_trait_to_its_own_impl, .._keeps_its_imports (the
+    // imports were the same fault: 'len not defined').
+    // lib_tests::leaks::a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped
+    // fails if a released dispatcher keeps its trait_methods entry. Not changed:
+    // Eq/Ord/Display/Cast, which the runtime consults by a value's type, read the
+    // registry alone, so a retired function prints a value by the impl registered
+    // now. design/module_system.md, A load keeps what it registered.
     /// Release a set-aside body, one a `reload` replaced or one deleted
     /// with its module. Its references go to the runtime, so what still
     /// holds one keeps it.

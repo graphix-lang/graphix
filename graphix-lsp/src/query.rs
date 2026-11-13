@@ -207,7 +207,7 @@ impl<'a> Query<'a> {
     fn trait_at(&self, path: &ModPath) -> Option<&'a TraitDef> {
         let env = &self.checked.env;
         let id = env.lexical.traits.get(&truncated(path, 1))?.get(basename(path))?;
-        env.trait_def(*id).map(|d| &**d)
+        env.trait_defs.get(id).map(|d| &**d)
     }
 
     fn trait_location(&self, def: &TraitDef) -> Option<Location> {

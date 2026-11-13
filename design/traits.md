@@ -522,7 +522,10 @@ therefore resolves to the SAME bindings whether it compiled before or
 after the implementation exists, which is what a dynamic module needs:
 its consumers compile against the signature alone, and a reload mints
 fresh implementation bindings behind unchanged declared ones. Static
-modules take the same path. A dynamically loaded source is
+modules take the same path. A loaded body's own calls are the
+exception: they resolve to the body's own method bindings and defaults,
+which a function made in it keeps past a reload
+(`design/module_system.md`, A load keeps what it registered). A dynamically loaded source is
 `typecheck1`'d and has the signature's declarations spliced in like a
 file, so a sig-declared trait is in scope in the source it governs.
 

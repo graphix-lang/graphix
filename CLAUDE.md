@@ -394,7 +394,10 @@ are in the docs named here.
 - **Types and modules**: nominal abstract types
   (`design/nominal_abstract_types.md`), traits (`design/traits.md`), native
   `List<'a>` (`design/list_native.md`), `catch` (`design/catch.md`), modules
-  (`design/module_system.md`), queued calls (`design/queue_fn.md`).
+  (`design/module_system.md`), queued calls (`design/queue_fn.md`). A
+  compile reads a trait's record and impls through `Env::trait_def`,
+  `impls_of` and `find_impl`, never the registry maps: a loaded dynamic
+  body's view reads its own first.
 
 ## Debugging
 

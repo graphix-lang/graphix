@@ -667,11 +667,8 @@ pub(super) fn eta_dispatcher<R: Rt>(
     bind: &crate::env::Bind,
 ) -> Result<Option<Expr>> {
     let Some(tm) = ctx.env.trait_methods.get(&bind.id) else { return Ok(None) };
-    let Some(m) =
-        ctx.env.trait_defs.get(&tm.trait_id).and_then(|d| d.methods.get(tm.index))
-    else {
-        return Ok(None);
-    };
+    let Some(def) = ctx.env.trait_def(tm.trait_id) else { return Ok(None) };
+    let Some(m) = def.methods.get(tm.index) else { return Ok(None) };
     let ft = &m.typ;
     // its names mean what they meant where the trait wrote them
     Type::Fn(ft.clone()).seed_refs(&ctx.env);

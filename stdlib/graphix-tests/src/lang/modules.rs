@@ -2295,6 +2295,117 @@ run!(
     FuseExpect::Jit
 );
 
+/// A dynamic module `d` declaring `sig` loads `first` at `ep` 2 and
+/// `second` at 6, after `above`. `saved` is the first body's `make` from
+/// 5: `held` is an instance of it alive across the reload, and `late`
+/// first calls it at 9. The program's value is, at each `ep` from 9 to
+/// 13, the second body's `make(ep)`, `held` and `late`.
+fn a_function_saved_across_a_reload(
+    above: &str,
+    sig: &str,
+    first: &str,
+    second: &str,
+) -> String {
+    format!(
+        r#"
+{above}
+let ep = 0;
+ep <- select ep {{ n if n < 14 => n + 1, _ => never() }};
+let src: string = never();
+src <- select ep {{ 2 => "{first}", 6 => "{second}", _ => never() }};
+let s = mod d dynamic {{ sandbox unrestricted; sig {{ {sig} }}; source src }};
+let saved: fn(x: i64) -> i64 = never();
+saved <- select ep {{ 4 => ep ~ d::make, _ => never() }};
+let held = saved(ep);
+let xs: Array<i64> = never();
+xs <- select ep {{ 8 => [0, 1], _ => never() }};
+let late = array::map(xs, |x| saved(x + ep));
+let seen = "";
+seen <- late ~ "[seen] [d::make(ep)] [held] [late]";
+let result = select ep {{ 14 => ep ~ seen, _ => never() }}
+"#
+    )
+}
+
+// A function saved from a dynamic module dispatches to the methods of the
+// body it was made in, whenever it is first called. The first body
+// declares a trait with a default that calls its sibling bare and an impl
+// of it; the second declares another trait of the name and no impl.
+run!(
+    a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods,
+    is(Value::String(
+        " 9000 15 [15, 16] 10000 16 [16, 17] 11000 17 [17, 18] 12000 18 [18, 19] 13000 19 [19, 20]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "",
+        "val make: fn(x: i64) -> i64",
+        "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) + 5 }; \
+         type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + 1 }; \
+         let make = |x: i64| T::e(C(x))",
+        "trait T { val q: fn(self, k: string) -> string }; let make = |x: i64| x * 1000"
+    );
+    FuseExpect::Jit
+);
+
+// Where the interface declares the trait, the type and the impl, the first
+// body's `make` still runs the first body's `d` over the first body's `v`,
+// through the default the interface wrote.
+run!(
+    a_function_saved_across_a_reload_dispatches_past_a_declared_impl,
+    is(Value::String(
+        " 20140 15 [15, 16] 20150 16 [16, 17] 20160 17 [17, 18] 20170 18 [18, 19] 20180 19 [19, 20]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "",
+        "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) + 5 }; \
+         type C; impl T for C; val make: fn(x: i64) -> i64",
+        "let v = 1; type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
+         let make = |x: i64| T::e(C(x))",
+        "let v = 2000; type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
+         let make = |x: i64| T::e(C(x)) * 10"
+    );
+    FuseExpect::Jit
+);
+
+// A trait declared outside the module: the first body's `make` runs the
+// first body's impl of it, though the second body wrote the impl now
+// registered for the type.
+run!(
+    a_function_saved_across_a_reload_dispatches_an_outside_trait_to_its_own_impl,
+    is(Value::String(
+        " 20090 10 [10, 11] 20100 11 [11, 12] 20110 12 [12, 13] 20120 13 [13, 14] 20130 14 [14, 15]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "trait Sh { val sh: fn(self) -> i64 };",
+        "val make: fn(x: i64) -> i64",
+        "use super::Sh; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + 1 }; \
+         let make = |x: i64| Sh::sh(C(x))",
+        "use super::Sh; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + 2000 }; \
+         let make = |x: i64| Sh::sh(C(x)) * 10"
+    );
+    FuseExpect::Jit
+);
+
+// What the first body imported is in scope for its `make` after a reload
+// whose source imports nothing.
+run!(
+    a_function_saved_across_a_reload_keeps_its_imports,
+    is(Value::String(
+        " 9000 11 [11, 12] 10000 12 [12, 13] 11000 13 [13, 14] 12000 14 [14, 15] 13000 15 [15, 16]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "",
+        "val make: fn(x: i64) -> i64",
+        r#"use str::len; let make = |x: i64| len(\"ab\") + x"#,
+        "let make = |x: i64| x * 1000"
+    );
+    FuseExpect::Jit
+);
+
 /// Slots born at `ep` 3 each run `body`, which returns a function over a
 /// binding `v` of its own, written to a hundred times the slot's element.
 /// `saved` takes the second slot's at 5, the slots are deleted at 7, and

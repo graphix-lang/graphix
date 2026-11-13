@@ -255,9 +255,17 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
-async fn held(ctx: &TestCtx) -> Result<[usize; 5]> {
+async fn held(ctx: &TestCtx) -> Result<[usize; 6]> {
     let s = ctx.rt.env_stats().await?;
-    Ok([s.store_len, s.aliases_len, s.ref_var_keys, s.ref_var_total, s.by_id_len])
+    let dispatchers = ctx.rt.get_env().await?.trait_methods.len();
+    Ok([
+        s.store_len,
+        s.aliases_len,
+        s.ref_var_keys,
+        s.ref_var_total,
+        s.by_id_len,
+        dispatchers,
+    ])
 }
 
 /// The root binding `name`, which a test writes to drive a program.
@@ -275,31 +283,28 @@ fn is_pair(a: i64, b: i64) -> impl Fn(&Value) -> bool {
     move |v| matches!(v, Value::Array(t) if t[..] == [Value::I64(a), Value::I64(b)])
 }
 
-/// `RELOADS` reloads of a dynamic module, each load's `get` saved and
-/// called through the next reload, which retires the body whose `v` it
-/// captures, then replaced by the new load's: a retired binding's value,
-/// readers and alias go with the last function that names it.
-async fn a_function_saved_across_reloads_keeps_nothing_once_dropped(
-    mode: Mode,
-) -> Result<()> {
+/// `RELOADS` reloads of a dynamic module whose source is `body` after
+/// `let v = [tick];`, each load's `get` saved and called through the next
+/// reload, which retires the body it was made in, then replaced by the
+/// new load's. `get(x)` is `x + v`.
+async fn saved_across_reloads(mode: Mode, body: &str) -> Result<()> {
     const RELOADS: i64 = 1000;
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let _tick = ctx.rt.compile(literal!("let tick: i64 = 0;")).await?;
-    let (eid, _expr) = compile_one(
-        &ctx,
-        r#"{
-          let src = "let v = [tick]; let get = |x: i64| x + v";
-          let s = mod d dynamic {
+    let program = format!(
+        r#"{{
+          let src = "let v = [tick]; {body}";
+          let s = mod d dynamic {{
               sandbox whitelist [core];
-              sig { val v: i64; val get: fn(x: i64) -> i64 };
+              sig {{ val v: i64; val get: fn(x: i64) -> i64 }};
               source src
-          };
+          }};
           let saved: fn(x: i64) -> i64 = never();
           saved <- d::get;
           (d::v, saved(d::v))
-        }"#,
-    )
-    .await?;
+        }}"#
+    );
+    let (eid, _expr) = compile_one(&ctx, program.as_str()).await?;
     let tick = root_bind(&ctx, "tick").await?;
     let at = |n: i64| is_pair(n, 2 * n);
     for n in 1..=20 {
@@ -315,6 +320,28 @@ async fn a_function_saved_across_reloads_keeps_nothing_once_dropped(
     ctx.shutdown().await;
     assert_eq!(early, late, "{mode:?}: grew over {RELOADS} reloads");
     Ok(())
+}
+
+/// A retired binding's value, readers and alias go with the last function
+/// that names it.
+async fn a_function_saved_across_reloads_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(mode, "let get = |x: i64| x + v").await
+}
+
+/// A retired body's dispatchers, defaults and impl methods go with the
+/// last function made in it.
+async fn a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(
+        mode,
+        "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
+         type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
+         let get = |x: i64| T::e(C(x))",
+    )
+    .await
 }
 
 /// `ROUNDS` slots of a function whose body declares an interface module,
@@ -550,6 +577,7 @@ async fn a_held_function_outlives_a_collected_reader_of_its_val(
 
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
+    a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
     both_sides_of_deleted_interface_modules_keep_nothing_once_dropped,
     a_held_function_outlives_a_collected_reader_of_its_val,

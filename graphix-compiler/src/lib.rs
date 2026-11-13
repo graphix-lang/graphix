@@ -2509,6 +2509,19 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         }
     }
 
+    /// Delete the dispatcher `id` of a trait declaration that is gone, as
+    /// [`Self::delete_binding`] deletes a binding: a function value made
+    /// under the declaration names it, and resolves a call through it
+    /// when the function is first called.
+    pub(crate) fn delete_dispatcher(&mut self, id: BindId) {
+        if self.control.lives().orphan_if_pinned(id) {
+            self.env.unbind_name(id)
+        } else {
+            self.env.trait_methods.remove(&id);
+            self.env.unbind_variable(id)
+        }
+    }
+
     /// Let go of what the references released since the last cycle kept:
     /// a cell's place, chain link and value, and a binding deleted while a
     /// reference named it.
@@ -2532,6 +2545,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             self.cx.env.byref_chain.remove(&id);
             self.cx.env.by_id.remove(&id);
             self.cx.env.poly_binds.remove(&id);
+            self.cx.env.trait_methods.remove(&id);
             self.rt.clear_ref_path(&id);
             self.release_kept(id);
             self.rt.store_release(&id);
