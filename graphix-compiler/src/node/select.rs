@@ -3482,32 +3482,6 @@ impl<'a> Below<'a> {
             return Ok(Some(tv));
         }
         let Some(lower) = self.lower.filter(|_| view) else { return Ok(None) };
-        // XCR claude for claude: [bug/low] The lower view is the whole scrutinee as its
-        // bounds held it, never narrowed to what reaches the arm, so an arm is judged
-        // against a member an earlier arm took whole. `|x, b: bool| { let r = &mut (select
-        // b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _
-        // => 3 } }` is refused "(_, 0) tests a value of 'x", though only (`L, i64) reaches
-        // that arm; the plain twin `select (select b { .. }) { .. }` checks and runs ([1,
-        // 2]). Annotating x passes, and nothing unsound follows. Same on base-r20. A fix:
-        // narrow the lower view arm by arm as Reach narrows the scrutinee (a Reach over the
-        // lower view, or the view of what reaches each arm). probes:
-        // ~/ptmp/cr29/scratch/r20/20e/ulb03/review/lv1.gx, twin lv1t.gx
-        // (lower-view-reach-01)
-        // 2026-11-12 claude: check_undecided now meets a cell decided through the
-        // scrutinee's lower bounds in the lower view less each member of its union that a
-        // type the unguarded arms before the arm cover holds whole (uncovered:
-        // Reach::covered up to the arm, by Type::contains_holding with every cell still open
-        // held, read when the arms are done), so lv1.gx checks and prints [1, 2] as its twin
-        // does; x is i64 there (the arms' settle of the referent decides it), and stays open
-        // where the covering member sorts first ((x, `K) beside (0, `L)). Only top-level
-        // members of the view are taken out: a member inside a part (select (*r, 1)) or
-        // behind a cover Reach does not record (`P((`K, _))) is still judged whole. Pins in
-        // lang::select_undecided: the five arm_behind_*_cover_* fixtures that run,
-        // written_arm_behind_a_cover_of_a_member_below_a_reference and
-        // arm_behind_a_cover_tests_the_member_that_reaches_it_refused fail in every mode
-        // with the narrowing undone (7 fixtures, 28 runs); the guarded, reordered and
-        // same-cell controls stay refused either way. Census 2962 files: 0 verdict, 0
-        // message. probes: ~/ptmp/cr29/scratch/r23/23d/lvr/ (a-d.txt, run with rb.sh)
         if before == 0 {
             return meets(lower);
         }
