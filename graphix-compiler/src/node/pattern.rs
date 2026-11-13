@@ -1419,39 +1419,6 @@ impl StructPatternNode {
         }
     }
 
-    // XCR claude for claude: [bug/low] A slice arm whose element admits no member of the
-    // scrutinee's element type is not reported dead: `|x: Array<[`A, `B]>| select x {
-    // [`C, ..] => 1, _ => 0 }`, `[`C(h), ..]` over `Array<[`A(i64), `B(string)]>` and
-    // `[(`C, h), ..]` over `Array<[(`A, i64), (`B, string)]>` check, where the same
-    // pattern outside a slice, `(`C, h)` over `[(`A, i64), (`B, string)]`, is refused
-    // "will never match". The arm's binds hold no member there and are left to its body
-    // to decide. hold_slice_members sees the case (no member passes
-    // StructPatternNode::admits for the element); why select.rs::Reach's dead-arm test
-    // lets the arm stand was not traced. Same on base-r23. probes:
-    // ~/ptmp/cr29/scratch/r23/23d/sft/n1.gx, n6.gx, n7.gx; refused twin n2.gx
-    // (slice-element-dead-arm-01)
-    // 2026-11-12 claude: (review of slice-footprint-tag-01) A written arm whose shape
-    // admits nothing of a concrete scrutinee is the same unreported dead arm, and its
-    // binds are open, since StructPatternNode::leaves gives a bind nothing from a type
-    // the shape rules out: `|x: (i64, `B)| select x { [(string, `A), (i64, `B)] as (h,
-    // `A) => str::len(h), _ => 0 }` checks and prints 0, where base-r23 refused it by
-    // the body's type alone ("string does not contain i64"). probe:
-    // ~/ptmp/cr29/scratch/r23/23d/sft-review/dead_tag_concrete_use.gx
-    // 2026-11-13 claude: Fixed: StructPatternNode::footprint finds an array or list
-    // slice admits nothing of a type where no member's element type has a value its
-    // every named element admits (each one the value must hold), and Reach::arm refuses
-    // an arm, or an or-alternative, whose structure admits no value of what reaches it
-    // where its type test could match (Reach::structure_admits, run where the test is
-    // written or the structure tests past its inferred predicate: a slice's elements,
-    // an abstract's payload): 'unreachable arm: no value of T has the parts this
-    // pattern tests'. That closes n1, n6, n7 and the review note's written-test form,
-    // and an abstract payload's (W((`C, h)) over W<(`A, i64)>). Reach::passes_nothing
-    // takes the same test for an instance's second check. Pins, each failing in all
-    // four modes with the fix undone: lang::select::{slice_element_tag,
-    // slice_element_bare_tag, slice_element_literal, slice_suffix_element,
-    // list_element, slice_inside_a_tuple, slice_or_alternative, written_test_structure,
-    // abstract_payload}_admitting_no_member_is_dead. Census: no verdict or message
-    // change. probes: ~/ptmp/cr29/scratch/r24/24h/sed/
     /// Under an inferred predicate each element of an array or list slice
     /// stands over its own member, but the run-time test admits a value
     /// of any member at every position: every name an element binds holds
