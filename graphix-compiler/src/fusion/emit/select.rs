@@ -2396,8 +2396,8 @@ fn emit_structure_cond(
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:
 /// the test that the value is that member, and `sp`'s condition over the
-/// member. A value failing the test reads
-/// as the empty array, which every read of it survives. An option's or
+/// member. A value failing the test reads as the empty array, which every
+/// read of it survives, and so does a bottom's placeholder. An option's or
 /// a result's composite is the one array the value may be; any other
 /// member is tested by type, a `written` predicate strictly, an inferred
 /// one as the node-walk's shape test reads it. A predicate with no
@@ -2456,7 +2456,7 @@ fn emit_member_cond(
                     emit_inferred_guard_cond(cx, pred_typ, scrut, scrut_typ)?;
                 let test = match test {
                     Some(test) => test,
-                    None => cx.b.ins().iconst(types::I8, 1),
+                    None => is_untainted(cx.b, disc),
                 };
                 (test, pred, exact || unique)
             }

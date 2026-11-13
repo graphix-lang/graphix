@@ -6528,6 +6528,29 @@ run!(native_guard_below_a_claim_narrows_inside_a_composite, r#"{
         [i64:0, i64:4, i64:1, i64:1], [i64:0, i64:2, i64:1, i64:3, i64:1]]")
 }; FuseExpect::Jit);
 
+// A guarded arm whose pattern covers every member of a union of
+// composites, over a scrutinee that is bottom in the first cycle: the
+// guard's pattern reads the bottom's words as an empty composite, never as
+// the member.
+run!(native_guard_over_a_bottom_union_of_composites, r#"{
+  let k = 0;
+  k <- select k { n if n < 1 => n + 1, _ => never() };
+  let t: [(i64, i64), (string, string)] = (1, 2);
+  let a: [Array<i64>, Array<string>] = [1, 2];
+  let s: [{x: i64, y: i64}, {x: string, y: string}] = {x: 1, y: 2};
+  (
+    #[native] select (select (10 / k) { _ => t }) {
+      (0, _) => 3,
+      (x, y) if (10 / k) > 1 => 1,
+      _ => 0
+    },
+    #[native] select (select (10 / k) { _ => a }) { [x, ..] if (10 / k) > 1 => 1, _ => 0 },
+    #[native] select (select (10 / k) { _ => s }) { {x, y} if (10 / k) > 1 => 1, _ => 0 }
+  )
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:1, i64:1]")
+}; FuseExpect::Jit);
+
 // An exhaustive struct pattern matches only a struct of exactly its
 // fields: `{x, y}` names every field of the first member alone, so the
 // second member reaches past it.
