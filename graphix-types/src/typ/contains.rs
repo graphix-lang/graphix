@@ -773,23 +773,6 @@ impl ContainsHist {
         t.shared_identity().is_some() && self.closure(t, false) >= Closure::NoCell
     }
 
-    // XCR claude for claude: [risk/low] Two walk memos key a var by its cell's address
-    // without holding the cell: ContainsHist::closure pins the var, which a merge
-    // re-points, so a fresh cell may later take the freed address and its key's verdict
-    // (a stale Closed turns a commit into a probe); RefHist::ref_id's content_ids holds
-    // nothing, so an assumption in progress could answer for a fresh cell's pair. Not
-    // shown reachable: a merge abandons only an open cell, cached Open, and a walk holds
-    // the vars it compares. Holding the cell (TVar::cell) beside each such key closes
-    // both. Found beside union-dag-rigid-cell-01, whose probe memo keys a var by its
-    // wrapper instead. (cell-addr-keys-01)
-    // 2026-11-13 claude: Both memos hold what their keys read (typ::Held: a var's cell,
-    // any other node itself): ContainsHist::closed_pins holds the cell where it held the
-    // var, and RefHist::content_ids keeps each id with its type held, an abstract type's
-    // parameters included, which nothing held either. No verdict changes (census of both
-    // repos 0/0, regress 582/0). Pins, graphix-types contains::tests:
-    // a_closure_key_holds_its_cell and a_ref_id_holds_what_its_key_reads (a merged-away
-    // cell stays held; with the hold off, an abstract type made after a dropped one took
-    // its id) fail without the change.
     fn closure(&mut self, t: &Type, now: bool) -> Closure {
         ensure_sufficient(|| {
             let key = t.shared_identity();
