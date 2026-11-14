@@ -2,7 +2,7 @@ use super::{
     WakeBit,
     callsite::{Narrowing, check_hidden_defaults},
     compiler::compile,
-    dense_gate,
+    dense_gate, one_bound, read_bound,
 };
 use crate::cost::ForkSite;
 use crate::{
@@ -965,7 +965,7 @@ pub(crate) fn struct_field_types<R: Rt>(
     )
 }
 
-// CR claude for claude: [bug/low] A field read through a union of declared variables
+// XCR claude for claude: [bug/low] A field read through a union of declared variables
 // each bounded by a struct is refused naming no annotation: `let f = 'a: {x: i64}, 'b:
 // {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x; f(true, {x:
 // 1}, {x: 2})` says "expected struct not ['a: unbound within { x: i64 }, 'b: unbound
@@ -976,8 +976,17 @@ pub(crate) fn struct_field_types<R: Rt>(
 // (node::read_bound). base-r24 alike. Found fixing or-name-open-parts-call-01. probes:
 // ~/ptmp/cr29/scratch/r24/24g/orname/{q3,q5}.gx (refused), q3b.gx (runs)
 // (union-read-through-bounds-01)
-/// The members of `t`, a union once expanded, each expanded and taken
-/// apart by `part`, when every one of them is that.
+// 2026-11-14 claude: union_of now reads an open-cell member through its one bound
+// (node::read_bound), as deref_typ does one cell; the field/tuple read and the struct
+// update through a union of bounded variables, alone or beside a written struct, check
+// and run in every mode. Pins that fail without it: lang::types
+// a_field_read_through_a_union_of_bounded_variables, ..._beside_a_written_struct,
+// a_tuple_read_through_a_union_of_bounded_variables,
+// a_field_read_through_bounded_variables_unions_the_fields,
+// ..._needs_the_field_in_each (refusal), plus generics.md cases.
+/// The members of `t`, a union once expanded, each expanded (an open cell
+/// through its one bound, as [`deref_typ!`] reads one) and taken apart by
+/// `part`, when every one of them is that.
 fn union_of<R: Rt, T>(
     ctx: &CompileCtx<R>,
     t: &Type,
@@ -994,7 +1003,11 @@ fn union_of<R: Rt, T>(
     let Some(Type::Set(members)) = &set else { return Ok(None) };
     let mut out: LPooled<Vec<T>> = LPooled::take();
     for m in members.iter() {
-        match expand(m)?.as_ref().and_then(&part) {
+        let m = match expand(m)? {
+            Some(m) => Some(m),
+            None => read_bound(&ctx.env, one_bound(m))?,
+        };
+        match m.as_ref().and_then(&part) {
             Some(p) => out.push(p),
             None => return Ok(None),
         }

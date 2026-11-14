@@ -97,6 +97,9 @@ select x {
   (`node::needs_member_type`, pins
   `a_call_through_a_name_alternatives_share_over_open_parts_needs_its_type`
   and its annotated twin).
+  A member that is a declared variable bounded by a struct or a tuple is read
+  through its bound, as a read of that variable alone is (`data.rs::union_of`,
+  pin `a_field_read_through_a_union_of_bounded_variables`).
 - **A shadowed alternative is a dead-arm error** (the house select
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
   `[x, r..] | [a, b, c]` are errors. At compile a duplicate, or any

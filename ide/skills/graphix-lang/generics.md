@@ -400,6 +400,8 @@ call through the read is refused. Write one variable in both.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
+ok let f = 'a: {x: i64}, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x; f(true, {x: 1}, {x: 2})
+no "unknown field x" 'a: {x: i64}, 'b: {y: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x
 no "i64 does not contain string" let fs = [|#d = 1, x: i64| x, |#d = "q", x: i64| x]; array::len(fs)
 no "the functions met here share one #d" let j = 0; let o1 = select j { 0 => |#d = 1, x: i64| x, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64| x, _ => null }; let a = [o1, o2]; select a[1]$ { null as _ => 0, f => f(7) }
 ok let j = 0; let o1 = select j { 0 => |#d = 1, x: i64| x, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64| x, _ => null }; let a: Array<[fn(?#d: [i64, string], x: i64) -> i64, null]> = [o1, o2]; select a[1]$ { null as _ => 0, f => f(7) }

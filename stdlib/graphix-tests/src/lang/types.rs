@@ -14814,6 +14814,68 @@ run!(
     FuseExpect::Jit
 );
 
+// A read through a union of declared variables reads each member through
+// its one bound, as a read through one such variable does.
+run!(
+    a_field_read_through_a_union_of_bounded_variables,
+    r#"{
+  let f = 'a: {x: i64}, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
+  (f(true, {x: 1}, {x: 2}), f(false, {x: 1}, {x: 2}))
+}"#,
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_field_read_through_a_bounded_variable_beside_a_written_struct,
+    r#"{
+  let f = 'a: {x: i64} |c: bool, a: 'a, b: {x: i64}| (select c { true => a, false => b }).x;
+  (f(true, {x: 1}, {x: 2}), f(false, {x: 1}, {x: 2}))
+}"#,
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_tuple_read_through_a_union_of_bounded_variables,
+    r#"{
+  let f = 'a: (i64, string), 'b: (i64, string) |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).0;
+  (f(true, (1, "a"), (2, "b")), f(false, (1, "a"), (2, "b")))
+}"#,
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_field_read_through_bounded_variables_unions_the_fields,
+    r#"{
+  let f = 'a: {x: i64}, 'b: {x: string} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
+  (f(true, {x: 1}, {x: "s"}), f(false, {x: 1}, {x: "s"}))
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    a_field_read_through_bounded_variables_needs_the_field_in_each,
+    r#"{
+  let f = 'a: {x: i64}, 'b: {y: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
+  f(true, {x: 1}, {y: 2})
+}"#,
+    refused("in struct, unknown field x");
+    FuseExpect::None
+);
+
+run!(
+    a_field_read_through_a_variable_no_bound_reads_beside_a_bounded_one_needs_its_type,
+    r#"{
+  let f = 'a: Number, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
+  f(true, 1, {x: 2})
+}"#,
+    refused("reading a struct needs its type known here");
+    FuseExpect::None
+);
+
 // A member the read refuses decides the refusal, whatever the open one
 // would take.
 run!(
