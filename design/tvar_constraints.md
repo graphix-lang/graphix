@@ -627,9 +627,13 @@ one member, chosen by rules that read the union alone:
   rigid (`undecided`); a decided member that holds the type takes it
   before any undecided one. Where every open cell the member and the
   type reach is held rigid, and every one their conjuncts and lower
-  bounds reach (`decides_no_cell`), a commit decides nothing, so it is
-  the probe: the first member the probe admits takes the type, on no
-  copies.
+  bounds reach, and none is one an earlier task left open
+  (`decides_no_cell`), a commit decides nothing, so it is the probe: the
+  first member the probe admits takes the type, on no copies. A function
+  type takes a quantifier an earlier task left open fresh for each walk,
+  outside a top-level input, so a commit decides the copy however the
+  cell is held (pin `typ::contains::tests::
+  a_commit_decides_a_quantifier_an_earlier_task_left_open`).
 - members that are one type are one member (Eric 11-11, D34): the same
   cells throughout, a union read as the set of its members, so neither
   their order, a member that stands twice, a nested union nor a cell bound

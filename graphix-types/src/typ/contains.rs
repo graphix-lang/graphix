@@ -16,7 +16,8 @@ use crate::{
         },
         tvar::{
             CellFact, CellLock, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
-            Standing, Toward, bare_path, cell_writes, cycle_toward, settled_cause_note,
+            Standing, Toward, bare_path, cell_writes, cycle_toward, in_input,
+            settled_cause_note,
             would_cycle_inner,
         },
         variance,
@@ -1183,28 +1184,15 @@ fn undecided(t: &Type) -> bool {
 }
 
 /// Whether a commit can decide no cell `t` reaches: each open cell is held
-/// rigid, and so is each open cell their conjuncts and lower bounds reach.
+/// rigid, and so is each one their conjuncts and lower bounds reach, and
+/// none is one an earlier task left open outside a top-level input: a
+/// function type quantifying such a cell takes it fresh for each walk
+/// (`FnType::contains_int`), and a commit decides the copy.
 fn decides_no_cell(t: &Type) -> bool {
-    let mut todo: LPooled<Vec<TVar>> = LPooled::take();
-    let mut seen: LPooled<AddrSet> = LPooled::take();
-    let reach = |t: &Type, todo: &mut Vec<TVar>| {
-        find_open_cell(t, true, &mut |tv| {
-            todo.push(tv.clone());
-            false
-        });
-    };
-    reach(t, &mut todo);
-    while let Some(tv) = todo.pop() {
-        if !tv.is_rigid() {
-            return false;
-        }
-        if seen.insert(tv.cell_addr()) {
-            for c in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
-                reach(c, &mut todo)
-            }
-        }
-    }
-    true
+    let fresh = !in_input();
+    each_cell_through_bounds(t, true, &mut LPooled::take(), &mut |tv| {
+        tv.is_rigid() && !(fresh && tv.earlier_task())
+    })
 }
 
 /// A variable whose chain of bindings ends open.
@@ -1866,6 +1854,22 @@ pub(super) fn hold_rigid_through_bounds(
     held: &mut AddrSet,
     gates: &mut Vec<RigidGate>,
 ) {
+    each_cell_through_bounds(t, false, held, &mut |tv| {
+        gates.push(tv.open_rigid());
+        true
+    });
+}
+
+/// Whether `f` holds of each open cell `t` reaches, and of each one the
+/// conjuncts of such a cell reach, and its lower bounds where `lower`, to
+/// any depth, each once: `seen` holds the cells met. Stops at the first
+/// that `f` refuses.
+fn each_cell_through_bounds(
+    t: &Type,
+    lower: bool,
+    seen: &mut AddrSet,
+    f: &mut impl FnMut(&TVar) -> bool,
+) -> bool {
     let mut todo: LPooled<Vec<TVar>> = LPooled::take();
     let reach = |t: &Type, todo: &mut Vec<TVar>| {
         find_open_cell(t, true, &mut |tv| {
@@ -1875,13 +1879,21 @@ pub(super) fn hold_rigid_through_bounds(
     };
     reach(t, &mut todo);
     while let Some(tv) = todo.pop() {
-        if held.insert(tv.cell_addr()) {
-            for c in tv.cell_constraints().iter() {
-                reach(c, &mut todo)
-            }
-            gates.push(tv.open_rigid());
+        if !seen.insert(tv.cell_addr()) {
+            continue;
+        }
+        if !f(&tv) {
+            return false;
+        }
+        let lowers = match lower {
+            true => tv.cell_lower(),
+            false => SmallVec::new(),
+        };
+        for c in tv.cell_constraints().iter().chain(lowers.iter()) {
+            reach(c, &mut todo)
         }
     }
+    true
 }
 
 /// A trial: `f` over copies of `ts` that share one cell map, each rigid
@@ -4671,6 +4683,22 @@ impl Type {
                 // undone (a trail of writes) instead of on copies, or the placement a trial
                 // allows taking a choice between decided members as its trial did. Probes
                 // and generators: ~/ptmp/cr29/scratch/r24/24f/tmt/ (README).
+                // 2026-11-13 claude: Review (lane 24f): the partial fix holds for the
+                // probes, with a correction. decides_no_cell saw every cell the member and
+                // the type reach held rigid, but a function type whose quantifier an
+                // earlier task left open takes it fresh for each walk
+                // (FnType::contains_int), and a commit decides the copy: under a later
+                // task, with 'c held rigid, [fn(x: string) -> i64, fn(x: string) -> string]
+                // ⊇ fn<'c: Any>(x: 'c) -> 'c was refused, since the probe admits the
+                // identity into the first member part by part and that commit refuses it,
+                // where base-r24 walks each member and the second takes it. decides_no_cell
+                // now also refuses a cell an earlier task left open outside a top-level
+                // input (Type-level only: no program found that reaches it). Pin
+                // typ::contains::tests::a_commit_decides_a_quantifier_an_earlier_task_left_open
+                // fails with the correction undone; the fixer's pin still fails with the
+                // rule undone (5.30M steps). --no-cache --check after the correction: 0140
+                // 1.66G, 0289 1.08G, 0224 17.87G; guicheck 39.50G base, 39.58G lane; 600
+                // genrigid programs (seed 11) identical to base-r24.
                 let fixed = decides_no_cell(m)
                     && *fixed_t.get_or_insert_with(|| decides_no_cell(t));
                 let holds = fixed
@@ -5703,7 +5731,11 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typ::{normalize::NORMALIZED, setops::tests::past_eager};
+    use crate::typ::{
+        normalize::NORMALIZED,
+        setops::tests::past_eager,
+        tvar::{InTask, new_task},
+    };
     use arcstr::literal;
 
     // A type expanded through a chain of parametric typedefs, a DAG that
@@ -6619,6 +6651,32 @@ mod tests {
             held.check_contains(&env, &open).unwrap();
             let steps = CONTAINS_STEPS.with(|n| n.get());
             assert!(steps <= most, "{body}: a commit took {steps} steps");
+        }
+    }
+
+    // A function type whose quantifier an earlier task left open takes it
+    // fresh for each walk, so a commit decides the copy though the cell is
+    // held rigid: the probe admits the identity into `fn(x: string) ->
+    // i64` part by part, and the commit refuses it there, so the choice
+    // walks each member and the identity goes to the one that holds it.
+    #[test]
+    fn a_commit_decides_a_quantifier_an_earlier_task_left_open() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        for (s, t) in [
+            (
+                "[fn(x: string) -> i64, fn(x: string) -> string]",
+                "fn<'c: Any>(x: 'c) -> 'c",
+            ),
+            (
+                "[`A(fn(x: string) -> i64), `A(fn(x: string) -> string)]",
+                "`A(fn<'c: Any>(x: 'c) -> 'c)",
+            ),
+        ] {
+            let (s, t) = (at_root(&env, s), at_root(&env, t));
+            let mut held = vec![];
+            hold_rigid(&t, &mut held);
+            let _later = InTask::enter(new_task());
+            assert!(s.contains(&env, &t).unwrap(), "{s} ⊇ {t}");
         }
     }
 

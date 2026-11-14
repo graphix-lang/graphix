@@ -415,9 +415,10 @@ can keep the original member slice.
   applications below it, so under a hold, where two members of one head
   over a recursive definition are a choice at every application, the
   walks on copies take every path through them. A commit that can
-  decide no cell of the member or the type (`contains::decides_no_cell`)
-  is the probe that admitted the member, which then takes the type with
-  no walk on copies. Pin `typ::contains::tests::
+  decide no cell of the member or the type (`contains::decides_no_cell`,
+  `design/tvar_constraints.md`) is the probe that admitted the member,
+  which then takes the type with no walk on copies. Pin
+  `typ::contains::tests::
   a_choice_no_commit_can_decide_walks_no_copies` (224 k and 76 k steps;
   5.3 M and 832 k with the walks). A choice whose commit decides a cell,
   a decided member taking an undecided type between two definitions with
