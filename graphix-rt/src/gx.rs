@@ -1,4 +1,4 @@
-use crate::{ProgramImage, RegistrationImage};
+use crate::{JitUnavailable, ProgramImage, RegistrationImage};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
@@ -479,9 +479,7 @@ impl<X: GXExt> GX<X> {
                     info!("program init time: {:?}", st.elapsed());
                     if let (Some(tx), Some(probes)) = (cfg.program_image, probes) {
                         let image = if fusion_on(t.flags) && !t.ctx.fusion.available() {
-                            Err(anyhow!(
-                                "the JIT is unavailable, so the program has no kernels"
-                            ))
+                            Err(anyhow::Error::new(JitUnavailable))
                         } else {
                             t.registration_image()
                         };

@@ -1322,7 +1322,7 @@ enum SessionImage {
 struct SubjectRun {
     outcome: Outcome,
     /// The program image a `Write` produced.
-    image: Result<Bytes, String>,
+    image: Result<Bytes, NoImage>,
     /// The program's own fusion stats: the registration compiles with
     /// fusion off (or is restored), so nothing else contributes. `None`
     /// when the runtime did not answer.
@@ -1332,8 +1332,20 @@ struct SubjectRun {
     stalled: bool,
 }
 
-fn no_image() -> Result<Bytes, String> {
-    Err("no program image was written".to_string())
+/// Why a `Write` run left no program image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NoImage {
+    /// The runtime sent none: it did not get as far as writing one.
+    Unwritten,
+    /// The runtime tried and the write failed.
+    Failed(String),
+    /// The JIT could not be built, so the run was unfused and the program
+    /// has no kernels to image: the environment, not the program.
+    NoJit,
+}
+
+fn no_image() -> Result<Bytes, NoImage> {
+    Err(NoImage::Unwritten)
 }
 
 impl SubjectRun {
@@ -1414,7 +1426,7 @@ async fn run_subject(
     if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
-    // CR claude for claude: [test-gap/low] A run contained at its deadline can report
+    // XCR claude for claude: [test-gap/low] A run contained at its deadline can report
     // its image write as failed for a reason the containment made, and the warm route
     // then differs from the cold one: the soak nov13a (aieka, divergence_000001, main
     // be2c16a05) recorded `jit/par/cold: Timeout(Deadline)` against `jit/par/warm:
@@ -1430,12 +1442,27 @@ async fn run_subject(
     // as the cold outcome. probes: ~/ptmp/cr29/scratch/r24/coord/soak/d1.gx,
     // fuzz/pending-triage/nov13a/aieka/divergence_000001.gx
     // (contained-image-write-unavailable-01)
+    // 2026-11-14 claude: The cause is neither the abort race nor a write after
+    // containment: GX::new sends the image at construction, before any cycle, and the
+    // error was the JIT failing to build there (the runtime's own warning 'fusion is
+    // unavailable'), an environment failure of the aieka process, so the cold run ran
+    // unfused and the run's containment is incidental. A non-contained program would
+    // have been misreported the same way. graphix_rt::JitUnavailable now types that
+    // error and graphix-fuzz's NoImage::NoJit makes restorable return the cold outcome
+    // as the warm one. Pins: graphix-fuzz/tests/jit_unavailable.rs (GRAPHIX_JIT_ARENA=1
+    // makes the JIT unbuildable; warm RuntimeErr without the fix) and the unit test
+    // contained_runs_report_a_failed_image_write. The finding's program is not pinned
+    // in findings/: with it embedded, regress was SIGKILLed (exit 137) in its
+    // sequential full-budget retry of untrusted agreements and was clean (exit 0)
+    // without it, so it builds an unbounded list; probe
+    // ~/ptmp/cr29/scratch/r25/25h/d1.gx.
     let grace = Duration::from_secs(2);
     let image = match image_rx {
         None => no_image(),
         Some(irx) => match tokio::time::timeout(grace, irx).await {
             Ok(Ok(Ok(p))) => Ok(p.image),
-            Ok(Ok(Err(e))) => Err(format!("the program image write failed: {e:#}")),
+            Ok(Ok(Err(e))) if e.is::<graphix_rt::JitUnavailable>() => Err(NoImage::NoJit),
+            Ok(Ok(Err(e))) => Err(NoImage::Failed(format!("{e:#}"))),
             Ok(Err(_)) | Err(_) => no_image(),
         },
     };
@@ -1473,7 +1500,7 @@ async fn run_session(
     image: SessionImage,
     timeout: Duration,
     opts: RunOpts,
-) -> (Outcome, Result<Bytes, String>) {
+) -> (Outcome, Result<Bytes, NoImage>) {
     let run = run_subject(code, mode, route, image, timeout, opts).await;
     (run.outcome, run.image)
 }
@@ -1514,14 +1541,22 @@ async fn cold_warm_with(
 /// The image a cold run leaves its warm run, else the warm outcome. The
 /// runtime writes the image at its construction, so only a program whose
 /// compile failed or outlived the deadline has none to restore; any other
-/// run's missing image is the write's failure.
-fn restorable(cold: &Outcome, image: Result<Bytes, String>) -> Result<Bytes, Outcome> {
+/// run's missing image is the write's failure. A run whose JIT could not
+/// be built ran unfused, as a warm run restored from nothing would, so
+/// its warm outcome is its own.
+fn restorable(cold: &Outcome, image: Result<Bytes, NoImage>) -> Result<Bytes, Outcome> {
     match (cold, image) {
         (Outcome::CompileErr(_) | Outcome::Timeout(Containment::Compile), _) => {
             Err(cold.clone())
         }
         (_, Ok(image)) => Ok(image),
-        (_, Err(e)) => Err(Outcome::RuntimeErr(e)),
+        (_, Err(NoImage::NoJit)) => Err(cold.clone()),
+        (_, Err(NoImage::Failed(e))) => {
+            Err(Outcome::RuntimeErr(format!("the program image write failed: {e}")))
+        }
+        (_, Err(NoImage::Unwritten)) => {
+            Err(Outcome::RuntimeErr("no program image was written".to_string()))
+        }
     }
 }
 
@@ -7944,10 +7979,12 @@ mod trace_probes {
     }
 
     /// A run contained after the runtime's construction wrote its image
-    /// there, so a failed write is the warm outcome, never the cold one.
+    /// there, so a failed write is the warm outcome, never the cold one;
+    /// a JIT that could not be built is the environment's failure, which
+    /// leaves the warm outcome the cold one.
     #[test]
     fn contained_runs_report_a_failed_image_write() {
-        let failed = || Err("the program image write failed: x".to_string());
+        let failed = || Err(NoImage::Failed("x".to_string()));
         for c in [
             Containment::Deadline,
             Containment::StackBudget,
@@ -7956,6 +7993,12 @@ mod trace_probes {
             let warm = restorable(&Outcome::Timeout(c), failed());
             assert!(matches!(warm, Err(Outcome::RuntimeErr(_))), "{c:?}: {warm:?}");
         }
+        let unfused = Outcome::Timeout(Containment::Deadline);
+        let warm = restorable(&unfused, Err(NoImage::NoJit));
+        assert!(matches!(warm, Err(Outcome::Timeout(Containment::Deadline))), "{warm:?}");
+        let shown = Outcome::single(Value::I64(1));
+        let warm = restorable(&shown, Err(NoImage::NoJit));
+        assert!(matches!(warm, Err(Outcome::Trace(_))), "{warm:?}");
         let compile = Outcome::Timeout(Containment::Compile);
         let warm = restorable(&compile, no_image());
         assert!(matches!(warm, Err(Outcome::Timeout(Containment::Compile))), "{warm:?}");

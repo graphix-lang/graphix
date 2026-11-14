@@ -53,6 +53,20 @@ use gx::GX;
 pub use reconcile::{keep_equal, reconcile};
 pub use rt::GXRt;
 
+/// Why a program image was not written: fusion is on and the JIT cannot
+/// be built, so the program has no kernels to image. The program runs
+/// unfused.
+#[derive(Debug, Clone, Copy)]
+pub struct JitUnavailable;
+
+impl fmt::Display for JitUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the JIT is unavailable, so the program has no kernels")
+    }
+}
+
+impl std::error::Error for JitUnavailable {}
+
 /// Trait to extend the event loop: `update_sources` polls the
 /// embedder's own async event sources between cycles. Packages deliver
 /// what they receive through variables the runtime watches

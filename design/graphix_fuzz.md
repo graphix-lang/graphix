@@ -295,7 +295,10 @@ image machinery), `cold` (compiled and written to a program image) and
 `warm` (restored from the image the cold run wrote). The pairs `nocache`/`cold` and
 `cold`/`warm` compare at the program's tier; a cold run that compiled
 but wrote no image makes the warm outcome the write's failure, so a
-codec gap is a finding (`Pair::Cold`/`Pair::Warm`). An `Excluded`
+codec gap is a finding (`Pair::Cold`/`Pair::Warm`); a run whose JIT could
+not be built (`graphix_rt::JitUnavailable`: the environment, not the
+program) ran unfused and has no kernels to image, so its warm outcome is
+its cold one. An `Excluded`
 program runs its sessions too, compared in kind only: a builtin's image
 state is fuzzed even where values are not comparable. Every session restores one registration image built once per
 process. The injected inputs live in their own `inputs` module so a
