@@ -60,8 +60,9 @@ A program under test must exit or the harness learns nothing:
 constant argument to `exit` runs at init — always gate it). The cycle
 in which `exit` fires is the program's last: everything else in that
 cycle still runs, and nothing after it does, so a `<-` written in it
-never lands and a reply still on its way is lost. Exit on the event
-that says the work is done (`sys::exit(written ~ 0)`).
+never lands, a reply still on its way is lost, and an async call it
+started (`sys::fs::write_all`, a send) may be cut short. Exit on the
+event that says the work is done (`sys::exit(written ~ 0)`).
 
 ## The rules that bite (read these first)
 

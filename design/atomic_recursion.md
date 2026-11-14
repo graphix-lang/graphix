@@ -108,11 +108,18 @@ program's output expression after a first cycle that exits; the fuzzer
 reads the trace), and what the embedder compiles or writes then never
 runs. The request arrives while that cycle may still be running, and
 the runtime is idle once the cycle's batch is sent: the shell shows
-batches until `wait_idle` answers (`Output::process_exited`). An
-embedder that seeded no `ExitRequest` gets the process's exit on the
-spot, where `Exit::update` runs. Pins:
+batches until `wait_idle` answers (`Output::process_exited`). A
+`wait_idle` that fails says the runtime was stopped inside that cycle:
+the cycle did not run whole, so the stop decides how the shell ends
+(the interrupt's status, a budget's error), not the code the program
+asked for, and a termination signal ends the shell while it waits. An
+async call the last cycle started is not waited for: the shutdown
+aborts it as a sleep would, so a program exits on the call's result.
+An embedder that seeded no `ExitRequest` gets the process's exit on
+the spot, where `Exit::update` runs. Pins:
 `lib_tests::sys::exit_is_the_programs_last_cycle`,
-`graphix-shell/tests/shell/script_exit.rs`.
+`graphix-shell/tests/shell/script_exit.rs`, the exit-cycle wedges of
+`graphix-shell/tests/shell/interrupt_wedge.rs`.
 
 The shell arms its keys before the first cycle (a top-level infinite
 loop wedges inside `load_env`, before the input loop exists). The

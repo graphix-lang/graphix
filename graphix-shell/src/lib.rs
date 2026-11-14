@@ -180,6 +180,14 @@ impl<X: GXExt> Output<X> {
     // values and r24-e 133, each after 5 to 6 seconds, status 0.
     // `process_exited` drains while it waits for the idle answer; the end of
     // piped input needs the same. (piped-flood-undrained-01)
+    // 2026-11-14 claude: A program's exit status is lost the same way: a piped
+    // line that counts flat out and calls sys::exit(9) at 500 ends the shell
+    // with status 0 after the five seconds, about 110 of its 501 values shown,
+    // on base-r24 and r24-e alike (the runtime is held in a send about a
+    // hundred cycles in and never reaches the cycle that exits, so the
+    // try_recv of the exit request finds none). probe:
+    // ~/ptmp/cr29/scratch/r24/24e/exit-cut-cycle-01/review/piped-exit.sh.
+    // Draining while waiting, as process_exited does, fixes both.
     async fn process_sent(
         &mut self,
         gx: &GXHandle<X>,
@@ -197,27 +205,29 @@ impl<X: GXExt> Output<X> {
     /// Show every batch of a runtime whose program asked to exit, through
     /// the cycle that asked: it runs no cycle after that one and is idle
     /// once that cycle's batch is sent, which waits for the room made
-    /// here.
+    /// here. `Continue(false)` when the runtime stopped before that cycle
+    /// ended.
     async fn process_exited(
         &mut self,
         gx: &GXHandle<X>,
         from_gx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
         env: &mut Env,
         newenv: &mut Option<Env>,
-    ) -> ControlFlow<Result<Option<i32>>> {
+    ) -> ControlFlow<Result<Option<i32>>, bool> {
         let idle = gx.wait_idle();
         tokio::pin!(idle);
-        loop {
+        let whole = loop {
             select! {
                 biased;
-                _ = &mut idle => break,
+                idle = &mut idle => break idle.is_ok(),
                 batch = from_gx.recv() => match batch {
                     Some(mut batch) => self.process_batch(env, newenv, &mut batch).await?,
-                    None => break,
+                    None => break false,
                 },
             }
-        }
-        self.process_sent(gx, from_gx, env, newenv).await
+        };
+        self.process_sent(gx, from_gx, env, newenv).await?;
+        ControlFlow::Continue(whole)
     }
 
     /// Show a batch of the runtime's events, following its env: `Break`
@@ -916,12 +926,19 @@ impl<X: GXExt> Shell<X> {
                 let mut key = None;
                 select! {
                     code = exit_requested(&mut session.exit) => if let Some(code) = code {
-                        match output
-                            .process_exited(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
-                            .await
-                        {
+                        // the cycle that asked may never end: a signal still
+                        // ends the shell, and what stopped a runtime inside
+                        // that cycle decides below, not the program's code
+                        let shown = select! {
+                            shown = output.process_exited(
+                                &session.gx, &mut session.from_gx, &mut env, &mut newenv,
+                            ) => shown,
+                            code = terminated.recv() => break 'session Ok(code),
+                        };
+                        match shown {
                             ControlFlow::Break(r) => break 'session r,
-                            ControlFlow::Continue(()) => break 'session Ok(Some(code)),
+                            ControlFlow::Continue(true) => break 'session Ok(Some(code)),
+                            ControlFlow::Continue(false) => (),
                         }
                     },
                     batch = session.from_gx.recv() => match batch {

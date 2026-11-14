@@ -900,6 +900,11 @@ impl<R: Rt> Apply<R> for Exit {
             // this today. Fix: the code goes on `Control` and the run loop ends
             // the process after the cycle, or every runtime is given a request.
             // (exit-unrequested-cut-01)
+            // 2026-11-14 claude: The run! harness seeds no request
+            // (testing::fixture_runtime seeds only what its caller's setup
+            // does; lib_tests/sys.rs's two exit tests seed theirs), so a
+            // fixture that calls sys::exit ends its test binary on the spot.
+            // The shell and the fuzzer seed one.
             match ctx.libstate.get::<graphix_package_core::ExitRequest>() {
                 Some(r) => {
                     ctx.control.exit();

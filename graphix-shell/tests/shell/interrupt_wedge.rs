@@ -25,6 +25,14 @@ const LATER_CYCLE_WEDGE: &str = "{ let x = i64:0; \
      let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; \
      f(x) }";
 
+/// [`LATER_CYCLE_WEDGE`] with a `sys::exit` in the cycle that spins: the
+/// program has asked to end, and its last cycle never does.
+const EXIT_CYCLE_WEDGE: &str = "{ let x = i64:0; \
+     x <- sys::time::timer(duration:1.s, false) ~ i64:1; \
+     sys::exit(select x { i64:0 => never(), _ => 0 }); \
+     let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; \
+     f(x) }";
+
 /// The node-walk's wedges keep an activation per call, so they grow about
 /// 0.5 GB/s: one that has grown past this is wedged, and is signalled
 /// then rather than at its deadline.
@@ -87,9 +95,9 @@ fn signal_frees_process(
     fs::write(&path, program).expect("write program");
     let out = dir.join("out");
     let mut child = spawn(&path, fs::File::create(&out).expect("output file"), no_fusion);
-    // the later-cycle wedge starts after its one print, however long the
+    // a later-cycle wedge starts after its one print, however long the
     // start took: count from it
-    if program == LATER_CYCLE_WEDGE {
+    if program != FIRST_CYCLE_WEDGE {
         let deadline = Instant::now() + Duration::from_secs(30);
         while fs::metadata(&out).expect("output").len() == 0 && Instant::now() < deadline
         {
@@ -240,5 +248,44 @@ fn quit_frees_later_cycle_wedge_jit() {
         Duration::from_secs(2),
         libc::SIGQUIT,
         130,
+    );
+}
+
+/// A program that asked to exit and whose last cycle never ends is still
+/// the signal's to end, with the signal's status and not the code the
+/// program asked for: that cycle did not run whole.
+#[test]
+fn interrupt_frees_exit_cycle_wedge_jit() {
+    signal_frees_process(
+        EXIT_CYCLE_WEDGE,
+        false,
+        "exit-cycle/jit",
+        Duration::from_secs(2),
+        libc::SIGINT,
+        130,
+    );
+}
+
+#[test]
+fn terminate_frees_exit_cycle_wedge_jit() {
+    signal_frees_process(
+        EXIT_CYCLE_WEDGE,
+        false,
+        "exit-cycle-term/jit",
+        Duration::from_secs(2),
+        libc::SIGTERM,
+        143,
+    );
+}
+
+#[test]
+fn terminate_frees_exit_cycle_wedge_interp() {
+    signal_frees_process(
+        EXIT_CYCLE_WEDGE,
+        true,
+        "exit-cycle-term/interp",
+        Duration::from_secs(2),
+        libc::SIGTERM,
+        143,
     );
 }

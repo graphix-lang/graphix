@@ -74,7 +74,21 @@ fn a_stopped_runtime_says_why() {
     });
 }
 
-/// Bytes holding an abstract value, read before the program mints any,
+/// A runtime stopped inside the cycle that asked to exit says why too:
+/// that cycle did not run whole, so the code it asked for is not the
+/// shell's status.
+#[test]
+fn a_runtime_stopped_in_its_exit_cycle_says_why() {
+    let program = "let rec f = |n: i64| -> i64 select n { 0 => 0, k => k + f(k - 1) };\n\
+                   let t = sys::time::after_idle(duration:50.ms, 100);\n\
+                   sys::exit(t ~ 0);\n\
+                   f(t)\n";
+    cold_then_warm(program, &[("GRAPHIX_ACTIVATION_BUDGET", "20")], |ran| {
+        assert!(!ran.status.success(), "{}", ran.stderr);
+        assert!(ran.stderr.contains("exceeded the runtime's budget"), "{}", ran.stderr);
+    });
+}
+
 /// are known for one and refused: the wrapper is registered before the
 /// first value is read, and only an image decodes one.
 #[test]

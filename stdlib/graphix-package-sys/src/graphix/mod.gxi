@@ -20,9 +20,11 @@ val join_path: fn(path: string, @args: [string, Array<string>]) -> string;
 
 /// flush stdout/stderr and end the program with the given exit code; a
 /// code outside 0..=255 exits with 1. The cycle in which the call fires
-/// is the program's last. It runs to its end, so what else it prints,
-/// writes or sends is done, and nothing runs after it: a `<-` it queued
-/// never lands and a reply still on its way is never delivered. The
+/// is the program's last. It runs to its end, so what else it prints is
+/// printed and every call it makes is made, and nothing runs after it:
+/// a `<-` it queued never lands, a reply still on its way is never
+/// delivered, and an async call still at work (a file write, a send)
+/// may be cut short. Exit on the event that says the work is done. The
 /// return type is fully polymorphic because the call never
 /// actually returns; it fires when its argument produces a value, so
 /// you can use it as the trailing expression of a program to make it
