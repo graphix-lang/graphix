@@ -1596,6 +1596,11 @@ impl<R: Rt> CallSite<R> {
             _ => false,
         };
         if union && !def.hole {
+            let members = Type::dispatch_members(&ctx.env, &self_t)?;
+            if let Some((a, b)) = Type::dispatch_crossing(&ctx.env, &members)? {
+                let why = Type::crossing_refusal(&def.name, &self_t, a, b);
+                return Err(why.at(&self.spec));
+            }
             let members = Type::dispatch_arms(&ctx.env, &self_t)?;
             return self.lower_trait_union(ctx, &def, tm.index, &members);
         }

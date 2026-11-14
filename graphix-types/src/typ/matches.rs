@@ -287,6 +287,12 @@ pub(super) struct MatchHist {
     rests: Rests,
     unfoldings: Unfoldings,
     pairs: Pairs,
+    /// Whether the walk asks if one value is a value of both types
+    /// ([`Type::shares_value`]): two arrays, lists or maps share the empty
+    /// one whatever they hold, and two instantiations of an abstract type
+    /// made in Graphix share a value only at the same parameters, which
+    /// a value carries.
+    shared: bool,
 }
 
 impl MatchHist {
@@ -300,6 +306,7 @@ impl MatchHist {
             rests: Rests::new(),
             unfoldings: Unfoldings::default(),
             pairs: Pairs::default(),
+            shared: false,
         }
     }
 }
@@ -590,6 +597,34 @@ impl Type {
             }
             (Type::Primitive(p), Type::Error(_)) => Ok(p.contains(Typ::Error)),
             (Type::Error(t0), Type::Error(t1)) => t0.could_match_int(env, hist, t1),
+            (Type::Array(_), Type::Array(_))
+            | (Type::List(_), Type::List(_))
+            | (Type::Map(_), Type::Map(_))
+                if hist.shared =>
+            {
+                Ok(true)
+            }
+            (
+                Type::Abstract { id: id0, params: p0 },
+                Type::Abstract { id: id1, params: p1 },
+            ) if hist.shared && env.abstract_reps.contains_key(id0) => {
+                let mut same = |(t0, t1): (&Type, &Type)| -> Result<bool> {
+                    let mut holds = |a: &Type, b: &Type| {
+                        a.contains_int(BitFlags::empty(), env, &mut hist.contains, b)
+                    };
+                    Ok(t0.has_unbound()
+                        || t1.has_unbound()
+                        || (holds(t0, t1)? && holds(t1, t0)?))
+                };
+                Ok(id0 == id1
+                    && p0.len() == p1.len()
+                    && p0
+                        .iter()
+                        .zip(p1.iter())
+                        .map(&mut same)
+                        .collect::<Result<AndAc>>()?
+                        .0)
+            }
             (Type::Array(t0), Type::Array(t1)) => t0.could_match_int(env, hist, t1),
             (Type::List(t0), Type::List(t1)) => t0.could_match_int(env, hist, t1),
             (Type::Primitive(p), Type::Array(_)) => Ok(p.contains(Typ::Array)),
@@ -713,6 +748,28 @@ impl Type {
 
     pub fn could_match(&self, env: &Env, t: &Self) -> Result<bool> {
         self.could_match_int(env, &mut MatchHist::new(), t)
+    }
+
+    // CR claude for claude: [bug/low] Two recursive types that share no value are
+    // read as sharing one where their pair is met again inside itself: could_match
+    // assumes a pair in progress overlaps, which is right for an arm's reach and
+    // too much for a shared value, which is finite. So a trait call over `[Ti, Ts]`
+    // with `type Ti = [`L(i64), `N(Ti, Ti)]; type Ts = [`L(string), `N(Ts, Ts)]`
+    // and an impl for each of the four members is refused ("a value may be both
+    // `N(Ti, Ti) and `N(Ts, Ts)"), though no value is of both and the dispatch's
+    // tests tell every value's member (main before the rule printed Ns for
+    // `N(`L("a"), `L("b"))). The refusal is safe and a select written by hand
+    // takes its place. To fix: in this walk a pair in progress is apart, which
+    // the memos of could_match (apart, refuted, rests) do not hold for as they
+    // stand. probe: ~/ptmp/cr29/scratch/r24/24d/ihsv/u5.gx
+    // (shares-value-recursive-pair-01)
+    /// Whether one value may be a value of both `self` and `t`:
+    /// [`Self::could_match`] either way, under [`MatchHist::shared`]. An
+    /// open cell may be any type.
+    pub fn shares_value(&self, env: &Env, t: &Self) -> Result<bool> {
+        let sharing = || MatchHist { shared: true, ..MatchHist::new() };
+        Ok(self.could_match_int(env, &mut sharing(), t)?
+            || t.could_match_int(env, &mut sharing(), self)?)
     }
 
     /// Whether a value of `t` may pass the run-time test (`is_a`) of the

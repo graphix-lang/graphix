@@ -8,7 +8,9 @@ use crate::{
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Held, Indiscernible,
         Lazy, Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId,
-        Type, TypeRef, Unfolded, node_addr,
+        Type, TypeRef, Unfolded,
+        cast::shares_form,
+        node_addr,
         normalize::NormCx,
         probe_key,
         setops::{
@@ -3602,6 +3604,9 @@ impl Type {
                 let what = format_compact!("a {} call over {t}", def.name);
                 return Some(why.untold(&what));
             }
+            if let Some((a, b)) = Self::dispatch_crossing(env, &members).ok()? {
+                return Some(Self::crossing_refusal(&def.name, t, a, b));
+            }
         }
         None
     }
@@ -3618,7 +3623,8 @@ impl Type {
         Ok(members)
     }
 
-    /// The arms of a dispatch over `t`, a type with no open cell: its
+    /// The arms of a dispatch over `t`, a type with no open cell and no
+    /// two members that cross ([`Self::dispatch_crossing`]): its
     /// [`Self::dispatch_members`], one per type, none after a member
     /// that holds it and none the arms before it leave no value. Of two
     /// that each hold the other the first met stays, and a member
@@ -3666,6 +3672,72 @@ impl Type {
         members.iter().enumerate().find_map(|(i, a)| {
             members[i + 1..].iter().find_map(|b| a.rep_collision_open(env, b))
         })
+    }
+
+    /// Whether `self` and `t`, two members of a dispatch, cross: one value
+    /// may be a value of both and neither holds the other, so no rule says
+    /// which member the value is. A member holding an open cell may cross
+    /// whatever it may share a value with. A member that is an open cell
+    /// is judged by its form ([`Self::dispatch_collision`]), and by its
+    /// typed bounds where it has any: it crosses a type whose form another
+    /// shares where every one of them may share a value with it.
+    fn crosses(&self, env: &Env, t: &Self) -> Result<bool> {
+        let open = |t: &Type| match t {
+            Type::TVar(tv) => tv.open_cell(),
+            _ => None,
+        };
+        let cell = match (open(self), open(t)) {
+            (Some(c), None) => Some((c, t)),
+            (None, Some(c)) => Some((c, self)),
+            (Some(_), Some(_)) | (None, None) => None,
+        };
+        if let Some((cell, t)) = cell {
+            let bounds = cell.typed_bounds(env);
+            if bounds.is_empty() || !shares_form(env, t) {
+                return Ok(false);
+            }
+            for b in bounds.iter() {
+                if !b.shares_value(env, t)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        if !self.shares_value(env, t)? {
+            return Ok(false);
+        }
+        if self.has_unbound() || t.has_unbound() {
+            return Ok(true);
+        }
+        let holds = |a: &Type, b: &Type| a.contains_with_flags(BitFlags::empty(), env, b);
+        Ok(!(holds(self, t)? || holds(t, self)?))
+    }
+
+    /// Two members of a dispatch that cross ([`Self::crosses`]): its arms
+    /// would give a value of both to whichever stands first in the union.
+    pub fn dispatch_crossing<'a>(
+        env: &Env,
+        members: &'a [Type],
+    ) -> Result<Option<(&'a Type, &'a Type)>> {
+        for (i, a) in members.iter().enumerate() {
+            for b in &members[i + 1..] {
+                if a.crosses(env, b)? {
+                    return Ok(Some((a, b)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The refusal of a `name` call over `t`, whose members `a` and `b`
+    /// cross.
+    pub fn crossing_refusal(name: &str, t: &Type, a: &Type, b: &Type) -> anyhow::Error {
+        anyhow::anyhow!(
+            "a {name} call over {t} tests each member, and a value may be both {} and \
+             {}, neither of which holds the other: give the value one member's type",
+            a.resolve_tvars(),
+            b.resolve_tvars()
+        )
     }
 
     /// Why `self ⊇ t` fails when `self` holds an open `Discernible` or
@@ -6108,10 +6180,13 @@ impl Type {
             return Ok(false);
         }
         // nor when its dispatch, which tests each member, can't tell two
-        // apart; each member is asked once, however many names reach it
+        // apart or gives a value of two to the one the union puts first; each
+        // member is asked once, however many names reach it
         if union && env.trait_def(tid).is_some_and(|d| !d.hole) {
             let members = Self::dispatch_members(env, t)?;
-            if Self::dispatch_collision(env, &members).is_some() {
+            if Self::dispatch_collision(env, &members).is_some()
+                || Self::dispatch_crossing(env, &members)?.is_some()
+            {
                 return Ok(false);
             }
             for m in members.iter() {
@@ -8927,10 +9002,8 @@ pub(super) fn find_impl_with(
         } else {
             im.target.reset_tvars()
         };
-        let (hc, tc) = (
-            head.contains_int(ContainsFlags::Commit.into(), env, hist, t)?,
-            t.contains_int(ContainsFlags::Commit.into(), env, hist, &head)?,
-        );
+        let hc = head.contains_int(ContainsFlags::Commit.into(), env, hist, t)?;
+        let tc = hc && t.contains_int(ContainsFlags::Commit.into(), env, hist, &head)?;
         if graphix_dbg_bind() {
             eprintln!("FIND-IMPL head={head:?} t={t:?} head>=t={hc} t>=head={tc}");
         }

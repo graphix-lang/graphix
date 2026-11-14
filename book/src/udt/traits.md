@@ -183,14 +183,26 @@ show(v)
 
 Every member needs an implementation. Two spellings of one type are one
 member. Where one member holds another (`Array<i64>` beside
-`Array<[i64, string]>`) the narrower is tested first. A value that two
-members share where neither holds the other (`[1]` in `Array<[i64,
-string]>` and `Array<[i64, null]>`) takes the one that comes first in
-the union as it prints: a union's members are sorted, so that is not the
-order they were written in. The call narrows only the `self`
-argument, so a trait with a method that takes `self` anywhere else (as
-another parameter's type, or in the bound of a type variable) cannot be
-called on a union: write the `select` yourself there.
+`Array<[i64, string]>`) the narrower is tested first. The call narrows
+only the `self` argument, so a trait with a method that takes `self`
+anywhere else (as another parameter's type, or in the bound of a type
+variable) cannot be called on a union: write the `select` yourself there.
+
+A call is refused where two members may share a value and neither holds
+the other: `[1]` is a value of both `Array<[i64, string]>` and
+`Array<[i64, null]>`, and the empty array is a value of every array type
+(the empty list and the empty map likewise), so nothing says which
+implementation such a value would take. Give the value one member's
+type. Where it must stay a union, write the `select`: a value of both
+takes the arm you wrote first, and that arm names its member's type
+again, since its bind holds only the values that reach it:
+
+```graphix,fragment
+select v {
+  Array<[i64, null]> as a => { let a: Array<[i64, null]> = a; show(a) },
+  Array<[i64, string]> as a => show(a)
+}
+```
 
 ## Traits as Bounds
 

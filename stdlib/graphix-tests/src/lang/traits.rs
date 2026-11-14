@@ -277,31 +277,188 @@ run!(
     "#
 );
 
-// Two members that share some values and neither holds the other: a value
-// of both takes the first, at that member's type.
+// Two members that share a value where neither holds the other are
+// refused: a value of both would take the member the union puts first,
+// and a union's order follows the names of its members.
 run!(
-    trait_union_dispatch_members_that_overlap,
-    |v: Result<&Value>| matches!(
-        v,
-        Ok(Value::String(s)) if s == "arr(int 1) arr(null) arr(str a) tup(int 1, null) tup(null, str b)"
+    trait_union_dispatch_members_that_cross_refused,
+    refused(
+        "a Show call over [Array<[i64, null]>, Array<[i64, string]>] tests each member, \
+         and a value may be both Array<[i64, null]> and Array<[i64, string]>, neither of \
+         which holds the other: give the value one member's type"
     ),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
-        impl Show for i64 { let show = |x| "int [x]" };
-        impl Show for string { let show = |x| "str [x]" };
+        impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
+        impl Show for Array<[i64, null]> { let show = |x| "arr-in" };
+        let x: [Array<[i64, string]>, Array<[i64, null]>] = [1];
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
+// Whatever the two members are named.
+run!(
+    trait_union_dispatch_members_that_cross_named_s_n_refused,
+    refused("a value may be both Array<[i64, null]> and Array<[i64, string]>, neither of"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
+        impl Show for Array<[i64, null]> { let show = |x| "arr-in" };
+        type S = Array<[i64, string]>;
+        type N = Array<[i64, null]>;
+        let z: [S, N] = [1];
+        let result = Show::show(z)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    trait_union_dispatch_members_that_cross_named_a1_b1_refused,
+    refused("a value may be both Array<[i64, string]> and Array<[i64, null]>, neither of"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
+        impl Show for Array<[i64, null]> { let show = |x| "arr-in" };
+        impl Show for string { let show = |x| "s" };
+        impl Show for null { let show = |x| "n" };
+        type A1 = Array<[i64, string]>;
+        type B1 = Array<[i64, null]>;
+        type P = [A1, string];
+        type Q = [B1, null];
+        let p: [P, Q] = [1];
+        let result = Show::show(p)
+    "#
+    ; FuseExpect::None
+);
+
+// A value of one member's type takes that member's impl, and a select
+// over the union gives a value of both to the arm written first, whose
+// bind is given that member's type.
+run!(
+    trait_union_dispatch_crossing_members_one_at_a_time,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if s == "arr-is arr-in arr-in arr-is"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
+        impl Show for Array<[i64, null]> { let show = |x| "arr-in" };
+        let s: Array<[i64, string]> = [1];
+        let n: Array<[i64, null]> = [1];
+        let x: [Array<[i64, string]>, Array<[i64, null]>] = s;
+        let n_first = select x {
+            Array<[i64, null]> as a => { let a: Array<[i64, null]> = a; Show::show(a) },
+            Array<[i64, string]> as a => Show::show(a)
+        };
+        let s_first = select x {
+            Array<[i64, string]> as a => { let a: Array<[i64, string]> = a; Show::show(a) },
+            Array<[i64, null]> as a => Show::show(a)
+        };
+        let result = "[Show::show(s)] [Show::show(n)] [n_first] [s_first]"
+    "#
+);
+
+// Two arrays share the empty one whatever they hold, and one generic
+// impl would still run at one member's type or the other's.
+run!(
+    trait_union_dispatch_two_arrays_cross_refused,
+    refused(
+        "a value may be both Array<i64> and Array<string>, neither of which holds the \
+         other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl<'a> Show for Array<'a> { let show = |x| "arr" };
+        let e: Array<i64> = [];
+        let x: [Array<i64>, Array<string>] = e;
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
+// Two tuples cross where each holds a part of the other.
+run!(
+    trait_union_dispatch_two_tuples_cross_refused,
+    refused(
+        "a value may be both (i64, [i64, string]) and ([i64, null], i64), neither of \
+         which holds the other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for (i64, [i64, string]) { let show = |x| "t-a" };
+        impl Show for ([i64, null], i64) { let show = |x| "t-b" };
+        let t: (i64, i64) = (1, 1);
+        let x: [(i64, [i64, string]), ([i64, null], i64)] = t;
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
+// A type an impl's bound meets as such a union does not implement the
+// trait.
+run!(
+    trait_union_dispatch_crossing_under_an_impl_bound_refused,
+    refused("Array<[Array<[i64, null]>, Array<[i64, string]>]> does not implement Show"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int" };
+        impl Show for string { let show = |x| "str" };
         impl Show for null { let show = |x| "null" };
         impl<'a: Show> Show for Array<'a> {
             let show = |x| "arr([str::join(#sep: ",", array::map(x, |e| Show::show(e)))])"
         };
-        impl<'a: Show, 'b: Show> Show for ('a, 'b) {
-            let show = |x| "tup([Show::show(x.0)], [Show::show(x.1)])"
-        };
-        type S = Array<[i64, string]>;
-        type N = Array<[i64, null]>;
-        let arr = |n: i64| -> [S, N] select n { 0 => [1], 1 => [null], _ => ["a"] };
-        let tup = |n: i64| -> [([i64, string], [i64, null]), ([i64, null], [string, null])]
-            select n { 0 => (1, null), _ => (null, "b") };
-        let result = "[Show::show(arr(0))] [Show::show(arr(1))] [Show::show(arr(2))] [Show::show(tup(0))] [Show::show(tup(1))]"
+        let s: Array<[i64, string]> = [1];
+        let xs: Array<[Array<[i64, string]>, Array<[i64, null]>]> = [s];
+        let result = Show::show(xs)
+    "#
+    ; FuseExpect::None
+);
+
+// A declared variable may be any type: a member holding one crosses
+// whatever it may share a value with.
+run!(
+    trait_union_dispatch_declared_variable_may_cross_refused,
+    refused(
+        "a value may be both (string, Array<string>) and ('a, Array<i64>), neither of \
+         which holds the other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl<'a> Show for ('a, Array<i64>) { let show = |x| "t1" };
+        impl Show for (string, Array<string>) { let show = |x| "t2" };
+        let f = |x: [('a, Array<i64>), (string, Array<string>)]| Show::show(x);
+        let result = f(("a", []))
+    "#
+    ; FuseExpect::None
+);
+
+// A member that is a declared variable, or holds one, beside members no
+// value of it can be: nothing crosses. Nor do two instantiations of an
+// abstract type, whose values carry their parameters.
+run!(
+    trait_union_dispatch_members_apart,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if s == "int null str arr null tup tup box"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int" };
+        impl Show for string { let show = |x| "str" };
+        impl Show for null { let show = |x| "null" };
+        impl<'a> Show for Array<'a> { let show = |x| "arr" };
+        impl<'a, 'b> Show for ('a, 'b) { let show = |x| "tup" };
+        type B<'a> = Abstract<Array<'a>>;
+        impl<'a> Show for B<'a> { let show = |x| "box" };
+        let f = 'a: Show |x: ['a, null]| Show::show(x);
+        let g = |x: [Array<'a>, null]| Show::show(x);
+        let t: [(i64, i64), (string, string)] = (1, 1);
+        let u: [(i64, [i64, string]), ([i64, string], [i64, string])] = (1, 1);
+        let b: B<[i64, string]> = B([1]);
+        let bs: [B<[i64, string]>, B<[i64, null]>] = b;
+        let result = "[f(1)] [f(null)] [f("a")] [g([1])] [g(null)] [Show::show(t)] [Show::show(u)] [Show::show(bs)]"
     "#
 );
 
@@ -311,7 +468,7 @@ run!(
     trait_union_dispatch_member_the_others_cover,
     |v: Result<&Value>| matches!(
         v,
-        Ok(Value::String(s)) if s == "E(A) E(B) null str s int 7 E(A) E(C) E(B)"
+        Ok(Value::String(s)) if s == "E(A) E(B) null str s int 7 E(B)"
     ),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
@@ -327,14 +484,33 @@ run!(
         type R = [Error<[`A, `B]>, i64];
         let one = |n: i64| -> [P, Q, R]
             select n { 0 => error(`A), 1 => error(`B), 2 => null, 3 => "s", _ => 7 };
+        let inline: [Error<`A>, Error<`B>, Error<[`A, `B]>, null] = error(`B);
+        let result = "[Show::show(one(0))] [Show::show(one(1))] [Show::show(one(2))] [Show::show(one(3))] [Show::show(one(4))] [Show::show(inline)]"
+    "#
+);
+
+// Members that share a value round a ring cross pair by pair.
+run!(
+    trait_union_dispatch_ring_of_members_refused,
+    refused(
+        "a value may be both Error<[`A, `B]> and Error<[`B, `C]>, neither of which holds \
+         the other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for null { let show = |x| "null" };
+        impl Show for `A { let show = |x| "A" };
+        impl Show for `B { let show = |x| "B" };
+        impl Show for `C { let show = |x| "C" };
+        impl<'a: Show> Show for Error<'a> { let show = |x| "E([Show::show(x.0)])" };
         type AB = [Error<[`A, `B]>, null];
         type BC = [Error<[`B, `C]>, null];
         type CA = [Error<[`C, `A]>, null];
         let ring = |n: i64| -> [AB, BC, CA]
             select n { 0 => error(`A), 1 => error(`C), _ => error(`B) };
-        let inline: [Error<`A>, Error<`B>, Error<[`A, `B]>, null] = error(`B);
-        let result = "[Show::show(one(0))] [Show::show(one(1))] [Show::show(one(2))] [Show::show(one(3))] [Show::show(one(4))] [Show::show(ring(0))] [Show::show(ring(1))] [Show::show(inline)]"
+        let result = Show::show(ring(0))
     "#
+    ; FuseExpect::None
 );
 
 // A union member without an implementation is refused at the call.

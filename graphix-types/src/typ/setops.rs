@@ -3444,9 +3444,8 @@ pub(crate) mod tests {
             "null, Array<i64>, Array<[i64, string]>, string"
         );
         assert_eq!(
-            printed("[Array<[i64, null]>, Wide, Array<[null, i64, string]>, Narrow]"),
-            "string, Array<i64>, Array<X>, null, Array<[i64, null]>, \
-             Array<[i64, null, string]>"
+            printed("[Wide, Array<[null, i64, string]>, Narrow]"),
+            "string, Array<i64>, Array<X>, null, Array<[i64, null, string]>"
         );
     }
 
@@ -3459,8 +3458,6 @@ pub(crate) mod tests {
             ("Q", "[Error<`B>, string]"),
             ("R", "[Error<[`A, `B]>, i64]"),
             ("AB", "Error<[`A, `B]>"),
-            ("BC", "Error<[`B, `C]>"),
-            ("CA", "Error<[`C, `A]>"),
         ];
         let printed = |t: &str| {
             let (env, t) = typed(&defs, t);
@@ -3470,11 +3467,45 @@ pub(crate) mod tests {
             })
         };
         assert_eq!(printed("[R, Q, P]"), "null, Error<`A>, string, Error<`B>, i64");
-        assert_eq!(printed("[AB, BC, CA]"), "Error<[`A, `B]>, Error<[`B, `C]>");
-        assert_eq!(
-            printed("[CA, AB, Error<`A>]"),
-            "Error<`A>, Error<[`A, `B]>, Error<[`A, `C]>"
-        );
+        assert_eq!(printed("[AB, Error<`A>, Error<`B>]"), "Error<`A>, Error<`B>");
+    }
+
+    // Two members cross where one value may be of both and neither holds
+    // the other; the empty array is a value of every array type.
+    #[test]
+    fn dispatch_crossing_is_a_shared_value_neither_member_holds() {
+        let defs = [("S", "Array<[i64, string]>"), ("N", "Array<[i64, null]>")];
+        let crossing = |t: &str| {
+            let (env, t) = typed(&defs, t);
+            let members = Type::dispatch_members(&env, &t).unwrap();
+            Type::dispatch_crossing(&env, &members).unwrap().is_some()
+        };
+        for t in [
+            "[S, N]",
+            "[Array<i64>, Array<string>]",
+            "[List<i64>, List<string>]",
+            "[Map<string, i64>, Map<string, string>]",
+            "[(i64, [i64, string]), ([i64, null], i64)]",
+            "[Error<[`A, `B]>, Error<[`B, `C]>]",
+            "[`T(Array<i64>), `T(Array<string>)]",
+            "[{a: Array<i64>}, {a: Array<string>}]",
+            "[(i64, Array<i64>), (i64, Array<string>)]",
+        ] {
+            assert!(crossing(t), "{t}")
+        }
+        for t in [
+            "[Array<i64>, S]",
+            "[Array<i64>, null, string]",
+            "[(i64, i64), (string, string)]",
+            "[(i64, i64), (i64, [i64, string])]",
+            "[Error<`A>, Error<`B>, Error<[`A, `B]>]",
+            "[`T(Array<i64>), `U(Array<string>)]",
+            "[{a: Array<i64>}, {b: Array<string>}]",
+            "[Array<i64>, Map<string, i64>, List<i64>]",
+            "[(i64, Array<i64>), (string, Array<string>)]",
+        ] {
+            assert!(!crossing(t), "{t}")
+        }
     }
 
     // One definition applied to two open cells is two types, each

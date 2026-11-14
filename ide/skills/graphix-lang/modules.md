@@ -84,7 +84,11 @@ name: outside its default bodies and impls, call `Show::show(x)` (or
 static on the self
 argument's type; a union self compiles to a select, unless a method of
 the trait takes `self` beyond its receiver (another parameter, or the
-bound of a variable): then select on the value and call per member.
+bound of a variable): then select on the value and call per member. A
+union two of whose members may share a value where neither holds the
+other is refused too (`Array<[i64, string]>` beside `Array<[i64,
+null]>`; any two array types, lists or maps, which share the empty
+one): give the value one member's type, or select on it yourself.
 Core `Eq`/`Ord`/`Display` ride the value everywhere (map keys, sort,
 operators, printing); only abstract types may implement them outside
 core. The io
@@ -116,6 +120,10 @@ ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 }; impl T for i64 {
 no "requires 'b: i64, which the signature does not declare" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x }; T::m(1, 2)
 no "T::m takes `self` beyond it" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; T::m(v, null)
 ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; select v { i64 as i => T::m(i, null), string as s => T::m(s, null) }
+no "neither of which holds the other: give the value one member's type" trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for Array<string> { let m = |s| 2 }; let e: Array<i64> = []; let v: [Array<i64>, Array<string>] = e; T::m(v)
+ok trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for Array<string> { let m = |s| 2 }; let e: Array<i64> = []; T::m(e)
+ok trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for Array<string> { let m = |s| 2 }; let e: Array<i64> = []; let v: [Array<i64>, Array<string>] = e; select v { Array<i64> as a => T::m(a), Array<string> as b => T::m(b) }
+ok trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for null { let m = |s| 2 }; let v: [Array<i64>, null] = [1]; T::m(v)
 no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P = self; let p: P = s; array::len(p) } }; T::m([1])
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
 no "i64 does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)

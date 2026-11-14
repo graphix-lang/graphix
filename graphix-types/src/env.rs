@@ -2527,7 +2527,7 @@ impl Env {
         }
     }
 
-    // CR claude for claude: [risk/low] Two impl heads that share values and neither
+    // XCR claude for claude: [risk/low] Two impl heads that share values and neither
     // holds the other are both registered (the test below is containment either way),
     // and a union dispatch over them gives a shared value to whichever member the
     // union's own order puts first, which is not the order written: `impl Show for
@@ -2555,6 +2555,22 @@ impl Env {
     // members apart (Type::rep_collision); the refusal names the annotation (give the
     // value one member's type). Impls stay unrestricted, and a call on a value of one
     // member's type is unaffected. Needs a census.
+    // 2026-11-14 claude: A trait call over a union two of whose members cross (one
+    // value may be a value of both and neither holds the other) is refused: by the
+    // check (trait_contains over Type::dispatch_crossing) and again where
+    // resolve_trait_call lowers the call, and the refusal says to give the value one
+    // member's type. What is shared is Type::shares_value: could_match either way,
+    // where two arrays, lists or maps share the empty one. Fail with the refusal
+    // undone: lang::traits::trait_union_dispatch_{members_that_cross_refused,
+    // members_that_cross_named_s_n_refused, members_that_cross_named_a1_b1_refused,
+    // two_arrays_cross_refused, two_tuples_cross_refused,
+    // declared_variable_may_cross_refused, ring_of_members_refused},
+    // typ::setops::tests::dispatch_crossing_is_a_shared_value_neither_member_holds
+    // and the modules.md case. Census: one file newly refused,
+    // design/review-2026-10-12/repro/x-typecheck-patterns-03.gx. Judged here, not
+    // ruled: one generic impl serving both members is refused too (it would run at
+    // one member's type or the other's), and a member holding an open cell crosses
+    // whatever it may share a value with. See also (shares-value-recursive-pair-01).
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.

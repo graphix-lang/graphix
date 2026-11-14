@@ -2361,7 +2361,7 @@ const SHARED_PRIMS: BitFlags<Typ> = make_bitflags!(Typ::{Map | Error | Array});
 /// Whether a value of `t` may also be a value of a type `t` doesn't hold:
 /// a Rust-backed abstract's values carry only its id, so one with
 /// parameters shares its form with its other instantiations.
-fn shares_form(env: &Env, t: &Type) -> bool {
+pub(super) fn shares_form(env: &Env, t: &Type) -> bool {
     ensure_sufficient(|| match rep_head(env, t).as_deref() {
         Some(Type::Abstract { id, params }) => {
             !params.is_empty() && !env.abstract_reps.contains_key(id)

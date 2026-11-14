@@ -512,19 +512,50 @@ are compared. A member the arms before it leave no value is then left
 out, by the walk the select makes of its arms (`could_match` against
 what reaches the arm, `diff` by each arm kept): `` Error<[`A, `B]> ``
 after `` Error<`A> `` and `` Error<`B> `` has no arm, and its values
-take theirs. So no arm is dead. Two members that share values and
-neither holds the other (`Array<[i64, string]>` beside `Array<[i64,
-null]>`) keep their order, the order `dispatch_members` met them in,
-which is the sorted union's and not the one written, and a value of both
-takes the first: the select types that arm's bind as its member and its
-part of the other, so an arm whose member shares a constructor with
-another takes its bind at the member's own type (`M as #t => { let #t: M
+take theirs. So no arm is dead. The select types an arm's bind as its
+member and its part of each member that shares its constructor, so such
+an arm takes its bind at the member's own type (`M as #t => { let #t: M
 = #t; #bind::N(#t, ..) }`), which a generic impl's head then matches as
 it did in the check (pins
 `lang::traits::trait_union_dispatch_{one_type_spelled_twice,
-member_another_holds, members_that_overlap, member_the_others_cover}`,
+member_another_holds, member_the_others_cover}`,
 `typ::setops::tests::dispatch_arms_are_one_per_type_narrower_first`,
 `dispatch_arms_leave_out_a_member_the_arms_before_cover`).
+
+**Members that cross are refused.** Two members cross where one value
+may be a value of both and neither holds the other (`Array<[i64,
+string]>` beside `Array<[i64, null]>`, which share `[1]`). The order
+`dispatch_members` met them in is the sorted union's, and a name sorts
+by its spelling, so the arms would give a value of both to an impl
+chosen by how a typedef is named. The call is refused instead
+(`Type::dispatch_crossing`, asked by `trait_contains` in the check and
+again where `resolve_trait_call` lowers the call), and the refusal names
+the annotation: give the value one member's type. Impls are not
+restricted, and a select written by hand gives a shared value to the arm
+written first. One impl serving both members changes nothing: it would
+still run at one member's type or the other's. What is shared is
+`Type::shares_value`: `could_match` either way, where two arrays, two
+lists and two maps share the empty one whatever they hold, and two
+instantiations of an abstract type made in Graphix share a value only at
+the same parameters, which a value carries. So `[Array<i64>,
+Array<string>]` is refused too, and `[Array<i64>, Array<[i64, string]>]`
+is not: the narrower is tested first, by rule. An open cell is any type
+it may yet bind. A member holding one crosses whatever it may share a
+value with (`('a, Array<i64>)` beside `(string, Array<string>)`), so a
+generic definition is refused where one of its instances would be. A
+member that is one is left to the form rule (`dispatch_collision`), so
+`['a, null]` dispatches; with typed bounds it crosses a member whose
+form another type shares where every bound may share a value with that
+member. Two recursive types met again inside their own pair are read as
+sharing a value, as `could_match` reads them. Pins
+`lang::traits::trait_union_dispatch_{members_that_cross_refused,
+members_that_cross_named_s_n_refused,
+members_that_cross_named_a1_b1_refused, crossing_members_one_at_a_time,
+two_arrays_cross_refused, two_tuples_cross_refused,
+crossing_under_an_impl_bound_refused,
+declared_variable_may_cross_refused, ring_of_members_refused,
+members_apart}`,
+`typ::setops::tests::dispatch_crossing_is_a_shared_value_neither_member_holds`.
 The generated select fuses over a union of primitives
 (`lang::traits::native_on_a_union_dispatch` holds a `#[native]` call);
 over a union of abstract types it de-fuses (coverage residue). A
