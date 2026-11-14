@@ -204,7 +204,8 @@ const TCP_ACCEPT_REPLACED_LISTENER: &str = r#"
   let attempt = never();
   attempt <- srv ~ 0;
   let refused = is_err(sys::tcp::connect(attempt ~ first));
-  attempt <- select refused { false => sys::time::after_idle(duration:100.ms, attempt + 1), true => never() };
+  let missed = filter(refused, |r| !r);
+  attempt <- sys::time::after_idle(duration:100.ms, missed ~ attempt + 1);
   let closed = select (refused, attempt) { (true, _) => true, (false, n) if n >= 50 => false, _ => never() };
   Socket::local_addr(srv)? == (cl ~ second) && first != second && closed
 }
@@ -232,13 +233,35 @@ const TCP_ACCEPT_DELETED: &str = r#"
   let attempt = never();
   attempt <- settled ~ 0;
   let refused = is_err(sys::tcp::connect(attempt ~ first));
-  attempt <- select refused { false => sys::time::after_idle(duration:100.ms, attempt + 1), true => never() };
+  let missed = filter(refused, |r| !r);
+  attempt <- sys::time::after_idle(duration:100.ms, missed ~ attempt + 1);
   select (refused, attempt) { (true, _) => true, (false, n) if n >= 50 => false, _ => never() }
 }
 "#;
 
 run!(tcp_accept_deleted, TCP_ACCEPT_DELETED, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
+}; FuseExpect::Jit);
+
+// The retry the two tests above use: a connect that is not refused is
+// tried again after 100 ms, so a listener that stays up is tried until the
+// count runs out.
+const TCP_CONNECT_RETRY: &str = r#"
+{
+  let l = sys::tcp::listen("127.0.0.1:0")?;
+  let la = sys::tcp::listener_addr(l)?;
+  let first = once(la);
+  let attempt = never();
+  attempt <- sys::time::after_idle(duration:50.ms, first ~ 0);
+  let refused = is_err(sys::tcp::connect(attempt ~ first));
+  let missed = filter(refused, |r| !r);
+  attempt <- sys::time::after_idle(duration:50.ms, missed ~ attempt + 1);
+  select (refused, attempt) { (true, _) => true, (false, n) if n >= 5 => false, _ => never() }
+}
+"#;
+
+run!(tcp_connect_retry, TCP_CONNECT_RETRY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(false)))
 }; FuseExpect::Jit);
 
 // A trigger that fires every cycle replaces each accept with the next, and

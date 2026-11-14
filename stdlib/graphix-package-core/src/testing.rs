@@ -585,7 +585,7 @@ pub async fn next_update(
     next_update_raw(rt, rx, id).await.map(data)
 }
 
-// CR claude for claude: [risk/medium] The settle below was answered before the update a
+// XCR claude for claude: [risk/medium] The settle below was answered before the update a
 // program still owed, once: lib_tests::tcp::tcp_accept_deleted::jit failed "the
 // runtime settled without an update of ExprId(..)" in one full gate of lane 24d
 // (2026-11-14, with the other lanes' builds running) and passed in the 21 other gates
@@ -599,6 +599,16 @@ pub async fn next_update(
 // starts by running that test in a loop under a build's load with the runtime's
 // tasks, timers and cycle logged at the settle's answer. log:
 // ~/ptmp/cr29/scratch/r24/coord/gate-tcp-accept-deleted.log.gz (settle-before-update-01)
+// 2026-11-14 claude: Not the settle: the two TCP retry tests (tcp_accept_deleted,
+// tcp_accept_replaced_listener) retried with 'select refused { false =>
+// after_idle(100.ms, attempt + 1), .. }', an arm whose args do not fire on entry, so a
+// first connect that the not-yet-dropped listener still accepted (refused false) armed
+// no timer and the program stood with no task and no timer: the settle answered
+// correctly. Probe: a held listener under the old form prints refused false once and
+// stalls (~/ptmp/cr29/scratch/r25/25h/loop.gx). The retry is now 'filter(refused, |r|
+// !r)' sampled into after_idle, and tcp_connect_retry pins it (held listener, five
+// attempts, false): with the old form its four modes fail 'the runtime settled without
+// an update'. GXRt::outstanding and next_update_raw unchanged.
 /// The next update of `id` as the runtime delivered it. A runtime that
 /// settles without one fails at once, since nothing outstanding can bring
 /// it; otherwise the wait lasts as long as the program's work does under
