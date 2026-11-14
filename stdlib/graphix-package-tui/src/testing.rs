@@ -114,7 +114,7 @@ impl TuiTestHarness {
     /// settles without one fails at once, since nothing outstanding can
     /// bring it; otherwise the wait lasts as long as the program's work
     /// does under the box's load, up to [`testing::HANG_GUARD`].
-    pub async fn next_update(&mut self) -> Result<()> {
+    pub async fn await_update(&mut self) -> Result<()> {
         let gx = self.f.gx.clone();
         let settled = gx.wait_settled();
         tokio::pin!(settled);
@@ -162,6 +162,27 @@ impl TuiTestHarness {
         Ok(updated)
     }
 
+    /// Wait up to `timeout` for the runtime to send an update, then
+    /// `drain`. False when nothing arrived. For a wait that something
+    /// outside the runtime ends (a file, a peer process), which the
+    /// runtime's settle does not count; [`Self::await_update`] is the wait
+    /// for the program's own work.
+    pub async fn next_update(&mut self, timeout: Duration) -> Result<bool> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, self.f.rx.recv()).await {
+                Ok(Some(mut batch)) => {
+                    if self.deliver_updates(&mut batch).await? {
+                        self.drain().await?;
+                        return Ok(true);
+                    }
+                }
+                Ok(None) => bail!("the runtime is gone"),
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+
     /// Take updates until `done` holds. A runtime that settles with it
     /// still false fails at once, with the last render.
     pub async fn wait_for(
@@ -169,7 +190,7 @@ impl TuiTestHarness {
         mut done: impl FnMut(&mut Self) -> Result<bool>,
     ) -> Result<()> {
         while !done(self)? {
-            if let Err(e) = self.next_update().await {
+            if let Err(e) = self.await_update().await {
                 let render = self.render_lines()?.join("\n");
                 return Err(e.context(format!("render:\n{render}")));
             }

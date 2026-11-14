@@ -51,8 +51,9 @@ let result = paragraph(&"static")
     .await?;
     let e = h.wait_for(|_| Ok(false)).await.unwrap_err();
     assert!(format!("{e:#}").contains("settled without an update"), "{e:#}");
-    let e = h.next_update().await.unwrap_err();
+    let e = h.await_update().await.unwrap_err();
     assert!(format!("{e:#}").contains("settled without an update"), "{e:#}");
+    assert!(!h.next_update(std::time::Duration::from_millis(20)).await?);
     Ok(())
 }
 

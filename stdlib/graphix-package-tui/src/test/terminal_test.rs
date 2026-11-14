@@ -106,6 +106,15 @@ async fn in_child(
         };
         if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
     };
+    // CR claude for claude: [risk/low] The child-process tests still give a wait for work a
+    // correct run brings a wall deadline: this 10 s on the child (it starts a test binary,
+    // which a loaded box slows), `a_display_ending_beside_another_reader_leaves_the_terminal`'s
+    // `recv_timeout(5 s)` on the next display's `Live::take`, and
+    // `an_initial_exit_reaches_a_later_display`'s `timeout(100 ms, stopped)` in
+    // `testing.rs`. The first two wait on a child process and the third on a oneshot the
+    // runtime fills, so each wants the child's own exit or the runtime's settle as its end,
+    // with `testing::HANG_GUARD` the only wall limit, as harness-wall-deadlines-gui-tui-01
+    // did for the harness waits. (harness-wall-deadlines-child-01)
     let (output, typed) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         futures::future::join(command.output(), typed),

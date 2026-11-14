@@ -35,7 +35,7 @@ async fn renders(name: &str) -> Result<()> {
     h.drain().await?;
     h.render()?;
     while h.render_lines()?.iter().all(|l| l.trim().is_empty()) {
-        h.next_update().await.context("draws nothing")?;
+        h.await_update().await.context("draws nothing")?;
         h.render()?;
     }
     Ok(())
