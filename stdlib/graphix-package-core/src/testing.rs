@@ -576,32 +576,6 @@ pub async fn observed(ctx: &TestCtx, typ: &Type, v: Value) -> Result<Value> {
     Ok(data(v))
 }
 
-// XCR claude for claude: [risk/low] Test-local waits still hand this and
-// `next_update_raw` (and `collect`, and their own `tokio::time::timeout`s) a short wall
-// deadline: 5 to 20 s in lang::fusion's `await_map_len`, lang::fusion_review,
-// lang::attributes, lang::image's `eval_on`, lib_tests::{pack, process, lift,
-// module_stmt}, tests/fusion_diagnostics and more, about 25 sites (`git grep -n
-// "Instant::now() + Duration::from_secs("` under stdlib/graphix-tests). That is the
-// exposure db-long-lists-wall-deadline-01 took out of the harness's first value: a
-// correct wait whose work is slow under load fails. None is seen to fail yet. A fix: a
-// wait for a later update races the settle as `first_update` does (a settle without the
-// update fails at once), with `HANG_GUARD` its only wall limit, and the deadline
-// parameter goes. (test-local-wall-deadlines-01)
-// 2026-11-13 claude: testing::next_update/next_update_raw take the runtime and race its
-// settle (first_update is now next_update_raw), HANG_GUARD their only wall limit;
-// updates_until, updates_until_quiet and collect lose their deadline. Every positive
-// wait in graphix-tests goes through them or HANG_GUARD: the hand-rolled loops in
-// lang::{types, errors, modules, repl_inputs, image} and lib_tests::{leaks, interrupt}
-// call next_update; fs::watch's positive waits and the remaining poll loops
-// (budget_stops, kill_on_drop, fastcall_panic, image's first_values) take HANG_GUARD.
-// Wall windows stay only where a value must not come (watch_test's expect:false
-// NO_EVENT, interrupt's after-stop check, the simultaneous-watch third event). The
-// runtime prunes a dropped settle waiter when the next is pushed (300 held over 300
-// next_update calls on a timer program before, 1 after). Pins:
-// lib_tests::harness::next_update_fails_when_the_runtime_settles_without_a_later_value
-// and a_late_later_value_is_awaited (11 s gap), both fail with the settle race undone
-// and a 10 s deadline. The GUI and TUI harnesses' waits are
-// harness-wall-deadlines-gui-tui-01.
 /// The next update of `id`, as [`data`].
 pub async fn next_update(
     rt: &GXHandle<NoExt>,
