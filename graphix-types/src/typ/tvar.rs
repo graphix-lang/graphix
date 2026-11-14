@@ -5023,29 +5023,6 @@ impl Type {
             )
         }
         let mut left: LPooled<AddrSet> = LPooled::take();
-        // XCR claude for claude: [bug/medium] A cell an arm decides to a function type
-        // inside an `Any` part is tested as "a function", whatever its signature. `|x:
-        // Any| select x { (g, b) => { let h: fn(x: i64) -> i64 = g; h(1) }, _ => 0 - 1 }`
-        // checks, and over `(|s: string| str::len(s), 2)` the run logs "h(1): binding the
-        // callee failed: a run-time bind at h(1) did not type: an instance at fn(x: i64)
-        // -> i64 of a definition typed fn(s: string) -> i64" and the call is bottom, in
-        // both engines; `(g, b) => array::map([1], g)` alike. Same on base-r24. The
-        // written twin, `(fn(x: i64) -> i64, i64) as (g, b)`, is refused where the
-        // pattern is compiled ("can't match on a type holding a function: a test tells a
-        // function from a value, not one signature from another", PatternNode::compile);
-        // an inferred test is not looked at again once its arm has decided it, and this
-        // walk passes over function types. A fix: a part of the test at or inside an
-        // `Any` part that holds a function type (Type::holds_fn) once the arm is checked
-        // is refused with that message; census both repos. probes:
-        // ~/ptmp/cr29/scratch/r24/24a/acb-rev/g1.gx, g2.gx, g3.gx (fn-cell-over-any-01)
-        // 2026-11-14 claude: A part of an inferred test at or inside an Any part that
-        // holds a function type once the arm is checked is refused with the written
-        // test's message (Type::close_over_any's fns flag, called from
-        // Select::typecheck0_with whenever reaching holds Any and the predicate holds a
-        // fn). Pins that fail without it:
-        // lang::select::any_part_cell_decided_to_a_function_refused,
-        // _to_an_open_function_refused, _to_a_function_under_a_part_refused; skill cases
-        // in select.md. Census of both repos: no file newly refused.
         loop {
             let mut unseen = |tv: &TVar| !left.contains(&tv.cell_addr());
             let Some(tv) = find_open_cell(self, false, &mut unseen) else { break };
