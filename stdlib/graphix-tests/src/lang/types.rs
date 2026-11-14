@@ -10481,6 +10481,130 @@ run!(
     FuseExpect::None
 );
 
+// Alternatives that are one function but for the names of its variables
+// meet as that renaming, each part beside its own image, so a union the
+// signature holds over two of its variables decides nothing where they
+// meet: the call through the select is the call of the binding.
+run!(
+    select_of_copies_of_a_signature_union_under_one_constructor,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y);
+  let s = {fld: f};
+  let c = true;
+  let g = select c { true => f, false => f };
+  let t = select c { true => s, false => s };
+  (g(1, ["s"]).1, t.fld("t", [2]).1)
+}"#,
+    prints(r#"[i64:1, "t"]"#);
+    FuseExpect::None
+);
+run!(
+    select_of_copies_of_a_signature_union_before_its_variables,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |x: (P<'a, 'b>, 'a, 'b)| x;
+  let c = true;
+  let g = select c { true => f, false => f };
+  let r = g(([1], 1, "s"));
+  (r.1, r.2)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    select_of_a_function_and_its_twin_of_a_signature_union_under_one_constructor,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y);
+  let c = true;
+  let g = select c { true => f, false => |y: 'a, x: P<'a, 'b>| (x, y) };
+  let h = select c { true => |y: 'a, x: P<'a, 'b>| (x, y), false => f };
+  (g(1, ["s"]).1, h("t", [2]).1)
+}"#,
+    prints(r#"[i64:1, "t"]"#);
+    FuseExpect::None
+);
+run!(
+    select_of_twins_in_composites_of_a_signature_union_under_one_constructor,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let c = true;
+  let s = select c {
+    true => {fld: |y: 'a, x: P<'a, 'b>| (x, y), n: 1},
+    false => {fld: |y: 'a, x: P<'a, 'b>| (x, y), n: 2}
+  };
+  let t = select c {
+    true => (|y: 'a, x: P<'a, 'b>| (x, y), 1),
+    false => (|y: 'a, x: P<'a, 'b>| (x, y), "s")
+  };
+  (s.fld(1, ["s"]).1, t.0("t", [2]).1)
+}"#,
+    prints(r#"[i64:1, "t"]"#);
+    FuseExpect::None
+);
+run!(
+    select_of_twins_inside_a_function_of_a_signature_union_under_one_constructor,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let c = true;
+  let h = |v, w| {
+    let g = select c {
+      true => |y: 'a, x: P<'a, 'b>| (x, y),
+      false => |y: 'a, x: P<'a, 'b>| (x, y)
+    };
+    g(v, w)
+  };
+  h(1, ["s"]).1
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    array_of_copies_and_a_twin_of_a_signature_union_under_one_constructor,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y);
+  let fs = [f, f, |y: 'a, x: P<'a, 'b>| (x, y)];
+  fs[2]$(1, ["s"]).1
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+// The twin's variables stay as many as the function's: a member of the
+// union one variable decides leaves the other to the argument, and an
+// argument both members could take is refused as at a call of the binding.
+run!(
+    select_of_a_twin_keeps_the_variables_of_a_signature_union_apart,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x0: 'b, x2: F2<'b, 'a>| x0;
+  let c = true;
+  let g = select c { true => f, false => |x0: 'b, x2: F2<'b, 'a>| x0 };
+  g(1, |q: string| 0)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    select_of_a_twin_leaves_a_signature_union_of_functions_to_its_call_refused,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  type FA<'p, 'q> = [fn(q: 'p) -> i64, Array<'q>];
+  let f = |x0: FA<'b, 'a>, x1: F2<'a, 'b>| (x0, x1);
+  let c = true;
+  let g = select c { true => f, false => |x0: FA<'b, 'a>, x1: F2<'a, 'b>| (x0, x1) };
+  let r = g([], |q: i64| 0);
+  0
+}"#,
+    refused(
+        "fn(q: i64) -> i64 could go to fn(q: 'a: unbound) -> i64 or fn(q: 'b: unbound) -> i64 \
+         of the union"
+    );
+    FuseExpect::None
+);
+
 // A function a call returned is one instance, its variables open cells
 // its calls decide: read through a field it keeps its signature's union
 // as well, so another argument decides the member, and an argument both

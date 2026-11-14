@@ -400,7 +400,9 @@ function throws counts: one that throws nothing beside two that throw
 two errors writes which (`|x: i64| -> i64 throws `B x + 1`). The
 lambdas a `let` holds directly in one literal are generic where they
 meet, so none is refused: each takes the first function it meets in the
-order written. A
+order written. A function beside itself, or beside the same lambda
+written again, is that function: a call through the select checks as a
+call of the binding does. A
 `seq` step or a `seqq` request reads `s` as generically as a `let` of
 it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
 A `let` nothing writes or annotates reads `s` once in its value,
@@ -429,6 +431,8 @@ no "the check picks neither by order" let b = 0; select b { 0 => |x: i64| x + 1,
 ok let b = 0; select b { 0 => |x: i64| -> i64 throws `B x + 1, 1 => |c: i64| -> i64 error(`B)?, _ => |d: i64| -> i64 error(`A)? }
 ok let t = [|x| x, |w| w, |y: i64| y + 1, |z: string| "[z]!"]; array::len(t)
 ok let t = [|x: i64| x, |x: i64| x + 1, |c: i64| -> i64 error(`B)?, |d: i64| -> i64 error(`A)?]; array::len(t)
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| x; let b = true; let g = select b { true => f, false => f }; g(1, ["s"])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| x; let b = true; let g = select b { true => f, false => |y: 'a, x: P<'a, 'b>| x }; g(1, ["s"])
 no "the check picks neither by order" let t = [[|x| x, |w| w], [|y: i64| y + 1], [|z: string| "[z]!"]]; array::len(t)
 no "the functions met here share one #d" let b = true; let t = `W(select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }); select t { `W(`A(r) | `B(r)) => r(7) }
 ok let b = true; let t: [`A(fn(?#d: [i64, string], x: i64) -> i64), `B(fn(?#d: [i64, string], x: i64) -> i64)] = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }

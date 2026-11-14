@@ -1138,7 +1138,23 @@ the definition gates:
   `lang::select::or_name_meets_its_functions`,
   `or_name_judges_every_default`): a member's generic cells meet
   through a copy, and its live cells bind, so a lambda literal in an arm
-  is the instance the call through the union makes. A member with cells
+  is the instance the call through the union makes. Two members that are
+  one signature but for the names of their variables, a scheme's cell
+  beside a live one too, meet as that renaming: their cells weld pair by
+  pair, each part beside its own image, and neither is contained in the
+  other (`setops::renames`, `contains::renaming_linked`). So a union the
+  signature holds over two of its variables (`x: P<'a, 'b>` over `type
+  P<'p, 'q> = [Array<'p>, Array<'q>]`), whose members a containment
+  cannot place while the variables are open, decides nothing and merges
+  nothing where the copies meet: a select of two copies of a function,
+  of the function and the same lambda written again, or of two structs or
+  tuples that hold it, is called as its binding is, running what that
+  runs and refusing what that refuses (pins
+  `lang::types::select_of_copies_of_a_signature_union_under_one_constructor`
+  and its neighbours,
+  `select_of_a_twin_keeps_the_variables_of_a_signature_union_apart`,
+  `select_of_a_twin_leaves_a_signature_union_of_functions_to_its_call_refused`).
+  A member with cells
   of its own is one type with every member it meets, so one that meets
   two members it cannot both be (`|x| x` beside `|y| y + 1` and `|z|
   "[z]!"`) is refused where they meet, naming the three and the fix, the

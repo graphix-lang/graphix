@@ -6,7 +6,7 @@ use crate::{
     typ::{
         Bound, Brief, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist,
         RefPair, TVar, Type, TypeRef,
-        contains::{ContainsHist, find_open_cell, on_copies},
+        contains::{ContainsHist, find_open_cell, on_copies, renaming_linked},
         fntyp::LambdaIds,
         node_addr,
         tvar::{Fresh, cell_writes},
@@ -430,6 +430,18 @@ pub(super) fn walks_alike(t0: &Type, t1: &Type) -> bool {
     .same(t0, t1)
 }
 
+/// Whether the function types `t0` and `t1` differ by a renaming of their
+/// open cells alone ([`union_identical_in`]), a scheme's cell beside a live
+/// one too: each part of one stands beside its own image in the other.
+pub(super) fn renames(env: &Env, t0: &Type, t1: &Type) -> bool {
+    Identity {
+        env: Some(env),
+        across: true,
+        ..Identity::new(None, &mut NodePairs::default())
+    }
+    .same(t0, t1)
+}
+
 /// The pairs of live cells union collapses have met: each pair is one
 /// cell once [`apply_welds`] runs.
 pub(super) type Welds = SmallVec<[(TVar, TVar); 2]>;
@@ -578,6 +590,8 @@ struct Identity<'a> {
     /// Two open cells nothing bounds are identical outside a function
     /// type too, and go on `live` ([`lower_collapses`]).
     unbounded: bool,
+    /// A scheme's cell pairs with a live one too ([`renames`]).
+    across: bool,
     /// Where the live cells paired go.
     live: Option<&'a mut Welds>,
     /// Names are compared by what they mean here, else by their cells.
@@ -607,6 +621,7 @@ impl<'a> Identity<'a> {
             in_order: false,
             by_name: false,
             unbounded: false,
+            across: false,
             live,
             env: None,
             pairs: None,
@@ -713,7 +728,7 @@ impl<'a> Identity<'a> {
             }
             return true;
         }
-        if a.level().is_generic() != b.level().is_generic() {
+        if !self.across && a.level().is_generic() != b.level().is_generic() {
             return false;
         }
         match pairs.iter().find(|(p, q)| *p == x || *q == y) {
@@ -1066,29 +1081,36 @@ fn open_cells(f: &Type) -> (bool, bool) {
     (live, generic)
 }
 
-/// Whether the function types `a` and `b` meet: each holds the other,
-/// by a probe and then by a commit on copies, since a probe judges each
-/// part apart.
+/// Make the function types `a` and `b` one in `hist`'s walk: a renaming's
+/// cells weld pair by pair ([`renaming_linked`]), which decides no member
+/// of a union the signature holds over its own variables, and any other
+/// two hold each other.
+fn fns_join(env: &Env, hist: &mut ContainsHist, a: &Type, b: &Type) -> Result<bool> {
+    if renaming_linked(env, a, b, true) {
+        return Ok(true);
+    }
+    let commit = ContainsFlags::Commit.into();
+    Ok(a.contains_int(commit, env, hist, b)? && b.contains_int(commit, env, hist, a)?)
+}
+
+/// Whether the function types `a` and `b` meet: one is a renaming of the
+/// other, or each holds the other, by a probe and then by a commit on
+/// copies, since a probe judges each part apart.
 fn fns_meet(env: &Env, a: &Type, b: &Type) -> Result<bool> {
+    if renaming_linked(env, a, b, false) {
+        return Ok(true);
+    }
     let probe = BitFlags::empty();
     Ok(a.contains_with_flags(probe, env, b)?
         && b.contains_with_flags(probe, env, a)?
-        && on_copies(None, [a, b], |[a, b], trial| {
-            let commit = ContainsFlags::Commit.into();
-            Ok(a.contains_int(commit, env, trial, &b)?
-                && b.contains_int(commit, env, trial, &a)?)
-        })?)
+        && on_copies(None, [a, b], |[a, b], trial| fns_join(env, trial, &a, &b))?)
 }
 
 /// Whether `a` meets `b` and `c` meets `d` at once, on copies that share
 /// their cells ([`fns_meet`]).
 fn fns_meet_both(env: &Env, [a, b]: [&Type; 2], [c, d]: [&Type; 2]) -> Result<bool> {
     on_copies(None, [a, b, c, d], |[a, b, c, d], trial| {
-        let commit = ContainsFlags::Commit.into();
-        Ok(a.contains_int(commit, env, trial, &b)?
-            && b.contains_int(commit, env, trial, &a)?
-            && c.contains_int(commit, env, trial, &d)?
-            && d.contains_int(commit, env, trial, &c)?)
+        Ok(fns_join(env, trial, &a, &b)? && fns_join(env, trial, &c, &d)?)
     })
 }
 
@@ -1524,7 +1546,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for claude: [bug/low] A select of two copies of one function whose
+    // XCR claude for claude: [bug/low] A select of two copies of one function whose
     // signature holds a typedef union of two of its variables under one constructor
     // is refused where a call of its binding runs: `type P<'p, 'q> = [Array<'p>,
     // Array<'q>]; let f = |x: P<'a, 'b>, y: 'a| x; let g = select c { true => f,
@@ -1544,6 +1566,29 @@ impl Type {
     // probes: ~/ptmp/cr29/scratch/r23/23b/rbf/sel-p.gx, sel-p-direct.gx,
     // sel-p-twin.gx, twin-fa.gx, twin-fa-direct.gx; generator genfam.py 7 300, summary
     // famsum.py (select-copies-union-meet-01)
+    // 2026-11-14 claude: Alternatives that are one signature but for the names of
+    // their variables meet as that renaming (setops::renames,
+    // contains::renaming_linked: the cells weld pair by pair over the whole signature,
+    // a scheme's with a live one too), so no containment places the members of a union
+    // the signature holds over its own variables. The select of two copies, of a
+    // function and its twin literal, and of structs or tuples holding them now checks
+    // and runs as the direct call does, and the twin no longer makes two variables one
+    // (which ran twin-fa.gx and refused calls the binding takes). genfam.py 7 300
+    // (select forms and the direct call, 1800 programs): 19 families had a form apart
+    // from its direct call on base-r24 and on the lane head, 0 now; 47 programs newly
+    // run, 11 newly refused, each as its direct call. Pins that fail without the fix,
+    // in 4 modes each:
+    // lang::types::select_of_copies_of_a_signature_union_under_one_constructor,
+    // select_of_copies_of_a_signature_union_before_its_variables,
+    // select_of_a_function_and_its_twin_of_a_signature_union_under_one_constructor,
+    // select_of_twins_in_composites_of_a_signature_union_under_one_constructor,
+    // select_of_twins_inside_a_function_of_a_signature_union_under_one_constructor,
+    // array_of_copies_and_a_twin_of_a_signature_union_under_one_constructor,
+    // select_of_a_twin_keeps_the_variables_of_a_signature_union_apart,
+    // select_of_a_twin_leaves_a_signature_union_of_functions_to_its_call_refused.
+    // Left, as union-member-renaming-order-01: two signatures that are one type and no
+    // renaming of each other (a typedef union spelling the variables in the other
+    // order). probes: ~/ptmp/cr29/scratch/r24/24d/scm/ (README)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A member with a scheme's cells is an
@@ -1662,7 +1707,9 @@ impl Type {
                         }
                     }
                 }
-                if inst.contains(env, &g)? && g.contains(env, &inst)? {
+                if renaming_linked(env, &inst, &g, true)
+                    || (inst.contains(env, &g)? && g.contains(env, &inst)?)
+                {
                     let (from, to) = (group[k], group[j]);
                     for m in group.iter_mut().filter(|m| **m == from) {
                         *m = to;
