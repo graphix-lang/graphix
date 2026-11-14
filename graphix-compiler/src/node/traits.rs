@@ -78,45 +78,6 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-// XCR claude for claude: [bug/medium] A method whose declared signature holds a variable
-// beside a written member under one constructor, ahead of the position that decides the
-// variable, cannot be implemented: `trait T { val m: fn(self, x: [Array<'a>,
-// Array<string>], y: 'a) -> i64 }; impl T for i64 { let m = |s, x, y| 0 }` is refused,
-// "signature has type variable 'a where implementation has string". So are the method
-// written with the declaration's own types (`|s, x: [Array<'a>, Array<string>], y: 'a|
-// 0`), a default body (`= |s, x, y| 0` with `impl T for i64 {}`), and the typedef form
-// (`x: P<'a, string>, y: O<'a>` over `type P<'p, 'q> = [Array<'p>, Array<'q>]`:
-// "signature has [Array<string>, Array<'a: unbound>], implementation has Array<'a:
-// string>"). With `y` first (`fn(self, y: 'a, x: [Array<'a>, Array<string>])`) it checks
-// and runs, and so does the same signature as a `let` annotation, as a `.gxi` val's, and
-// as the written type of a callback's parameter. The method's own type reaches
-// `implements` with Array<'a> already given to the written member Array<string>; where
-// that happens is not looked into. Lambda::typecheck0_instance met the same choice and
-// places the signature's cells before it contains (open-instance-signature-01).
-// base-r23 alike. Found reviewing open-instance-signature-01. probes:
-// ~/ptmp/cr29/scratch/r23/23b/ois-review/{v9,v8,v1,v13,v11,v14,v15}.gx, gxi1/
-// (method-union-member-order-01)
-// 2026-11-13 claude: A method that took its trait's signature (traits::signature_of)
-// holds the signature's variables rigid while the impl's body, or the trait's defaults,
-// are checked (traits::hold_declared), so a written member does not take the
-// declaration's variable; and the impl's last containment holds the trait's copy rigid,
-// where it narrowed the method's type after implements had judged it (check accepted,
-// build refused, with the first half alone). contains::Link pairs a cell a merge left
-// forwarding as the cell it forwards to: without that a function member over the impl
-// head's variable passed for the declaration's under the gates (q3.gx: check accepted,
-// build refused). The CR's forms v9, v8, v1, v13 run. Pins:
-// lang::traits::method_variable_beside_a_written_member_{ahead_of_its_decider,
-// written_as_declared, behind_a_typedef, alone, holds_its_call},
-// default_method_variable_beside_a_written_member_ahead_of_its_decider,
-// method_narrower_than_a_declared_variable_is_refused and
-// impl_method_does_not_narrow_the_head (its message is the let's now) fail with the
-// gates off, the first four with the last containment's gate off alone;
-// method_head_variable_for_a_declared_one_in_a_function_member_is_refused and
-// typ::contains::tests::a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell fail with
-// Link's two arms back. Left: a let rec method (rec-method-union-member-01), and an
-// annotation the method writes on its own let, which is a let's and decided in the order
-// written (D36; pins method_let_annotation_variable_*). probes:
-// ~/ptmp/cr29/scratch/r24/24d/mum/ (README)
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface
