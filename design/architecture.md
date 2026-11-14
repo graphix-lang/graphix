@@ -39,7 +39,9 @@ constructor, pattern or payload read), never an outer type of the name
 or one a `use` brings, and a statement above the declaration that needs
 it as it compiles is refused (`Lexical::block_names`); a module's body
 and a script are held to the same rule, where a function above the
-declaration is refused too; where another of
+declaration is refused too; a name a later `use` of the list, or a
+module declared below a `use` of it, may still change is not read
+until then either (`Env::open_list`); where another of
 the name is in view, the definition's check warns at the name
 (`Env::later_block_type_note`). A top-level input (a REPL input, each
 statement of its line one; a script; a dynamic module's load) is checked

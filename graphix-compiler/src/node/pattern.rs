@@ -2,7 +2,7 @@ use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
-    env::Env,
+    env::{ChangesLater, Env},
     expr::{
         AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, UndecidedMembers,
         WrittenAt, union_members, union_members_open, union_members_with,
@@ -2095,13 +2095,14 @@ impl StructPatternNode {
     ) -> Result<Self> {
         // an alias of an alias expands to its body: typedefs are
         // contractive, so the chain ends. The chase fills no cell, and stops
-        // at a name a later statement declares, which means that type: a
-        // name binds at it, and a pattern that tests or takes it apart is
-        // refused
+        // at a name a later statement declares or may import, which means
+        // that type: a name binds at it, and a pattern that tests or takes it
+        // apart is refused
+        let binds = matches!(spec, StructurePattern::Bind(_) | StructurePattern::Ignore);
         let mut type_predicate = type_predicate.clone();
         while let Type::Ref(tr) = &type_predicate {
             if super::later_typedef(ctx, tr) {
-                if let StructurePattern::Bind(_) | StructurePattern::Ignore = spec {
+                if binds {
                     break;
                 }
                 bail!(
@@ -2110,7 +2111,11 @@ impl StructPatternNode {
                     tr.name
                 )
             }
-            type_predicate = type_predicate.lookup_ref_peek(&ctx.env)?;
+            type_predicate = match type_predicate.lookup_ref_peek(&ctx.env) {
+                Ok(t) => t,
+                Err(e) if binds && e.is::<ChangesLater>() => break,
+                Err(e) => return Err(e),
+            };
         }
         let type_predicate = &type_predicate;
         // under a written type, a constructor pattern at a union narrows to

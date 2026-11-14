@@ -202,6 +202,44 @@ nothing.
   `script_interface::a_scripts_own_type_is_not_its_interfaces`,
   `interface_names_resolve_in_the_interface`,
   `lang::block_types::a_deleted_modules_type_frees_its_name`).
+- **A name is not read before what may change it.** A typedef's shape
+  (its self-references, whether it is expansive, the aliases its body
+  stores as their expansions) is decided from a look at its body's names
+  that fills no cell, and the check's end fills them as they stand then.
+  So what a look reads must be what the fill will read, and a statement
+  the list has still to compile may change it: a `use` of the name, a
+  glob, and a module declared below that a `use` above imports from (the
+  import falls through until its target is declared). Before a list's
+  statements compile, `compile_block_children` records what its `use`s
+  and modules have still to bring (`Env::open_list`, `Unsettled`: the
+  names its explicit `use`s import, its globs, the modules it declares,
+  each by its statement's index; a `use` installed already, a `.gxi`'s
+  spliced into the body or a block compiled again, brings nothing new),
+  and each `use` and module is taken off as it begins to compile
+  (`Env::settle_statement`). `Env::resolve_type_name`, alone among the
+  lookups, asks each level on its way (`lookup_in`, `settle`), for the
+  module segments of a path too, and refuses with `ChangesLater`: a name a
+  later `use` of the level imports; a name the level neither declares nor
+  imports nor finds in a glob while a glob is still to come, or while a
+  glob there imports from a module not compiled yet; a name whose import
+  there finds nothing while its module is not compiled yet. A reader that
+  defers an unresolved name waits as it does for a type declared below: a
+  typedef's shape stays open until the `use` (`Completed::Use`) or the
+  definition that completes a cycle through it, and a `let` annotation, a
+  `never<T>` and a signature read the import at the check, so the import
+  is in force throughout its list. A pattern over the annotation binds at
+  the name unexpanded (as at `later_typedef`); a
+  statement that needs the type as it compiles (a type test, a cast, a
+  `let` that takes it apart, an abstract constructor) is refused, naming
+  the `use` or the module to move up. The record is not lexical: a
+  definition checked under its snapshot after its list has compiled reads
+  what the list brought. Pins: `lang::types::typedef_above_the_use_*`,
+  `typedef_between_a_use_and_the_module_*`, `typedef_above_a_glob*`,
+  `typedef_between_a_glob_and_its_module*`, `block_typedef_above_the_blocks_use*`,
+  `nested_block_typedef_above_an_outer_use_refused`,
+  `typedef_through_an_imported_module_declared_below*`,
+  `let_annotation_above_the_use_reads_the_import`, `type_test_*_the_use*`,
+  `cast_above_the_use_refused`, `destructuring_let_*`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

@@ -393,6 +393,7 @@ impl Pack for Env {
             package_roots,
             block_types,
             ide: _,
+            unsettled: _,
             hidden_impls: _,
             recorded: _,
         } = self;
@@ -423,6 +424,7 @@ impl Pack for Env {
             package_roots,
             block_types,
             ide: _,
+            unsettled: _,
             hidden_impls: _,
             recorded: _,
         } = self;

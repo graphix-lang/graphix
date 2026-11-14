@@ -751,6 +751,40 @@ enum Unseen {
     Later,
 }
 
+/// What the statements a list has still to compile may change of the
+/// names read through its level, each by its statement's index: a name
+/// an explicit `use` imports, a glob, and a module the list declares,
+/// whose names a `use` above it may import.
+#[derive(Debug, Default)]
+pub struct Unsettled {
+    pub uses: SmallVec<[(usize, CompactString); 8]>,
+    pub globs: SmallVec<[usize; 2]>,
+    pub modules: SmallVec<[(usize, CompactString); 8]>,
+}
+
+impl Unsettled {
+    pub fn is_empty(&self) -> bool {
+        self.uses.is_empty() && self.globs.is_empty() && self.modules.is_empty()
+    }
+}
+
+/// A list's [`Unsettled`] and the index of the first statement that has
+/// not begun to compile.
+pub type OpenList = (Arc<Unsettled>, usize);
+
+/// The refusal of a name read through a level whose list may still
+/// change it ([`Env::unsettled`]).
+#[derive(Debug)]
+pub struct ChangesLater(CompactString);
+
+impl fmt::Display for ChangesLater {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ChangesLater {}
+
 /// Where a scope is, for a message: the root is the top level.
 fn in_scope(scope: &ModPath) -> CompactString {
     match &*scope.0 {
@@ -1053,6 +1087,13 @@ pub struct Env {
     pub ide: IdeMode,
     /// The typedefs blocks declare, past their blocks.
     pub block_types: BlockTypes,
+    /// What each statement list being compiled has still to bring, by
+    /// its scope: a type name is not read through a level a later `use`
+    /// or a module declared below may change. Not lexical: a definition
+    /// checked under its snapshot once its list has compiled reads what
+    /// the list brought.
+    #[doc(hidden)]
+    pub unsettled: Map<ModPath, OpenList>,
     /// The modules whose undeclared impls this compile task does not
     /// see: its siblings in a run of module checks, which reach each
     /// other only through their interfaces.
@@ -1085,6 +1126,7 @@ impl Env {
             block_types: self.block_types.clone(),
             ide: self.ide.fork(),
             lexical: self.lexical.clone(),
+            unsettled: self.unsettled.clone(),
             hidden_impls: self.hidden_impls.clone(),
             recorded: self.recorded.clone(),
         }
@@ -1106,6 +1148,7 @@ impl Env {
             package_roots,
             block_types: _,
             ide,
+            unsettled: _,
             hidden_impls: _,
             recorded: _,
         } = fork;
@@ -1437,19 +1480,43 @@ impl Env {
     /// Consult one lexical level for `n`: its own declarations (via
     /// `f`), then, iff `origin` is inside the level's module, its
     /// explicit imports and its globs (two globs providing one name is
-    /// an error at use).
+    /// an error at use). Where `settle`, a name the level does not hold
+    /// yet is refused while a statement its list has still to compile may
+    /// bring it there ([`Self::unsettled`]): it is never read from a
+    /// glob such a statement may shadow, or from outside the level.
     fn lookup_at<T>(
         &self,
         origin: &str,
         level: &str,
         n: &str,
         depth: usize,
+        settle: bool,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
         let inside = scope_is_under(origin, mod_root(level));
-        self.lookup_in(origin, level, inside, n, depth, f)
+        self.lookup_in(origin, level, inside, n, depth, settle, f)
     }
 
+    // CR claude for claude: [risk/medium] A definition's snapshot holds nothing of a
+    // module declared below the definition, so in a function body above `mod o` a
+    // name a `use` imports from o finds nothing and falls through to an outer type or
+    // the prelude's, for good: with `let f = |a: [f64, string]| { let x: Option<f64>
+    // = a; x }; mod o; use o::Option` over o's `type Option<'a> = ['a, string]` the
+    // body's Option is the prelude's ("Option<f64> does not contain [f64, string]")
+    // while f's signature and every statement outside read the import. A typedef in
+    // such a body settles its shape on the outer type, and the check's end fills the
+    // name to the import (`Env::seed_typedef_refs` runs under the final env): under
+    // an outer `type Foo<'a> = Array<'a>`, `{ let f = |a: i64| { type T = [i64,
+    // Foo<T>]; let x: T = a; x }; use o::Foo; f(1) }; mod o` over o's `type Foo<'a> =
+    // ['a, string]` is accepted and prints 1 with T left `[i64, T, string]`:
+    // typedef-use-below-01's door through the snapshot (no hang found; base-r24
+    // alike). While the list compiles such a name is refused (`ChangesLater`), but a
+    // snapshot has no record that o was to come. An import whose target names nothing
+    // in the view (`import_target_exists`) could refuse in place of falling through,
+    // once (fn-typedef-unjudged-01) is closed: alone it leaves that T deferred and
+    // never judged, and the run does not return. probes:
+    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/{fn-body-import,fn-body-typedef,fn-body-typedef-glob}/
+    // (import-snapshot-fallthrough-01)
     /// [`Self::lookup_at`], with whether `origin` is inside the level's
     /// module already known: one chain's levels share their module.
     fn lookup_in<T>(
@@ -1459,6 +1526,7 @@ impl Env {
         inside: bool,
         n: &str,
         depth: usize,
+        settle: bool,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
         if let Some(t) = f(level, n) {
@@ -1467,42 +1535,112 @@ impl Env {
         if !inside {
             return Ok(None);
         }
-        let kept = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
-        let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) else {
-            return Ok(None);
+        let later = match settle && !self.unsettled.is_empty() {
+            true => self.unsettled.get(level).map(|(l, from)| (&**l, *from)),
+            false => None,
         };
-        if depth > MAX_IMPORT_DEPTH {
-            bail!("import chain too deep resolving `{n}` (import cycle?)")
+        let kind = scope_kind(level);
+        if let Some((l, from)) = later
+            && l.uses.iter().any(|(i, k)| *i >= from && k.as_str() == n)
+        {
+            return Err(anyhow!(ChangesLater(format_compact!(
+                "{n} names what a later `use` of this {kind} imports: write the \
+                 `use` before the name's first use"
+            ))));
         }
-        if let Some(e) = sn.imports.get(n) {
-            let hit = if e.keyword_anchored {
-                self.chain_lookup(origin, &e.scope, &e.name, depth + 1, f)?
-            } else {
-                self.lookup_at(origin, &e.scope, &e.name, depth + 1, f)?
-            };
-            if let Some(t) = hit {
-                e.used.store(true, Ordering::Relaxed);
-                return Ok(Some(t));
+        let kept = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
+        let mut later_module = None;
+        if let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) {
+            if depth > MAX_IMPORT_DEPTH {
+                bail!("import chain too deep resolving `{n}` (import cycle?)")
             }
-            // A kind-miss on an import falls through to globs
-            // (`use gui::text::{self, *}`).
-        }
-        let mut found: Option<(&str, T)> = None;
-        for g in sn.globs.iter() {
-            if let Some((at, t)) = g.find(n, f) {
-                match &found {
-                    None => found = Some((at, t)),
-                    Some((first, _)) if *first == at => (),
-                    Some((first, _)) => bail!(
-                        "`{n}` is ambiguous: both {} and {} provide it; \
-                         import one explicitly",
-                        written_level(first),
-                        written_level(at)
-                    ),
+            if let Some(e) = sn.imports.get(n) {
+                let hit = if e.keyword_anchored {
+                    self.chain_lookup(origin, &e.scope, &e.name, depth + 1, settle, f)?
+                } else {
+                    self.lookup_at(origin, &e.scope, &e.name, depth + 1, settle, f)?
+                };
+                if let Some(t) = hit {
+                    e.used.store(true, Ordering::Relaxed);
+                    return Ok(Some(t));
+                }
+                if settle
+                    && !e.keyword_anchored
+                    && let Some(m) = self.unsettled_module(&e.scope)
+                {
+                    return Err(anyhow!(ChangesLater(format_compact!(
+                        "{n} names what a `use` of this {kind} imports from module \
+                         {}, which a later statement declares: declare the module \
+                         before the name's first use",
+                        written_level(m)
+                    ))));
+                }
+                // A kind-miss on an import falls through to globs
+                // (`use gui::text::{self, *}`).
+            }
+            let mut found: Option<(&str, T)> = None;
+            for g in sn.globs.iter() {
+                if settle
+                    && let Glob::Module(m) = g
+                    && let Some(m) = self.unsettled_module(m)
+                {
+                    later_module = Some(m);
+                    continue;
+                }
+                if let Some((at, t)) = g.find(n, f) {
+                    match &found {
+                        None => found = Some((at, t)),
+                        Some((first, _)) if *first == at => (),
+                        Some((first, _)) => bail!(
+                            "`{n}` is ambiguous: both {} and {} provide it; \
+                             import one explicitly",
+                            written_level(first),
+                            written_level(at)
+                        ),
+                    }
                 }
             }
+            if let Some((_, t)) = found {
+                return Ok(Some(t));
+            }
         }
-        Ok(found.map(|(_, t)| t))
+        if let Some((l, from)) = later
+            && l.globs.iter().any(|i| *i >= from)
+        {
+            return Err(anyhow!(ChangesLater(format_compact!(
+                "{n} may name what a later glob `use` of this {kind} imports: write \
+                 the `use` before the name's first use"
+            ))));
+        }
+        if let Some(m) = later_module {
+            return Err(anyhow!(ChangesLater(format_compact!(
+                "{n} may name what a glob `use` of this {kind} imports from module \
+                 {}, which a later statement declares: declare the module before \
+                 the name's first use",
+                written_level(m)
+            ))));
+        }
+        Ok(None)
+    }
+
+    /// The module at or around `m` that a list being compiled declares
+    /// in a statement it has not reached: nothing it holds is known yet.
+    fn unsettled_module<'a>(&self, m: &'a str) -> Option<&'a str> {
+        if self.unsettled.is_empty() {
+            return None;
+        }
+        let mut at = m;
+        while at != "/" {
+            let parent = Path::dirname(at).unwrap_or("/");
+            let name = Path::basename(at)?;
+            if let Some((l, from)) = self.unsettled.get(parent)
+                && l.modules.iter().any(|(i, k)| i >= from && k.as_str() == name)
+            {
+                return Some(at);
+            }
+            at = parent;
+        }
+        None
     }
 
     /// [`Self::lookup_at`] over every level from `from` up to its
@@ -1513,11 +1651,12 @@ impl Env {
         from: &str,
         n: &str,
         depth: usize,
+        settle: bool,
         f: &mut impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
         let inside = scope_is_under(origin, mod_root(from));
         for level in chain_levels(from) {
-            if let Some(t) = self.lookup_in(origin, level, inside, n, depth, f)? {
+            if let Some(t) = self.lookup_in(origin, level, inside, n, depth, settle, f)? {
                 return Ok(Some(t));
             }
         }
@@ -1539,9 +1678,14 @@ impl Env {
 
     /// Resolve the single segment `seg` as a module from `scope`: the
     /// lexical chain, then the package prelude, then the core prelude.
-    fn resolve_module_seg(&self, scope: &str, seg: &str) -> Result<Option<ModPath>> {
+    fn resolve_module_seg(
+        &self,
+        scope: &str,
+        seg: &str,
+        settle: bool,
+    ) -> Result<Option<ModPath>> {
         let mut f = |lvl: &str, n: &str| self.module_at(lvl, n);
-        if let Some(p) = self.chain_lookup(scope, scope, seg, 0, &mut f)? {
+        if let Some(p) = self.chain_lookup(scope, scope, seg, 0, settle, &mut f)? {
             return Ok(Some(p));
         }
         // A sandboxed env may keep `/sys/net` without `/sys`: the
@@ -1559,8 +1703,9 @@ impl Env {
         origin: &str,
         cur: &str,
         seg: &str,
+        settle: bool,
     ) -> Result<Option<ModPath>> {
-        self.lookup_at(origin, cur, seg, 0, &mut |lvl, n| self.module_at(lvl, n))
+        self.lookup_at(origin, cur, seg, 0, settle, &mut |lvl, n| self.module_at(lvl, n))
     }
 
     /// Resolve `name`, written at `scope`: `f` is consulted with
@@ -1572,6 +1717,20 @@ impl Env {
         scope: &ModPath,
         name: &ModPath,
         ns: NameNs,
+        f: impl FnMut(&str, &str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        self.resolve_path(scope, name, ns, false, f)
+    }
+
+    /// [`Self::resolve_visible`]; where `settle`, a name a statement not
+    /// compiled yet may change at a level on the way is refused there
+    /// ([`Self::lookup_at`]).
+    fn resolve_path<T>(
+        &self,
+        scope: &ModPath,
+        name: &ModPath,
+        ns: NameNs,
+        settle: bool,
         mut f: impl FnMut(&str, &str) -> Option<T>,
     ) -> Result<Option<T>> {
         let parts: LPooled<Vec<&str>> = Path::parts(&**name).collect();
@@ -1580,7 +1739,7 @@ impl Env {
         // A bare `self` in value position is the receiver binding;
         // only `self::x` is the path keyword.
         if parts.len() == 1 && base == "self" && ns == NameNs::Value {
-            return self.chain_lookup(scope, scope, base, 0, &mut f);
+            return self.chain_lookup(scope, scope, base, 0, settle, &mut f);
         }
         let lead = match parts[0] {
             "self" | "package" => 1,
@@ -1599,7 +1758,9 @@ impl Env {
         let anchor: &str = match self.path_anchor(scope, &parts[..lead])? {
             Some(anchor) => anchor,
             None if parts.len() == 1 => {
-                if let Some(t) = self.chain_lookup(scope, scope, base, 0, &mut f)? {
+                if let Some(t) =
+                    self.chain_lookup(scope, scope, base, 0, settle, &mut f)?
+                {
                     return Ok(Some(t));
                 }
                 if ns == NameNs::Module && self.package_roots.contains(base) {
@@ -1609,10 +1770,10 @@ impl Env {
                 }
                 return Ok(f("/core", base));
             }
-            None => match self.resolve_module_seg(scope, parts[0])? {
+            None => match self.resolve_module_seg(scope, parts[0], settle)? {
                 Some(m) => {
-                    let m = self.descend(scope, m, &interior[1..])?;
-                    return self.lookup_at(scope, &m, base, 0, &mut f);
+                    let m = self.descend(scope, m, &interior[1..], settle)?;
+                    return self.lookup_at(scope, &m, base, 0, settle, &mut f);
                 }
                 None => return Ok(None),
             },
@@ -1620,25 +1781,35 @@ impl Env {
         // `super::x` resolves along the anchor's own chain (a super
         // anchor may be a block level). No preludes for keyword roots.
         if interior.is_empty() {
-            return self.chain_lookup(scope, anchor, base, 0, &mut f);
+            return self.chain_lookup(scope, anchor, base, 0, settle, &mut f);
         }
-        let first =
-            match self.chain_lookup(scope, anchor, interior[0], 0, &mut |lvl, n| {
-                self.module_at(lvl, n)
-            })? {
-                Some(m) => m,
-                None => bail!("no module `{}` in `{anchor}`", interior[0]),
-            };
-        let m = self.descend(scope, first, &interior[1..])?;
-        self.lookup_at(scope, &m, base, 0, &mut f)
+        let first = match self.chain_lookup(
+            scope,
+            anchor,
+            interior[0],
+            0,
+            settle,
+            &mut |lvl, n| self.module_at(lvl, n),
+        )? {
+            Some(m) => m,
+            None => bail!("no module `{}` in `{anchor}`", interior[0]),
+        };
+        let m = self.descend(scope, first, &interior[1..], settle)?;
+        self.lookup_at(scope, &m, base, 0, settle, &mut f)
     }
 
     /// Walk `segs` down from module `cur`, erroring on a missing
     /// step.
-    fn descend(&self, origin: &ModPath, cur: ModPath, segs: &[&str]) -> Result<ModPath> {
+    fn descend(
+        &self,
+        origin: &ModPath,
+        cur: ModPath,
+        segs: &[&str],
+        settle: bool,
+    ) -> Result<ModPath> {
         let mut m = cur;
         for seg in segs {
-            match self.descend_step(origin, &m, seg)? {
+            match self.descend_step(origin, &m, seg, settle)? {
                 Some(next) => m = next,
                 None => bail!("no module `{seg}` in `{m}`"),
             }
@@ -1714,14 +1885,17 @@ impl Env {
 
     /// What a name in type position means at `scope`: the first typedef
     /// or trait of that name along the lookup chain, so a closer one of
-    /// either kind shadows a farther one of the other.
+    /// either kind shadows a farther one of the other. A name a statement
+    /// not compiled yet may change is refused: one its list declares
+    /// below, and one a later `use` or a module declared below may bring
+    /// to a level on the way ([`Self::open_list`]).
     pub(crate) fn resolve_type_name(
         &self,
         scope: &ModPath,
         name: &ModPath,
     ) -> Result<Option<TypeName>> {
         let mut kind = "";
-        let hit = self.resolve_visible(scope, name, NameNs::Type, |s, n| {
+        let hit = self.resolve_path(scope, name, NameNs::Type, true, |s, n| {
             let hit = self.type_name_at(s, n)?;
             kind = scope_kind(s);
             Some(hit)
@@ -2822,6 +2996,21 @@ impl Env {
         Ok(())
     }
 
+    // CR claude for claude: [bug/medium] A typedef a function's body declares whose
+    // shape is still open when the body's check ends is never judged: `let f = |a:
+    // i64| { type T = [i64, Zed<T>]; let x: T = a; x }; type Zed<'a> = ['a, string];
+    // f(1)` passes `--check` and its run never returns (killed at 20 s, base-r24
+    // alike). Zed is the module's later type in f's snapshot for good
+    // (`Lexical::block_names`), so T's walk is `Unknown` and T is deferred
+    // (`Pending::Typedef`); the body's typedefs leave the lexical maps with the body,
+    // so the recheck here finds nothing and answers `Guarded`, and the check's end
+    // fills Zed to the module's type: T is `[i64, T, string]`. A block outside a
+    // function is still in the maps when `type Zed` compiles and is refused (`{ type
+    // T = [i64, Zed<T>]; .. }; type Zed<'a> = ['a, string]`). Judge the deferred
+    // typedef through `Env::block_types` when the maps no longer hold it, under the
+    // env the seed fills its names in, here and in `check_typedef_guard`. probe:
+    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/fn-body-later-type/
+    // (fn-typedef-unjudged-01)
     /// [`Self::deftype`]'s check of a typedef's shape again, for a
     /// definition whose body named something not defined yet: at the end
     /// of the check every name it reaches is. `Unknown` while a name it
@@ -2981,6 +3170,35 @@ impl Env {
         }
     }
 
+    /// The statement list at `scope` begins to compile: record what its
+    /// statements may change of the names read through its level
+    /// ([`Unsettled`]). The entry it replaces, for [`Self::close_list`].
+    pub fn open_list(&mut self, scope: &ModPath, later: Unsettled) -> Option<OpenList> {
+        match later.is_empty() {
+            true if self.unsettled.is_empty() => None,
+            true => self.unsettled.remove_cow(scope),
+            false => self.unsettled.insert_cow(scope.clone(), (Arc::new(later), 0)),
+        }
+    }
+
+    /// Statement `stmt` of the list at `scope`, a `use` or a module,
+    /// begins to compile: what it brings is no longer to come.
+    pub fn settle_statement(&mut self, scope: &ModPath, stmt: usize) {
+        if let Some((_, from)) = self.unsettled.get_mut_cow(scope) {
+            *from = stmt + 1
+        }
+    }
+
+    /// The list at `scope` has compiled: `prev` is what
+    /// [`Self::open_list`] replaced.
+    pub fn close_list(&mut self, scope: &ModPath, prev: Option<OpenList>) {
+        match prev {
+            Some(prev) => drop(self.unsettled.insert_cow(scope.clone(), prev)),
+            None if self.unsettled.is_empty() => (),
+            None => drop(self.unsettled.remove_cow(scope)),
+        }
+    }
+
     /// Forget the names [`Self::open_block`] recorded for the module's
     /// body or script at `scope`, whose statements have compiled: the
     /// lexical maps hold what it declares, and a name they lose (one its
@@ -3055,6 +3273,8 @@ impl Env {
             // each load names its blocks apart
             block_types: _,
             ide: _,
+            // a list's, while it compiles
+            unsettled: _,
             hidden_impls: _,
             recorded: _,
         } = self;

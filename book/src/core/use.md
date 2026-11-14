@@ -134,6 +134,16 @@ names are visible whatever their order; a value is not, because a
 module's body runs where its `mod` statement stands, so a sub-module
 that imports a parent's value must be declared below that value.
 
+A type name an import brings means that import throughout its statement
+list, above the `use` as well: `type Op = {mode: Mode}` written above
+`use sys::fs::Mode` names the imported `Mode`, never an outer type of
+that name. A statement above the `use` that needs the type while it
+compiles (a cast, a type test, a `let` that takes the type apart, an
+abstract constructor) is refused, and the error names the `use` to move
+up. The same holds for a name imported from a module declared further
+down, and, above a glob, for every type name the scope neither declares
+nor imports itself. Writing `use` first, then `mod`, avoids all of it.
+
 ## Shadowing and collisions
 
 Within one scope, names resolve in precedence order: an explicit

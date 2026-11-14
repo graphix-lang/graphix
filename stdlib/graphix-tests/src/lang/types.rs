@@ -4550,6 +4550,210 @@ run!(
         let n = select x { `C(_, `C(_, _)) => 2, `C(_, `N) => 1, `N => 0 }"
 );
 
+// A name a later `use` of the list imports, or a module declared below
+// may bring through a `use` above, is not read before then: a typedef
+// above waits for it, so the cycle the import completes is found, and a
+// statement that needs the type at once is refused.
+const IMPORTED_CYCLE: &str = "use super::N; type Option<'a> = N<Array<'a>>";
+const IMPORTED_OPTION: &str = "type Option<'a> = ['a, string]";
+const GROWS_N: &str = "recursive type N grows its parameter 'a as it recurses";
+const GROWS_OPTION: &str = "recursive type Option grows its parameter 'a as it recurses";
+const NO_VALUE: &str =
+    "recursive type T refers back to itself through unions and aliases alone";
+
+run!(
+    typedef_above_the_use_of_a_name_it_reads_refused,
+    refused(GROWS_N),
+    "/test.gx" => "type N<'a> = [`Nil, `Cons('a, Option<'a>)]; mod o; use o::Option; \
+        let result = 0",
+    "/test/o.gx" => IMPORTED_CYCLE
+; FuseExpect::None);
+
+run!(
+    typedef_above_the_use_of_a_name_it_reads,
+    is(Value::I64(1)),
+    "/test.gx" => "type N<'a> = {v: Option<'a>}; mod o; use o::Option; \
+        let y: N<f64> = {v: \"s\"}; \
+        let result = select y.v { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    typedef_between_a_use_and_the_module_it_imports_from_refused,
+    refused(GROWS_OPTION),
+    "/test.gx" => "use o::Option; type N<'a> = [`Nil, `Cons('a, Option<'a>)]; mod o; \
+        let result = 0",
+    "/test/o.gx" => IMPORTED_CYCLE
+; FuseExpect::None);
+
+run!(
+    typedef_between_a_use_and_the_module_it_imports_from,
+    is(Value::I64(1)),
+    "/test.gx" => "use o::Option; type N<'a> = {v: Option<'a>}; mod o; \
+        let y: N<f64> = {v: \"s\"}; \
+        let result = select y.v { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    typedef_above_a_glob_refused,
+    refused(GROWS_N),
+    "/test.gx" => "type N<'a> = [`Nil, `Cons('a, Option<'a>)]; mod o; use o::*; \
+        let result = 0",
+    "/test/o.gx" => IMPORTED_CYCLE
+; FuseExpect::None);
+
+run!(
+    typedef_above_a_glob,
+    is(Value::I64(1)),
+    "/test.gx" => "type N<'a> = {v: Option<'a>}; mod o; use o::*; \
+        let y: N<f64> = {v: \"s\"}; \
+        let result = select y.v { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    typedef_between_a_glob_and_its_module_refused,
+    refused(GROWS_OPTION),
+    "/test.gx" => "use o::*; type N<'a> = [`Nil, `Cons('a, Option<'a>)]; mod o; \
+        let result = 0",
+    "/test/o.gx" => IMPORTED_CYCLE
+; FuseExpect::None);
+
+run!(
+    typedef_between_a_glob_and_its_module,
+    is(Value::I64(1)),
+    "/test.gx" => "use o::*; type N<'a> = {v: Option<'a>}; mod o; \
+        let y: N<f64> = {v: \"s\"}; \
+        let result = select y.v { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    typedef_reading_a_globs_name_above_the_use_that_takes_it_over_refused,
+    refused("recursive type Opt grows its parameter 'a as it recurses"),
+    "/test.gx" => "mod a; mod b; use a::*; type N<'a> = [`Nil, `Cons('a, Opt<'a>)]; \
+        use b::Opt; let result = 0",
+    "/test/a.gx" => "type Opt<'a> = ['a, null]",
+    "/test/b.gx" => "use super::N; type Opt<'a> = N<Array<'a>>"
+; FuseExpect::None);
+
+run!(
+    block_typedef_above_the_blocks_use_refused,
+    refused(NO_VALUE),
+    "/test.gx" => "type Foo<'a> = Array<'a>; mod o; \
+        let result = { type T = [i64, Foo<T>]; use o::Foo; let x: T = 1; 0 }",
+    "/test/o.gx" => "type Foo<'a> = ['a, string]"
+; FuseExpect::None);
+
+run!(
+    block_typedef_above_the_blocks_use,
+    is(Value::I64(1)),
+    "/test.gx" => "type Foo<'a> = Array<'a>; mod o; \
+        let result = { type T = [i64, Foo<T>]; use o::Foo; let y: T = (\"s\", 1); \
+        select y { i64 as _ => 0, _ => 1 } }",
+    "/test/o.gx" => "type Foo<'a> = (string, 'a)"
+);
+
+run!(
+    nested_block_typedef_above_an_outer_use_refused,
+    refused(NO_VALUE),
+    "/test.gx" => "type Foo<'a> = Array<'a>; mod o; \
+        let result = { let q = { type T = [i64, Foo<T>]; let x: T = 1; 0 }; \
+        use o::Foo; q }",
+    "/test/o.gx" => "type Foo<'a> = ['a, string]"
+; FuseExpect::None);
+
+run!(
+    typedef_through_an_imported_module_declared_below_refused,
+    refused(NO_VALUE),
+    "/test.gx" => "mod p; \
+        let r = { use o::p; type T = [i64, p::Foo<T>]; let x: T = 1; 0 }; \
+        mod o; let result = r",
+    "/test/p.gx" => "type Foo<'a> = Array<'a>",
+    "/test/o.gx" => "mod p",
+    "/test/o/p.gx" => "type Foo<'a> = ['a, string]"
+; FuseExpect::None);
+
+run!(
+    typedef_through_an_imported_module_declared_below,
+    is(Value::I64(1)),
+    "/test.gx" => "mod p; \
+        let r = { use o::p; type T = [i64, p::Foo<T>]; let y: T = (\"s\", 1); \
+        select y { i64 as _ => 0, _ => 1 } }; \
+        mod o; let result = r",
+    "/test/p.gx" => "type Foo<'a> = Array<'a>",
+    "/test/o.gx" => "mod p",
+    "/test/o/p.gx" => "type Foo<'a> = (string, 'a)"
+);
+
+run!(
+    let_annotation_above_the_use_reads_the_import,
+    is(Value::I64(1)),
+    "/test.gx" => "let x: Option<f64> = \"s\"; mod o; use o::Option; \
+        let result = select x { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    type_test_above_the_use_refused,
+    refused("Option names what a later `use` of this module imports: write the `use` before the name's first use"),
+    "/test.gx" => "let v: [f64, string, null] = \"s\"; \
+        let result = select v { Option<f64> as _ => 1, _ => 0 }; mod o; use o::Option",
+    "/test/o.gx" => IMPORTED_OPTION
+; FuseExpect::None);
+
+run!(
+    type_test_below_the_use,
+    is(Value::I64(1)),
+    "/test.gx" => "mod o; use o::Option; let v: [f64, string, null] = \"s\"; \
+        let result = select v { Option<f64> as _ => 1, _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    cast_above_the_use_refused,
+    refused("Option names what a later `use` of this module imports"),
+    "/test.gx" => "let result = cast<Option<f64>>(\"s\"); mod o; use o::Option",
+    "/test/o.gx" => IMPORTED_OPTION
+; FuseExpect::None);
+
+run!(
+    destructuring_let_above_the_blocks_use_refused,
+    refused("Pair names what a later `use` of this block imports"),
+    "/test.gx" => "type Pair = (i64, i64); mod o; \
+        let result = { let (a, b): Pair = (1, \"s\"); use o::Pair; a }",
+    "/test/o.gx" => "type Pair = (i64, string)"
+; FuseExpect::None);
+
+run!(
+    destructuring_let_above_a_glob_refused,
+    refused("P may name what a later glob `use` of this module imports: write the `use` before the name's first use"),
+    "/test.gx" => "let (a, b): P = (1, \"s\"); mod o; use o::*; let result = a",
+    "/test/o.gx" => "type P = (i64, string)"
+; FuseExpect::None);
+
+run!(
+    destructuring_let_between_a_glob_and_its_module_refused,
+    refused("P may name what a glob `use` of this module imports from module `/test/o`, which a later statement declares"),
+    "/test.gx" => "use o::*; let (a, b): P = (1, \"s\"); mod o; let result = a",
+    "/test/o.gx" => "type P = (i64, string)"
+; FuseExpect::None);
+
+run!(
+    destructuring_let_between_a_use_and_its_module_refused,
+    refused("P names what a `use` of this module imports from module `/test/o`, which a later statement declares"),
+    "/test.gx" => "use o::P; let (a, b): P = (1, \"s\"); mod o; let result = a",
+    "/test/o.gx" => "type P = (i64, string)"
+; FuseExpect::None);
+
+run!(
+    destructuring_let_below_the_use_and_its_module,
+    is(Value::I64(1)),
+    "/test.gx" => "mod o; use o::P; let (a, b): P = (1, \"s\"); let result = a",
+    "/test/o.gx" => "type P = (i64, string)"
+);
+
 /// An alias that bounds its parameter is not looked through; its body
 /// written out in its place checks.
 const BOUNDED_ALIAS_OVER_A_RECURSIVE_PARAMETER: &str = r#"

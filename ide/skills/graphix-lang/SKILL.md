@@ -834,6 +834,8 @@ away the element it had in hand. Build the final row there:
   body and a script follow the same rule, over a name a `use` or the
   prelude brings too: a `let` annotation above the declaration takes the
   module's type, and a function above it that names the type is refused.
+  A `use` is in force throughout its list the same way: write it first
+  (`modules.md`).
 - Each REPL statement, a script and a dynamic module's load is checked
   alone, and what it leaves undecided is `_` from its end: after `let e
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),

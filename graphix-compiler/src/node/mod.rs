@@ -1325,6 +1325,20 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             _ => None,
         }),
     );
+    let mut later = env::Unsettled::default();
+    for (i, e) in exprs.iter().enumerate() {
+        match &e.kind {
+            ExprKind::Module { name, .. } => {
+                later.modules.push((i, name.name.as_str().into()))
+            }
+            ExprKind::Use { names, .. } => {
+                module::later_use(&ctx.env, list, i, e, names, &mut later)
+            }
+            _ => (),
+        }
+    }
+    let brings = !later.is_empty();
+    let reopened = ctx.env.open_list(list, later);
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
@@ -1337,6 +1351,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             catches.push(i);
         }
         let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
+        if brings && matches!(e.kind, ExprKind::Use { .. } | ExprKind::Module { .. }) {
+            ctx.env.settle_statement(list, i)
+        }
         let boundary = prune::Prune::boundary(ctx);
         let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {
             compile_statement(ctx, flags, e, &scope, top_id, at)
@@ -1352,6 +1369,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         ctx.block_typedefs.pop();
     }
     ctx.env.close_block(list);
+    ctx.env.close_list(list, reopened);
     compiled?;
     for n in children.iter() {
         defer_typedef_names(ctx, n)?;

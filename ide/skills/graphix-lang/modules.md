@@ -24,6 +24,24 @@ explicit imports of one name are an error where a glob silently lost to
 the explicit one. `use Collection::*` (a trait's methods) is the one
 glob the book teaches.
 
+A `use` is in force throughout its statement list, for a type name
+written above it too: `type Op = {mode: Mode}` or `let m: Mode = ..`
+above `use sys::fs::Mode` means the imported `Mode`, never an outer or
+prelude type of the name. A statement above the `use` that needs the type
+as it compiles (a cast, a type test, a `let` that takes the type apart,
+an abstract constructor) is refused, and above a glob that holds for
+every type name the list neither declares nor imports. The same goes for
+a name a `use` imports from a module declared further down: until the
+`mod`, the name is not read. Write `use` first, then `mod`.
+
+```graphix,cases
+no "Mode names what a later `use` of this module imports" let m = cast<Mode>(`Read); use sys::fs::Mode; m
+ok use sys::fs::Mode; let m = cast<Mode>(`Read); m
+ok type Op = {mode: Mode}; use sys::fs::Mode; let o: Op = {mode: `Read}; o.mode
+ok let m: Mode = `Read; use sys::fs::Mode; m
+no "Mode may name what a later glob `use` of this module imports" let m = cast<Mode>(`Read); use sys::fs::*; m
+```
+
 Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 `val`, `type`, `mod`, `trait`, `impl T for X;` declarations with `///`
 docs; types and mods from the gxi are in scope in the impl. A hidden

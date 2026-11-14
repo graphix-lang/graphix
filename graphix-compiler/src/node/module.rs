@@ -3,8 +3,8 @@ use crate::{
     Refs, Rt, Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{
-        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, UseAnchor,
-        scope_params,
+        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, Unsettled,
+        UseAnchor, scope_params,
     },
     errf,
     expr::{
@@ -76,6 +76,45 @@ fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> 
         Some(UseAnchor::Chain(a)) => Glob::Chain(ModPath(Path::from(ArcStr::from(a)))),
         Some(UseAnchor::Module(m)) => Glob::Module(m),
     }))
+}
+
+/// What the `use` at statement `stmt` of the list at `scope` has still to
+/// bring, into `later`: nothing where the item is installed already (a
+/// `.gxi`'s `use` spliced into the body, a block compiled again) or names
+/// a package, which the prelude provides.
+pub(crate) fn later_use(
+    env: &Env,
+    scope: &ModPath,
+    stmt: usize,
+    spec: &Expr,
+    items: &[UseItem],
+    later: &mut Unsettled,
+) {
+    let sn = env.names.get(scope);
+    for item in items {
+        match item.bound_name() {
+            Some(key) => {
+                let here = sn
+                    .and_then(|sn| sn.imports.get(key))
+                    .is_some_and(|e| e.pos == spec.pos && *e.ori == *spec.ori);
+                let package = item.rename.is_none()
+                    && Path::levels(&*item.path.0) == 1
+                    && env.package_roots.contains(key);
+                if !here && !package {
+                    later.uses.push((stmt, key.into()))
+                }
+            }
+            None => {
+                let here = match use_glob(env, scope, item) {
+                    Ok(Some(g)) => sn.is_some_and(|sn| sn.globs.contains(&g)),
+                    Ok(None) | Err(_) => false,
+                };
+                if !here {
+                    later.globs.push(stmt)
+                }
+            }
+        }
+    }
 }
 
 /// Resolve one item of a `use` against the namespace table
