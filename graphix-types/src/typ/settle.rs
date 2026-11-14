@@ -1202,6 +1202,9 @@ impl Held {
 pub struct DataPositions<'a> {
     env: &'a Env,
     members: bool,
+    /// The applications under expansion, each as it is held, for a walk
+    /// [`Self::passing_repeats`].
+    repeats: Option<SmallVec<[(AppKey, Held); 4]>>,
     unrolling: Unrolling,
     seen: LPooled<AHashMap<(usize, Held), Type>>,
     applied: LPooled<AHashMap<(AppKey, Held), (Type, Expanded)>>,
@@ -1215,6 +1218,7 @@ impl<'a> DataPositions<'a> {
         DataPositions {
             env,
             members: false,
+            repeats: None,
             unrolling: Unrolling::default(),
             seen: LPooled::take(),
             applied: LPooled::take(),
@@ -1225,6 +1229,14 @@ impl<'a> DataPositions<'a> {
     /// Tell [`Held::member`] too.
     pub fn telling_members(self) -> Self {
         DataPositions { members: true, ..self }
+    }
+
+    /// Pass by an application met inside its own expansion, held as that
+    /// expansion is: it holds its variables as the expansion told them.
+    /// Any other application of a definition under expansion is still
+    /// taken for holding them under a function.
+    pub fn passing_repeats(self) -> Self {
+        DataPositions { repeats: Some(SmallVec::new()), ..self }
     }
 
     fn beneath_function(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
@@ -1277,13 +1289,23 @@ impl<'a> DataPositions<'a> {
                 match t.lookup_ref_probe(self.env) {
                     Some((_, whole)) => {
                         self.unrolling.enter(key);
+                        if let Some(open) = &mut self.repeats {
+                            open.push(app.clone())
+                        }
                         self.walk(&whole, held, f);
+                        if let Some(open) = &mut self.repeats {
+                            open.pop();
+                        }
                         let expanded = self.unrolling.leave(tr);
                         self.applied.insert(app, (t.clone(), expanded));
                     }
                     None => self.beneath_function(t, held, f),
                 }
             }
+            Type::Ref(tr)
+                if let Some(open) = &self.repeats
+                    && let Some(key) = tr.probe_def_key(self.env)
+                    && open.contains(&(tr.app_key(key), held)) => {}
             Type::Fn(_) | Type::Ref(_) => self.beneath_function(t, held, f),
             Type::ByRef(super::Mutability::Mut, _)
             | Type::Abstract { .. }

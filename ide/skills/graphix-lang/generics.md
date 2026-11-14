@@ -656,6 +656,18 @@ no "annotate that argument as wide as this one" let f = |x: 'a, y: 'a, k: fn(v: 
 ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`ParseError(string)>] = 1; f(one, str::parse("5"), |v| 0)
 ```
 
+A variable a bound holds under a function type, a writable reference or a
+nominal type does not widen either, though no parameter holds it so: the
+bound `'a: fn(q: 'c) -> i64` over `|v: 'a, c: 'c|` takes `'c` from the
+callback, and a wider `c` is refused as it is where the function type is
+written in the parameter. Annotate the callback's parameter as wide as `c`.
+
+```graphix,cases
+no "'c: string does not contain [i64, string]" let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)
+ok let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: [i64, string]| 0, n)
+ok let f = 'a: Array<'c> |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(["s"], n)
+```
+
 A generic function held at a written function type (an annotated `let`,
 a callback parameter, a field, a write) meets the type's positions in
 the order written, and its variable takes the first position's type:

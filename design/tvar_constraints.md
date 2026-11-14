@@ -432,6 +432,17 @@ stands is the mismatch where it is written, whatever follows (`f(`A, `B,
 ab)` over three `'a` is refused; `f(ab, `B, `A)` runs): no union is
 made of two arguments.
 
+A variable also counts as held by data alone only when no bound holds it
+otherwise: `widenable` walks each such variable's cell constraints,
+transitively, and a variable one of them holds under a function type, a
+writable reference or a nominal type does not widen (`'a: fn(q: 'c) ->
+i64` with `|v: 'a, c: 'c|` takes `f(|q: string| 0, n)` over `n: [i64,
+string]` as the mismatch the function type written in the parameter
+gives; pins `lang::types::a_variable_held_by_a_bound_*`). A recursive
+typedef's application met inside its own expansion is passed by
+(`DataPositions::passing_repeats`), as it holds its variables as the
+expansion told them.
+
 A widening leaves every decided cell above its lower bounds. A lower
 bound holds its cells live, so widening a variable grows each bound that
 holds it, and a cell an earlier argument decided may hold the bound no

@@ -1720,10 +1720,12 @@ fn holds_a_variable(t: &Type) -> bool {
 
 /// A fresh instance's type variables that widen to an argument wider
 /// than the ones before it: open in the definition `def`, and met only as
-/// data in `inst`, so a value of a wider type is well typed wherever the
-/// signature holds one. One standing in a union beside another undecided
-/// member is not: which member takes a type turns on what the cells are,
-/// so the first argument that meets it decides it.
+/// data in `inst` and in the bounds of the cells it reaches, so a value
+/// of a wider type is well typed wherever the signature holds one, and a
+/// bound that held what its variable took holds it still. One standing
+/// in a union beside another undecided member is not: which member takes
+/// a type turns on what the cells are, so the first argument that meets
+/// it decides it.
 fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
     // CR claude for claude: [bug/low] A variable only bounds hold takes no argument wider
     // than the first that reached it through a bound. Over `let f = 'a1: Array<'a3>, 'a2:
@@ -1750,7 +1752,7 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
-    // CR claude for claude: [bug/medium] A variable a bound holds under a function type
+    // XCR claude for claude: [bug/medium] A variable a bound holds under a function type
     // or exactly widens, and the bound no longer holds what its variable took: the check
     // accepts and the build refuses the instance. `let f = 'a: fn(q: 'c) -> i64 |v: 'a,
     // c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)` passes `--check` and the
@@ -1778,6 +1780,14 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     // first, is fixed in the lane 25d build (pre_unify_seen no longer binds a variable
     // bounded by a union of function types to an ambiguous callback early); its static
     // walk can be tried again.
+    // 2026-11-14 claude: Fixed: callsite::widenable also walks each candidate variable's
+    // cell constraints, transitively (DataPositions::passing_repeats passes a recursive
+    // typedef application met inside its own expansion), so a variable a bound holds
+    // under a function, a writable reference or a nominal type no longer widens; t1 t4
+    // t6 t15 y1 v5 i7 are now refused at --check with the parameter form's message.
+    // Fails without it: the 6 refused pins
+    // lang::types::a_variable_held_by_a_bound_*_refused in all 4 modes (24 runs); their
+    // annotated twins and a_variable_held_by_a_bound_in_data_alone_still_widens run.
     let mut positions = DataPositions::new(env).telling_members();
     inst.for_each_type(&mut |t| {
         positions.walk(t, Held::default(), &mut |tv, held| {
@@ -1785,6 +1795,23 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
                 held.data() && !held.member
         })
     });
+    let mut bounds = DataPositions::new(env).passing_repeats();
+    let mut bounded: LPooled<Vec<TVar>> =
+        found.values().map(|(tv, _)| tv.clone()).collect();
+    let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
+    while let Some(tv) = bounded.pop() {
+        if !walked.insert(tv.cell_addr()) {
+            continue;
+        }
+        for c in tv.cell_constraints() {
+            bounds.walk(&c, Held::default(), &mut |tv, held| {
+                if let Some((_, data)) = found.get_mut(&tv.name) {
+                    *data &= held.data()
+                }
+                bounded.push(tv.clone())
+            })
+        }
+    }
     found
         .drain()
         .filter(|(name, (tv, data))| {

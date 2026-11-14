@@ -11575,6 +11575,115 @@ run!(
     prints("i64:7")
 );
 
+// A variable a bound holds under a function, exactly or by reference does
+// not widen to an argument wider than the one that decided it: the bound
+// no longer holds what the variable took, as the function type written in
+// the parameter does not.
+const HELD_BY_A_BOUND: &str = "does not contain [i64, string]";
+
+run!(
+    a_variable_held_by_a_bound_under_a_function_does_not_widen_refused,
+    r#"{
+  let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)
+}"#,
+    refused(HELD_BY_A_BOUND);
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_under_a_function_does_not_widen_annotated,
+    r#"{
+  let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: [i64, string]| 0, n)
+}"#,
+    prints("i64:1")
+);
+run!(
+    a_variable_held_by_a_bound_under_a_mutable_reference_does_not_widen_refused,
+    r#"{
+  let f = 'a: &mut 'c |v: 'a, c: 'c| c; let n: [i64, string] = 1; let s = "s"; f(&mut s, n)
+}"#,
+    refused(HELD_BY_A_BOUND);
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_under_a_mutable_reference_does_not_widen_annotated,
+    r#"{
+  let f = 'a: &mut 'c |v: 'a, c: 'c| c; let n: [i64, string] = 1; let s: [i64, string] = 2; f(&mut s, n)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_union_member_under_a_function_does_not_widen_refused,
+    r#"{
+  let f = 'a: [fn(q: 'c) -> i64, 'b] |v: 'a, y: 'b, c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, "s", n)
+}"#,
+    refused(HELD_BY_A_BOUND);
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_union_member_under_a_function_does_not_widen_annotated,
+    r#"{
+  let f = 'a: [fn(q: 'c) -> i64, 'b] |v: 'a, y: 'b, c: 'c| c; let n: [i64, string] = 1; f(|q: [i64, string]| 0, "s", n)
+}"#,
+    prints("i64:1")
+);
+run!(
+    a_variable_held_by_a_bound_of_a_bound_does_not_widen_refused,
+    r#"{
+  let f = 'a: Array<'d>, 'd: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f([|q: string| 0], n)
+}"#,
+    refused(HELD_BY_A_BOUND);
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_of_a_bound_does_not_widen_annotated,
+    r#"{
+  let f = 'a: Array<'d>, 'd: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f([|q: [i64, string]| 0], n)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_recursive_typedef_bound_does_not_widen_refused,
+    r#"{
+  type T<'x> = [`Leaf(fn(q: 'x) -> i64), `Node(Array<T<'x>>)]; let f = 'a: T<'c> |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(`Leaf(|q: string| 0), n)
+}"#,
+    refused(HELD_BY_A_BOUND);
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_recursive_typedef_bound_does_not_widen_annotated,
+    r#"{
+  type T<'x> = [`Leaf(fn(q: 'x) -> i64), `Node(Array<T<'x>>)]; let f = 'a: T<'c> |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(`Leaf(|q: [i64, string]| 0), n)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_does_not_widen_to_an_omitted_default_refused,
+    r#"{
+  let n: [i64, string] = 1; let f = 'a: fn(q: 'c) -> i64 |#c: 'c = n, v: 'a| c; f(|q: string| 0)
+}"#,
+    refused(HELD_BY_A_BOUND);
+    FuseExpect::None
+);
+run!(
+    a_variable_held_by_a_bound_does_not_widen_to_an_omitted_default_annotated,
+    r#"{
+  let n: [i64, string] = 1; let f = 'a: fn(q: 'c) -> i64 |#c: 'c = n, v: 'a| c; f(|q: [i64, string]| 0)
+}"#,
+    prints("i64:1")
+);
+run!(
+    a_variable_held_by_a_bound_in_data_alone_still_widens,
+    r#"{
+  let f = 'a: Array<'c> |v: 'a, c: 'c| c;
+  let n: [i64, string] = 1;
+  f(["s"], n)
+}"#,
+    prints("i64:1")
+);
+
 // A formal that reaches a variable an earlier argument settled only
 // through another variable's bound leaves it settled: the copy the
 // argument pre-unifies with opens its own cells alone.
