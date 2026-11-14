@@ -3027,7 +3027,7 @@ impl<R: Rt> Update<R> for Select<R> {
         Ok(())
     }
 
-    // CR claude for claude: [bug/low] An instance checked again (GRAPHIX_NO_SUBST=1)
+    // XCR claude for claude: [bug/low] An instance checked again (GRAPHIX_NO_SUBST=1)
     // refuses a select whose arm the instance's type rules out where that arm reads a
     // part of its bind: `let c = 'c: Collection, 'b: (i64, i64) |x: ('c<'b>, i64)| ->
     // i64 select x { ([h, ..], n) => h.0 + n, ([<h, ..>], n) => h.0 + n, _ => 0 };
@@ -3041,6 +3041,17 @@ impl<R: Rt> Update<R> for Select<R> {
     // default, so only the debug A/B splits. probes:
     // ~/ptmp/cr29/scratch/r24/24h/spom/nosubst/{ns5,ns6,ns7}.gx, ns2.gx (one arm, builds)
     // (nosubst-ruled-out-arm-bind-01)
+    // 2026-11-14 claude: Fixed. Under a NO_SUBST re-check an arm nothing reaches bound
+    // its names at bottom, so the arm's 'h.0' read an unbound cell. Now the arm's binds
+    // take the elements of the slices it stands over
+    // (StructurePattern::collection_view_of_unreached: a List where the instance holds an
+    // Array and the reverse), else bottom as before; the shipped mode never reaches it.
+    // Pins: shell
+    // no_subst::an_instance_checked_again_types_a_ruled_out_slice_arm_by_its_elements
+    // fails without the change; under GRAPHIX_NO_SUBST=1 lang::select
+    // nested_slice_element_bind_typed and collection_variable_element_bind_typed (x4
+    // modes each) now pass (17 failures down to 9, the rest default_at_a_bind_* and
+    // test_beside_a_variable_bounded_by_any_written::jit, all failing before).
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -3374,22 +3385,26 @@ impl<R: Rt> Select<R> {
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
-            let reaching = match !super::instance_rechecked()
-                || !reach.passes_nothing(&ctx.env, pat)?
-            {
-                true => reach.atype.clone(),
-                // an arm its definition's check kept that nothing reaches
-                // at the instance's types never runs
-                false => Type::Bottom,
-            };
+            let unreached =
+                super::instance_rechecked() && reach.passes_nothing(&ctx.env, pat)?;
             // a written test types its binds itself (Type::matching_type)
-            let reaching = spec_pats
-                .get(i)
-                .filter(|_| !pat.explicit_type_predicate)
-                .and_then(|(p, _)| {
-                    p.structure_predicate.collection_view(&ctx.env, &reaching)
-                })
-                .unwrap_or(reaching);
+            let view = spec_pats.get(i).filter(|_| !pat.explicit_type_predicate);
+            let reaching = match (unreached, view) {
+                (false, view) => view
+                    .and_then(|(p, _)| {
+                        p.structure_predicate.collection_view(&ctx.env, &reach.atype)
+                    })
+                    .unwrap_or_else(|| reach.atype.clone()),
+                // an arm its definition's check kept that nothing reaches
+                // at the instance's types never runs: its binds take the
+                // elements of the slices it stands over, else ⊥
+                (true, view) => view
+                    .and_then(|(p, _)| {
+                        p.structure_predicate
+                            .collection_view_of_unreached(&ctx.env, &reach.atype)
+                    })
+                    .unwrap_or(Type::Bottom),
+            };
             if checking {
                 reached.push(Reached {
                     atype: reaching.clone(),

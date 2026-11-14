@@ -182,3 +182,25 @@ fn an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one
         assert_eq!(run(program, true), "3", "under GRAPHIX_NO_SUBST: {program}");
     }
 }
+
+/// An instance that checks its body again types the binds of an arm its
+/// types rule out by the elements of the slices it stands over: the list
+/// arm of a collection variable the call makes an array reads its element.
+#[test]
+fn an_instance_checked_again_types_a_ruled_out_slice_arm_by_its_elements() {
+    let c = "let c = 'c: Collection, 'b: (i64, i64) |x: ('c<'b>, i64)| -> i64 select x {\n\
+             ([h, ..], n) => h.0 + n,\n\
+             ([<h, ..>], n) => h.0 + n,\n\
+             _ => 0\n\
+         };\n";
+    let programs = [
+        ("c(([(3, 4)], 1))\n", "4"),
+        ("c(([<(3, 4)>], 1))\n", "4"),
+        ("(c(([(3, 4)], 1)), c(([<(5, 6)>], 2)))\n", "(4, 7)"),
+    ];
+    for (program, expected) in programs {
+        let program = format!("{c}{program}");
+        assert_eq!(run(&program, false), expected, "{program}");
+        assert_eq!(run(&program, true), expected, "under GRAPHIX_NO_SUBST: {program}");
+    }
+}

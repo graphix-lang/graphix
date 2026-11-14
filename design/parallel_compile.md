@@ -553,7 +553,10 @@ defaults its return hides, which stay its definition's, as an instance
 without check rows takes them (`node::rechecking_instance`,
 `typ::TextSite`, `GXLambda::typecheck0`): the instance's narrower types
 can make an arm the definition needs unreachable, and such an arm, which
-never runs, binds its names at ⊥; at the instance's types a
+never runs, binds its names at ⊥, but for the elements of a slice it
+stands over, which type its binds as the definition's check did (an array
+the call makes of a collection variable still gives a list arm its
+element); at the instance's types a
 `Transparent` over the definition's own variable is over the type a call
 gave it; and an instance's return holds what its site's later uses
 decided (`v(0)(#d: "s", 7)` makes `#d` a string), against which a default
