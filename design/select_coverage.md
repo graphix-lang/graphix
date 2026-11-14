@@ -200,7 +200,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   each other), so `` `A((a, _)) `` takes all of `` `A(P) `` with
   `type P = (i64, i64)`, `([i64, string], i64)` and `(Number, i64)`
   take all of `(i64, i64)`, and a written `` `A(('b, Any)) `` takes
-  nothing of `` `A(('a, i64)) ``. What reaches the next arm
+  nothing of `` `A(('a, i64)) ``. Where it holds every position but one,
+  and a union there loses whole members to the arm's part, what reaches the
+  next arm is the product with the rest of that union there
+  (`Type::diff_one_part`): `` `A(null) `` leaves `` `A(i64) `` of
+  `` `A([i64, null]) ``, so arms that cover a union by its members leave
+  no arm after them. What reaches the next arm
   (`Type::diff`) and `could_match` unfold a pair of named types'
   definitions (arguments ignored) once on a path, a pair with a side
   that is no named type uncounted; met again, diff subtracts nothing

@@ -2073,7 +2073,7 @@ impl Type {
                 if held_by_shape(env, hist, self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
-                    Ok(self.clone())
+                    Ok(self.diff_one_part(env, hist, t)?.unwrap_or_else(|| self.clone()))
                 }
             }
             (Type::Map { .. }, Type::Map { .. }) => {
@@ -2395,6 +2395,81 @@ impl Type {
         Ok((!widened).then_some(d))
     }
 
+    /// The tuple, struct or variant `self` less `t`, a product of its
+    /// shape, where every position but one is held by `t`'s
+    /// ([`held_by_shape`]) and a union there loses whole members to `t`'s
+    /// part: `self` with that position's difference. `None` where there is
+    /// no such position, or its difference is not a union of the members
+    /// it had.
+    fn diff_one_part(
+        &self,
+        env: &Env,
+        hist: &mut DiffHist,
+        t: &Self,
+    ) -> Result<Option<Self>> {
+        let (p0, p1): (SmallVec<[&Type; 4]>, SmallVec<[&Type; 4]>) = match (self, t) {
+            (Type::Tuple(a), Type::Tuple(b)) => (a.iter().collect(), b.iter().collect()),
+            (Type::Variant(tag0, a, _), Type::Variant(tag1, b, _)) if tag0 == tag1 => {
+                (a.iter().collect(), b.iter().collect())
+            }
+            (Type::Struct(a), Type::Struct(b))
+                if a.len() == b.len()
+                    && a.iter().zip(b.iter()).all(|(x, y)| x.0 == y.0) =>
+            {
+                (
+                    a.iter().map(|(_, t, _)| t).collect(),
+                    b.iter().map(|(_, t, _)| t).collect(),
+                )
+            }
+            _ => return Ok(None),
+        };
+        if p0.len() != p1.len() {
+            return Ok(None);
+        }
+        if !p0.iter().any(|a| union_parts(a).is_some()) {
+            return Ok(None);
+        }
+        let mut apart = None;
+        for (i, (a, b)) in p0.iter().zip(p1.iter()).enumerate() {
+            if !held_by_shape(env, hist, a, b) {
+                if apart.is_some() {
+                    return Ok(None);
+                }
+                apart = Some(i);
+            }
+        }
+        let Some(i) = apart else { return Ok(None) };
+        let Some(whole) = union_parts(p0[i]) else { return Ok(None) };
+        let d = p0[i].diff_int(env, hist, p1[i])?;
+        let Some((flags, rest)) = parts_of(&d) else { return Ok(None) };
+        if !whole.0.contains(flags)
+            || !rest.iter().all(|m| whole.1.iter().any(|n| union_identical(m, n)))
+        {
+            return Ok(None);
+        }
+        if is_empty_ty(&d) {
+            return Ok(Some(Type::Primitive(BitFlags::empty())));
+        }
+        let part = |j: usize, t: &Type| if j == i { d.clone() } else { t.clone() };
+        Ok(Some(match self {
+            Type::Tuple(a) => {
+                Type::Tuple(a.iter().enumerate().map(|(j, t)| part(j, t)).collect())
+            }
+            Type::Variant(tag, a, at) => Type::Variant(
+                tag.clone(),
+                a.iter().enumerate().map(|(j, t)| part(j, t)).collect(),
+                at.clone(),
+            ),
+            Type::Struct(a) => Type::Struct(
+                a.iter()
+                    .enumerate()
+                    .map(|(j, (n, t, at))| (n.clone(), part(j, t), at.clone()))
+                    .collect(),
+            ),
+            _ => return Ok(None),
+        }))
+    }
+
     fn diff_walk(&self, env: &Env, t: &Self) -> Result<(Self, bool)> {
         let mut hist = DiffHist::new();
         let r = self.diff_int(env, &mut hist, t)?;
@@ -2428,6 +2503,26 @@ fn same_type(t0: &Type, t1: &Type) -> bool {
 /// variables may differ in every instance.
 fn identical_normal(t0: &Type, t1: &Type) -> bool {
     union_identical(&t0.resolve_tvars().normalize(), &t1.resolve_tvars().normalize())
+}
+
+/// The primitive flags and the other members of `t`.
+fn parts_of(t: &Type) -> Option<(BitFlags<Typ>, SmallVec<[Type; 4]>)> {
+    let mut flags = BitFlags::empty();
+    let mut rest: SmallVec<[Type; 4]> = SmallVec::new();
+    let mut add = |m: &Type| match m {
+        Type::Primitive(p) => flags |= *p,
+        m => rest.push(m.clone()),
+    };
+    match t.deref_cloned()? {
+        Type::Set(ref ms) => ms.iter().for_each(&mut add),
+        m => add(&m),
+    }
+    Some((flags, rest))
+}
+
+/// [`parts_of`] where `t` is a union of two or more.
+fn union_parts(t: &Type) -> Option<(BitFlags<Typ>, SmallVec<[Type; 4]>)> {
+    parts_of(t).filter(|(flags, rest)| flags.len() + rest.len() > 1)
 }
 
 /// Whether every value of `t0` is one of `t1` by their shapes alone
@@ -2828,6 +2923,31 @@ pub(crate) mod tests {
         }
     }
 
+    // A product the subtrahend holds at every position but one, where a
+    // union of the minuend loses whole members, keeps the rest of the union
+    // there, and is whole where more than one position differs or the
+    // difference is not a part of the union.
+    #[test]
+    fn diff_keeps_the_rest_of_a_union_at_the_one_differing_position() {
+        let (env, _) = typed(&[("L", "[`Cons(i64, L), `Nil]")], "null");
+        for (t0, t1, left) in [
+            ("`A([i64, string])", "`A(i64)", "`A(string)"),
+            ("`A([i64, string])", "`A([i64, string])", "[]"),
+            ("`A([i64, string, null])", "`A(i64)", "`A([null, string])"),
+            ("`A([Array<i64>, null])", "`A(Array<i64>)", "`A(null)"),
+            ("`A([Array<i64>, null])", "`A(Array<string>)", "`A([null, Array<i64>])"),
+            ("([i64, null], i64)", "(null, Any)", "(i64, i64)"),
+            ("([i64, null], i64)", "(null, i64)", "(i64, i64)"),
+            ("([i64, null], [i64, null])", "(i64, i64)", "([i64, null], [i64, null])"),
+            ("{a: [i64, null], b: i64}", "{a: i64, b: Any}", "{ a: null, b: i64 }"),
+            ("`A([`B, `C])", "`A(`B)", "`A(`C)"),
+            ("`A(L)", "`A(`Nil)", "`A(L)"),
+        ] {
+            let d = parsed(&env, t0).diff(&env, &parsed(&env, t1)).unwrap();
+            assert_eq!(d.to_string(), left, "{t0} - {t1}");
+        }
+    }
+
     // A position the subtrahend writes as a union or a name holds a minuend's
     // position one of its members holds, member by member where the minuend's
     // is a union, and a name of the subtrahend is read through.
@@ -2863,11 +2983,7 @@ pub(crate) mod tests {
             ("[([i32, f64], i64), null]", "(N, i64)", "null"),
             ("[`A(`Nil), null]", "`A(L)", "null"),
             ("[`A(`Cons(i64, `Nil)), null]", "`A(L)", "null"),
-            (
-                "[(i64, [i64, f64]), null]",
-                "(i64, [i64, string])",
-                "[null, (i64, [i64, f64])]",
-            ),
+            ("[(i64, [i64, f64]), null]", "(i64, [i64, string])", "[null, (i64, f64)]"),
             ("[(f64, i64), null]", "(U, i64)", "[null, (f64, i64)]"),
             ("[(i64, i64), null]", "(['a, string], i64)", "[null, (i64, i64)]"),
             ("[`A(L), null]", "`A(M)", "[null, `A(L)]"),

@@ -582,12 +582,14 @@ ok |x: Array<i64>| select (x, 0) { ([], _) => 0, ([a, ..], _) => a }
 ok let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 }; f(`A([1, 2]))
 no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0 }
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
-no "every array length" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A([a, b]) => 3, `A(null) => 2 }
+no "will never match" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A([a, b]) => 3, `A(null) => 2 }
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(_) => 2 }
 ok |x: [`A(Array<i64>), `A(null)]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
 no "covers none of its lengths" |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0 }
 ok |x: Array<[(i64, i64), (string, string)]>| select x { [(a, _), ..] => 1, [] => 0 }
 no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
+no "unreachable arm" |x: [`A([i64, string])]| select x { `A(i64) as `A(n) => n, `A(string) as `A(s) => 0, _ => 3 }
+no "unreachable arm" |x: ([i64, null], i64)| select x { (null, _) => 0, (i64, i64) as (n, _) => n, _ => 3 }
 ok |x: Array<[(`A, i64), (`B, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
 no "unreachable arm" |x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }
 no "unreachable arm" |x: Array<u8>| select x { [1, ..] => 1, _ => 0 }

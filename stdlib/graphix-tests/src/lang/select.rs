@@ -765,7 +765,7 @@ run!(
   let f = |x: [`A([Array<i64>, null])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
   f(`A([1, 2]))
 }"#,
-    refused("missing match cases: no arm covers `A([null, Array<i64>])");
+    refused("missing match cases: no arm covers `A(null)");
     FuseExpect::None
 );
 
@@ -775,7 +775,7 @@ run!(
   let g = |x: [`A([Array<i64>, List<i64>])]| select x { `A([e, ..]) => 1, `A([]) => 0 };
   g(`A([1, 2]))
 }"#,
-    refused("missing match cases: no arm covers `A([Array<i64>, List<i64>])");
+    refused("missing match cases: no arm covers `A(List<i64>)");
     FuseExpect::None
 );
 
@@ -872,7 +872,7 @@ run!(
   };
   f(`A(null))
 }"#,
-    refused("every array length this slice pattern can match is covered by earlier arms");
+    refused("will never match `A(null), unused match cases");
     FuseExpect::None
 );
 
@@ -928,7 +928,7 @@ run!(
   };
   f(`A(null))
 }"#,
-    refused("missing match cases: no arm covers `A([null, ([null, Array<i64>], i64)])");
+    refused("missing match cases: no arm covers `A(([null, Array<i64>], i64))");
     FuseExpect::None
 );
 
@@ -952,7 +952,7 @@ run!(
   };
   f(`A([3]))
 }"#,
-    refused("missing match cases: no arm covers `A([null, Array<[i64, (i64, i64)]>])");
+    refused("missing match cases: no arm covers `A(Array<[i64, (i64, i64)]>)");
     FuseExpect::None
 );
 
@@ -11104,7 +11104,7 @@ run!(
         };
         f(`C)
     }"#,
-    refused("missing match cases: no arm covers `B([(bool, [`X, `Y]), `A])");
+    refused("missing match cases: no arm covers `B((bool, [`X, `Y]))");
     FuseExpect::None
 );
 
@@ -11133,7 +11133,7 @@ run!(
         [u(`B(w)), u(`C)]
     }"#,
     refused(
-        "missing match cases: no arm covers `B(['b: unbound within [i64, string], (bool, bool), `A])"
+        "missing match cases: no arm covers `B(['b: unbound within [i64, string], (bool, bool)])"
     );
     FuseExpect::None
 );
@@ -11160,7 +11160,7 @@ run!(
         u((true, w))
     }"#,
     refused(
-        "missing match cases: no arm covers (bool, ['b: unbound within [i64, string], (bool, bool), `A])"
+        "missing match cases: no arm covers (bool, ['b: unbound within [i64, string], (bool, bool)])"
     );
     FuseExpect::None
 );
@@ -11222,7 +11222,7 @@ run!(
         [u(`B((true, w))), u(`C)]
     }"#,
     refused(
-        "missing match cases: no arm covers `B([(bool, [bool, 'b: unbound within [i64, string]]), `A])"
+        "missing match cases: no arm covers `B((bool, [bool, 'b: unbound within [i64, string]]))"
     );
     FuseExpect::None
 );
@@ -11237,7 +11237,7 @@ run!(
         [u(`B((true, w))), u(`C)]
     }"#,
     refused(
-        "missing match cases: no arm covers `B([(bool, ['b: unbound within [i64, string], `X, `Y]), `A])"
+        "missing match cases: no arm covers `B((bool, ['b: unbound within [i64, string], `X, `Y]))"
     );
     FuseExpect::None
 );
@@ -11252,7 +11252,7 @@ run!(
         [u(`B({a: true, c: w})), u(`C)]
     }"#,
     refused(
-        "missing match cases: no arm covers `B([{ a: bool, c: [bool, 'b: unbound within [i64, string]] }, `A])"
+        "missing match cases: no arm covers `B({ a: bool, c: [bool, 'b: unbound within [i64, string]] })"
     );
     FuseExpect::None
 );
@@ -11267,7 +11267,7 @@ run!(
         u((true, (true, w)))
     }"#,
     refused(
-        "missing match cases: no arm covers (bool, [(bool, [null, 'b: unbound within [i64, string]]), `A])"
+        "missing match cases: no arm covers (bool, (bool, [null, 'b: unbound within [i64, string]]))"
     );
     FuseExpect::None
 );
@@ -11408,7 +11408,7 @@ run!(
         let w: [i64, string] = 7;
         [u((`A, null)), u((`B, w))]
     }"#,
-    refused("missing match cases: no arm covers ([`A, `B], [null, 'b: unbound within [i64, string]])");
+    refused("missing match cases: no arm covers (`B, [null, 'b: unbound within [i64, string]])");
     FuseExpect::None
 );
 
@@ -11423,7 +11423,7 @@ run!(
         [u((`A, `C(true))), u((`B, w))]
     }"#,
     refused(
-        "missing match cases: no arm covers ([`A, `B], ['b: unbound within [i64, string], `C(bool)])"
+        "missing match cases: no arm covers (`B, ['b: unbound within [i64, string], `C(bool)])"
     );
     FuseExpect::None
 );
@@ -13361,4 +13361,70 @@ run!(
 }"#,
     is(Value::I64(7));
     FuseExpect::None
+);
+
+// What reaches the next arm loses the members of a union an arm covers at
+// the one position of a product where the arm differs from the product, so
+// an arm after arms that cover such a union member by member is dead.
+run!(
+    variant_union_part_covered_by_members_leaves_no_arm,
+    "{ let f = |x: [`A([i64, string])]| select x { `A(i64) as `A(n) => n, `A(string) as `A(s) => 0, _ => 3 }; f(`A(1)) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    variant_union_part_null_first_leaves_no_arm,
+    "{ let f = |x: [`A([i64, null])]| select x { `A(null) => 0, `A(i64) as `A(n) => n, _ => 3 }; f(`A(1)) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    tuple_union_part_covered_by_members_leaves_no_arm,
+    "{ let f = |x: ([i64, null], i64)| select x { (null, _) => 0, (i64, i64) as (n, _) => n, _ => 3 }; f((1, 2)) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    struct_union_part_covered_by_members_leaves_no_arm,
+    "{ let f = |x: {a: [i64, null], b: i64}| select x { {a: null, ..} => 0, {a: i64, b: i64} as {a, b} => a + b, _ => 3 }; f({a: 1, b: 2}) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    variant_slice_part_and_null_leave_no_arm,
+    "{ let f = |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2, _ => 3 }; f(`A(null)) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    variant_slice_part_after_null_leave_no_arm,
+    "{ let f = |x: [`A([Array<i64>, null])]| select x { `A(null) => 2, `A([h, ..]) => 1, `A([]) => 0, `A(_) => 3 }; f(`A(null)) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    variant_union_part_member_leaves_the_other_members,
+    "{ let f = |x: [`A([i64, string, null])]| select x { `A(i64) as `A(n) => n, v => select v { `A(string) as `A(s) => str::len(s), `A(null) => 100 } }; [f(`A(7)), f(`A(\"ab\")), f(`A(null))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [7, 2, 100]);
+    FuseExpect::Jit
+);
+
+run!(
+    tuple_union_part_member_leaves_the_other_member,
+    "{ let f = |x: ([i64, null], i64)| select x { (i64, i64) as (n, _) => n, v => select v { (null, m) => m } }; [f((1, 2)), f((null, 5))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 5]);
+    FuseExpect::Jit
+);
+
+run!(
+    tuple_union_part_member_with_another_position_open_leaves_both,
+    "{ let f = |x: ([i64, null], [i64, null])| select x { (i64, i64) as (n, m) => n + m, _ => 0 }; [f((1, 2)), f((null, 5)), f((3, null))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 0]);
+    FuseExpect::Jit
 );
