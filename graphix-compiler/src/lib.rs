@@ -2466,7 +2466,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         }
     }
 
-    // CR claude for claude: [bug/low] An instance of a retired body's function that
+    // XCR claude for claude: [bug/low] An instance of a retired body's function that
     // is first built after the reload binds every call of that body's own functions
     // at run time, so nothing fuses there and `#[native]` refuses the bind: the call
     // is bottom. `forget_binding` drops a deleted binding's `bind_to_lambda` entry
@@ -2489,14 +2489,25 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     // sibling function is the same code, not probed. probes:
     // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/review/{n1native,n2native,n3native,r2long}.gx,
     // `graphix --no-cache` (orphan-fn-late-bind-defuse-01)
+    // 2026-11-14 claude: Fixed: forget_binding keeps the bind_to_lambda/builtin_bindings records while a
+    // reference or function value pins the binding; delete_binding drops them when nothing names it,
+    // release_references when the last holder goes, and Lives::collect walks the record's function value as one
+    // more value of the orphan (else the extra owner kept the captures alive and the leak pins failed). Pins
+    // failing without the fix (jit, jit_par):
+    // modules::a_retired_bodys_function_first_called_after_the_reload_binds_{its_helper,its_own_impl,an_outside_function}_statically;
+    // the seq-step pin a_function_saved_across_a_reload_dispatches_a_seq_steps_call_to_its_own_impl is rewritten
+    // (late now moves at alive's cadence: two runs, not one).
     /// Forget what the indexes that outlive a batch hold for `id`, a
     /// binding about to be deleted. One that is another's variable
     /// ([`StaticCallees::join`]) leaves it here, and where a reference or
     /// a function value still names it, it keeps what the variable holds
-    /// ([`branch::RtView::store_own`]).
+    /// ([`branch::RtView::store_own`]). The records of what function it is
+    /// stay while one names it, for a call site built later
+    /// ([`Self::delete_binding`], [`Self::release_references`]).
     pub(crate) fn forget_binding(&mut self, id: BindId) {
-        self.bind_to_lambda.remove(&id);
-        self.builtin_bindings.remove(&id);
+        if !self.control.lives().pinned(id) {
+            self.forget_function_records(id)
+        }
         if self.rt.var(id) != id
             && self.control.lives().pinned(id)
             && !self.static_callees.kept(id)
@@ -2506,6 +2517,13 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.static_callees.forget(id);
         self.connect_targets.remove(&id);
         self.batch_connect_targets.remove(&id);
+    }
+
+    /// Drop the records of what function `id` is, which a call site built
+    /// later reads to bind its callee statically.
+    fn forget_function_records(&mut self, id: BindId) {
+        self.bind_to_lambda.remove(&id);
+        self.builtin_bindings.remove(&id);
     }
 
     /// `inner` and the val `outer` it implements, which
@@ -2546,6 +2564,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         if self.control.lives().orphan_if_pinned(id) {
             self.env.unbind_name(id)
         } else {
+            self.forget_function_records(id);
             self.rt.store_release(&id);
             self.env.unbind_variable(id)
         }
@@ -2601,15 +2620,20 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     pub fn release_references(&mut self) {
         let lives = self.control.lives().clone();
         let rt = &self.rt;
+        let functions = &self.cx.bind_to_lambda;
         lives.collect(
             // a binding that is another's variable holds no value of its
-            // own: the variable's is walked once, as the val's
+            // own: the variable's is walked once, as the val's. The record
+            // of what function it is holds the function value too.
             |id, f| {
                 if rt.var(id) == id
                     && let Some((tv, _)) = rt.store_get(&id)
                     && !tv.tag().is_bottom()
                 {
                     tv.with_value(|v| f(v))
+                }
+                if let Some(v) = functions.get(&id) {
+                    f(v)
                 }
             },
             |a| a.downcast_ref::<LambdaDef<R>>().and_then(|d| d.captures.get()),
@@ -2621,6 +2645,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             self.cx.env.release_dispatcher(id);
             self.rt.clear_ref_path(&id);
             self.release_kept(id);
+            self.forget_function_records(id);
             self.rt.store_release(&id);
         });
     }

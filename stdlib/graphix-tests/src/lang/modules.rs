@@ -2410,6 +2410,58 @@ run!(
     FuseExpect::Jit
 );
 
+/// `saved` is the first body's `make`, whose `#[native]` expression is
+/// `native`. `late` first calls it after the reload has retired that body
+/// (`ep` 10), so its instance builds over bindings the body no longer
+/// names. The program's value is `late` at the last cycle.
+fn retired_function_first_called_after_the_reload(native: &str) -> String {
+    format!(
+        r#"{{
+    trait Sh {{ val sh: fn(self) -> i64 }};
+    let app = |x: Sh| Sh::sh(x) + 5;
+    let ep = 0;
+    ep <- select ep {{ n if n < 14 => n + 1, _ => never() }};
+    let src: string = never();
+    src <- select ep {{
+        2 => "use super::{{Sh, app}}; type C = Abstract<i64>; impl Sh for C {{ let sh = |c: C| c.0 + 1 }}; let helper = |y: i64| y + 6; let make = |x: i64| #\[native\] {native}",
+        6 => "use super::{{Sh, app}}; type C = Abstract<i64>; impl Sh for C {{ let sh = |c: C| c.0 + 2000 }}; let helper = |y: i64| y + 6; let make = |x: i64| #\[native\] {native} * 10",
+        _ => never()
+    }};
+    let s = mod d dynamic {{ sandbox unrestricted; sig {{ val make: fn(x: i64) -> i64 }}; source src }};
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep {{ 4 => ep ~ d::make, _ => never() }};
+    let xs: Array<i64> = never();
+    xs <- select ep {{ 10 => [0, 1], _ => never() }};
+    let late = array::map(xs, |x| saved(x + ep));
+    select ep {{ 14 => late, _ => never() }}
+}}"#
+    )
+}
+
+// The call sites of a retired body's function that is first called after
+// the reload still bind their callees statically, so `#[native]` holds
+// there as in the instance that was alive across the reload.
+run!(
+    a_retired_bodys_function_first_called_after_the_reload_binds_its_helper_statically,
+    retired_function_first_called_after_the_reload("helper(x)"),
+    prints("[i64:20, i64:21]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_retired_bodys_function_first_called_after_the_reload_binds_its_own_impl_statically,
+    retired_function_first_called_after_the_reload("(Sh::sh(C(x)) + 5)"),
+    prints("[i64:20, i64:21]");
+    FuseExpect::Jit
+);
+
+run!(
+    a_retired_bodys_function_first_called_after_the_reload_binds_an_outside_function_statically,
+    retired_function_first_called_after_the_reload("app(C(x))"),
+    prints("[i64:20, i64:21]");
+    FuseExpect::Jit
+);
+
 // A function saved from a dynamic module is a closure over the bindings
 // of the body it was made in. `get0` and `set0` are the first body's:
 // after the reload (`ep` 7) the instance `held` has kept and the ones
@@ -2862,11 +2914,12 @@ run!(
 );
 
 // The call is a seq's step in the first body's function, built at each
-// run of the seq. A seq drops the triggers that fire while it runs, so
-// `late` has one value by the end, of the run its slots' births began.
+// run of the seq. A seq drops the triggers that fire while it runs, and a
+// run takes the cycles the instance alive across the reload takes, so
+// `late` has two values by the end.
 run!(
     a_function_saved_across_a_reload_dispatches_a_seq_steps_call_to_its_own_impl,
-    is(Value::String(" 20140 15 [15, 16]".into())),
+    is(Value::String(" 20140 15 [15, 16] 20160 17 [17, 18]".into())),
     "/test.gx" => {
         let (first, second) = bodies_implementing_sh(
             "Sh, app",
