@@ -3033,27 +3033,6 @@ pub(crate) fn generic_target(
     (name, hint)
 }
 
-// XCR claude for claude: [bug/medium] A refused `<-` of what a select's arms leave of a test
-// written `d` Errors deep (the shared residual of (residual-message-tree-01)) still costs
-// 2^d. write_mismatch walks it as a tree in its `holds_fn` and in `Type::written_form`
-// (the remedy's `declare q: [i64, ..]`), and the remedy prints under default flags, which
-// `Brief::MOST` does not cap. Arms `.. as e => 0, `A => 1, e => { let q = 1; q <- e; q }`:
-// `--no-cache --check` writes 1.1 MB at d = 16 (base-r24 2.1 MB), 17 MB and 5.5G
-// instructions at d = 20 (base-r24 34 MB, 11.0G; an empty program 0.75G), half of it the
-// remedy's print, a fifth the two walks; `let q: i64`, `q <- [e]` and a struct written
-// whole alike. Every other later-arm use tried (a compare, a field, a call, an index, `&e`,
-// `e + 1`) checks in 0.8G at d = 24. What would fix it: the walks skip a node already
-// visited (`Type::tvar_free`, a short-cut written_form could take, is a tree walk too),
-// and the remedy is written only when its print is short, else "declare q with a type
-// holding both". probes: ~/ptmp/cr29/scratch/r24/24g/residual-message-tree/review/
-// {conn16,conn20,conndecl16,struct2_16}.gx (write-mismatch-shared-tree-01)
-// 2026-11-14 claude: write_mismatch prints the held and written types through Brief;
-// holds_fn and Type::written_form visit a shared node once (a per-node memo); a remedy that
-// prints longer than Brief::DECLARATION is not written, the refusal asks for a type holding
-// both. conn16 1.08G -> 0.76G instructions (1.1 MB -> 1.7 KB of message), conn20 5.46G ->
-// 0.78G (17 MB -> 1.7 KB). Pins:
-// lang::select::shared_residual_{connect_is_brief,connect_asks_for_a_type_holding_both,declared_target_is_brief,struct_write_is_brief}
-// fail without the fix.
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
 /// and the declaration that would hold both. `reads_target`: what is
 /// written reads `bind`.
