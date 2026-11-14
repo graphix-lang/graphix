@@ -506,8 +506,25 @@ gives the kept record and `impls_of` and `find_impl` the kept entries
 ahead of the registered ones, after a load's own. So a trait and an impl
 declared again at the same path serve the functions made under them and
 leave the functions of the dropped ones alone, whether the head is an
-abstract type or not. One case is not kept: an impl entry given back while its
-trait's declaration still stands (CR `escaped-fn-dropped-impl-01`). Pins:
+abstract type or not.
+
+**An impl given back while its trait stands.** A function that calls a
+dispatcher, or names the anchor as a bound, also names the method
+bindings of the registered impls of that trait that its definition's
+view names under their own scope, where the impl's block or module
+encloses the definition (`capture_impls`, `Env::impl_bindings`), so a
+function value pins them. `Impl::give_back` keeps the entry under the
+method bindings a value names (`ExecCtx::keep_impl`, `Env::kept_impls`,
+a `KeptImpl` with the typedefs its head names); the entry goes with the
+last of them (`Env::release_dispatcher`). A view reads a kept entry only
+where it names one of its methods at the entry's scope
+(`Env::kept_impls_named`), ahead of the registered ones of its head, so
+an impl of the same head declared again serves the functions made under
+it and leaves the older ones alone. Not kept: an entry that writes no
+method, and a call that reaches the impl through another function
+instantiated in that function's own view (a trait's default method, a
+function of an earlier input that names the trait only as a bound),
+whose view does not name the impl. Pins:
 `lib_tests::leaks::
 a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `.._to_its_defaults`,
@@ -518,6 +535,9 @@ a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `a_function_escaping_a_dropped_load_around_an_interface_module_dispatches`,
 `a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration`,
 `a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration`,
+`a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait`,
+`.._of_a_plain_head`,
+`a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it`,
 `a_function_outliving_another_inputs_trait_dispatches_to_its_impl`,
 `a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped`,
 `a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches`,

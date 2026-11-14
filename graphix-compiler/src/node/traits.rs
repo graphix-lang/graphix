@@ -1270,7 +1270,7 @@ impl<R: Rt> Impl<R> {
         self.unannotated_method(name, false)
     }
 
-    // CR claude for claude: [bug/low] An impl entry given back while its trait's
+    // XCR claude for claude: [bug/low] An impl entry given back while its trait's
     // declaration still stands is kept for no one. `Env::keep_impl` keeps an entry
     // only in the `KeptTrait` of a declaration that is being deleted or is gone
     // (escaped-fn-dropped-trait-01), so a function that outlives the impl alone
@@ -1312,6 +1312,23 @@ impl<R: Rt> Impl<R> {
     // deletion. An impl given back while its trait stands still has no holder; a
     // holder keyed by the same anchor (a kept entry read where the view's anchor
     // binding is the declaration's) is the place for it.
+    // 2026-11-14 claude: Fixed for a function that dispatches through the trait
+    // itself: a definition that calls a dispatcher or names the anchor as a bound
+    // now names the registered impls' method bindings its view names under their
+    // own scope where the impl's block or module encloses it (capture_impls,
+    // Env::impl_bindings), Impl::give_back keeps the entry under the method
+    // bindings a value names (Env::keep_impl, Env::kept_impls), and a view reads
+    // it ahead of the registered ones where it names one of those bindings
+    // (Env::kept_impls_named), so a redeclared impl of the same head serves only
+    // the functions made under it. The CR's probe prints 30 live, with the impl
+    // dropped and with both dropped. Pins that fail without keep_impl (12 runs):
+    // lib_tests::leaks::a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait,
+    // .._of_a_plain_head,
+    // a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it (four
+    // drop orders over separate inputs). Not covered, now CR
+    // escaped-fn-dropped-impl-outside-01: a call that reaches the impl through a
+    // default method or a function of an earlier input, built in a view that names
+    // no impl method; and an impl that writes no method.
     /// Give back to the registry what this implementation registered:
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a
@@ -1319,7 +1336,10 @@ impl<R: Rt> Impl<R> {
     /// finds nothing to give back.
     fn give_back(&self, ctx: &mut ExecCtx<'_, R>) {
         match &self.fulfils {
-            None => ctx.env.unregister_impl(&self.def),
+            None => {
+                ctx.keep_impl(&self.def);
+                ctx.env.unregister_impl(&self.def)
+            }
             Some(Fulfils { entry, narrowed: Some(declared) }) => {
                 ctx.env.replace_impl(entry, declared.clone())
             }

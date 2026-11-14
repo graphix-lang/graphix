@@ -48,7 +48,7 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    env::{Env, Lexical, LoadedBody, TraitDef},
+    env::{Env, ImplDef, Lexical, LoadedBody, TraitDef},
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
@@ -2580,6 +2580,19 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         let named: SmallVec<[BindId; 4]> =
             dispatchers.iter().copied().filter(|id| lives.pinned(*id)).collect();
         self.env.keep_trait(&lives, def, &dispatchers, &named)
+    }
+
+    /// The implementation `im` is about to be given back: the method
+    /// bindings a function value names keep its entry.
+    pub(crate) fn keep_impl(&mut self, im: &Arc<ImplDef>) {
+        let lives = self.control.lives();
+        let named: SmallVec<[BindId; 4]> = im
+            .methods
+            .into_iter()
+            .map(|(_, id)| *id)
+            .filter(|id| lives.pinned(*id))
+            .collect();
+        self.env.keep_impl(im, &named)
     }
 
     /// Let go of what the references released since the last cycle kept:

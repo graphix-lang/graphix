@@ -31,7 +31,7 @@ use crate::{
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
-        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, TypeMismatch,
+        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type, TypeMismatch,
         check_bounds_acyclic,
         settle::VariableUnion,
         tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
@@ -2904,6 +2904,28 @@ fn capture_id(
     }
 }
 
+/// The methods of the impls of every trait `captures` names a dispatcher
+/// or the anchor of, which a call through it may reach once the impl is
+/// given back.
+fn capture_impls<R: Rt>(
+    def: &LambdaDef<R>,
+    checked: &Env,
+    captures: &mut AHashSet<(ModPath, CompactString)>,
+) {
+    let mut traits: LPooled<AHashSet<TraitId>> = LPooled::take();
+    for (scope, name) in captures.iter() {
+        let id = def.env.binds.get(scope).and_then(|bs| bs.get(name));
+        traits.extend(id.and_then(|id| checked.trait_of_binding(*id, name)))
+    }
+    let mut found: LPooled<Vec<(ModPath, CompactString)>> = LPooled::take();
+    for t in traits.drain() {
+        checked.impl_bindings(t, &def.env, &def.scope.lexical, &mut |s, n| {
+            found.push((s.clone(), n.clone()))
+        })
+    }
+    captures.extend(found.drain(..))
+}
+
 fn capture_names<R: Rt>(
     node: &Node<R>,
     outer: &Lexical,
@@ -3138,6 +3160,7 @@ impl<R: Rt> Update<R> for Lambda {
             def.bound_ids(&ctx.env, &mut |id| {
                 capture_id(id, &def.env, &ctx.env, &mut captures)
             });
+            capture_impls(def, &ctx.env, &mut captures);
         }
         let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
         let res = res

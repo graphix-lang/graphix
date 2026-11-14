@@ -416,6 +416,7 @@ impl Pack for Env {
             impls,
             // none before a program's first cycle, when an image is written
             kept_traits: _,
+            kept_impls: _,
             poly_binds,
             package_roots,
             block_types,
@@ -449,6 +450,7 @@ impl Pack for Env {
             impls,
             // none before a program's first cycle, when an image is written
             kept_traits: _,
+            kept_impls: _,
             poly_binds,
             package_roots,
             block_types,

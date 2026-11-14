@@ -929,12 +929,24 @@ async fn escaped_and_called<const N: usize>(
     files: [(&'static str, &'static str); N],
     code: &'static str,
 ) -> Result<()> {
+    escaped_and_called_over(mode, files, "", code).await
+}
+
+/// [`escaped_and_called`] with `prelude` compiled first and kept: what
+/// the rounds' expression declares is beside it.
+async fn escaped_and_called_over<const N: usize>(
+    mode: Mode,
+    files: [(&'static str, &'static str); N],
+    prelude: &'static str,
+    code: &'static str,
+) -> Result<()> {
     const ROUNDS: usize = 30;
     let files = files.map(|(path, text)| (path, VfsEntry::from(ArcStr::from(text))));
     let (ctx, mut rx) =
         fixture_runtime(files, crate::TEST_REGISTER, mode, |_| {}).await?;
     let _saved =
         ctx.rt.compile(literal!("let saved: fn(x: i64) -> i64 = never();")).await?;
+    let _prelude = ctx.rt.compile(ArcStr::from(prelude)).await?;
     let mut early = None;
     for i in 0..5 + ROUNDS {
         if i == 5 {
@@ -1253,6 +1265,20 @@ async fn trait_dropped_before_its_impl(
     function: &'static str,
     want: i64,
 ) -> Result<()> {
+    inputs_dropped_in_order(mode, trait_input, impl_input, function, want, [0, 1, 2])
+        .await
+}
+
+/// [`trait_dropped_before_its_impl`] dropping the inputs in `order`: 0 is
+/// the trait's, 1 the impl's, 2 the function's.
+async fn inputs_dropped_in_order(
+    mode: Mode,
+    trait_input: &'static str,
+    impl_input: &'static str,
+    function: &'static str,
+    want: i64,
+    order: [usize; 3],
+) -> Result<()> {
     const ROUNDS: usize = 30;
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let _saved =
@@ -1275,8 +1301,8 @@ async fn trait_dropped_before_its_impl(
         await_update(&ctx, &mut rx, landed, is(7)).await?;
         drop(read);
         let mut inputs = [Some(declared), Some(implemented), Some(function)];
-        for input in inputs.iter_mut() {
-            drop(input.take());
+        for k in order {
+            drop(inputs[k].take());
             let (late, call) = compile_one(&ctx, "saved(3)").await?;
             await_update(&ctx, &mut rx, late, is(want)).await?;
             drop(call);
@@ -1301,6 +1327,59 @@ async fn a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped(
         "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 5 }",
         "|x: i64| app(C(x))",
         31,
+    )
+    .await
+}
+
+/// An impl given back while its trait's declaration stands is kept for a
+/// function that dispatches through the trait: the block that declares
+/// the impl and the function is dropped first, then the trait; and an
+/// impl and a function of separate inputs, dropped in each order.
+async fn a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    let trait_input = "trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+         let app = |v: Sh| Sh::twice(v) + 1";
+    let impl_input = "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 5 }";
+    for order in [[1, 0, 2], [1, 2, 0], [0, 1, 2], [2, 1, 0]] {
+        inputs_dropped_in_order(
+            mode,
+            trait_input,
+            impl_input,
+            "|x: i64| Sh::sh(C(x)) + 1",
+            16,
+            order,
+        )
+        .await?
+    }
+    Ok(())
+}
+
+/// A function that left a dropped block dispatches to the block's impl
+/// of a trait declared outside it, which stays declared.
+async fn a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| Sh::sh(C(x)); 1 }",
+    )
+    .await
+}
+
+/// The same for an impl of a plain head, called over a union.
+async fn a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_plain_head(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }; impl Sh for i64 { let sh = |c: i64| c * 20 }",
+        "{ impl Sh for string { let sh = |c: string| 10 }; \
+         saved <- |x: i64| { let u: [i64, string] = \"s\"; Sh::sh(u) + Sh::sh(x) - 40 }; 1 }",
     )
     .await
 }
@@ -1434,6 +1513,9 @@ modes!(
     a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration,
     a_function_outliving_another_inputs_trait_dispatches_to_its_impl,
     a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped,
+    a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it,
+    a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait,
+    a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_plain_head,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
     a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration,
     a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls,

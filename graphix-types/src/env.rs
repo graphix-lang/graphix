@@ -1237,6 +1237,31 @@ impl KeptTrait {
     }
 }
 
+/// An impl entry given back while its trait's declaration stood, as the
+/// registry held it, for the views that name its method bindings
+/// ([`Env::keep_impl`]). It goes with the last of them.
+#[derive(Debug)]
+pub struct KeptImpl {
+    im: Arc<ImplDef>,
+    /// The typedefs the head names, which a resolution cell holds only
+    /// weakly.
+    _named: Vec<std::sync::Arc<ResolvedRef>>,
+}
+
+impl KeptImpl {
+    fn new(im: Arc<ImplDef>) -> Self {
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut defs: LPooled<AHashMap<usize, std::sync::Arc<ResolvedRef>>> =
+            LPooled::take();
+        im.target.named_defs(&mut cells, &mut defs);
+        for tv in im.params.iter() {
+            Type::TVar(tv.clone()).named_defs(&mut cells, &mut defs)
+        }
+        let _named = defs.drain().map(|(_, d)| d).collect();
+        Self { im, _named }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: TrackedMap<BindId, Arc<Bind>>,
@@ -1262,6 +1287,9 @@ pub struct Env {
     /// The deleted trait declarations function values still dispatch
     /// through, by each dispatcher one names.
     pub kept_traits: TrackedMap<BindId, Arc<KeptTrait>>,
+    /// The impl entries given back while their trait's declaration stood,
+    /// by each method binding a function value names.
+    pub kept_impls: TrackedMap<BindId, Arc<KeptImpl>>,
     /// Generalized bindings (let-bound lambdas, interface `val`s, trait
     /// dispatchers, and the lets nothing writes that hold a lambda in a
     /// data literal) whose signatures a value occurrence instantiates
@@ -1310,6 +1338,7 @@ impl Env {
             trait_methods: self.trait_methods.fork(),
             impls: self.impls.fork(),
             kept_traits: self.kept_traits.fork(),
+            kept_impls: self.kept_impls.fork(),
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
             block_types: self.block_types.clone(),
@@ -1334,6 +1363,7 @@ impl Env {
             trait_methods,
             impls,
             kept_traits,
+            kept_impls,
             poly_binds,
             package_roots,
             block_types: _,
@@ -1350,6 +1380,7 @@ impl Env {
         self.trait_methods.join(trait_methods);
         self.impls.join(impls);
         self.kept_traits.join(kept_traits);
+        self.kept_impls.join(kept_impls);
         self.poly_binds.join(poly_binds);
         self.package_roots.join(package_roots);
         self.ide.join(ide, &self.recorded);
@@ -2464,16 +2495,73 @@ impl Env {
             .or_else(|| self.trait_defs.get(&id).cloned())
     }
 
+    /// The traits `t` names as a bound.
+    pub fn bound_traits(&self, t: &Type, f: &mut impl FnMut(TraitId)) {
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut ids: LPooled<AHashSet<TraitId>> = LPooled::take();
+        t.named_traits(self, &mut cells, &mut ids);
+        ids.drain().for_each(f)
+    }
+
     /// The dispatchers of the traits `t` names as a bound: a function
     /// whose types name a trait names them, and a declaration deleted
     /// while one does is kept for it ([`Self::keep_trait`]).
     pub fn bound_dispatchers(&self, t: &Type, f: &mut impl FnMut(BindId)) {
-        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
-        let mut ids: LPooled<AHashSet<TraitId>> = LPooled::take();
-        t.named_traits(self, &mut cells, &mut ids);
-        for id in ids.drain() {
+        self.bound_traits(t, &mut |id| {
             if let Some(def) = self.trait_def(id) {
                 f(def.anchor)
+            }
+        })
+    }
+
+    /// The trait the binding `id`, named `name`, is a dispatcher or the
+    /// anchor of.
+    pub fn trait_of_binding(&self, id: BindId, name: &str) -> Option<TraitId> {
+        match self.trait_methods.get(&id) {
+            Some(r) => Some(r.trait_id),
+            None if name == TraitDef::ANCHOR => {
+                self.trait_defs.iter().find(|(_, d)| d.anchor == id).map(|(tid, _)| *tid)
+            }
+            None => None,
+        }
+    }
+
+    // CR claude for claude: [bug/low] An impl given back while its trait stands is not
+    // kept for a call that reaches it through a function instantiated in its own
+    // definition's view. `Env::kept_impls_named` reads a kept entry only where the view names
+    // one of its method bindings, which a function made beside the impl does, and a trait's
+    // default method (`val twice: fn(self) -> i64 = |s| sh(s) * 2`, `Sh::twice(C(x))`) or a
+    // function of an earlier input that names the trait only as a bound (`let app = |v: Sh|
+    // Sh::sh(v)`, `app(C(x))`) is built in a view made before the impl, which names none:
+    // after the impl input is dropped the call logs "binding the callee failed: .. an
+    // instance at fn(self: C) -> i64 of a definition typed fn(s: 'self: unbound within Sh &
+    // Sh) -> i64" and is bottom, with the trait's declaration standing (30 while the impl
+    // lives). Only an embedder reaches it (escaped-fn-dropped-impl-01's setting). To fix: an
+    // instance made for a call takes the kept impls its caller's view names, as
+    // `Lexical::called_in` gives it the caller's load. probe:
+    // ~/ptmp/cr29/scratch/r25/25g/eid/probes.txt (escaped-fn-dropped-impl-outside-01)
+    /// The method bindings of the registered impls of `trait_id` that
+    /// `view` names under their own scope, for impls of blocks and
+    /// modules a definition at `at` is inside: what a function value
+    /// that dispatches through the trait names, for the entry
+    /// [`Self::keep_impl`] keeps once the impl is given back.
+    pub fn impl_bindings(
+        &self,
+        trait_id: TraitId,
+        view: &Lexical,
+        at: &ModPath,
+        f: &mut impl FnMut(&ModPath, &CompactString),
+    ) {
+        let Some(list) = self.impls.get(&trait_id) else { return };
+        for im in list.iter() {
+            let up = Path::dirname(&im.scope.0).unwrap_or("/");
+            let Some(binds) = view.binds.get(&im.scope) else { continue };
+            if scope_is_under(&at.0, up) {
+                for (n, id) in im.methods.into_iter() {
+                    if binds.get(n) == Some(id) {
+                        f(&im.scope, n)
+                    }
+                }
             }
         }
     }
@@ -2536,6 +2624,43 @@ impl Env {
     pub fn release_dispatcher(&mut self, id: BindId) {
         self.trait_methods.remove(&id);
         self.kept_traits.remove(&id);
+        self.kept_impls.remove(&id);
+    }
+
+    /// The implementation `im` is being given back and function values
+    /// name `named` among its method bindings: each of those keeps the
+    /// entry until [`Self::release_dispatcher`], for the views that name
+    /// one ([`Self::impls_all`]).
+    pub fn keep_impl(&mut self, im: &Arc<ImplDef>, named: &[BindId]) {
+        if named.is_empty() {
+            return;
+        }
+        let kept = match named.iter().find_map(|id| self.kept_impls.get(id)) {
+            Some(k) => k.clone(),
+            None => Arc::new(KeptImpl::new(im.clone())),
+        };
+        for id in named {
+            if self.kept_impls.get(id).is_none() {
+                self.kept_impls.insert(*id, kept.clone());
+            }
+        }
+    }
+
+    /// The entries kept for `trait_id` whose method bindings this view
+    /// names at the entry's scope.
+    fn kept_impls_named(&self, trait_id: TraitId, own: &mut Vec<Arc<ImplDef>>) {
+        for (_, k) in self.kept_impls.iter() {
+            let im = &k.im;
+            let names = |binds: &Map<CompactString, BindId>| {
+                im.methods.into_iter().any(|(n, id)| binds.get(n) == Some(id))
+            };
+            if im.trait_id == trait_id
+                && self.lexical.binds.get(&im.scope).is_some_and(names)
+                && !own.iter().any(|o| Arc::ptr_eq(o, &k.im))
+            {
+                own.push(k.im.clone())
+            }
+        }
     }
 
     /// Register an implementation. One impl per (trait, target): an
@@ -2739,7 +2864,7 @@ impl Env {
     pub(crate) fn impls_all(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
         let registered = self.impls.get(&trait_id);
         let kept = self.kept_trait(trait_id);
-        if self.lexical.body.is_none() && kept.is_none() {
+        if self.lexical.body.is_none() && kept.is_none() && self.kept_impls.len() == 0 {
             return registered.cloned();
         }
         let mut own: LPooled<Vec<Arc<ImplDef>>> = LPooled::take();
@@ -2749,6 +2874,7 @@ impl Env {
         if let Some(k) = kept {
             own.extend(k.impls.iter().cloned())
         }
+        self.kept_impls_named(trait_id, &mut own);
         if own.is_empty() {
             return registered.cloned();
         }
@@ -3728,6 +3854,7 @@ impl Env {
             trait_methods,
             impls,
             kept_traits,
+            kept_impls,
             poly_binds,
             // a package stays registered across its recheck
             package_roots: _,
@@ -3748,6 +3875,7 @@ impl Env {
         by_id.remove_many(binds.iter().copied());
         trait_methods.remove_many(binds.iter().copied());
         kept_traits.remove_many(binds.iter().copied());
+        kept_impls.remove_many(binds.iter().copied());
         poly_binds.remove_many(binds.iter().copied());
         byref_chain.remove_many(binds.iter().copied());
         abstract_reps.retain(|_, r| !under(&r.scope));
