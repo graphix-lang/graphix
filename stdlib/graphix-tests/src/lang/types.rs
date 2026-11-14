@@ -16439,3 +16439,34 @@ run!(
     refused("does not contain &mut [Array<i64>, Array<string>]");
     FuseExpect::None
 );
+
+// A trial gives an undecided type to the first member of a union that holds
+// it on copies, so the union written in either order is a verdict of its own
+// on the relation. A program whose argument holds an open variable is
+// pre-unified and refused in both orders.
+run!(
+    union_of_arrays_beside_an_open_argument_is_refused_in_the_first_order,
+    r#"{
+  type U<'x, 'y> = [Array<'x>, Array<'y>];
+  let f = |x: [`X('b, 'c, U<'a, 'b>, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]| 0;
+  let n: [i64, null] = null;
+  let y: Array<Array<Array<[i64, string]>>> = [[[1]]];
+  let g = |z| { let c = true; let v = select c { true => `X(n, 1, [z], ["s"], z), false => `Y(y) }; f(v) };
+  g(null)
+}"#,
+    refused("type mismatch");
+    FuseExpect::None
+);
+run!(
+    union_of_arrays_beside_an_open_argument_is_refused_in_the_other_order,
+    r#"{
+  type U<'x, 'y> = [Array<'x>, Array<'y>];
+  let f = |x: [`X('b, 'c, U<'b, 'a>, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]| 0;
+  let n: [i64, null] = null;
+  let y: Array<Array<Array<[i64, string]>>> = [[[1]]];
+  let g = |z| { let c = true; let v = select c { true => `X(n, 1, [z], ["s"], z), false => `Y(y) }; f(v) };
+  g(null)
+}"#,
+    refused("type mismatch");
+    FuseExpect::None
+);

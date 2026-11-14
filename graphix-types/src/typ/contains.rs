@@ -1527,7 +1527,6 @@ fn commit_conjuncts(
             return Ok(false);
         }
 
-
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
         // later to a type without it is refused
@@ -5085,30 +5084,6 @@ impl Type {
             let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
             let mut decided: SmallVec<[&Type; 2]> = SmallVec::new();
             for m in tier.iter().copied() {
-                // CR claude for claude: [risk/low] A walk on copies gives an undecided type to
-                // the first member that holds it, where the check gives it to the decided one,
-                // so whether a trial holds still follows the members' position, and with it
-                // the order Type::place_in_order picks and how many members hold a type on
-                // copies. ``[`X('b, 'c, U, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]
-                // ⊇ [`X([i64, null], i64, Array<'z>, Array<string>, 'z),
-                // `Y(Array<Array<Array<[i64, string]>>>)]`` (Type::check_contains) is a type
-                // mismatch with U `[Array<'a>, Array<'b>]`: the deepest-first trial gives
-                // `Array<'z>` to `Array<'a>`, 'a is then string, and `[i64, null]` holds no 'z.
-                // With U `[Array<'b>, Array<'a>]` it holds. ``[`A('b, U, Array<'a>, [i64,
-                // null]), `A('d, 'e, 'f, 'g)] ⊇ `A([i64, null], Array<'z>, Array<string>, 'z)``
-                // holds with the first U (one member holds on copies) and is AmbiguousMember
-                // with the second. No program found that reaches it: a signature refuses the
-                // second union, and an argument whose type holds an open cell is pre-unified,
-                // which refuses both orders of the first (w1-ab.gx, w1-ba.gx). Tried behind a
-                // test knob only: a trial that commits the members holding no open cell before
-                // the others (the check's rule) makes each pair one verdict in both orders
-                // (held; AmbiguousMember), and of 320k random pairs (the differential of
-                // set-commit-stale-closure-01, seeds 31..38, two styles) 51 differ from this
-                // code: 19 it refuses hold, 27 are refused with another message, 5 hold with
-                // other bindings, none it holds is refused. Not done: a census, guicheck and
-                // the probes of take-member-trials-01 (the knob asks `undecided` of each
-                // member at each take). probes: ~/ptmp/cr29/scratch/r24/24d/scs-rev/ (README;
-                // undecided.rs, port.py knob 5) (trial-undecided-first-member-01)
                 if hist.trial {
                     if m.contains_int(flags, env, hist, t)? {
                         return Ok(Some(true));
@@ -7591,6 +7566,41 @@ mod tests {
             let e = held.check_contains(&env, &t).unwrap_err();
             assert!(e.is::<AmbiguousMember>(), "{union}: {e:#}");
         }
+    }
+
+    // Which member of a union an undecided type goes to, on copies, follows
+    // the members' place: the union written one way meets a pair with a
+    // type mismatch where the other holds. The hold is sound (it stands
+    // when asked again, and `'z` took the one member that held its type).
+    #[test]
+    fn an_undecided_type_met_by_a_trial_goes_to_the_first_member_that_holds_it() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let held = |union: &str| {
+            at_root(
+                &env,
+                &format!(
+                    "[`X('b, 'c, {union}, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]"
+                ),
+            )
+        };
+        let t = at_root(
+            &env,
+            "[`X([i64, null], i64, Array<'z>, Array<string>, 'z), `Y(Array<Array<Array<[i64, string]>>>)]",
+        );
+        let e = held("[Array<'a>, Array<'b>]").check_contains(&env, &t).unwrap_err();
+        assert!(
+            !e.is::<AmbiguousMember>() && format!("{e:#}").contains("type mismatch"),
+            "{e:#}"
+        );
+        let held = held("[Array<'b>, Array<'a>]");
+        held.check_contains(&env, &t).unwrap();
+        held.check_contains(&env, &t).unwrap();
+        let Type::Set(ms) = &held else { panic!("no set") };
+        let Type::Variant(_, xs, _) = &ms[0] else { panic!("no variant") };
+        assert_eq!(
+            crate::format_with_flags(crate::PrintFlag::DerefTVars, || xs[2].to_string()),
+            "[Array<'b: [i64, null]>, Array<'a: string>]"
+        );
     }
 
     // `closed_now` reads the cells: a verdict `closed` reached at the same
