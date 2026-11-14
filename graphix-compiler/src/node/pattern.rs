@@ -2402,6 +2402,12 @@ impl StructPatternNode {
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
                 // a tag test nothing performs
+                // CR claude for claude: [bug/low] The advice below is wrong for an abstract
+                // type with parameters: `W as x` over `type W<'a> = Abstract<&mut 'a>` is
+                // refused, "W expects 1 type parameters". Name the instance (`W<T> as x`)
+                // where the type has parameters. probe:
+                // ~/ptmp/cr29/scratch/r25/25a/aio-rev/t1.gx, t2.gx
+                // (abstract-tag-first-advice-01)
                 if !matches!(type_predicate.deref_cloned(), Some(Type::Abstract { id: t, .. }) if t == id)
                 {
                     return format_with_flags(PrintFlag::DerefTVars, || {
