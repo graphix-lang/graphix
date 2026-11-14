@@ -516,44 +516,6 @@ fn distinct_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Value; 2]
     defs
 }
 
-// XCR claude for claude: [risk/low] In a function's body, the function type a `let`'s
-// annotation holds names the lambdas of every compile of that `let`: its definition's
-// check's and each instance's built so far, so a judgment over "the definitions the value
-// may be" in one instance compiles another instance's default, in that instance's
-// environment. `{ let j = 0; let mk = |t: 'a| -> string { let v: fn(?#d: 'q, x: i64) ->
-// string = select j { 0 => |#d = t, x: i64| cast<string>(d)$, _ => never() }; v(7) };
-// "[mk(1)] [mk("z")]" }` prints "1 z", and under GRAPHIX_NO_SUBST=1 the instance of
-// mk("z") is refused at the default `t`, "the functions met here share one #d .. 'q: i64
-// does not contain string": the copy's 'q took i64 from the default of mk(1)'s lambda.
-// A trace of judge_hidden_defaults there printed the same three ids for the declared
-// function and the value ({the check's}, then +mk(1)'s, then +mk("z")'s): Bind::compile
-// takes the annotation by Type::scope_refs, which copies its cells and keeps each
-// function type's LambdaIds node (FnType::cow_walk clones the handle), so every compile
-// of the `let` links its lambda onto the expression's one node. A fix gives each compile
-// a node of its own (LambdaIds::instantiate), if nothing reads the shared one on purpose.
-// base-r24 alike under NO_SUBST, and without it until an instance's `let` stopped
-// judging such a function (let-annotation-default-instance-01). The default build shows
-// no wrong verdict or value in the probes; a call through `v` in an instance names
-// three definitions where it could name one. probes:
-// ~/ptmp/cr29/scratch/r24/24c/ladi/{e8,e8b,e11,e12}.gx (annotation-names-sibling-lambdas-01)
-// 2026-11-14 claude: A bug in the default build, not only under GRAPHIX_NO_SUBST: a check
-// that runs after an instance was built names that instance's lambda. In the REPL, `let mk =
-// |t: 'a| { let v: fn(?#d: 'q, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$; v }`,
-// then `mk(1)(7)` prints "1", then `mk("z")(8)` is refused at the default `t`, "'q: string
-// does not contain i64": the call that omits the label judges the default of the lambda
-// mk(1) built, in that instance's environment. The same function without the annotation
-// (`let v = |#d = t, ..| ..; v`) runs both inputs, and one script holding both calls runs
-// (its check ends before any instance is built). base-r24 alike. Under NO_SUBST the same
-// reaches an annotation that hides the label (`let w: fn(x: i64) -> string = select j { 0 =>
-// v, _ => never() }`, ladi/e13.gx). probe:
-// ~/ptmp/cr29/scratch/r24/24c/ladi-rev/repl_siblings.txt
-// 2026-11-14 claude: Fixed: Type::scope_refs (FnType::scope_refs_with) gives each scoping of
-// a written function type a LambdaIds node of its own, so the compiles of one let (the
-// check's, each instance's) no longer link their lambdas onto the expression's one node.
-// Pins that fail without it: tvar.rs scoped_fn_types_have_their_own_lambda_ids,
-// repl_inputs.rs annotated_binding_of_an_instance_names_its_own_lambdas (mk("z")(8) was
-// refused 'q: string does not contain i64). e8/e8b/e11/e12/e13 under GRAPHIX_NO_SUBST=1 now
-// run.
 /// The definitions a function of type `ft` may be, in the order the
 /// program writes them ([`LambdaDef::written_order`]); an id no definition
 /// is registered for comes last.
