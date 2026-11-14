@@ -13459,6 +13459,37 @@ run!(
     FuseExpect::Jit
 );
 
+// The members are applications of two names: a probe of one asks whether
+// it is closed and is answered from before 'b was bound, at the write
+// count the union is met at. The union still reads the cells.
+run!(
+    a_named_member_decided_in_a_trial_takes_a_decided_type,
+    r#"{
+  type A<'x> = Array<'x>;
+  type B<'x> = Array<'x>;
+  type U<'x, 'y> = [A<'x>, B<'y>];
+  let f = |x: [`X('b, 'c, U<'a, 'b>, Array<'a>), `Y(Array<Array<Array<'c>>>)]| 0;
+  let v: [`X([i64, null], i64, Array<i64>, Array<string>), `Y(Array<Array<Array<[i64, string]>>>)] = `Y([[[1]]]);
+  f(v)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
+run!(
+    a_named_member_decided_in_a_trial_takes_a_decided_type_in_the_other_member_order,
+    r#"{
+  type A<'x> = Array<'x>;
+  type B<'x> = Array<'x>;
+  type U<'x, 'y> = [A<'x>, B<'y>];
+  let f = |x: [`X('b, 'c, U<'b, 'a>, Array<'a>), `Y(Array<Array<Array<'c>>>)]| 0;
+  let v: [`X([i64, null], i64, Array<i64>, Array<string>), `Y(Array<Array<Array<[i64, string]>>>)] = `Y([[[1]]]);
+  f(v)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
 // A cell two arguments of one definition share holds what both ask.
 run!(
     a_cell_two_arguments_of_one_typedef_share_takes_both,

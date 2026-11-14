@@ -406,17 +406,23 @@ can keep the original member slice.
   member that holds a decided type is no choice: it takes the type in
   both and binds nothing, and both read which members are decided from
   the cells as they stand (`ContainsHist::binds_nothing`), never from
-  what the walk met before a cell was bound. They part too at
-  a part that waits for the end of a function's arguments, which a
-  trial begun inside them binds at once. A trial that met one allows
-  no placement, and a placement that meets one asks a trial at each
-  such union from there: the trials are saved only where no member is
-  a choice, which is where the applications of two definitions with
-  one body are. Pins `typ::contains::tests::
+  what the walk met before a cell was bound: `ContainsHist::closure`
+  keeps with each verdict the write count it read the cells at, and an
+  open verdict `closed` reaches, which may rest on one kept from an
+  earlier count, has none, so `closed_now` reads the cells again (a
+  probe of a member that is an application asks `closed` at the count
+  the union is met at). They part too at a part that waits for the end
+  of a function's arguments, which a trial begun inside them binds at
+  once. A trial that met one allows no placement, and a placement that
+  meets one asks a trial at each such union from there: the trials are
+  saved only where no member is a choice, which is where the
+  applications of two definitions with one body are. Pins `typ::contains::tests::
   a_placement_leaves_its_trial_at_a_choice_between_members`,
   `a_member_decided_since_the_walk_met_it_takes_a_decided_type`,
+  `closed_now_reads_the_cells_after_closed_answered_from_a_kept_verdict`,
   `lang::types::
-  a_union_below_a_choice_between_members_asks_its_own_trial`.
+  a_union_below_a_choice_between_members_asks_its_own_trial`,
+  `a_named_member_decided_in_a_trial_takes_a_decided_type`.
 - A verdict reached inside pairs in progress rests on the outermost
   of them, a place in `ContainsHist::assumed`. A pair answered resting
   on one further out leaves that pair's place in its own and rewrites

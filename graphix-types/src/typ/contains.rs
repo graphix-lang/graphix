@@ -181,10 +181,12 @@ pub(super) struct ContainsHist {
     /// A cycle under a constructor refused a pair of cells: the reason a
     /// refusal gives ([`TypeMismatch`]).
     cycled: bool,
-    /// [`Self::closure`]'s verdicts by node and cell identity, with the
-    /// [`cell_writes`] count each was reached at, each node and cell held
-    /// so its address is not recycled under its key.
-    closed: Lazy<AddrMap<(Closure, u64)>>,
+    /// [`Self::closure`]'s verdicts by node and cell identity, each with
+    /// the [`cell_writes`] count it read the cells at, `None` for an open
+    /// one [`Self::closed`] reached, which may rest on verdicts kept from
+    /// an earlier count; each node and cell held so its address is not
+    /// recycled under its key.
+    closed: Lazy<AddrMap<(Closure, Option<u64>)>>,
     closed_pins: Lazy<Vec<Held>>,
     /// The one normalize pass of the unions this walk builds from members
     /// holding no cell and no function type ([`Self::normal_union`]):
@@ -493,9 +495,7 @@ impl ContainsHist {
     }
 
     /// Whether a member `m` that holds `t` takes it and binds nothing:
-    /// neither reaches an open cell as the cells stand now. [`Self::closed`]
-    /// keeps a node it met before a cell was bound open, and would leave
-    /// the type to whichever member the walk tries first.
+    /// neither reaches an open cell as the cells stand now.
     fn binds_nothing(&mut self, m: &Type, t: &Type) -> bool {
         self.closed_now(m) && self.closed_now(t)
     }
@@ -525,14 +525,16 @@ impl ContainsHist {
             let writes = cell_writes();
             if let Some(k) = key {
                 match self.closed.get().and_then(|m| m.get(&k)).copied() {
-                    Some((c, at)) if !now || c >= Closure::NoCell || at == writes => {
+                    Some((c, at))
+                        if !now || c >= Closure::NoCell || at == Some(writes) =>
+                    {
                         return c;
                     }
                     Some(_) => (),
                     None => self.closed_pins.get_mut().push(Held::of(t)),
                 }
                 // a binding that reaches its own cell is not closed
-                self.closed.get_mut().insert(k, (Closure::Open, writes));
+                self.closed.get_mut().insert(k, (Closure::Open, Some(writes)));
             }
             let c = match t {
                 Type::TVar(tv) if tv.ground_now() => Closure::Closed,
@@ -558,7 +560,8 @@ impl ContainsHist {
                 }
             };
             if let Some(k) = key {
-                self.closed.get_mut().insert(k, (c, writes));
+                let at = (now || c != Closure::Open).then_some(writes);
+                self.closed.get_mut().insert(k, (c, at));
             }
             c
         })
@@ -5069,7 +5072,31 @@ impl Type {
             let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
             let mut decided: SmallVec<[&Type; 2]> = SmallVec::new();
             for m in tier.iter().copied() {
-                if hist.trial || hist.binds_nothing(m, t) {
+                // CR claude for claude: [risk/low] A walk on copies gives an undecided type to
+                // the first member that holds it, where the check gives it to the decided one,
+                // so whether a trial holds still follows the members' position, and with it
+                // the order Type::place_in_order picks and how many members hold a type on
+                // copies. ``[`X('b, 'c, U, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]
+                // ⊇ [`X([i64, null], i64, Array<'z>, Array<string>, 'z),
+                // `Y(Array<Array<Array<[i64, string]>>>)]`` (Type::check_contains) is a type
+                // mismatch with U `[Array<'a>, Array<'b>]`: the deepest-first trial gives
+                // `Array<'z>` to `Array<'a>`, 'a is then string, and `[i64, null]` holds no 'z.
+                // With U `[Array<'b>, Array<'a>]` it holds. ``[`A('b, U, Array<'a>, [i64,
+                // null]), `A('d, 'e, 'f, 'g)] ⊇ `A([i64, null], Array<'z>, Array<string>, 'z)``
+                // holds with the first U (one member holds on copies) and is AmbiguousMember
+                // with the second. No program found that reaches it: a signature refuses the
+                // second union, and an argument whose type holds an open cell is pre-unified,
+                // which refuses both orders of the first (w1-ab.gx, w1-ba.gx). Tried behind a
+                // test knob only: a trial that commits the members holding no open cell before
+                // the others (the check's rule) makes each pair one verdict in both orders
+                // (held; AmbiguousMember), and of 320k random pairs (the differential of
+                // set-commit-stale-closure-01, seeds 31..38, two styles) 51 differ from this
+                // code: 19 it refuses hold, 27 are refused with another message, 5 hold with
+                // other bindings, none it holds is refused. Not done: a census, guicheck and
+                // the probes of take-member-trials-01 (the knob asks `undecided` of each
+                // member at each take). probes: ~/ptmp/cr29/scratch/r24/24d/scs-rev/ (README;
+                // undecided.rs, port.py knob 5) (trial-undecided-first-member-01)
+                if hist.trial {
                     if m.contains_int(flags, env, hist, t)? {
                         return Ok(Some(true));
                     }
@@ -5455,6 +5482,29 @@ impl Type {
             let mut on_copies = trial();
             hist.seed(&mut on_copies, &mut known, env, inherit);
             if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
+                // CR claude for claude: [perf/low] ContainsHist::chose changes no verdict any
+                // test or the differential shows, and costs trials. It was added for the stale
+                // answer set-commit-stale-closure-01 fixed: a trial that had met a choice could
+                // have read a member as undecided where its placement read it decided. Now a
+                // trial marks a choice in Type::take, Type::residue_member and
+                // Type::applications_hold, and the placement that follows it meets the same
+                // choice in the same function and clears `as_tried` itself
+                // (ContainsHist::strays), but for one undecided member admitted alone in
+                // residue_member, which both take. With `!on_copies.chose` dropped here
+                // graphix-types (602) and graphix-tests lib (21286) pass, and of 320k random
+                // pairs (the differential of set-commit-stale-closure-01, seeds 31..38, two
+                // styles) none differs in verdict or binding while 4503 take fewer contains
+                // steps (3.44M to 2.64M over those) and none more: the unions between a
+                // trial's start and its first choice ask no trial of their own. That corpus
+                // has no pair whose verdict `as_tried` decides (a trial at every union
+                // differs in none either), so the argument above is the evidence that the
+                // placement is right without the mark. The test that pinned it
+                // (a_trial_that_chose_a_member_allows_no_placement_below) went with that fix:
+                // its pair held only by the stale answer. Delete the field, its half of
+                // `strays` and the sentences in design/type_operation_scaling.md and
+                // design/tvar_constraints.md ("allows it for no union below"), or pin a pair
+                // that needs it. probes: ~/ptmp/cr29/scratch/r24/24d/scs-rev/ (README;
+                // port.py knob 4) (trial-chose-redundant-01)
                 let tried = hist.as_tried || (on_copies.trial && !on_copies.chose);
                 let outer = mem::replace(&mut hist.as_tried, tried);
                 let r = place(flags, env, hist, t0, s0, order);
@@ -7400,6 +7450,22 @@ mod tests {
             let e = held.check_contains(&env, &t).unwrap_err();
             assert!(e.is::<AmbiguousMember>(), "{union}: {e:#}");
         }
+    }
+
+    // `closed_now` reads the cells: a verdict `closed` reached at the same
+    // write count through one it kept from before the cell was bound is
+    // not its answer.
+    #[test]
+    fn closed_now_reads_the_cells_after_closed_answered_from_a_kept_verdict() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let held = at_root(&env, "('a, Array<'a>)");
+        let Type::Tuple(parts) = &held else { unreachable!("a tuple") };
+        let mut hist = ContainsHist::new();
+        assert!(!hist.closed(&parts[0]));
+        parts[0].check_contains(&env, &at_root(&env, "i64")).unwrap();
+        assert!(!hist.closed(&parts[1]));
+        assert!(hist.closed_now(&parts[1]));
+        assert!(hist.binds_nothing(&parts[1], &at_root(&env, "Array<i64>")));
     }
 
     // Two applications of one definition are compared by their arguments,

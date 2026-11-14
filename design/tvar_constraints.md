@@ -721,8 +721,10 @@ one member, chosen by rules that read the union alone:
   is met (`ContainsHist::binds_nothing`): `[Array<'a>, Array<'b>] ⊇
   Array<i64>` after an earlier part of the same containment made `'b`
   `[i64, null]` goes to `Array<'b>` and leaves `'a` open, in either order
-  of the members (pin
-  `typ::contains::tests::a_member_decided_since_the_walk_met_it_takes_a_decided_type`).
+  of the members, and where the members are applications of names (pins
+  `typ::contains::tests::a_member_decided_since_the_walk_met_it_takes_a_decided_type`,
+  `lang::types::a_member_decided_in_a_trial_takes_a_decided_type`,
+  `a_named_member_decided_in_a_trial_takes_a_decided_type`).
   Where every open cell the member and the
   type reach is held rigid, and every one their conjuncts and lower
   bounds reach, and none is one an earlier task left open
