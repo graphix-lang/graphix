@@ -521,22 +521,6 @@ async fn iter_reentry_emits_no_old_element(mode: Mode) -> Result<()> {
 // A throttle's held value waits out its arm's sleep and is delivered at
 // the wake, the window since the last emission long past. `n` counts in
 // consecutive cycles, and the window is far wider than any stall between them.
-// XCR claude for claude: [test-gap/low] The expected `[0, 3]` holds only while
-// `n`'s four self-loop cycles land inside the throttle's 200 ms window of wall
-// time: a runtime thread descheduled for 200 ms between two of them (a gate on
-// a loaded box) lets the throttle emit 1 or 2 before the sleep, and the run
-// shows more values. The same program with `n` stepped by a 250 ms timer
-// prints 0 1 2 3 on base-r24 (probe:
-// ~/ptmp/cr29/scratch/r24/24h/seq-io/throttle_spaced.gx; throttle_orig.gx is
-// this fixture). A fix keeps the cycles' spacing out of the verdict: a window
-// far wider than any stall (seconds) and a sleep wider still, collected with
-// `Collect::Settled` so a quiet window cannot cut the wake's value
-// (quiet-window-positive-waits-01). (throttle-window-wall-01)
-// 2026-11-14 claude: The throttle's window is 3 s and the sleep 4 s (both were
-// 200 and 300 ms), collected with Collect::Settled (run_delta); a stall shorter
-// than 3 s between n's cycles no longer changes the values.
-// throttle_holds_across_a_sleep still passes in all four modes (4.2 s); a stall
-// cannot be injected, so no pin fails without it.
 async fn throttle_holds_across_a_sleep(mode: Mode) -> Result<()> {
     let code = r#"{
         let n = 0;
