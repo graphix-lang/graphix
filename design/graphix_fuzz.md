@@ -261,10 +261,12 @@ unseen handles differently (`{a => a, b => c}`) their numbers are still a
 run's, and a divergence that shows nothing else is the trace's: the exact
 form is a graph canonization. A program that reads
 handle order any other way differs between runs by the language's own
-rule: one that makes a handle and sorts, dedups, folds a map or prints is
-`Excluded` (`oracle_tier`). A comparison of two handles, a cast of such a
-map and a string interpolating one have no marker as narrow, so the trace
-reports them: such a finding is the program's.
+rule: one that makes a handle and sorts, dedups, folds a map (`map::fold`,
+or any `Collection::` method, whose traversal of a map is in key order) or
+prints is `Excluded` (`oracle_tier`). A comparison of two handles, a cast
+of such a map, a string interpolating one and a `map::map` sending two of
+its keys to one have no marker as narrow, so the trace reports them: such
+a finding is the program's.
 
 **One route.** Every run reaches the runtime the way the shell's
 script path does (`GXConfig::program`: the subject's module table

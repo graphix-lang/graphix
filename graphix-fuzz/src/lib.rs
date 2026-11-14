@@ -1249,13 +1249,14 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // the rule off).
 
         // Handles order by identity, a run's (book/src/stdlib/sys.md): a
-        // sort of them, or a fold or print of a map they key, differs
-        // between two runs by the language's own rule
+        // sort of them, or a fold, search or print of a map they key,
+        // differs between two runs by the language's own rule. A map's
+        // `Collection` traversal visits it in key order
         let handles = [
             "stdin", "stdout", "stderr", "::open", "tcp::", "tls::", "watch::", "db::",
             "sqlite::", "http::",
         ];
-        let orders = ["sort", "dedup", "map::fold", "print", "dbg("];
+        let orders = ["sort", "dedup", "map::fold", "Collection::", "print", "dbg("];
         if handles.iter().any(|m| mentions(code, m))
             && orders.iter().any(|m| mentions(code, m))
         {
@@ -6093,13 +6094,17 @@ mod tests {
 
     #[test]
     fn a_program_reading_handle_order_is_excluded_tier() {
-        // handles order by identity, a run's: a sort of them, or a fold or
-        // print of a map they key, differs between two runs of one program
+        // handles order by identity, a run's: a sort of them, or a fold,
+        // search or print of a map they key, differs between two runs of
+        // one program
         let hm = "let hm = map::map(m, |(k, v)| (sys::io::stdout(null), v))";
         for prog in [
             "array::map(array::sort(array::map(m, |v| (sys::io::stdout(null), v))), |(h, v)| v)"
                 .to_string(),
             format!("{{ {hm}; map::fold(hm, [], |acc, (k, v)| array::push(acc, v)) }}"),
+            format!("{{ {hm}; Collection::fold(hm, [], |acc, v| array::push(acc, v)) }}"),
+            format!("{{ use Collection::*; {hm}; fold(hm, [], |acc, v| array::push(acc, v)) }}"),
+            format!("{{ {hm}; Collection::find(hm, |v| v > 2) }}"),
             format!("{{ {hm}; println(hm) }}"),
             format!("{{ {hm}; dbg(hm) }}"),
             "{ let t = sys::tcp::connect(a)?; let u = sys::tcp::connect(b)?; array::dedup([t, u]) }"
