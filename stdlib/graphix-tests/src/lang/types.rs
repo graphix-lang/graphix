@@ -4845,6 +4845,45 @@ run!(
     "/test/o.gx" => IMPORTED_OPTION
 );
 
+run!(
+    lambda_parameter_above_the_module_it_imports_from_refused,
+    refused("Option names what a `use` of this module imports from module `/test/o`, which a later statement declares: declare the module before the name's first use"),
+    "/test.gx" => "let f = |x: Option<f64>| x; mod o; use o::Option; \
+        let result = select f(\"s\") { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+; FuseExpect::None);
+
+run!(
+    lambda_body_annotation_above_the_module_it_imports_from_refused,
+    refused("Option names what a `use` of this module imports from module `/test/o`, which a later statement declares"),
+    "/test.gx" => "let f = |a: [f64, string]| { let x: Option<f64> = a; x }; mod o; \
+        use o::Option; let result = 0",
+    "/test/o.gx" => IMPORTED_OPTION
+; FuseExpect::None);
+
+run!(
+    lambda_parameter_above_the_module_a_glob_imports_from_refused,
+    refused("Option may name what a glob `use` of this module imports from module `/test/o`, which a later statement declares: declare the module before the name's first use"),
+    "/test.gx" => "let f = |x: Option<f64>| x; mod o; use o::*; let result = 0",
+    "/test/o.gx" => IMPORTED_OPTION
+; FuseExpect::None);
+
+run!(
+    lambda_parameter_above_the_module_of_a_glob_reads_the_import,
+    is(Value::I64(1)),
+    "/test.gx" => "mod o; use o::*; let f = |x: Option<f64>| x; \
+        let result = select f(\"s\") { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
+run!(
+    lambda_above_a_module_imports_nothing_it_names,
+    is(Value::I64(0)),
+    "/test.gx" => "let f = |x: Option<f64>| x; mod o; use o::P; \
+        let result = select f(1.0) { null as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => "type P = (i64, string)"
+);
+
 /// An alias that bounds its parameter is not looked through; its body
 /// written out in its place checks.
 const BOUNDED_ALIAS_OVER_A_RECURSIVE_PARAMETER: &str = r#"

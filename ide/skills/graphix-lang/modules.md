@@ -33,7 +33,8 @@ an abstract constructor, a trait as a parameter's type) is refused, and
 above a glob that holds for every type name the list neither declares
 nor imports, a trait's glob (`use Collection::*`) included. The same
 goes for a name a `use` imports from a module declared further down:
-until the `mod`, the name is not read. Write `use` first, then `mod`.
+until the `mod`, the name is not read, and a function above the `mod`
+is refused where its body or signature names it. Write `use` first, then `mod`.
 
 ```graphix,cases
 no "Mode names what a later `use` of this module imports" let m = cast<Mode>(`Read); use sys::fs::Mode; m

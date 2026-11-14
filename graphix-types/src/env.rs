@@ -936,6 +936,11 @@ pub struct Lexical {
     pub body: Option<Arc<LoadedBody>>,
     /// The top-level input this view was made in.
     pub input: Option<InputHold>,
+    /// What the statement lists open when the view was made had still to
+    /// declare ([`Env::unsettled`]): a definition checked under it once
+    /// its list has compiled reads no module in it as holding what it
+    /// holds now.
+    pub open: Map<ModPath, OpenList>,
 }
 
 impl Lexical {
@@ -1293,7 +1298,11 @@ impl Env {
     /// A snapshot of the lexical environment, which a definition keeps.
     #[doc(hidden)]
     pub fn lexical(&self) -> Lexical {
-        self.lexical.clone()
+        let mut lexical = self.lexical.clone();
+        for (level, list) in self.unsettled.iter() {
+            lexical.open.insert_cow(level.clone(), list.clone());
+        }
+        lexical
     }
 
     /// Exchange the lexical environment with `other`; the global
@@ -1678,6 +1687,20 @@ impl Env {
     // check" under `--no-fusion`; base-r24 alike. With `mod o` above f the select is refused as it should be
     // (lang::types::lambda_parameter_above_the_use_reads_the_import pins that order). probe:
     // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/review/fn-above-mod-wrong-value/
+    // 2026-11-14 claude: r25 lane 25g: a definition's snapshot now keeps the lists open when it was made
+    // (Lexical::open, set by Env::lexical; Env::unsettled_module reads it beside Env::unsettled), so a name a
+    // use or a glob imports from a module declared below the definition is refused with the list's own
+    // ChangesLater message instead of falling through to the outer or prelude type. Closed: fn-body-import,
+    // review/fn-above-mod-wrong-value (the wrong value), the glob twin. Pins:
+    // lang::types::lambda_parameter_above_the_module_it_imports_from_refused,
+    // lambda_body_annotation_above_the_module_it_imports_from_refused,
+    // lambda_parameter_above_the_module_a_glob_imports_from_refused (12 runs fail without the fix), twins
+    // lambda_parameter_above_the_module_of_a_glob_reads_the_import and
+    // lambda_above_a_module_imports_nothing_it_names. STILL OPEN: fn-body-typedef and fn-body-typedef-glob.
+    // The name in a typedef a function body declares is now ChangesLater, T is deferred and never judged
+    // (fn-typedef-unjudged-01), and the run does not return (killed by the memory cap; --check passes):
+    // before this change it printed 1 over a wrong T. Closing fn-typedef-unjudged-01 closes them; re-run both
+    // probes then. probes: ~/ptmp/cr29/scratch/r25/25g/import-snapshot/
     /// [`Self::lookup_at`], with whether `origin` is inside the level's
     /// module already known: one chain's levels share their module.
     fn lookup_in<T>(
@@ -1804,14 +1827,15 @@ impl Env {
     /// The module at or around `m` that a list being compiled declares
     /// in a statement it has not reached: nothing it holds is known yet.
     fn unsettled_module<'a>(&self, m: &'a str) -> Option<&'a str> {
-        if self.unsettled.is_empty() {
+        if self.unsettled.is_empty() && self.lexical.open.is_empty() {
             return None;
         }
         let mut at = m;
         while at != "/" {
             let parent = Path::dirname(at).unwrap_or("/");
             let name = Path::basename(at)?;
-            if let Some((l, from)) = self.unsettled.get(parent)
+            if let Some((l, from)) =
+                self.unsettled.get(parent).or_else(|| self.lexical.open.get(parent))
                 && l.modules.iter().any(|(i, k)| i >= from && k.as_str() == name)
             {
                 return Some(at);

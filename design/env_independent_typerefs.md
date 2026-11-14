@@ -228,7 +228,12 @@ nothing.
   later `use` of the level imports; a name the level neither declares nor
   imports nor finds in a glob while a glob is still to come, or while a
   glob there imports from a module not compiled yet; a name whose import
-  there finds nothing while its module is not compiled yet. A reader that
+  there finds nothing while its module is not compiled yet. A definition's
+  snapshot keeps the lists open when it was made (`Lexical::open`, set by
+  `Env::lexical`), so its check, which runs once the list has compiled,
+  refuses a name imported from a module declared below the definition as
+  the list's own compile does, and never reads the outer or prelude type of
+  the name for good. A reader that
   defers an unresolved name waits as it does for a type declared below: a
   typedef's shape stays open until the `use` (`Completed::Use`) or the
   definition that completes a cycle through it, and a `let` annotation, a

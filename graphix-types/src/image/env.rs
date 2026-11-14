@@ -337,8 +337,16 @@ where
 /// A definition's or a module's snapshot: only the lexical fields are
 /// ever read from it (`Env::swap_lexical`), so only they travel.
 pub(crate) fn lexical_len(lex: &Lexical) -> usize {
-    let Lexical { binds, modules, typedefs, traits, block_names, body: _, input: _ } =
-        lex;
+    let Lexical {
+        binds,
+        modules,
+        typedefs,
+        traits,
+        block_names,
+        body: _,
+        input: _,
+        open: _,
+    } = lex;
     shared_map::map_len(binds)
         + SharedSet(modules.clone()).encoded_len()
         + shared_map::map_len(typedefs)
@@ -348,7 +356,16 @@ pub(crate) fn lexical_len(lex: &Lexical) -> usize {
 
 #[doc(hidden)]
 pub fn lexical_encode(lex: &Lexical, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let Lexical { binds, modules, typedefs, traits, block_names, body, input: _ } = lex;
+    let Lexical {
+        binds,
+        modules,
+        typedefs,
+        traits,
+        block_names,
+        body,
+        input: _,
+        open: _,
+    } = lex;
     // a load happens in a cycle, and an image is written before any
     if body.is_some() {
         return Err(PackError::InvalidFormat);
@@ -374,6 +391,7 @@ pub fn lexical_decode(buf: &mut impl Buf) -> Result<Lexical, PackError> {
         block_names: nested_decode(buf, &|_, _| ())?,
         body: None,
         input: None,
+        open: Map::default(),
     })
 }
 
