@@ -1444,14 +1444,14 @@ run!(
 run!(
     two_instances_of_an_inferred_generic_print_apart_in_a_union,
     r#"{ let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x), false => mk(y) }; let n: i64 = s; n }; f(false, 1, "s") }"#,
-    refused_renumbered("i64 does not contain [fn(p: '_0: unbound) -> ('_1: unbound, '_0: unbound), fn(p: '_0_1: unbound) -> ('_1_1: unbound, '_0_1: unbound)]");
+    refused_renumbered("i64 does not contain [fn(p: '_0: unbound) -> ('a: unbound, '_0: unbound), fn(p: '_0_1: unbound) -> ('b: unbound, '_0_1: unbound)]");
     FuseExpect::None
 );
 
 run!(
     two_instances_of_an_inferred_generic_print_apart_in_a_callee,
     r#"{ let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x), false => mk(y) }; let r: i64 = s(1); r }; f(false, 1, "s") }"#,
-    refused_renumbered("this callee is one of fn(p: '_0: unbound) -> ('_1: unbound, '_0: unbound) and fn(p: '_0_1: unbound) -> ('_1_1: unbound, '_0_1: unbound);");
+    refused_renumbered("this callee is one of fn(p: '_0: unbound) -> ('a: unbound, '_0: unbound) and fn(p: '_0_1: unbound) -> ('b: unbound, '_0_1: unbound);");
     FuseExpect::None
 );
 
@@ -1608,4 +1608,61 @@ run!(
     "{ let rec f = 'a: Number |x: 'a| -> 'a { let s: {g: string} = {g: f}; x }; 0 }",
     refused("type mismatch { g: string } does not contain { g: fn(x: 'a: unbound within Number) -> 'a: unbound within Number }");
     FuseExpect::None
+);
+
+// A cell merged into a variable the definition being checked declares is
+// that variable: a refusal names it as declared, whatever handle reaches it
+// (a call's result, an inferred argument), formatted then or after the
+// check.
+run!(
+    a_call_result_in_a_declared_variable_prints_its_name,
+    "{ let m = 'b: Number |f: fn() -> 'b| -> i64 { let r: i64 = f(); r }; m(|| 1) }",
+    refused("type mismatch i64 does not contain 'b: unbound within Number");
+    FuseExpect::None
+);
+
+run!(
+    a_call_result_in_a_declared_variable_written_as_it,
+    "{ let m = 'b: Number |f: fn() -> 'b| -> 'b { let r: 'b = f(); r }; m(|| 1) }",
+    is(Value::I64(1));
+    FuseExpect::Jit
+);
+
+run!(
+    an_operand_in_a_declared_variable_prints_its_name,
+    "{ let m = 'b: Number |f: fn(x: i64) -> 'b| -> 'b f(1) + 1; m(|x| x) }",
+    refused("cannot compute 'b: unbound within Number + i64");
+    FuseExpect::None
+);
+
+run!(
+    a_call_result_handed_on_prints_its_name,
+    "{ let f = |x: 'a| { let id = |v| v; let g = |v: (i64, i64)| v.0; g(id(x)) }; f((1, 2)) }",
+    refused("type mismatch (i64, i64) does not contain 'a: unbound");
+    FuseExpect::None
+);
+
+run!(
+    an_enclosing_definitions_variable_prints_its_name,
+    "{ let f = 'a: Number |g: fn() -> 'a| -> i64 { let h = 'b: Number |y: 'b| -> i64 { let r: string = g(); 0 }; h(1) }; f(|| 1) }",
+    refused("type mismatch string does not contain 'a: unbound within Number");
+    FuseExpect::None
+);
+
+run!(
+    two_declared_variables_print_their_names,
+    "{ let f = 'b: Number, 'c: Number |g: fn() -> 'b, h: fn() -> 'c| -> i64 { let r: string = (h(), g()); 0 }; f(|| 1, || 2) }",
+    refused("type mismatch string does not contain ('c: unbound within Number, 'b: unbound within Number)");
+    FuseExpect::None
+);
+
+run!(
+    an_impls_variable_prints_its_name,
+    refused("type mismatch i64 does not contain 'a: unbound"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl<'a> Show for Array<'a> { let show = |x| { let id = |v| v; let r: i64 = id(x[0]$); "s" } };
+        let result = Show::show([1])
+    "#
+    ; FuseExpect::None
 );

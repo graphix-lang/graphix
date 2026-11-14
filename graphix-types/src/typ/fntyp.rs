@@ -1293,6 +1293,12 @@ impl FnType {
         // same signature stands for, which covers g2 itself but not inner. probe:
         // ~/ptmp/cr29/scratch/r24/24g/display-auto-bound-review/rt2.gx (hover `let
         // |inner `) and rt2bad.gx (--check).
+        // 2026-11-14 claude: The mismatch half of the note above is fixed by
+        // call-result-rigid-name-01: rt2bad.gx now prints fn(y: i64) -> 'a: unbound
+        // within Number. That fix names a cell by tvar::Declared, which holds only
+        // while the definition's gate is open, so a hover, run after the check,
+        // still reads the cell nameless; a name that outlives the gate is what the
+        // hover half needs.
         let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
         let mut sig = self.sig_tvars();
         let declared: LPooled<AHashSet<usize>> = sig

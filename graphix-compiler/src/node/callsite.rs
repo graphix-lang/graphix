@@ -4488,7 +4488,7 @@ impl<R: Rt> CallSite<R> {
             }
         }
         self.raise_throws(ctx, ftype, true)?;
-        // CR claude for claude: [readability/low] A refusal of a call's result
+        // XCR claude for claude: [readability/low] A refusal of a call's result
         // names the call's own cell where it is an enclosing definition's
         // declared variable: in `'b: Number |f: fn() -> 'b| -> i64 { let r: i64 =
         // f(); r }` the check below merges `self.rtype` ('_N) into the rigid 'b
@@ -4514,6 +4514,27 @@ impl<R: Rt> CallSite<R> {
         // being checked (CompileCtx::rec_defs); the printer could take the same
         // name for a rigid cell's merged handle, which would serve every site here
         // at once.
+        // 2026-11-14 claude: Fixed in the printer, so every site at once: the
+        // definition gate (lambda.rs DefGate::open) declares the variables it holds
+        // rigid in tvar::Declared (a thread's innermost-first stack, Declaring
+        // guard), and printed_name gives a cell a definition being checked declares
+        // that name (TVar::declared_name) whatever handle reaches it; TypeMismatch,
+        // formatted after the gate closes, keeps the stack it was made under in
+        // HeldQuantifiers. pattern.rs's declared_var now reads the same table
+        // instead of walking rec_defs' signatures. s2/s4 say 'b, v7 'cannot compute
+        // 'b: unbound within Number + i64', r10 'a (base-r24: '_N). Pins:
+        // lang::quantified::{a_call_result_in_a_declared_variable_prints_its_name,
+        // an_operand_in_a_declared_variable_prints_its_name,
+        // a_call_result_handed_on_prints_its_name,
+        // an_enclosing_definitions_variable_prints_its_name,
+        // two_declared_variables_print_their_names,
+        // an_impls_variable_prints_its_name}; with printed_name reading the handle
+        // they and the two two_instances_of_an_inferred_generic_print_apart_* pins
+        // (now 'a/'b for the cells x and y merged into) fail, 32 runs; with no
+        // snapshot in HeldQuantifiers the 5 type-mismatch pins + the union one fail
+        // (24 runs). Outcome manifest blessed (rigid-gate-alias-sep2026/01 now
+        // 'does not contain 'b'). Hovers run after the gate closes and are
+        // unchanged.
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the

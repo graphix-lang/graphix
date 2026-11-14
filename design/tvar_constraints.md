@@ -2328,7 +2328,14 @@ former consumer derives from the cells:
   first name it prints under whatever name a later binding reaches it by:
   a parameter's cell a callee's instance merged into prints under the
   parameter's name in the result too, where a copy left the callee's
-  variable's name on it (`TVar::named_as`). A cell that holds a type
+  variable's name on it (`TVar::named_as`). A cell a definition being
+  checked declares prints under the name its signature declares,
+  whatever handle reaches it: a call's result or an inferred argument
+  merged into the rigid `'b` reads `'b`, never the call's `'_N`
+  (`tvar::Declared`, the variables each open definition gate declares,
+  innermost first, `TVar::declared_name`, which a pattern refusal names
+  the variable by too); a refusal formatted after its check prints them
+  as at the refusal (`HeldQuantifiers` keeps them). A cell that holds a type
   prints in one form through the message too, the form its first handle
   printed in: bare as what it holds where that handle's name is
   generated, as `'a: T` where it is written (`tvar::prints_held`),
@@ -2369,6 +2376,12 @@ former consumer derives from the cells:
   `a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name`,
   `a_decided_cell_merged_with_a_callee_prints_bare_throughout`,
   `a_decided_cell_merged_with_a_callee_prints_named_throughout`,
+  `a_call_result_in_a_declared_variable_prints_its_name`,
+  `an_operand_in_a_declared_variable_prints_its_name`,
+  `a_call_result_handed_on_prints_its_name`,
+  `an_enclosing_definitions_variable_prints_its_name`,
+  `two_declared_variables_print_their_names`,
+  `an_impls_variable_prints_its_name`,
   `lang::types::payload_cycle_through_a_typedef`; the hover's:
   `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`,
   `a_hover_numbers_an_instance_past_a_header_name`,

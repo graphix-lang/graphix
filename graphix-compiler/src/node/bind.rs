@@ -382,7 +382,7 @@ impl<R: Rt> Bind<R> {
             {
                 let ids = expr::StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
                 let vtyp = annotation.as_ref().unwrap_or(node.typ());
-                refuse_inside_rigid(ctx, &ids, &spec, pat, vtyp)?;
+                refuse_inside_rigid(&ctx.env, &ids, &spec, pat, vtyp)?;
             }
             let typ = match annotation {
                 Some(typ) => typ,
@@ -944,7 +944,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         if let ExprKind::Bind(b) = &self.spec.kind {
             let ids = CompiledAbstracts::new(&self.pattern, &b.pattern);
             let ids = |p: &expr::StructurePattern| ids.get(p);
-            refuse_inside_rigid(ctx, &ids, &self.spec, &b.pattern, &self.typ)?;
+            refuse_inside_rigid(&ctx.env, &ids, &self.spec, &b.pattern, &self.typ)?;
         }
         self.check_value(ctx)?;
         self.complete_deferred(ctx)?;
@@ -1347,8 +1347,8 @@ impl Ref {
 /// variable its definition holds rigid
 /// ([`expr::StructurePattern::meets_rigid`]), met in `typ` as it stands and
 /// as its open cells' lower bounds hold it.
-fn refuse_inside_rigid<R: Rt>(
-    ctx: &CompileCtx<R>,
+fn refuse_inside_rigid(
+    env: &Env,
     ids: &expr::AbstractOf,
     spec: &Expr,
     pat: &expr::StructurePattern,
@@ -1359,8 +1359,8 @@ fn refuse_inside_rigid<R: Rt>(
     }
     let lower = lower_view(typ);
     for view in iter::once(typ).chain(lower.as_ref()) {
-        if let Some(tv) = pat.meets_rigid(&ctx.env, ids, view)? {
-            let e = rigid_refusal(ctx, ids, pat, view, &tv, Holder::Let);
+        if let Some(tv) = pat.meets_rigid(env, ids, view)? {
+            let e = rigid_refusal(env, ids, pat, view, &tv, Holder::Let);
             return Err(e).at(spec);
         }
     }

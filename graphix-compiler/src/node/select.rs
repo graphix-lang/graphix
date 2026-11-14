@@ -3197,7 +3197,8 @@ impl<R: Rt> Select<R> {
                     match sp.meets_rigid(&ctx.env, &ids, over)? {
                         None => Ok(()),
                         Some(tv) => {
-                            let e = rigid_refusal(ctx, &ids, sp, over, &tv, Holder::Arm);
+                            let e =
+                                rigid_refusal(&ctx.env, &ids, sp, over, &tv, Holder::Arm);
                             Err(e).at(&site())
                         }
                     }
@@ -3211,7 +3212,8 @@ impl<R: Rt> Select<R> {
                             if let Some((tv, part)) =
                                 sp.meets_rigid_written(&ctx.env, &ids, view, over)?
                             {
-                                let e = written_refusal(ctx, &ids, sp, view, &tv, &part);
+                                let e =
+                                    written_refusal(&ctx.env, &ids, sp, view, &tv, &part);
                                 return Err(e).at(&site());
                             }
                         }

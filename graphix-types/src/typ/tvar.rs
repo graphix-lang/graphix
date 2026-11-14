@@ -1030,15 +1030,16 @@ impl TaskContext {
     }
 
     /// Run as this context until the guard drops. The thread's record of
-    /// foreign writes ([`OwnWrites`]) is its waiting task's and is set
-    /// aside meanwhile: a task's record is kept on the thread it runs
-    /// whole on.
+    /// foreign writes ([`OwnWrites`]) and the variables of the definitions
+    /// it checks ([`Declared`]) are its waiting task's and are set aside
+    /// meanwhile: a task's record is kept on the thread it runs whole on.
     #[doc(hidden)]
     pub fn enter(self) -> InContext {
         InContext {
             task: TASK.replace(self.task),
             level: LEVEL.replace(self.level),
             own: OWN_WRITES.take(),
+            declared: DECLARED.take(),
         }
     }
 }
@@ -1051,6 +1052,7 @@ pub struct InContext {
     task: TaskId,
     level: Level,
     own: Option<Record>,
+    declared: Declared,
 }
 
 impl Drop for InContext {
@@ -1058,6 +1060,7 @@ impl Drop for InContext {
         TASK.set(self.task);
         LEVEL.set(self.level);
         OWN_WRITES.set(self.own.take());
+        DECLARED.set(mem::take(&mut self.declared));
     }
 }
 
@@ -2341,6 +2344,12 @@ impl TVar {
         c.binding.is_some() && c.ground == ground_epoch()
     }
 
+    /// The name a definition whose body this thread checks declares the
+    /// open cell this var stands for by ([`Declared`]).
+    pub fn declared_name(&self) -> Option<ArcStr> {
+        DECLARED.with_borrow(|d| d.name_of(self))
+    }
+
     /// The open cell this var stands for: its own, or the end of a chain
     /// of bindings to vars (a merged cell's forward link); `None` when
     /// the chain ends bound.
@@ -3467,14 +3476,88 @@ thread_local! {
     static SHOWN: RefCell<Shown> = RefCell::new(Shown::default());
     /// The cells of the [`HeldQuantifiers`] being printed.
     static HELD: RefCell<SmallVec<[usize; 4]>> = RefCell::new(SmallVec::new());
+    /// The variables of the definitions whose bodies this thread checks.
+    static DECLARED: RefCell<Declared> = RefCell::new(Declared::default());
 }
 
-/// The quantifiers of a refusal's types that no call picked when it was
-/// made: a definition's own, read in its body (a `let rec`'s self-read),
-/// and one instance's. They print where they occur, as they did then,
-/// though the definition's close generalizes them before the message prints.
+/// The variables the definitions whose bodies a thread checks declare,
+/// innermost first, each holding its cell rigid meanwhile: a cell merged
+/// into one (a call's result, an inferred argument) is that variable,
+/// whatever handle a message reaches it by, and prints under its name
+/// ([`printed_name`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Declared(Option<Arc<DeclaredFrame>>);
+
 #[derive(Debug)]
-pub(crate) struct HeldQuantifiers(SmallVec<[TVar; 2]>);
+struct DeclaredFrame {
+    vars: SmallVec<[TVar; 2]>,
+    outer: Declared,
+}
+
+impl Declared {
+    /// The name a variable of these declares the open cell `tv` stands for
+    /// by, the least where two do.
+    fn name_of(&self, tv: &TVar) -> Option<ArcStr> {
+        let mut frame = self.0.as_deref()?;
+        let end = tv.open_cell()?;
+        let mut found: Option<&ArcStr> = None;
+        loop {
+            for v in frame.vars.iter() {
+                if v.open_cell().is_some_and(|c| c.same_cell(&end))
+                    && found.is_none_or(|f| v.name < *f)
+                {
+                    found = Some(&v.name)
+                }
+            }
+            match frame.outer.0.as_deref() {
+                Some(outer) => frame = outer,
+                None => return found.cloned(),
+            }
+        }
+    }
+}
+
+/// The variables a definition whose body this thread checks declares
+/// ([`Declared`]) until this drops, which restores the enclosing ones.
+#[must_use]
+#[doc(hidden)]
+pub struct Declaring(Declared);
+
+impl Declaring {
+    #[doc(hidden)]
+    pub fn enter(vars: impl IntoIterator<Item = TVar>) -> Self {
+        let vars: SmallVec<[TVar; 2]> = vars.into_iter().collect();
+        let outer = DECLARED.with_borrow(Declared::clone);
+        match vars.is_empty() {
+            true => Self(outer),
+            false => {
+                Self::replace(Declared(Some(Arc::new(DeclaredFrame { vars, outer }))))
+            }
+        }
+    }
+
+    fn replace(declared: Declared) -> Self {
+        Self(DECLARED.replace(declared))
+    }
+}
+
+impl Drop for Declaring {
+    fn drop(&mut self) {
+        DECLARED.set(mem::take(&mut self.0))
+    }
+}
+
+/// What a refusal formatted after its check prints by as it stood when the
+/// refusal was made: the quantifiers of its types no call picked (a
+/// definition's own, read in its body, a `let rec`'s self-read, and one
+/// instance's), which print where they occur though the definition's close
+/// generalizes them, and the variables of the definitions being checked
+/// ([`Declared`]), whose gates have closed by then.
+#[derive(Debug)]
+pub(crate) struct HeldQuantifiers {
+    held: SmallVec<[TVar; 2]>,
+    declared: Declared,
+}
 
 impl HeldQuantifiers {
     pub(crate) fn of(types: [&Type; 2]) -> Self {
@@ -3488,10 +3571,10 @@ impl HeldQuantifiers {
                 }
             })
         }
-        Self(held)
+        Self { held, declared: DECLARED.with_borrow(Declared::clone) }
     }
 
-    /// `f`, printing these quantifiers as when the refusal was made.
+    /// `f`, printing as when the refusal was made.
     pub(crate) fn printing<R>(&self, f: impl FnOnce() -> R) -> R {
         struct Truncate(usize);
         impl Drop for Truncate {
@@ -3499,12 +3582,13 @@ impl HeldQuantifiers {
                 HELD.with_borrow_mut(|h| h.truncate(self.0))
             }
         }
-        if self.0.is_empty() {
+        let _declared = Declaring::replace(self.declared.clone());
+        if self.held.is_empty() {
             return f();
         }
         let _truncate = Truncate(HELD.with_borrow_mut(|h| {
             let len = h.len();
-            h.extend(self.0.iter().map(TVar::cell_addr));
+            h.extend(self.held.iter().map(TVar::cell_addr));
             len
         }));
         f()
@@ -3638,9 +3722,10 @@ impl Drop for Printing {
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for any
-/// other named cell, its own unless the message being printed showed
-/// another cell under it, then numbered apart, so two instances' cells of
-/// one declared or inferred variable read as two.
+/// other named cell, the one a definition being checked declares it by
+/// ([`TVar::declared_name`]), else its own, unless the message being
+/// printed showed another cell under it, then numbered apart, so two
+/// instances' cells of one declared or inferred variable read as two.
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
     if !crate::print_standing() || PRINT_DEPTH.get() == 0 {
         return tv.name.clone();
@@ -3650,7 +3735,8 @@ pub(super) fn printed_name(tv: &TVar) -> ArcStr {
         Some(name) => name.clone(),
         None if tv.unwritten() => tv.name.clone(),
         None => {
-            let name = s.free_name(&tv.name);
+            let name =
+                s.free_name(&tv.declared_name().unwrap_or_else(|| tv.name.clone()));
             s.show(addr, name.clone());
             name
         }

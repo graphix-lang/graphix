@@ -33,7 +33,7 @@ use crate::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type, TypeMismatch,
         check_bounds_acyclic,
         settle::VariableUnion,
-        tvar::{AtLevel, InTask, Level, RigidGate, TaskId, current_level},
+        tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
 };
@@ -1731,7 +1731,7 @@ impl<R: Rt> GXLambda<R> {
                 let ids = expr::StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
                 if let Some(tv) = a.pattern.meets_rigid(&ctx.env, &ids, &atyp.typ)? {
                     let (pat, typ) = (&a.pattern, &atyp.typ);
-                    let e = rigid_refusal(ctx, &ids, pat, typ, &tv, Holder::Formal);
+                    let e = rigid_refusal(&ctx.env, &ids, pat, typ, &tv, Holder::Formal);
                     return Err(e);
                 }
             }
@@ -2437,6 +2437,7 @@ struct DefGate<R: Rt> {
     args: LPooled<Vec<Node<R>>>,
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
+    _declaring: Declaring,
     /// Each quantifier the definition declares, at the depth it had at the
     /// gate's opening.
     declared: LPooled<Vec<(TVar, u32)>>,
@@ -2470,6 +2471,7 @@ impl<R: Rt> DefGate<R> {
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
+        let declaring = Declaring::enter(named.values().cloned());
         let declared = def
             .typ
             .quantifiers
@@ -2505,6 +2507,7 @@ impl<R: Rt> DefGate<R> {
             args,
             scope,
             rigid,
+            _declaring: declaring,
             declared,
             unwritten,
         }

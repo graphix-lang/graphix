@@ -2,7 +2,6 @@ use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
-    analysis::lambda_def,
     env::Env,
     expr::{
         AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, UndecidedMembers,
@@ -441,16 +440,15 @@ pub(super) fn undecided_members(
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
-pub(super) fn rigid_refusal<R: Rt>(
-    ctx: &CompileCtx<R>,
+pub(super) fn rigid_refusal(
+    env: &Env,
     ids: &AbstractOf,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
     holder: Holder,
 ) -> anyhow::Error {
-    let env = &ctx.env;
-    let declared = declared_var(ctx, tv);
+    let declared = declared_var(tv);
     let named = declared.is_some();
     let var = declared.unwrap_or_else(|| format_compact!("the variable"));
     let bounds = tv.typed_bounds(env);
@@ -570,16 +568,15 @@ pub(super) fn rigid_refusal<R: Rt>(
 /// or binding inside a value of `tv`, a type variable its definition holds
 /// rigid, where the test's part over it, `part`, holds `_` or an open cell
 /// ([`StructurePattern::meets_rigid_written`]).
-pub(super) fn written_refusal<R: Rt>(
-    ctx: &CompileCtx<R>,
+pub(super) fn written_refusal(
+    env: &Env,
     ids: &AbstractOf,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
     part: &Type,
 ) -> anyhow::Error {
-    let env = &ctx.env;
-    let var = declared_var(ctx, tv).unwrap_or_else(|| format_compact!("the variable"));
+    let var = declared_var(tv).unwrap_or_else(|| format_compact!("the variable"));
     let fix = match rigid_written(env, ids, pat, typ, tv) {
         Some(t) => format_compact!("write the type it tests, `{t} as {pat}`"),
         None => {
@@ -616,25 +613,19 @@ pub(super) fn written_refusal<R: Rt>(
 // what the program wrote (the trait, `self`) and name a remedy it can write (declare
 // a named variable bounded by the trait in its place; under `self`, the type test).
 // probes: ~/ptmp/cr29/scratch/r24/24g/rru/t4.gx .. t7.gx (unwritten-rigid-name-01)
+// 2026-11-14 claude: call-result-rigid-name-01 makes the printer name a cell a
+// definition being checked declares by its declared name through any handle, so a
+// generated handle merged into the cell of |s: Show| now prints '#s: unbound within
+// Show (base-r24: '_8352), as the parameter's own handle already did; a fix here
+// that changes what such a cell is told by covers the printer too
+// (tvar::printed_name, TVar::declared_name).
 /// `tv`, a variable a definition being checked holds rigid, by the name
-/// its signature declares (`'a`): a pattern meets the variable at whatever
-/// handle a merge left, which the checker may have made up or a callee
-/// declared. `None` where no signature being checked names it.
-fn declared_var<R: Rt>(ctx: &CompileCtx<R>, tv: &TVar) -> Option<CompactString> {
-    let mut found: Option<ArcStr> = None;
-    for def in ctx.rec_defs.iter().filter_map(|id| lambda_def(ctx, *id)) {
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        def.typ.collect_tvars_through_bounds(&mut named);
-        for (name, v) in named.drain() {
-            if v.written_open().is_some()
-                && v.open_cell().is_some_and(|c| c.same_cell(tv))
-                && found.as_ref().is_none_or(|f| name < *f)
-            {
-                found = Some(name)
-            }
-        }
-    }
-    found.map(|n| format_compact!("'{n}"))
+/// its signature declares (`'a`, [`TVar::declared_name`]): a pattern meets
+/// the variable at whatever handle a merge left, which the checker may have
+/// made up or a callee declared. `None` where no signature being checked
+/// names it.
+fn declared_var(tv: &TVar) -> Option<CompactString> {
+    tv.declared_name().map(|n| format_compact!("'{n}"))
 }
 
 /// Whether `typ` is the variable `tv` itself.
@@ -3368,7 +3359,7 @@ impl<R: Rt> PatternNode<R> {
             let ids = StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
             if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, &type_predicate)? {
                 let tp = &type_predicate;
-                return Err(rigid_refusal(ctx, &ids, sp, tp, &tv, Holder::Arm));
+                return Err(rigid_refusal(&ctx.env, &ids, sp, tp, &tv, Holder::Arm));
             }
         }
         let cx = PatCx {
