@@ -2619,6 +2619,10 @@ impl<R: Rt> DefGate<R> {
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
+        let mut seen: LPooled<AddrSet> = LPooled::take();
+        for tv in named.values() {
+            Type::TVar(tv.clone()).seed_names_seen(&ctx.env, &mut seen);
+        }
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         let declaring = Declaring::enter(named.values().cloned());
         let declared = def

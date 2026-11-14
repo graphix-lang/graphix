@@ -2896,6 +2896,26 @@ impl TVar {
         // bounds as its signature writes them (the call's bound is checked, not
         // added). base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24g/tmv/dupbound.gx,
         // dupbound2.gx, dupbound3.gx (declared-bound-doubled-01)
+        // 2026-11-14 claude: Partly fixed. Mechanism: the doubled conjunct is the
+        // callee copy's bound beside the rigid cell's own, kept because new_conjuncts
+        // compares two Refs without an env and an open ref is never identical to a
+        // filled one (the declared bound was open, the callee's filled by its own
+        // check's seed). DefGate::open now seeds the refs of each declared variable's
+        // bounds (Type::seed_names_seen), so dupbound.gx prints 'c: Number once; pin
+        // lang::quantified::a_declared_bound_a_call_meets_prints_once (4 modes fail
+        // without it). Still open: dupbound2.gx ('q: T + T) is the other direction,
+        // the incoming bound is a trait method's own self bound, whose ref the trait
+        // never fills (scope '/' ref open, the declared one filled Trait), and a
+        // call's meet of two scopes' refs to one trait reads apart even by
+        // same_definition (resolve_peek is None for a trait, so (None,None) compares
+        // scope and name); a fix fills the trait signatures' refs where the trait is
+        // registered (a shadowing hazard if before every name is registered) and
+        // compares trait ids in same_definition/same_held. dupbound3.gx (a bound
+        // holding a variable: 'b1 vs 'b numbered apart) is untouched. The suggested
+        // rule (a call's bound checked, not added) is a refusal: 'c: Any |y: 'c| f(y)
+        // and 'c: [i64, string] are accepted today with the cell tightened to Any &
+        // Number / [i64, string] & Number, so it needs a census and Eric before it is
+        // built.
 
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {

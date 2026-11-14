@@ -1338,6 +1338,15 @@ run!(
 );
 
 run!(
+    a_declared_bound_a_call_meets_prints_once,
+    refused("does not contain fn<'c: Number>(y: 'c: unbound within Number) -> 'c: unbound within Number"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| -> 'a x;
+        let result: string = 'c: Number |y: 'c| -> 'c f(y)
+    "#
+);
+
+run!(
     a_printed_quantifier_is_not_read_for_a_cell_of_its_name,
     refused("but implemented fn<'a1: Number>(y: Array<'a: unbound>, x: 'a1: unbound within Number) -> 'a1: unbound within Number:"),
     "/test.gx" => "mod m; let result = 0",
