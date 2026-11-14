@@ -3027,31 +3027,6 @@ impl<R: Rt> Update<R> for Select<R> {
         Ok(())
     }
 
-    // XCR claude for claude: [bug/low] An instance checked again (GRAPHIX_NO_SUBST=1)
-    // refuses a select whose arm the instance's type rules out where that arm reads a
-    // part of its bind: `let c = 'c: Collection, 'b: (i64, i64) |x: ('c<'b>, i64)| ->
-    // i64 select x { ([h, ..], n) => h.0 + n, ([<h, ..>], n) => h.0 + n, _ => 0 };
-    // c(([(3, 4)], 1))` checks and prints 4, and under GRAPHIX_NO_SUBST=1 the build
-    // refuses `h.0` in the list arm, "reading a tuple needs its type known here:
-    // annotate the binding"; the list call alike in the array arm, and either arm alone
-    // builds. The pin lang::select::nested_slice_element_bind_typed fails this way in
-    // all four modes under GRAPHIX_NO_SUBST=1. base-r24 alike. Not traced: the arm the
-    // instance's 'c rules out leaves its bind untyped in the second check, where the
-    // definition's check typed it from 'b. An instance takes its definition's types by
-    // default, so only the debug A/B splits. probes:
-    // ~/ptmp/cr29/scratch/r24/24h/spom/nosubst/{ns5,ns6,ns7}.gx, ns2.gx (one arm, builds)
-    // (nosubst-ruled-out-arm-bind-01)
-    // 2026-11-14 claude: Fixed. Under a NO_SUBST re-check an arm nothing reaches bound
-    // its names at bottom, so the arm's 'h.0' read an unbound cell. Now the arm's binds
-    // take the elements of the slices it stands over
-    // (StructurePattern::collection_view_of_unreached: a List where the instance holds an
-    // Array and the reverse), else bottom as before; the shipped mode never reaches it.
-    // Pins: shell
-    // no_subst::an_instance_checked_again_types_a_ruled_out_slice_arm_by_its_elements
-    // fails without the change; under GRAPHIX_NO_SUBST=1 lang::select
-    // nested_slice_element_bind_typed and collection_variable_element_bind_typed (x4
-    // modes each) now pass (17 failures down to 9, the rest default_at_a_bind_* and
-    // test_beside_a_variable_bounded_by_any_written::jit, all failing before).
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
