@@ -294,25 +294,6 @@ fn checked_default<R: Rt>(
     let label = |ft: &FnType| -> Option<Type> {
         ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
     };
-    // XCR claude for claude: [bug/medium] A default that is a call's result holding a function
-    // with an open cell (one instance, which nothing in the definition decides) is judged at
-    // the check on this copy, which decides nothing of the default's own type, and the bind's
-    // default reads the cell as bottom: the check accepts and the build refuses. `let mk = |k:
-    // i64| |d, x: i64| cast<string>(d)$; let f = |#w: fn(d: 'z, x: i64) -> string = mk(0), y:
-    // 'z, x: i64| w(y, x); f(1, 7)` checks, and its build fails "in the instance of f(1, 7) at
-    // this call site .. in: mk(0): type mismatch fn(d: 'z: i64, x: i64) -> string does not
-    // contain fn(d: _, x: i64) -> string"; the same with a defaulted function (`mk = |k: i64|
-    // |#d = 1, x: i64| ..`, `#w: fn(?#d: 'z, x: i64) -> string = mk(0)`, `f(7)`), whose written
-    // twin `f(#w: mk(0), 7)` runs. With the result named outside the default (`let m = mk(0);
-    // .. = m`) both run. base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf/s/
-    // {call_result_plain, call_result_plain_let, call_result_inner, call_result_inner_let,
-    // call_result_written}.gx (default-call-result-open-01)
-    // 2026-11-14 claude: Fixed in DefGate::close (node/lambda.rs): the site settles of a
-    // default's check left the cells its rows hold (DefTable::default_cells) bound to bottom,
-    // so the bind read the call result's argument as bottom. They stay open; the bind places
-    // them at the site's view of the label. Pins that fail without it (12 of 16 runs):
-    // lang::functions::a_default_call_result_with_an_open_cell, _at_two_types,
-    // _with_a_defaulted_function; the refused twin _that_fixes_the_variable holds either way.
     let copy = match judge {
         Judge::Check(_) if node.typ().has_unbound() => {
             Some(node.typ().instantiate_with(&mut LPooled::take(), &ctx.rec_defs))
