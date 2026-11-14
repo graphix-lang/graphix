@@ -1477,6 +1477,7 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
                     task: _,
                     ground: _,
                     kept: _,
+                    resolved: _,
                     place: _,
                 } = &*c;
                 if *rigid_gates != 0 {

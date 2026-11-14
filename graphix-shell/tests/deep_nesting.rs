@@ -1499,6 +1499,34 @@ fn written_holder_chains_check_in_linear_time() {
 // changes; regress clean; graphix-tests lib 18954 pass; guicheck base 41.341 G, lane
 // 41.404 G. Probes agree fused, --no-fusion, GRAPHIX_PAR=force and a warm image:
 // ~/ptmp/cr29/scratch/r23/23g/call-dag-arg-walk-01/review/.
+// 2026-11-14 claude: PARTIAL (lane 24f). Done: a ground cell keeps its binding's
+// resolution while its proof stands (TCell::resolved, TVar::ground_resolution; dropped
+// by a write of its binding and by a re-proof at a later epoch), and resolve_tvars
+// takes a ground cell's from it, so a chain's links resolve once, each over the parts
+// of the link below; CompileCtx::monomorphic takes a ground cell that may hold no
+// function or typedef (the kept may_hold_fn) as that resolution, where it rebuilt the
+// chain at each link; and contains holds at once between a ground cell and a type of
+// its resolution's parts (contains::same_resolution). base-r24 -> lane, debug,
+// instructions:u, --no-cache: 'let x{i} = mk(x{i-1})' over 'x0 = 1' --expand
+// 2.09/4.93/15.76 -> 1.80/3.74/10.69 G at 320/640/1280 links, --no-fusion --expand
+// 1.44/3.11/9.93 -> 1.18/1.93/5.00 G; the written chain (c) --check 1.65/4.00/13.23 ->
+// 1.08/1.57/3.04 G; --check of the plain chain and of (b) unchanged (1.26 G at 1280;
+// fn-in-pair 1.67 G at 320). Pins:
+// deep_nesting::generic_pair_call_chains_share_their_resolutions (--no-fusion --expand
+// at 1280 within 7 G: 8.9 G without the fix; the written chain's --check at 1280
+// within 5 G: 13.5 G without, 14.2 G without the monomorphic part, 8.0 G without
+// same_resolution), typ::normalize::tests::a_ground_chain_resolves_once and
+// typ::contains::tests::a_ground_cell_holds_its_resolutions_parts_at_once (194 steps
+// without, 1 with). Census 2967 files 0 verdict / 0 message changes; regress clean.
+// Remains, each still quadratic: (a) a resolution holds no cell, so nothing keeps a
+// walk's findings over it past the walk: an instance binds its signature's cells to
+// the site's resolution, and its elaboration walks it whole (refresh_static_ftype's
+// resolve_tvars of the instance's type, ContainsHist::closure, FnType::held_at), and
+// fusion asks of each node's resolved type (meets_abstract, TypeMemo, unfolds_past,
+// Brief's 512 bytes of a failure reason); a fix needs a fact about a cell-free node
+// that outlives one walk. (b) as before. (c) superlinear still (0.97/1.08/1.57/3.04 G
+// at 160/320/640/1280): the connect's walks over what the proof does not keep. probes:
+// ~/ptmp/cr29/scratch/r24/24f/call-dag-arg-walk-01/ (xu0-*, w-*, fn-*, m.sh)
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,
@@ -1548,6 +1576,33 @@ fn generic_pair_call_chains_check_in_linear_time() {
     };
     checks_within(&program(1280), 3 * BILLION);
     completes_within(&["--expand", "--no-cache"], &program(320), 28 * BILLION / 10)
+}
+
+/// A chain of calls of a generic pair constructor over data elaborates,
+/// and checked with every link written checks, within what a walk of
+/// each link's whole argument once a call passes: a ground cell keeps
+/// its resolution, a written binding's instance of a ground cell that
+/// holds no function is that resolution, and a containment takes a
+/// ground cell over parts its resolution shares at once
+/// (call-dag-arg-walk-01).
+#[test]
+#[cfg(target_os = "linux")]
+fn generic_pair_call_chains_share_their_resolutions() {
+    const LINKS: usize = 1280;
+    let called = chain(
+        "let mk = |f| (f, f);\nlet x0 = 1;\n",
+        LINKS,
+        &|i| format!("let x{i} = mk(x{p});\n", p = i - 1),
+        "0\n",
+    );
+    let written = chain(
+        "let mk = |f| (f, f);\nlet x0 = (1, 1);\n",
+        LINKS,
+        &|i| format!("let x{i} = mk(x{p}); x{i} <- mk(x{p});\n", p = i - 1),
+        "0\n",
+    );
+    completes_within(&["--expand", "--no-fusion", "--no-cache"], &called, 7 * BILLION);
+    checks_within(&written, 5 * BILLION)
 }
 
 /// `head`, then `link(i)` for each `i` from 1 to `links`, then `tail`.

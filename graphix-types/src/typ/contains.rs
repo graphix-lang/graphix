@@ -2808,6 +2808,35 @@ fn same_content(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// Whether `a` and `b`, one of them a cell proved ground, are one type: a
+/// ground cell stands for its resolution ([`TVar::ground_resolution`]),
+/// and two nodes over one content, or of one kind over the same parts,
+/// hold each other.
+fn same_resolution(a: &Type, b: &Type) -> bool {
+    let ground = |t: &Type| match t {
+        Type::TVar(tv) => tv.ground_resolution(),
+        _ => None,
+    };
+    let (ra, rb) = match (ground(a), ground(b)) {
+        (None, None) => return false,
+        r => r,
+    };
+    let (a, b) = (ra.as_ref().unwrap_or(a), rb.as_ref().unwrap_or(b));
+    let same = |x: &Type, y: &Type| match (x, y) {
+        (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
+        (Type::TVar(v0), Type::TVar(v1)) => v0.cell_addr() == v1.cell_addr(),
+        (x, y) => same_content(x, y),
+    };
+    let parts = |x: &[Type], y: &[Type]| {
+        x.len() == y.len() && x.iter().zip(y.iter()).all(|(x, y)| same(x, y))
+    };
+    match (a, b) {
+        (Type::Tuple(x), Type::Tuple(y)) => parts(x, y),
+        (Type::Variant(t0, x, _), Type::Variant(t1, y, _)) => t0 == t1 && parts(x, y),
+        (a, b) => same(a, b),
+    }
+}
+
 /// The first open cell in `t` that `pick` takes, each shared node walked
 /// once; a function type's parts only `into_fns`.
 pub(super) fn find_open_cell(
@@ -3318,7 +3347,10 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        if (self as *const Type) == (t as *const Type) || same_content(self, t) {
+        if (self as *const Type) == (t as *const Type)
+            || same_content(self, t)
+            || same_resolution(self, t)
+        {
             return Ok(true);
         }
         // a commit over two closed sides binds nothing: it is the probe
@@ -5760,11 +5792,28 @@ impl Type {
 mod tests {
     use super::*;
     use crate::typ::{
-        normalize::NORMALIZED,
+        normalize::{NORMALIZED, tests::ground_pair_chain},
         setops::tests::past_eager,
         tvar::{InTask, new_task},
     };
     use arcstr::literal;
+
+    /// A ground cell and a pair of its resolution's parts hold each other
+    /// in one step, where a walk of the two takes a step a link.
+    #[test]
+    fn a_ground_cell_holds_its_resolutions_parts_at_once() {
+        let depth = 64;
+        let cells = ground_pair_chain(depth);
+        let below = Type::TVar(cells[depth - 1].clone()).resolve_tvars();
+        let pair = Type::Tuple(Arc::from_iter([below.clone(), below]));
+        let top = Type::TVar(cells[depth].clone());
+        let env = Env::default();
+        for (t0, t1) in [(&top, &pair), (&pair, &top)] {
+            CONTAINS_STEPS.with(|n| n.set(0));
+            t0.check_contains(&env, t1).unwrap();
+            assert_eq!(CONTAINS_STEPS.with(|n| n.get()), 1);
+        }
+    }
 
     // A type expanded through a chain of parametric typedefs, a DAG that
     // shares each level, contains the application it expanded with each

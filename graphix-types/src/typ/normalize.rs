@@ -135,6 +135,8 @@ pub(super) struct ResolveTvarsCx {
     /// The open quantifiers of the function types met: their bounds are
     /// part of the type (`fn<'a: Function>(..)`), so a copy keeps them all.
     pub(super) quantifiers: LPooled<AddrSet>,
+    /// How many copies of open cells the walk has made or met.
+    opened: usize,
 }
 
 impl ResolveTvarsCx {
@@ -146,7 +148,21 @@ impl ResolveTvarsCx {
             memo: LPooled::take(),
             predicates: false,
             quantifiers: LPooled::take(),
+            opened: 0,
         }
+    }
+}
+
+impl TVar {
+    /// The cell's binding resolved ([`Type::resolve_tvars`]) when the cell
+    /// is proved to reach no open cell, else `None`; the cell keeps it while
+    /// the proof stands, so it is resolved once however many ask.
+    pub fn ground_resolution(&self) -> Option<Type> {
+        self.ground_resolved(|b| {
+            let mut cx = ResolveTvarsCx::take();
+            let r = b.resolve_tvars_seen_int(&mut cx).unwrap_or_else(|| b.clone());
+            (r, cx.opened == 0)
+        })
     }
 }
 
@@ -154,6 +170,8 @@ impl ResolveTvarsCx {
 thread_local! {
     /// The nodes a normalize pass walked: those its memo did not hold.
     pub(super) static NORMALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The nodes a resolution walked: those its memo did not hold.
+    static RESOLVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A composite's identity: its kind and its content allocation's address,
@@ -453,6 +471,8 @@ impl Type {
         {
             return r.clone();
         }
+        #[cfg(test)]
+        RESOLVED.with(|n| n.set(n.get() + 1));
         let r = match self {
             Type::TVar(tv) => Some({
                 let addr = tv.cell_addr();
@@ -460,21 +480,28 @@ impl Type {
                     return Some(tv.forwarded_as(t.clone()));
                 }
                 if let Some(fresh) = cx.fresh.get(&addr) {
+                    cx.opened += 1;
                     return Some(Type::TVar(fresh.named_as(tv)));
                 }
                 if !cx.in_progress.insert(addr) {
+                    cx.opened += 1;
                     return Some(Type::TVar(tv.fresh_copy()));
                 }
-                let r = match tv.binding() {
-                    Some(t) => {
-                        let r = match t.resolve_tvars_seen_int(cx) {
-                            Some(t) => t,
-                            None => t,
-                        };
+                let resolve = |t: &Type, cx: &mut ResolveTvarsCx| {
+                    t.resolve_tvars_seen_int(cx).unwrap_or_else(|| t.clone())
+                };
+                let ground = tv.ground_resolved(|t| {
+                    let opened = cx.opened;
+                    let r = resolve(t, cx);
+                    (r, cx.opened == opened)
+                });
+                let r = match ground.or_else(|| tv.binding().map(|t| resolve(&t, cx))) {
+                    Some(r) => {
                         cx.done.insert(addr, r.clone());
                         tv.forwarded_as(r)
                     }
                     None => {
+                        cx.opened += 1;
                         let fresh = tv.fresh_copy();
                         cx.fresh.insert(addr, fresh.clone());
                         if cx.quantifiers.contains(&addr) {
@@ -833,7 +860,7 @@ impl Type {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::{env::Env, expr::ModPath, typ::TypeRef};
     use std::cmp::Ordering;
@@ -1118,5 +1145,43 @@ mod tests {
         assert!(key(&abs("A")) != key(&abs("B")));
         assert!(key(&named("A")) == key(&named("A")));
         assert!(key(&named("A")) != key(&named("B")));
+    }
+
+    /// Cells `c_0 = i64`, `c_k = (c_k-1, c_k-1)`, proved ground: what
+    /// `c_depth` holds.
+    pub(in crate::typ) fn ground_pair_chain(depth: usize) -> Vec<TVar> {
+        let mut cells: Vec<TVar> = vec![TVar::empty_named(arcstr::literal!("c"))];
+        cells[0].bind(Type::Primitive(Typ::I64.into()));
+        for _ in 0..depth {
+            let last = Type::TVar(cells[cells.len() - 1].clone());
+            let c = TVar::empty_named(arcstr::literal!("c"));
+            c.bind(Type::Tuple(Arc::from_iter([last.clone(), last])));
+            cells.push(c);
+        }
+        assert!(Type::TVar(cells[depth].clone()).prove_ground());
+        cells
+    }
+
+    /// A ground cell keeps what it resolved to: a chain of them resolves
+    /// a link at a time once, then each link of it at once, over the
+    /// first resolution's parts.
+    #[test]
+    fn a_ground_chain_resolves_once() {
+        let depth = 64;
+        let cells = ground_pair_chain(depth);
+        let walked = |tv: &TVar| {
+            RESOLVED.with(|n| n.set(0));
+            let r = Type::TVar(tv.clone()).resolve_tvars();
+            (r, RESOLVED.with(|n| n.get()))
+        };
+        let (first, n) = walked(&cells[depth]);
+        assert!(n <= 3 * depth + 2, "the first resolution walked {n} nodes");
+        let (again, n) = walked(&cells[depth]);
+        assert_eq!(n, 1, "a second resolution walked {n} nodes");
+        assert!(again.shares_content(&first));
+        let (below, n) = walked(&cells[depth - 1]);
+        assert_eq!(n, 1, "a link's resolution walked {n} nodes");
+        let Type::Tuple(parts) = &first else { panic!("not a pair") };
+        assert!(below.shares_content(&parts[0]));
     }
 }

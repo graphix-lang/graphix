@@ -52,11 +52,12 @@ use crate::{
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
-        callsite::CallSite,
+        callsite::{CallSite, may_hold_fn},
         lambda::{GXLambda, LambdaDef},
     },
     typ::{
-        Bound, ContainsFlags, CopySites, FnType, Indiscernible, Open, ReadCopies, Type,
+        Bound, ContainsFlags, CopySites, FnType, Indiscernible, Open, ReadCopies, TVar,
+        Type, tvar::Judgment,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -2075,6 +2076,15 @@ impl<R: Rt> CompileCtx<R> {
             /// past it one is copied as one, which holds a val narrower
             expansions: usize,
         }
+        /// A ground cell's binding holding no function or typedef: no
+        /// instance differs from its resolution, which the cell keeps.
+        fn plain_ground(tv: &TVar) -> Option<Type> {
+            let held = |b: &Type| (may_hold_fn(b, &mut LPooled::take()), true);
+            match tv.ground_holds(Judgment::MayHoldFn, held) {
+                Some(false) => tv.ground_resolution(),
+                Some(true) | None => None,
+            }
+        }
         fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
             crate::stack::ensure_sufficient(|| {
                 let key = t.shared_identity();
@@ -2087,7 +2097,8 @@ impl<R: Rt> CompileCtx<R> {
                 }
                 let outer = mem::replace(&mut m.copied, false);
                 let r = match t {
-                    Type::TVar(tv) => tv.binding().map(|b| instance(&b, m).unwrap_or(b)),
+                    Type::TVar(tv) => plain_ground(tv)
+                        .or_else(|| tv.binding().map(|b| instance(&b, m).unwrap_or(b))),
                     Type::Fn(ft) => {
                         m.copied = true;
                         Some(Type::Fn(Arc::new(ft.instantiate(m.open))))

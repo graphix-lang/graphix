@@ -185,15 +185,28 @@ structure is returned SHARED, never copied.
   generic_pair_call_chains_check_in_linear_time`,
   `typ::cast::tests::a_ground_cell_forgets_its_findings_when_its_binding_changes`,
   `typ::cast::tests::a_ground_cell_keeps_no_finding_that_looked_a_name_up`.
-  What the proof does not reach stays quadratic in such a chain: a pair
-  that holds a generic function value holds the function's quantifiers
-  open, so nothing above it is ground; a written binding's
-  `CompileCtx::monomorphic` rebuilds the chain's type at each link; and
-  each instance's elaboration resolves its signature anew
-  (`resolve_tvars`, then the contains walks over the resolved,
-  cell-free DAG) and fusion asks of each node's resolved type
-  (`meets_abstract`, `TypeMemo`), so `--expand` grows quadratically
-  (call-dag-arg-walk-01).
+- A ground cell keeps its binding's resolution too (`TCell::resolved`,
+  `TVar::ground_resolution`): `resolve_tvars` takes a ground cell's from
+  it, so a chain's links resolve once, each over the parts the link
+  below resolved to. A written binding's instance of a ground cell that
+  may hold no function or typedef (the kept `may_hold_fn`) is that
+  resolution (`CompileCtx::monomorphic`), and a containment holds at
+  once between a ground cell and a type of its resolution's parts
+  (`contains::same_resolution`). A write of the cell's binding drops it,
+  and so does a re-proof at a later epoch; a normal form written back
+  below the cell leaves it, as it means the same type. Pins:
+  `deep_nesting::generic_pair_call_chains_share_their_resolutions`,
+  `typ::normalize::tests::a_ground_chain_resolves_once`,
+  `typ::contains::tests::a_ground_cell_holds_its_resolutions_parts_at_once`.
+  What stays quadratic in such a chain: a pair that holds a generic
+  function value holds the function's quantifiers open, so nothing
+  above it is ground; and a resolution holds no cell, so nothing keeps a
+  walk's findings over it past the walk: an instance's elaboration binds
+  its signature's cells to the site's resolution and walks it whole
+  (`resolve_tvars` of the instance's type, `ContainsHist::closure`,
+  `FnType::held_at`), and fusion asks of each node's resolved type
+  (`meets_abstract`, `TypeMemo`, `unfolds_past`), so `--expand` still
+  grows quadratically (call-dag-arg-walk-01).
 
 - A chain of OPEN cells (a signature's bounds, each naming the next
   variable) has no ground mark to stop at, and every bind or merge of

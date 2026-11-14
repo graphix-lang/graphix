@@ -135,6 +135,7 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
         if c.binding.is_some() && c.ground < epoch {
             c.ground = epoch;
             c.kept = Kept::default();
+            c.resolved = None;
         }
     }
 }
@@ -1470,6 +1471,9 @@ pub struct TCell {
     /// The judgments of the ground binding the cell keeps while the proof
     /// at `ground` stands.
     pub(crate) kept: Kept,
+    /// The ground binding resolved ([`TVar::ground_resolved`]), kept while
+    /// the proof at `ground` stands and the binding is not written.
+    pub(crate) resolved: Option<Box<Type>>,
     /// The cell's number by what it reaches, until its next write: boxed,
     /// so a cell no walk numbers pays one word for it.
     pub(crate) place: Option<Box<Place>>,
@@ -1603,6 +1607,7 @@ impl Default for TCell {
             task: TASK.get(),
             ground: 0,
             kept: Kept::default(),
+            resolved: None,
             place: None,
         }
     }
@@ -1648,7 +1653,8 @@ impl TCell {
 
     /// Bind the cell, or clear its binding with `None`.
     pub(crate) fn set_binding(&mut self, binding: Option<Type>) {
-        self.binding = binding
+        self.binding = binding;
+        self.resolved = None
     }
 
     fn place(&self) -> Option<Place> {
@@ -2355,6 +2361,35 @@ impl TVar {
                 Some(found)
             }
         }
+    }
+
+    /// The cell's binding resolved ([`Type::resolve_tvars`]) when it
+    /// reaches no open cell ([`Self::ground_now`]), else `None`: the form
+    /// the cell keeps, or `resolve`'s of the binding, which the cell keeps
+    /// while the proof stands when `resolve` says it holds no cell.
+    pub(super) fn ground_resolved(
+        &self,
+        resolve: impl FnOnce(&Type) -> (Type, bool),
+    ) -> Option<Type> {
+        let epoch = ground_epoch();
+        let (cell, binding) = {
+            let link = self.read();
+            let c = link.cell.read();
+            match (&c.binding, &c.resolved) {
+                (Some(_), Some(r)) if c.ground == epoch => return Some((**r).clone()),
+                (Some(b), None) if c.ground == epoch => (link.cell.clone(), b.clone()),
+                _ => return None,
+            }
+        };
+        let (r, keep) = resolve(&binding);
+        if keep && ground_epoch() == epoch {
+            let mut c = cell.0.write();
+            let written = c.binding.as_ref().map(Type::shared_identity);
+            if c.ground == epoch && written == Some(binding.shared_identity()) {
+                c.resolved = Some(Box::new(r.clone()))
+            }
+        }
+        Some(r)
     }
 
     /// Whether the cell is bound and proved, at the current

@@ -534,7 +534,7 @@ fn names_definitions(formal: &FnType, value: &FnType) -> bool {
 
 /// Whether a function may stand somewhere in `t`, through bindings; a
 /// typedef may expand to one. Each shared node is asked once (`seen`).
-fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+pub(crate) fn may_hold_fn(t: &Type, seen: &mut AHashSet<usize>) -> bool {
     ensure_sufficient(|| match t {
         _ if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
         Type::Fn(_) | Type::Ref(_) => true,
