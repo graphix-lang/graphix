@@ -3154,18 +3154,6 @@ impl<R: Rt> PatternNode<R> {
         // refused, naming a variable for each part; or its binds take every member's
         // part there. probes: ~/ptmp/cr29/scratch/r24/24a/wvt/{h1,h3,h5}.gx,
         // settle.patch (written-variable-twice-open-01)
-        // CR claude for claude: [bug/high] A written test's own variable over a part
-        // typed `Any` stays open where its arm does not decide it, and the fused run
-        // dies: `let f = |x: Any| select x { ('q, i64) as (c, _) => c, _ => 0 }; let r =
-        // f(("s", 2)); println(r)` checks; fused it panics, "kernel param `r`: runtime
-        // String("s") does not match the compiled Scalar(I64) slot", and --no-fusion
-        // prints s. base-r24 alike. The inferred twin, `(c, _) => c`, is `Any` there
-        // (PendingSettle::InsideAny); that judgment is not made for a written test, and
-        // would skip the variable's cell, which no definition owns (Level::Written).
-        // `(Any, i64) as (c, _)` runs. What would close it: the same close for a
-        // written test's variable at an `Any` part, or a refusal that names `Any` for
-        // `'q`. probe: ~/ptmp/cr29/scratch/r24/24b/nvd/wq.gx
-        // (written-variable-over-any-open-01)
         if self.type_predicate.has_unbound() {
             reaching.narrow_pattern(env, &self.type_predicate)?;
         }

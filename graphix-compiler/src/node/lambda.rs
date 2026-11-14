@@ -1512,25 +1512,6 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, res)?;
                     let body = self.body.typ().clone();
                     let rtype = &self.typ.rtype;
-                    // CR claude for claude: [risk/low] Under GRAPHIX_NO_SUBST=1 an instance
-                    // checked again gives a cell its definition closed as `Any` (a name
-                    // inside a part typed `Any` that nothing decided,
-                    // PendingSettle::InsideAny) to another member of its return: the
-                    // definition's return is `[(i64, i64), (Any, Any)]`, the instance's body
-                    // is `[(i64, i64), ('a, 'b)]` with its own cells still open, and this
-                    // containment gives the open pair to the first member that holds it, so
-                    // the instance's arm tests `{a: i64, b: i64}`. `let f = |x: Any| select
-                    // x { {a, b} => (a, b), _ => (0, 0) }; f({a: "s", b: 1})` prints ("s",
-                    // 1) by default, fused and --no-fusion, and (0, 0) under
-                    // GRAPHIX_NO_SUBST=1 (as every mode did before those cells were
-                    // closed). 3 of 500 generated selects over `Any` parts differ so
-                    // (gen3.py, seed 2412). Closing the instance's cells before this
-                    // containment is wrong where the definition's return decided them
-                    // (`-> i64`). What would close it: a union holding `Any` takes an open
-                    // cell as `Any` does, binding nothing, or the instance's cells take
-                    // what the definition's did. probes:
-                    // ~/ptmp/cr29/scratch/r24/24b/nvd/{ns1.gx,p3.txt,p5.txt} (README; run a
-                    // .txt with rb.sh) (nosubst-any-member-first-01)
                     let contain =
                         rtype.check_contains_rigid(&ctx.env, &body).map_err(|e| {
                             let method = ctx

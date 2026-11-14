@@ -7466,6 +7466,98 @@ run!(
     prints(r#""[\"s\", \"q\"] [\"q\"] [2, 5]""#)
 );
 
+// A part is `Any` wherever the scrutinee's type says so: another arm's
+// `_` over an unannotated parameter, a field, a payload, a slice, a list,
+// a member of a union, an enclosing definition's parameter, a top-level
+// let. A name inside it that its arm leaves open is `Any` and takes
+// every value there.
+run!(
+    name_inside_an_any_part_nothing_decides_is_any,
+    r#"{
+    let t = |x: (i64, Any)| select x { (1, _) => 0, (2, (c, _)) => c, (_, _) => 1 };
+    let u = |x| select x { (1, _) => 0, (2, (c, _)) => c, (_, _) => 1 };
+    let s = |x: Any| select x { {a, b} => (a, b), _ => (0, 0) };
+    let v = |x: Any| select x { `A(`B(c), d) => (c, d), _ => (0, 0) };
+    let l = |x: Any| select x { [a, b] => (a, b), _ => (0, 0) };
+    let m = |x: [i64, (Any, i64)]| select x { ((a, b), n) => (a, n), _ => (0, 0) };
+    let k = |x: Any| { let g = |y| select x { [<c, r..>] => c, _ => y }; g(0) };
+    let q = |x: Any| select x { ('q, i64) as (c, _) => c, _ => 0 };
+    let w: Any = (2, ("s", 4));
+    let top = select w { (2, (c, _)) => c, _ => 1 };
+    (
+      t((2, ("s", 4))), u((2, ("s", 4))), s({a: "s", b: 1}), v(`A(`B("s"), true)),
+      l(["s", "t"]), m((("s", 1), 2)), k([<"s">]), q(("s", 2)), top
+    )
+}"#,
+    prints(
+        r#"["s", "s", ["s", i64:1], ["s", true], ["s", "t"], ["s", i64:2], "s", "s", "s"]"#
+    )
+);
+
+run!(
+    name_inside_a_part_another_arms_wildcard_makes_any_is_not_decided_by_a_caller_refused,
+    r#"{
+    let f = |x| select x { (1, _) => 0, (2, (c, _)) => c, (_, _) => 1 };
+    f((2, ("s", 4))) + 1
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+// A function something writes, or one a call returns, is one instance,
+// and its uses decide no arm's test either.
+run!(
+    name_inside_an_any_part_of_one_instance_nothing_decides_is_any,
+    r#"{
+    let f = |x: Any| select x { (c, _) => c, _ => 0 };
+    f <- never();
+    let o = |x: Any| {
+        let g = |y: i64| select x { (c, _) => c, _ => y };
+        g <- never();
+        g(0)
+    };
+    let mk = |z, x: Any| |u: i64| select x { (c, _) => c, _ => z };
+    let h = mk(0, ("s", 1));
+    let (a, b, c) = (f(("s", 2)), o(("s", 1)), h(1));
+    let n = |v: i64| v * 2 + 1;
+    "[a] [b] [c] [n(20)]"
+}"#,
+    prints(r#""s s s 41""#)
+);
+
+run!(
+    name_inside_an_any_part_of_one_instance_is_not_decided_by_its_uses_refused,
+    r#"{
+    let f = |x: Any| select x { (c, _) => c, _ => 0 };
+    f <- never();
+    f((5, 2)) + 1
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+run!(
+    name_inside_an_any_part_of_a_returned_function_is_not_decided_by_its_use_refused,
+    r#"{
+    let mk = |z| |x: Any| select x { (c, _) => c, _ => z };
+    let h = mk(0);
+    h((5, 1)) + 1
+}"#,
+    refused("cannot compute Any + i64")
+);
+
+// An argument a call leaves undecided decides no test: the name the arm
+// relates to it is `Any` with it.
+run!(
+    name_inside_an_any_part_beside_an_undecided_argument_is_any,
+    r#"{
+    let same = |a: 'a, b: 'a| a;
+    let p = |d, x: Any| select x { ([c, ..], _) => { let k = same([c], d); c }, _ => 0 };
+    let e = [];
+    p(e, (["s"], 3))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s");
+    FuseExpect::None
+);
+
 // A slice's rest nothing types takes the type of a name beside it, so
 // the test reads every element; with no name it stands over any value.
 run!(

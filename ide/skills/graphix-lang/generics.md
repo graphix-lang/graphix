@@ -134,10 +134,11 @@ beside arms that take it apart (`(1, b)` beside `` (2, `A(x)) `` and
 call's argument whose shape there is decided is taken as `|s: (i64,
 [`A('x), `B('y)])|` takes it; one whose shape is still undecided
 (`f((2, u))` in a wrapper `|u|`) is not: annotate the wrapper's
-parameter. A `_` at the part is no
-such union: it holds any value and decides nothing of a name another arm
-binds inside it (`(1, _, z)` beside `(2, (c, _), z)`), so the call is
-refused: annotate the parameter. An impl's target may
+parameter. A `_` at the part makes it
+`Any`, and a name another arm binds inside it (`(1, _, z)` beside `(2,
+(c, _), z)`) is fixed at its arm's end, `Any` or what the arm decided
+(`select.md`), so a call's decided argument is taken there too, and a
+caller's use of the result decides nothing of the name. An impl's target may
 not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
 either, unless the arguments before it decided the members. The parts of
@@ -170,7 +171,10 @@ ok let f = |s| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b)
 ok let f = |s| select s { (1, b) => (b, 1), (2, b) => (b, 2), (3, b) => (b, 3), (_, b) => (b, 0) }; f((1, "q"))
 no "string does not contain i64" let f = |s| select s { (1, b) => 0, (2, b) => b + 1, (3, b) => str::len(b), _ => 0 }; f((2, 5))
 ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; (f((1, `A(5))), f((3, `B("x"))))
-no "picks none by order" let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; f((2, ("s", 4), 0))
+ok let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; f((2, ("s", 4), 0))
+ok let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c + 1, (_, _, z) => z }; f((2, ("s", 4), 0))
+no "cannot compute Any + i64" let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; f((2, ("s", 4), 0)) + 1
+no "picks none by order" let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; let g = |u| f((2, u, 0)); g(("s", 4))
 ok let f = |x: (i64, (string, i64), i64)| select x { (1, _, z) => "[z]", (2, (c, _), z) => c, (_, _, z) => "[z]" }; f((2, ("s", 4), 0))
 ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; let g = |u: [`A(i64), `B(string)]| f((2, u)); g(`A(5))
 ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; let h = |a| f((2, `A(a))); h(5)

@@ -13751,7 +13751,7 @@ run!(
 // A variable no argument holds whose bound is a closed type settles to it
 // before the variable that holds it, which then tells the members of its
 // own bound apart; with a `never()` at it the members stay undecided, and
-// the call is refused until the `never` is given its type.
+// the one that holds the other takes the argument and decides it.
 run!(
     closed_bound_under_a_union_bound_settles_before_its_holder,
     r#"{
@@ -13763,14 +13763,29 @@ run!(
 );
 
 run!(
-    never_under_a_union_bound_of_two_arrays_refused,
+    never_under_a_union_bound_of_two_arrays_goes_to_the_member_holding_the_other,
     r#"{
   type O<'t> = ['t, null];
   let f = 'a3: O<'a4>, 'a4: [Array<'a5>, Array<O<'a5>>], 'a5: string
     |x3: 'a3, x5: 'a5| x3;
   f(["s"], never())
 }"#,
-    refused("Array<string> could go to Array<O<'a5: unbound within string>> or Array<'a5");
+    prints("[\"s\"]");
+    FuseExpect::None
+);
+
+run!(
+    never_under_a_union_bound_of_two_arrays_written_another_type_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: [Array<'a5>, Array<O<'a5>>], 'a5: string
+    |x3: 'a3, x5: 'a5| x3;
+  let v = never();
+  let r = f(["s"], v);
+  v <- 1;
+  r
+}"#,
+    refused("within string and cannot hold i64");
     FuseExpect::None
 );
 

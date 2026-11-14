@@ -727,14 +727,20 @@ one member, chosen by rules that read the union alone:
   it stands once the first has. Where one would still have a cell to
   decide, none takes it: `[(i64, Any, 'z), (i64, ('c, Any), 'z)] ⊇ (i64,
   (string, i64), i64)` is refused, since the first member's `Any` decides
-  nothing of `'c`, which the second member's arm reads its bind by. So is
-  a type still undecided where the others would not hold what it becomes
+  nothing of `'c`, which the second member's arm reads its bind by. No
+  select gives a scrutinee that union: a name an arm binds inside a part
+  another arm's `_` makes `Any` is fixed at its arm's end, `Any` or what
+  the arm decided (`design/select_coverage.md`, "A test inside an `Any`
+  part"), so `(1, _, z)` beside `(2, (c, _), z)` is `[(i64, Any, 'z),
+  (i64, (Any, Any), 'z)]` and the first member takes the argument. A
+  type still undecided is refused too where the others would not hold what
+  it becomes
   (`(i64, 'q)` against `` [(i64, [`A('x), `B('y)]), (i64, `A('x)), (i64,
   `B('y))] ``), and a pre-unification leaves the choice to the argument's
   check. Pins
   `typ::contains::tests::a_member_holding_the_others_takes_a_type_where_it_decides_their_cells`,
   `lang::select_undecided::bind_beside_arms_that_take_the_part_apart*`,
-  `wildcard_member_holding_a_bind_inside_takes_no_argument`.
+  `wildcard_member_holding_a_bind_inside_*`.
 
 A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
 ⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`
@@ -1422,7 +1428,9 @@ An image carries each cell's level and each definition's depth.
   holder, which then holds them decided (`'a4: [Array<'a5>,
   Array<['a5, null]>], 'a5: string` above `Array<string>` tells its
   members apart only by a decided `'a5`; with a `never()` at `'a5` the
-  call is refused for the undecided members until the `never` is typed).
+  members are undecided and the one that holds the other, `Array<['a5,
+  null]>`, takes the argument and decides `'a5` as the other would,
+  `contains::widest` above).
   Pins `typ::settle::test::a_terminal_settle_takes_a_cell_above_a_type_before_its_bounds_cells`,
   `lang::types::never_under_a_union_bound_*`,
   `unheld_variable{,s}_under_*`,

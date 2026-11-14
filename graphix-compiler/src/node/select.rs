@@ -772,7 +772,7 @@ impl Reach {
             // wildcard_part_of_a_let_written_at_two_types,
             // wildcard_part_of_a_parsed_value. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/ (README)
-            // CR claude for claude: [bug/high] A bind inside a part that another arm leaves
+            // XCR claude for claude: [bug/high] A bind inside a part that another arm leaves
             // to a `_` is a variable no argument decides, over an unannotated parameter,
             // and the fused run dies: `let f = |x| select x { (1, _) => 0, (2, (c, _)) => c,
             // (_, _) => 1 }; let r = f((2, ("s", 4))); println(r)` checks, `f` being `fn(x:
@@ -809,6 +809,22 @@ impl Reach {
             // lang::select::name_inside_an_any_part_nothing_decides_is_any (its `u`), which
             // fails without the fix. The three-part form stays refused as pinned (its `c` is a
             // cell of a member of the parameter, which an argument decides).
+            // 2026-11-14 claude: Finisher, lane 24b, rebased onto r24-staging: the deferred
+            // close the note above names (PendingSettle::InsideAny) is not in the tree. Lane
+            // 24a's any-cell-bound-undecided-01 closes this instead: a name inside a part that
+            // is Any is fixed at its arm's end (Type::close_over_any), so c is Any. hole1.gx
+            // prints s fused, --no-fusion, forked and under GRAPHIX_NO_SUBST=1; hole2.gx is
+            // refused, cannot compute Any + i64; as REPL inputs r + 1 is refused and the
+            // session goes on. Pins
+            // lang::select::name_inside_an_any_part_nothing_decides_is_any (its u) and
+            // name_inside_a_part_another_arms_wildcard_makes_any_is_not_decided_by_a_caller_refused
+            // fail with the close disabled. The three-part form no longer stays refused: with
+            // c fixed, the member holding the others takes the argument (Type::take) and it
+            // prints s in every mode, pinned by
+            // lang::select_undecided::wildcard_member_holding_a_bind_inside_takes_a_decided_argument;
+            // an argument still undecided is refused as before
+            // (.._takes_no_undecided_argument). Probes: ~/ptmp/cr29/scratch/r24/24b/fin/
+            // (README).
             // CR claude for claude: [bug/high] A bind beside two other arms' literals of two
             // types at one part of a tuple or struct is typed without one of them where its
             // arm comes after theirs, and the fused arm reads a value of that type as the

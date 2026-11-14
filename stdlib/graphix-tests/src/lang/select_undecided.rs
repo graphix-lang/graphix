@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, as_i64s, refused},
+    testing::{FuseExpect, as_i64s, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -2723,11 +2723,29 @@ run!(bind_beside_arms_that_take_the_part_apart_used_as_another_type_refused, r#"
 }"#, refused("does not contain (i64, `B(i64))"); FuseExpect::None);
 
 // The member that holds the others takes an argument only where that
-// leaves nothing for another to decide: a `_` holds any value, and what
-// `c` reads would stay open.
-run!(wildcard_member_holding_a_bind_inside_takes_no_argument, r#"{
+// leaves nothing for another to decide. A `_` holds any value, and a
+// name another arm binds inside that part is fixed at its arm's end
+// (`Any`, or what the arm decided), so the `_`'s member takes an argument
+// whose shape is decided; one still undecided goes to neither.
+run!(
+    wildcard_member_holding_a_bind_inside_takes_a_decided_argument,
+    r#"{
     let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z };
-    f((2, ("s", 4), 0))
+    let g = |x| select x { (1, _, z) => z, (2, (c, _), z) => c + 1, (_, _, z) => z };
+    (f((2, ("s", 4), 0)), f((1, 7, 3)), f((5, "q", "zz")), g((2, (5, 4), 0)), g((2, ("s", 4), 7)))
+}"#,
+    prints(r#"["s", i64:3, "zz", i64:6, i64:7]"#)
+);
+
+run!(wildcard_member_holding_a_bind_inside_is_not_decided_by_a_caller_refused, r#"{
+    let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z };
+    f((2, ("s", 4), 0)) + 1
+}"#, refused("cannot compute Any + i64"); FuseExpect::None);
+
+run!(wildcard_member_holding_a_bind_inside_takes_no_undecided_argument, r#"{
+    let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z };
+    let g = |u| f((2, u, 0));
+    g(("s", 4))
 }"#, refused("could go to (i64, Any, '_"); FuseExpect::None);
 
 run!(wildcard_member_holding_a_bind_inside_annotated, r#"{
