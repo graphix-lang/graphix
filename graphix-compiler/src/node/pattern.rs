@@ -3020,7 +3020,8 @@ impl<R: Rt> PatternNode<R> {
     }
 
     /// A refusal of [`Type::close_over_any`] told as the written test
-    /// that decides the cell: `pat` is the arm's pattern as written.
+    /// that decides the cell, or as the declared variable no test can
+    /// stand on: `pat` is the arm's pattern as written.
     pub(super) fn undecided_over_any(
         &self,
         env: &Env,
@@ -3028,6 +3029,10 @@ impl<R: Rt> PatternNode<R> {
         e: anyhow::Error,
     ) -> anyhow::Error {
         let Some(OpenOverAny(tv)) = e.downcast_ref() else { return e };
+        let pat = match pat {
+            Some(p) => format_compact!("{p}"),
+            None => CompactString::const_new("its pattern"),
+        };
         // the name that is the cell, else the first whose type holds it
         let mut held: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let (mut is, mut holds) = (None, None);
@@ -3043,13 +3048,22 @@ impl<R: Rt> PatternNode<R> {
                 }
             }
         });
-        let name = match is.or(holds) {
+        let name = is.or(holds);
+        if tv.is_rigid() {
+            let var = match (tv.written_open(), name) {
+                (Some(_), _) => format_compact!("the declared variable '{}", tv.name),
+                (None, Some(n)) => format_compact!("the declared variable `{n}` is of"),
+                (None, None) => CompactString::const_new("a declared variable"),
+            };
+            return anyhow!(
+                "{pat} tests {var} inside a value that may be Any, and a call that \
+                 leaves the variable undecided would pass any value there: write the \
+                 type the test takes (`(i64, i64) as (a, b)`)"
+            );
+        }
+        let name = match name {
             Some(n) => format_compact!("`{n}`"),
             None => format_compact!("{}", Type::TVar(tv.clone())),
-        };
-        let pat = match pat {
-            Some(p) => format_compact!("{p}"),
-            None => CompactString::const_new("its pattern"),
         };
         anyhow!(
             "this arm does not decide the type of {name}, which {pat} takes out of a \

@@ -243,9 +243,14 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   b`: one cell `'t: Number + Singleton` at both positions, which no test
   of a bound could hold to one type), is refused, naming the written test
   (`PatternNode::undecided_over_any`); `(i64, i64) as (a, b)` and `a + b +
-  1` are tested. A declared variable stands, an instance's test being its
-  type there, and so do the cells of a function type. Pins:
-  `lang::select::any_part_cell_*`.
+  1` are tested. A declared variable there is refused alike where `Any`
+  does not meet its bound (`'t: Number + Singleton`, written in a test,
+  `('t, 't) as (a, b)`, or reached by a bind, `(a, b) => a + y` beside
+  `y: 't`): an instance's test is its type for the variable, and a call
+  that leaves it undecided would pass every value to what the bound
+  allows. One with no bound stands, since its body can do nothing with a
+  value of it that depends on the type, and so do the cells of a function
+  type. Pins: `lang::select::any_part_cell_*`.
 
 - **A written test's own variable is a part the arm binds, not one it
   tests.** Nothing declares it, and where the narrowing leaves it open it

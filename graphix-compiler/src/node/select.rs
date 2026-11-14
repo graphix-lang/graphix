@@ -3310,7 +3310,7 @@ impl<R: Rt> Select<R> {
                 }
             }
             wrap!(n, child(n, ctx))?;
-            if pat.type_predicate.has_free() {
+            if pat.type_predicate.has_unbound() {
                 reaching
                     .close_over_any(&ctx.env, &pat.type_predicate)
                     .map_err(|e| {

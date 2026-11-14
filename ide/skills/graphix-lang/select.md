@@ -98,7 +98,11 @@ select, and runtime forms. Each rule refuses and names the fix.
   a + b` being a number of no one type. Write the test, `(i64, i64) as
   (a, b)`, or decide it in the arm (`a + b + 1`). A written test's own
   variable there is the arm's alike (`('q, i64) as (r, n) => r + n`
-  tests an `i64`). A slice tests every element against
+  tests an `i64`). A declared variable with a bound is no test there (a
+  call that leaves it undecided would test nothing): `('t, 't) as (a,
+  b)` under `'t: Number + Singleton` is refused, and so is a bind used
+  at it (`(a, b) => a + y` beside `y: 't`); one with no bound is each
+  call's type for it. A slice tests every element against
   the union of its elements' types, so with a `_` among them, or a rest
   beside no name, it tests none and every name under it is `Any`: `[(a,
   b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused. Write the
@@ -154,6 +158,9 @@ no "does not decide the type of `a`" |x: Any| -> i64 select x { (a, b) => a + b,
 ok |x: Any| select x { (i64, i64) as (a, b) => a + b, _ => 0 }
 ok |x: Any| select x { (a, b) => a + b + 1, _ => 0 }
 no "cannot compute Any + i64" let f = |x: Any| select x { (a, b) => a, _ => never() }; let v: Any = (1, 2); f(v) + 1
+no "tests the declared variable 't inside a value that may be Any" 't: Number + Singleton |x: Any| -> 't select x { ('t, 't) as (a, b) => a + b, _ => never() }
+no "tests the declared variable `a` is of" 't: Number + Singleton |x: Any, y: 't| select x { (a, b) => a + y, _ => y }
+ok |x: Any, y: 't| select x { ('t, i64) as (r, n) => [r, y], _ => [y] }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }

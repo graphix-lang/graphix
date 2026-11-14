@@ -6686,6 +6686,60 @@ run!(
     refused("cannot compute Any + Any")
 );
 
+// A declared variable with a bound is no test inside an `Any` part: a
+// call that leaves it undecided would pass any value to what the bound
+// allows.
+run!(
+    any_part_cell_a_bounded_declared_variable_refused,
+    r#"{
+    let f = 't: Number + Singleton |x: Any| -> 't select x {
+      ('t, 't) as (a, b) => a + b,
+      _ => never()
+    };
+    let v: Any = (1, 2.5);
+    f(v)
+}"#,
+    refused("(a, b) tests the declared variable 't inside a value that may be Any")
+);
+
+run!(
+    any_part_cell_a_bind_of_a_bounded_declared_variable_refused,
+    r#"{
+    let f = 't: Number + Singleton |x: Any, y: 't| select x {
+      (a, b) => { let k: 't = a; k + b },
+      _ => y
+    };
+    let v: Any = ("s", "t");
+    f(v, never())
+}"#,
+    refused("tests the declared variable `a` is of inside a value that may be Any")
+);
+
+run!(
+    any_part_cell_a_bounded_declared_variable_under_a_part_refused,
+    r#"{
+    let f = 't: Number + Singleton |x: (Any, i64), y: 't| select x {
+      ((a, b), n) => a + y,
+      _ => y
+    };
+    let v: Any = (3, 1);
+    f((v, 1), 2)
+}"#,
+    refused("tests the declared variable `a` is of inside a value that may be Any")
+);
+
+// One with no bound stands: the test is each call's type for it.
+run!(
+    any_part_cell_an_unbounded_declared_variable_is_the_calls_type,
+    r#"{
+    let f = |x: Any, y: 't| select x { ('t, i64) as (r, n) => [r, y], _ => [y] };
+    let v: Any = ("s", 1);
+    let u: Any = (2, 1);
+    "[f(v, "q")] [f(u, "q")] [f(u, 5)]"
+}"#,
+    prints(r#""[\"s\", \"q\"] [\"q\"] [2, 5]""#)
+);
+
 // A slice's rest nothing types takes the type of a name beside it, so
 // the test reads every element; with no name it stands over any value.
 run!(

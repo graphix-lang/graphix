@@ -1696,6 +1696,12 @@ fn conjuncts_admit(
     Ok(true)
 }
 
+/// Whether every conjunct of the open cell's constraints contains `t`
+/// ([`conjuncts_admit`]).
+pub(super) fn cell_admits(tv: &TVar, env: &Env, t: &Type) -> Result<bool> {
+    conjuncts_admit(tv, BitFlags::empty(), env, &mut ContainsHist::new(), t)
+}
+
 /// Whether the rigid open cell `tv` (as `tt`) holds `t`: a rigid cell
 /// holds only itself, ⊥, what one of its lower bounds holds (`t ⊆ L ⊆
 /// tv`), since whatever it stands for holds each, and a union of such.
