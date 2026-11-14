@@ -1797,6 +1797,12 @@ impl<X: GXExt> GX<X> {
                 first_cycle = false;
                 info!("first cycle time: {:?}", st.elapsed());
             }
+            if let Some(code) = self.ctx.control.process_exit() {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().flush();
+                std::process::exit(code)
+            }
             if self.ctx.control.exited() {
                 self.run_exited(to_rt, aborted, &mut sets, &mut input).await;
                 return Ok(());

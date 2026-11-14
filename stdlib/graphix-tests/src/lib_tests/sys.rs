@@ -211,6 +211,44 @@ async fn exit_without_a_listener_keeps_the_process() -> Result<()> {
     Ok(())
 }
 
+// sys::exit under an embedder that seeded no ExitRequest ends the
+// process after the cycle that asked, which runs whole: what its walk
+// reaches after the exit prints. The program runs in a child of this
+// binary, which the process exit ends with the program's code.
+#[tokio::test(flavor = "current_thread")]
+async fn exit_without_a_request_ends_the_process_after_its_cycle() -> Result<()> {
+    const CHILD: &str = "GRAPHIX_TEST_EXIT_PROCESS_CHILD";
+    const NAME: &str =
+        "lib_tests::sys::exit_without_a_request_ends_the_process_after_its_cycle";
+    if std::env::var_os(CHILD).is_some() {
+        let _ctx = testing::eval(
+            r#"{
+                let n = 0;
+                n <- n + 1;
+                sys::exit(select n { m if m == 20 => 7, _ => never() });
+                println("n=[n]");
+                n
+            }"#,
+            &crate::TEST_REGISTER,
+        )
+        .await?;
+        tokio::time::sleep(HANG_GUARD).await;
+        std::process::exit(99)
+    }
+    let out = std::process::Command::new(std::env::current_exe()?)
+        .args([NAME, "--exact", "--include-ignored", "--nocapture"])
+        .env(CHILD, "1")
+        .output()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(7), "{:?}\n{stdout}", out.status);
+    assert_eq!(
+        stdout.lines().filter(|l| l.starts_with("n=")).last(),
+        Some("n=20"),
+        "{stdout}"
+    );
+    Ok(())
+}
+
 // sys::exit ends the program in the cycle that asks. That cycle runs
 // whole, what its walk reaches after the exit included, and its batch is
 // delivered; no cycle runs after it, so a counter that runs flat out stops

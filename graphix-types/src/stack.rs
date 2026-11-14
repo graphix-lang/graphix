@@ -6,7 +6,9 @@ use std::{
     io,
     sync::{
         LazyLock, OnceLock,
-        atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{
+            AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+        },
     },
     thread::JoinHandle,
 };
@@ -357,6 +359,10 @@ pub enum CtlFlag {
     /// Set by the program ([`Control::exit`]): the cycle that set it is
     /// the runtime's last.
     Exit = 16,
+    /// Set beside `Exit` by a program no embedder listens for
+    /// ([`Control::exit_process`]): the run loop ends the process with
+    /// the code after that cycle.
+    ExitProcess = 32,
 }
 
 /// What stopped a runtime before its embedder shut it down.
@@ -383,6 +389,7 @@ impl StopCause {
 #[derive(Debug)]
 pub struct Control {
     flags: AtomicU32,
+    exit_code: AtomicI32,
     stack_budget: AtomicUsize,
     /// Bytes of grown stack segments live in this runtime's cycle, on
     /// every thread of its evaluation.
@@ -494,6 +501,7 @@ impl Control {
     pub fn new() -> Self {
         Control {
             flags: AtomicU32::new(0),
+            exit_code: AtomicI32::new(0),
             stack_budget: AtomicUsize::new(default_budget()),
             grown: AtomicUsize::new(0),
             par: AtomicU8::new(ParMode::from_env() as u8),
@@ -782,6 +790,23 @@ impl Control {
     /// embedder until that stops it. Sticky.
     pub fn exit(&self) {
         self.flags.fetch_or(CtlFlag::Exit as u32, Ordering::Release);
+    }
+
+    /// [`Self::exit`] for a program whose embedder takes no request: the
+    /// run loop ends the process with `code` once the cycle that asked
+    /// has run whole and sent its batch.
+    pub fn exit_process(&self, code: i32) {
+        self.exit_code.store(code, Ordering::Relaxed);
+        self.flags.fetch_or(
+            CtlFlag::Exit as u32 | CtlFlag::ExitProcess as u32,
+            Ordering::Release,
+        );
+    }
+
+    /// The code the process is to end with ([`Self::exit_process`]).
+    pub fn process_exit(&self) -> Option<i32> {
+        (self.flags.load(Ordering::Acquire) & (CtlFlag::ExitProcess as u32) != 0)
+            .then(|| self.exit_code.load(Ordering::Relaxed))
     }
 
     /// True once the program has ended itself ([`Self::exit`]).

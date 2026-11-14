@@ -864,7 +864,7 @@ impl<R: Rt> Apply<R> for Exit {
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
             let code = u8::try_from(code).map_or(1, i32::from);
-            // CR claude for claude: [risk/low] Under an embedder that seeded no
+            // XCR claude for claude: [risk/low] Under an embedder that seeded no
             // `ExitRequest` the process ends here, inside the cycle that asked:
             // what that cycle's walk reaches after the exit never runs and a
             // forked branch is cut wherever it is, where under a request the
@@ -879,12 +879,20 @@ impl<R: Rt> Apply<R> for Exit {
             // does; lib_tests/sys.rs's two exit tests seed theirs), so a
             // fixture that calls sys::exit ends its test binary on the spot.
             // The shell and the fuzzer seed one.
+            // 2026-11-14 claude: sys::exit without a request now calls
+            // Control::exit_process(code); the run loop (gx.rs) flushes and
+            // ends the process after the cycle that asked has run whole and
+            // sent its batch. Pin
+            // lib_tests::sys::exit_without_a_request_ends_the_process_after_its_cycle
+            // (a child process: its last printed cycle is n=20 and status 7)
+            // fails with the old std::process::exit in Exit::update (last line
+            // n=19).
             match ctx.libstate.get::<graphix_package_core::ExitRequest>() {
                 Some(r) => {
                     ctx.control.exit();
                     r.request(code)
                 }
-                None => std::process::exit(code),
+                None => ctx.control.exit_process(code),
             }
         }
         TagValue::phantom_ref()

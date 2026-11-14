@@ -115,9 +115,11 @@ the cycle did not run whole, so the stop decides how the shell ends
 asked for, and a termination signal ends the shell while it waits. An
 async call the last cycle started is not waited for: the shutdown
 aborts it as a sleep would, so a program exits on the call's result.
-An embedder that seeded no `ExitRequest` gets the process's exit on
-the spot, where `Exit::update` runs. Pins:
+An embedder that seeded no `ExitRequest` gets the process's exit with
+the code (`Control::exit_process`) after the cycle that asked has run
+whole and sent its batch: the run loop ends the process. Pins:
 `lib_tests::sys::exit_is_the_programs_last_cycle`,
+`lib_tests::sys::exit_without_a_request_ends_the_process_after_its_cycle`,
 `graphix-shell/tests/shell/script_exit.rs`, the exit-cycle wedges of
 `graphix-shell/tests/shell/interrupt_wedge.rs`.
 
