@@ -1331,9 +1331,20 @@ fn commit_cell_bounds(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    if !commit_lower(tv, flags, env, hist, t)? {
-        return Ok(false);
-    }
+    Ok(commit_lower(tv, flags, env, hist, t)?
+        && commit_conjuncts(tv, flags, env, hist, t)?)
+}
+
+/// The conjuncts' half of [`commit_cell_bounds`]: the open cells of `t`
+/// take their part of each conjunct, and the open cells a conjunct holds
+/// stand above their part of `t`.
+fn commit_conjuncts(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
         if c.is_trait_ref(env) {
             for m in Type::dispatch_members(env, t)?.iter() {
@@ -1405,6 +1416,20 @@ fn commit_cell_bounds(
         }
     }
     Ok(true)
+}
+
+impl TVar {
+    /// Commit the cell's conjuncts over `t` as the containment that binds
+    /// the cell to `t` does ([`commit_conjuncts`]), for a bind made outside
+    /// one: a settle at the cell's lower bounds, a call's widening. So no
+    /// bind leaves a cell a conjunct holds free of what the cell took.
+    /// False where a conjunct does not hold `t`.
+    pub fn commit_conjuncts(&self, env: &Env, t: &Type) -> Result<bool> {
+        let flags = ContainsFlags::Commit.into();
+        let mut hist = ContainsHist::new();
+        Ok(conjuncts_admit(self, flags, env, &mut hist, t)?
+            && commit_conjuncts(self, flags, env, &mut hist, t)?)
+    }
 }
 
 /// Pass the parts of a conjunct `c` that is not exact down to the open
@@ -3902,6 +3927,11 @@ impl Type {
                     }
                     t1.weld_lower();
                     let Ok(w) = t1.witness(env)? else { return Ok(false) };
+                    if !t1.cell_lower().is_empty()
+                        && !commit_conjuncts(t1, flags, env, hist, &w)?
+                    {
+                        return Ok(false);
+                    }
                     t1.bind(w.clone());
                     return t0.contains_int(flags, env, hist, &w);
                 }
@@ -5645,8 +5675,9 @@ impl Type {
             // type: met again, it holds if the rest does.
             t => {
                 if flags.contains(ContainsFlags::Commit)
-                    && let Some(cells) = t.lowered_cells()
+                    && let Some(mut cells) = t.lowered_cells()
                 {
+                    super::settle::settle_order(&mut cells);
                     for tv in cells.iter() {
                         tv.settle_witness(env)?
                     }

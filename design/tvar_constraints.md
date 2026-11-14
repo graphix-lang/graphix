@@ -125,6 +125,26 @@ one of its own conjuncts implies it. The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
+A settle there is a bind, and commits the cell's conjuncts over the
+witness as a containment's bind does (`TVar::commit_conjuncts`): a lower
+bound is only probed against a conjunct when it is added, so the settle
+is where the open cells a conjunct holds take their part. Under `'a0:
+['a1, null], 'a1: ['a2, null]` an `x0: (i64, i64)` puts `'a1` above the
+pair, an `x1` narrower than it settles `'a1` there, and that puts `'a2`
+above the pair too, so an `x2: null` is refused, where an `'a2` left
+free took it and no instance held the three. A conjunct that does not
+hold the witness leaves the cell open, "unsatisfiable constraints". The
+settles that bind so: `TVar::settle_witness`, and a containment whose
+wider side holds the witness (`'a ⊆ W ⊆ t`, below). A settle so decides
+more than its own cell, and a run of them over a set of cells (the
+variables a call's formal holds, `Widening::settle_bounded`; the cells
+of a call's result no argument holds; the cells a trait bound's probe
+settles) takes a cell after those whose conjuncts reach it, and by name
+where neither reaches the other (`settle::settle_order`): the verdict
+turns on no map's order. Pins:
+`lang::types::a_bound_chain_{hands_on_what_a_settled_link_took,refuses_what_a_settled_link_does_not_hold,over_undecided_elements_builds,refuses_null_below_a_settled_link,in_one_argument_settles_in_the_chains_order}`,
+`a_result_settled_at_its_lower_bounds_hands_them_to_its_bound_refused`,
+`typ::settle::test::{a_settle_at_lower_bounds_commits_the_conjuncts,a_run_of_settles_takes_a_bounds_holder_first}`.
 Two lower bounds that are the same type but for open cells nothing
 bounds (no conjunct, no lower bound, not rigid, not a scheme's) are one
 bound, and those cells one cell: a settle welds them before it takes the
@@ -401,6 +421,18 @@ and settles to their union. Pins:
 `lang::types::{decided_payload_takes_no_wider_argument,decided_payload_written_after_takes_no_wider_argument,empty_declared_payload_takes_no_argument,payload_read_into_a_decided_parameter_takes_no_wider_argument}`,
 their annotated twins, and
 `lang::repl_inputs::settled_payload_takes_nothing_a_function_builds_into_it`.
+
+A widening binds its variable again, so the variable's conjuncts commit
+over the wider type as at any bind (`TVar::commit_conjuncts`): a
+variable its bound holds, which the narrower argument left open, takes
+its part of the wider one. Under `'a2: [('a3, bool), bool]`, `x1:
+Array<'a2>` given `[true]` decides `'a2` as `bool` and says nothing of
+`'a3`; an `x2: [(duration, bool), bool]` widens `'a2` and makes `'a3`
+`duration`, so `x3: 'a3` given a string is refused. A conjunct that does
+not hold the wider type undoes the widening, and the argument is the
+mismatch. Pins:
+`lang::types::a_widening_hands_its_bound_the_wider_type{,_refused}`,
+`a_widening_over_an_undecided_element_hands_its_bound_the_wider_type_refused`.
 
 Before its own check, an argument holding an undecided cell is
 pre-unified with a copy of its formal in which the widenable variables

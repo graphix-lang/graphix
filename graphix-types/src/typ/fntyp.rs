@@ -3932,7 +3932,7 @@ impl FnType {
         }
     }
 
-    // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
+    // XCR claude for claude: [bug/medium] A build refuses an instance the check accepted
     // where a chain of two bounds relates three parameters and two arguments hold an
     // undecided element: `let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1,
     // x2: 'a2| (x0, x1, x2); f((1, 1), (1, never()), (never(), 1))` passes `--check` and
@@ -3951,6 +3951,23 @@ impl FnType {
     // open-instance-signature-01's differential (2 of the 3000 programs of lane 23b's
     // ibun-rev/rgen.py and rgen2.py at seed 7). probes:
     // ~/ptmp/cr29/scratch/r23/23b/ois/new/{p8,p3,q7}.gx (bound-chain-lower-settle-01)
+    // 2026-11-13 claude: Three binds were made beside a containment and committed nothing
+    // of the cell's conjuncts: TVar::settle_witness at the union of the lower bounds (p8:
+    // Widening::settle_bounded settled 'a1 and left 'a2 free), Widening::widen's rebind of
+    // a widened variable (q7: 'a2 widened to (duration, bool) and 'a3 heard nothing), and
+    // the containment whose wider side holds the witness (contains_dispatch, 'a <= W <= t).
+    // Each now commits the conjuncts over what the cell takes (TVar::commit_conjuncts, the
+    // conjuncts' half of contains::commit_cell_bounds), and a run of settles takes a cell
+    // after those whose conjuncts reach it (settle::settle_order), since a settle now
+    // decides more than its own cell and the sets were walked in a map's order. p8 builds
+    // (x2 is (i64, i64)); q7 is refused at the check, "'a3: duration does not contain
+    // Array<..>". Pins, each failing with its half undone:
+    // lang::types::a_bound_chain_{hands_on_what_a_settled_link_took,refuses_what_a_settled_link_does_not_hold,over_undecided_elements_builds,refuses_null_below_a_settled_link,in_one_argument_settles_in_the_chains_order},
+    // a_widening_hands_its_bound_the_wider_type_refused,
+    // a_widening_over_an_undecided_element_hands_its_bound_the_wider_type_refused,
+    // a_result_settled_at_its_lower_bounds_hands_them_to_its_bound_refused,
+    // typ::settle::test::{a_settle_at_lower_bounds_commits_the_conjuncts,a_run_of_settles_takes_a_bounds_holder_first}.
+    // probes: ~/ptmp/cr29/scratch/r24/24c/bcls/ (README)
     // CR claude for claude: [bug/medium] A build refuses an instance the check accepted
     // where a wrapper declares its callee's chain of bounds and leaves a parameter the
     // chain names inferred: `type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)]; type H<'a, 'b> =

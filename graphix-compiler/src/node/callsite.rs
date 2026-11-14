@@ -37,7 +37,7 @@ use crate::{
     typ::{
         AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
         Mutability, TVar, Type, UndecidedTaker,
-        settle::{DataPositions, Expanded, Held, Reaching, Unrolling},
+        settle::{DataPositions, Expanded, Held, Reaching, Unrolling, settle_order},
         tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
     },
     wrap,
@@ -1750,12 +1750,20 @@ impl Widening {
     /// Settle each of `cells` that `formal` holds undecided above a lower
     /// bound, at the union of its lower bounds: it binds to no argument
     /// that does not hold them, and whatever it becomes holds them, so an
-    /// argument inside them fits and a wider one widens it.
+    /// argument inside them fits and a wider one widens it. A settle puts
+    /// the variables its variable's bounds hold above what it took, so
+    /// each settles after the variables whose bounds reach it.
     fn settle_bounded(env: &Env, cells: &AHashMap<ArcStr, TVar>, formal: &Type) {
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut held);
-        for (name, tv) in held.iter() {
-            if cells.contains_key(name) && !tv.is_bound() && !tv.cell_lower().is_empty() {
+        let mut held: LPooled<Vec<TVar>> = held
+            .drain()
+            .filter(|(name, _)| cells.contains_key(name))
+            .map(|(_, tv)| tv)
+            .collect();
+        settle_order(&mut held);
+        for tv in held.iter() {
+            if !tv.is_bound() && !tv.cell_lower().is_empty() {
                 let _ = tv.settle_witness(env);
             }
         }
@@ -1765,7 +1773,10 @@ impl Widening {
     /// it holds wider and check it, or the mismatch error. False when it
     /// is neither wider nor narrower than a variable. A widening that
     /// leaves a decided cell below one of its lower bounds
-    /// ([`Self::below_bounds`]) is undone, and the mismatch names both.
+    /// ([`Self::below_bounds`]) is undone, and the mismatch names both. A
+    /// widened variable's conjuncts commit over its wider type
+    /// ([`TVar::commit_conjuncts`]), and one that does not hold it undoes
+    /// the widening too.
     fn widen(
         &mut self,
         env: &Env,
@@ -1826,6 +1837,15 @@ impl Widening {
                 }
                 let Err(e) = formal.check_contains(env, typ) else { return Ok(true) };
                 bail!("{e}: {note}")
+            }
+            wider.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+            for i in 0..wider.len() {
+                if !wider[i].0.commit_conjuncts(env, &wider[i].2)? {
+                    for (cell, old, _) in wider.drain(..) {
+                        cell.bind(old)
+                    }
+                    return check();
+                }
             }
         }
         if incomparable {
@@ -4555,18 +4575,23 @@ impl<R: Rt> CallSite<R> {
             let mut rt_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             ftype.rtype.collect_tvars(&mut rt_tvs);
             ftype.throws.collect_tvars(&mut rt_tvs);
-            for (name, tv) in rt_tvs.drain() {
-                let addr = tv.cell_addr();
-                // the callee's declared quantifiers were rigid in its check, so
-                // its body produced nothing into them: the caller narrows them
-                let declared = ftype.quantifiers.contains(&name);
-                if !arg_cells.contains(&addr)
-                    && !quantifiers.contains_key(&addr)
-                    && !declared
-                    && !tv.is_rigid()
-                {
-                    wrap!(self, tv.settle_witness(&ctx.env))?;
-                }
+            // the callee's declared quantifiers were rigid in its check, so
+            // its body produced nothing into them: the caller narrows them
+            let mut produced: LPooled<Vec<TVar>> = rt_tvs
+                .drain()
+                .filter(|(name, tv)| {
+                    let addr = tv.cell_addr();
+                    !arg_cells.contains(&addr)
+                        && !quantifiers.contains_key(&addr)
+                        && !ftype.quantifiers.contains(name)
+                        && !tv.is_rigid()
+                        && !tv.is_bound()
+                })
+                .map(|(_, tv)| tv)
+                .collect();
+            settle_order(&mut produced);
+            for tv in produced.iter() {
+                wrap!(self, tv.settle_witness(&ctx.env))?;
             }
         }
         self.raise_throws(ctx, ftype, true)?;

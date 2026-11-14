@@ -489,6 +489,18 @@ no "nothing has decided which" let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; le
 ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; let z = never(); let r = f("s", [z]); z <- 1; r
 ```
 
+A bound holds through a chain of bounds. Under `'a0: ['a1, null], 'a1:
+['a2, null]` the argument that decides `'a0` is a value `'a1` must hold,
+and so one `'a2` must hold: a later `x2: 'a2` fits it or is refused. A
+variable that widens hands its bound's variables the wider type the same
+way.
+
+```graphix,cases
+ok let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), (null, 1))
+no "'a2: ([i64, null], i64) does not contain string" let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), "s")
+no "'a3: duration does not contain string" let f = 'a2: [('a3, bool), bool] |x1: Array<'a2>, x2: 'a2, x3: 'a3| x3; let n: [(duration, bool), bool] = (duration:1.s, true); f([true], n, "s")
+```
+
 A variable a callback also holds does not widen: the first argument decides
 it, an open one included, so order decides between a value and a refusal.
 `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v: 'a) -> i64|`

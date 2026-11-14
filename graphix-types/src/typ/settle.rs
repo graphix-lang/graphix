@@ -96,17 +96,62 @@ enum Witness {
     Conjunct(Type),
 }
 
+/// Whether a conjunct of `holder`, or of an open cell one holds, holds
+/// `tv`'s cell.
+fn conjuncts_reach(holder: &TVar, tv: &TVar, seen: &mut AddrSet) -> bool {
+    crate::stack::ensure_sufficient(|| {
+        holder.cell_constraints().iter().any(|c| {
+            let found = super::contains::find_open_cell(c, true, &mut |o| {
+                o.same_cell(tv)
+                    || (seen.insert(o.cell_addr()) && conjuncts_reach(o, tv, seen))
+            });
+            found.is_some()
+        })
+    })
+}
+
+/// Put `tvs` in the order a run of settles takes them: a cell after those
+/// whose conjuncts reach it, since a settle at a cell's lower bounds puts
+/// the open cells its conjuncts hold above what it took
+/// ([`TVar::settle_witness`]); cells neither of which reaches the other
+/// stand by name.
+pub fn settle_order(tvs: &mut [TVar]) {
+    if tvs.len() < 2 {
+        return;
+    }
+    tvs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.read().id.cmp(&b.read().id)));
+    for i in 0..tvs.len() {
+        let left = &tvs[i..];
+        let reached = |k: usize| {
+            left.iter().enumerate().any(|(j, o)| {
+                j != k && conjuncts_reach(o, &left[k], &mut LPooled::take())
+            })
+        };
+        if let Some(k) = (0..left.len()).find(|&k| !reached(k)) {
+            tvs[i..=i + k].rotate_right(1)
+        }
+    }
+}
+
+impl Witness {
+    /// The witness with a conjunct's generic cells copied and its live
+    /// cells shared.
+    fn shared(self) -> Type {
+        match self {
+            Witness::Lower(w) => w,
+            Witness::Conjunct(c) => {
+                c.reset_tvars_int(&mut LPooled::take(), Fresh::Generic).unwrap_or(c)
+            }
+        }
+    }
+}
+
 impl TVar {
     /// [`Self::own_witness`], a conjunct's generic cells copied (a stored
     /// scheme's cells must not join live inference) and its live cells
     /// shared, so it keeps its relations.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
-        Ok(self.own_witness(env)?.map(|w| match w {
-            Witness::Lower(w) => w,
-            Witness::Conjunct(c) => {
-                c.reset_tvars_int(&mut LPooled::take(), Fresh::Generic).unwrap_or(c)
-            }
-        }))
+        Ok(self.own_witness(env)?.map(Witness::shared))
     }
 
     /// The union of the cell's lower bounds, else the narrowest conjunct
@@ -211,6 +256,12 @@ impl TVar {
         // its declared variables each beside an inferred parameter (`let p = (y, e);
         // f(p, ..)`) is refused this way now, as its direct call is; base-r23 ran the
         // wrapper. probes: ~/ptmp/cr29/scratch/r23/23b/bccrev/nev1_{wrapper,direct}.gx
+        // 2026-11-13 claude: Learned fixing bound-chain-lower-settle-01 (lane 24c): a
+        // settle at a cell's lower bounds now commits its conjuncts
+        // (TVar::commit_conjuncts), so 'a4 settled at Array<string> would give 'a5
+        // string. The probes are refused as before (b5, b5r, c6, c8 on the lane's
+        // build): the terminal settle still takes 'a5 first, to bottom. What is left of
+        // this CR is that order alone.
         if self.cell().read().facts.contains(CellFact::BottomFed)
             && self
                 .cell_lower()
@@ -234,24 +285,40 @@ impl TVar {
             return Ok(());
         }
         self.weld_lower();
-        match self.witness(env)? {
-            Ok(w) => Ok(self.bind_witness(w)),
-            Err(false) => Ok(()),
-            Err(true) => {
-                let cons = self.cell_constraints();
-                format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                    let mut cs: LPooled<String> = LPooled::take();
-                    for (i, c) in cons.iter().enumerate() {
-                        if i > 0 {
-                            cs.push_str(" & ");
-                        }
-                        write!(cs, "{c}")?;
-                    }
-                    let name = super::tvar::ShortName(&self.name);
-                    bail!("unsatisfiable constraints on '{name}: {}", &*cs)
-                })
-            }
+        let settled = match self.own_witness(env)? {
+            Ok(w) => self.settle_at(env, w)?,
+            Err(unsatisfiable) => !unsatisfiable,
+        };
+        if settled {
+            return Ok(());
         }
+        let cons = self.cell_constraints();
+        format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+            let mut cs: LPooled<String> = LPooled::take();
+            for (i, c) in cons.iter().enumerate() {
+                if i > 0 {
+                    cs.push_str(" & ");
+                }
+                write!(cs, "{c}")?;
+            }
+            let name = super::tvar::ShortName(&self.name);
+            bail!("unsatisfiable constraints on '{name}: {}", &*cs)
+        })
+    }
+
+    /// Bind the cell to its witness `w` as a containment binds a cell: at
+    /// the union of its lower bounds its conjuncts commit over it first
+    /// ([`Self::commit_conjuncts`]), so a cell a conjunct holds stands
+    /// above what this one took. False, the cell left open, where a
+    /// conjunct does not hold it.
+    fn settle_at(&self, env: &Env, w: Witness) -> Result<bool> {
+        if let Witness::Lower(w) = &w
+            && !self.commit_conjuncts(env, w)?
+        {
+            return Ok(false);
+        }
+        self.bind_witness(w.shared());
+        Ok(true)
     }
 
     /// Bind the cell to its [own witness], after the open cells its
@@ -1406,5 +1473,47 @@ mod test {
         ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
         assert!(matches!(a.binding(), Some(Type::Bottom)), "{a:?}");
         assert!(!p.binding().unwrap().has_unbound(), "{p:?}");
+    }
+
+    /// A run of settles takes a cell after the cells whose bounds reach
+    /// it, whatever their names.
+    #[test]
+    fn a_run_of_settles_takes_a_bounds_holder_first() {
+        let (_, t) = Env::typed_at_root(
+            &[],
+            "fn<'m: ['z, null], 'z: ['a, null]>(x: 'a, y: 'm, z: 'z, w: 'b) -> i64",
+        )
+        .unwrap();
+        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
+        ft.alias_tvars(&mut LPooled::take());
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ft.collect_tvars(&mut cells);
+        let mut tvs: Vec<TVar> = cells.values().cloned().collect();
+        settle_order(&mut tvs);
+        let names: Vec<&str> = tvs.iter().map(|tv| tv.name.as_str()).collect();
+        assert_eq!(names, ["b", "m", "z", "a"]);
+    }
+
+    /// A settle at a cell's lower bounds binds it as a containment does:
+    /// the open cell its bound holds stands above what the cell took.
+    #[test]
+    fn a_settle_at_lower_bounds_commits_the_conjuncts() {
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, t) =
+            Env::typed_at_root(&[], "fn<'p: ['a, null]>(x: 'p, y: 'a) -> i64").unwrap();
+        let (_, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
+        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
+        ft.alias_tvars(&mut LPooled::take());
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ft.collect_tvars(&mut cells);
+        let (p, a) = (cells.get("p").unwrap().clone(), cells.get("a").unwrap().clone());
+        p.set_level(Level::TOP);
+        a.set_level(Level::TOP);
+        p.add_lower(i64_t.clone());
+        assert!(a.cell_lower().is_empty(), "{a:?}");
+        p.settle_witness(&env).unwrap();
+        assert!(strictly_identical(&p.binding().unwrap(), &i64_t), "{p:?}");
+        let below = a.cell_lower();
+        assert!(matches!(&below[..], [l] if strictly_identical(l, &i64_t)), "{a:?}");
     }
 }

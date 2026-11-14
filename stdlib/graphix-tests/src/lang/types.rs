@@ -12040,6 +12040,138 @@ run!(
     FuseExpect::None
 );
 
+// A variable settled at its lower bounds is bound as any is: the variable
+// its own bound holds stands above what it took, so the next link of a
+// chain of bounds holds the argument that started it.
+run!(
+    a_bound_chain_hands_on_what_a_settled_link_took,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  let v: ([i64, null], i64) = (1, 1);
+  f(v, (1, 1), (null, 1)).1
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    a_bound_chain_hands_on_what_a_settled_link_took_annotated,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  let v: ([i64, null], i64) = (1, 1);
+  let w: ([i64, null], i64) = (null, 1);
+  f(v, (1, 1), w).1
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    a_bound_chain_refuses_what_a_settled_link_does_not_hold,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  let v: ([i64, null], i64) = (1, 1);
+  f(v, (1, 1), "s")
+}"#,
+    refused("'a2: ([i64, null], i64) does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_bound_chain_over_undecided_elements_builds,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  let r = f((1, 1), (1, never()), (never(), 1));
+  1
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    a_bound_chain_refuses_null_below_a_settled_link,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  f((1, 1), (1, never()), null)
+}"#,
+    refused("'a2: (i64, i64) does not contain null");
+    FuseExpect::None
+);
+
+// The links of a chain one argument holds settle in the order of the
+// chain, whatever the variables are named.
+run!(
+    a_bound_chain_in_one_argument_settles_in_the_chains_order,
+    r#"{
+  let f = 'k: ['j, null], 'b: ('a, 'a), 'j: ['b, null]
+    |x: {f0: 'k, f1: 'j, f2: 'b}| x.f2;
+  let v: ([i64, null], i64) = (1, 1);
+  f({f0: v, f1: (1, 1), f2: (null, 1)}).1
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+// A result's variable a wider annotation settles at its lower bounds is
+// bound as any is: the variable its bound holds takes its part.
+run!(
+    a_result_settled_at_its_lower_bounds_hands_them_to_its_bound_refused,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, i64) |x0: 'a0| -> ('a1, Array<'a2>) never();
+  let r: (([i64, string], [i64, null]), Array<string>) = f((1, 1));
+  1
+}"#,
+    refused("does not contain ('a1: (i64, i64), Array<'a2: i64>)");
+    FuseExpect::None
+);
+
+run!(
+    a_result_settled_at_its_lower_bounds_hands_them_to_its_bound,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, i64) |x0: 'a0| -> ('a1, Array<'a2>) never();
+  let r: (([i64, string], [i64, null]), Array<i64>) = f((1, 1));
+  1
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+// A widened variable is bound again as any is: the variable its bound
+// holds, which its first argument left open, takes its part of the wider
+// type.
+run!(
+    a_widening_hands_its_bound_the_wider_type_refused,
+    r#"{
+  let f = 'a2: [('a3, bool), bool] |x1: Array<'a2>, x2: 'a2, x3: 'a3| x3;
+  let n: [(duration, bool), bool] = (duration:1.s, true);
+  f([true], n, "s")
+}"#,
+    refused("'a3: duration does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_widening_hands_its_bound_the_wider_type,
+    r#"{
+  let f = 'a2: [('a3, bool), bool] |x1: Array<'a2>, x2: 'a2, x3: 'a3| x3;
+  let n: [(duration, bool), bool] = (duration:1.s, true);
+  f([true], n, duration:2.s)
+}"#,
+    prints("duration:2.s");
+    FuseExpect::Jit
+);
+
+run!(
+    a_widening_over_an_undecided_element_hands_its_bound_the_wider_type_refused,
+    r#"{
+  let f = 'a3: [Array<'a4>, duration], 'a1: [Array<'a2>, string], 'a4: Any,
+    'a2: [('a3, bool), bool] |x1: 'a1, x2: 'a2, x3: 'a3| 7;
+  f([(never(), true)], (duration:1.s, true), [1])
+}"#,
+    refused("'a3: duration does not contain Array<i64>");
+    FuseExpect::None
+);
+
 // A recursive typedef with a bare parameter: the union of its expansion
 // places its members on copies, where the definition's recursion is met
 // by assumption, as the walk on the cells themselves meets it, rather
