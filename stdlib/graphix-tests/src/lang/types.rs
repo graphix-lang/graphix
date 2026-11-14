@@ -5830,10 +5830,42 @@ run!(
     let f = |a, z| { a <- B([z]); a.0 };
     let g = |z, a| { a <- B([z]); a.0 };
     let h = |u| { let x = B([]); f(x, u); x.0 };
-    let x: B<[Array<i64>, Array<[i64, null]>]> = B([5]);
-    (f(B([1]), "s"), g(n, B([2])), f(B([]), 3), h(4), f(x, n))
+    (f(B([1]), "s"), g(n, B([2])), f(B([]), 3), h(4))
 }"#,
-    prints("[[i64:1], [i64:2], [], [], [i64:5]]")
+    prints("[[i64:1], [i64:2], [], []]")
+);
+
+// A payload declared as a union of two arrays could hold what the
+// function builds into it in either member, whatever the other argument
+// is and wherever it stands: refused, naming the payload, which runs
+// declared as one member.
+run!(
+    declared_union_payload_takes_no_array_the_function_builds_refused,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let n: [i64, null] = null;
+    let f = |a, z| { a <- B([z]); a.0 };
+    let x: B<[Array<i64>, Array<[i64, null]>]> = B([5]);
+    f(x, n)
+}"#,
+    refused(
+        "of the union [Array<i64>, Array<[i64, null]>], and nothing has decided which: \
+         the function builds that type into this argument's, which the arguments have \
+         yet to decide; give this argument one member's type"
+    );
+    FuseExpect::None
+);
+
+run!(
+    declared_union_payload_after_its_decider_refused,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let g = |z, a| { a <- B([z]); a.0 };
+    let x: B<[Array<i64>, Array<string>]> = B([5]);
+    g(2, x)
+}"#,
+    refused("the function builds that type into this argument's");
+    FuseExpect::None
 );
 
 // A payload an earlier argument decided holds what the function builds

@@ -4214,10 +4214,11 @@ impl Meetings<'_> {
                     f0.align(f1).0.into_iter().map(|(own, at)| (&own.typ, &at.typ));
                 for (own, at) in args.chain(f0.vargs.as_ref().zip(f1.vargs.as_ref())) {
                     let mut placed: LPooled<AddrSet> = LPooled::take();
-                    own.for_each_place(self.env, at, &mut |_, tv, at| {
+                    Places::every(self.env, &mut |_, tv, at| {
                         placed.insert(tv.cell_addr());
                         (self.met)(tv, at, self.exact)
-                    });
+                    })
+                    .types(own, at);
                     self.unplaced(own, at, &placed)
                 }
             }
@@ -4394,21 +4395,31 @@ fn members_stand_alike(own: &[Type], at: &[Type]) -> bool {
 
 /// The walk of two types built alike that gives each open cell of the
 /// first what stands at its place in the second, a pair of shared nodes
-/// once among a union's members and once outside every union.
+/// once among a union's members and once outside every union, or
+/// (`every`) each time it stands.
 struct Places<'a> {
     env: &'a Env,
     member: bool,
+    every: bool,
     seen: [LPooled<AHashSet<(usize, usize)>>; 2],
     f: &'a mut dyn FnMut(Place, &TVar, &Type),
 }
 
 impl<'a> Places<'a> {
     fn new(env: &'a Env, f: &'a mut dyn FnMut(Place, &TVar, &Type)) -> Self {
-        Places { env, member: false, seen: [LPooled::take(), LPooled::take()], f }
+        let seen = [LPooled::take(), LPooled::take()];
+        Places { env, member: false, every: false, seen, f }
+    }
+
+    /// A walk that counts a cell's places: a cell under a shared node is
+    /// given once for each place the node stands at.
+    fn every(env: &'a Env, f: &'a mut dyn FnMut(Place, &TVar, &Type)) -> Self {
+        Places { every: true, ..Self::new(env, f) }
     }
 
     fn types(&mut self, own: &Type, at: &Type) {
-        if let (Some(a), Some(b)) = (super::node_addr(own), super::node_addr(at))
+        if !self.every
+            && let (Some(a), Some(b)) = (super::node_addr(own), super::node_addr(at))
             && !self.seen[usize::from(self.member)].insert((a, b))
         {
             return;

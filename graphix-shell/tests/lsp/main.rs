@@ -221,7 +221,7 @@ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] };
     let hovers = [
         ("one", "fn(x: '_0) -> Array<'_0>"),
         ("pair", "fn(x: '_0) -> (Array<'_0>, '_0)"),
-        ("m", "fn(x: Array<'_0>) -> [Array<'_1>, Array<'_0>]"),
+        ("m", "fn(x: Array<'_0>) -> [Array<'_0>, Array<'_1>]"),
     ];
     for (name, typ) in hovers {
         let got = c.hover("main.gx", &format!("let |{name} "));

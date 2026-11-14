@@ -2312,7 +2312,8 @@ fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
 /// union two decided members of which could take it ([`UndecidedTaker`])
 /// names what to annotate, at the argument: the argument where the type
 /// is its own, the parameters that decide the formal's where the union is
-/// the argument's.
+/// the argument's, and the argument's union where the argument is decided
+/// and the type is one the function builds into it.
 fn undecided_taker<R: Rt>(
     ctx: &CompileCtx<R>,
     n: &Node<R>,
@@ -2325,6 +2326,14 @@ fn undecided_taker<R: Rt>(
                 "{}: a call's arguments are met in the order of the parameters, so \
                  declare the parameters that decide it before this one, or give this \
                  argument's own parameter one member's type",
+                u.fact()
+            )
+        ),
+        Some(u) if !n.typ().has_free() => wrap!(
+            n,
+            anyhow!(
+                "{}: the function builds that type into this argument's, which the \
+                 arguments have yet to decide; give this argument one member's type",
                 u.fact()
             )
         ),

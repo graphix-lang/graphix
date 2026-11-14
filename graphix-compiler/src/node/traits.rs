@@ -1430,22 +1430,22 @@ impl<R: Rt> Update<R> for Impl<R> {
                 Told::over(e, &told)
             })?;
             // a method that took the declared signature is that signature
-            if self.method_took_declared(&d.name) {
-                continue;
+            if !self.method_took_declared(&d.name) {
+                let expected =
+                    Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
+                let _declared = hold_declared(iter::once(&expected));
+                expected.check_contains(&ctx.env, &implemented).map_err(|e| {
+                    let told = format_compact!(
+                        "method {} of impl {} for {} has type {}, the trait declares {}",
+                        d.name,
+                        self.trait_def.name,
+                        self.def.target,
+                        implemented.resolve_tvars(),
+                        expected.resolve_tvars()
+                    );
+                    Told::over(e, &told)
+                })?;
             }
-            let expected = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-            let _declared = hold_declared(iter::once(&expected));
-            expected.check_contains(&ctx.env, &implemented).map_err(|e| {
-                let told = format_compact!(
-                    "method {} of impl {} for {} has type {}, the trait declares {}",
-                    d.name,
-                    self.trait_def.name,
-                    self.def.target,
-                    implemented.resolve_tvars(),
-                    expected.resolve_tvars()
-                );
-                Told::over(e, &told)
-            })?;
             returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
                 || {
                     format!(

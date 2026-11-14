@@ -1476,7 +1476,7 @@ run!(
 run!(
     a_parameter_cell_merged_with_a_callee_prints_under_one_name,
     r#"{ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] }; let n: i64 = m; n }"#,
-    refused_renumbered("i64 does not contain fn(x: Array<'_0: unbound>) -> [Array<'_1: unbound>, Array<'_0: unbound>]");
+    refused_renumbered("i64 does not contain fn(x: Array<'_0: unbound>) -> [Array<'_0: unbound>, Array<'_1: unbound>]");
     FuseExpect::None
 );
 
@@ -1493,7 +1493,7 @@ run!(
 run!(
     a_decided_cell_merged_with_a_callee_prints_bare_throughout,
     r#"{ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] }; let n: fn(x: Array<string>) -> i64 = m; n }"#,
-    refused_renumbered("fn(x: Array<string>) -> i64 does not contain fn(x: Array<string>) -> [Array<'_0: unbound>, Array<string>]");
+    refused_renumbered("fn(x: Array<string>) -> i64 does not contain fn(x: Array<string>) -> [Array<string>, Array<'_0: unbound>]");
     FuseExpect::None
 );
 

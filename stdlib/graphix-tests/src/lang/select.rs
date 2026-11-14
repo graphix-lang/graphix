@@ -911,7 +911,8 @@ run!(
   let f = |x: [`A([Array<(i64, i64)>, Array<string>, null])]| select x {
     `A([(a, b), ..]) => a + b, `A([h, ..]) => 10, `A([]) => 0, `A(null) => 20
   };
-  [f(`A([(1, 2)])), f(`A(["s"])), f(`A([])), f(`A(null))]
+  let none: Array<string> = [];
+  [f(`A([(1, 2)])), f(`A(["s"])), f(`A(none)), f(`A(null))]
 }"#,
     |v: Result<&Value>| {
         matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 10, 0, 20])
