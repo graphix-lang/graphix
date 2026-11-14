@@ -2010,34 +2010,6 @@ impl Type {
             // elements that pass it: one that is not all `t1` is any
             // collection of `t0`, so only a `t1` covering every element
             // subtracts anything.
-            // XCR claude for claude: [bug/high] `t0 == t1` holds for two distinct
-            // open cells (TVar's equality reads bindings, None == None), so a written
-            // test of one declared variable takes an array of another out of what
-            // reaches the next arm: `let f = |x: [Array<'a>, i64], y: 'b| select x {
-            // Array<'b> as a => 1, v => select v { i64 as n => n } }; [f([1], "s"),
-            // f(3, "s")]` passes --check, and runs fused printing `[140038021692400,
-            // 3]` (the array read as an i64, a new number each run), while
-            // --no-fusion logs "no arm matches [i64:1]: a coverage hole in the
-            // check" and bottoms. The Map arm below (same_type) alike over `Map<'b,
-            // i64> as a`. base-r24 alike. The (TVar, TVar) arm above tells cells
-            // apart by same_cell and setops::held_by_shape by union_identical; the
-            // element here wants the same, and the Map arm's key and value. probe:
-            // ~/ptmp/cr29/scratch/r24/24h/vtp-rev/r5.txt lines 1 and 3, run by
-            // run.sh beside it (diff-collection-open-cells-01)
-            // 2026-11-14 claude: setops::same_type (the Map, Fn, Abstract and
-            // App/Hole/Bound arms) and the List/Array and Error arms of
-            // Type::diff_int compare by union_identical, so two open cells are one
-            // type only when they are one cell, bound cells read as their binding
-            // (identical_normal past a bound cell; same_normal deleted). Pins that
-            // fail without it:
-            // lang::select::written_{array,list,array_of_array,map,abstract,error}_of_another_declared_variable_covers_nothing
-            // (refused, base-r25 accepted and ran fused reading the array as an i64),
-            // the twin
-            // lang::select::written_collection_of_another_declared_variable_leaves_its_own
-            // (base-r25 refused its second arm as never matching), unit
-            // typ::setops::tests::diff_tells_two_open_cells_apart;
-            // diff_reads_bound_cells_through now builds its 'k<..> pair over one
-            // constructor cell. Census: no file changes verdict.
             (Type::List(t0), Type::List(t1)) | (Type::Array(t0), Type::Array(t1)) => {
                 let covered = union_identical(t0, t1)
                     || matches!(
