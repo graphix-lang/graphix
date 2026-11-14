@@ -150,3 +150,28 @@ fn an_instance_checked_again_takes_no_bind_from_a_member_the_structure_rules_out
         assert_eq!(run(&program, true), expected, "under GRAPHIX_NO_SUBST: {program}");
     }
 }
+
+/// An instance that checks its body again holds a nested definition's
+/// variable bounded by an enclosing one, which the instance decided, as
+/// its definition does: the variable fits where the enclosing one stands.
+#[test]
+fn an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one() {
+    let programs = [
+        "let f = 'z: Number |w: 'z| { let g = 'e: 'z |u: 'e| -> 'z u; g(w) };\nf(3)\n",
+        "let f = 'z: Number |w: 'z| {\n\
+           let g = 'e: 'z |k: fn(x: 'z) -> 'z, u: 'e| k(u);\n\
+           g(|x| x, w)\n\
+         };\n\
+         f(3)\n",
+        "let f = 'z: Number |w: 'z| {\n\
+           let g = 'b: fn(x: 'z) -> 'z, 'e: 'z |k: 'b, u: 'e| k(u);\n\
+           g(|x| x, w)\n\
+         };\n\
+         f(3)\n",
+        "let f = 'z: Number |w: 'z| { let g = 'b: fn(x: 'z) -> 'z |k: 'b| k(w); g(|x| x) };\nf(3)\n",
+    ];
+    for program in programs {
+        assert_eq!(run(program, false), "3", "{program}");
+        assert_eq!(run(program, true), "3", "under GRAPHIX_NO_SUBST: {program}");
+    }
+}

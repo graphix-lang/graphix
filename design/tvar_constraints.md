@@ -1675,7 +1675,15 @@ conjuncts): `'p` above both `Array<'x>` and `'x` is `[Array<'x>, 'x]`, no
 cycle (pin `lang::types::lower_bounds_beside_an_array_of_themselves`).
 A contravariant part turns the walk round; an invariant part (an
 abstract's parameter, `&mut`, a constructor application) and a typedef's
-parameter take every edge. Where two cells meet (`contains_tvars`):
+parameter take every edge. A declared variable under its definition's
+check does none of the three, so against a bound cell it takes no walk:
+the binding decides, through the variable's bounds where the cell is to
+hold it, and a cell its bound names closes no cycle. Under `'e: 'z` with
+`'z` decided (an instance checked again), `'z` holds `'e` and `'e` keeps
+its bound (pins
+`typ::contains::tests::a_declared_var_and_the_bound_cell_its_bound_names`,
+graphix-shell's `no_subst::an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one`).
+Where two cells meet (`contains_tvars`):
 
 - A path through a constructor's part (an element, a field, a payload,
   a function's argument or result, a referent, an abstract's

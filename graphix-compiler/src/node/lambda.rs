@@ -1322,7 +1322,7 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
-    // CR claude for claude: [bug/low] An instance checked again refuses a
+    // XCR claude for claude: [bug/low] An instance checked again refuses a
     // nested lambda whose own bound is a function type naming an enclosing
     // variable, where its definition's check accepts it. `let f = 'z: Number
     // |w: 'z| { let g = 'b: fn(x: 'z) -> 'z |k: 'b| k(w); g(|x| x) }; f(3)`
@@ -1338,6 +1338,26 @@ impl Typing {
     // tuple (q6c.gx, q6d.gx), both modes agree. Cause not traced. probes:
     // ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/review/q6*.gx
     // (nosubst-bound-fn-enclosing-01)
+    // 2026-11-13 claude: Fixed in Type::contains_tvars. base-r24 already ran
+    // the CR's probes (q6.gx, q6i.gx) alike in both modes; the split stood for
+    // a nested variable whose bound is the enclosing one: `let f = 'z: Number
+    // |w: 'z| { let g = 'e: 'z |u: 'e| -> 'z u; g(w) }; f(3)` printed 3, and
+    // under GRAPHIX_NO_SUBST=1 was refused at u, "type mismatch 'z: i64 does
+    // not contain 'e: unbound" (alike with u passed to a k: fn(x: 'z) -> 'z).
+    // Cause: in the instance's second check 'z is decided,
+    // and contains_tvars ran its occurs check between the bound cell 'z and the
+    // rigid 'e before its rigid branch, read 'e's bound 'z as a bare cycle, and
+    // merge_bare_cycle dropped the declared bound (a rigid probe answered true
+    // where the commit refused). A rigid cell binds nothing, so both arms that
+    // meet a bound cell and an open one now take the rigid re-verdict before
+    // the occurs check, as the function's doc says. Pins:
+    // typ::contains::tests::a_declared_var_and_the_bound_cell_its_bound_names
+    // (fails with either arm undone: the commit refuses 'z ⊇ 'e, or 'e ⊇ 'z
+    // drops 'e's bound) and graphix-shell
+    // no_subst::an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one
+    // (fails under NO_SUBST without the fix). Census base-r24 vs this build: 0
+    // verdict and 0 message changes in 2967 files; gxf regress clean. probes:
+    // ~/ptmp/cr29/scratch/r24/24h/nbfe/ (v6, w6, w7 split on base-r24)
 
     /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
     /// where its definition's types would do.

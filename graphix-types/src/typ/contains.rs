@@ -4121,17 +4121,15 @@ impl Type {
                 b0.contains_int(flags, env, hist, &b1)
             }),
             (None, Some(b1)) => {
-                if would_cycle_inner(&cell0, tt1) {
+                // A rigid receiver must not bind; re-verdict against
+                // the binding.
+                if would_cycle_inner(&cell0, tt1) || ((rigid || commit) && t0.is_rigid())
+                {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
                 let up = if lower(false) { Toward::Above } else { Toward::Any };
                 if let Some(cycle) = cycle_toward(&cell1, tt0, up) {
                     return refuse(cycle, &[(t1, tt0, up)], hist);
-                }
-                // A rigid receiver must not bind; re-verdict against
-                // the binding.
-                if (rigid || commit) && t0.is_rigid() {
-                    return tt0.contains_int(flags, env, hist, &b1);
                 }
                 if lower(false) {
                     if !conjuncts_admit(t0, flags, env, hist, &b1)? {
@@ -4163,14 +4161,12 @@ impl Type {
                 Ok(true)
             }
             (Some(b0), None) => {
-                if would_cycle_inner(&cell1, tt0) {
+                if would_cycle_inner(&cell1, tt0) || ((rigid || commit) && t1.is_rigid())
+                {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
                 if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any) {
                     return refuse(cycle, &[(t0, tt1, Toward::Any)], hist);
-                }
-                if (rigid || commit) && t1.is_rigid() {
-                    return b0.contains_int(flags, env, hist, tt1);
                 }
                 if !cell_constraints_ok(t1, flags, env, hist, &b0)? {
                     return Ok(false);
@@ -7126,6 +7122,34 @@ mod tests {
         Type::TVar(a.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
         assert!(a.same_cell(&p) && a.same_cell(&q));
         assert!(a.is_rigid() && !a.is_bound());
+    }
+
+    /// A declared var `e` whose bound is a cell `z` bound to `i64`: neither
+    /// binds where `e` is rigid, so the relation is no cycle. `z ⊇ e` holds
+    /// by the bound, `e ⊇ z` does not (`e` holds only itself), a probe
+    /// answers as the commit does, and `e` keeps its bound.
+    #[test]
+    fn a_declared_var_and_the_bound_cell_its_bound_names() {
+        let env = Env::default();
+        let checks = [
+            ContainsFlags::Commit | ContainsFlags::RigidCheck,
+            ContainsFlags::Commit.into(),
+            ContainsFlags::RigidCheck.into(),
+        ];
+        for flags in checks {
+            for (holder, holds) in [(true, true), (false, false)] {
+                let (z, e) = (var("z"), var("e"));
+                z.bind(prim(Typ::I64));
+                e.add_cell_constraint(Type::TVar(z.clone()));
+                let _gate = e.open_rigid();
+                let (tz, te) = (Type::TVar(z), Type::TVar(e.clone()));
+                let (t0, t1) = if holder { (&tz, &te) } else { (&te, &tz) };
+                let held = t0.contains_with_flags(flags, &env, t1).unwrap();
+                assert_eq!(held, holds, "{t0} ⊇ {t1} under {flags:?}");
+                assert!(!e.is_bound(), "{flags:?}");
+                assert_eq!(e.cell_constraints().len(), 1, "{flags:?}");
+            }
+        }
     }
 
     /// A declared var holds a union of open cells as each of them, and no
