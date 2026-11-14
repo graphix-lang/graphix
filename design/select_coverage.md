@@ -110,8 +110,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   name over it takes the open part beside the members' others
   (`TVar::narrow_per_member`).
   A cell an arm's pattern decided (the arms' settle, a completion, the
-  narrowing, the coverage) counts as one still open there, a binding the
-  decision rewrote read as it was (`Deciding`,
+  narrowing, the coverage) counts as one still open there, a binding
+  rewritten since the arms began read as it was then, whichever union
+  dropped the member that held the cell, a pattern's, a body's, a guard's
+  or the select's own result (`Deciding::rewritten`,
   `StructurePattern::meets_decided`, `written_tests_decided`), one the
   scrutinee holds only through an open cell's lower bounds (`*r` over
   `&mut (x, 0)`, an abstract constructor's parameter) met in the

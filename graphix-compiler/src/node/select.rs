@@ -3517,7 +3517,7 @@ impl<R: Rt> Select<R> {
             if checking && pat.explicit_type_predicate {
                 super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
             }
-            let deciding = deciding.again();
+            let step = deciding.again();
             // a refusal about the pattern points at the pattern
             let site = match spec_pats.get(i) {
                 Some((p, _)) => pattern_site(p, n.spec()),
@@ -3587,7 +3587,7 @@ impl<R: Rt> Select<R> {
             pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;
-            deciding.decided(&mut decided);
+            step.decided(&mut decided);
             // a runtime test can't tell apart two types with one runtime form
             if checking
                 && pat.explicit_type_predicate
@@ -3670,13 +3670,14 @@ impl<R: Rt> Select<R> {
                     })
                     .at(&site)?;
             }
-            let deciding = deciding.again();
+            let step = deciding.again();
             let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking)?;
-            deciding.decided(&mut decided);
+            step.decided(&mut decided);
             // an arm dead for what an earlier arm's pattern decided is refused
             // for that decision
             if let Err(Dead(e)) = covered {
                 deciding.left_open(&mut decided);
+                deciding.rewritten(&mut decided);
                 let open = still_open(&outer);
                 self.check_undecided(
                     &ctx.env,
@@ -3698,6 +3699,7 @@ impl<R: Rt> Select<R> {
         match checking {
             true => {
                 deciding.left_open(&mut decided);
+                deciding.rewritten(&mut decided);
                 let mut undecided = still_open(&outer);
                 self.check_undecided(
                     &ctx.env,
@@ -3835,7 +3837,7 @@ impl<R: Rt> Select<R> {
 /// decide them, the arms' settle or an arm's pattern, and the bound cells
 /// whose bindings hold open cells, each with its binding: deciding a cell
 /// may rewrite a binding that held it (`['x, `J]` to `` `J ``), so a holder
-/// whose binding the step changed was decided too. A whole scrutinee open
+/// whose binding changed under the arms was decided too. A whole scrutinee open
 /// before the arms is theirs to decide together, unless an arm holds a
 /// partial struct pattern, whose completion has no one answer.
 #[derive(Default)]
@@ -3900,8 +3902,7 @@ impl Deciding {
         b.has_free().then(|| (tv.clone(), Kept::Holder(b)))
     }
 
-    /// The cells still open, and the holders still holding one, for the
-    /// next step.
+    /// The cells still open, for the next step.
     fn again(&self) -> Self {
         Self(
             self.0
@@ -3909,13 +3910,13 @@ impl Deciding {
                 .filter_map(|(tv, held)| match held {
                     Kept::Open => tv.open_cell().map(|_| (tv.clone(), Kept::Open)),
                     Kept::Below => tv.open_cell().map(|_| (tv.clone(), Kept::Below)),
-                    Kept::Holder(_) => Self::holding(tv),
+                    Kept::Holder(_) => None,
                 })
                 .collect(),
         )
     }
 
-    // CR claude for claude: [bug/low] A holder's binding rewritten outside the steps
+    // XCR claude for claude: [bug/low] A holder's binding rewritten outside the steps
     // that record it is read as rewritten. `decided` runs after each arm's pattern step
     // and coverage step; the arms' bodies and the select's result union
     // (Type::union_of_alternatives) run between and after them, and a normalization
@@ -3933,18 +3934,38 @@ impl Deciding {
     // refuses all three and leaves a body's decision (`(a, 1) => { z <- a; a }`)
     // accepted; not censused. probes: ~/ptmp/cr29/scratch/r23/23c/crash-rev/s1.gx,
     // t4.gx, t5.gx, twins s2.gx, s4.gx (held-rewrite-after-steps-01)
-    /// Add to `decided` each cell the step decided, and each binding it
-    /// rewrote as it was.
+    // 2026-11-14 claude: Deciding::rewritten records each holder whose binding differs
+    // from the one it had before the arms, once, where check_undecided is called (the
+    // end and the dead-arm path); the steps record cells alone. A body's own decision
+    // stays accepted (body_deciding_a_member_a_later_union_drops). Pins in
+    // lang::select_undecided that fail without it:
+    // test_deciding_a_member_the_result_union_drops_refused,
+    // tuple_test_deciding_a_member_the_result_union_drops_refused,
+    // test_deciding_a_parameter_the_result_union_drops_refused,
+    // test_deciding_a_member_an_arm_body_drops_refused,
+    // test_deciding_a_member_a_guard_drops_refused,
+    // test_deciding_a_member_an_arm_body_drops_before_a_dead_arm_refused. Census
+    // against base-r24: no verdict or message changed.
+    /// Add to `decided` each binding rewritten since the arms began, as it
+    /// was then, whatever rewrote it: a union an arm's body or the select's
+    /// result builds may drop the member that held a cell a pattern decided.
+    fn rewritten(&self, decided: &mut Decisions) {
+        for (tv, held) in self.0.iter() {
+            if let Kept::Holder(b) = held
+                && tv.binding().as_ref() != Some(b)
+            {
+                decided.held.insert(tv.cell_addr(), b.clone());
+            }
+        }
+    }
+
+    /// Add to `decided` each cell the step decided.
     fn decided(&self, decided: &mut Decisions) {
         for (tv, held) in self.0.iter() {
-            match held {
-                Kept::Open | Kept::Below if tv.open_cell().is_none() => {
-                    decided.cells.insert(tv.stands_for(), tv.clone());
-                }
-                Kept::Holder(b) if tv.binding().as_ref() != Some(b) => {
-                    decided.held.entry(tv.cell_addr()).or_insert_with(|| b.clone());
-                }
-                Kept::Open | Kept::Below | Kept::Holder(_) => (),
+            if let Kept::Open | Kept::Below = held
+                && tv.open_cell().is_none()
+            {
+                decided.cells.insert(tv.stands_for(), tv.clone());
             }
         }
     }
@@ -4360,9 +4381,9 @@ fn still_open(outer: &AHashMap<usize, TVar>) -> LPooled<AHashMap<usize, TVar>> {
 }
 
 /// What a select's arms decided: the cells open before them, each by the
-/// cell it stands for, and the bindings their decisions rewrote, as they
-/// were, each by its own cell: a rewrite may leave a holder standing for a
-/// cell its binding held.
+/// cell it stands for, and the bindings rewritten since, as they were
+/// before the arms, each by its own cell: a rewrite may leave a holder
+/// standing for a cell its binding held.
 #[derive(Default)]
 struct Decisions {
     cells: AHashMap<usize, TVar>,
