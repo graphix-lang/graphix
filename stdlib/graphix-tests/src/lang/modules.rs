@@ -491,6 +491,35 @@ run!(
     FuseExpect::None
 );
 
+/// A script declaring a type, and a module `m` loaded under `sandbox`
+/// from `body`, which names it: `m`'s status.
+fn names_the_loaders_type(sandbox: &str, body: &str) -> String {
+    format!(
+        r#"type Foo = {{a: i64}};
+let result = mod m dynamic {{ sandbox {sandbox}; sig {{ val v: i64 }}; source "{body}" }}"#
+    )
+}
+
+run!(
+    a_whitelist_hides_the_loaders_type,
+    load_refused("undefined type super::Foo"),
+    "/test.gx" => &names_the_loaders_type(
+        "whitelist [core]",
+        "let w: super::Foo = {a: 1}; let v = w.a"
+    );
+    FuseExpect::None
+);
+
+run!(
+    a_blacklist_shows_the_loaders_type,
+    is(Value::Null),
+    "/test.gx" => &names_the_loaders_type(
+        "blacklist [sys]",
+        "let w: super::Foo = {a: 1}; let v = w.a"
+    );
+    FuseExpect::None
+);
+
 run!(
     a_blacklist_shows_the_loaders_super,
     reads_the_loader("blacklist [sys]", "let v = super::y + 1"),

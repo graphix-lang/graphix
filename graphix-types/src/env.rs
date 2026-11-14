@@ -1573,7 +1573,7 @@ impl Env {
                 }
                 Ok(t)
             }
-            // CR claude for claude: [bug/low] What a whitelist leaves of a name a
+            // CR claude for eric: [bug/low] What a whitelist leaves of a name a
             // dynamic module's sig imports depends on where the type is declared,
             // and the check accepts each. Under `sandbox whitelist [core]` and `sig {
             // use super::Foo; val f: fn(x: Foo) -> i64 }` the body `let f = |x: Foo|
@@ -1601,6 +1601,22 @@ impl Env {
             // scope" (base-r24 alike), while the path with no import, `val f: fn(x: sys::fs::Mode)`, loads (e9_sandboxed_pkg.gx). The function case fails
             // without a whitelist too where the type stands below the module (sig-import-fn-body-below-01). probe:
             // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/review/r43_wl_import.gx
+            // 2026-11-14 claude: Round 25 (25g): base-r25 reproduces all of it (probes copied to ~/ptmp/cr29/scratch/r25/25g/wsi/). Done: the wrong
+            // message. Env::apply_sandbox's whitelist arm now drops a dropped scope's block_names with its typedefs (as the blacklist's
+            // unbind_lexical_under does), so a body naming a script's type under a whitelist is told "undefined type super::Foo in foo", not "a later
+            // statement of this module declares" (pins lang::modules::a_whitelist_hides_the_loaders_type, fails without; twin
+            // a_blacklist_shows_the_loaders_type). Not done, and why: the check cannot refuse what no load can take. A refusal at the module's declaration
+            // (replaying the sig's use items against the sandboxed view in compile_dynamic) was built and dropped, because the failures come from three
+            // places and only some are knowable there: (1) a sig use whose module prefix the whitelist drops (r43_wl_import: use sys::fs::Mode) fails every
+            // load in resolve_use_item; (2) a sig use of a name declared in a function body's block (g2_fn_once) fails every load in check_pending_imports,
+            // whatever the sandbox (that part is sig-import-fn-body-below-01); (3) a script's type (e1, e4) fails only where the BODY writes the name, and
+            // a body that never does (let f = |x| 1 under val f: fn(x: Foo) -> i64) loads today, so a declaration-site refusal loses valid loads; and a
+            // block's type (i2) loads only because block types resolve through the global Env::block_types, outside the whitelist. So the verdict is the
+            // sandbox's policy, which no ruling covers: should a sig's use of a type grant the body that name under a whitelist, as a declared impl grants
+            // its trait (Env::grant_trait, called in compile_dynamic)? Recommendation: yes, grant the typedef (not values, not a module's contents) that
+            // the sig imports, keeping its module path nameable without its contents: the loader writes both the sandbox and the sig, a type is inert, e1
+            // and e4 (impl Show for C over a script's type) become implementable, and the path form val f: fn(x: sys::fs::Mode) already loads; the
+            // alternative leaves a sig's own impl Show for C over a script type unusable under every whitelist. Readdressed to eric.
             Sandbox::Whitelist(wl) => {
                 let mut modules: LPooled<AHashSet<ModPath>> = LPooled::take();
                 let mut names: LPooled<
@@ -1626,6 +1642,7 @@ impl Env {
                 let kept = |k: &ModPath| under_listed(k) || names.contains_key(k);
                 let mut t = self.clone();
                 t.lexical.typedefs = retain(&self.lexical.typedefs, |k, _| kept(k));
+                t.lexical.block_names = retain(&self.lexical.block_names, |k, _| kept(k));
                 t.lexical.modules = retain_set(&self.lexical.modules, kept);
                 t.lexical.binds = retain(&self.lexical.binds, |k, _| kept(k));
                 t.lexical.traits = retain(&self.lexical.traits, |k, _| kept(k));
