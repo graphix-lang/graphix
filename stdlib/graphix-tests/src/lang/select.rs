@@ -7513,6 +7513,25 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 1, 3])
 );
 
+run!(slice_element_literal_over_another_member_is_a_dead_arm,
+    "|x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }",
+    refused("no value of Array<(i64, string)> has the parts this pattern tests"); FuseExpect::None);
+
+run!(slice_element_literal_over_another_number_type_is_a_dead_arm,
+    "|x: Array<u8>| select x { [1, ..] => 1, _ => 0 }",
+    refused("no value of Array<u8> has the parts this pattern tests"); FuseExpect::None);
+
+run!(
+    slice_element_literal_of_its_member_keeps_the_arm,
+    r#"{
+    let a = |x: Array<(i64, string)>| -> i64 select x { [(0, "a"), ..] => 1, _ => 0 };
+    let b = |x: Array<u8>| -> i64 select x { [u8:1, ..] => 1, _ => 0 };
+    let c = |x: Array<[(i64, string), (f64, bool)]>| -> i64 select x { [(0, _), ..] => 1, _ => 0 };
+    [a([(0, "a")]), a([(1, "a")]), b([u8:1]), b([u8:2]), c([(0, "z")]), c([(0.5, true)])]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 1, 0, 1, 0])
+);
+
 // Under a written test a slice element's literal rules out the members it
 // admits no value of for a bind, as a literal outside a slice does: an
 // instance's scrutinee may be the member alone.

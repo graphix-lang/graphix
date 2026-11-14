@@ -1521,7 +1521,7 @@ impl StructPatternNode {
         })
     }
 
-    // CR claude for claude: [bug/low] A slice element whose literal admits no member of
+    // XCR claude for claude: [bug/low] A slice element whose literal admits no member of
     // the element type leaves its arm live: `|x: Array<(i64, string)>| select x { [(0,
     // 1), ..] => 1, _ => 0 }` and `|x: Array<u8>| select x { [1, ..] => 1, _ => 0 }`
     // check, where `(0, 1)` over `(i64, string)` and `[1]` over `Array<u8>` are refused
@@ -1546,6 +1546,15 @@ impl StructPatternNode {
     // not made here. pin
     // lang::select::written_test_slice_literal_rules_out_no_member_for_a_bind
     // (rewritten to bind string alone) covers the instance that panicked the JIT.
+    // 2026-11-14 claude: The slice arm of footprint judges each element by admits
+    // (literals included) instead of by shape, so an element literal no member of the
+    // element type holds leaves no live arm: both probes are refused 'unreachable arm:
+    // no value of ... has the parts this pattern tests'. Pins that fail without it:
+    // lang::select::slice_element_literal_over_another_member_is_a_dead_arm,
+    // slice_element_literal_over_another_number_type_is_a_dead_arm (twin
+    // slice_element_literal_of_its_member_keeps_the_arm passes), and the two cases
+    // lines in ide/skills/graphix-lang/SKILL.md. Census of both repos: no file newly
+    // refused; guicheck 39621839288 -> 39726201713; deep_nesting green. Needs a soak.
     /// What this pattern's structure test admits of `typ`: `typ` with
     /// every position the structure does not test as `Any` (an abstract
     /// pattern tests its type, never the parameters), and a union
@@ -1576,11 +1585,9 @@ impl StructPatternNode {
                         Self::Slice { kind: SliceKind::List, .. }
                             | Self::SlicePrefix { list: true, .. }
                     );
-                    // every element it names is one the value must hold, each
-                    // judged by its shape: a literal rules out no member here
                     let elements_admit = |ts: &[Option<(Type, usize)>]| {
                         self.children().into_iter().zip(ts).all(|(c, t)| match t {
-                            Some((t, _)) => c.footprint(env, t, false).is_some(),
+                            Some((t, _)) => c.admits(env, t, false).unwrap_or(true),
                             None => true,
                         })
                     };

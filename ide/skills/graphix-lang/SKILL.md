@@ -587,6 +587,8 @@ no "covers none of its lengths" |x: Array<[(i64, i64), i64]>| select x { [(a, b)
 ok |x: Array<[(i64, i64), (string, string)]>| select x { [(a, _), ..] => 1, [] => 0 }
 no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
 ok |x: Array<[(`A, i64), (`B, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
+no "unreachable arm" |x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }
+no "unreachable arm" |x: Array<u8>| select x { [1, ..] => 1, _ => 0 }
 no "cannot compute" |x: Array<[(`A, i64), (`A, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
 ok |x: [(`A, i64), (`B, string), null]| select x { [(`A, i64), (`B, string)] as (`A, h) => h + 1, _ => 0 }
 ok |x: [(i64, i64), (f64, string)]| select x { (0, h) => h + 1, _ => 0 }
