@@ -1620,6 +1620,19 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // member by StructPatternNode::matched_part and a bool pair has no such path.
 // base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/bool/{b05,b06,b08}.gx,
 // b07.gx (the tuple twin) (bool-beside-collection-cover-01)
+// CR claude for claude: [bug/low] An arm is not found dead behind an arm that takes every
+// value of its variant where the parameter is unannotated and another tag's arm follows:
+// `let f = |s| select s { `A(b) => b, `A(c) => 1, `B => 2 }; f(`A(1))` checks and runs
+// with its second arm never taken (so does `` `A(_, b) => b, `A(_, c) => 1, `B => 2 ``
+// over two parts, and a `C arm after `B), where `` `A(b) => b, `B => 2, `A(c) => 1 ``
+// and `` `A(b) => b, `A(c) => 1, _ => 2 `` are refused "unreachable arm", and the
+// parameter written (`|s: [`A(i64), `B]|`) is refused with a message about another arm,
+// "pattern `A('_N) will never match `B". The language says no dead arms. base-r25 alike
+// (with `_` for `b`, base-r25 refused by that message; wildcard-slot-any-part-01's fix
+// checks it as its name twin does). Not traced: which of the arms' settle and the
+// coverage walk takes the second `A arm as covering `B. probes:
+// ~/ptmp/cr29/scratch/r25/25c/rev2/p5.txt, p6.txt, p7.txt (run with rb.sh)
+// (variant-dead-arm-unannotated-01)
 // CR claude for claude: [bug/low] An arm is not found dead behind arms that take
 // every value it matches where a position inside the scrutinee holds two tuple or
 // struct members: `type E = [{a: i64, d: i64}, {c: i64}]; |x: (i64, E)| select x { (n,
