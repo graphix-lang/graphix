@@ -382,7 +382,7 @@ fn program(shape: &str, d: usize) -> String {
         // The chain through a union with each link the next one bare, the
         // call passing a value for every link; with each link implementing a
         // trait too.
-        "chainboundsvalued" | "chainboundsvaluedtrait" => {
+        "chainboundsvalued" | "chainboundsvaluedtrait" | "chainboundsarrays" => {
             let (pre, conj) = match shape {
                 "chainboundsvaluedtrait" => (
                     "trait Tr { val m: fn(self) -> i64 };\n\
@@ -391,13 +391,17 @@ fn program(shape: &str, d: usize) -> String {
                 ),
                 _ => ("", ""),
             };
+            let (last, value) = match shape {
+                "chainboundsarrays" => ("Array<i64>", "[1]"),
+                _ => ("Number", "1"),
+            };
             let bounds = (0..d)
                 .map(|i| format!("'a{i}: ['a{}, null]{conj}", i + 1))
-                .chain([format!("'a{d}: Number")])
+                .chain([format!("'a{d}: {last}")])
                 .collect::<Vec<_>>()
                 .join(", ");
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
-            let values = vec!["1"; d + 1].join(", ");
+            let values = vec![value; d + 1].join(", ");
             format!("{pre}let f = {bounds} |x: ({cells})| x;\nf(({values}))")
         }
         // The chain through a union with each link the next one bare, the
@@ -855,6 +859,15 @@ fn an_impl_head_with_a_chain_of_bounds_checks_in_linear_time() {
 #[cfg(target_os = "linux")]
 fn a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time() {
     checks_within(&program("chainboundsvalued", CHAIN_DEPTH), 8 * BILLION)
+}
+
+/// The same with an array for every link: a link's lower bounds are held
+/// once however many links lie below it, so the work does not double with
+/// each link.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_call_passing_arrays_to_a_chain_of_bounds_checks_in_polynomial_time() {
+    checks_within(&program("chainboundsarrays", 40), 3 * BILLION)
 }
 
 /// The same with a trait on every link: the answer that `i64` implements

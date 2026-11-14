@@ -202,6 +202,11 @@ pub(super) struct ContainsHist {
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
+    /// The walk is the commit that follows a trial which held a cell's
+    /// lower bounds ([`commit_lower`]): the cells below take their choice
+    /// of how to hold theirs from a probe, as that trial did, and run no
+    /// trial of their own.
+    proved: bool,
     /// The walk places a union's members in an order a trial placed them
     /// all in ([`Type::place_in_order`]), and neither has met a choice
     /// since ([`Self::strays`]): that trial took each union below with
@@ -365,6 +370,7 @@ impl ContainsHist {
             norm: None,
             pools: Lazy::new(),
             trial: false,
+            proved: false,
             as_tried: false,
             chose: false,
             ordered: false,
@@ -1936,7 +1942,7 @@ fn holds_union(
     }
 }
 
-// CR claude for claude: [perf/medium] A call passing an array for every link of a
+// XCR claude for claude: [perf/medium] A call passing an array for every link of a
 // chain of bounds checks in time exponential in the chain's length. `let f = 'a0:
 // ['a1, null], .., 'a{d-1}: ['a{d}, null], 'a{d}: Array<i64> |x: ('a0, .., 'a{d})|
 // x; f(([1], .., [1]))` takes 1.79 / 4.88 / 17.2 / 66.5 / 264 G instructions at
@@ -1952,6 +1958,34 @@ fn holds_union(
 // 1000 / 2000. probes: ~/ptmp/cr29/scratch/r24/24h/impls-read/arrnotrait{15,17,
 // 19}.gx, generators gen2.py / gen3.py there (`python3 gen2.py arrnotrait N`)
 // (chainbounds-array-valued-01)
+// 2026-11-14 claude: The exponential is fixed; the quadratic part stays. Each
+// link's commit_lower ran a trial on copies and then the commit, and each of those
+// ran the links below the same way: 2^links. Now only the outermost commit_lower
+// runs a trial (hist.trial / hist.proved: the trial's walk and the commit after a
+// held trial choose flags-or-IntoMember by a probe). arrnotrait 15/17 links:
+// 1.81/4.88 G on base-r24 -> 0.77/0.80 G (empty 0.75), 500 links 8.1 G, 1000 links
+// 27.9 G; tuples (i64, i64) 1000/2000 5.0/17.0 G, arrnoparam 500 7.0 G, impl<'e>
+// param 500 16.6 G: the same quadratic as before (the trait variants were not
+// 2^n), a flat profile in contains_dispatch/TVar::read/probe_get with no single
+// cause; not fixed here. Pin: deep_nesting
+// a_call_passing_arrays_to_a_chain_of_bounds_checks_in_polynomial_time (40 links,
+// 3 G; fails killed at the budget without the fix). Probes:
+// ~/ptmp/cr29/scratch/r25/25e/. A nested commit that the probe admits but no
+// commit holds, in a trial, is no longer retried with IntoMember; 24322
+// graphix-tests, 663 graphix-types, deep_nesting, census (2967 files identical)
+// and guicheck (39.65 G base, 39.85 G lane) show none.
+
+// CR claude for claude: [perf/low] A call passing an array, or a tuple, for every
+// link of a chain of bounds checks in time quadratic in the chain's length, where the
+// twin passing integers is linear (deep_nesting chainboundsvalued). `python3 gen2.py
+// arrnotrait N` / `gen3.py tupnotrait N` (--no-cache --check, debug, empty 0.75 G): arrays
+// 8.1 / 27.9 G at 500 / 1000 links, tuples (i64, i64) 5.0 / 17.0 G at 1000 / 2000, a
+// trait on every link `impl<'e> Tr for Array<'e>` 16.6 G at 500. The profile is flat
+// (contains_dispatch, TVar::read, cell_lower, probe_get, ContainsHist::closure): each
+// link's commit probes and commits the whole chain below it once. A fix makes a link's
+// commit read the links below by a verdict that stands while nothing they reach is
+// written, as the integers' probes do (probe_standing). probes:
+// ~/ptmp/cr29/scratch/r24/24h/impls-read/, ~/ptmp/cr29/scratch/r25/25e/ (chainbounds-quadratic-01)
 
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
 /// copies first, so bounds a probe admits apart but no commit holds
@@ -1969,22 +2003,35 @@ fn commit_lower(
 ) -> Result<bool> {
     let lower = tv.cell_lower();
     let mut flags = below(flags) | ContainsFlags::Commit;
-    if !lower.is_empty() && !flags.contains(ContainsFlags::IntoMember) {
-        let ls = Type::Tuple(Arc::from_iter(lower.iter().cloned()));
-        let holds = |flags| {
-            on_copies(Some((&*hist, env)), [t, &ls], |[t, ls], trial| match &ls {
-                Type::Tuple(ls) => holds_union(ls, flags, env, trial, &t),
-                _ => Ok(false),
-            })
-        };
-        if !holds(flags)? {
+    if lower.is_empty() || flags.contains(ContainsFlags::IntoMember) {
+        return holds_union(&lower, flags, env, hist, t);
+    }
+    if hist.trial || hist.proved {
+        if !holds_union(&lower, guide(flags), env, hist, t)? {
             flags |= ContainsFlags::IntoMember;
-            if !holds(flags)? {
+            if !holds_union(&lower, guide(flags), env, hist, t)? {
                 return Ok(false);
             }
         }
+        return holds_union(&lower, flags, env, hist, t);
     }
-    holds_union(&lower, flags, env, hist, t)
+    let ls = Type::Tuple(Arc::from_iter(lower.iter().cloned()));
+    let holds = |flags| {
+        on_copies(Some((&*hist, env)), [t, &ls], |[t, ls], trial| match &ls {
+            Type::Tuple(ls) => holds_union(ls, flags, env, trial, &t),
+            _ => Ok(false),
+        })
+    };
+    if !holds(flags)? {
+        flags |= ContainsFlags::IntoMember;
+        if !holds(flags)? {
+            return Ok(false);
+        }
+    }
+    let proved = mem::replace(&mut hist.proved, true);
+    let held = holds_union(&lower, flags, env, hist, t);
+    hist.proved = proved;
+    held
 }
 
 /// Whether the open cell `tv`, above lower bounds that hold `t` and that

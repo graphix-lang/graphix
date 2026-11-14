@@ -65,7 +65,12 @@ others, from the members they left, as a union holding a union does
 bounds a probe admits apart but no binding holds together (`(i64,
 string)` above `('x, 'x)`) refuse the bind and bind none of their cells:
 a refusal another walk ignores (a select's settle against its arms)
-leaves nothing behind. An open cell of a bound below a union binds to
+leaves nothing behind. The trial is made once, by the outermost commit: the
+commits below it, in the trial and in the commit that follows it, choose
+between binding the union and `IntoMember` by a probe, so a chain of
+bounds, each link's bound an open cell of the next, costs a polynomial
+of its length, not a doubling per link (`deep_nesting`'s
+`chainboundsarrays`). An open cell of a bound below a union binds to
 the union where that holds every bound, else the union's open member
 takes it as a bare cell would (`ContainsFlags::IntoMember`): a slice's
 element set `['h, 'r]` that must hold `'x` and `Array<'x>` puts `'h`
