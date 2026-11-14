@@ -609,6 +609,7 @@ impl TraitDef {
     pub fn dispatchers(&self) -> impl Iterator<Item = BindId> + '_ {
         self.methods.iter().map(|m| m.dispatcher).chain(std::iter::once(self.anchor))
     }
+
     /// The first method that takes `self` beyond its receiver, in another
     /// parameter's type, in the bound of a variable its signature holds, or
     /// where its result takes a value of it in (under a function's
