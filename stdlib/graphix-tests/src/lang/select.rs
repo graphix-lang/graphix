@@ -9698,6 +9698,12 @@ run!(unannotated_slice_element_telling_rest_from_keep_refused, r#"{
   f([`Keep(1)])
 }"#, refused("isn't known here and may share `Keep("); FuseExpect::None);
 
+// The refusal names a written variable one way at both places it prints it.
+run!(told_refusal_names_written_variable_once, r#"{
+  let f = |v: 'a| select v { Array<'b> as xs => xs, _ => never() };
+  f([1])
+}"#, refused("tests for Array<'b: unbound> among 'a: unbound, but a type variable there isn't known here and may share Array<'b: unbound>'s runtime form"); FuseExpect::None);
+
 // A bind tests nothing a quantifier could share: the binds take the element
 // type whole.
 run!(generic_slice_binds_beside_keep_check, r#"{

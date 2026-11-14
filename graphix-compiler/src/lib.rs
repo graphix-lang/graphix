@@ -3341,7 +3341,7 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
         return Ok(());
     };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-    // CR claude for claude: [readability/low] The message below names one variable of
+    // XCR claude for claude: [readability/low] The message below names one variable of
     // a written test two ways: `let f = |v: 'a| select v { Array<'b> as xs => xs, _ =>
     // never() }; f([1])` is refused with "this pattern tests for Array<'b: unbound>
     // among 'a: unbound, but a type variable there isn't known here and may share
@@ -3354,12 +3354,15 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     // print the part of `test` the pair stands for, or one name for both cells.
     // probe: ~/ptmp/cr29/scratch/r24/24a/wtrv/review/msg1.gx
     // (told-names-variable-twice-01)
+    // 2026-11-14 claude: The refusal prints test, rest and known through one printer
+    // walk with no resolve_tvars copy (each call made fresh cells the printer numbered
+    // apart: 'b1). Pin lang::select::told_refusal_names_written_variable_once fails
+    // (every mode) with the resolve_tvars calls restored.
     format_with_flags(PrintFlag::DerefTVars, || {
         if let Indiscernible::Pair(a, b) = &why
             && (open(a) || open(b))
         {
-            let (test, rest) = (test.resolve_tvars(), rest.resolve_tvars());
-            let known = if open(a) { b.resolve_tvars() } else { a.resolve_tvars() };
+            let known = if open(a) { b } else { a };
             bail!(
                 "this pattern tests for {test} among {rest}, but a type variable there \
                  isn't known here and may share {known}'s runtime form: annotate it"
