@@ -15640,3 +15640,58 @@ run!(
 }"#,
     is(Value::I64(1))
 );
+
+// A bound's argument that is an open variable through a typedef name takes
+// the bound as a conjunct, as a bare one does, and is not decided by it.
+run!(
+    bound_name_argument_through_an_alias_stays_open,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  type I<'t> = 't;
+  let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y);
+  let h = |v| f(v, null);
+  let z: i64 = h(2).0;
+  z
+}"#,
+    is(Value::I64(2))
+);
+run!(
+    bound_name_argument_through_an_alias_in_a_parameter_stays_open,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  type I<'t> = 't;
+  let f = |x: 'b, y: N<I<'b>>| (x, y);
+  let h = |v| f(v, null);
+  let z: i64 = h(2).0;
+  z
+}"#,
+    is(Value::I64(2))
+);
+run!(
+    bound_name_argument_through_an_alias_still_refuses_what_breaks_the_bound,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  type I<'t> = 't;
+  let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y);
+  let h = |v| f(v, null);
+  h("s")
+}"#,
+    refused("unbound within Number does not contain string");
+    FuseExpect::None
+);
+run!(
+    bound_name_argument_through_a_bound_cell_stays_open,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  type I<'t> = 't;
+  let f = 'a: N<I<'b>>, 'b: Number |x0: 'a, x1: 'b, x2: 'b| (x0, x1, x2);
+  let v = never();
+  let w = never();
+  let r = f(w, w, v);
+  let z: i64 = r.0;
+  v <- 2;
+  w <- 2;
+  z
+}"#,
+    is(Value::I64(2))
+);

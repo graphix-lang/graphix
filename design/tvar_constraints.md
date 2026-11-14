@@ -2771,7 +2771,10 @@ generic definition's variable passed as `Result`'s success type carries
 it in its signature. A written name is held the same way where it is
 written (`TypeRef::check_application`): in `'a: Result<'b, `E>` the cell
 `'b` takes `NoError` as its own conjunct at the signature, so a call that
-leaves `'a` undecided still refuses an `'b` the bound rejects.
+leaves `'a` undecided still refuses an `'b` the bound rejects. An argument
+that is an open variable through a typedef name (`N<I<'b>>` with `type I<'t> =
+'t`) or through a cell bound to one counts as that variable
+(`Type::open_cell`): it takes the conjunct and is not decided by the bound.
 
 - `NoError ⊇ t` (`Type::may_be_error` negated) reads `t`'s members
   through bindings and type references; an error nested in a collection

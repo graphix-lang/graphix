@@ -1499,7 +1499,7 @@ impl TypeRef {
         }
     }
 
-    // CR claude for claude: [bug/low] A bounded parameter's bound decides, or refuses,
+    // XCR claude for claude: [bug/low] A bounded parameter's bound decides, or refuses,
     // an undecided argument that is not a bare open variable. `type N<'t: Number> = ['t,
     // null]; type I<'t> = 't; let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y); let h = |v|
     // f(v, null); let z: i64 = h(2).0` is refused, "i64 does not contain [Int, Real]": h
@@ -1515,6 +1515,12 @@ impl TypeRef {
     // `let z: i64 = r.0` is refused where base-r24 ran it. probes:
     // ~/ptmp/cr29/scratch/r24/24c/bcnb/{i1,i2,i3,t2,p00107}.gx
     // (named-bound-arg-decides-01)
+    // 2026-11-14 claude: An argument that is an open variable through a typedef name
+    // (I<'b> with type I<'t> = 't) or through a cell bound to one now takes the bound as
+    // a conjunct, as a bare variable does (Type::open_cell in hold_bounds_of and
+    // check_application); i1, i2, i3 and p00107 check and run, 2. Pins that fail without
+    // it: types.rs bound_name_argument_through_*. guicheck 39679980616 -> 39840669707;
+    // deep_nesting green; census: no verdict or message change from this commit.
     /// Hold the arguments to `def`'s parameter bounds, as an expansion
     /// does: an open argument cell takes its bound when `commit`, any
     /// other argument must meet it, refused by error when `commit`, else
@@ -1527,17 +1533,17 @@ impl TypeRef {
         for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
             let Some(bound) = bound else { continue };
             let bound = bound.replace_tvars(&known);
-            match arg {
-                Type::TVar(tv) if !tv.is_bound() => {
+            match arg.open_cell(env) {
+                Some(tv) => {
                     if commit {
                         tv.add_cell_constraint(bound)
                     }
                 }
-                _ if commit => {
+                None if commit => {
                     bound.check_contains(env, arg)?;
                     tvar::require_bounds(std::slice::from_ref(&bound), arg)
                 }
-                _ => {
+                None => {
                     if !bound.contains_with_flags(BitFlags::empty(), env, arg)? {
                         return Ok(false);
                     }
@@ -1614,12 +1620,12 @@ impl TypeRef {
         for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
             let Some(bound) = bound else { continue };
             let bound = bound.replace_tvars(&known);
-            match arg {
-                Type::TVar(tv) if !tv.is_bound() => tv.add_cell_constraint(bound),
-                _ if !arg.has_unbound() && !bound.has_unbound() => {
+            match arg.open_cell(env) {
+                Some(tv) => tv.add_cell_constraint(bound),
+                None if !arg.has_unbound() && !bound.has_unbound() => {
                     bound.check_contains(env, arg)?
                 }
-                _ => (),
+                None => (),
             }
         }
         Ok(())
@@ -3882,6 +3888,21 @@ impl Type {
                 r.lookup_ref_probe(env).is_some_and(|(_, t)| t.is_function(env))
             }
             _ => false,
+        })
+    }
+
+    /// The open cell this type is: an unbound variable, or one bound to
+    /// another type that is, through typedef names. Fills nothing.
+    pub(crate) fn open_cell(&self, env: &Env) -> Option<TVar> {
+        ensure_sufficient(|| match self {
+            Self::TVar(tv) => match tv.binding() {
+                None => Some(tv.clone()),
+                Some(t) => t.open_cell(env),
+            },
+            Self::Ref(_) => {
+                self.lookup_ref_probe(env).and_then(|(_, t)| t.open_cell(env))
+            }
+            _ => None,
         })
     }
 
