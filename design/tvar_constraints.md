@@ -251,10 +251,11 @@ value at that variable), so a name under it keeps the cell
 declared variable; pins
 `lang::select::written_test_own_variable_over_a_declared_one_*`). A
 name the test types at `_` where the cell stands (`_ as w` over `'a`,
-`(i64, _) as (n, w)` over `[(i64, 'a), (string, 'a)]`) would be bottom
-while the run-time test for bottom passes every value: it is refused,
+`(i64, _) as (n, w)` over `[(i64, 'a), (string, 'a)]`) would be bottom,
+and a whole capture of a test holding such a `_` (`(i64, _) as p`) would
+hold it, while the run-time test for bottom passes every value: it is refused,
 naming `Any` or the type the test takes (`StructurePattern`'s
-`type_inside_rigid`; pins `lang::select::written_bottom_over_a_declared_*`). An
+`type_inside_rigid`; pins `lang::select::written_bottom_*`). An
 abstract pattern names the type its compile resolved, an alias's
 included (`CompiledAbstracts`); a name a later statement of the block
 declares is that type there, in a function above the declaration too, and

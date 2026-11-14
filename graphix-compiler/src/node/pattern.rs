@@ -3421,7 +3421,7 @@ impl<R: Rt> PatternNode<R> {
                     k.typ = Type::union(env, &[&k.typ, &l.typ])?
                 }
                 Some(k) if k.typ.has_rigid() => (),
-                Some(k) if matches!((&k.typ, &l.typ), (Type::Bottom, Type::Bottom)) => {
+                Some(k) if k.typ.has_bottom() && l.typ.has_bottom() => {
                     let name = env.by_id.get(&l.id).map(|b| b.name.as_str());
                     bail!(
                         "the written test types `{}` at `_`, which is bottom, where a \

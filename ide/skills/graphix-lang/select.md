@@ -248,6 +248,8 @@ ok |x: ['a, null]| select x { null as _ => 0, _ => 1 }
 no "types `w` at `_`" |z: 'a| select z { _ as w => w + 1, _ => 0 }
 no "types `w` at `_`" 'a: [i64, string] |z: 'a| select z { _ as w => w + 1, _ => 0 }
 no "types `w` at `_`" |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as (n, w) => n + w, _ => 0 }
+no "types `p` at `_`" |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as p => p.0, _ => 0 }
+ok |z: [(i64, 'a), (string, 'a)]| select z { (i64, Any) as p => p.0, _ => 0 }
 ok |z: 'a| select z { Any as w => 1, _ => 0 }
 ok |z: ('a, i64)| select z { (_, i64) as (w, n) => n, _ => 0 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { 'c as `A(z) => 1, _ => 2 }

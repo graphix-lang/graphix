@@ -12140,8 +12140,8 @@ run!(
         let g = 'b: Any |x: ['b, `Z]| -> ['b, null] select x { `Z as `Z => null, v => v };
         g(1)
     }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
-    FuseExpect::Jit
+    is(Value::I64(1));
+    FuseExpect::None
 );
 
 run!(
@@ -13031,4 +13031,24 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 5]);
     FuseExpect::Jit
+);
+
+run!(
+    written_bottom_whole_capture_over_a_declared_variable_refused,
+    r#"{
+  let k = |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as p => { let q: string = p.1; q }, _ => "no" };
+  k((1, 5))
+}"#,
+    refused("the written test types `p` at `_`");
+    FuseExpect::None
+);
+
+run!(
+    written_bottom_whole_capture_over_a_declared_variable_any_twin,
+    r#"{
+  let k = |z: [(i64, 'a), (string, 'a)]| select z { (i64, Any) as p => 1, _ => 0 };
+  k((1, "s"))
+}"#,
+    is(Value::I64(1));
+    FuseExpect::None
 );
