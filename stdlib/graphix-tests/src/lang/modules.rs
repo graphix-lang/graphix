@@ -570,13 +570,13 @@ run!(
 );
 
 run!(
-    a_body_naming_a_field_the_functions_type_lacks_is_refused_at_each_load,
+    a_body_naming_a_field_the_functions_type_lacks_is_refused_and_the_next_load_holds,
     sig_imports_a_function_bodys_type(
         "unrestricted",
         "let f = |x: Foo| x.b",
-        "let f = |x: Foo| x.b"
+        "let f = |x: Foo| x.a + 1"
     ),
-    is(Value::I64(0));
+    is(Value::I64(7));
     FuseExpect::None
 );
 
