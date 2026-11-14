@@ -718,6 +718,98 @@ impl Reach {
             // '_N, '_N, '_N], which nothing has decided" and now says "type mismatch
             // Number does not contain Any", as this CR's other shapes do. probes:
             // ~/ptmp/cr29/scratch/r23/23d/sacc/{msg_p0085u,msg_p0199u}.gx
+            // 2026-11-13 claude: Review, lane 24b: a fix (e4a119389, reverted) read every
+            // `_` at a position of a tuple, struct or variant as a cell of its own in the
+            // settle, over a scrutinee cell with no lower bounds. It ran this CR's shapes
+            // and closed bind-inside-wildcard-part-01, but the `_`'s cell is then one
+            // more undecided cell, which takes what another arm tests at its part or
+            // stays open beside it, and selects base-r24 runs right were refused. Where
+            // they are written: `|s| select s { (`Key, `Char(c)) => c + 1, (`Mouse, _) =>
+            // 0 }` ("this pattern tests for (`Key, `Char(i64)) among (`Mouse, '_N), but a
+            // type variable there isn't known here"; a struct, a tuple or a slice for the
+            // `Char alike), `(`Key, `Char(c)) => c + 1, (`Key, _) => 0` and `(1, _) => 0,
+            // (_, null) => 1, (_, _) => 2` ("unreachable arm"), `` `S(`C(1)) => 1, `S(_)
+            // => 0 `` ("may share `C(i64)'s runtime form"). At the use: `(1, _) => 0, (_,
+            // "a") => 1, (_, _) => 2` called with `(2, 5)`; one instance called at two
+            // types of a part only `_` meets (`let h = mk(0)`, a `let rec`, a function a
+            // `<-` writes or a `&` holds, a later REPL input); `str::parse` selected by
+            // `(1, _) => 0, (_, _) => 1` ("must be fully known here"); a second select
+            // over one never() let. Of 900 generated selects (gen2.py, seeds 9102 and
+            // 3317) 78 that base-r24 runs were refused and 51 it refuses ran. D5
+            // (cr-discuss, Ruled) says a `_`'s own cell is not to count as undecided.
+            // Tried on top of it, none landed (tried-scoped-cells.patch holds the last):
+            // a cell only where another arm binds a name at, inside or over the `_`'s
+            // position (two arms then differ by `Any` against a type at another part and
+            // a call "could go to" both members); every `_` a cell only in a select where
+            // one stands beside a bind, and `Any` for a cell the arms leave open that no
+            // arm's predicate holds (that runs the `Mouse, `S, instance, parse and
+            // second-select programs above, but `(`Key, `Char(c)) => c, (`Key, _) => 0`
+            // is still "unreachable arm": narrowing binds the `_`'s cell to the other
+            // arm's shape). What a fix has to hold at once: this CR's shapes (a name at
+            // the `_`'s own position), a `_` wider than the shape another arm of the same
+            // first part takes apart, and bind-inside-wildcard-part-01, which is a
+            // question of where a call's argument goes among a decided `(i64, Any)`
+            // member and an undecided one, not of the `_`'s type. Pins that hold the
+            // programs above as they run (each fails on e4a119389):
+            // lang::select_undecided::wildcard_beside_a_shape_under_another_tag,
+            // .._under_the_same_tag, .._in_a_struct, .._in_a_variants_payload,
+            // wildcard_beside_a_literal_of_another_type,
+            // wildcard_arm_behind_a_null_test_is_live,
+            // wildcard_part_of_one_instance_called_at_two_types,
+            // wildcard_part_of_a_let_written_at_two_types,
+            // wildcard_part_of_a_parsed_value. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/ (README)
+            // CR claude for claude: [bug/high] A bind inside a part that another arm leaves
+            // to a `_` is a variable no argument decides, over an unannotated parameter,
+            // and the fused run dies: `let f = |x| select x { (1, _) => 0, (2, (c, _)) => c,
+            // (_, _) => 1 }; let r = f((2, ("s", 4))); println(r)` checks, `f` being `fn(x:
+            // (i64, Any)) -> [i64, '_N]`; fused it panics, "kernel param `r`: runtime
+            // String("s") does not match the compiled Scalar(I64) slot", and --no-fusion
+            // prints s. `f((2, ("s", 4))) + 1` checks and prints 2 on both engines: the
+            // use makes the arm's test `(i64, (i64, Any))`, and the value goes to the `(_,
+            // _)` arm. As REPL inputs, `r + 1` after `let r = f((2, ("s", 4)))` kills the
+            // runtime. The settle below joins `(i64, Any)` and `(i64, ('c, Any))`, the
+            // `_`'s `Any` holds the other arm's part, the call's argument is held by the
+            // first, and nothing decides `'c`. With the parameter written `(i64, Any)` the
+            // same (narrow-verdict-dropped-01's note). A `_` read as a cell of its own
+            // closed it and was reverted (wildcard-slot-any-part-01's note). What would
+            // close it: an argument that a decided member holds and an undecided member
+            // could take decides that one too, or the bind is refused where the select is
+            // written, naming the parameter to annotate. base-r24 alike. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/{hole1.gx,hole2.gx,repl.in}
+            // (bind-inside-wildcard-part-01)
+            // CR claude for claude: [bug/high] A bind beside two other arms' literals of two
+            // types at one part of a tuple or struct is typed without one of them where its
+            // arm comes after theirs, and the fused arm reads a value of that type as the
+            // other: `let f = |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => v + 1,
+            // (_, _) => 9 }; f((4, "y"))` checks, `f` being `fn(s: [(i64, [i64, string]),
+            // (i64, i64)]) -> i64`; fused it prints an address plus one (140031906144801),
+            // --no-fusion 9, and GRAPHIX_NO_SUBST=1 refuses it, "cannot compute [i64,
+            // string] + i64" (GRAPHIX_ELAB_AUDIT reports it, for `f((4, 7))` too). With
+            // `"[v]"` for the body fused prints an address, --no-fusion w and NO_SUBST y;
+            // with `null` for the `"x"` and `f((4, null))` fused prints 0; with `"a"` for
+            // the first arm's second `1` as well the fused run dumps core. The struct form
+            // (`{k: 4, v} => v + 1`) alike. With the bind's arm first the check refuses it
+            // ("cannot compute [i64, string] + i64"), and the variant form (`` `S(4, v) ``)
+            // is refused too ("cannot compute Any + i64"). The tuple twin of
+            // payload-bind-beside-literal-01, whose text has the tuple forms right: with
+            // one literal arm they are. Not diagnosed. base-r24 alike. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/{r10.txt,r11.txt,r17.txt} (run with
+            // rb.sh), fs1.gx (bind-beside-literal-types-01)
+            // CR claude for claude: [perf/low] The check of a select over an unannotated
+            // parameter whose arms hold a literal at one part and a name at another grows
+            // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,
+            // _) => 0 }` takes 3.73 G user instructions of `--no-cache --check` in a debug
+            // build at 200 arms, beside the 0.74 G of an empty program and the 0.80 G of
+            // the same arms with `_` for the name; a struct of three fields takes 4.65 G
+            // at 200. The variant form (`` `A(k, a) ``) takes 1.11 G: its arms' cells are
+            // one before the settle (Type::binds_beside), where each tuple or struct arm
+            // is a member of its own that every arm narrows against. What would likely fix
+            // it: the same for the members of one tuple or struct shape whose other parts
+            // are equal. The fixer of wildcard-slot-any-part-01 measured 0.94 G at 50 arms
+            // and 1.50 G at 100. base-r24. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
+            // (tuple-arms-settle-cost-01)
             // CR claude for claude: [bug/low] An arm that binds a part whole beside arms that
             // take that part apart in two shapes is refused at the call, where the written
             // parameter runs: `let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3,
@@ -3372,6 +3464,14 @@ impl<R: Rt> Select<R> {
             // finds the arm live, refuse an inferred predicate the narrowing did
             // not hold, naming the written test (`T as pattern`). probes:
             // ~/ptmp/cr29/scratch/r23/23d/sab/ (narrow-verdict-dropped-01)
+            // 2026-11-13 claude: Two witnesses, base-r24:
+            // bind-inside-wildcard-part-01 (an unannotated parameter), and the same
+            // with the part written: `let f = |x: (i64, Any)| select x { (1, _) =>
+            // 0, (2, (c, _)) => c, (_, _) => 1 }; let r = f((2, ("s", 4)));
+            // println(r)` checks, `f` being `fn(x: (i64, Any)) -> [i64, '_N]`; fused
+            // it panics, "kernel param `r`: runtime String("s") does not match the
+            // compiled Scalar(I64) slot", and --no-fusion prints s. probe:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa/any1.gx
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
                 reaching

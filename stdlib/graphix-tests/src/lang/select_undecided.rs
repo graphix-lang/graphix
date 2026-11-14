@@ -2186,3 +2186,55 @@ run!(slice_element_beside_a_wildcard_over_a_let_the_arms_decide_refused, r#"{
     v <- [`J("s"), 0];
     z
 }"#, refused("cannot compute Any + i64"); FuseExpect::None);
+
+// A `_` at a part of a tuple, struct or variant reads `Any` in a scrutinee
+// the arms decide: it takes the values the other arms' tests of that part
+// leave, of whatever type.
+run!(wildcard_beside_a_shape_under_another_tag, r#"{
+    let f = |s| select s { (`Key, `Char(c)) => c + 1, (`Mouse, _) => 0 };
+    [f((`Key, `Char(7))), f((`Mouse, "x"))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [8, 0]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_shape_under_the_same_tag, r#"{
+    let f = |s| select s { (`Key, `Char(c)) => c + 1, (`Key, _) => 0 };
+    [f((`Key, `Char(7))), f((`Key, `Enter)), f((`Key, `Char("s")))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [8, 0, 0]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_shape_in_a_struct, r#"{
+    let f = |s| select s { {k: `Key, v: `Char(c)} => c + 1, {k: `Mouse, v: _} => 0 };
+    [f({k: `Key, v: `Char(7)}), f({k: `Mouse, v: "x"})]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [8, 0]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_shape_in_a_variants_payload, r#"{
+    let f = |s| select s { `S(`C(1)) => 1, `S((2, _)) => 2, `S(_) => 0 };
+    [f(`S(`C(1))), f(`S((2, "x"))), f(`S(7)), f(`S(`C("s")))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 0, 0]); FuseExpect::None);
+
+run!(wildcard_beside_a_literal_of_another_type, r#"{
+    let f = |s| select s { (1, _) => 0, (_, "a") => 1, (_, _) => 2 };
+    [f((2, 5)), f((2, "a")), f((1, null))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 0]); FuseExpect::None);
+
+run!(wildcard_arm_behind_a_null_test_is_live, r#"{
+    let f = |s| select s { (1, _) => 0, (_, null) => 1, (_, _) => 2 };
+    [f((1, null)), f((2, null)), f((2, 5))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]); FuseExpect::None);
+
+run!(wildcard_part_of_one_instance_called_at_two_types, r#"{
+    let mk = |z| |s| select s { (1, _) => 0, (_, _) => 1 };
+    let h = mk(0);
+    [h((1, "a")), h((2, 3))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1]); FuseExpect::None);
+
+run!(wildcard_part_of_a_let_written_at_two_types, r#"{
+    let s = never();
+    let v = select s { (1, _) => 0, (_, _) => 1 };
+    s <- (1, "a");
+    s <- (2, 3);
+    v
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::None);
+
+run!(wildcard_part_of_a_parsed_value, r#"{
+    let p = str::parse("(2, \"s\")")$;
+    select p { (1, _) => 0, (_, _) => 1 }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
