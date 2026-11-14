@@ -2212,6 +2212,78 @@ run!(
     prints(r#"[[i64:-1, i64:2, i64:0], i64:2, i64:2]"#)
 );
 
+// The widest instance holds every instance's payload only where the
+// representation holds each parameter covariantly: under a writable
+// reference, a function's argument or an abstract type's parameter, a
+// name taken out over `Any` is refused, and the written instance passes.
+run!(
+    abstract_payload_under_a_writable_reference_over_any_refused,
+    r#"{
+    type W<'a> = Abstract<&mut 'a>;
+    let i = 1;
+    let f = |x: Any| select x { W(r) => *r <- "s", _ => never() };
+    f(W(&mut i));
+    i + 1
+}"#,
+    refused("no instance of W holds every other's payload");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_in_a_function_argument_over_any_refused,
+    r#"{
+    type F<'t> = fn(x: 't) -> i64;
+    type W<'a> = Abstract<F<'a>>;
+    let f = |x: Any| select x { W(g) => g("s"), _ => 0 };
+    f(W(|x: i64| x + 1))
+}"#,
+    refused("no instance of W holds every other's payload");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_in_an_any_part_under_a_writable_reference_refused,
+    r#"{
+    type W<'a> = Abstract<&mut 'a>;
+    let i = 1;
+    let f = |x: Array<Any>| select x { [W(r), ..] => *r <- "s", _ => never() };
+    f([W(&mut i)]);
+    i + 1
+}"#,
+    refused("no instance of W holds every other's payload");
+    FuseExpect::None
+);
+
+run!(
+    abstract_capture_over_any_under_a_writable_reference_refused,
+    r#"{
+    type W<'a> = Abstract<&mut 'a>;
+    let i = 1;
+    let f = |x: Any| select x { t@ (W(_), _) => { let r = t.0.0; *r <- "s" }, _ => never() };
+    f((W(&mut i), 1));
+    i + 1
+}"#,
+    refused("no instance of W holds every other's payload");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_under_a_writable_reference_written_instance,
+    r#"{
+    type W<'a> = Abstract<&mut 'a>;
+    type G<'t> = fn(x: i64) -> 't;
+    type V<'a> = Abstract<(G<'a>, &'a)>;
+    let i = 1;
+    let f = |x: Any| select x { (W<i64>, i64) as (W(r), b) => *r <- b ~ 5, _ => never() };
+    let tag = |x: Any| select x { W(_) => "w", _ => "o" };
+    let co = |x: Any| select x { V((g, r)) => "[g(1)] [*r]", _ => "o" };
+    f((W(&mut i), 2));
+    select i { 5 => (tag(W(&mut i)), tag(3), co(V((|x: i64| x + 1, &i)))), _ => never() }
+}"#,
+    prints(r#"["w", "o", "2 5"]"#);
+    FuseExpect::None
+);
+
 // A name or-alternatives bind under an abstract pattern is typed by its
 // representation, and joins the union of a name another alternative binds
 // outside one.

@@ -361,8 +361,11 @@ pub(super) struct Leaf {
 
 /// An abstract pattern's own parameters, representation and payload
 /// pattern, with the parameters of each instance that reaches it and its
-/// representation at them.
+/// representation at them. `named_over_any`: a value that is `Any`
+/// reaches it, and a name takes out it or a part of it.
 struct PayloadReps<'a> {
+    id: AbstractId,
+    named_over_any: bool,
     own: &'a [Type],
     rep: &'a Type,
     bind: &'a StructPatternNode,
@@ -1088,7 +1091,7 @@ impl StructPatternNode {
         )
     }
 
-    // CR claude for claude: [bug/high] An abstract pattern with no written test, over a
+    // XCR claude for claude: [bug/high] An abstract pattern with no written test, over a
     // value that is `Any`, types its payload at the widest instance, which is every
     // instance's type only where the representation holds each parameter covariantly:
     // `type W<'a> = Abstract<&mut 'a>; let i = 1; let f = |x: Any| select x { W(r) => *r
@@ -1106,6 +1109,21 @@ impl StructPatternNode {
     // reference or in a function's argument, naming the written test (`W<T> as W(r)`);
     // census both repos. probes: ~/ptmp/cr29/scratch/r24/24a/apa-rev/q07.gx, q08.gx;
     // right: t01.gx (abstract-invariant-over-any-01)
+    // 2026-11-14 claude: StructPatternNode::narrow_payloads refuses an inferred abstract
+    // pattern a value that is Any reaches, where a name takes it or a part of it out (a
+    // payload bind, its capture, a capture around it), when
+    // AbstractRep::widest_holds_each (variance::covariant_in) finds a parameter under a
+    // writable reference, a function's argument or an abstract type's parameter, naming
+    // the written instance (W<T> as W(..)). W(_) naming nothing still passes; covariant
+    // reps (&'a, fn(..) -> 'a, recursive and aliased typedefs) are unchanged. Pins that
+    // fail without it:
+    // lang::select::{abstract_payload_under_a_writable_reference_over_any_refused,
+    // abstract_payload_in_a_function_argument_over_any_refused,
+    // abstract_payload_in_an_any_part_under_a_writable_reference_refused,
+    // abstract_capture_over_any_under_a_writable_reference_refused} (16 runs); twin
+    // abstract_payload_under_a_writable_reference_written_instance; unit
+    // variance::a_body_is_covariant_where_each_parameter_is. Census of both repos: no
+    // change. Probes ~/ptmp/cr29/scratch/r25/25a/aio/.
     /// The parameters an abstract pattern's type stands at in `m`, one
     /// member of the type at its position: `m`'s own when `m` is an
     /// instance of its type, the widest instance's when `m` is `Any`
@@ -1212,9 +1230,24 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| {
             let mut reps: SmallVec<[PayloadReps; 2]> = SmallVec::new();
             for m in members {
-                self.payload_reps(env, m, &mut reps);
+                self.payload_reps(env, m, false, &mut reps);
             }
-            for PayloadReps { own, rep, bind, params, at } in reps.iter() {
+            for PayloadReps { id, named_over_any, own, rep, bind, params, at } in
+                reps.iter()
+            {
+                if *named_over_any
+                    && let Some(r) = env.abstract_reps.get(id)
+                    && !r.widest_holds_each(env)
+                {
+                    let name = &r.name;
+                    bail!(
+                        "{name}(..) here takes out of a value that may be Any, and no \
+                         instance of {name} holds every other's payload: its \
+                         representation holds a parameter under a writable reference, a \
+                         function's argument or an abstract type; write the instance the \
+                         arm takes in a type test, `{name}<T> as {name}(..)`"
+                    )
+                }
                 let held =
                     Type::union(env, &at.iter().collect::<SmallVec<[&Type; 2]>>())?;
                 held.narrow_pattern(env, rep)?;
@@ -1230,11 +1263,13 @@ impl StructPatternNode {
     /// Each abstract pattern in this one that is under no other's payload,
     /// with its representation at every instance `typ` holds at its
     /// position: at `Any` for each parameter at or inside a part of `typ`
-    /// that is `Any`.
+    /// that is `Any`. `named`: a capture of a pattern around this one
+    /// takes it out.
     fn payload_reps<'a>(
         &'a self,
         env: &Env,
         typ: &Type,
+        named: bool,
         out: &mut SmallVec<[PayloadReps<'a>; 2]>,
     ) {
         crate::stack::ensure_sufficient(|| {
@@ -1243,24 +1278,34 @@ impl StructPatternNode {
                 return;
             }
             if let Self::Abstract {
+                id,
                 own: Type::Abstract { params: own, .. },
                 rep,
                 bind,
                 ..
             } = self
             {
+                let named = named || {
+                    let mut any = false;
+                    self.ids(&mut |_| any = true);
+                    any
+                };
                 for m in members.iter() {
                     let (Some(ps), Some(r)) =
                         (self.member_params(env, m), self.member_rep(env, m))
                     else {
                         continue;
                     };
+                    let over_any = matches!(expand(env, m), Some(Type::Any));
                     match out.iter_mut().find(|e| std::ptr::eq(e.rep, rep)) {
                         Some(e) => {
+                            e.named_over_any |= named && over_any;
                             e.params.push(ps);
                             e.at.push(r)
                         }
                         None => out.push(PayloadReps {
+                            id: *id,
+                            named_over_any: named && over_any,
                             own,
                             rep,
                             bind,
@@ -1271,15 +1316,16 @@ impl StructPatternNode {
                 }
                 return;
             }
+            let named = named || self.whole_binds().next().is_some();
             if members.iter().any(|m| matches!(m, Type::Any)) {
                 for c in self.children() {
-                    c.payload_reps(env, &Type::Any, out)
+                    c.payload_reps(env, &Type::Any, named, out)
                 }
             }
             for (_, ts) in self.member_parts(env, typ, false) {
                 for (c, t) in self.children().into_iter().zip(ts) {
                     if let Some((t, _)) = t {
-                        c.payload_reps(env, &t, out)
+                        c.payload_reps(env, &t, named, out)
                     }
                 }
             }

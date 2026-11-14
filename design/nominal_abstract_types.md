@@ -87,10 +87,21 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    or `Any`. The predicate's own parameters are that instance's there
    before the arm is checked (`Type::widen_abstracts_over_any`), so a
    whole capture (`b@ Box(_)` over `Any`) is `Box<Any>` whatever the arm
-   does with it. An abstract pattern under a payload (`Box(Inner((a,
-   b)))`) compiles at parameters of its own too, and is narrowed against
-   the instances that payload holds. Pins:
-   `lang::select::abstract_payload_*`, `abstract_capture_*`.
+   does with it. The widest instance's representation holds every
+   instance's only where it meets each parameter covariantly
+   (`AbstractRep::widest_holds_each`, `variance::covariant_in`): a
+   parameter under a writable reference, a function's argument or an
+   abstract type's parameter there (`Abstract<&mut 'a>`) would let the
+   arm write a string through a `&mut i64` or call an `fn(x: i64)` with
+   one. So where a value that is `Any` reaches such a pattern and a name
+   takes it or a part of it out (a payload bind, its capture, a capture
+   of a pattern around it), the arm is refused for the written instance,
+   `W<i64> as W(r)` (`StructPatternNode::narrow_payloads`); a written
+   test of an abstract compares its parameters at run time. A pattern
+   that names nothing (`W(_)`) tests the tag and passes. An abstract
+   pattern under a payload (`Box(Inner((a, b)))`) compiles at parameters
+   of its own too, and is narrowed against the instances that payload
+   holds. Pins: `lang::select::abstract_payload_*`, `abstract_capture_*`.
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.

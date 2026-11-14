@@ -13,6 +13,7 @@ use crate::{
         AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
         Unguarded,
         expansive::{Blind, Expansive, through_aliases},
+        variance,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -229,6 +230,16 @@ impl AbstractRep {
                 None => Type::Any,
             })
             .collect()
+    }
+
+    /// Whether the representation at the widest instance holds it at
+    /// every instance: it meets each parameter covariantly or not at all,
+    /// never under a writable reference, a function's argument or an
+    /// abstract type's parameter.
+    pub fn widest_holds_each(&self, env: &Env) -> bool {
+        let formals: SmallVec<[ArcStr; 4]> =
+            self.params.iter().map(|(tv, _)| tv.name.clone()).collect();
+        variance::covariant_in(env, &self.rep, &formals)
     }
 
     fn formals(&self, params: &[Type]) -> LPooled<AHashMap<ArcStr, Type>> {

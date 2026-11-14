@@ -422,9 +422,101 @@ pub(crate) fn meets(env: &Env, def: &DefRef) -> Option<Arc<[Meets]>> {
     def.meets.get().cloned()
 }
 
+/// Whether `t` meets each variable `formals` names covariantly or not at
+/// all, so that `t` with wider types put for them holds `t` with the
+/// narrower ones. False where it cannot tell: a name not defined, an
+/// application of an unknown variance, a definition met again while
+/// looked through.
+pub(crate) fn covariant_in(env: &Env, t: &Type, formals: &[ArcStr]) -> bool {
+    struct Co<'a> {
+        env: &'a Env,
+        formals: &'a [ArcStr],
+        active: LPooled<Vec<usize>>,
+        steps: usize,
+    }
+    impl Co<'_> {
+        fn holds(&self, t: &Type) -> bool {
+            self.formals.iter().any(|f| holds_formal(t, f))
+        }
+
+        fn walk(&mut self, t: &Type, at: Meets) -> bool {
+            self.steps += 1;
+            if self.steps > BUDGET {
+                return false;
+            }
+            ensure_sufficient(|| match t {
+                Type::Bottom
+                | Type::Any
+                | Type::Primitive(_)
+                | Type::Hole
+                | Type::Bound(_) => true,
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => self.walk(&b, at),
+                    None => !self.formals.contains(&tv.name) || at.0 & !Meets::HOLDS == 0,
+                },
+                Type::Ref(tr) => self.apply(tr, at),
+                Type::Fn(f) => {
+                    f.args.iter().all(|a| self.walk(&a.typ, at.argument()))
+                        && f.vargs.as_ref().is_none_or(|t| self.walk(t, at.argument()))
+                        && self.walk(&f.rtype, at)
+                        && self.walk(&f.throws, at)
+                }
+                Type::ByRef(Mutability::Mut, t) => self.walk(t, at.invariant()),
+                Type::Abstract { params, .. } => {
+                    params.iter().all(|p| self.walk(p, at.invariant()))
+                }
+                Type::App(..) => !self.holds(t),
+                Type::ByRef(Mutability::Shared, _)
+                | Type::Error(_)
+                | Type::Array(_)
+                | Type::List(_)
+                | Type::Tuple(_)
+                | Type::Struct(_)
+                | Type::Variant(..)
+                | Type::Map(_)
+                | Type::Set(_) => {
+                    let mut co = true;
+                    t.for_each_child(&mut |c| co = co && self.walk(c, at));
+                    co
+                }
+            })
+        }
+
+        fn apply(&mut self, tr: &TypeRef, at: Meets) -> bool {
+            if !tr.params.iter().any(|a| self.holds(a)) {
+                return true;
+            }
+            let Named::Def(c) = definition(tr, self.env) else { return false };
+            let Some(inner) = meets(self.env, &c) else { return false };
+            if inner.len() != tr.params.len() {
+                return false;
+            }
+            if !inner.iter().zip(tr.params.iter()).any(|(m, a)| m.walk() && self.holds(a))
+            {
+                return tr
+                    .params
+                    .iter()
+                    .zip(inner.iter())
+                    .all(|(a, m)| *m == Meets::UNUSED || self.walk(a, at.through(*m)));
+            }
+            if self.active.contains(&c.def_key()) {
+                return false;
+            }
+            let Some(known) = c.bindings(&tr.params) else { return false };
+            let body = c.typ().replace_tvars(&known);
+            self.active.push(c.def_key());
+            let co = self.walk(&body, at);
+            self.active.pop();
+            co
+        }
+    }
+    let mut co = Co { env, formals, active: LPooled::take(), steps: 0 };
+    co.walk(t, Meets::COVARIANT)
+}
+
 #[cfg(test)]
 mod test {
-    use super::{Meets, meets};
+    use super::{Meets, covariant_in, meets};
     use crate::{env::Env, typ::Type};
 
     fn of(defs: &[(&str, &str)], name: &str) -> Vec<Meets> {
@@ -524,5 +616,28 @@ mod test {
         let defs =
             [("O<'t>", "['t, null]"), ("L<'a>", "[`Cons('a, L<'a>), O<`Cons(i64, 'a)>]")];
         assert!(of(&defs, "L<i64>")[0].walk());
+    }
+
+    #[test]
+    fn a_body_is_covariant_where_each_parameter_is() {
+        let co = |defs: &[(&str, &str)]| {
+            let (env, t) = Env::typed_at_root(defs, "T<i64>").expect("defined");
+            let Type::Ref(tr) = &t else { panic!("T is no name") };
+            let def = tr.resolve_peek(&env).expect("resolved");
+            let formals: Vec<arcstr::ArcStr> =
+                def.params().iter().map(|(tv, _)| tv.name.clone()).collect();
+            covariant_in(&env, def.typ(), &formals)
+        };
+        assert!(co(&[("T<'a>", "&'a")]));
+        assert!(co(&[("T<'a>", "fn(k: fn(x: 'a) -> i64) -> 'a")]));
+        assert!(co(&[("T<'a>", "[`N, `C('a, T<'a>)]")]));
+        assert!(co(&[("O<'t>", "['t, null]"), ("T<'a>", "O<Array<'a>>")]));
+        assert!(co(&[("T<'a>", "(i64, fn(x: i64) -> 'a)")]));
+        assert!(!co(&[("T<'a>", "&mut 'a")]));
+        assert!(!co(&[("T<'a>", "{v: i64, g: fn(x: 'a) -> i64}")]));
+        assert!(!co(&[("F<'t>", "fn(x: 't) -> i64"), ("T<'a>", "[F<'a>, null]")]));
+        assert!(!co(&[("O<'t>", "['t, null]"), ("T<'a>", "O<&mut 'a>")]));
+        assert!(!co(&[("T<'a>", "[`N, `C(fn(x: 'a) -> i64, T<'a>)]")]));
+        assert!(!co(&[("V<'a>", "Abstract<'a>"), ("T<'a>", "V<'a>")]));
     }
 }
