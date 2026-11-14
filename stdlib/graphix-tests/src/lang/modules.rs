@@ -2462,6 +2462,28 @@ run!(
     FuseExpect::Jit
 );
 
+// A closure that left a deleted collection slot calls the sibling function
+// the slot declared: an instance of it first built after the slot is gone
+// binds that call statically too.
+run!(
+    a_deleted_slots_closure_first_called_after_it_binds_a_sibling_function_statically,
+    r#"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let ys: Array<i64> = [1];
+    ys <- select ep { 5 => [], _ => never() };
+    let fs = array::map(ys, |y| { let h = |z: i64| z + 6; |x: i64| #[native] h(x) + y });
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 3 => ep ~ fs[0]$, _ => never() };
+    let xs: Array<i64> = never();
+    xs <- select ep { 10 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| saved(x + ep));
+    select ep { 14 => late, _ => never() }
+}"#,
+    prints("[i64:21, i64:22]");
+    FuseExpect::Jit
+);
+
 // A function saved from a dynamic module is a closure over the bindings
 // of the body it was made in. `get0` and `set0` are the first body's:
 // after the reload (`ep` 7) the instance `held` has kept and the ones
