@@ -801,7 +801,12 @@ alone (`on_copies`, `place_in_order`'s trials, `contains_holding`,
 `contains_through_copy`), whose answer the real walk judges again, and a
 select's patterns (`contains_ordered`, `check_contains_ordered`: the
 narrowing walk in `tvar.rs`, `pattern.rs`, `Select`'s predicate against
-its scrutinee), whose arms are consulted top down. What a pattern leaves
+its scrutinee), whose arms are consulted top down. The members the
+narrowing chooses among there are the arms' own, but for a written test
+over a scrutinee two of whose members are cells still undecided: the
+first would take it, so the arm is refused, naming the bindings to
+annotate (`select.rs::written_takers`, `design/select_coverage.md`).
+What a pattern leaves
 in a binding's or a parameter's type is judged where a value next meets
 it: `|x| select x { [h, t..] => h, [] => 0 }` types `x` as a union of
 one array member an arm, `[Array<['e, 'e]>, Array<'e>]`. Its members hold

@@ -347,7 +347,8 @@ a change elsewhere most often breaks.
 - A type that two undecided members of a union could take goes to neither
   (`contains.rs::AmbiguousMember`): the relation's site names what to
   annotate. Only a select's own pattern walks keep the first member
-  (`Type::contains_ordered`).
+  (`Type::contains_ordered`), and a written test two undecided members
+  of the scrutinee could take is refused (`select.rs::written_takers`).
 - **A call's arguments are met in the order of the parameters, then the
   defaults it omits; nothing waits for a later argument**, and no rule may
   be added to make a verdict independent of that order: soundness is the

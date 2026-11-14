@@ -541,6 +541,14 @@ refused where it is written. A type test tests what it reads as a
 pattern does: `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) `` is
 refused until `z` is annotated, since `z` might become neither.
 
+A type test over a scrutinee that is one of two such types is refused
+too. With `u` an `x` or a `y`, both written later, `select u { i64 as n
+=> n, _ => 0 }` could make either one an `i64`, and the check does not
+pick one by the order they stand in: annotate `x` or `y`. The other is
+then the test's to decide, or stays open where the annotation holds the
+test. Tests that cover the scrutinee between them, `i64 as n => ..,
+string as s => ..`, decide both: each is an `[i64, string]`.
+
 Arms that bind the same part of such a scrutinee bind one type there.
 No literal or guard beside a bind narrows it, so in `` |s| select s {
 `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 } `` both `a` are the

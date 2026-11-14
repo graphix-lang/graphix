@@ -2954,3 +2954,166 @@ run!(take_apart_deciding_a_part_a_body_union_drops, r#"{
     };
     f((1, 2), (3, 4))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+const COULD_EACH_TAKE: &str =
+    "types not decided at this select that could each take the test";
+
+// A written test that two undecided members of the scrutinee could each
+// take goes to neither: which took it would follow their order in the
+// union.
+run!(written_test_two_undecided_members_could_take_refused, r#"{
+    let x = never();
+    let y = never();
+    let u = select true { true => x, false => y };
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- 1;
+    y <- "s";
+    r
+}"#, refused("i64 as n tests a value of 'x or 'y, types not decided at this select that could each take the test"); FuseExpect::None);
+
+run!(written_test_two_undecided_members_written_the_other_way_refused, r#"{
+    let x = never();
+    let y = never();
+    let u = select true { true => x, false => y };
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- "s";
+    y <- 1;
+    r
+}"#, refused(COULD_EACH_TAKE); FuseExpect::None);
+
+run!(written_test_two_undecided_members_a_call_returns_refused, r#"{
+    let mk = |c, a, b| select c { true => a, false => b };
+    let x = never();
+    let y = never();
+    let u = mk(true, x, y);
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- 1;
+    y <- "s";
+    r
+}"#, refused(COULD_EACH_TAKE); FuseExpect::None);
+
+run!(written_test_two_undecided_parameters_could_take_refused, r#"{
+    let g = |p, q| {
+        let u = select true { true => p, false => q };
+        select u { null as _ => 0, v => 1 }
+    };
+    g(null, 5)
+}"#, refused("null as _ tests a value of 'p or 'q, types not decided at this select that could each take the test"); FuseExpect::None);
+
+run!(written_test_three_undecided_members_could_take_refused, r#"{
+    let x = never();
+    let y = never();
+    let z = never();
+    let u = select 1 { 1 => x, 2 => y, _ => z };
+    let r = select u { i64 as n => n, string as s => 1, _ => 0 };
+    x <- 1;
+    y <- "s";
+    z <- null;
+    r
+}"#, refused("i64 as n tests a value of 'x or 'y or 'z, types not decided at this select"); FuseExpect::None);
+
+run!(written_tuple_test_two_undecided_members_could_take_refused, r#"{
+    let x = never();
+    let y = never();
+    let u = select true { true => x, false => y };
+    let r = select u { (i64, string) as (a, b) => a, _ => 0 };
+    x <- (1, "t");
+    y <- "s";
+    r
+}"#, refused(COULD_EACH_TAKE); FuseExpect::None);
+
+run!(guarded_written_test_two_undecided_members_could_take_refused, r#"{
+    let x = never();
+    let y = never();
+    let u = select true { true => x, false => y };
+    let r = select u { i64 as n if n > 0 => n, _ => 0 };
+    x <- 1;
+    y <- "s";
+    r
+}"#, refused(COULD_EACH_TAKE); FuseExpect::None);
+
+// One annotation leaves one member to take the test, or a decided member
+// that holds it.
+run!(written_test_beside_one_annotated_member_decides_the_other, r#"{
+    let x: string = never();
+    let y = never();
+    let u = select false { true => x, false => y };
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- "s";
+    y <- 7;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
+
+run!(written_test_a_decided_member_holds_leaves_the_other_open, r#"{
+    let x = never();
+    let y: i64 = never();
+    let u = select true { true => x, false => y };
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- "s";
+    y <- 7;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
+
+run!(written_test_two_annotated_members, r#"{
+    let x: [i64, string] = never();
+    let y: [i64, string] = never();
+    let u = select false { true => x, false => y };
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- "s";
+    y <- 7;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::Jit);
+
+// A decided member that holds the test takes it, however many undecided
+// members stand beside it.
+run!(written_test_a_decided_member_holds_beside_two_undecided, r#"{
+    let x = never();
+    let y = never();
+    let u = select 3 { 1 => x, 2 => y, _ => 5 };
+    let r = select u { i64 as n => n, _ => 0 };
+    x <- "s";
+    y <- null;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::Jit);
+
+// Arms that cover the scrutinee between them decide every undecided
+// member together, as the union of what they test.
+run!(written_tests_covering_two_undecided_members_decide_both, r#"{
+    let x = never();
+    let y = never();
+    let u = select false { true => x, false => y };
+    let r = select u { i64 as n => n + 1, string as s => 0 };
+    x <- "s";
+    y <- 1;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+// A member something already decided is no taker.
+run!(written_test_one_undecided_member_beside_one_a_use_decided, r#"{
+    let x = never();
+    let y = never();
+    let k = x + 1;
+    let u = select false { true => x, false => y };
+    let r = select u { string as s => 1, _ => 0 };
+    x <- 1;
+    y <- "s";
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+// With no catch-all a case the arms leave out is the refusal: with it
+// written, the arms decide both members and nothing is picked.
+run!(written_tests_short_of_a_decided_member_name_the_missing_case, r#"{
+    let g = |x, y, k: i64| {
+        let u = select k { 0 => y, 1 => x, _ => null };
+        select u { i64 as n => n, string as s => str::len(s) }
+    };
+    g(1, "ab", 0)
+}"#, refused("missing match cases: no arm covers null"); FuseExpect::None);
+
+run!(written_tests_covering_a_decided_member_and_two_undecided, r#"{
+    let g = |x, y, k: i64| {
+        let u = select k { 0 => y, 1 => x, _ => null };
+        select u { i64 as n => n, string as s => str::len(s), null as _ => -1 }
+    };
+    [g(1, "ab", 0), g("ab", 1, 0), g(1, 1, 2)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, -1]); FuseExpect::Jit);

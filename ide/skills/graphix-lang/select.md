@@ -93,7 +93,13 @@ select, and runtime forms. Each rule refuses and names the fix.
   [`A(n)] ``); a name over `'b` passes, and so does a destructure that
   takes apart all of it (`Array<'b> as [(a, b), ..]`). A written test
   that tests the undecided part is refused as a pattern is:
-  `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``.
+  `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) ``. A written
+  test over a scrutinee two of whose members are undecided (`u`, an `x`
+  or a `y` both written later, with `i64 as n => n, _ => 0`) could go
+  to either, and is refused, "could each take the test": annotate one,
+  and the other is the test's to decide, or stays open where the
+  annotation holds the test. With no catch-all the tests decide both,
+  each the union of the tests.
 - Arms that bind one part of a scrutinee the arms decide bind one type
   there: `(1, a) => .., (2, a) => ..` and `` `A(1, a) => .., `A(2, a) =>
   .. `` give both `a` the part's one type, since no literal or guard
@@ -214,6 +220,9 @@ no "tests the declared variable `a` is of" 't: Number + Singleton |x: Any, y: 't
 ok |x: Any, y: 't| select x { ('t, i64) as (r, n) => [r, y], _ => [y] }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
+no "could each take the test" let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }
+ok let x = never(); let y: string = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }
+ok let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, string as s => 0 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }
 ok let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [i64, null] select x { [h, ..] => h.0, _ => null }; g([(3, 4)])
 no "string does not contain" 'b: (i64, i64) |x: (Array<'b>, i64)| -> [string, null] select x { ([h, ..], n) => { let q: string = h; q }, _ => null }

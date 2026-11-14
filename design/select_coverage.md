@@ -107,6 +107,18 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`Deciding::hold_written`), and
   a written test that takes such a member only whatever the cell becomes,
   not with the cell one type of its own (`written_tests_undecided`); a
+  written test that two or more such cells, each a member of what
+  reaches its arm, could take whole, where the narrowing gave it to the
+  first of them in the union, is refused naming them all
+  (`written_takers`, `taken_by_order`: a member is never picked by its
+  place in a union; over `u`, an `x` or a `y` both written later, `i64
+  as n => n, _ => 0` is refused until one is annotated). A decided
+  member that holds the test takes it and leaves them open, one such
+  cell alone is the arm's to decide, and arms with no catch-all decide
+  them together in the settle, each the union of the tests; a case
+  those arms leave out leaves the settle short, so it is the refusal
+  told, before this one (pins `select_undecided::written_test_*`,
+  `written_tests_*`). A
   name over it takes the open part beside the members' others
   (`TVar::narrow_per_member`).
   A cell an arm's pattern decided (the arms' settle, a completion, the

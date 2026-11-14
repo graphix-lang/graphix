@@ -31,7 +31,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::{Typ, Value};
@@ -579,6 +579,8 @@ struct Reach {
     covered: SmallVec<[Type; 8]>,
     /// An unguarded arm matches every value.
     wildcard: bool,
+    /// One of the arms is such an arm: no value goes uncovered.
+    catch_all: bool,
     guarded_slice: bool,
     refutable_slice: bool,
     /// What was built into a scrutinee cell the arms decided.
@@ -1068,6 +1070,7 @@ impl Reach {
             bools: (false, false),
             covered: SmallVec::new(),
             wildcard: false,
+            catch_all: wildcard,
             guarded_slice: false,
             refutable_slice: false,
             built,
@@ -3508,6 +3511,8 @@ impl<R: Rt> Select<R> {
         let mut reach = Reach::new(&ctx.env, &scrut, &self.arms, at)?;
         deciding.decided(&mut decided);
         let mut reached: SmallVec<[Reached; 16]> = SmallVec::new();
+        // told after a missing case, which leaves the arms' settle short
+        let mut by_order: Result<()> = Ok(());
         let spec_pats: &[_] = match &self.spec.kind {
             ExprKind::Select(se) => &se.arms,
             _ => &[],
@@ -3565,7 +3570,14 @@ impl<R: Rt> Select<R> {
                 });
             }
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-            union_members(&ctx.env, &reaching, &mut members)?;
+            let tested = checking && pat.explicit_type_predicate;
+            let mut bare: SmallVec<[TVar; 2]> = SmallVec::new();
+            union_members_with(&ctx.env, &reaching, &mut members, &mut |tv| {
+                if tested {
+                    bare.push(tv.clone())
+                }
+            })?;
+            let takers = written_takers(&ctx.env, &outer, &bare, &pat.type_predicate)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
@@ -3588,6 +3600,23 @@ impl<R: Rt> Select<R> {
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;
             step.decided(&mut decided);
+            if takers.len() > 1 && takers.iter().any(|c| c.open_cell().is_none()) {
+                let t = &pat.type_predicate;
+                let pat = match spec_pats.get(i) {
+                    Some((p, _)) => {
+                        let w = p.type_predicate.as_ref().unwrap_or(t);
+                        format_compact!("{w} as {}", p.structure_predicate)
+                    }
+                    None => format_compact!("the test {t}"),
+                };
+                let e = Err(taken_by_order(&ctx.env, &pat, &takers, &self.spec));
+                if reach.catch_all {
+                    return e.at(&site);
+                }
+                if by_order.is_ok() {
+                    by_order = e.at(&site)
+                }
+            }
             // a runtime test can't tell apart two types with one runtime form
             if checking
                 && pat.explicit_type_predicate
@@ -3676,6 +3705,7 @@ impl<R: Rt> Select<R> {
             // an arm dead for what an earlier arm's pattern decided is refused
             // for that decision
             if let Err(Dead(e)) = covered {
+                by_order?;
                 deciding.left_open(&mut decided);
                 deciding.rewritten(&mut decided);
                 let open = still_open(&outer);
@@ -3717,7 +3747,8 @@ impl<R: Rt> Select<R> {
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
                     undecided.drain().map(|(_, c)| c).collect();
-                reach.exhausted(&ctx.env, &scrut, &undecided).at(&self.spec)
+                reach.exhausted(&ctx.env, &scrut, &undecided).at(&self.spec)?;
+                by_order
             }
             false => Ok(()),
         }
@@ -4458,6 +4489,65 @@ fn written_tests_decided(
     Ok(written_tests_undecided(env, t, &copy, &open)?.and_then(|c| {
         fresh.values().find(|(f, _)| f.same_cell(&c)).map(|(_, d)| d.clone())
     }))
+}
+
+/// The scrutinee's cells open before the arms (`outer`) and still, none
+/// rigid, among `bare`, the open cells that are members of what reaches an
+/// arm, that could each take the arm's written test `t` whole: none where
+/// fewer than two could.
+fn written_takers(
+    env: &Env,
+    outer: &AHashMap<usize, TVar>,
+    bare: &[TVar],
+    t: &Type,
+) -> Result<SmallVec<[TVar; 2]>> {
+    let mut takers: SmallVec<[TVar; 2]> = SmallVec::new();
+    if bare.len() < 2 {
+        return Ok(takers);
+    }
+    let open = still_open(outer);
+    for c in bare.iter().filter_map(|tv| tv.open_cell()) {
+        if open.contains_key(&c.cell_addr())
+            && !takers.iter().any(|k| k.same_cell(&c))
+            && Type::TVar(c.clone()).contains_holding(env, t, &[])?
+        {
+            takers.push(c)
+        }
+    }
+    if takers.len() < 2 {
+        takers.clear()
+    }
+    Ok(takers)
+}
+
+/// The refusal of `pat`, whose written test the narrowing gave to the
+/// first of `takers` ([`written_takers`]) in the scrutinee's union,
+/// naming the bindings whose types they are.
+fn taken_by_order(
+    env: &Env,
+    pat: &dyn std::fmt::Display,
+    takers: &[TVar],
+    select: &Expr,
+) -> anyhow::Error {
+    let name = |holders: &mut Holders, tv: &TVar| {
+        let name = holders.name_cell(tv).unwrap_or_else(|| holders.number(tv));
+        format_compact!("{name}")
+    };
+    // named in one order, whatever the union's
+    let mut sorted: SmallVec<[&TVar; 2]> = takers.iter().collect();
+    sorted.sort_by_cached_key(|tv| name(&mut Holders::new(env, None), tv));
+    let mut holders = Holders::new(env, None);
+    let mut names = CompactString::new("");
+    for (i, tv) in sorted.into_iter().enumerate() {
+        names.push_str(if i == 0 { "" } else { " or " });
+        names.push_str(&name(&mut holders, tv));
+    }
+    let meanings = holders.meanings(&select.ori);
+    anyhow!(
+        "{pat} tests a value of {names}, types not decided at this select that could \
+         each take the test, and the check picks none by their order: annotate all but \
+         one of them{meanings}"
+    )
 }
 
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided
