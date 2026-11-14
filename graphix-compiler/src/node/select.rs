@@ -856,48 +856,6 @@ impl Reach {
             // and 1.50 G at 100. base-r24. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
             // (tuple-arms-settle-cost-01)
-            // XCR claude for claude: [bug/low] An arm that binds a part whole beside arms that
-            // take that part apart in two shapes is refused at the call, where the written
-            // parameter runs: `let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3,
-            // `B(y)) => str::len(y), (_, b) => 0 }; f((1, `A(5)))` says "(i64, `A(i64))
-            // could go to (i64, [`A('_N), `B(string)]) or (i64, `A('_N)) of the union [(i64,
-            // [`A('_N), `B(string)]), (i64, `A('_N)), (i64, `B(string))] .. write the type
-            // of the parameter", and `|s: (i64, [`A(i64), `B(string)])|` prints 0. `(2, (x,
-            // y))` beside `(3, (x, y, z))` and `(2, [x, ..])` beside `(3, {a, c})` alike.
-            // One shape (`(1, b) => 0, (2, `A(x)) => x, (3, `A(y)) => y, (_, b) => 0`)
-            // runs, and so does the select without the `(1, b)` arm. The bind's member
-            // holds the union of the other arms' shapes, which is no one type with the
-            // member of each shape (setops::one_type), so the argument meets three
-            // members. base-r23 alike. probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/d2.txt
-            // (run with rb.sh) (bind-beside-shapes-01)
-            // 2026-11-13 claude: Fixed where the choice is made, Type::take
-            // (graphix-types/src/typ/contains.rs): of several undecided members that could
-            // take a type, the one that holds each of the others as it stands
-            // (contains::widest) takes it, where taking it leaves each of the others holding
-            // the type as it stands (contains::decides_each on copies, then the same against
-            // the walk's own take), outside a pre-unification. The bind's member here holds
-            // the member of each shape, cell for cell, so the argument goes to it and decides
-            // the shape's cell as the shape's own member would; the CR's three programs, the
-            // struct and variant scrutinees, one instance, a never() let written later,
-            // array::map and a seq step run as the written parameter does (d2.txt, p1.txt,
-            // p5.txt). The second condition is what keeps bind-inside-wildcard-part-01's hole
-            // from growing: without it `(1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z`
-            // called with (2, ("s", 4), 0) is accepted and panics fused, since (i64, Any, 'z)
-            // holds (i64, ('c, Any), 'z) and decides nothing of 'c; it stays refused. Still
-            // refused: an argument not decided yet (`let g = |u| f((2, u))`: annotate u).
-            // Pins: lang::select_undecided::bind_beside_arms_that_take_the_part_apart and its
-            // _as_tuples, _as_a_slice_and_a_struct, _in_a_struct, _in_a_variants_payload,
-            // _whose_value_is_the_bind, _in_one_instance,
-            // _in_one_instance_at_two_types_refused, _over_a_let_written_later (36 runs fail
-            // with the rule off), wildcard_member_holding_a_bind_inside_takes_no_argument
-            // (fails with the two conditions off), and the unit test
-            // typ::contains::tests::a_member_holding_the_others_takes_a_type_where_it_decides_their_cells
-            // (fails either way). 1400 generated selects (gen.py with an oracle, seeds 4201,
-            // 977, 31337), the lane before against after: 24 newly accepted, each printing
-            // what its arms compute (one of them, g1/p0119, only fused: --no-fusion takes
-            // another arm, as it does for that select's one call the lane already accepted,
-            // bind-beside-literal-types-01's note); none newly refused; three refusals
-            // reworded. probes: ~/ptmp/cr29/scratch/r24/24b/bbs/ (README)
             // CR claude for claude: [bug/low] The check accepts and the build refuses a
             // select of three literal arms and a wildcard that bind a part of an abstract's
             // payload built at two shapes, one holding the other's cell: `type B<'p> =
