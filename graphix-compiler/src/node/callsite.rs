@@ -651,34 +651,6 @@ fn hidden_defaults_at<R: Rt>(
                     Some(_) | None => judge(ctx, formal),
                 },
             }?;
-            // XCR claude for claude: [risk/low] An instance checked again (GRAPHIX_NO_SUBST=1)
-            // judges, at its return, the default of a function its body returns against the
-            // label a later use of the result decided, which the definition's check leaves to
-            // the calls. `let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$; v(0)(#d: "s", 7)`
-            // checks, builds and prints s (no call omits the label, so the default is never
-            // needed), and under GRAPHIX_NO_SUBST=1 the build refuses the instance of v(0),
-            // "the functions met here share one #d .. in: 1: type mismatch string does not
-            // contain i64". base-r23 alike; with one more function between (`|k: i64| |j: i64|
-            // |#d = 1, ..| ..`) base-r23 fails under NO_SUBST at the run-time bind ("a run-time
-            // bind at v(0)(0) did not type") and the lane at the build, since the walk reaches
-            // what a function returns. 54 of the 950 programs of gen_rev.py that run differ
-            // this way, under NO_SUBST alone, all 54 on base-r23 too. An instance takes its
-            // definition's types by default, so only the debug A/B splits. probes:
-            // ~/ptmp/cr29/scratch/r23/23b/trdrev/{ns1,ns2}.gx, gen_rev.py, nosubst_base.out
-            // (nosubst-returned-default-01)
-            // 2026-11-13 claude: GXLambda::typecheck0 (node/lambda.rs) no longer judges the
-            // defaults its return hides when the instance checks its body again
-            // (Typing::rechecks): substitution never judges them, the definition's check judges
-            // them on a copy (Narrowing::Copy) and a call that omits the label judges its
-            // default, so the second check now takes them as its definition's, as it takes a
-            // select's verdicts. Pin: graphix-shell tests/shell/no_subst.rs
-            // an_instance_checked_again_leaves_a_returned_default_to_its_calls (ns1, ns2, a
-            // struct field, two lambdas met by a select; each refused under NO_SUBST without
-            // the fix, the omitting twin prints 1 both ways). gen_rev.py's 1620 programs:
-            // base-r24 54 differ between the modes, the fix none; the plain runs are identical
-            // to base-r24's. Shipped mode unchanged. design/parallel_compile.md and
-            // design/debugging.md name it. probes:
-            // ~/ptmp/cr29/scratch/r24/24h/nosubst-returned-default-01/
             at(ctx, walk, &formal.rtype, &fv.rtype)
         }
         (Type::Set(_), _) | (_, Type::Set(_)) => {
