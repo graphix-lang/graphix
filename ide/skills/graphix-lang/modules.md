@@ -50,16 +50,19 @@ Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 docs; types and mods from the gxi are in scope in the impl. A hidden
 type must be `Abstract<..>` or Rust-backed.
 
-An interface names only what it imports or declares itself, never what
-its implementation imports or the code around the module declares. A
-dynamic module's `sig` is one, checked with the program that declares
-it: a type of the program it names is imported there, `use super::Foo;`,
-and declared above the module.
+An interface names by a bare name only what it imports or declares
+itself, never what its implementation imports or the code around the
+module declares. A dynamic module's `sig` is one, checked with the
+program that declares it: a type of the program it names is imported
+there, `use super::Foo;`, or written by its path, `super::Foo`, and
+declared above the module.
 
 ```graphix,cases
 no "undefined type Foo in foo" type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; st
 ok type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x: Foo| x.a" }; st
 no "Foo names the type a later statement of this module declares" let st = mod foo dynamic { sandbox unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+ok type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x: super::Foo| x.a" }; st
+no "super::Foo names the type a later statement of this module declares" let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
 ```
 
 A gxi `mod` or `use` the body does not repeat is spliced into the body

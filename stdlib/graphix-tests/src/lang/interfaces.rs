@@ -2731,6 +2731,49 @@ run!(
     "#
 ; FuseExpect::None);
 
+// A loaded body's dynamic module is held to its names by the load that
+// declares it: the outer load is refused.
+run!(
+    dynamic_sig_name_in_a_loaded_body_refuses_its_load,
+    is(Value::Bool(true)),
+    "/test.gx" => r#"
+        let st = mod outer dynamic {
+            sandbox unrestricted;
+            sig { val k: i64 };
+            source """type Bar = {b: i64}; let st = mod inner dynamic { sandbox unrestricted; sig { val f: fn(x: Bar) -> i64 }; source "let f = |x| 1" }; let k = select st { error as e => 1, null as _ => 2 }"""
+        };
+        let result = select st {
+            error as e => str::contains(#part: "undefined type Bar", "[e]"),
+            null as _ => false
+        }
+    "#
+; FuseExpect::Jit);
+
+// An instance built while the program runs checks its sig's names too:
+// one built after another's load, whose body renamed the import, passes.
+run!(
+    dynamic_sig_names_check_at_an_instance_built_after_a_load,
+    is(Value::I64(9)),
+    "/test.gx" => r#"
+        type Foo = {a: i64};
+        let mk = |src: string| {
+            let st = mod foo dynamic {
+                sandbox unrestricted;
+                sig { use super::Foo; val f: fn(x: Foo) -> i64 };
+                source src
+            };
+            select st { error as e => 0, null as _ => foo::f({a: 4}) }
+        };
+        let t = 0;
+        t <- 1;
+        let g = select t { 1 => mk, _ => never() };
+        let a = g(t ~ "use super::Foo as Bar; let f = |x: Bar| x.a");
+        let h = select a { 4 => mk, _ => never() };
+        let b = h(a ~ "let f = |x: Foo| x.a + 1");
+        let result = a + b
+    "#
+; FuseExpect::Jit);
+
 // Inside function types each use picks a val's variable: a struct of
 // functions, an alias of a function type (the alias defined after the
 // module included) and a recursive typedef of functions.

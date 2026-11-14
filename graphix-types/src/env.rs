@@ -1406,6 +1406,11 @@ impl Env {
             // check refuses what no load can take. base-r24 alike. probes:
             // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/{e1_use_above,e4_trait_impl,g2_fn_once,i2_block_whitelist_named,f1_unrestricted}.gx
             // (whitelist-sig-import-01)
+            // 2026-11-13 claude: Review of dynamic-sig-names-at-check-01: a sig's import from a package the whitelist leaves out is one more: `sandbox
+            // whitelist [core]; sig { use sys::fs::Mode; val f: fn(x: Mode) -> i64; val k: i64 }` checks and every load is "use: no module `sys::fs` in
+            // scope" (base-r24 alike), while the path with no import, `val f: fn(x: sys::fs::Mode)`, loads (e9_sandboxed_pkg.gx). The function case fails
+            // without a whitelist too where the type stands below the module (sig-import-fn-body-below-01). probe:
+            // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/review/r43_wl_import.gx
             Sandbox::Whitelist(wl) => {
                 let mut modules: LPooled<AHashSet<ModPath>> = LPooled::take();
                 let mut names: LPooled<

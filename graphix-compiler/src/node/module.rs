@@ -1478,9 +1478,10 @@ static DYNAMIC_TYP: LazyLock<Type> = LazyLock::new(|| {
 enum Body<R: Rt> {
     /// Compiled with the program.
     Static,
-    /// Loaded at run time from the text `source` produces. The load's
-    /// signature check runs in `sig_env`: a dynamic module not exported
-    /// from its parent would otherwise lose its bound signature.
+    /// Loaded at run time from the text `source` produces. The program's
+    /// check of the signature and each load's run in `sig_env`: a dynamic
+    /// module not exported from its parent would otherwise lose its bound
+    /// signature.
     Dynamic { source: Node<R>, sig_env: Lexical },
 }
 
@@ -1777,6 +1778,26 @@ impl<R: Rt> Module<R> {
         Ok(Node::new(t))
     }
 
+    // CR claude for claude: [bug/low] A dynamic module in a function's body
+    // whose sig imports a type the body declares below the module checks, and
+    // every load fails on the sig's own spliced `use`, whatever the source
+    // writes: `let mk = |src: string| { let st = mod foo dynamic { sandbox
+    // unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source
+    // src }; type Foo = {a: i64}; .. }` is `DynamicLoadError("use: no `Foo` in
+    // `#fn..::#do..`")` at each call, base-r24 alike. The same sig in a block
+    // of the script loads, in the script itself the check refuses it ("Foo
+    // names the type a later statement of this module declares",
+    // dynamic-sig-names-at-check-01), and the function's loads where the type
+    // stands above the module, or where the sig writes the path, `val f:
+    // fn(x: super::Foo)`, and imports nothing. The message is
+    // `check_pending_imports`': the spliced `use` is deferred at the load, and
+    // `compile_source` looks for its target in the env the load runs in. One
+    // verdict for the three: the check refuses the function's as it does the
+    // script's, or the load finds the body's type as it finds a block's.
+    // whitelist-sig-import-01's function case fails by the same message.
+    // probes:
+    // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/review/{s5_fn_below,t4_fn_below_nobody,s4_block_below,t3_fn_qualified_below}.gx
+    // (sig-import-fn-body-below-01)
     /// Compile loaded text as the module's body, with the end of a
     /// program statement's checks: a deferred import must name
     /// something, and analysis checks the definition assertions it
