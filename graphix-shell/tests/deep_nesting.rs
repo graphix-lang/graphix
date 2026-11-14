@@ -1007,6 +1007,29 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // changes which cells a pre-unification binds, so it was not tried. A typedef chain
 // in the arguments' types is carries-typedef-chain-01. probes:
 // ~/ptmp/cr29/scratch/r24/24f/cbea/ (README)
+// 2026-11-13 claude: Review (round 24): the partial fix 9c2b7cd9a holds. base-r24 ->
+// lane, debug, --no-cache, G instructions: fnalias --expand 4000/8000 6.32/19.27 ->
+// 2.64/4.56; alias --expand 4000/8000 4.36/10.71 -> 2.96/5.19, 10000/20000
+// 6.28/11.86 (14.76/45.85 with (2) undone); formals --check 1000/2000/4000
+// 4.55/15.54/58.95 -> 1.04/1.34/1.95; neighbours type C<'x> = fn(x: 'x, y: 'x) ->
+// i64, fn(x: 'x) -> 'x and [fn(x: 'x) -> i64, null] at 2000/4000 5.29/17.34,
+// 5.30/17.37, 2.75/6.65 -> 1.73/2.73, 1.75/2.76, 1.85/2.98. Each pin fails with only
+// its part undone (the fnalias pin at 7.0 G of 7.0, the alias one at 8.1 G of 8.0,
+// the formals one at 5.0 G of 5.0), the other two passing. (1) and (2) are exact: a
+// node closure finds Plain holds no cell and no function type through
+// try_for_each_child, the children cow_children copies, so reset_memo returns None
+// for it; closure < NoCell is !tvar_free over the same children. (3) differs from
+// the old code only in the rejoin of a copy no argument pre-unified with, which
+// merged the copy's duplicated conjuncts into the formal's cells. 79 call probes
+// (undecided calls, lambdas, arrays, references, monomorphic and wrapped callees,
+// conjunct chains) give the same --expand output on base-r24, the lane without (3)
+// and the lane. Census 2967 files 0/0 against base and against the lane before the
+// fix; regress 585/0; graphix-tests lib 20849, graphix-types 601, graphix-compiler
+// 87, deep_nesting 48, shell 140; guicheck 39.599 -> 39.473 G. Correction
+// 5bf187133: design/type_operation_scaling.md named the pin's old name. The
+// remaining fnargs (cubic, 4.16/22.38 G at 250/500 on the lane, base alike) and
+// decided (6.14 G at 1000, carries-typedef-chain-01) reproduce. probes:
+// ~/ptmp/cr29/scratch/r24/24f/cbea/review/
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
