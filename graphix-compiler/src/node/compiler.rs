@@ -740,28 +740,6 @@ pub(super) fn eta_dispatcher<R: Rt>(
     let at = |kind| Expr::synth(spec, kind);
     let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
-    // XCR claude for claude: [bug/low] A label named like the method as the body
-    // calls it hides the method: `trait T { val m: fn(#m: i64, self) -> i64 }; impl
-    // T for i64 { let m = |#m, s| s + m }; use T::m; let g = m; g(#m: 1, 2)` is
-    // refused "expected fn not i64", the expansion's body `m(#m: m, self)` calling
-    // its own label. A positional parameter takes a name apart there; a label
-    // cannot, its bind being its name. A fix calls the method by a path no
-    // parameter can hide (the binding itself, as `#bind::N` names one, with the
-    // reference a poly binding's call takes). base-r24 alike. probe:
-    // ~/ptmp/cr29/scratch/r24/24g/tmv/label.gx (eta-label-hides-method-01)
-    // 2026-11-14 claude: Since trait-method-value-names-01 the expansion's
-    // parameters carry the trait's names, so this refusal's site frame quotes the
-    // expansion's body (in: m(#m, self)) where base-r24 printed no snippet; the
-    // lambda's own frame is dropped, Expr::is_lowered taking a lambda that declares
-    // '#self as a lowering's. A fix that calls the method by a lowered path also
-    // takes that frame's snippet away.
-    // 2026-11-14 claude: The eta-expansion's body now calls the method by its
-    // binding (#bind::N), which no parameter can hide; Ref::to_bind gives a
-    // synthesized reference to a generalized binding the type its site was checked
-    // at, as a named one takes. The positional-name special case is gone. Pin:
-    // lang::traits::trait_method_value_label_named_like_the_method fails (4 modes)
-    // without the path change. Probe on a warm image and GRAPHIX_PAR=force agrees.
-    // Needs a soak.
 
     // a positional parameter takes the trait's name for it
     for (i, a) in ft.args.iter().enumerate() {
