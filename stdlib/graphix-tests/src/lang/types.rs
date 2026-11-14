@@ -13894,6 +13894,174 @@ run!(
     FuseExpect::Jit
 );
 
+// Three structs whose `f` a field read meets: `x`, the `i64` function and
+// the string function, standing in the union in the order of `fields`.
+fn field_read_beside_two(x: &str, [a, b, c]: [&str; 3]) -> String {
+    format!(
+        r#"{{
+  let k = |b| {{
+    let t = select b {{
+      0 => {{f: {x}, {a}: 1}},
+      1 => {{f: |y| y + 1, {b}: 1}},
+      _ => {{f: |z| "[z]!", {c}: 1}}
+    }};
+    let u = t.f;
+    select t {{ {{f, {a}: _}} => f("s"), _ => "no" }}
+  }};
+  k(0)
+}}"#
+    )
+}
+
+const MEMBER_ORDERS: [[&str; 3]; 6] = [
+    ["a", "b", "c"],
+    ["a", "c", "b"],
+    ["b", "a", "c"],
+    ["b", "c", "a"],
+    ["c", "a", "b"],
+    ["c", "b", "a"],
+];
+
+const TWO_MEETS: &str = "and the check picks neither by order: write the part of its type that tells them apart";
+
+// A lambda that two functions of its union could decide, which are not one
+// type, is refused wherever the three stand in the union, and runs once its
+// parameter is written.
+#[tokio::test(flavor = "current_thread")]
+async fn field_read_refuses_a_lambda_two_members_could_decide() -> Result<()> {
+    use graphix_package_core::testing::refusal;
+    for order in MEMBER_ORDERS {
+        let e =
+            refusal(&field_read_beside_two("|x| x", order), crate::TEST_REGISTER).await?;
+        assert!(
+            e.contains("could be fn(y: i64) -> i64 or fn(z: ")
+                || e.contains(" or fn(y: i64) -> i64, two functions"),
+            "{order:?}: {e}"
+        );
+        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+    }
+    Ok(())
+}
+
+run!(
+    field_read_refuses_a_lambda_beside_two_functions,
+    field_read_beside_two("|x| x", ["a", "b", "c"]),
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    field_read_refuses_a_lambda_beside_two_functions_exchanged,
+    field_read_beside_two("|x| x", ["a", "c", "b"]),
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    field_read_of_a_written_lambda_beside_two_functions,
+    field_read_beside_two("|x: string| x", ["a", "b", "c"]),
+    prints("\"s\"");
+    FuseExpect::None
+);
+
+run!(
+    field_read_of_a_written_lambda_beside_two_functions_exchanged,
+    field_read_beside_two("|x: string| x", ["a", "c", "b"]),
+    prints("\"s\"");
+    FuseExpect::None
+);
+
+// A select's arms and a read of a generic binding among them meet alike.
+run!(
+    select_refuses_a_lambda_two_arms_could_decide,
+    r#"{
+  let k = |b| {
+    let u = select b { 0 => |x| x, 1 => |y| y + 1, _ => |z| "[z]!" };
+    0
+  };
+  k(0)
+}"#,
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    select_refuses_a_generic_function_two_arms_could_decide,
+    r#"{
+  let id = |x| x;
+  let k = |b| {
+    let u = select b { 0 => |z| "[z]!", 1 => id, _ => |y| y + 1 };
+    0
+  };
+  k(0)
+}"#,
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+// What a function throws tells two functions apart as a parameter does:
+// one that throws nothing beside two that throw two errors is refused, and
+// runs once it says which it throws.
+fn select_beside_two_errors(x: &str) -> String {
+    format!(
+        r#"{{
+  let k = |b| {{
+    let t = select b {{
+      0 => {{f: {x}, a: 1}},
+      1 => {{f: |c: i64| -> i64 error(`B)?, b: 1}},
+      _ => {{f: |d: i64| -> i64 error(`A)?, c: 1}}
+    }};
+    let u = t.f;
+    select t {{ {{f, a: _}} => f(1), _ => 0 }}
+  }};
+  k(0)
+}}"#
+    )
+}
+
+run!(
+    field_read_refuses_a_lambda_two_errors_could_decide,
+    select_beside_two_errors("|b: i64| b + 1"),
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    field_read_of_a_lambda_that_writes_what_it_throws,
+    select_beside_two_errors("|b: i64| -> i64 throws `B b + 1"),
+    is(Value::I64(2));
+    FuseExpect::None
+);
+
+// A lambda of a generic holder that reads a binding of its definition is
+// refused alike: the meet would decide the binding.
+fn element_read_beside_two([a, b, c]: [&str; 3]) -> String {
+    format!(
+        r#"{{
+  let k = |v| {{
+    let t = [
+      {{f: |x| (x, v), {a}: 1}},
+      {{f: |y: i64| (y, 1), {b}: 1}},
+      {{f: |z: i64| (z, "s"), {c}: 1}}
+    ];
+    let u = t[0]$.f;
+    v
+  }};
+  k(1)
+}}"#
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn field_read_refuses_a_capture_two_members_could_decide() -> Result<()> {
+    use graphix_package_core::testing::refusal;
+    for order in MEMBER_ORDERS {
+        let e = refusal(&element_read_beside_two(order), crate::TEST_REGISTER).await?;
+        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+    }
+    Ok(())
+}
+
 run!(
     select_of_composites_of_lambdas_in_a_definition,
     r#"{

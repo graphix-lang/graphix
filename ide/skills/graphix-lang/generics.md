@@ -392,7 +392,12 @@ function the same way where the signatures agree, and the open lambda is
 that function from there on (`|x| x` beside `|y| y + 1` takes `i64`),
 called or not; a call through the name judges each one's labeled
 defaults as a call through an array's element does, and where the
-signatures do not agree it is refused, naming both. A
+signatures do not agree it is refused, naming both. An open lambda that
+meets two functions that are not one type (`|x| x` beside `|y| y + 1`
+and `|z| "[z]!"`) is refused where the three meet, a select's arms, an
+or-pattern's name or a field read: write its parameter's type. What a
+function throws counts: one that throws nothing beside two that throw
+two errors writes which (`|x: i64| -> i64 throws `B x + 1`). A
 `seq` step or a `seqq` request reads `s` as generically as a `let` of
 it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
 A `let` nothing writes or annotates reads `s` once in its value,
@@ -414,6 +419,11 @@ ok let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1,
 no "i64 does not contain string" let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r("s") }
 no "a call takes one function type" let b = true; let t = select b { true => `A(|x: string| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
 no "the functions met here share one #d" let b = true; let t = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
+no "the check picks neither by order" let b = 0; let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; t.f
+ok let b = 0; let t = select b { 0 => {f: |x: string| x, a: 1}, 1 => {f: |y| y + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; t.f
+no "the check picks neither by order" let b = 0; select b { 0 => |x| x, 1 => |y| y + 1, _ => |z| "[z]!" }
+no "the check picks neither by order" let b = 0; select b { 0 => |x: i64| x + 1, 1 => |c: i64| -> i64 error(`B)?, _ => |d: i64| -> i64 error(`A)? }
+ok let b = 0; select b { 0 => |x: i64| -> i64 throws `B x + 1, 1 => |c: i64| -> i64 error(`B)?, _ => |d: i64| -> i64 error(`A)? }
 no "the functions met here share one #d" let b = true; let t = `W(select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }); select t { `W(`A(r) | `B(r)) => r(7) }
 ok let b = true; let t: [`A(fn(?#d: [i64, string], x: i64) -> i64), `B(fn(?#d: [i64, string], x: i64) -> i64)] = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
 ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }

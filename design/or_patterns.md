@@ -82,7 +82,10 @@ select x {
   label judges each one's default, and the annotation the refusal names
   is one written function type whose label holds every default.
   Functions that do not meet stay two members, and a call through the
-  name is refused, naming them (pins `or_name_meets_its_functions`,
+  name is refused, naming them; an open function beside two that are not
+  one type is refused at the join, whatever the order of the members and
+  of the alternatives (`design/tvar_constraints.md`, pin
+  `or_name_refuses_a_function_two_could_decide`) (pins `or_name_meets_its_functions`,
   `or_name_is_its_met_function`, `or_name_judges_every_default` and its
   `_under_a_constructor`, `_in_a_slice`, `_in_a_list`, `_of_one_member`
   and `_a_member_joined` forms, `or_name_defaults_under_one_written_type`,

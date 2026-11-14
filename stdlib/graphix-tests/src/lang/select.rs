@@ -5708,6 +5708,61 @@ run!(
     FuseExpect::None
 );
 
+// Three variants an or-arm's name meets: `x`, the `i64` function and the
+// string function, under the tags `members` and read by `alternatives`.
+fn or_name_beside_two(x: &str, [b, c]: [&str; 2], alternatives: &str) -> String {
+    format!(
+        r#"{{
+  let k = |b| {{
+    let t = select b {{ 0 => `A({x}), 1 => `{b}(|y| y + 1), _ => `{c}(|z| "[z]!") }};
+    let u = select t {{ {alternatives} => 0 }};
+    select t {{ `A(r) => r("s"), _ => "no" }}
+  }};
+  k(0)
+}}"#
+    )
+}
+
+const TWO_MEETS: &str = "and the check picks neither by order: write the part of its type that tells them apart";
+
+// A function an or-arm's name shares with two that are not one type is
+// refused in every order of the scrutinee's members and of the
+// alternatives, and runs once its parameter is written.
+run!(
+    or_name_refuses_a_function_two_could_decide,
+    or_name_beside_two("|x| x", ["B", "C"], "`A(r) | `B(r) | `C(r)"),
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    or_name_refuses_a_function_two_could_decide_members_exchanged,
+    or_name_beside_two("|x| x", ["C", "B"], "`A(r) | `B(r) | `C(r)"),
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    or_name_refuses_a_function_two_could_decide_alternatives_exchanged,
+    or_name_beside_two("|x| x", ["B", "C"], "`A(r) | `C(r) | `B(r)"),
+    refused(TWO_MEETS);
+    FuseExpect::None
+);
+
+run!(
+    or_name_of_a_written_function_beside_two,
+    or_name_beside_two("|x: string| x", ["B", "C"], "`A(r) | `B(r) | `C(r)"),
+    prints("\"s\"");
+    FuseExpect::None
+);
+
+run!(
+    or_name_of_a_written_function_beside_two_members_exchanged,
+    or_name_beside_two("|x: string| x", ["C", "B"], "`A(r) | `C(r) | `B(r)"),
+    prints("\"s\"");
+    FuseExpect::None
+);
+
 // The met function is every one of its definitions wherever the
 // alternatives stand: under a constructor, in a slice or a list, where two
 // of them read one member, and where a member's own join meets another's.

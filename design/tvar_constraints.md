@@ -1138,7 +1138,20 @@ the definition gates:
   `lang::select::or_name_meets_its_functions`,
   `or_name_judges_every_default`): a member's generic cells meet
   through a copy, and its live cells bind, so a lambda literal in an arm
-  is the instance the call through the union makes. Members one value
+  is the instance the call through the union makes. A member with cells
+  of its own is one type with every member it meets, so one that meets
+  two members it cannot both be (`|x| x` beside `|y| y + 1` and `|z|
+  "[z]!"`) is refused where they meet, naming the three and the fix, the
+  part of its type that tells the two apart, a parameter or what it
+  throws (`setops::two_meets`): which of the two decided its
+  cells would follow the order of the alternatives, and a union's
+  members stand in the order of their sort. The refusal holds for the
+  member that looks for its meets and for the one it finds, whose other
+  meets the bind would end (pins
+  `lang::types::field_read_refuses_a_lambda_two_members_could_decide`
+  and its neighbours, `lang::select::or_name_refuses_a_function_two_could_decide`).
+  A member whose open cells are all a scheme's is an instance of the
+  first member it meets, which decides nothing of it. Members one value
   may be (`Type::shares_constructor`: arrays, lists, maps, references
   read-only or writable, tuples of one arity, structs of one field list,
   variants of one tag and arity) meet part by part the same way

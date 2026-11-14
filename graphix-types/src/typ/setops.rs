@@ -1,17 +1,19 @@
 use crate::{
+    PrintFlag,
     env::Env,
+    format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        Bound, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair,
-        TVar, Type, TypeRef,
-        contains::{ContainsHist, on_copies},
+        Bound, Brief, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist,
+        RefPair, TVar, Type, TypeRef,
+        contains::{ContainsHist, find_open_cell, on_copies},
         fntyp::LambdaIds,
         node_addr,
         tvar::{Fresh, cell_writes},
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
@@ -1049,6 +1051,66 @@ fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
 }
 
+/// Whether `f` holds an open cell a definition or the top level owns,
+/// and one of a scheme, which no definition owns.
+fn open_cells(f: &Type) -> (bool, bool) {
+    let (mut live, mut generic) = (false, false);
+    find_open_cell(f, true, &mut |tv| {
+        if tv.level().is_generic() {
+            generic = true
+        } else {
+            live = true
+        }
+        live && generic
+    });
+    (live, generic)
+}
+
+/// Whether the function types `a` and `b` meet: each holds the other,
+/// by a probe and then by a commit on copies, since a probe judges each
+/// part apart.
+fn fns_meet(env: &Env, a: &Type, b: &Type) -> Result<bool> {
+    let probe = BitFlags::empty();
+    Ok(a.contains_with_flags(probe, env, b)?
+        && b.contains_with_flags(probe, env, a)?
+        && on_copies(None, [a, b], |[a, b], trial| {
+            let commit = ContainsFlags::Commit.into();
+            Ok(a.contains_int(commit, env, trial, &b)?
+                && b.contains_int(commit, env, trial, &a)?)
+        })?)
+}
+
+/// Whether `a` meets `b` and `c` meets `d` at once, on copies that share
+/// their cells ([`fns_meet`]).
+fn fns_meet_both(env: &Env, [a, b]: [&Type; 2], [c, d]: [&Type; 2]) -> Result<bool> {
+    on_copies(None, [a, b, c, d], |[a, b, c, d], trial| {
+        let commit = ContainsFlags::Commit.into();
+        Ok(a.contains_int(commit, env, trial, &b)?
+            && b.contains_int(commit, env, trial, &a)?
+            && c.contains_int(commit, env, trial, &d)?
+            && d.contains_int(commit, env, trial, &c)?)
+    })
+}
+
+/// The refusal of a function `f` among alternatives that meets `a` and
+/// meets `b`, and is not one type with both at once.
+fn two_meets(f: &Type, a: &Type, b: &Type) -> anyhow::Error {
+    let mut known = LPooled::take();
+    let [f, a, b] = [f, a, b]
+        .map(|t| t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| t.clone()));
+    format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+        anyhow!(
+            "the function {} could be {} or {}, two functions it stands beside, but \
+             not both, and the check picks neither by order: write the part of its \
+             type that tells them apart (`|x: T| -> R throws E ..`), so it is one of \
+             them or neither",
+            Brief(&f),
+            Brief(&a),
+            Brief(&b)
+        )
+    })
+}
+
 /// How a union treats two applications of one definition that differ
 /// in a parameter the body does not hold linearly.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1462,7 +1524,7 @@ impl Type {
         Ok(out)
     }
 
-    // CR claude for claude: [bug/low] An open function that meets two members that do
+    // XCR claude for claude: [bug/low] An open function that meets two members that do
     // not meet each other takes the first, so the order of a union's members decides
     // a lambda's type. Over `let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y
     // + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; let u = t.f; select t { {f, a: _} =>
@@ -1482,6 +1544,24 @@ impl Type {
     // string function and `A(r) | `B(r) | `C(r) the i64 one. probe:
     // ~/ptmp/cr29/scratch/r23/23d/obfm-review/o6.gx (o3.gx of the fixer's probes is
     // its twin)
+    // 2026-11-14 claude: Type::meet_open_fns no longer lets the first member a
+    // function meets decide it: a member with cells of its own is one type with every
+    // member it meets, and one that meets two it cannot both be is refused where they
+    // meet (setops::two_meets), the member that looks for its meets and the one it
+    // finds alike; the refusal names the three and the fix, the part of the lambda's
+    // type that tells the two apart (a parameter, or what it throws). The CR's probes
+    // o1/o2/o3/o5/o6 are refused in every order, and run with the parameter written.
+    // A member whose open cells are all a scheme's still joins the first member it
+    // meets, which decides nothing of it. Pins that fail without it:
+    // lang::types::field_read_refuses_a_lambda_two_members_could_decide (all six
+    // member orders), field_read_refuses_a_lambda_beside_two_functions and its
+    // _exchanged twin, field_read_refuses_a_capture_two_members_could_decide,
+    // field_read_refuses_a_lambda_two_errors_could_decide,
+    // select_refuses_a_lambda_two_arms_could_decide,
+    // select_refuses_a_generic_function_two_arms_could_decide,
+    // lang::select::or_name_refuses_a_function_two_could_decide and its two exchanged
+    // twins. Census: no file of either repo changes verdict or message. probes:
+    // ~/ptmp/cr29/scratch/r24/24d/fmfm/
     // CR claude for claude: [bug/low] A select of two copies of one function whose
     // signature holds a typedef union of two of its variables under one constructor
     // is refused where a call of its binding runs: `type P<'p, 'q> = [Array<'p>,
@@ -1504,11 +1584,14 @@ impl Type {
     // famsum.py (select-copies-union-meet-01)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
-    /// call needs one signature. A generic member meets through a fresh
-    /// instance; an occurrence's own cells bind, as the call would bind
-    /// them, once the meet holds on copies (a probe judges each part apart,
-    /// and a refused commit would leave its bindings behind). `None` when
-    /// no member changes.
+    /// call needs one signature. A member with a scheme's cells is an
+    /// instance of the first member it meets; any other is one type with
+    /// every member it meets, since the meet binds its own cells as the
+    /// call would bind them. A member whose own cells two members it
+    /// cannot both be could decide is refused ([`two_meets`]), the member
+    /// that looks for its meets and the one it finds alike: which decided
+    /// them would follow the members' order. `None` when no member
+    /// changes.
     fn meet_open_fns(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
             .iter()
@@ -1523,43 +1606,89 @@ impl Type {
         if fns.len() < 2 {
             return Ok(None);
         }
+        let member = |j: usize| Type::Fn(fns[j].1.clone());
+        let instance = |j: usize| {
+            Type::Fn(Arc::new(
+                fns[j].1.reset_tvars_int(&mut LPooled::take(), Fresh::Generic),
+            ))
+        };
         // `group[k]` names the member each of `fns` met into, and `base`
         // holds that group's last met type
         let mut group: SmallVec<[usize; 4]> = (0..fns.len()).collect();
         let mut base: SmallVec<[Option<Arc<FnType>>; 4]> = smallvec![None; fns.len()];
         let mut met: SmallVec<[bool; 4]> = smallvec![false; fns.len()];
-        let probe = BitFlags::empty();
-        for (k, (_, f)) in fns.iter().enumerate() {
-            if Type::Fn(f.clone()).tvar_free() {
+        for k in 0..fns.len() {
+            let own = member(k);
+            if own.tvar_free() {
                 continue;
             }
-            let inst = Type::Fn(Arc::new(
-                f.reset_tvars_int(&mut LPooled::take(), Fresh::Generic),
-            ));
-            for (j, (_, g)) in fns.iter().enumerate() {
-                if j == k || met[j] {
+            let (live, generic) = open_cells(&own);
+            let inst = instance(k);
+            let mut meets: SmallVec<[usize; 4]> = smallvec![];
+            for j in 0..fns.len() {
+                if j == k || met[j] || group[j] == group[k] {
                     continue;
                 }
-                let g = Type::Fn(g.clone());
-                if inst.contains_with_flags(probe, env, &g)?
-                    && g.contains_with_flags(probe, env, &inst)?
-                    && on_copies(None, [&inst, &g], |[i, g], trial| {
-                        let commit = ContainsFlags::Commit.into();
-                        Ok(i.contains_int(commit, env, trial, &g)?
-                            && g.contains_int(commit, env, trial, &i)?)
-                    })?
-                    && inst.contains(env, &g)?
-                    && g.contains(env, &inst)?
+                if fns_meet(env, &inst, &member(j))? {
+                    meets.push(j);
+                    if generic && !live {
+                        break;
+                    }
+                }
+            }
+            let Some(first) = meets.first().map(|j| member(*j)) else { continue };
+            let before = (!generic && meets.len() > 1).then(|| {
+                let mut known = LPooled::take();
+                [&inst, &first].map(|t| {
+                    t.reset_tvars_int(&mut known, Fresh::Copy)
+                        .unwrap_or_else(|| t.clone())
+                })
+            });
+            if generic {
+                let again = instance(k);
+                for j in &meets[1..] {
+                    let g = member(*j);
+                    if !fns_meet_both(env, [&inst, &first], [&again, &g])? {
+                        return Err(two_meets(&inst, &first, &g));
+                    }
+                }
+                meets.truncate(1);
+            }
+            for (n, j) in meets.iter().copied().enumerate() {
+                let g = member(j);
+                if let Some([was, first]) = &before
+                    && n > 0
+                    && !fns_meet(env, &inst, &g)?
                 {
-                    let Type::Fn(g) = &g else { unreachable!("a function member") };
+                    return Err(two_meets(was, first, &g));
+                }
+                if open_cells(&g).0 {
+                    let again = instance(j);
+                    for m in 0..fns.len() {
+                        if m == k
+                            || met[m]
+                            || meets.contains(&m)
+                            || group[m] == group[k]
+                            || group[m] == group[j]
+                        {
+                            continue;
+                        }
+                        let h = member(m);
+                        if fns_meet(env, &again, &h)?
+                            && !fns_meet_both(env, [&inst, &g], [&again, &h])?
+                        {
+                            return Err(two_meets(&g, &inst, &h));
+                        }
+                    }
+                }
+                if inst.contains(env, &g)? && g.contains(env, &inst)? {
                     let (from, to) = (group[k], group[j]);
                     for m in group.iter_mut().filter(|m| **m == from) {
                         *m = to;
                     }
                     base[from] = None;
-                    base[to] = Some(g.clone());
+                    base[to] = Some(fns[j].1.clone());
                     met[k] = true;
-                    break;
                 }
             }
         }
