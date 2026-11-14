@@ -4595,6 +4595,47 @@ run!(
     "#
 ; FuseExpect::None);
 
+// A target the impl names is a name the signature writes: it imports it.
+run!(
+    impl_self_in_a_dynamic_module_signature_names_the_target,
+    refused("undefined type W"),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait T { val m: fn(self) -> i64 };
+        impl T for W {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: self) -> self };
+                    source "let f = |x| x"
+                };
+                select status { error as e => 0, null as _ => foo::f(s).0 }
+            }
+        };
+        let result = T::m(W(7))
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_self_in_a_dynamic_module_signature_imports_the_target,
+    is(Value::I64(7)),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait T { val m: fn(self) -> i64 };
+        impl T for W {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { use super::W; val f: fn(x: self) -> self };
+                    source "let f = |x| x"
+                };
+                select status { error as e => 0, null as _ => foo::f(s).0 }
+            }
+        };
+        let result = T::m(W(7))
+    "#
+; FuseExpect::None);
+
 run!(
     impl_self_in_a_module_interface_is_the_target,
     is(Value::I64(3)),

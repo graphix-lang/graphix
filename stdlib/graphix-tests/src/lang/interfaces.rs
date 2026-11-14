@@ -2657,6 +2657,80 @@ run!(
     "#
 );
 
+// And to the names it imports and declares, as each load holds it: a
+// val, a typedef and a trait method alike.
+run!(
+    dynamic_sig_name_it_does_not_import_refused,
+    refused("undefined type Foo"),
+    "/test.gx" => r#"
+        type Foo = {a: i64};
+        let st = mod foo dynamic {
+            sandbox unrestricted;
+            sig { val f: fn(x: Foo) -> i64; val k: i64 };
+            source "let f = |x| 1; let k = 3"
+        };
+        let result = select st { error as e => 0, null as _ => foo::k }
+    "#
+; FuseExpect::None);
+
+run!(
+    dynamic_sig_name_it_imports_checks,
+    is(Value::I64(7)),
+    "/test.gx" => r#"
+        type Foo = {a: i64};
+        let st = mod foo dynamic {
+            sandbox unrestricted;
+            sig { use super::Foo; val f: fn(x: Foo) -> i64; val k: i64 };
+            source "let f = |x: Foo| x.a; let k = 3"
+        };
+        let result = select st { error as e => 0, null as _ => foo::f({a: 4}) + foo::k }
+    "#
+; FuseExpect::None);
+
+run!(
+    dynamic_sig_typedef_name_it_does_not_import_refused,
+    refused("undefined type Foo"),
+    "/test.gx" => r#"
+        type Foo = {a: i64};
+        let st = mod foo dynamic {
+            sandbox unrestricted;
+            sig { type P = {p: Foo}; val k: i64 };
+            source "let k = 3"
+        };
+        let result = select st { error as e => 0, null as _ => foo::k }
+    "#
+; FuseExpect::None);
+
+run!(
+    dynamic_sig_trait_name_it_does_not_import_refused,
+    refused("undefined type Foo"),
+    "/test.gx" => r#"
+        type Foo = {a: i64};
+        let st = mod foo dynamic {
+            sandbox unrestricted;
+            sig { trait Q { val q: fn(self, x: Foo) -> i64 }; val k: i64 };
+            source "let k = 3"
+        };
+        let result = select st { error as e => 0, null as _ => foo::k }
+    "#
+; FuseExpect::None);
+
+// A sig's import of a type its list declares below the module names
+// nothing where the module stands.
+run!(
+    dynamic_sig_import_of_a_type_declared_below_refused,
+    refused("Foo names the type a later statement of this module declares"),
+    "/test.gx" => r#"
+        let st = mod foo dynamic {
+            sandbox unrestricted;
+            sig { use super::Foo; val f: fn(x: Foo) -> i64; val k: i64 };
+            source "let f = |x| 1; let k = 3"
+        };
+        type Foo = {a: i64};
+        let result = select st { error as e => 0, null as _ => foo::k }
+    "#
+; FuseExpect::None);
+
 // Inside function types each use picks a val's variable: a struct of
 // functions, an alias of a function type (the alias defined after the
 // module included) and a recursive typedef of functions.

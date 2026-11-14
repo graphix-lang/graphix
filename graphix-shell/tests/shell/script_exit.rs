@@ -94,6 +94,32 @@ fn an_unused_import_is_refused_by_the_run_as_by_the_check() {
     }
 }
 
+/// A name a dynamic module's sig imports for an impl's `self` alone is
+/// used: the check reads the sig's names through its imports.
+#[test]
+fn a_dynamic_sig_uses_the_import_its_self_reads() {
+    let program = "type W = Abstract<i64>;\n\
+        trait T { val m: fn(self) -> i64 };\n\
+        impl T for W {\n\
+          let m = |s| {\n\
+            let status = mod foo dynamic {\n\
+              sandbox whitelist [core];\n\
+              sig { use super::W; val f: fn(x: self) -> self };\n\
+              source \"let f = |x| x\"\n\
+            };\n\
+            select status { error as e => 0, null as _ => foo::f(s).0 }\n\
+          }\n\
+        };\n\
+        let r = T::m(W(7));\n\
+        sys::exit(r ~ 0);\n\
+        r\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ran = graphix(dir.path(), program, &["-W", "error", "--check"], &[]);
+    assert!(ran.status.success(), "the check refused it:\n{}", ran.stderr);
+    let ran = graphix(dir.path(), program, &["-W", "error", "--no-cache"], &[]);
+    assert_eq!(ran.stdout.trim(), "7", "{}", ran.stderr);
+}
+
 /// A restored program compiles nothing, so its image carries the warnings
 /// its compile printed, and every run prints them.
 #[test]

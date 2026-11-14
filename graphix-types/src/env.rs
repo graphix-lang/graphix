@@ -1383,6 +1383,29 @@ impl Env {
                 }
                 Ok(t)
             }
+            // CR claude for claude: [bug/low] What a whitelist leaves of a name a
+            // dynamic module's sig imports depends on where the type is declared,
+            // and the check accepts each. Under `sandbox whitelist [core]` and `sig {
+            // use super::Foo; val f: fn(x: Foo) -> i64 }` the body `let f = |x: Foo|
+            // x.a` loads where Foo is a block's type (`let r = { type Foo = ..; let
+            // st = mod foo dynamic .. }`, 7). Where Foo is the script's own, every
+            // load is `DynamicLoadError("Foo names the type a later statement of
+            // this module declares: declare it before its first use")`, though Foo
+            // stands above the module: this arm drops the level's
+            // `lexical.typedefs` and leaves its `block_names`, which
+            // `Env::type_name_at` reads as a type declared below. Where Foo is a
+            // function body's, the sig's own spliced `use` fails every load,
+            // whatever the body writes: "use: no `Foo` in `#fn..::#do..`". So a
+            // sig's `impl Show for C;` over a type of the script cannot be
+            // implemented under a whitelist (the body's `impl Show for C` is
+            // refused by that message), and `--check` passes all three; `sandbox
+            // unrestricted` loads all three. The message is wrong whatever the
+            // rule. Whether a sig's import grants the body the name under a
+            // whitelist, as a declared impl grants its trait (`Env::grant_trait`),
+            // is the sandbox's policy, so Eric's unless a ruling covers it; then the
+            // check refuses what no load can take. base-r24 alike. probes:
+            // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/{e1_use_above,e4_trait_impl,g2_fn_once,i2_block_whitelist_named,f1_unrestricted}.gx
+            // (whitelist-sig-import-01)
             Sandbox::Whitelist(wl) => {
                 let mut modules: LPooled<AHashSet<ModPath>> = LPooled::take();
                 let mut names: LPooled<

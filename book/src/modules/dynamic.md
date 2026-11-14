@@ -76,6 +76,11 @@ module, they are required to be defined in order, sandbox, sig, and source,
     T;`, declares an implementation the loaded module must provide.
   - a use statement imports names the signature uses, e.g. `use sys::io::Read;`
 
+  Like an interface, the signature sees only what it imports or declares
+  itself. A type of the loading program is imported, `use super::Config;`,
+  and declared above the module; a signature naming a type it does not
+  import is refused when the loading program is checked.
+
   A dynamic module has no sub-modules: its source is one piece of text, so
   it cannot declare a `mod`, and a `mod` in its sig is refused.
 - a `source` statement defines where the source code for the dynamic module will

@@ -50,6 +50,18 @@ Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 docs; types and mods from the gxi are in scope in the impl. A hidden
 type must be `Abstract<..>` or Rust-backed.
 
+An interface names only what it imports or declares itself, never what
+its implementation imports or the code around the module declares. A
+dynamic module's `sig` is one, checked with the program that declares
+it: a type of the program it names is imported there, `use super::Foo;`,
+and declared above the module.
+
+```graphix,cases
+no "undefined type Foo in foo" type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; st
+ok type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x: Foo| x.a" }; st
+no "Foo names the type a later statement of this module declares" let st = mod foo dynamic { sandbox unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+```
+
 A gxi `mod` or `use` the body does not repeat is spliced into the body
 after the body's last declaration of every gxi item listed before it,
 in whatever order the body declares them (at the top when the body
@@ -85,7 +97,9 @@ declare there is refused, and so is a `self` in a `type` definition
 inside a generic impl's method (the target holds the impl's variables,
 which a definition cannot name: give it a parameter), and a `self` in a
 module's signature inside a generic impl's method or a default (a
-signature names only variables of its own: write one). A bound the trait declares over `self` is over the
+signature names only variables of its own: write one). A target the impl
+names (`impl T for W`) is a name a signature's `self` writes, so the
+signature imports it: `use super::W;`. A bound the trait declares over `self` is over the
 target in an impl too: the method writes it with `self` or with the
 target, or leaves it out.
 
@@ -103,6 +117,8 @@ no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Arr
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
 no "i64 does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
 no "[i64, null] does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
+no "undefined type W" type W = Abstract<i64>; trait T { val m: fn(self) -> i64 }; impl T for W { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => foo::f(s).0 } } }; T::m(W(7))
+ok type W = Abstract<i64>; trait T { val m: fn(self) -> i64 }; impl T for W { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { use super::W; val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => foo::f(s).0 } } }; T::m(W(7))
 no "the signature of module foo writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => array::len(s) } } }; T::m([1])
 no "which in a default is the trait's type variable" trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => 1 } } }; impl T for i64 {}; T::m(1)
 ok trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: 'q) -> 'q }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) } } }; impl T for i64 {}; T::m(1)

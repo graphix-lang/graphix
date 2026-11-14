@@ -189,7 +189,12 @@ paths, never through the `.gx`'s imports or its own types, so an
 interface means one thing whatever its implementation imports. The
 interface check resolves each item's names in that view
 (`module.rs::interface_env`, `check_interface_names`) and refuses one it
-does not give; a script's interface alike. A private
+does not give; a script's interface alike. A dynamic module's `sig` is
+held to it at the program's check as at each load
+(`module.rs::check_sig_decls`), both in the env its statement compiled
+in (`Body::Dynamic::sig_env`): a type its list declares below the
+module is not in that env, and the import of one is refused, "declare
+it before its first use". A private
 item is visible to the defining module and its descendants, uniformly
 for values and types — a private type in a public lambda's body is the
 module's own business when the body is instance-elaborated elsewhere.

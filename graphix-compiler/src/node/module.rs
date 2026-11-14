@@ -1035,6 +1035,17 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
     ))
 }
 
+// CR claude for claude: [readability/low] A signature's `self` in an impl
+// over a named target that the signature does not import is refused by the
+// target's name at the impl's head: in `impl T for W` (`type W =
+// Abstract<i64>`), a dynamic `sig { val f: fn(x: self) -> self }` or a
+// `mod m;` whose .gxi writes it is "undefined type W at <the head's
+// position>", which says neither that the `self` reads it nor that the
+// signature must import it (`use super::W;`); only the context above the
+// message carries the sig item's position. Name the fix where
+// `Written::Name` is refused for a name written outside its item. probes:
+// ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/{p_abs.gx,sa/}
+// (impl-self-sig-refusal-site-01)
 /// Refuse a name the interface item `si` writes that the interface
 /// neither imports nor declares: each resolves in `view`
 /// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
@@ -1199,6 +1210,36 @@ fn check_sig<R: Rt>(
     Ok(())
 }
 
+/// What the interface `sig` of the names at `scope` states by itself,
+/// whatever implements it: each `val`'s variables stand inside a
+/// function type, each name an item writes is one the interface imports
+/// or declares, and `nodes`, the implementation's statements, redefine
+/// none of its types and traits.
+fn check_sig_decls<R: Rt>(
+    env: &Env,
+    scope: &ModPath,
+    sig: &Sig,
+    sig_binds: &Map<CompactString, BindId>,
+    nodes: &[Node<R>],
+) -> Result<()> {
+    // the interface's types and traits first: a val's type names them
+    let view = interface_env(env, scope, sig)?;
+    check_val_variables(env, sig, sig_binds)?;
+    for si in sig.items.iter() {
+        let val = match &si.kind {
+            SigKind::Bind(BindSig { name, .. }) => sig_binds
+                .get(name.name.as_str())
+                .and_then(|id| env.by_id.get(id))
+                .map(|b| &b.typ),
+            _ => None,
+        };
+        check_redefinition(scope, si, nodes)
+            .and_then(|()| check_interface_names(&view, scope, si, val))
+            .placed(&si.ori, si.pos)?;
+    }
+    Ok(())
+}
+
 fn check_sig_items<R: Rt>(
     ctx: &mut CompileCtx<R>,
     proxy: &mut Vec<Proxy>,
@@ -1207,21 +1248,7 @@ fn check_sig_items<R: Rt>(
     sig_binds: &Map<CompactString, BindId>,
     nodes: &[Node<R>],
 ) -> Result<()> {
-    // the interface's types and traits first: a val's type names them
-    let view = interface_env(&ctx.env, &scope.lexical, sig)?;
-    check_val_variables(&ctx.env, sig, sig_binds)?;
-    for si in sig.items.iter() {
-        let val = match &si.kind {
-            SigKind::Bind(BindSig { name, .. }) => sig_binds
-                .get(name.name.as_str())
-                .and_then(|id| ctx.env.by_id.get(id))
-                .map(|b| &b.typ),
-            _ => None,
-        };
-        check_redefinition(&scope.lexical, si, nodes)
-            .and_then(|()| check_interface_names(&view, &scope.lexical, si, val))
-            .placed(&si.ori, si.pos)?;
-    }
+    check_sig_decls(&ctx.env, &scope.lexical, sig, sig_binds, nodes)?;
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     for (i, id, proxy_id) in implemented_vals(&ctx.env, sig_binds, nodes).drain(..) {
         let n = &nodes[i];
@@ -1623,7 +1650,7 @@ impl<R: Rt> Module<R> {
         )))
     }
 
-    // CR claude for claude: [bug/low] A dynamic module's signature meets its
+    // XCR claude for claude: [bug/low] A dynamic module's signature meets its
     // interface's names only at a load (check_sig_items' check_interface_names),
     // so the check accepts a sig whose every load fails: `type Foo = {a: i64}`
     // then a dynamic `sig { val f: fn(x: Foo) -> i64; val k: i64 }` read only
@@ -1640,6 +1667,20 @@ impl<R: Rt> Module<R> {
     // `self` that reads it. probes:
     // ~/ptmp/cr29/scratch/r23/23h/impl-self-dynamic-sig-01/review/{u_unused,p_abs,p_abs_use,sa}
     // (dynamic-sig-names-at-check-01)
+    // 2026-11-13 claude: The program's check holds a dynamic module's sig to its names as a
+    // load does: Module::typecheck0 runs check_sig_decls (interface_env + check_interface_names
+    // over the items, the part check_sig_items shared out) under the module's sig_env, so
+    // u_unused and p_abs are refused at the check by the message each load gave, and
+    // p_abs_use's import is used (no warning). Pins that fail with the call put back to
+    // check_val_variables:
+    // lang::interfaces::dynamic_sig_{name,typedef_name,trait_name}_it_does_not_import_refused,
+    // dynamic_sig_import_of_a_type_declared_below_refused,
+    // lang::traits::impl_self_in_a_dynamic_module_signature_names_the_target (20 of 40 mode
+    // runs), and the shell's script_exit::a_dynamic_sig_uses_the_import_its_self_reads; the
+    // passing twins are dynamic_sig_name_it_imports_checks and
+    // impl_self_in_a_dynamic_module_signature_imports_the_target. Census 2967 files: 0 verdict,
+    // 0 message. The head-not-self wording the CR ends on is impl-self-sig-refusal-site-01;
+    // what a whitelist leaves of a sig's import is whitelist-sig-import-01.
     pub(super) fn compile_dynamic(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
@@ -2311,9 +2352,17 @@ impl<R: Rt> Update<R> for Module<R> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         match &mut self.body {
-            Body::Dynamic { source, .. } => {
-                check_val_variables(&ctx.env, &self.sig, &self.sig_binds)
-                    .at(&self.spec)?;
+            Body::Dynamic { source, sig_env } => {
+                ctx.with_restored_mut(sig_env, |ctx| {
+                    check_sig_decls(
+                        &ctx.env,
+                        &self.scope.lexical,
+                        &self.sig,
+                        &self.sig_binds,
+                        &self.nodes,
+                    )
+                })
+                .at(&self.spec)?;
                 wrap!(source, source.typecheck0(ctx))?;
                 let t = Type::Primitive(Typ::String | Typ::Error);
                 wrap!(source, t.check_contains(&ctx.env, source.typ()))?;
