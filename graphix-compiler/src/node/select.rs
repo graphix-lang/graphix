@@ -1543,32 +1543,6 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// XCR claude for claude: [bug/low] `true` and `false` arms at a variant's payload
-// position whose union holds an array or a list never cover the bool member, so
-// the select is refused though an arm takes every value: `|x: [`A([bool,
-// Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A(Array<i64>) as `A(a)
-// => 2 }` and the slice form (`` `A([a, ..]) => 2, `A([]) => 3 `` for the last arm)
-// say "missing match cases: no arm covers `A([bool, Array<i64>])". The tuple form
-// (`(true, _)`, `(false, _)`, `(Array<i64>, i64) as (a, _)` over `([bool,
-// Array<i64>], i64)`) runs, since a written test cuts a tuple into parts
-// (PartPool), and so does `[bool, (i64, i64)]` at the position, whose tuple is a
-// head (Head::Composite). An array or list member has no head here, so the
-// position's heads are None and the pool never completes; a `null` arm covers its
-// member by StructPatternNode::matched_part and a bool pair has no such path.
-// base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/bool/{b05,b06,b08}.gx,
-// b07.gx (the tuple twin) (bool-beside-collection-cover-01)
-// 2026-11-14 claude: PartPool now cuts a variant member too, and a member (tuple,
-// struct or variant) an arm's slice tests inside, not only one a written test does
-// not hold; the bool part pools on its own and the array/list/map/number part is
-// covered by its ladder or its written test. Pins (fail without the fix in 4
-// modes):
-// lang::select::variant_bool_literals_beside_{a_written_array,an_array_slice_ladder,a_list_slice_ladder,a_written_map_and_a_number}_cover_the_payload,
-// variant_written_array_before_bool_literals_..,
-// variant_bool_null_and_slice_ladder_.., variant_bool_or_pattern_..,
-// tuple_bool_literals_beside_an_array_slice_ladder_cover_the_member, and the
-// dead-arm pins
-// variant_bool_literal_{repeated,after_the_cover}_beside_an_array_slice_is_dead;
-// refusal twins pin the missing cases.
 // CR claude for claude: [bug/low] A bool literal beside a slice at another position of
 // one tuple or variant member never covers it, so the select is refused though its arms
 // take every value: `|x: (bool, Array<i64>)| select x { (true, [a, ..]) => 0, (false, _)
