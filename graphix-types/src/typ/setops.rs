@@ -336,6 +336,22 @@ impl Type {
             t => is_empty_ty(t),
         }
     }
+
+    /// Whether a walk of `self` is one of `members`' ([`walks_alike`]).
+    pub fn walks_as_one_of(&self, members: &[Type]) -> bool {
+        members.iter().any(|m| walks_alike(m, self))
+    }
+
+    /// Drop from `members` each walked as a member before it.
+    pub fn drop_repeated(members: &mut SmallVec<[Type; 8]>) {
+        let mut i = 1;
+        while i < members.len() {
+            match members[i].walks_as_one_of(&members[..i]) {
+                true => drop(members.remove(i)),
+                false => i += 1,
+            }
+        }
+    }
 }
 
 fn diff_already_normal(before: &Type, after: &Type) -> bool {
@@ -394,6 +410,19 @@ pub(super) fn one_type(t0: &Type, t1: &Type) -> bool {
     Identity {
         strict: true,
         sets: true,
+        ..Identity::new(None, &mut NodePairs::default())
+    }
+    .same(t0, t1)
+}
+
+/// [`one_type`] with a union's members but its open cells read in order:
+/// a narrowing walks two such types alike, where a union of two members
+/// one type with each other walks apart from one of them.
+pub(super) fn walks_alike(t0: &Type, t1: &Type) -> bool {
+    Identity {
+        strict: true,
+        sets: true,
+        in_order: true,
         ..Identity::new(None, &mut NodePairs::default())
     }
     .same(t0, t1)
@@ -538,6 +567,9 @@ struct Identity<'a> {
     /// A union is the set of its members ([`one_type`]); with `strict`
     /// alone, since a failed search for a member must pair no cells.
     sets: bool,
+    /// With `sets`, a union's members but its open cells in order
+    /// ([`walks_alike`]).
+    in_order: bool,
     /// Two open cells of one name are identical, whatever holds them
     /// (`pairs` holds those met, never `None`).
     by_name: bool,
@@ -570,6 +602,7 @@ impl<'a> Identity<'a> {
         Self {
             strict: false,
             sets: false,
+            in_order: false,
             by_name: false,
             unbounded: false,
             live,
@@ -636,8 +669,10 @@ impl<'a> Identity<'a> {
     fn same_members(&mut self, a: &[Type], b: &[Type]) -> bool {
         let (a, b) = (Leaves::of(a), Leaves::of(b));
         a.cells[..] == b.cells[..]
-            && self.within(&a.rest, &b.rest)
-            && self.within(&b.rest, &a.rest)
+            && match self.in_order {
+                true => self.all(&a.rest, &b.rest),
+                false => self.within(&a.rest, &b.rest) && self.within(&b.rest, &a.rest),
+            }
     }
 
     /// Whether each of `a` is one of `b`.

@@ -739,7 +739,25 @@ never by a factor at each arm, and the check of a ladder of slice arms
 costs what its arms hold (pins
 `lang::types::slice_arms_over_an_unannotated_parameter_copy_no_chain_of_cells`,
 units `narrowing_slice_arms_over_their_one_cell_copies_nothing`,
-`narrowing_nested_slice_arms_copies_no_chain_of_links`). A cell that is
+`narrowing_nested_slice_arms_copies_no_chain_of_links`). Once an arm
+made the members one type the union still holds each of them, but the
+walks over it take each way of holding the type once: a member walked
+alike as one before it (`setops::walks_alike`: one type, a union's open
+cells as a set and its other members in order) gives no part that one
+did not, so the narrowing (`Type::narrow_per_member`) and an arm's
+binds over its slices (`PatternNode::bind_narrowed`,
+`StructPatternNode::hold_slice_members`) cost what one member holds, not
+what every arm left (units
+`narrowing_against_members_of_one_type_walks_one`,
+`members_walked_as_one_before_are_dropped`). One type alone is not
+enough, and the union is not cut to one member: over a union of two
+members one type the narrowing makes the open cells among their parts
+one, over one of them it does not (a lone member narrows by its
+constructor), so an element union holding two arrays one type with each
+other walks apart from one holding one, and a slice's rest beside an
+array element takes the element's cell only over the members (pin
+`lang::types::slice_rest_beside_an_array_element_behind_members_of_one_type`).
+A cell that is
 not copied stays open, with no link to a copy, so it stands among the
 members of a union where its written twin's variable does (an open cell
 sorts before one bound to another), and a later input reads the result

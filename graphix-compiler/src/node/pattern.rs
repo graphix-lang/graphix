@@ -1619,6 +1619,7 @@ impl StructPatternNode {
                         _ => own = true,
                     }
                 }
+                Type::drop_repeated(&mut members);
                 let typed = members.len();
                 let own = match &expand(env, typ) {
                     Some(Type::Array(et) | Type::List(et)) if own || part_any => {
@@ -1700,7 +1701,7 @@ impl StructPatternNode {
                     held.push(Type::Any)
                 }
                 for m in held.drain(..) {
-                    if t.could_match(env, &m)? {
+                    if !m.walks_as_one_of(&reach) && t.could_match(env, &m)? {
                         reach.push(m)
                     }
                 }
@@ -3102,6 +3103,9 @@ impl<R: Rt> PatternNode<R> {
         let mut wholes: SmallVec<[Type; 8]> = SmallVec::new();
         if !self.explicit_type_predicate {
             for m in reaching {
+                if m.walks_as_one_of(&matched) {
+                    continue;
+                }
                 if self.type_predicate.could_match(env, m)? {
                     matched.push(m.clone());
                     match m {

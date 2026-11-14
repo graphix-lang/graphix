@@ -654,7 +654,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [perf/low] The check of slice arms over an unannotated
+            // XCR claude for claude: [perf/low] The check of slice arms over an unannotated
             // parameter still grows steeply with the arms, at the definition: `gen.py 20 rest u
             // def` takes 1.12 G user instructions of `--no-cache --check` in a debug build, 30
             // arms 2.18 G, 50 arms 9.8 G, beside 0.79 G to 0.94 G over `|x: Array<'e>|`; arms of
@@ -684,6 +684,22 @@ impl Reach {
             // enough: `|x| select x { [v1, v2, v3, v4, v5..] => v3, [v1, [[v2, v3], v4, ..],
             // v5..] => [v5], v1 => v1 }`. probes:
             // ~/ptmp/cr29/scratch/r23/23d/sacc-rev/{gen3.py,grow.sh,g_nest3_20.gx,killed/}
+            // 2026-11-13 claude: Fixed for the shapes named: a walk over a scrutinee's members
+            // skips a member walked alike as one before it (setops::walks_alike: one type, a
+            // union's open cells as a set and its other members in order), in
+            // Type::narrow_per_member, PatternNode::bind_narrowed's matched members and
+            // StructPatternNode::hold_slice_members' element members and parts. Debug --no-cache
+            // --check, lane head -> fix: rest 30/50 arms 2.14/9.70 G -> 1.01/2.06 G; fixed 32/48
+            // 2.40/8.12 -> 1.05/1.83; nested 12/20 2.69/32.5 -> 0.82/1.21; nest3 16/20 18.5/63.0
+            // -> 1.05/1.46; nestfix 20 35.5 -> 1.16. Pin
+            // typ::normalize::tests::narrowing_against_members_of_one_type_walks_one (348
+            // narrowings, 7800 with the skip undone). Neither skipping by one_type nor cutting
+            // the union to its normal form is neutral: the first changed REPL types (gen4 p0199,
+            // p0480), the second refused a program the head runs (pin
+            // lang::types::slice_rest_beside_an_array_element_behind_members_of_one_type).
+            // arrelem 20 (29.1 -> 17.2 G) and tupelem 24 (10.6 -> 6.4 G) are what is left:
+            // slice-arms-composite-member-cost-01. probes ~/ptmp/cr29/scratch/r24/24f/sacm/
+            // (README)
             // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
             // over an unannotated parameter is refused at the call, where the same slices
             // in arms of their own and the written parameter run: `let f = |x| select x {
@@ -3340,6 +3356,17 @@ impl<R: Rt> Select<R> {
                     .widen_abstracts_over_any(&ctx.env, &pat.type_predicate)
                     .at(&site)?;
             }
+            // CR claude for claude: [bug/low] A refusal over an unannotated parameter
+            // prints a different union from run to run, with one eval thread too: `let f =
+            // |x| select x { [v13.., ([v2.., v1], _), ([v4.., v3], _), (_, [v7.., v5, v6]),
+            // (v8, v9), (v10, [v11, v12])] => array::concat(v7, v7), [v1, v2] => [v1, v2],
+            // [v1] => v1, v1 => [v1] }` is refused at its first arm's pattern, "type
+            // mismatch Array<['_N, '_N, '_N]> does not contain Any", and about half the
+            // runs print two cells, `Array<['_N, '_N]>`, under `--check`, a run and
+            // `--no-fusion` alike, base-r24 alike. The verdict holds. Not looked into: what
+            // decides how many cells the union keeps (a map's order, the kind
+            // settle::settle_order fixed for settles, is likely). probe:
+            // ~/ptmp/cr29/scratch/r24/24f/sacm/p0112.gx (select-refusal-cells-nondeterministic-01)
             pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;

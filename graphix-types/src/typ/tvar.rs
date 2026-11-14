@@ -2067,6 +2067,13 @@ impl PartialOrd for TVar {
 // cell it is. probes: ~/ptmp/cr29/scratch/r23/23d/sacc-rev/reg/{q1,q2,q3,q4}.repl,
 // ord/, tw/ (run with repl3.sh DIR), g11.diffs, g12.diffs
 // (union-order-forward-link-01)
+// 2026-11-13 claude: slice-arms-member-cost-01's fix (a walk over a scrutinee's
+// members skips one walked alike before it, setops::walks_alike) moves which cell
+// forwards in two of 1200 generated slice-arm functions (gen4 seed 12): their result
+// unions print in another order in the REPL, head `fn(x: Array<Array<'a>>) -> [i64,
+// Array<Array<'a>>, Array<'a>]`, fix `[i64, Array<'a>, Array<Array<'a>>]`; no
+// verdict or value changed there, nor in 3095 more generated selects in five modes.
+// probes: ~/ptmp/cr29/scratch/r24/24f/sacm/{p0214,p0475}.repl
 impl Ord for TVar {
     fn cmp(&self, other: &Self) -> Ordering {
         let (c0, c1) = (self.cell(), other.cell());
@@ -5385,11 +5392,40 @@ impl Type {
         if alts.is_empty() {
             alts.push(self.clone())
         }
+        // a member walked as one before it gives no part that one did not
+        let mut walked: SmallVec<[Type; 8]> = SmallVec::new();
+        // CR claude for claude: [perf/low] Slice arms that take each element apart over
+        // an unannotated parameter still cost steeply at the definition: `gen3.py 20
+        // arrelem` (`[[a0, s0..], [a1, s1..], .., t..] => t`) takes 17.2 G user
+        // instructions of `--no-cache --check` in a debug build and `gen3.py 24 tupelem`
+        // (`[(a0, b0), (a1, b1), .., t..] => t`) 6.4 G, beside 0.81 G and 0.82 G over the
+        // written parameter (`x: Array<Array<i64>>`, `x: Array<(i64, i64)>`). The walk
+        // below skips a member walked alike before it (setops::walks_alike), but these
+        // arms leave members whose element union holds two arrays (or tuples) one type
+        // with each other beside members that hold one, and those walk apart: over a
+        // union of two such members the narrowing makes the open cells among their parts
+        // one (the own-part merge below), over the one member it does not (a lone member
+        // narrows by its constructor, Type::narrow_pattern_inner). So skipping a member
+        // one type (setops::one_type) with one walked changes the types the REPL prints
+        // (p0480.repl: `fn(x: [Array<Array<'_0>>, Array<Array<'a>>])`, where every member
+        // walked gives `fn(x: Array<Array<'_0>>)`), and cutting the union to its normal
+        // form after an arm refuses `[[a, s..], [b, r..], t..] => a + b, [[a, s..], t..]
+        // => a, _ => 0` (pin
+        // lang::types::slice_rest_beside_an_array_element_behind_members_of_one_type).
+        // What would fix it: a narrowing that gives one result for a union of members one
+        // type and for one of them; then they are kept as one. probes:
+        // ~/ptmp/cr29/scratch/r24/24f/sacm/{gen3.py,grow.sh,g_arrelem_20.gx,
+        // g_tupelem_24.gx,w_arrelem_20.gx,p0480.repl} (slice-arms-composite-member-cost-01)
         for m in members {
+            if m.walks_as_one_of(&walked) {
+                continue;
+            }
+            let mut met = false;
             for alt in alts.iter() {
                 if !alt.could_match(env, m)? {
                     continue;
                 }
+                met = true;
                 let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                 own_parts(env, m, alt, &mut LPooled::take(), &mut known)?;
                 // an open cell is copied before the vars that forward to it,
@@ -5438,6 +5474,9 @@ impl Type {
                         (Some(_), None) => (),
                     }
                 }
+            }
+            if met {
+                walked.push(m.clone())
             }
         }
         for (c, p) in cells.iter().zip(parts.iter()) {

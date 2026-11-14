@@ -7952,6 +7952,20 @@ run!(
 }"#,
     prints(r#"[[i64:7, i64:8], [], ["d"], []]"#)
 );
+// Behind an arm that made the members one type, an arm whose slice's rest
+// stands beside an array element narrows over the members, which makes
+// the rest's elements the array's: it runs as its written twin does.
+run!(
+    slice_rest_beside_an_array_element_behind_members_of_one_type,
+    r#"{
+  let f = |x| select x { [[a, s..], [b, r..], t..] => a + b, [[a, s..], t..] => a, _ => 0 };
+  let g = |x: Array<Array<i64>>| select x {
+    [[a, s..], [b, r..], t..] => a + b, [[a, s..], t..] => a, _ => 0
+  };
+  (f([[5], [6]]), f([[7]]), f([]), g([[5], [6]]), g([[7]]))
+}"#,
+    prints("[i64:11, i64:7, i64:0, i64:11, i64:7]")
+);
 run!(
     ladder_of_nested_slice_arms_over_an_unannotated_parameter,
     r#"{

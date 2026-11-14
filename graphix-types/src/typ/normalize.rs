@@ -1049,6 +1049,55 @@ mod tests {
         assert!(most <= 2 * n * n, "{most} links after {n} arms");
     }
 
+    /// Slice arms over a scrutinee whose members are one type, as the first
+    /// arm leaves the members of an open scrutinee the arms typed: each arm
+    /// narrows against one of them, and its cell is the members' cell.
+    #[test]
+    fn narrowing_against_members_of_one_type_walks_one() {
+        use crate::typ::tvar::NARROW_STEPS;
+        let env = Env::default();
+        let n = 24;
+        let c = TVar::empty_named("c".into());
+        let members: Vec<Type> = (1..=n).rev().map(|k| slice_of(&c, k)).collect();
+        let scrut = Type::TVar(TVar::empty_named("x".into()));
+        let Type::TVar(x) = &scrut else { unreachable!() };
+        x.bind(Type::Set(Arc::from_iter(members)));
+        let mut cells: Vec<TVar> = vec![];
+        NARROW_STEPS.with(|s| s.set(0));
+        for k in (1..=n).rev() {
+            let at = cells.len();
+            cells.extend((0..=k).map(|i| TVar::empty_named(arcstr::format!("a{k}_{i}"))));
+            let elems = cells[at..].iter().cloned().map(Type::TVar);
+            let arm = Type::Array(Arc::new(Type::Set(elems.collect())));
+            assert!(scrut.narrow_pattern(&env, &arm).unwrap());
+        }
+        let steps = NARROW_STEPS.with(|s| s.get());
+        for a in cells.iter() {
+            assert!(a.open_cell().is_some_and(|a| a.same_cell(&c)), "{a}");
+        }
+        assert_eq!(steps, 348, "narrowings for {n} arms");
+    }
+
+    /// A member walked as a member before it is dropped: one type with it,
+    /// a union's members but its open cells in order. An array of a union of
+    /// two arrays one type with each other walks apart from an array of one
+    /// of them.
+    #[test]
+    fn members_walked_as_one_before_are_dropped() {
+        let (c, d) = (TVar::empty_named("c".into()), TVar::empty_named("d".into()));
+        let (cs, ds) = (|k| slice_of(&c, k), |k| slice_of(&d, k));
+        let mut members: SmallVec<[Type; 8]> =
+            SmallVec::from_iter([cs(2), ds(1), cs(1), cs(3), ds(2)]);
+        Type::drop_repeated(&mut members);
+        assert_eq!(&members[..], &[cs(2), ds(1)]);
+        let nested = |k| Type::Array(Arc::new(cs(k)));
+        let two = Type::Array(Arc::new(Type::Set(Arc::from_iter([cs(1), cs(2)]))));
+        let mut members: SmallVec<[Type; 8]> =
+            SmallVec::from_iter([nested(1), two.clone(), nested(2)]);
+        Type::drop_repeated(&mut members);
+        assert_eq!(&members[..], &[nested(1), two]);
+    }
+
     /// A union of named or abstract members normalizes in linear time:
     /// each is tried only against members it could merge with.
     #[test]
