@@ -465,6 +465,19 @@ fn names_nothing(e: &Expr) -> bool {
     })
 }
 
+// CR claude for claude: [bug/low] An arm whose every value an earlier unguarded arm
+// takes is not found dead where the earlier arm has a name or `_` at a position the
+// later one tests by a literal the pools do not read (a number, a string): `|x: (i64,
+// i64)| select x { (_, 1) => 0, (3, 1) => 1, _ => 2 }` checks and the second arm never
+// runs, and so do `(_, true)` before `(3, true)`, `[_, 1]` before `[3, 1]`, `` `A(_, 1)
+// `` before `` `A(3, 1) ``, `{b: _, c: true}` before `{b: "s", c: true}` and its written
+// form (`E as {b: _, c: true}` before `E as {b: "s", c: true}`). `(_, true)` before
+// `(true, true)` is refused (the pool reads both), and so is the same test written
+// twice (check_repeats). base-r24 alike. What would likely fix it: same_test taken
+// one way, an earlier name or `_` standing for any test the later atom makes at its
+// position; census both repos. probes: ~/ptmp/cr29/scratch/r24/24a/wsaf/p6.txt, p5.txt
+// lines 1 to 3 (run.sh beside them runs each line: check, fused, node-walk)
+// (literal-arm-subsumed-dead-01)
 /// Do two atoms test the same thing: equal literals and heads at every
 /// position, a bind and `_` alike?
 fn same_test(a: &StructPatternNode, b: &StructPatternNode) -> bool {

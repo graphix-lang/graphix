@@ -2600,6 +2600,8 @@ impl StructPatternNode {
     /// `null` and, where a constructor stands over a union, the members
     /// it takes, so `{a: null}` over `{a: [i64, null]}` covers `{a: null}`
     /// and `` (`B, n) `` over `` ([`A, `B], i64) `` covers `` (`B, i64) ``.
+    /// A struct member passes as [`Self::is_match`] reads it: at the
+    /// pattern's width, each field it names at its index.
     /// `None` for any other pattern, or where no member passes.
     pub(crate) fn matched_part(&self, env: &Env, typ: &Type) -> Option<Type> {
         let parts = |binds: &[Self], ts: &[Type]| {
@@ -2631,7 +2633,10 @@ impl StructPatternNode {
             },
             Self::Struct { binds, width, all: _ } => match &expand(env, typ)? {
                 Type::Struct(fs) => {
-                    width.admits(fs.len()).then_some(())?;
+                    let named = |(n, i, _): &(ArcStr, usize, Self)| {
+                        fs.get(*i).is_some_and(|(f, _, _)| f == n)
+                    };
+                    (width.admits(fs.len()) && binds.iter().all(named)).then_some(())?;
                     let fields = fs
                         .iter()
                         .map(|(n, t, at)| {
@@ -2761,7 +2766,7 @@ impl StructPatternNode {
         })
     }
 
-    // CR claude for claude: [bug/low] A written struct pattern that names a field the
+    // XCR claude for claude: [bug/low] A written struct pattern that names a field the
     // scrutinee's struct lacks is taken to cover the scrutinee: `|x: {a: i64, c: f64}|
     // select x { [{a: string, b: f64}, {a: i64, c: f64}] as {a: h, b: _} => 0, _ => 1 }`
     // is refused "unreachable arm: the earlier arms already cover the whole scrutinee",
@@ -2786,6 +2791,22 @@ impl StructPatternNode {
     // by index and printed 5). A second written arm for the other member is refused
     // "unreachable arm". So this is check accepted, run failed, not only a wrong refusal.
     // probe: ~/ptmp/cr29/scratch/r24/24a/review/h1.gx
+    // 2026-11-14 claude: StructPatternNode::matched_part takes a struct member only at
+    // the pattern's width with each field it names at the index its test reads (as
+    // is_match does), so a written struct pattern covers the members holding its fields
+    // and no other: h1.gx is refused 'missing match cases: no arm covers { u: i64, v: i64
+    // }', and sc2.gx and the two-arm form check and run (sc.gx checks and prints 1 here;
+    // slice-element-dead-arm-01's Reach::structure_admits, on r24-staging, refuses its
+    // first arm as dead, and the two compose: both applied, lang::select passes and sc.gx
+    // is refused at that arm). Pins, each failing in all four modes with the fix undone:
+    // lang::select::written_struct_pattern_absent_field_uncovered, _beside_null,
+    // _in_a_payload, _in_a_field, _over_a_declared_variable, and
+    // written_struct_patterns_cover_the_members_holding_their_fields. Census: no verdict
+    // or message change. Of 1500 generated selects of written struct tests over unions of
+    // structs (gen.py, with an oracle) base-r24 accepted 19 of the first 600 with a
+    // member uncovered and gave 5 wrong fused values; this accepts none and every
+    // accepted one prints the oracle's values in both engines. probes:
+    // ~/ptmp/cr29/scratch/r24/24a/wsaf/
     /// True when the pattern matches any value of the scrutinee's type:
     /// `Select`'s wildcard test. A variant pattern with an all-bind
     /// payload is irrefutable given its tag matched, but its inferred

@@ -49,7 +49,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   constructor at a union position the members it takes, and a written test
   over a closed type the part of it its structure takes
   (`StructPatternNode::matched_part`: `` ([`A, `B], i64) as (`B, n) ``
-  covers `` (`B, i64) ``); a collection type test (`Array<T> as`)
+  covers `` (`B, i64) ``; a struct pattern takes a struct member as its
+  run-time test does, at its width with each field it names at the index
+  it reads, so `[{t: i64, w: i64}, {u: i64, v: i64}] as {t: h, w: _}`
+  covers the first member alone); a collection type test (`Array<T> as`)
   narrows later arms only of collections whose every element it
   covers, since a mixed one that fails it may still hold a `T`;
   bool literals, variant heads

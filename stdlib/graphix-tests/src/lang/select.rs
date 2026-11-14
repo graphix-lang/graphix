@@ -8734,6 +8734,79 @@ run!(struct_pattern_width_or, r#"{
     matches!(v, Ok(v) if v.to_string() == r#"["s!", "zz!"]"#)
 }; FuseExpect::Jit);
 
+// A struct pattern under a written union covers only the members that
+// hold every field it names: a member with other fields reaches past it.
+run!(written_struct_pattern_absent_field_uncovered, r#"{
+  type E = [{t: i64, w: i64}, {u: i64, v: i64}];
+  let f = |x: E| -> i64 select x { E as {t: h, w: _} => h };
+  [f({t: 1, w: 2}), f({u: 5, v: 6})]
+}"#, refused("missing match cases: no arm covers { u: i64, v: i64 }"); FuseExpect::None);
+
+run!(written_struct_pattern_absent_field_uncovered_beside_null, r#"{
+  type E = [{t: i64, w: i64}, {u: i64, v: i64}];
+  let f = |x: [E, null]| -> i64 select x { E as {t: h, w: _} => h, null as _ => 3 };
+  [f({t: 1, w: 2}), f({u: 5, v: 6}), f(null)]
+}"#, refused("missing match cases: no arm covers { u: i64, v: i64 }"); FuseExpect::None);
+
+run!(written_struct_pattern_absent_field_uncovered_in_a_payload, r#"{
+  type E = [`A({t: i64, w: i64}), `A({u: i64, v: i64})];
+  let f = |x: E| -> i64 select x { E as `A({t: h, w: _}) => h };
+  [f(`A({t: 1, w: 2})), f(`A({u: 5, v: 6}))]
+}"#, refused("missing match cases: no arm covers `A({ u: i64, v: i64 })"); FuseExpect::None);
+
+run!(written_struct_pattern_absent_field_uncovered_in_a_field, r#"{
+  type S = {s: [{t: i64, w: i64}, {u: i64, v: i64}], n: i64};
+  let f = |x: S| -> i64 select x { S as {s: {t: h, w: _}, n} => h + n };
+  [f({s: {t: 1, w: 2}, n: 0}), f({s: {u: 5, v: 6}, n: 0})]
+}"#, refused("missing match cases"); FuseExpect::None);
+
+run!(written_struct_pattern_absent_field_uncovered_over_a_declared_variable, r#"{
+  type E = [{t: i64, w: i64}, {u: i64, v: i64}];
+  let f = 'a: E |x: 'a| -> i64 select x { E as {t: h, w: _} => h };
+  [f({t: 1, w: 2}), f({u: 5, v: 6})]
+}"#, refused("missing match cases"); FuseExpect::None);
+
+// So the arm for the member it leaves is live, written, by a name, in an
+// or-alternative, behind a guard, and where the struct is a part.
+run!(
+    written_struct_patterns_cover_the_members_holding_their_fields,
+    r#"{
+    type E = [{t: i64, w: i64}, {u: i64, v: i64}];
+    type N = [{t: [i64, null], w: i64}, {u: i64, v: i64}];
+    type T = [(`A, {a: i64, b: i64}), (`B, {b: i64, c: i64})];
+    type S = {s: E, n: i64};
+    type M = [{a: i64, c: f64}, {a: string, b: f64}];
+    let a = |x: E| -> i64 select x { E as {t: h, w: _} => h, E as {u: h, v: _} => h + 100 };
+    let b = |x: E| -> i64 select x { E as {t: h, w: _} => h, _ => 100 };
+    let c = |x: [E, null]| -> i64 select x { E as {t: h, w: _} => h, E as {u: h, v: _} => h + 100, null as _ => 3 };
+    let d = |x: N| -> i64 select x { N as {t: null, w: _} => 0, N as {t: h, w: _} => 1, N as {u: _, v} => v };
+    let e = |x: T| -> i64 select x { T as (`A, {b, ..}) => b, T as (`B, {b, ..}) => b + 100 };
+    let f = |x: S| -> i64 select x { S as {s: {t: h, w: _}, n} => h + n, S as {s: {u: h, v: _}, n} => h + n + 100 };
+    let g = |x: E| -> i64 select x { E as {t: h, w: _} | {u: h, v: _} => h };
+    let k = 'a: E |x: 'a| -> i64 select x { E as {t: h, w: _} => h, E as {u: h, v: _} => h + 100 };
+    let m = |x: E| -> i64 select x {
+        E as {u: 0, v: _} => 0,
+        E as {t: h, w: _} if h > 0 => h,
+        E as {t: _, w} => w,
+        E as {u: h, v: _} if h > 3 => 100 + h,
+        E as {u: _, v} => v
+    };
+    let o = |x: M| -> i64 select x { M as {a: h, b: _} => 0, _ => 1 };
+    [
+        a({t: 1, w: 2}), a({u: 5, v: 6}), b({t: 1, w: 2}), b({u: 5, v: 6}),
+        c({t: 1, w: 2}), c({u: 5, v: 6}), c(null),
+        d({t: 1, w: 2}), d({t: null, w: 2}), d({u: 5, v: 6}),
+        e((`A, {a: 1, b: 2})), e((`B, {b: 5, c: 6})),
+        f({s: {t: 1, w: 2}, n: 0}), f({s: {u: 5, v: 6}, n: 0}),
+        g({t: 1, w: 2}), g({u: 5, v: 6}), k({t: 1, w: 2}), k({u: 5, v: 6}),
+        m({t: 1, w: 2}), m({t: 0, w: 2}), m({u: 5, v: 6}), m({u: 1, v: 6}), m({u: 0, v: 6}),
+        o({a: 1, c: 0.5}), o({a: "s", b: 0.5})
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 105, 1, 100, 1, 105, 3, 1, 0, 6, 2, 105, 1, 105, 1, 5, 1, 105, 1, 2, 105, 6, 0, 1, 0])
+);
+
 // A slice pattern's element cells are the arm's own to narrow: over an
 // unannotated parameter, and over one of a declared element type, the
 // open-member rule does not read them as types the arm must tell apart.
