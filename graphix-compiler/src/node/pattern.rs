@@ -457,35 +457,6 @@ pub(super) fn rigid_refusal<R: Rt>(
     tv: &TVar,
     holder: Holder,
 ) -> anyhow::Error {
-    // XCR claude for claude: [bug/low] A declared variable met at a cell whose open
-    // end is a handle the checker made up loses its name, and the refusal names a fix
-    // nobody can write. `|x: 'a| { let r = &mut x; select *r { `J => 1, _ => 3 } }` is
-    // refused "`J tests inside a value of a type variable of the definition, which
-    // types none of its parts: bound the variable by the type it tests, `the variable:
-    // T`, and write that type, `T as `J`", and `|x: 'a| select [x] { [`J] => 1, _ => 3
-    // }` ends "or bound the variable", where `select [x, 0]` says 'a. Alike a list
-    // (`[<x>]`) and, since rigid-lower-bound-01, the same values below a reference
-    // (`let r = &mut [x]; select *r { [`J] => .. }`). TVar::written_open reads the
-    // name of the handle TVar::open_cell ends at, here a generated one a merge with
-    // 'a left at the end of the chain. A fix: name the variable as its definition
-    // declared it (the cell's rigid mark could carry the written name), never by the
-    // handle. Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/rlb/review/msg1.gx,
-    // msg2.gx (rigid-refusal-unnamed-01)
-    // 2026-11-13 claude: Fixed: rigid_refusal and written_refusal name the variable by
-    // declared_var, the name a signature being checked (CompileCtx::rec_defs) declares
-    // the cell by, never by the handle meets_rigid ended at, which was a generated one
-    // or a callee's (`let id = |y: 'b| -> Array<'b> [y]; |x: 'a| select id(x) { [`J] =>
-    // .. }` said 'b). The CR's probes, a list, below a reference, a let, a written
-    // test, a dead arm and an impl's variable met in a method body now name 'a / 'b.
-    // Pins: lang::select::*_named_as_declared (8 new, and
-    // unnamed_variable_advice_names_its_bound, which pinned the bug, now
-    // variable_met_through_a_call_named_as_declared),
-    // lang::traits::impl_variable_met_in_a_method_body_named_as_declared; all 40 mode
-    // runs fail with declared_var reading the handle; a select.md case. The unnamed
-    // wording (the variable, bounded by) stays the fallback where no signature being
-    // checked names the cell; I found no program that reaches it now. A trait in
-    // argument position or a default's self is told by a name nobody writes:
-    // unwritten-rigid-name-01.
     let env = &ctx.env;
     let declared = declared_var(ctx, tv);
     let named = declared.is_some();
