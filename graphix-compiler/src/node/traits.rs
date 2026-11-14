@@ -1477,6 +1477,45 @@ impl<R: Rt> Update<R> for Impl<R> {
 }
 
 impl<R: Rt> CallSite<R> {
+    /// The binding of the method this trait call dispatches to, when its
+    /// self argument's type, as the check leaves it, decides the impl
+    /// alone: no cell open in it, no union to dispatch per member, no
+    /// constructor trait, no core trait that lowers to an operator.
+    pub(super) fn decided_method(
+        &self,
+        ctx: &CompileCtx<R>,
+        ftype: &FnType,
+    ) -> Option<BindId> {
+        let NodeView::Ref(r) = self.fnode.view() else { return None };
+        let tm = ctx.env.trait_methods.get(&r.id).copied()?;
+        let def = ctx.env.trait_def(tm.trait_id)?;
+        let m = &def.methods[tm.index];
+        let mut self_t = ftype.args.get(m.self_index?)?.typ.resolve_tvars().normalize();
+        let open = |t: &Type| {
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            t.collect_tvars(&mut tvs);
+            tvs.values().any(|tv| Type::TVar(tv.clone()).has_unbound())
+        };
+        if def.hole || CoreTrait::of_id(def.id).is_some_and(|c| c.structural()) {
+            return None;
+        }
+        while let Type::Ref(tr) = &self_t
+            && ctx.env.trait_of_ref(tr).is_none()
+        {
+            self_t = self_t.lookup_ref(&ctx.env).ok()?;
+        }
+        let union = match &self_t {
+            Type::Set(_) | Type::Bottom => true,
+            Type::Primitive(p) => p.len() > 1,
+            _ => false,
+        };
+        if union || open(&self_t) {
+            return None;
+        }
+        let im = ctx.env.find_impl(def.id, &self_t).ok()??;
+        im.methods.get(m.name.as_str()).copied().or(m.default)
+    }
+
     /// Resolve a trait method call to an implementation by the self
     /// argument's type. A self type nothing produced into settles to ⊥
     /// and the call is a standing bottom; a union self type lowers to a

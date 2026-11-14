@@ -6281,6 +6281,62 @@ run!(
     "#
 );
 
+// A call that omits a method's labeled default judges the default of the
+// impl its self argument decides, as a named function's is.
+run!(
+    method_own_default_conflicting_with_an_argument_refused,
+    refused("'z: string does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
+        impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
+        let result = T::m(1, "q", 7)
+    "#
+);
+
+run!(
+    method_own_default_fitting_its_arguments,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 2 s q"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
+        impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
+        let result = "[T::m(1, 2, 7)] [T::m(#w: "s", 1, "q", 7)]"
+    "#
+);
+
+run!(
+    trait_body_default_conflicting_with_an_argument_refused,
+    refused("'z: string does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
+        impl T for i64 { };
+        let result = T::m(1, "q", 7)
+    "#
+);
+
+run!(
+    method_own_default_holding_a_defaulted_fn_conflicting_refused,
+    refused("'z: string does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: fn(?#d: 'z, x: i64) -> string, self, y: 'z, x: i64) -> string };
+        impl T for i64 {
+            let m = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, s, y: 'z, x: i64| w(x + s)
+        };
+        let result = T::m(1, "q", 7)
+    "#
+);
+
+run!(
+    method_own_default_holding_a_defaulted_fn_fitting,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: fn(?#d: 'z, x: i64) -> string, self, y: 'z, x: i64) -> string };
+        impl T for i64 {
+            let m = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, s, y: 'z, x: i64| w(x * 0 + s)
+        };
+        let result = T::m(1, 2, 7)
+    "#
+);
+
 // The walk goes as deep as the defaults nest, and reaches an impl of a
 // trait an interface declares.
 run!(

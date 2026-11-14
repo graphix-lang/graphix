@@ -3038,11 +3038,15 @@ impl<R: Rt> CallSite<R> {
         // (a restored interface `val`'s type carries none) by the binding
         // the function names
         let mut defs = written_defs(ctx, ftype);
-        if defs.is_empty()
-            && let NodeView::Ref(r) = self.fnode.view()
-            && let Some(fv) = ctx.bind_to_lambda.get(&r.id)
-        {
-            defs.push(Some(fv.clone()));
+        if defs.is_empty() {
+            let bind = match self.fnode.view() {
+                NodeView::Ref(r) => Some(r.id),
+                _ => None,
+            };
+            let bind = self.decided_method(ctx, ftype).or(bind);
+            if let Some(fv) = bind.and_then(|b| ctx.bind_to_lambda.get(&b)) {
+                defs.push(Some(fv.clone()));
+            }
         }
         let callee = self.fnode.typ();
         let mut join =
@@ -3054,7 +3058,7 @@ impl<R: Rt> CallSite<R> {
                     },
                 )
             };
-        // CR claude for claude: [bug/medium] A trait method call that omits a labeled default is
+        // XCR claude for claude: [bug/medium] A trait method call that omits a labeled default is
         // checked with no default judged: the call's type is the trait's signature, which
         // names no definition, so `defs` is empty here and the default is left to the bind,
         // which refuses it. `trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
@@ -3073,6 +3077,17 @@ impl<R: Rt> CallSite<R> {
         // of the method's own label is still left to the call, as this CR says.
         // lang::traits::method_own_default_is_left_to_its_calls pins the case that runs today
         // (nothing else decides the label's variable).
+        // 2026-11-14 claude: A trait method call's omitted labeled default is judged at the
+        // check: CallSite::decided_method gives the impl method (or the trait's default body)
+        // the self type decides (no open cell, no union, no constructor or structural core
+        // trait), and check_omitted_defaults judges its defaults as a named function's.
+        // tplain/trait2/traitd/tplain_traitbody are refused at --check ('z: string does not
+        // contain i64); the fitting twins run. Pins
+        // lang::traits::{method_own_default_conflicting_with_an_argument_refused,
+        // trait_body_default_conflicting_with_an_argument_refused,
+        // method_own_default_holding_a_defaulted_fn_conflicting_refused} fail (interp: check
+        // alone passes) without it. Left: a union self's per-member defaults stay to the binds
+        // (method_own_default_is_left_to_its_calls); needs a soak.
         // CR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
         // function a call returns that is called with a labeled default omitted checks, and
         // is refused when its bind runs. `let mk = |k: i64| |#d = 1, x: i64|

@@ -501,6 +501,14 @@ instantiated signature's self-argument type, resolved and
 alias-expanded, selects the impl (or the trait's default); the call's
 function node is RE-POINTED at that binding and pre-bound statically
 when the lambda is known — after which it is an ordinary static call.
+A call that omits a method's labeled default is judged at the check as a
+named function's is, against the default of the impl its self type
+decides (`CallSite::decided_method`: no open cell, no union, no
+constructor or structural core trait); a union self's per-member defaults
+are left to the binds. Pins
+`lang::traits::{method_own_default_conflicting_with_an_argument_refused,
+trait_body_default_conflicting_with_an_argument_refused,
+method_own_default_holding_a_defaulted_fn_conflicting_refused}`.
 An open self type inside a definition gate is the polymorphic case,
 left for the instances; open at depth zero is the compile error. A self
 type holding a declared (rigid) variable is a constant to the impl
