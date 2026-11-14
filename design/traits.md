@@ -550,7 +550,11 @@ still run at one member's type or the other's. What is shared is
 `Type::shares_value`: `could_match` either way, where two arrays, two
 lists and two maps share the empty one whatever they hold, and two
 instantiations of an abstract type made in Graphix share a value only at
-the same parameters, which a value carries. One typedef at two
+the same parameters, which a value carries. A value is finite, so a pair
+of names met again inside itself is apart, and what is found apart resting
+on a pair still in progress is kept only once that pair is done:
+`type Ti = [`L(i64), `N(Ti, Ti)]` and `type Ts = [`L(string), `N(Ts,
+Ts)]` share no value. One typedef at two
 parameters that are apart shares what its expansions share, so the walk
 expands it there: `(Arr<i64>, i64)` beside `(Arr<string>, i64)` over
 `type Arr<'a> = Array<'a>` share `([], 1)`. So `[Array<i64>,

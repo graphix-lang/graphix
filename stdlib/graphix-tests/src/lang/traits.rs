@@ -523,6 +523,52 @@ run!(
     ; FuseExpect::None
 );
 
+// Two recursive typedefs whose values are finite share none where each
+// level holds the pair again: the dispatch tells every value's member.
+run!(
+    trait_union_dispatch_recursive_typedefs_sharing_no_value,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Ns Ls Ni"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Ti = [`L(i64), `N(Ti, Ti)];
+        type Ts = [`L(string), `N(Ts, Ts)];
+        impl Show for `L(i64) { let show = |x| "Li" };
+        impl Show for `L(string) { let show = |x| "Ls" };
+        impl Show for `N(Ti, Ti) { let show = |x| "Ni" };
+        impl Show for `N(Ts, Ts) { let show = |x| "Ns" };
+        let a: Ts = `N(`L("a"), `L("b"));
+        let b: Ts = `L("c");
+        let c: Ti = `N(`L(1), `L(2));
+        let x: [Ti, Ts] = a;
+        let y: [Ti, Ts] = b;
+        let z: [Ti, Ts] = c;
+        let result = "[Show::show(x)] [Show::show(y)] [Show::show(z)]"
+    "#
+    ; FuseExpect::Jit
+);
+
+// Two that share a leaf share a value, and the call is refused.
+run!(
+    trait_union_dispatch_recursive_typedefs_sharing_a_leaf_refused,
+    refused(
+        "a value may be both `N(Tx, Tx) and `N(Ty, Ty), neither of which holds the other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Tx = [`L(i64), `X, `N(Tx, Tx)];
+        type Ty = [`L(i64), `Y, `N(Ty, Ty)];
+        impl Show for `L(i64) { let show = |x| "l" };
+        impl Show for `X { let show = |x| "x" };
+        impl Show for `Y { let show = |x| "y" };
+        impl Show for `N(Tx, Tx) { let show = |x| "nx" };
+        impl Show for `N(Ty, Ty) { let show = |x| "ny" };
+        let p: Tx = `N(`L(1), `L(2));
+        let x: [Tx, Ty] = p;
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
 // Members that hold one typedef at two parameters and share no value are
 // apart, and so are two instantiations of an abstract type where one's
 // parameter is a declared variable: they are one type or share no value.

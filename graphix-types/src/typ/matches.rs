@@ -291,7 +291,7 @@ thread_local! {
 /// found apart, and a memo of its own for the containment questions it
 /// asks.
 pub(super) struct MatchHist {
-    pub(super) hist: RefHist<AHashMap<RefPair, u32>>,
+    pub(super) hist: RefHist<AHashMap<RefPair, Entered>>,
     /// The pairs found apart, wherever they were found: assuming that pairs
     /// in progress overlap only adds overlaps, so such a pair is apart with
     /// no pair in progress, as at the top of the walk, whose answer it
@@ -313,6 +313,18 @@ pub(super) struct MatchHist {
     /// made in Graphix share a value only at the same parameters, which
     /// a value carries.
     shared: bool,
+    /// Under `shared`, the shallowest pair in progress that the walk since
+    /// the last call began read as apart ([`NO_DEPTH`] when none): a pair
+    /// found apart on it holds only while that pair does, so it is kept
+    /// only when none is read.
+    lowest: u32,
+}
+
+/// A pair of names in progress: the node resting on it once met again,
+/// and how many pairs were in progress when it began.
+pub(super) struct Entered {
+    node: u32,
+    depth: u32,
 }
 
 impl MatchHist {
@@ -327,12 +339,14 @@ impl MatchHist {
             unfoldings: Unfoldings::default(),
             pairs: Pairs::default(),
             shared: false,
+            lowest: NO_DEPTH,
         }
     }
 }
 
 const NO_LINK: u32 = u32::MAX;
 const NO_NODE: u32 = u32::MAX;
+const NO_DEPTH: u32 = u32::MAX;
 
 /// What could_match's trues rest on. Each pair of names entered and each
 /// node pair found to overlap by assuming a pair in progress is a node,
@@ -456,7 +470,7 @@ impl Rests {
 }
 
 impl Deref for MatchHist {
-    type Target = RefHist<AHashMap<RefPair, u32>>;
+    type Target = RefHist<AHashMap<RefPair, Entered>>;
 
     fn deref(&self) -> &Self::Target {
         &self.hist
@@ -492,7 +506,10 @@ impl Type {
             }
         }
         let mark = hist.rests.mark();
+        let outer = mem::replace(&mut hist.lowest, NO_DEPTH);
         let could = ensure_sufficient(|| self.could_match_inner(env, hist, t));
+        let lowest = hist.lowest;
+        hist.lowest = outer.min(lowest);
         match (&could, pair) {
             (Ok(true), None) => (),
             (Ok(true), Some(pair)) if hist.found.contains(pair) => {
@@ -506,7 +523,9 @@ impl Type {
             },
             (Ok(false), Some(pair)) => {
                 hist.rests.unread(mark);
-                hist.apart.insert(pair, self, t)
+                if lowest == NO_DEPTH {
+                    hist.apart.insert(pair, self, t)
+                }
             }
             (Ok(false) | Err(_), _) => hist.rests.unread(mark),
         }
@@ -556,6 +575,12 @@ impl Type {
                 if memo_on() && hist.refuted.get().is_some_and(|m| m.contains_key(&key)) {
                     return Ok(false);
                 }
+                if hist.shared
+                    && let Some(entered) = hist.hist.get(&key)
+                {
+                    hist.lowest = hist.lowest.min(entered.depth);
+                    return Ok(false);
+                }
                 // a pair of definitions unfolded as often as a walk may is
                 // met again as the innermost of them in progress
                 let defs = def_pair(env, t0, t1);
@@ -564,12 +589,12 @@ impl Type {
                     false => hist.unfoldings.again(defs),
                 };
                 if let Some(again) = again
-                    && let Some(node) = hist.hist.get_mut(&again)
+                    && let Some(entered) = hist.hist.get_mut(&again)
                 {
-                    if *node == NO_NODE {
-                        *node = hist.rests.node()
+                    if entered.node == NO_NODE {
+                        entered.node = hist.rests.node()
                     }
-                    let node = *node;
+                    let node = entered.node;
                     hist.rests.read(node);
                     return Ok(true);
                 }
@@ -581,11 +606,15 @@ impl Type {
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
                 let mark = hist.rests.mark();
-                hist.insert(key, NO_NODE);
+                let depth = hist.hist.len() as u32;
+                hist.insert(key, Entered { node: NO_NODE, depth });
                 hist.unfoldings.enter(defs, key);
                 let r = t0.could_match_int(env, hist, &t1);
                 hist.unfoldings.leave(defs);
-                let node = hist.remove(&key).unwrap_or(NO_NODE);
+                let node = hist.remove(&key).map_or(NO_NODE, |e| e.node);
+                if hist.lowest >= depth {
+                    hist.lowest = NO_DEPTH
+                }
                 match r {
                     Ok(true) if node == NO_NODE => {
                         hist.rests.rest(mark);
@@ -596,6 +625,7 @@ impl Type {
                 if let Ok(false) = r
                     && key.0.is_some()
                     && key.1.is_some()
+                    && hist.lowest == NO_DEPTH
                 {
                     hist.refuted.get_mut().insert(key, Kept::new((), self, t));
                 }
@@ -775,7 +805,7 @@ impl Type {
         self.could_match_int(env, &mut MatchHist::new(), t)
     }
 
-    // CR claude for claude: [bug/low] Two recursive types that share no value are
+    // XCR claude for claude: [bug/low] Two recursive types that share no value are
     // read as sharing one where their pair is met again inside itself: could_match
     // assumes a pair in progress overlaps, which is right for an arm's reach and
     // too much for a shared value, which is finite. So a trait call over `[Ti, Ts]`
@@ -788,9 +818,21 @@ impl Type {
     // the memos of could_match (apart, refuted, rests) do not hold for as they
     // stand. probe: ~/ptmp/cr29/scratch/r24/24d/ihsv/u5.gx
     // (shares-value-recursive-pair-01)
+    // 2026-11-14 claude: Fixed in could_match's ref-pair walk. Under
+    // MatchHist::shared a pair met again inside itself is apart (a value is
+    // finite); a pair found apart that read such a pair still in progress is not
+    // memoized (MatchHist::lowest) until that pair is done. Pins that fail without
+    // it: typ::matches tests
+    // recursive_types_share_a_value_only_where_a_finite_one_is_of_both (fails with
+    // the exact-key rule off) and
+    // a_pair_apart_on_one_in_progress_is_asked_again_when_that_pair_shares (fails
+    // with the memo guard off); lang::traits
+    // trait_union_dispatch_recursive_typedefs_sharing_no_value, with
+    // ..._sharing_a_leaf_refused for the refusal that stays.
     /// Whether one value may be a value of both `self` and `t`:
-    /// [`Self::could_match`] either way, under [`MatchHist::shared`]. An
-    /// open cell may be any type.
+    /// [`Self::could_match`] either way, under [`MatchHist::shared`], where a
+    /// pair met again inside itself is apart: a value is finite. An open
+    /// cell may be any type.
     pub fn shares_value(&self, env: &Env, t: &Self) -> Result<bool> {
         let sharing = || MatchHist { shared: true, ..MatchHist::new() };
         Ok(self.could_match_int(env, &mut sharing(), t)?
@@ -1091,6 +1133,50 @@ impl Type {
 mod tests {
     use super::{MATCH_CALLS, MATCH_PAIRS, REST_STEPS};
     use crate::typ::cast::tests::{parsed, typed};
+
+    fn shares_value(defs: &[(&str, &str)], t0: &str, t1: &str) -> bool {
+        let (env, _) = typed(defs, "null");
+        parsed(&env, t0).shares_value(&env, &parsed(&env, t1)).unwrap()
+    }
+
+    #[test]
+    fn recursive_types_share_a_value_only_where_a_finite_one_is_of_both() {
+        let apart = [
+            ("Ti", "[`L(i64), `N(Ti, Ti)]"),
+            ("Ts", "[`L(string), `N(Ts, Ts)]"),
+            ("Ei", "`N(Ei)"),
+            ("Es", "`N(Es)"),
+        ];
+        assert!(!shares_value(&apart, "Ti", "Ts"));
+        assert!(!shares_value(&apart, "`N(Ti, Ti)", "`N(Ts, Ts)"));
+        assert!(!shares_value(&apart, "Ei", "Es"));
+        assert!(shares_value(&apart, "Ti", "Ti"));
+        let meet = [
+            ("Ti", "[`L(i64), `N(Ti, Ti)]"),
+            ("Tj", "[`L(i64), `N(Tj, Tj)]"),
+            ("Lp", "[`L(i64), `L(string), `N(Lp, Lp)]"),
+            ("Ts", "[`L(string), `N(Ts, Ts)]"),
+        ];
+        assert!(shares_value(&meet, "Ti", "Tj"));
+        assert!(shares_value(&meet, "Ti", "Lp"));
+        assert!(shares_value(&meet, "Ts", "Lp"));
+    }
+
+    // Ua against Ub is walked with the pair Ta, Tb in progress and read
+    // apart there; Ta, Tb then share `Z, so Ua, Ub, asked again beside it,
+    // share `M(`Z).
+    #[test]
+    fn a_pair_apart_on_one_in_progress_is_asked_again_when_that_pair_shares() {
+        let defs = [
+            ("Ta", "[`N(Ua), `Z]"),
+            ("Tb", "[`N(Ub), `Z]"),
+            ("Ua", "`M(Ta)"),
+            ("Ub", "`M(Tb)"),
+        ];
+        assert!(shares_value(&defs, "Ta", "Tb"));
+        assert!(shares_value(&defs, "(Ta, Ua)", "(Tb, Ub)"));
+        assert!(shares_value(&defs, "(Ua, Ta)", "(Ub, Tb)"));
+    }
 
     fn could_match(defs: &[(&str, String)], t0: &str, t1: &str) -> bool {
         let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (*n, &**b)).collect();
