@@ -2827,7 +2827,6 @@ fn resolves_to(tv: &TVar, t: &Type) -> bool {
     let Some(r) = tv.ground_resolution() else { return false };
     let same = |x: &Type, y: &Type| match (x, y) {
         (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
-        (Type::TVar(v0), Type::TVar(v1)) => v0.cell_addr() == v1.cell_addr(),
         (x, y) => same_content(x, y),
     };
     let parts = |x: &[Type], y: &[Type]| {
@@ -5795,7 +5794,10 @@ impl Type {
 mod tests {
     use super::*;
     use crate::typ::{
-        normalize::{NORMALIZED, tests::ground_pair_chain},
+        normalize::{
+            NORMALIZED,
+            tests::{ground_pair_chain, while_ground},
+        },
         setops::tests::past_eager,
         tvar::{InTask, new_task},
     };
@@ -5807,15 +5809,46 @@ mod tests {
     fn a_ground_cell_holds_its_resolutions_parts_at_once() {
         let depth = 64;
         let cells = ground_pair_chain(depth);
-        let below = Type::TVar(cells[depth - 1].clone()).resolve_tvars();
-        let pair = Type::Tuple(Arc::from_iter([below.clone(), below]));
         let top = Type::TVar(cells[depth].clone());
         let env = Env::default();
-        for (t0, t1) in [(&top, &pair), (&pair, &top)] {
-            CONTAINS_STEPS.with(|n| n.set(0));
-            t0.check_contains(&env, t1).unwrap();
-            assert_eq!(CONTAINS_STEPS.with(|n| n.get()), 1);
-        }
+        let steps = while_ground(&cells[depth], || {
+            let below = Type::TVar(cells[depth - 1].clone()).resolve_tvars();
+            let pair = Type::Tuple(Arc::from_iter([below.clone(), below]));
+            [(&top, &pair), (&pair, &top)].map(|(t0, t1)| {
+                CONTAINS_STEPS.with(|n| n.set(0));
+                t0.check_contains(&env, t1).unwrap();
+                CONTAINS_STEPS.with(|n| n.get())
+            })
+        });
+        assert_eq!(steps, [1, 1]);
+    }
+
+    /// A pair whose parts are not the resolution's own is walked: an equal
+    /// copy holds, and a pair of one of its parts and another type does not.
+    #[test]
+    fn a_ground_cell_takes_only_its_resolutions_own_parts_at_once() {
+        let depth = 8;
+        let cells = ground_pair_chain(depth);
+        let top = Type::TVar(cells[depth].clone());
+        let copy =
+            Type::TVar(ground_pair_chain(depth - 1)[depth - 1].clone()).resolve_tvars();
+        let equal = Type::Tuple(Arc::from_iter([copy.clone(), copy]));
+        let env = Env::default();
+        let (steps, refused) = while_ground(&cells[depth], || {
+            let below = Type::TVar(cells[depth - 1].clone()).resolve_tvars();
+            let string = Type::Primitive(Typ::String.into());
+            let unequal = Type::Tuple(Arc::from_iter([below, string]));
+            let steps = [(&top, &equal), (&equal, &top)].map(|(t0, t1)| {
+                CONTAINS_STEPS.with(|n| n.set(0));
+                t0.check_contains(&env, t1).unwrap();
+                CONTAINS_STEPS.with(|n| n.get())
+            });
+            let refused = [(&top, &unequal), (&unequal, &top)]
+                .map(|(t0, t1)| t0.check_contains(&env, t1).is_err());
+            (steps, refused)
+        });
+        assert!(steps.iter().all(|n| *n > 1), "{steps:?}");
+        assert_eq!(refused, [true, true]);
     }
 
     // A type expanded through a chain of parametric typedefs, a DAG that

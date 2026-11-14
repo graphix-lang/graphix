@@ -1162,6 +1162,24 @@ pub(super) mod tests {
         cells
     }
 
+    /// `measure` while `top`'s proof stands: a write to a bound cell, which
+    /// a test on another thread may make, moves the ground epoch and drops
+    /// what the cells keep, so `measure` runs again over a new proof until
+    /// no such write fell inside it.
+    pub(in crate::typ) fn while_ground<T>(
+        top: &TVar,
+        mut measure: impl FnMut() -> T,
+    ) -> T {
+        for _ in 0..100_000 {
+            assert!(Type::TVar(top.clone()).prove_ground());
+            let r = measure();
+            if top.ground_now() {
+                return r;
+            }
+        }
+        panic!("the ground epoch moved under every measure")
+    }
+
     /// A ground cell keeps what it resolved to: a chain of them resolves
     /// a link at a time once, then each link of it at once, over the
     /// first resolution's parts.
@@ -1174,13 +1192,14 @@ pub(super) mod tests {
             let r = Type::TVar(tv.clone()).resolve_tvars();
             (r, RESOLVED.with(|n| n.get()))
         };
-        let (first, n) = walked(&cells[depth]);
+        let ((first, n), (again, n_again), (below, n_below)) =
+            while_ground(&cells[depth], || {
+                (walked(&cells[depth]), walked(&cells[depth]), walked(&cells[depth - 1]))
+            });
         assert!(n <= 3 * depth + 2, "the first resolution walked {n} nodes");
-        let (again, n) = walked(&cells[depth]);
-        assert_eq!(n, 1, "a second resolution walked {n} nodes");
+        assert_eq!(n_again, 1, "a second resolution walked {n_again} nodes");
         assert!(again.shares_content(&first));
-        let (below, n) = walked(&cells[depth - 1]);
-        assert_eq!(n, 1, "a link's resolution walked {n} nodes");
+        assert_eq!(n_below, 1, "a link's resolution walked {n_below} nodes");
         let Type::Tuple(parts) = &first else { panic!("not a pair") };
         assert!(below.shares_content(&parts[0]));
     }
