@@ -7211,6 +7211,37 @@ run!(repeated_tuple_arm_unreachable, "{ let p = (true, false); select p { (true,
 run!(repeated_payload_arm_unreachable, "{ let f = |v: [`A(i64), `B]| select v { `A(0) => 1, `A(0) => 2, `A(_) => 3, `B => 4 }; f(`A(0)) }",
     refused("unreachable arm"); FuseExpect::None);
 
+// a name or `_` before a literal at one position takes the literal's values
+run!(literal_after_wildcard_in_tuple_unreachable, "{ let f = |x: (i64, i64)| -> i64 select x { (_, 1) => 0, (3, 1) => 1, _ => 2 }; f((3, 1)) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_wildcard_in_tuple_twin, "{ let f = |x: (i64, i64)| -> i64 select x { (_, 1) => 0, (3, 2) => 1, _ => 2 }; (f((3, 1)), f((3, 2)), f((4, 2))) }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]); FuseExpect::Jit);
+
+run!(literal_after_bind_in_tuple_unreachable, "{ let f = |x: (i64, bool)| -> i64 select x { (n, true) => n, (3, true) => 1, _ => 2 }; f((3, true)) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_wildcard_in_slice_unreachable, "{ let f = |x: Array<i64>| -> i64 select x { [_, 1] => 0, [3, 1] => 1, _ => 2 }; f([3, 1]) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_wildcard_in_payload_unreachable, "{ let f = |x: [`A(i64, i64), `B]| -> i64 select x { `A(_, 1) => 0, `A(3, 1) => 1, _ => 2 }; f(`A(3, 1)) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_wildcard_in_struct_unreachable, "{ let f = |x: {b: string, c: bool}| -> i64 select x { {b: _, c: true} => 0, {b: \"s\", c: true} => 1, _ => 2 }; f({b: \"s\", c: true}) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_wildcard_in_written_struct_unreachable, "{ type E = [{b: string, c: bool}, {d: i64}]; let f = |x: E| -> i64 select x { E as {b: _, c: true} => 0, E as {b: \"s\", c: true} => 1, _ => 2 }; f({b: \"s\", c: true}) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_wildcard_in_or_alternative_unreachable, "{ let f = |x: (i64, i64)| -> i64 select x { (_, 1) => 0, (3, 1) | (4, 1) => 1, _ => 2 }; f((3, 1)) }",
+    refused("an earlier arm matches the same values"); FuseExpect::None);
+
+run!(literal_after_guarded_wildcard_runs, "{ let f = |x: (i64, i64)| -> i64 select x { (n, 1) if n > 0 => 0, (3, 1) => 1, _ => 2 }; (f((3, 1)), f((-3, 1)), f((3, 2))) }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 2, 2]); FuseExpect::Jit);
+
+run!(literal_before_wildcard_runs, "{ let f = |x: (i64, i64)| -> i64 select x { (3, 1) => 1, (_, 1) => 0, _ => 2 }; (f((3, 1)), f((4, 1)), f((3, 2))) }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 2]); FuseExpect::Jit);
+
 // A guarded arm before an unguarded one over a payload holding null leaves
 // the unguarded arm's bind its whole type.
 run!(

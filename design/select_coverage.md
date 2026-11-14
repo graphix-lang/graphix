@@ -20,7 +20,9 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   fields but never a literal; an abstract's
   payload; the structure under a written test; `Reach::structure_admits`,
   `StructPatternNode::footprint`), or
-  that tests what an earlier unguarded arm tests, is dead, and the
+  that tests what an earlier unguarded arm tests (a name or `_` there
+  standing for whatever a later atom tests at that position,
+  `select.rs::subsumes`), is dead, and the
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member
   (a slice arm claims its lengths of each member whose element type its

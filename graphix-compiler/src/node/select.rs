@@ -465,7 +465,7 @@ fn names_nothing(e: &Expr) -> bool {
     })
 }
 
-// CR claude for claude: [bug/low] An arm whose every value an earlier unguarded arm
+// XCR claude for claude: [bug/low] An arm whose every value an earlier unguarded arm
 // takes is not found dead where the earlier arm has a name or `_` at a position the
 // later one tests by a literal the pools do not read (a number, a string): `|x: (i64,
 // i64)| select x { (_, 1) => 0, (3, 1) => 1, _ => 2 }` checks and the second arm never
@@ -478,15 +478,27 @@ fn names_nothing(e: &Expr) -> bool {
 // position; census both repos. probes: ~/ptmp/cr29/scratch/r24/24a/wsaf/p6.txt, p5.txt
 // lines 1 to 3 (run.sh beside them runs each line: check, fused, node-walk)
 // (literal-arm-subsumed-dead-01)
-/// Do two atoms test the same thing: equal literals and heads at every
-/// position, a bind and `_` alike?
-fn same_test(a: &StructPatternNode, b: &StructPatternNode) -> bool {
+// 2026-11-14 claude: select.rs::same_test is now subsumes(earlier, later): a name or _
+// in an earlier unguarded arm stands for any test the later atom makes at that position
+// (an Or on either side is read alternative by alternative), so check_repeats refuses
+// (_, 1) before (3, 1) and the slice, payload, struct and written-struct forms. Pins
+// that fail without it:
+// lang::select::literal_after_{wildcard_in_tuple,bind_in_tuple,wildcard_in_slice,wildcard_in_payload,wildcard_in_struct,wildcard_in_written_struct,wildcard_in_or_alternative}_unreachable;
+// twins that run: literal_after_wildcard_in_tuple_twin,
+// literal_after_guarded_wildcard_runs, literal_before_wildcard_runs. Census of both
+// repos: no file newly refused.
+/// Does `earlier` match every value `later` does, position by position:
+/// a bind or `_` at a position matches whatever `later` tests there, and
+/// equal literals, heads and shapes match alike?
+fn subsumes(earlier: &StructPatternNode, later: &StructPatternNode) -> bool {
     use StructPatternNode as P;
     let all = |x: &[P], y: &[P]| {
-        x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_test(x, y))
+        x.len() == y.len() && x.iter().zip(y).all(|(x, y)| subsumes(x, y))
     };
-    crate::stack::ensure_sufficient(|| match (a, b) {
-        (P::Ignore | P::Bind(_), P::Ignore | P::Bind(_)) => true,
+    crate::stack::ensure_sufficient(|| match (earlier, later) {
+        (P::Ignore | P::Bind(_), _) => true,
+        (e, P::Or { alts }) => alts.iter().all(|l| subsumes(e, l)),
+        (P::Or { alts }, l) => alts.iter().any(|e| subsumes(e, l)),
         (P::Literal(x), P::Literal(y)) => x == y,
         (P::Slice { kind: k0, binds: b0, .. }, P::Slice { kind: k1, binds: b1, .. }) => {
             k0 == k1 && all(b0, b1)
@@ -503,16 +515,15 @@ fn same_test(a: &StructPatternNode, b: &StructPatternNode) -> bool {
                 && b0
                     .iter()
                     .zip(b1.iter())
-                    .all(|((n0, _, p0), (n1, _, p1))| n0 == n1 && same_test(p0, p1))
+                    .all(|((n0, _, p0), (n1, _, p1))| n0 == n1 && subsumes(p0, p1))
         }
         (
             P::Variant { tag: t0, binds: b0, .. },
             P::Variant { tag: t1, binds: b1, .. },
         ) => t0 == t1 && all(b0, b1),
         (P::Abstract { id: i0, bind: x0, .. }, P::Abstract { id: i1, bind: x1, .. }) => {
-            i0 == i1 && same_test(x0, x1)
+            i0 == i1 && subsumes(x0, x1)
         }
-        (P::Or { alts: a0 }, P::Or { alts: a1 }) => all(a0, a1),
         _ => false,
     })
 }
@@ -532,7 +543,7 @@ fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result
             let repeat =
                 arms[..i].iter().filter(|(p, _)| p.guard.is_none()).any(|(p, _)| {
                     type_test(p) == type_test(pat)
-                        && p.atoms().iter().any(|(e, _)| same_test(e, sp))
+                        && p.atoms().iter().any(|(e, _)| subsumes(e, sp))
                 });
             if repeat {
                 bailat!(
