@@ -412,7 +412,12 @@ fn(x: i64) -> i64}` makes `t.a.f` take `i64` too, and so does `b: seqq
 type a read of its binding has: a union of function types its signature
 holds over two of its variables (`x: F2<'a, 'b>`) is that union in the
 call's result, and a call through the result is refused, naming the
-members.
+members. A value read through a field, a tuple position or a reference
+is read as its binding is too: a union of function types it holds stays
+that union, the read making its members one no more than the binding
+does, so parameters nothing has decided stay two and a variable no
+argument decided (`F2<'a, 'b>` with `'b` nowhere else) stays open: the
+call through the read is refused. Write one variable in both.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
@@ -442,6 +447,10 @@ ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)
 no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
 ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)}; s.fld(1, "s", |q: i64| 0)
 no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| x}; let g = s.fld(1, "s", |q: i64| q + 1); g("s")
+ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; (s.fld, u, v) }; h(1, "s", |q: i64| q + 1)
+no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; s.fld(u) }; h(1, 2, |q: i64| q + 1)
+no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |x0: 'a, x1: F2<'a, 'b>| (x0, x1); let r = f(1, |q: i64| q + 1); r.1(1)
+ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |x0: 'a, x1: F2<'a, 'a>| (x0, x1); let r = f(1, |q: i64| q + 1); r.1(1)
 ```
 
 A sample is no binding: under a binding made generic before the write,

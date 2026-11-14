@@ -1129,6 +1129,23 @@ the definition gates:
   binding does (pins `lang::types::field_read_keeps_a_signature_union_of_functions_over_its_variables`
   and its neighbours,
   `typ::normalize::tests::a_union_of_alternatives_keeps_a_signature_union_of_renamings`).
+  One alternative joins nothing, however many times its node stands and
+  whatever `⊥` stands beside it (`setops::sole`): it meets nothing and is
+  its type as it stands, normalized with no pairing of cells. So a read
+  of one value (a field, a tuple position, an error's payload, a
+  dereference, a pattern's part, a select of one binding in every arm,
+  `any` over one argument) is a read of its binding: the result of that
+  `f` inside `|u, v, w| { let s = {fld: f(u, v, w)}; s.fld }` keeps both
+  members and `u` and `v` two variables, and a call through the read is
+  refused as a call of the binding is, naming the members. A read decides
+  no variable: `f(1, |q: i64| q + 1).1` over `|x0: 'a, x1: F2<'a, 'b>|
+  (x0, x1)`, whose `'b` no argument decides, is two functions, where
+  `F2<'a, 'a>` is one (pins
+  `lang::types::field_read_of_one_value_keeps_its_union_of_functions_over_two_variables`
+  and its neighbours,
+  `call_through_a_field_read_of_a_union_of_functions_over_two_variables_refused`,
+  `call_through_a_tuple_read_of_a_union_of_functions_no_argument_decided_refused`,
+  `typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings`).
   And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its

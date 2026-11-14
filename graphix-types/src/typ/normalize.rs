@@ -942,6 +942,36 @@ pub(super) mod tests {
         }
     }
 
+    /// One alternative joins nothing, however many times its node stands
+    /// and whatever `⊥` stands beside it: a union it holds, at its top or
+    /// under a constructor, keeps the members a renaming of two live
+    /// cells would make one, and the cells stay two.
+    #[test]
+    fn a_union_of_one_alternative_keeps_its_union_of_renamings() {
+        let env = Env::default();
+        let written = "([fn(q: 'c) -> i64, fn(q: 'd) -> i64], 'c, 'd)";
+        let t = crate::expr::parser::parse_type(written).unwrap();
+        t.alias_tvars(&mut AHashMap::default());
+        let Type::Tuple(fs) = &t else { unreachable!() };
+        let (Type::TVar(c), Type::TVar(d)) = (&fs[1], &fs[2]) else { unreachable!() };
+        let unions: [fn(&Env, &[&Type]) -> anyhow::Result<Type>; 4] = [
+            Type::union,
+            Type::union_exact,
+            Type::union_of_alternatives,
+            Type::union_exact_of_alternatives,
+        ];
+        for union in unions {
+            for ts in [&[&fs[0]][..], &[&fs[0], &fs[0]], &[&Type::Bottom, &fs[0]]] {
+                let read = union(&env, ts).unwrap();
+                assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
+            }
+            let read = union(&env, &[&t, &t]).unwrap();
+            let Type::Tuple(parts) = &read else { unreachable!() };
+            assert!(matches!(&parts[0], Type::Set(ms) if ms.len() == 2), "{read}");
+            assert!(c.stands_for() != d.stands_for(), "{read}");
+        }
+    }
+
     /// A node shared by both sides compares equal without walking it.
     #[test]
     fn ordering_does_not_walk_a_shared_node() {

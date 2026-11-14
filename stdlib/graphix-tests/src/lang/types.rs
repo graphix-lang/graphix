@@ -10448,6 +10448,149 @@ run!(
     FuseExpect::None
 );
 
+// One value joins nothing: a read of it through a field, a tuple
+// position, an error's payload, a reference, a variant's pattern, a
+// select of one binding in every arm or `any` over it alone returns its
+// type as it stands, as a read of its binding does. A union of function
+// types it holds over two undecided variables stays two members, and the
+// variables two.
+run!(
+    field_read_of_one_value_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let s = {fld: f(u, v, w)}; (s.fld, u, v) };
+  let r = h(1, "s", |q: i64| q + 1);
+  (r.1, r.2)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+run!(
+    tuple_read_of_one_value_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let t = (f(u, v, w), u, v); let g = t.0; (t.1, t.2) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+run!(
+    error_payload_read_of_one_value_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let e = error(f(u, v, w)); let g = e.0; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    deref_of_one_value_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let x = f(u, v, w); let r = &x; let g = *r; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    variant_pattern_over_one_value_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let s = `A(f(u, v, w)); let g = select s { `A(g) => g }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    select_of_one_binding_in_every_arm_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let x = f(u, v, w); let g = select c { true => x, false => x }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    any_over_one_value_keeps_its_union_of_functions_over_two_variables,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let g = any(f(u, v, w)); (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
+// So a call through such a read is refused as the call of its binding
+// is, and runs where one variable stands in both members.
+run!(
+    call_through_a_field_read_of_a_union_of_functions_over_two_variables_refused,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, w| { let s = {fld: f(u, v, w)}; s.fld(u) };
+  h(1, 2, |q: i64| q + 1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(q: 'a: unbound) -> i64 \
+         and fn(q: 'b: unbound) -> i64; write one variable in both, or one written type in both"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_a_field_read_of_a_union_of_functions_over_one_variable,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u: 'c, v: 'c, w: F2<'c, 'c>| { let s = {fld: f(u, v, w)}; s.fld(u) };
+  h(1, 2, |q: i64| q + 1)
+}"#,
+    prints("i64:2");
+    FuseExpect::None
+);
+
+// A read decides no variable either: a union one of whose members holds a
+// variable no argument decided is two functions through a field or a
+// tuple position, as it is through its binding.
+run!(
+    call_through_a_tuple_read_of_a_union_of_functions_no_argument_decided_refused,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x0: 'a, x1: F2<'a, 'b>| (x0, x1);
+  let r = f(1, |q: i64| q + 1);
+  r.1(1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(q: 'b: unbound) -> i64 \
+         and fn(q: 'a: i64) -> i64; write one variable in both, or one written type in both"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_a_tuple_read_of_a_union_of_functions_its_arguments_decided,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x0: 'a, x1: F2<'a, 'a>| (x0, x1);
+  let r = f(1, |q: i64| q + 1);
+  r.1(1)
+}"#,
+    prints("i64:2");
+    FuseExpect::None
+);
+
 // So an argument both members of such a union could take is refused
 // through a select of the function's copies as at a call of its binding,
 // where one variable in both members takes it.

@@ -1083,6 +1083,16 @@ impl Meets {
     }
 }
 
+/// The one alternative `ts` are, `⊥` aside: the same node, however many
+/// times it stands. It joins nothing, so a union it holds keeps its
+/// members as they stand.
+fn sole<'a>(ts: &[&'a Type]) -> Option<&'a Type> {
+    let mut held = ts.iter().copied().filter(|t| !matches!(t, Type::Bottom));
+    let one = held.next()?;
+    let node = one.node_key();
+    held.all(|t| node.is_some() && t.node_key() == node).then_some(one)
+}
+
 /// The two-member union of `a` and `b`.
 fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
@@ -1379,7 +1389,7 @@ impl Type {
         Self::union_with(env, Merge::Exact, ts)
     }
 
-    // CR claude for claude: [bug/low] A read of one value whose type is a typedef union
+    // XCR claude for claude: [bug/low] A read of one value whose type is a typedef union
     // of two function types over two undecided variables makes the two variables one:
     // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
     // F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; s.fld }; h(1, "s",
@@ -1396,6 +1406,30 @@ impl Type {
     // as it stands. base-r23 alike. Found reviewing runtime-bind-fn-union-01. probes:
     // ~/ptmp/cr29/scratch/r23/23b/rbf-rev/{e5,d4}.gx (refused), {e1,e3,e4,d3b}.gx (run)
     // (read-welds-data-union-01)
+    // 2026-11-14 claude: Both merged the variables, each enough alone: meet_alternatives
+    // took the one alternative's members apart and met them, and union_with's welding
+    // normalize paired them (the plain Type::union of one type too, which is what a
+    // dereference takes). One alternative now joins nothing (setops::sole: one node
+    // however many times it stands, ⊥ aside): it meets nothing and is its type as it
+    // stands under a plain normalize. So a read of one value through a field, a tuple
+    // position, an error's payload, a dereference, a variant's pattern, a select of one
+    // binding in every arm or any over it is a read of its binding: e5.gx runs, and
+    // d4.gx's call of h checks (its last line calls the union, refused as
+    // lang::types::field_read_result_of_a_signature_union_of_functions_is_no_one_function
+    // pins). The read decides nothing any more, so a call through it is refused as the
+    // call of its binding always was (a call takes one function type), where the read
+    // used to make the members one: genrev.py 23 500 (1500 programs) has 32 newly
+    // refused, all calls through a read of a union with a variable no argument decided
+    // (F2<'a, 'b>, 'b nowhere else), 31 of them refused alike on base-r24 with the read
+    // written as a pattern bind; 0 newly accepted; census of both repos 0 verdicts
+    // changed. Pins that fail without the fix (4 modes each):
+    // lang::types::{field_read_of,tuple_read_of,error_payload_read_of,deref_of,variant_pattern_over,any_over}_one_value_keeps_its_union_of_functions_over_two_variables,
+    // select_of_one_binding_in_every_arm_keeps_its_union_of_functions_over_two_variables,
+    // call_through_a_field_read_of_a_union_of_functions_over_two_variables_refused,
+    // call_through_a_tuple_read_of_a_union_of_functions_no_argument_decided_refused, and
+    // typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings.
+    // Left, as alternative-union-members-pair-01: the same pairing inside one of several
+    // alternatives. probes: ~/ptmp/cr29/scratch/r24/24d/rwd/ (README)
     /// The union of a select's alternatives, which a call through the
     /// select must accept alike: function members meet first, and so do
     /// those in the members' parts ([`Self::meet_alternatives`]).
@@ -1422,7 +1456,40 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [bug/low] A union that one of several alternatives already
+    // holds has its own members paired where the alternatives join: two function types
+    // that differ by a renaming of two undecided variables become one member and the
+    // variables one cell. `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f
+    // = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let r = f(u, v, w); let g =
+    // select c { true => r, false => null }; (u, v) }; h(1, "s", |q: i64| q + 1)` is
+    // refused, "type mismatch 'b: i64 does not contain string" at "s", naming no
+    // annotation (m1.gx), where `h` without the select runs (m0.gx; one alternative is
+    // its type as it stands, `sole`). Alike: `select c { true => f(u, v, w), false =>
+    // f(u, v, w) }`, two nodes of one type (m2.gx); a field or a tuple position read
+    // over two shapes that each hold the union (m3.gx, m4.gx); a slice pattern's
+    // element (m5.gx); two arms' captures of one part (m6.gx); a bare name over the
+    // whole value, `select r { k => k }` (m7.gx). Nothing wrong runs: the type left is
+    // narrower than the value's. Two mechanisms, each enough alone (the unit test
+    // typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings
+    // fails with either's `sole` test removed): meet_alternatives flattens every
+    // alternative's members into one list, where meet_open_fns and meet_parts pair two
+    // members of one alternative as they pair two alternatives; and the welding
+    // normalize below (normalize::Members::Welding) collapses renamings in every
+    // union the result reaches, at any depth, those an alternative held before the
+    // join too. What would fix it: a member meets, and collapses with, only a member
+    // of another alternative, and a member two alternatives hold cell for cell is one
+    // member that meets neither's neighbours: the meet carries each member's
+    // alternative through meet_members and meet_parts, and the union collapses across
+    // alternatives itself, its last normalize as the members stand. Not looked into:
+    // which callers of the plain Type::union need the welding merge of products with
+    // one differing part (normalize's Type::merge under Members::Welding), which that
+    // last step would lose; census them. base-r24 alike. Found fixing
+    // read-welds-data-union-01. probes: ~/ptmp/cr29/scratch/r24/24d/rwd/m{0..7}.gx
+    // (alternative-union-members-pair-01)
     fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
+        if let Some(one) = sole(ts) {
+            return Ok(one.normalize());
+        }
         let mut iter = ts.iter().copied();
         let Some(first) = iter.next() else {
             return Ok(Type::Primitive(BitFlags::empty()));
@@ -1442,12 +1509,16 @@ impl Type {
     /// that is a union standing for its members ([`union_members`]), each
     /// union rebuilt of its met members: a call through the union may be
     /// any member's; alternatives over nodes `meets` has met take that
-    /// meet ([`Meets`]). `None` when no member changes.
+    /// meet ([`Meets`]). One alternative ([`sole`]) meets nothing. `None`
+    /// when no member changes.
     fn meet_alternatives(
         env: &Env,
         meets: &mut Meets,
         ts: &[&Type],
     ) -> Result<Option<LPooled<Vec<Type>>>> {
+        if sole(ts).is_some() {
+            return Ok(None);
+        }
         #[cfg(test)]
         MEET_STEPS.with(|n| n.set(n.get() + 1));
         let Some((key, nodes)) = meets.key(ts) else {
@@ -1502,8 +1573,7 @@ impl Type {
     }
 
     /// The members of `ts` of one shape meet part by part
-    /// ([`Self::meet_alternatives`]); a part that is one node in every
-    /// member meets nothing. `None` when no member changes.
+    /// ([`Self::meet_alternatives`]). `None` when no member changes.
     fn meet_parts(
         env: &Env,
         meets: &mut Meets,
@@ -1538,10 +1608,6 @@ impl Type {
                 let met = {
                     let at: SmallVec<[&Type; 4]> =
                         rebuilt.iter().map(|m| part(m, p)).collect();
-                    let one = at[0].node_key();
-                    if one.is_some() && at.iter().all(|t| t.node_key() == one) {
-                        continue;
-                    }
                     Self::meet_alternatives(env, meets, &at)?
                 };
                 let Some(mut met) = met else { continue };
