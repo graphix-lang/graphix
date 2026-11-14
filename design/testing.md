@@ -35,9 +35,12 @@ How `run!` fixtures run, and what a landing owes.
   load makes it take. `Collect::Settled` takes every value until the
   settle, under the same guard. A test takes no deadline of its own for
   a value that must come; a wall window is only for what must not come.
-  `Collect::Quiet` (and `updates_until_quiet`) also ends a collection at
-  the first gap of its window after a value: that window is wall time,
-  for a program with a standing source that never settles.
+  `Collect::Quiet` also ends a collection at the first gap of its window
+  after a value, for a program with a standing source that never
+  settles; a program that ends by itself collects `Settled`. The window
+  counts only while the runtime is idle (it starts at a
+  `GXHandle::wait_idle` answer and reopens if a batch came while that
+  was asked again), so a long cycle is never a quiet one.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
   and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
   forked nothing (a finding where the fixture has fork points).
