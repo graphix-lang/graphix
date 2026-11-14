@@ -119,6 +119,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   part is `Any`, the struct is the other member's and nothing is
   refused: `` (`K, {a, ..}) `` over `` [(`K, {a: i64, b: i64}), (`J,
   Any)] ``.
+- An abstract's constructor pattern tests the tag and the payload's
+  shape, never the type of a part, so its arm decides nothing: over
+  `W<Any>` or `Any`, each name `W((a, b))` takes out is `Any`, and `a +
+  1` is refused. Select on the name (`select a { i64 as i => .. }`).
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
@@ -223,4 +227,8 @@ no "has no struct type to complete it" |x: (i64, Any)| select x { (_, {a, ..}) =
 ok |x: (i64, Any)| select x { (i64, {a: i64, b: i64}) as (_, {a, ..}) => a, _ => 0 }
 ok |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x { (`K, {a, ..}) => a, _ => 0 }
 no "has no struct type to complete it" |x: [(`K, {a: i64, b: i64}), (`J, Any)]| select x { (_, {a, ..}) => a, _ => 0 }
+no "cannot compute Any + i64" type W<'a> = Abstract<'a>; |x: W<Any>| select x { W((a, b)) => a + 1, _ => 0 }
+no "cannot compute Any + i64" type W<'a> = Abstract<'a>; |x: Any| select x { (W((a, b)), n) => a + 1, _ => 0 }
+ok type W<'a> = Abstract<'a>; |x: W<Any>| select x { W((a, b)) => select a { i64 as i => i + 1, _ => 0 }, _ => 0 }
+ok type W<'a> = Abstract<'a>; |x: W<(i64, i64)>| select x { W((a, b)) => a + 1 }
 ```

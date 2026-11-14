@@ -163,6 +163,10 @@ struct PatCx<'a> {
     /// The predicate was inferred from this pattern, so an or-pattern's
     /// Set holds one member per alternative, in order.
     inferred: bool,
+    /// The arm's predicate was inferred, here or above a payload: an
+    /// abstract pattern's payload is compiled against a representation
+    /// at parameters of its own.
+    own_payloads: bool,
 }
 
 fn leaf_bind<R: Rt>(
@@ -329,12 +333,12 @@ pub(super) struct Leaf {
     pub(super) fresh: bool,
 }
 
-/// An abstract pattern with its representation at each instance that
-/// reaches it, and whether `Any` does.
+/// An abstract pattern's own representation and payload pattern, with
+/// its representation at each instance that reaches it.
 struct PayloadReps<'a> {
-    pat: &'a StructPatternNode,
-    reps: SmallVec<[Type; 2]>,
-    over_any: bool,
+    rep: &'a Type,
+    bind: &'a StructPatternNode,
+    at: SmallVec<[Type; 2]>,
 }
 
 // CR claude for claude: [bug/low] A call through a name or-alternatives share over
@@ -1079,7 +1083,7 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for claude: [bug/high] A pattern that takes apart an abstract's payload
+    // XCR claude for claude: [bug/high] A pattern that takes apart an abstract's payload
     // where the payload is `Any` leaves its binds the arm's own cells, and nothing tests
     // them: an abstract's predicate tests its parameters (`W<Any>`), never the payload.
     // `type W<'a> = Abstract<'a>; let f = |x: W<Any>| select x { W((a, b)) => a + 100, _
@@ -1094,34 +1098,53 @@ impl StructPatternNode {
     // is `Any`, as `hold_untyped_elements` does for a slice its test cannot type; pin
     // both engines. probes: ~/ptmp/cr29/scratch/r23/23c/sap/r5.gx, q1.gx, q3.gx, t15.gx;
     // right: q2.gx, q4.gx (abstract-payload-any-01)
+    // 2026-11-13 claude: narrow_payloads binds each cell a payload's pattern holds at or
+    // inside a part that is Any at an instance to Any (Type::close_over_any after the
+    // narrowing, which replaces the over_any step), reaches an abstract pattern inside a
+    // value that is Any (payload_reps), and an abstract pattern under a payload compiles
+    // at parameters of its own (PatCx::own_payloads) and is narrowed against the
+    // instances that payload holds. Pins lang::select::abstract_payload_*: 12 of the 16
+    // new ones fail with pattern.rs as it was (taken_apart_at_an_any_parameter,
+    // _over_any, _under_a_tuple, any_part_taken_apart, any_name_in_a_guard,
+    // literal_beside_an_any_name, any_instance_beside_a_typed_one,
+    // under_a_payload_at_an_any_parameter, under_a_payload_any_beside_a_typed_instance,
+    // inside_an_any_value, name_inside_an_any_value, any_names_take_every_shape); the
+    // other four hold what the change must keep. probes ~/ptmp/cr29/scratch/r24/24a/apa/
+    // (README)
     /// Narrow each abstract payload's own representation, which its binds
     /// and captures are typed by, to the union of its representation at
     /// every instance `members`, the scrutinee's members the arm can match,
     /// hold at its position ([`Self::member_rep`]): an inferred abstract
     /// predicate takes its parameters from the scrutinee, never from its
-    /// payload.
+    /// payload. The arm's test reads an abstract's tag and its payload's
+    /// shape, never the type of a part, so nothing the arm decides of a
+    /// payload is tested: each cell a payload's pattern holds at or inside
+    /// a part that is `Any` at an instance is `Any`. An abstract pattern
+    /// under a payload stands over the instances that payload holds.
     fn narrow_payloads(&self, env: &Env, members: &[Type]) -> Result<()> {
-        let mut reps: SmallVec<[PayloadReps; 2]> = SmallVec::new();
-        for m in members {
-            self.payload_reps(env, m, &mut reps);
+        if !self.holds_abstract() {
+            return Ok(());
         }
-        for PayloadReps { pat, reps, over_any } in reps.iter() {
-            if let Self::Abstract { rep, .. } = pat {
-                let rs: SmallVec<[&Type; 2]> = reps.iter().collect();
-                let at = Type::union(env, &rs)?;
-                at.narrow_pattern(env, rep)?;
-                // narrowing against `Any` decides nothing: each part the
-                // payload leaves open is `Any`
-                if *over_any {
-                    rep.contains_ordered(env, &at)?;
-                }
+        crate::stack::ensure_sufficient(|| {
+            let mut reps: SmallVec<[PayloadReps; 2]> = SmallVec::new();
+            for m in members {
+                self.payload_reps(env, m, &mut reps);
             }
-        }
-        Ok(())
+            for PayloadReps { rep, bind, at } in reps.iter() {
+                let held =
+                    Type::union(env, &at.iter().collect::<SmallVec<[&Type; 2]>>())?;
+                held.narrow_pattern(env, rep)?;
+                held.close_over_any(env, rep)?;
+                bind.narrow_payloads(env, at)?
+            }
+            Ok(())
+        })
     }
 
-    /// Each abstract pattern in this one with its representation at every
-    /// instance `typ` holds at its position.
+    /// Each abstract pattern in this one that is under no other's payload,
+    /// with its representation at every instance `typ` holds at its
+    /// position: at `Any` for each parameter at or inside a part of `typ`
+    /// that is `Any`.
     fn payload_reps<'a>(
         &'a self,
         env: &Env,
@@ -1129,27 +1152,24 @@ impl StructPatternNode {
         out: &mut SmallVec<[PayloadReps<'a>; 2]>,
     ) {
         crate::stack::ensure_sufficient(|| {
-            if let Self::Abstract { .. } = self {
-                let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-                if union_members(env, typ, &mut members).is_err() {
-                    return;
-                }
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            if union_members(env, typ, &mut members).is_err() {
+                return;
+            }
+            if let Self::Abstract { rep, bind, .. } = self {
                 for m in members.iter() {
                     let Some(r) = self.member_rep(env, m) else { continue };
-                    let any = matches!(m, Type::Any);
-                    match out.iter_mut().find(|e| std::ptr::eq(e.pat, self)) {
-                        Some(e) => {
-                            e.reps.push(r);
-                            e.over_any |= any
-                        }
-                        None => out.push(PayloadReps {
-                            pat: self,
-                            reps: smallvec![r],
-                            over_any: any,
-                        }),
+                    match out.iter_mut().find(|e| std::ptr::eq(e.rep, rep)) {
+                        Some(e) => e.at.push(r),
+                        None => out.push(PayloadReps { rep, bind, at: smallvec![r] }),
                     }
                 }
                 return;
+            }
+            if members.iter().any(|m| matches!(m, Type::Any)) {
+                for c in self.children() {
+                    c.payload_reps(env, &Type::Any, out)
+                }
             }
             for (_, ts) in self.member_parts(env, typ, false) {
                 for (c, t) in self.children().into_iter().zip(ts) {
@@ -1610,6 +1630,24 @@ impl StructPatternNode {
         })
     }
 
+    // CR claude for claude: [bug/high] An abstract pattern in a slice with a rest, over
+    // a scrutinee not yet decided, binds its payload at the type its arm decides, and a
+    // call passes another instance of the type: `type W<'a> = Abstract<'a>; let f = |x|
+    // select x { [W(p), ..] => p + 100, _ => 0 }; f([W("s")])` checks (`f` is `fn(x:
+    // Array<['r, W<i64>]>)`, and `W<string>` goes to `'r`, the rest's cell), the
+    // node-walk logs an arith error and the fused run panics "kernel param `p`: runtime
+    // String("s") does not match the compiled Scalar(I64) slot": the element's test
+    // reads the abstract's tag, which every instance passes. `[W((a, b)), ..]`, a named
+    // rest (`[W(p), r..]`, `[r.., W(p)]`), a list (`[<W(p), r..>]`) and a `let x =
+    // never()` a later `x <- [W("s")]` writes alike; `[W(p)]` and `[W(p), q]` are right
+    // (`Array<W<i64>>`), and so is the parameter annotated (`|x: Array<W<string>>|`:
+    // "cannot compute string + i64"). The plain form is refused: `[(a, b), ..] => a +
+    // 100` says "this pattern tests for (i64, '_) among '_ ..". Not traced: why that
+    // refusal passes over an abstract pattern (StructurePattern::may_hold's walk?). A
+    // fix: refuse it the same way, or let the rest's cell take no instance of a type
+    // the slice's elements test by tag. Same on base-r24. probes:
+    // ~/ptmp/cr29/scratch/r24/24a/apa/g1.gx, g2.gx, g11.gx, g12.gx, g13.gx, g14.gx;
+    // right: g4.gx, g6.gx, g9.gx (abstract-slice-rest-instance-01)
     /// This slice's elements where what reaches it types none of them
     /// (`Any`, `Array<Any>`, a cell the arms decide) and its run-time test
     /// is `et`, its predicate's own element union, alone. A rest takes the
@@ -1809,7 +1847,7 @@ impl StructPatternNode {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Self> {
-        let cx = PatCx { scope, pos, ori: &ori, inferred: false };
+        let cx = PatCx { scope, pos, ori: &ori, inferred: false, own_payloads: false };
         Self::compile_with(ctx, cx, type_predicate, spec)
     }
 
@@ -2175,7 +2213,7 @@ impl StructPatternNode {
                     )
                 };
                 let (atyp, rep) = r.instantiate(id);
-                let own = cx.inferred.then(|| r.instantiate(id).1);
+                let own = cx.own_payloads.then(|| r.instantiate(id).1);
                 type_predicate.check_contains_ordered(&ctx.env, &atyp)?;
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
@@ -3211,7 +3249,8 @@ impl<R: Rt> PatternNode<R> {
                 return Err(rigid_refusal(&ctx.env, &ids, sp, tp, &tv, Holder::Arm));
             }
         }
-        let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
+        let cx =
+            PatCx { scope, pos, ori: &ori, inferred: !explicit, own_payloads: !explicit };
         let structure_predicate = StructPatternNode::compile_with(
             ctx,
             cx,

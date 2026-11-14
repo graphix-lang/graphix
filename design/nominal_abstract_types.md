@@ -73,7 +73,17 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    payload's representation is narrowed against the scrutinee
    member's (`StructPatternNode::narrow_payloads`), typing its binds.
    Over `[Box<bool>, Box<i64>]`, `Box(b)` matches both with
-   `b: [bool, i64]` and covers both.
+   `b: [bool, i64]` and covers both. That test reads the tag and the
+   payload's shape, never the type of a part, so nothing the arm decides
+   of a payload is tested: each cell the payload's pattern holds at or
+   inside a part that is `Any` at an instance is `Any`
+   (`Type::close_over_any`), beside a typed instance too. Over
+   `Box<Any>`, over `Any`, and inside a value that is `Any` (`(Box((a,
+   b)), n)` over `Any`), `Box((a, b))` binds two `Any`, and `a + 1` is
+   refused; a select on the name tests it. An abstract pattern under a
+   payload (`Box(Inner((a, b)))`) compiles at parameters of its own
+   too, and is narrowed against the instances that payload holds.
+   Pins: `lang::select::abstract_payload_*`.
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.

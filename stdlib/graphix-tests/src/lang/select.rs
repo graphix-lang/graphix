@@ -1803,6 +1803,223 @@ run!(
     FuseExpect::None
 );
 
+// An abstract pattern's test reads its tag and its payload's shape, never
+// the type of a part: a name its payload's pattern takes out of a part that
+// is `Any` at an instance is `Any`, whatever the arm does with it.
+run!(
+    abstract_payload_taken_apart_at_an_any_parameter_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: W<Any>| select x { W((a, b)) => a + 100, _ => 0 };
+    let v: Any = ("s", 2);
+    f(W(v))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_taken_apart_over_any_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: Any| select x { W((a, b)) => a + 100, _ => 0 };
+    let v: Any = ("s", 2);
+    f(W(v))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_taken_apart_under_a_tuple_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: (W<Any>, i64)| select x { (W((a, b)), n) => a + n, _ => 0 };
+    let v: Any = ("s", 2);
+    f((W(v), 1))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_any_part_taken_apart_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type P<'a> = Abstract<('a, i64)>;
+    let f = |x: P<Any>| select x { P(((a, b), n)) => a + n, _ => 0 };
+    let v: Any = ("s", 2);
+    f(P((v, 1)))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_any_name_in_a_guard_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: W<Any>| select x { W((a, b)) if a > 0 => 1, _ => 0 };
+    let v: Any = ("s", 2);
+    f(W(v))
+}"#,
+    refused("cannot compare Any with i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_literal_beside_an_any_name,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: W<Any>| select x { W((0, b)) => b + 100, _ => 0 };
+    let v: Any = (0, "s");
+    f(W(v))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_any_instance_beside_a_typed_one_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type P<'a, 'b> = Abstract<('a, 'b)>;
+    let f = |x: [P<Any, i64>, P<(i64, i64), string>]| select x { P(((a, b), n)) => a + 1, _ => 0 };
+    let v: Any = ("s", 2);
+    f(P((v, 1)))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_part_beside_an_any_part_is_every_instance,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type P<'a, 'b> = Abstract<('a, 'b)>;
+    let f = |x: [P<Any, i64>, P<(i64, i64), string>]| select x { P(((a, b), n)) => n + 1, _ => 0 };
+    f(P(((1, 2), "s")))
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_under_a_payload_at_an_any_parameter_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type V<'a> = Abstract<'a>;
+    let f = |x: W<V<Any>>| select x { W(V((a, b))) => a + 100, _ => 0 };
+    let v: Any = ("s", 2);
+    f(W(V(v)))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_under_a_payload_any_beside_a_typed_instance,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type V<'a> = Abstract<'a>;
+    let f = |x: [W<V<Any>>, W<V<(i64, i64)>>]| select x { W(V((a, b))) => a + 100, _ => 0 };
+    let v: Any = ("s", 2);
+    f(W(V(v)))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_inside_an_any_value_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: Any| select x { (W((a, b)), n) => a + 100, _ => 0 };
+    let v: Any = ("s", 2);
+    f((W(v), 1))
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_name_inside_an_any_value_is_any,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: Any| select x { [W(p), ..] => p + 100, _ => 0 };
+    let v: Any = ("s", 2);
+    f([W(v)])
+}"#,
+    refused("cannot compute Any + i64");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_under_a_payload_decides_its_parameter,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type V<'a> = Abstract<'a>;
+    let f = |x| select x { W(V((a, b))) => a + 100 };
+    f(W(V(("s", 2))))
+}"#,
+    refused("does not contain V<(string, i64)>");
+    FuseExpect::None
+);
+
+run!(
+    abstract_payload_any_names_take_every_shape,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type V<'a> = Abstract<'a>;
+    let f = |x: W<Any>| select x {
+      W((a, b)) => select a { i64 as i => "t [i + 100] [b]", _ => "t [a] [b]" },
+      W(`T(a)) => "v [a]",
+      W([a, ..]) => "s [a]",
+      W({k}) => "k [k]",
+      W(V((a, b))) => "n [a]",
+      W(i) => "o [i]"
+    };
+    let g = |x: Any| select x { (W((a, b)), n) => "g [a] [n]", _ => "o" };
+    let nested: Any = V(("q", 1));
+    let vs: Array<Any> = [("s", 2), (1, 2), `T("s"), [1, 2], {k: 1}, nested, 7];
+    (array::map(vs, |v| f(W(v))), array::map(vs, |v| g((W(v), 1))))
+}"#,
+    prints(
+        r#"[["t s 2", "t 101 2", "v s", "s 1", "k 1", "n q", "o 7"], ["g s 1", "g 1 1", "o", "o", "o", "o", "o"]]"#
+    )
+);
+
+run!(
+    abstract_payload_typed_parts_beside_any_keep_their_types,
+    r#"{
+    type P<'a, 'b> = Abstract<('a, 'b)>;
+    type V<'a> = Abstract<'a>;
+    let f = |x: P<Any, i64>| select x { P(((a, b), n)) => n + 100, P((_, n)) => n };
+    let g = |x: P<V<Any>, i64>| select x { P((V((a, b)), n)) => "[a] [n + 1]", _ => "o" };
+    let h = |x: [P<Any, i64>, P<(i64, i64), string>]| select x { P(((a, b), n)) => "[a] [n]", _ => "o" };
+    let v: Any = ("s", 2);
+    let u: Any = 5;
+    ([f(P((v, 1))), f(P((u, 1)))], [g(P((V(v), 1))), g(P((V(u), 1)))], [h(P((v, 1))), h(P(((1, 2), "s"))), h(P((u, 1)))])
+}"#,
+    prints(r#"[[i64:101, i64:1], ["s 2", "o"], ["s 1", "1 s", "o"]]"#)
+);
+
+run!(
+    abstract_payload_under_a_payload_takes_each_instance,
+    r#"{
+    type W<'a> = Abstract<'a>;
+    type P<'a, 'b> = Abstract<('a, 'b)>;
+    type V<'a> = Abstract<'a>;
+    let f = |x| select x { W(V((a, b))) => b };
+    let g = |x| select x { P((V((a, b)), n)) => (b, n) };
+    let h = |x: [W<V<(i64, i64)>>, W<V<(string, i64)>>]| select x {
+      W(v@ V((a, b))) => select v { V((c, d)) => "[c] [a] [b + d]" }
+    };
+    ((f(W(V((1, 2)))), f(W(V(("s", "t"))))), (g(P((V((1, 2)), "n"))), g(P((V(("s", "t")), 3)))), [h(W(V((1, 2)))), h(W(V(("s", 2))))])
+}"#,
+    prints(r#"[[i64:2, "t"], [[i64:2, "n"], ["t", i64:3]], ["1 1 4", "s s 4"]]"#)
+);
+
 // A name or-alternatives bind under an abstract pattern is typed by its
 // representation, and joins the union of a name another alternative binds
 // outside one.
