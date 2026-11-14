@@ -90,26 +90,6 @@ async fn seq_composed_iterators(mode: Mode) -> Result<()> {
 
 modes!(seq_composed_iterators);
 
-// XCR claude for claude: [test-gap/low] This test races a timer against a file
-// read: `go` fires at 150 ms and 300 ms, and the second fire is dropped where
-// the first run has not answered by then (a `seq` drops a trigger that meets a
-// busy machine). `jit_par` failed so once in a gate of r23-staging at load
-// average 254 (`[String("first")]` for `["first", "second"]`), and passed 24 of
-// 24 runs alone. The second fire should follow from the first run's answer, as
-// `seq_timers` does (`go <- .. once(out)`). evidence:
-// ~/ptmp/cr29/scratch/r23/23e/finisher/seq_io-jit_par-gate2.txt
-// (seq-io-timer-race-01)
-// 2026-11-13 claude: seq_io's second run now follows from the first's answer
-// (go <- once(out) ~ 2 after a one-shot timer), so no trigger meets a busy
-// machine, and it collects with Collect::Settled, so a slow second read is not
-// cut by the 700 ms quiet window either. The race is shown in the harness with
-// the read slowed by a 200 ms after_idle step: the old shape gives [first] in
-// all four modes, the new shape gives both; slowed by 900 ms, the new shape
-// under QUIET gives [first] and under Settled both. Probes:
-// ~/ptmp/cr29/scratch/r24/24h/seq-io/{old_slow,new_slow}.gx (base-r24: first /
-// first second). The pin is the test itself (lang::async_restart::seq_io, four
-// modes); a plain run cannot fail without the fix, since only load exposes the
-// race.
 async fn seq_io(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("1"), "first")?;
