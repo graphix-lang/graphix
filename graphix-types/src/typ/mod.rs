@@ -3938,7 +3938,7 @@ impl Type {
         ensure_sufficient(|| self.rewrite_trait_args_inner(env, scheme))
     }
 
-    // CR claude for claude: [perf/low] The check's refusal of a nest of
+    // XCR claude for claude: [perf/low] The check's refusal of a nest of
     // quantified function types costs time quadratic in its depth: each
     // signature's constraint_view walks the whole nest below it
     // (FnType::collect_tvars) before the walk recurses into it, and only then
@@ -3951,6 +3951,21 @@ impl Type {
     // refusal, which a pin may name. Only a refused program holds such a nest.
     // probe: ~/ptmp/cr29/scratch/r23/23f/rank2-open-nest/fnqo_640.gx
     // (rank2-refusal-walk-01)
+    // 2026-11-14 claude: rewrite_trait_args_inner refuses a function type with
+    // written quantifiers outside a scheme's top (QUANTIFIED_FN) before
+    // constraint_view, so a nest is refused in linear time: --no-cache --check
+    // at depth 900, base-r24 -> lane, through parameters 7.00 -> 0.87 G, bounds
+    // 4.34 -> 0.84 G, results 5.39 -> 0.83 G, under an interface val's top 6.98
+    // -> 0.87 G (empty program ~0.75 G). Every such type was refused before
+    // too; only the message moves: a hole or a trait as a type in its bound or
+    // parts now reads QUANTIFIED_FN (census 2967 files: 0 verdict, 0 message).
+    // A declared signature's top still reads its bounds first
+    // (lang::types::hole_in_a_fn_quantifier moved to a trait method,
+    // trait_under_a_fn_quantifier). Pins that fail without it:
+    // deep_nesting::a_nest_of_quantified_function_types_is_refused_in_linear_time
+    // (2 G budget),
+    // lang::quantified::quantified_{function_type_is_refused_before_its_bound,function_type_is_refused_before_a_bound_holding_a_trait,function_type_is_refused_before_its_parts,parameter_is_refused_before_its_bound}.
+    // Probes ~/ptmp/cr29/scratch/r24/24f/rrw/.
     fn rewrite_trait_args_inner(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
@@ -3961,6 +3976,9 @@ impl Type {
                 tr.name
             ),
             Type::Fn(ft) => {
+                if !scheme && !ft.quantifiers.is_empty() {
+                    bail!("{QUANTIFIED_FN}")
+                }
                 for (_, c) in ft.constraint_view().iter() {
                     c.check_bound(env)?;
                 }

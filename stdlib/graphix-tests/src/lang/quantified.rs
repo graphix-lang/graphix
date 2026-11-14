@@ -65,6 +65,14 @@ refused_positions! {
         "{ let v: [i64, string] = 1; select v { Array<fn<'a: Any>(x: 'a) -> 'a> as a => 0, _ => 1 } }",
     quantified_catch_annotation_is_refused =>
         "{ let r = never(); catch(e: Error<ErrChain<`F(fn<'a: Any>(x: 'a) -> 'a)>>) r <- e; 0 }",
+    quantified_function_type_is_refused_before_its_bound =>
+        "{ let g: fn<'b: Array<'_>>(x: 'b) -> i64 = |x| 0; g([1]) }",
+    quantified_function_type_is_refused_before_a_bound_holding_a_trait =>
+        "{ let g: fn<'b: Array<Display>>(x: 'b) -> i64 = |x| 0; g([1]) }",
+    quantified_function_type_is_refused_before_its_parts =>
+        "{ let g: fn<'b: Any>(x: Array<Display>) -> 'b = never(); 0 }",
+    quantified_parameter_is_refused_before_its_bound =>
+        "{ let h = |f: fn(g: fn<'b: Array<'_>>(x: 'b) -> i64) -> i64| 0; 0 }",
 }
 
 // The kept forms: a definition declares the variables its parameters use,

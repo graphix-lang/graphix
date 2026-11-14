@@ -1853,6 +1853,45 @@ fn a_refusal_against_a_dag_of_named_unions_is_linear() {
     }
 }
 
+/// A nest of function types with variables of their own, through their
+/// parameters, their bounds or their results, in a `let`'s annotation or
+/// below an interface `val`'s top, is refused in time linear in its depth:
+/// each is refused before its bounds are read, which walks the nest below
+/// it.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_nest_of_quantified_function_types_is_refused_in_linear_time() {
+    const DEPTH: usize = 800;
+    let nest = |leaf: &str, wrap: &dyn Fn(&str) -> String| {
+        (1..DEPTH).fold(leaf.to_string(), |s, _| wrap(&s))
+    };
+    let through_parameters = format!(
+        "fn<'z: Any>(x: {}) -> 'z",
+        nest("fn<'a: Any>(x: 'z) -> 'a", &|s| format!(
+            "fn<'a: Any>(x: {s}, y: 'z) -> 'a"
+        ))
+    );
+    let leaf = "fn<'a: Any>(x: 'a) -> 'a";
+    let through_bounds = nest(leaf, &|s| format!("fn<'a: {s}>(x: 'a) -> 'a"));
+    let through_results = nest(leaf, &|s| format!("fn<'a: Any>(x: 'a) -> {s}"));
+    let refused = |files: &[(&str, &str)]| {
+        let out = exits_within(&["--check", "--no-cache"], files, 2 * BILLION);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && stderr.contains("type variables of its own"),
+            "{stderr}"
+        );
+    };
+    for t in [&through_parameters, &through_bounds, &through_results] {
+        refused(&[("program.gx", &format!("let y: {t} = never()\n"))]);
+    }
+    refused(&[
+        ("main.gx", "mod m;\nm::y\n"),
+        ("m.gxi", &format!("val y: {through_parameters};\n")),
+        ("m.gx", "let y = never()\n"),
+    ]);
+}
+
 /// A call whose parameter or result is a DAG of parametrized named unions
 /// (`L<i><'t> = [L<i-1><'t>, M<i-1><'t>]`, `M<i>` the same), and a declared
 /// variable refused against one, check and elaborate in time polynomial in

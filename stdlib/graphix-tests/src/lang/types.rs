@@ -4692,12 +4692,26 @@ run!(trait_under_a_bound, TRAIT_UNDER_A_BOUND, refused("trait Show used as a typ
 
 const HOLE_IN_A_FN_QUANTIFIER: &str = r#"
 {
-    let g: fn<'b: Array<'_>>(x: 'b) -> i64 = |x| 0;
-    g([1])
+    trait T { val g: fn<'b: Array<'_>>(self, x: 'b) -> i64 };
+    0
 }
 "#;
 
 run!(hole_in_a_fn_quantifier, HOLE_IN_A_FN_QUANTIFIER, refused("'_ is the hole"); FuseExpect::None);
+
+const TRAIT_UNDER_A_FN_QUANTIFIER: &str = r#"
+{
+    trait T { val g: fn<'b: Array<Display>>(self, x: 'b) -> i64 };
+    0
+}
+"#;
+
+run!(
+    trait_under_a_fn_quantifier,
+    TRAIT_UNDER_A_FN_QUANTIFIER,
+    refused("trait Display used as a type");
+    FuseExpect::None
+);
 
 /// A declared variable may be anything, so `_` cannot hold it.
 const BOTTOM_REFUSES_A_DECLARED_VARIABLE: &str = r#"
