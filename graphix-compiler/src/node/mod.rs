@@ -285,9 +285,11 @@ macro_rules! bailat {
     };
 }
 
-/// Read `$typ` through the first of the patterns that matches. A union no
-/// pattern reads is refused with the error `$union(env, union)` (optional,
-/// after `;`) gives for it, or else as "expected `$name` not" the union.
+/// Read `$typ` through the first of the patterns that matches. A union with
+/// an open member, whose other members the patterns read, waits for its
+/// type ([`crate::node::waits_for_member`]). Another union no pattern reads is
+/// refused with the error `$union(env, union)` (optional, after `;`) gives
+/// for it, or else as "expected `$name` not" the union.
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
@@ -298,19 +300,7 @@ macro_rules! deref_typ {
         )
     };
     ($name:literal, $ctx:expr, $typ:expr; $union:expr; $($pat:pat => $body:expr),+) => {{
-        // an unbound cell is read through its one bound when that is, or a
-        // typedef names, a structure or an abstract type: every type it
-        // admits has it
-        let mut bound = match &$typ {
-            $crate::typ::Type::TVar(tv) => {
-                let mut c = tv.cell_constraints();
-                match c.len() {
-                    1 => c.pop(),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
+        let mut bound = $crate::node::one_bound(&$typ);
         $typ.with_deref(|typ| {
             let mut typ = typ.cloned();
             loop {
@@ -325,7 +315,15 @@ macro_rules! deref_typ {
                     // never re-collapses on its own; normalize may collapse it
                     Some(t @ $crate::typ::Type::Set(_)) => {
                         let nt = t.normalize();
-                        if matches!(nt, $crate::typ::Type::Set(_)) {
+                        if let $crate::typ::Type::Set(ms) = &nt {
+                            #[allow(unused_variables, unreachable_patterns)]
+                            let reads = |m: &$crate::typ::Type| match &Some(m.clone()) {
+                                $($pat => true),+,
+                                _ => false,
+                            };
+                            if $crate::node::waits_for_member(&$ctx.env, ms, reads) {
+                                return Err($crate::node::unknown_read($name));
+                            }
                             $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                                 match ($union)(&$ctx.env, &nt) {
                                     Some(e) => Err(e),
@@ -338,30 +336,87 @@ macro_rules! deref_typ {
                     Some(t) => $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
-                    None => {
-                        let mut b = bound.take();
-                        while let Some(rt @ $crate::typ::Type::Ref(_)) = &b
-                            && !rt.is_trait_ref(&$ctx.env)
-                        {
-                            b = Some(rt.lookup_ref(&$ctx.env)?);
-                        }
-                        match b {
-                            Some(
-                                b @ ($crate::typ::Type::Struct(_)
-                                | $crate::typ::Type::Tuple(_)
-                                | $crate::typ::Type::Fn(_)
-                                | $crate::typ::Type::Abstract { .. }),
-                            ) => typ = Some(b),
-                            _ => anyhow::bail!(
-                                "reading a {} needs its type known here: annotate the binding",
-                                $name
-                            ),
-                        }
-                    }
+                    None => match $crate::node::read_bound(&$ctx.env, bound.take())? {
+                        Some(b) => typ = Some(b),
+                        None => return Err($crate::node::unknown_read($name)),
+                    },
                 }
             }
         })
     }};
+}
+
+/// The one bound of the cell `t` is, when it has exactly one.
+#[doc(hidden)]
+pub fn one_bound(t: &Type) -> Option<Type> {
+    let Type::TVar(tv) = t else { return None };
+    let mut c = tv.cell_constraints();
+    match c.len() {
+        1 => c.pop(),
+        _ => None,
+    }
+}
+
+/// What a read takes an open cell's one `bound` as: the structure or
+/// abstract type it is or a typedef names, which every type the cell
+/// admits has.
+#[doc(hidden)]
+pub fn read_bound(env: &env::Env, mut bound: Option<Type>) -> Result<Option<Type>> {
+    while let Some(rt @ Type::Ref(_)) = &bound
+        && !rt.is_trait_ref(env)
+    {
+        bound = Some(rt.lookup_ref(env)?);
+    }
+    Ok(bound.filter(|b| {
+        matches!(
+            b,
+            Type::Struct(_) | Type::Tuple(_) | Type::Fn(_) | Type::Abstract { .. }
+        )
+    }))
+}
+
+/// Whether a read through the union `ms` waits for a member's type: one
+/// is an open cell no bound reads, and the read `reads` each other one,
+/// through its typedefs and its bound.
+#[doc(hidden)]
+pub fn waits_for_member(
+    env: &env::Env,
+    ms: &[Type],
+    reads: impl Fn(&Type) -> bool,
+) -> bool {
+    let mut open = false;
+    for m in ms {
+        let mut t = match m.deref_cloned() {
+            Some(t) => t,
+            None => match read_bound(env, one_bound(m)) {
+                Ok(Some(b)) => b,
+                Ok(None) => {
+                    open = true;
+                    continue;
+                }
+                Err(_) => return false,
+            },
+        };
+        while let Type::Ref(_) = &t
+            && !t.is_trait_ref(env)
+        {
+            match t.lookup_ref(env).ok().and_then(|t| t.deref_cloned()) {
+                Some(next) => t = next,
+                None => return false,
+            }
+        }
+        if !reads(&t) {
+            return false;
+        }
+    }
+    open
+}
+
+/// The refusal of a read of a `name` (a fn, a struct, a tuple) through a
+/// type not yet known.
+#[doc(hidden)]
+pub fn unknown_read(name: &str) -> anyhow::Error {
+    anyhow!("reading a {name} needs its type known here: annotate the binding")
 }
 
 pub(crate) use crate::expr::NOP;

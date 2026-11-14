@@ -86,7 +86,13 @@ select x {
   `or_name_is_its_met_function`, `or_name_judges_every_default` and its
   `_under_a_constructor`, `_in_a_slice`, `_in_a_list`, `_of_one_member`
   and `_a_member_joined` forms, `or_name_defaults_under_one_written_type`,
-  `or_name_holds_the_functions_that_do_not_meet`).
+  `or_name_holds_the_functions_that_do_not_meet`). Over a scrutinee not
+  yet decided the name is a union of open cells, and a call or a field
+  read through it needs its type known, as a read through one open cell
+  does: a union with an open member whose other members the read takes
+  waits for that member (`node::waits_for_member`, pins
+  `a_call_through_a_name_alternatives_share_over_open_parts_needs_its_type`
+  and its annotated twin).
 - **A shadowed alternative is a dead-arm error** (the house select
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
   `[x, r..] | [a, b, c]` are errors. At compile a duplicate, or any

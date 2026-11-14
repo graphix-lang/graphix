@@ -3,7 +3,9 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval_modes, is, next_update_raw, prints, refused},
+    testing::{
+        FuseExpect, eval_modes, is, next_update_raw, prints, refused, refused_renumbered,
+    },
 };
 use netidx::publisher::Value;
 
@@ -12328,6 +12330,96 @@ run!(
   select f { null as _ => 0, g => g(1) }
 }"#,
     prints("i64:1");
+    FuseExpect::None
+);
+
+// A read through a union with an open member waits for that member's type,
+// as a read through the open cell alone does, wherever the union is made:
+// a name or-alternatives share, a select of two values.
+run!(
+    a_call_through_a_name_alternatives_share_over_open_parts_needs_its_type,
+    r#"{
+  let h = |u| select u { `A(r, n) | `B(r, n) => r(2) };
+  h(`A(|x| x, 1))
+}"#,
+    refused("reading a fn needs its type known here: annotate the binding");
+    FuseExpect::None
+);
+
+run!(
+    a_call_through_a_name_alternatives_share_over_written_parts,
+    r#"{
+  let h = |u: [`A(fn(x: i64) -> i64, i64), `B(fn(x: i64) -> i64, i64)]| select u {
+    `A(r, n) | `B(r, n) => r(2)
+  };
+  h(`A(|x| x + 1, 1))
+}"#,
+    prints("i64:3");
+    FuseExpect::None
+);
+
+run!(
+    a_call_through_a_function_or_an_open_cell_needs_its_type,
+    r#"{
+  let h = |g, b: bool| { let f = select b { true => |x: i64| x + 1, false => g }; f(2) };
+  h(|x| x, true)
+}"#,
+    refused("reading a fn needs its type known here: annotate the binding");
+    FuseExpect::None
+);
+
+run!(
+    a_call_through_a_function_or_a_written_function,
+    r#"{
+  let h = |g: fn(x: i64) -> i64, b: bool| {
+    let f = select b { true => |x: i64| x + 1, false => g };
+    f(2)
+  };
+  h(|x| x, true)
+}"#,
+    prints("i64:3");
+    FuseExpect::None
+);
+
+run!(
+    a_field_read_through_a_name_alternatives_share_over_open_parts_needs_its_type,
+    r#"{
+  let h = |u| select u { `A(r, n) | `B(r, n) => r.x };
+  h(`A({x: 1}, 1))
+}"#,
+    refused("reading a struct needs its type known here: annotate the binding");
+    FuseExpect::None
+);
+
+run!(
+    a_tuple_read_through_a_select_of_two_open_cells_needs_its_type,
+    r#"{
+  let h = |a, b, c: bool| (select c { true => a, false => b }).0;
+  h((1, 2), (3, 4), true)
+}"#,
+    refused("reading a tuple needs its type known here: annotate the binding");
+    FuseExpect::None
+);
+
+run!(
+    a_tuple_read_through_a_select_of_two_written_tuples,
+    r#"{
+  let h = |a: (i64, i64), b: (i64, i64), c: bool| (select c { true => a, false => b }).0;
+  h((1, 2), (3, 4), true)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+// A member the read refuses decides the refusal, whatever the open one
+// would take.
+run!(
+    a_call_through_a_number_or_an_open_cell_names_the_union,
+    r#"{
+  let h = |g, b: bool| { let f = select b { true => 1, false => g }; f(2) };
+  h(|x| x, true)
+}"#,
+    refused_renumbered("expected fn not [i64, '_0: unbound]");
     FuseExpect::None
 );
 

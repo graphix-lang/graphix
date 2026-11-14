@@ -965,6 +965,17 @@ pub(crate) fn struct_field_types<R: Rt>(
     )
 }
 
+// CR claude for claude: [bug/low] A field read through a union of declared variables
+// each bounded by a struct is refused naming no annotation: `let f = 'a: {x: i64}, 'b:
+// {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x; f(true, {x:
+// 1}, {x: 2})` says "expected struct not ['a: unbound within { x: i64 }, 'b: unbound
+// within { x: i64 }]", and so does one such variable beside a written struct (`b: {x:
+// i64}`), where a read through `a` alone reads through its bound and `let s: {x: i64}
+// = select ..; s.x` runs. union_of expands each member through its aliases but not
+// through an open cell's one bound, as deref_typ's read of one cell does
+// (node::read_bound). base-r24 alike. Found fixing or-name-open-parts-call-01. probes:
+// ~/ptmp/cr29/scratch/r24/24g/orname/{q3,q5}.gx (refused), q3b.gx (runs)
+// (union-read-through-bounds-01)
 /// The members of `t`, a union once expanded, each expanded and taken
 /// apart by `part`, when every one of them is that.
 fn union_of<R: Rt, T>(
