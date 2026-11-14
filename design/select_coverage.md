@@ -141,16 +141,22 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   the next arm (`Type::diff`) loses a tuple, struct or variant only
   whole, where what an arm covers holds every position of it by shape
   (`setops::held_by_shape`: `Any` or the same type there, two open
-  cells the same only where they are one, through parts of one shape at
-  any depth, its own union there member by member and its own name read
-  through, to the expansion a bind's cell holds too), so `` `A((a, _)) ``
-  takes all of `` `A(P) `` with `type P = (i64, i64)`, and a written
-  `` `A(('b, Any)) `` takes nothing of `` `A(('a, i64)) ``. What reaches
-  the next arm (`Type::diff`) and `could_match` unfold a pair of
-  named types' definitions (arguments ignored) once on a path, a pair
-  with a side that is no named type uncounted; met again, diff
-  subtracts nothing and could_match answers an overlap
-  (`setops::UNFOLDINGS`), as they do past `setops::WALK_PAIRS` pairs
+  cells the same only where they are one, primitives its flags hold,
+  through parts of one shape at any depth, its own union there member by
+  member and its own name read through, to the expansion a bind's cell
+  holds too; a union the arm writes there holds what one of its members
+  holds, a primitive flag by flag, and a name it writes is read through
+  against the walk's pair budget, never again on a path once the other
+  side has read a name since, so two recursive names hold nothing of
+  each other), so `` `A((a, _)) `` takes all of `` `A(P) `` with
+  `type P = (i64, i64)`, `([i64, string], i64)` and `(Number, i64)`
+  take all of `(i64, i64)`, and a written `` `A(('b, Any)) `` takes
+  nothing of `` `A(('a, i64)) ``. What reaches the next arm
+  (`Type::diff`) and `could_match` unfold a pair of named types'
+  definitions (arguments ignored) once on a path, a pair with a side
+  that is no named type uncounted; met again, diff subtracts nothing
+  and could_match answers an overlap (`setops::UNFOLDINGS`), as they do
+  past `setops::WALK_PAIRS` pairs
   (either side named) in one walk, and an Error keeps its payload whole
   where the payload's difference nests `setops::ERRORS_OVER_CUT` Errors
   over a pair met again: a wider residual, so fewer dead arms

@@ -1886,12 +1886,27 @@ run!(
     r#"{
     let f = |a| select a { `A(x) | `B(x) => x + 1 };
     let g = |a| select a { (x, 1) | (1, x) => x + 1, _ => 0 };
+    let h = |a: [(i64, `L), (`R, string)]| select a {
+      (x, `L) | (`R, x) => select x { i64 as i => "[i]", string as s => s }
+    };
+    ([f(`A(1)), f(`B(2)), g((7, 1)), g((1, 9)), g((3, 3))], [h((1, `L)), h((`R, "b"))])
+}"#,
+    prints(r#"[[i64:2, i64:3, i64:8, i64:10, i64:0], ["1", "b"]]"#)
+);
+
+// A name's alternative over a union takes every member the name holds at
+// its position: an alternative after it that the members reach no more is
+// dead.
+run!(
+    or_name_alternative_over_a_union_shadows_the_next,
+    r#"{
     let h = |a: [(i64, string), (string, i64)]| select a {
       (x, _) | (_, x) => select x { i64 as i => "[i]", string as s => s }
     };
-    ([f(`A(1)), f(`B(2)), g((7, 1)), g((1, 9)), g((3, 3))], [h((1, "a")), h(("b", 2))])
+    [h((1, "a")), h(("b", 2))]
 }"#,
-    prints(r#"[[i64:2, i64:3, i64:8, i64:10, i64:0], ["1", "b"]]"#)
+    refused("unreachable or-pattern alternative: the earlier arms and alternatives already cover everything");
+    FuseExpect::None
 );
 
 // Under a written union a capture, a rest and an element bind take
@@ -6134,6 +6149,45 @@ run!(
     variant_payload_test_of_its_own_variable_covers_its_member,
     "{ let f = |x: [`A(('a, i64)), `B]| select x { `A(('a, Any)) as `A((p, _)) => 1, v => select v { `B => 100 } }; [f(`A((\"s\", 1))), f(`B)] }",
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 100])
+);
+
+// A position an arm's test writes as a union or a name holds a member whose
+// position one of its members holds: that member goes whole with the arm,
+// and an arm testing it after is dead.
+run!(product_position_union_holds_a_narrower_member, "{ type A = [([i64, string], i64), null]; type B = [(i64, i64), string]; let x: [A, B] = (1, 2); select x { ([i64, string], i64) as t => 1, (i64, i64) as t => 2, null as _ => 3, string as s => 4 } }",
+    refused("pattern (i64, i64) will never match [null, string]"); FuseExpect::None);
+
+run!(struct_field_union_holds_a_narrower_member, "{ type A = [{a: [i64, string], b: i64}, null]; type B = [{a: i64, b: i64}, string]; let x: [A, B] = {a: 1, b: 2}; select x { {a: [i64, string], b: i64} as t => 1, {a: i64, b: i64} as t => 2, null as _ => 3, string as s => 4 } }",
+    refused("pattern { a: i64, b: i64 } will never match [null, string]"); FuseExpect::None);
+
+run!(variant_payload_union_holds_a_narrower_member, "{ type A = [`A(i64, [`X, `Y]), null]; type B = [`A(i64, `X), string]; let x: [A, B] = `A(1, `X); select x { `A(i64, [`X, `Y]) as t => 1, `A(i64, `X) as t => 2, null as _ => 3, string as s => 4 } }",
+    refused("pattern `A(i64, `X) will never match [null, string]"); FuseExpect::None);
+
+run!(product_position_name_holds_a_narrower_member, "{ type U = [i64, string]; type A = [(U, i64), null]; type B = [(i64, i64), string]; let x: [A, B] = (1, 2); select x { (U, i64) as t => 1, (i64, i64) as t => 2, null as _ => 3, string as s => 4 } }",
+    refused("pattern (i64, i64) will never match [null, string]"); FuseExpect::None);
+
+run!(product_position_number_holds_a_narrower_member, "{ type A = [(Number, i64), null]; type B = [(i64, i64), string]; let x: [A, B] = (1, 2); select x { (Number, i64) as t => 1, (i64, i64) as t => 2, null as _ => 3, string as s => 4 } }",
+    refused("pattern (i64, i64) will never match [null, string]"); FuseExpect::None);
+
+run!(product_position_recursive_name_holds_a_narrower_member, "{ type L = [`Cons(i64, L), `Nil]; type A = [(L, i64), null]; type B = [(`Cons(i64, `Cons(i64, `Nil)), i64), string]; let x: [A, B] = (`Nil, 3); select x { (L, i64) as t => 1, (`Cons(i64, `Cons(i64, `Nil)), i64) as t => 2, null as _ => 3, string as s => 4 } }",
+    refused("pattern (`Cons(i64, `Cons(i64, `Nil)), i64) will never match [null, string]"); FuseExpect::None);
+
+run!(
+    product_position_union_takes_a_narrower_members_values,
+    "{ type A = [([i64, string], i64), null]; type B = [(i64, i64), string]; let f = |x: [A, B]| select x { ([i64, string], i64) as t => 1, null as _ => 3, string as s => 4 }; [f((1, 2)), f((\"a\", 2)), f(null), f(\"s\")] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 3, 4])
+);
+
+run!(
+    product_position_union_leaves_a_member_it_does_not_hold,
+    "{ type A = [([i64, string], i64), null]; type B = [(f64, i64), string]; let f = |x: [A, B]| select x { ([i64, string], i64) as t => 1, (f64, i64) as t => 2, null as _ => 3, string as s => 4 }; [f((1, 2)), f((1.5, 2)), f(null), f(\"s\")] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 4])
+);
+
+run!(
+    product_position_union_with_a_declared_variable_leaves_the_member,
+    "{ type A<'a> = [(['a, string], i64), null]; type B = [(i64, i64), string]; let f = |x: [A<'a>, B], y: 'a| select x { (['a, string], i64) as t => 1, (i64, i64) as t => 2, null as _ => 3, string as s => 4 }; [f((1, 2), 1.5), f((1, 2), 7), f((\"s\", 2), 1.5), f(null, 1)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 1, 3])
 );
 
 // Under a written test a slice element's literal rules out no member for a

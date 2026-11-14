@@ -1630,7 +1630,7 @@ impl Type {
                 }
                 Ok(t)
             }
-            // CR claude for claude: [bug/low] A tuple, struct or variant is subtracted
+            // XCR claude for claude: [bug/low] A tuple, struct or variant is subtracted
             // only by the same type, so one the subtrahend holds stays in the
             // difference and a select arm that can match nothing is not refused:
             // `type A = [([i64, string], i64), null]; type B = [(i64, i64), string];
@@ -1657,10 +1657,27 @@ impl Type {
             // inside recursive unions of two families multiply the paths, all cut at
             // an ancestor so nothing is kept. A union on the subtrahend's side wants a
             // walk that stops at the first member not held, not a residual.
+            // 2026-11-13 claude: setops::held_by_shape (now the Held walk, taking the diff's
+            // DiffHist) reads the subtrahend's side: a union there holds a position one of its
+            // members holds (a primitive flag by flag), a primitive by its flags, and a name
+            // there is read through against the walk's pair budget (WALK_PAIRS, counted in
+            // DIFF_PAIRS), never again on a path once the minuend has read a name since, so two
+            // recursive names stop at their first turn. u5.gx is refused as u6.gx is. Pins that
+            // fail with the change undone:
+            // lang::select::{product_position_union,struct_field_union,variant_payload_union,product_position_name,product_position_number,product_position_recursive_name}_holds_a_narrower_member,
+            // or_name_alternative_over_a_union_shadows_the_next,
+            // lang::select_undecided::annotated_payload_members_leave_no_other_arm (32 mode
+            // runs; the name/Number/recursive pins also with read_through alone undone),
+            // typ::setops::tests::diff_takes_a_product_a_union_or_name_holds_at_a_position,
+            // held_reads_a_subtrahends_name_until_both_sides_recur (1000 pairs without the
+            // recursion guard). Two fixtures had truly dead alternatives/arms and are rewritten
+            // (or_names_over_unions_keep_working, the annotated_payload pair). Census 0/0 of
+            // 2967. Distributive cases (a minuend position held only by two subtrahend members
+            // together) stay conservative.
             (Type::Tuple(_), Type::Tuple(_))
             | (Type::Struct(_), Type::Struct(_))
             | (Type::Variant(..), Type::Variant(..)) => {
-                if held_by_shape(env, self, t) {
+                if held_by_shape(env, hist, self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     Ok(self.clone())
@@ -2026,59 +2043,128 @@ fn identical_normal(t0: &Type, t1: &Type) -> bool {
     union_identical(&t0.resolve_tvars().normalize(), &t1.resolve_tvars().normalize())
 }
 
-/// Whether every value of `t0` is one of `t1` by their shapes alone: `t1`
-/// is `Any` or `t0` itself, read through bound cells, or the two are
-/// tuples, structs or variants of one shape whose parts are held so. A
-/// union `t0` is held where each of its members is, and a name `t0` stands
-/// for is read through; `t1`'s names are not, so the walk ends within `t1`.
-fn held_by_shape(env: &Env, t0: &Type, t1: &Type) -> bool {
-    if is_any(t1) || union_identical(t0, t1) {
-        return true;
-    }
-    let product =
-        |t: &Type| matches!(t, Type::Tuple(_) | Type::Struct(_) | Type::Variant(..));
-    ensure_sufficient(|| match (t0.deref_cloned(), t1.deref_cloned()) {
-        (Some(t0 @ Type::Ref(_)), Some(t1)) => {
-            (!product(&t1) && identical_normal(&t0, &t1))
-                || matches!(
-                    t0.lookup_ref_with(env, false),
-                    Ok(Some(t)) if held_by_shape(env, &t, &t1)
-                )
+/// Whether every value of `t0` is one of `t1` by their shapes alone
+/// ([`Held::of`]), against the pair budget of `hist`'s walk.
+fn held_by_shape(env: &Env, hist: &mut DiffHist, t0: &Type, t1: &Type) -> bool {
+    Held { env, hist, read: SmallVec::new(), minuend_reads: 0 }.of(t0, t1)
+}
+
+/// The walk of [`held_by_shape`].
+struct Held<'a> {
+    env: &'a Env,
+    hist: &'a mut DiffHist,
+    /// The definition of each name of `t1` the path is reading, with the
+    /// count of `t0`'s names the path was reading when it began.
+    read: SmallVec<[(usize, usize); 4]>,
+    /// How many names of `t0` the path is reading.
+    minuend_reads: usize,
+}
+
+impl Held<'_> {
+    /// Whether every value of `t0` is one of `t1` by their shapes alone:
+    /// `t1` is `Any` or `t0` itself, read through bound cells, primitives
+    /// `t1`'s flags hold, or the two are tuples, structs or variants of one
+    /// shape whose parts are held so. A union `t0` is held where each of its
+    /// members is, and another `t0` by a union `t1` where one of its members
+    /// holds it, a primitive flag by flag. Names are read through, one of
+    /// `t1` against the pair budget, past which nothing more is held, and
+    /// never again on a path once `t0` has read a name since it began: the
+    /// walk stops where both sides recur.
+    fn of(&mut self, t0: &Type, t1: &Type) -> bool {
+        if is_any(t1) || union_identical(t0, t1) {
+            return true;
         }
-        (Some(t0), Some(t1)) if product(&t1) => match (&t0, &t1) {
-            (Type::Set(ms), _) => ms.iter().all(|m| held_by_shape(env, m, &t1)),
-            (Type::Tuple(p0), Type::Tuple(p1)) => held_at_each(env, p0.iter(), p1.iter()),
-            (Type::Variant(tag0, p0, _), Type::Variant(tag1, p1, _)) => {
-                tag0 == tag1 && held_at_each(env, p0.iter(), p1.iter())
+        let env = self.env;
+        let product =
+            |t: &Type| matches!(t, Type::Tuple(_) | Type::Struct(_) | Type::Variant(..));
+        ensure_sufficient(|| match (t0.deref_cloned(), t1.deref_cloned()) {
+            (Some(t0 @ Type::Ref(_)), Some(t1)) => {
+                if !product(&t1) && identical_normal(&t0, &t1) {
+                    return true;
+                }
+                let Ok(Some(t)) = t0.lookup_ref_with(env, false) else { return false };
+                self.minuend_reads += 1;
+                let held = self.of(&t, &t1);
+                self.minuend_reads -= 1;
+                held
             }
-            (Type::Struct(f0), Type::Struct(f1)) => {
+            (Some(t0), Some(ref t1 @ Type::Ref(ref tr))) => {
+                self.read_through(&t0, t1, tr)
+            }
+            (Some(Type::Set(ref ms)), Some(ref t1))
+                if product(t1) || matches!(t1, Type::Set(_) | Type::Primitive(_)) =>
+            {
+                ms.iter().all(|m| self.of(m, t1))
+            }
+            (Some(Type::Primitive(p0)), Some(Type::Set(ref ms))) if p0.len() > 1 => {
+                p0.iter().all(|p| {
+                    let p = Type::Primitive(p.into());
+                    ms.iter().any(|m| self.of(&p, m))
+                })
+            }
+            (_, Some(Type::Set(ref ms))) => ms.iter().any(|m| self.of(t0, m)),
+            (Some(Type::Primitive(p0)), Some(Type::Primitive(p1))) => p1.contains(p0),
+            (Some(Type::Tuple(ref p0)), Some(Type::Tuple(ref p1))) => {
+                self.at_each(p0.iter(), p1.iter())
+            }
+            (
+                Some(Type::Variant(ref tag0, ref p0, _)),
+                Some(Type::Variant(ref tag1, ref p1, _)),
+            ) => tag0 == tag1 && self.at_each(p0.iter(), p1.iter()),
+            (Some(Type::Struct(ref f0)), Some(Type::Struct(ref f1))) => {
                 f0.len() == f1.len()
                     && f0.iter().zip(f1.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1)
-                    && held_at_each(
-                        env,
+                    && self.at_each(
                         f0.iter().map(|(_, t, _)| t),
                         f1.iter().map(|(_, t, _)| t),
                     )
             }
-            _ => false,
-        },
-        _ => identical_normal(t0, t1),
-    })
-}
+            (_, Some(ref t1)) if product(t1) => false,
+            _ => identical_normal(t0, t1),
+        })
+    }
 
-/// Positional [`held_by_shape`].
-fn held_at_each<'a, 'b>(
-    env: &Env,
-    t0: impl IntoIterator<Item = &'a Type>,
-    t1: impl IntoIterator<Item = &'b Type>,
-) -> bool {
-    let mut t0 = t0.into_iter();
-    let mut t1 = t1.into_iter();
-    loop {
-        match (t0.next(), t1.next()) {
-            (None, None) => return true,
-            (Some(a), Some(b)) if held_by_shape(env, a, b) => (),
-            _ => return false,
+    /// [`Self::of`] with `t1`, the name `tr`, read through: not held where
+    /// the path reads it already from before `t0` read a name, or the pair
+    /// budget is spent.
+    fn read_through(&mut self, t0: &Type, t1: &Type, tr: &TypeRef) -> bool {
+        let Some(def) = tr.resolve_in(self.env).map(|r| r.def_key()) else {
+            return false;
+        };
+        if self.read.iter().any(|(d, at)| *d == def && *at < self.minuend_reads) {
+            return false;
+        }
+        if !self.hist.pairs.unfold() {
+            self.hist.cut = 0;
+            self.hist.widened = true;
+            self.hist.holds(CUT);
+            return false;
+        }
+        #[cfg(test)]
+        DIFF_PAIRS.with(|n| n.set(n.get() + 1));
+        self.read.push((def, self.minuend_reads));
+        let held = matches!(
+            t1.lookup_ref_with(self.env, false),
+            Ok(Some(t)) if self.of(t0, &t)
+        );
+        self.read.pop();
+        held
+    }
+
+    /// Positional [`Self::of`].
+    fn at_each<'a, 'b>(
+        &mut self,
+        t0: impl IntoIterator<Item = &'a Type>,
+        t1: impl IntoIterator<Item = &'b Type>,
+    ) -> bool {
+        let mut t0 = t0.into_iter();
+        let mut t1 = t1.into_iter();
+        loop {
+            match (t0.next(), t1.next()) {
+                (None, None) => return true,
+                (Some(a), Some(b)) if self.of(a, b) => (),
+                _ => return false,
+            }
         }
     }
 }
@@ -2293,6 +2379,75 @@ pub(crate) mod tests {
         ] {
             let d = parsed(&env, t0).diff(&env, &parsed(&env, t1)).unwrap();
             assert_eq!(d.to_string(), left, "{t0} - {t1}");
+        }
+    }
+
+    // A position the subtrahend writes as a union or a name holds a minuend's
+    // position one of its members holds, member by member where the minuend's
+    // is a union, and a name of the subtrahend is read through.
+    #[test]
+    fn diff_takes_a_product_a_union_or_name_holds_at_a_position() {
+        let (env, _) = typed(
+            &[
+                ("U", "[i64, string]"),
+                ("N", "[I, R]"),
+                ("I", "[i64, i32]"),
+                ("R", "f64"),
+                ("L", "[`Cons(i64, L), `Nil]"),
+                ("M", "[`Cons([i64, string], M), `Nil]"),
+            ],
+            "null",
+        );
+        for (t0, t1, left) in [
+            ("[(i64, i64), null]", "([i64, string], i64)", "null"),
+            ("[`A(i64, `X), null]", "`A(i64, [`X, `Y])", "null"),
+            (
+                "[{a: i64, b: (null, i64)}, null]",
+                "{a: i64, b: ([i64, null], i64)}",
+                "null",
+            ),
+            (
+                "[(i64, [i64, null]), null]",
+                "([i64, string], [i64, string, null])",
+                "null",
+            ),
+            ("[(i64, [`X, i64]), null]", "(i64, [`X, `Y, i64])", "null"),
+            ("[(i64, i64), null]", "(U, i64)", "null"),
+            ("[(i32, i64), null]", "(N, i64)", "null"),
+            ("[([i32, f64], i64), null]", "(N, i64)", "null"),
+            ("[`A(`Nil), null]", "`A(L)", "null"),
+            ("[`A(`Cons(i64, `Nil)), null]", "`A(L)", "null"),
+            (
+                "[(i64, [i64, f64]), null]",
+                "(i64, [i64, string])",
+                "[null, (i64, [i64, f64])]",
+            ),
+            ("[(f64, i64), null]", "(U, i64)", "[null, (f64, i64)]"),
+            ("[(i64, i64), null]", "(['a, string], i64)", "[null, (i64, i64)]"),
+            ("[`A(L), null]", "`A(M)", "[null, `A(L)]"),
+        ] {
+            let d = parsed(&env, t0).diff(&env, &parsed(&env, t1)).unwrap();
+            assert_eq!(d.to_string(), left, "{t0} - {t1}");
+        }
+    }
+
+    // A name the subtrahend writes is read again on a path only while the
+    // minuend reads none: a pair of recursive names stops at their first
+    // turn, and a finite minuend goes as deep as it is.
+    #[test]
+    fn held_reads_a_subtrahends_name_until_both_sides_recur() {
+        let (env, _) = typed(
+            &[("L", "[`Cons(i64, L), `Nil]"), ("M", "[`Cons([i64, string], M), `Nil]")],
+            "null",
+        );
+        for (t0, t1, left, pairs) in [
+            ("[`A(L), null]", "`A(M)", "[null, `A(L)]", 1),
+            ("[`A(`Cons(i64, `Cons(i64, `Cons(i64, `Nil)))), null]", "`A(M)", "null", 4),
+        ] {
+            super::DIFF_PAIRS.with(|n| n.set(0));
+            let d = parsed(&env, t0).diff(&env, &parsed(&env, t1)).unwrap();
+            assert_eq!(d.to_string(), left, "{t0} - {t1}");
+            assert_eq!(super::DIFF_PAIRS.with(|n| n.get()), pairs, "{t0} - {t1}");
         }
     }
 
@@ -2817,7 +2972,7 @@ pub(crate) mod tests {
             ("U2", "[Error<[U1, U2]>, Array<U0>, `A2]"),
         ];
         let costs = arms_cost(&through_arrays, "T2", &["U2", "Error<U1>"]);
-        assert_eq!(costs, vec![(51, 1), (10, 4)]);
+        assert_eq!(costs, vec![(60, 1), (13, 4)]);
         let one_family = [
             ("T0", "[Error<T2>, Error<T3>, Error<T0>, `A0]"),
             ("T2", "[Error<[T2, T2]>, Array<T2>, `P2(T0), `A2]"),
@@ -2836,7 +2991,7 @@ pub(crate) mod tests {
         ];
         let arms = ["U1", "Error<U2>", "U3", "U1", "Error<U2>"];
         let costs = arms_cost(&four_a_side, "T0", &arms);
-        assert_eq!(costs, vec![(95, 4), (56, 4), (33, 4), (95, 4), (56, 4)]);
+        assert_eq!(costs, vec![(113, 4), (70, 4), (45, 4), (113, 4), (70, 4)]);
     }
 
     /// `T0 .. Tn-1`, each `[Error<Ti+1>, Error<Ti+2>, `Ai]` (indices mod

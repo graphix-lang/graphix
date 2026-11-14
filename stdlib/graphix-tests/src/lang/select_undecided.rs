@@ -113,7 +113,7 @@ run!(undecided_payload_members_refused, r#"{
     let x = never();
     let y = never();
     let v = select b { true => `P({a: [1], c: x}), false => `P({a: ["s"], c: y}) };
-    let r = select v { `P({a, ..}) => "[a]", _ => "other" };
+    let r = select v { `P({a, ..}) => "[a]" };
     x <- 1;
     y <- 2;
     r
@@ -124,11 +124,22 @@ run!(annotated_payload_members_reach_the_arm, r#"{
     let x: i64 = never();
     let y: i64 = never();
     let v = select b { true => `P({a: [1], c: x}), false => `P({a: ["s"], c: y}) };
-    let r = select v { `P({a, ..}) => "[a]", _ => "other" };
+    let r = select v { `P({a, ..}) => "[a]" };
     x <- 1;
     y <- 2;
     r
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == r#"["s"]"#); FuseExpect::Jit);
+
+run!(annotated_payload_members_leave_no_other_arm, r#"{
+    let b = false;
+    let x: i64 = never();
+    let y: i64 = never();
+    let v = select b { true => `P({a: [1], c: x}), false => `P({a: ["s"], c: y}) };
+    let r = select v { `P({a, ..}) => "[a]", _ => "other" };
+    x <- 1;
+    y <- 2;
+    r
+}"#, refused("unreachable arm: the earlier arms already cover the whole scrutinee"); FuseExpect::None);
 
 // A name over a union position holds an undecided member's part beside
 // the others, so what its body decides of it decides that part.
