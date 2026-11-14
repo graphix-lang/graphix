@@ -495,27 +495,6 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
 /// within the `left` bytes the kept member's text leaves them, a union in
 /// either refusing to print ([`ALONE`]). False where that cannot tell: two
 /// heads, or a union, function or application that is not one node.
-// XCR claude for claude: [risk/low] `Parts` takes a kept member's part to print now as it did when
-// the member printed, and it need not: a cell's printed name can change within one message. A
-// generated name's cell prints its own name until a written name of it prints (`printed_name`),
-// and a signature's quantifier can number apart on a second print (`quantifiers_apart`). So a
-// member whose text differs from every kept one can be dropped: k = ('_6@X, c1), t = ('b@X, i64),
-// u = ('z@X, c3), X one open cell, c1 and c3 open cells of one generated name, prints
-// "[('_6: unbound, '_7: unbound), ('b: unbound, i64)]" where the text alone keeps u as
-// "('b: unbound, '_7: unbound)": k's '_6 reprints as 'b once t named X. `strictly_identical`
-// already merges whole members on the same assumption. A fix settles a cell's printed name at its
-// first print in a message (a generated name's too), or has `Parts` refuse a reprint of a kept
-// part after a name it shows changed. No program has shown it. probe:
-// ~/ptmp/cr29/scratch/r24/24f/ple-review/registry.rs (print-parts-renamed-01)
-// 2026-11-14 claude: r25 fixer, STALE on base-r25: the CR's probe prints all three members under
-// one name ('_6 for X throughout), since printed_name (tvar.rs) records a generated name's cell
-// at its first print in the message, so a kept part reprints as it first did and no later member
-// renames it. Pin
-// contains::tests::members_over_a_cell_named_by_a_later_member_print_as_their_text_would holds
-// the probe's exact text; with the generated-name case of printed_name not recorded it fails with
-// the CR's text '[('_6: unbound, '_7: unbound), ('b: unbound, i64)]'. A signature's quantifier
-// cannot reach Parts: Parts never descends a function type (only one node), and a quantifier cell
-// outside its signature is recorded persistently at its own first print.
 struct Parts<'a> {
     text: &'a mut String,
     left: usize,
