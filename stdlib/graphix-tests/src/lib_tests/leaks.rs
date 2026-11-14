@@ -781,12 +781,12 @@ async fn a_function_escaping_a_dropped_block_keeps_its_imports_while_held() -> R
             format!("{{ use str::len; let f = |s: string| len(s) + {k}; g <- f; null }}");
         let (_, made) = compile_one(&ctx, block.as_str()).await?;
         let (written, call) = compile_one(&ctx, r#"g("ab")"#).await?;
-        await_update(&mut rx, written, is(2 + k)).await?;
+        await_update(&ctx, &mut rx, written, is(2 + k)).await?;
         drop((made, call));
         // the block is gone, and this call is the first to build f's body
         // since
         let (late, call) = compile_one(&ctx, r#"g("abc")"#).await?;
-        await_update(&mut rx, late, is(3 + k)).await?;
+        await_update(&ctx, &mut rx, late, is(3 + k)).await?;
         drop(call);
     }
     let late = held(&ctx).await?;
@@ -823,7 +823,7 @@ async fn a_blocks_imported_type_outlives_its_table() -> Result<()> {
         .await?;
     for _ in 0..3 {
         let (id, res) = compile_one(&ctx, "{ use str::len; len(\"ab\") }").await?;
-        await_update(&mut rx, id, |v| *v == Value::I64(2)).await?;
+        await_update(&ctx, &mut rx, id, |v| *v == Value::I64(2)).await?;
         drop(res)
     }
     // the last block compiled keeps its table until the next compile
@@ -843,7 +843,7 @@ async fn a_blocks_imported_type_outlives_its_table() -> Result<()> {
     .await?;
     let want: Value =
         [1i64, 10, 2, 1, 3, 5].into_iter().map(Value::I64).collect::<Vec<_>>().into();
-    await_update(&mut rx, id, |v| *v == want).await?;
+    await_update(&ctx, &mut rx, id, |v| *v == want).await?;
     ctx.shutdown().await;
     Ok(())
 }
@@ -862,15 +862,15 @@ async fn a_live_blocks_callback_builds_new_slots_against_its_imports() -> Result
         compile_one(&ctx, r#"{ use str::len; array::map(a, |x| len("ab") + x) }"#)
             .await?;
     let want = array(&[3, 4]);
-    await_update(&mut rx, mapped, |v| *v == want).await?;
+    await_update(&ctx, &mut rx, mapped, |v| *v == want).await?;
     for _ in 0..3 {
         let (id, res) = compile_one(&ctx, "{ use str::len; len(\"ab\") }").await?;
-        await_update(&mut rx, id, |v| *v == Value::I64(2)).await?;
+        await_update(&ctx, &mut rx, id, |v| *v == Value::I64(2)).await?;
         drop(res)
     }
     let _grown = ctx.rt.compile(literal!("a <- [1, 2, 3, 4]")).await?;
     let want = array(&[3, 4, 5, 6]);
-    await_update(&mut rx, mapped, |v| *v == want).await?;
+    await_update(&ctx, &mut rx, mapped, |v| *v == want).await?;
     ctx.shutdown().await;
     Ok(())
 }
@@ -925,12 +925,12 @@ async fn escaped_and_called<const N: usize>(
             Err(e) => bail!("compile {i} failed: {e:?}"),
         };
         let eid = made.exprs[made.exprs.len() - 1].id;
-        await_update(&mut rx, eid, |v| *v == Value::I64(1)).await?;
+        await_update(&ctx, &mut rx, eid, |v| *v == Value::I64(1)).await?;
         let (landed, read) = compile_one(&ctx, "{ let f = saved; 7 }").await?;
-        await_update(&mut rx, landed, |v| *v == Value::I64(7)).await?;
+        await_update(&ctx, &mut rx, landed, |v| *v == Value::I64(7)).await?;
         drop((made, read));
         let (late, call) = compile_one(&ctx, "saved(3)").await?;
-        await_update(&mut rx, late, |v| *v == Value::I64(30)).await?;
+        await_update(&ctx, &mut rx, late, |v| *v == Value::I64(30)).await?;
         drop(call);
     }
     let late = held(&ctx).await?;
@@ -1088,7 +1088,7 @@ async fn released(ctx: &TestCtx, rx: &mut Events, names: &[&str]) -> Result<()> 
     let want = Value::I64(3 * names.len() as i64);
     for _ in 0..3 {
         let (id, call) = compile_one(ctx, format!("{calls}0")).await?;
-        await_update(rx, id, |v| *v == want).await?;
+        await_update(ctx, rx, id, |v| *v == want).await?;
         drop(call)
     }
     drop(written);
@@ -1116,17 +1116,17 @@ async fn a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration(
         // the first declaration is gone before the second is made
         made.clear();
         let res = ctx.rt.compile(ArcStr::from(root_module_and_function(name, k))).await?;
-        await_update(&mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
+        await_update(&ctx, &mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
         made.push(res);
         let (id, call) = compile_one(&ctx, format!("{name}(3)")).await?;
-        await_update(&mut rx, id, is(3 * k)).await?;
+        await_update(&ctx, &mut rx, id, is(3 * k)).await?;
         drop(call)
     }
     let (id, call) = compile_one(&ctx, "(old(3), new(3))").await?;
-    await_update(&mut rx, id, is_pair(30, 60)).await?;
+    await_update(&ctx, &mut rx, id, is_pair(30, 60)).await?;
     drop((call, made));
     let (id, call) = compile_one(&ctx, "(old(4), new(4))").await?;
-    await_update(&mut rx, id, is_pair(40, 80)).await?;
+    await_update(&ctx, &mut rx, id, is_pair(40, 80)).await?;
     drop(call);
     released(&ctx, &mut rx, &["old", "new"]).await?;
     let after = held(&ctx).await?;
@@ -1159,15 +1159,15 @@ async fn a_function_outliving_another_inputs_trait_dispatches_to_its_impl(
     let is = |n: i64| move |v: &Value| *v == Value::I64(n);
     let (made, kept) =
         compile_one(&ctx, "{ saved <- |x: i64| Sh::twice(C(x)); 1 }").await?;
-    await_update(&mut rx, made, is(1)).await?;
+    await_update(&ctx, &mut rx, made, is(1)).await?;
     let (live, call) = compile_one(&ctx, "saved(3)").await?;
-    await_update(&mut rx, live, is(30)).await?;
+    await_update(&ctx, &mut rx, live, is(30)).await?;
     drop((declared, call));
     let (late, call) = compile_one(&ctx, "saved(3)").await?;
-    await_update(&mut rx, late, is(30)).await?;
+    await_update(&ctx, &mut rx, late, is(30)).await?;
     drop((kept, call));
     let (later, call) = compile_one(&ctx, "saved(4)").await?;
-    await_update(&mut rx, later, is(40)).await?;
+    await_update(&ctx, &mut rx, later, is(40)).await?;
     drop(call);
     released(&ctx, &mut rx, &["saved"]).await?;
     let after = held(&ctx).await?;
@@ -1204,20 +1204,20 @@ async fn trait_dropped_before_its_impl(
         }
         let declared = ctx.rt.compile(ArcStr::from(trait_input)).await?;
         let (made, read) = compile_one(&ctx, "{ let f = app; 7 }").await?;
-        await_update(&mut rx, made, is(7)).await?;
+        await_update(&ctx, &mut rx, made, is(7)).await?;
         drop(read);
         let implemented = ctx.rt.compile(ArcStr::from(impl_input)).await?;
         let (made, function) =
             compile_one(&ctx, format!("{{ saved <- {function}; 1 }}")).await?;
-        await_update(&mut rx, made, is(1)).await?;
+        await_update(&ctx, &mut rx, made, is(1)).await?;
         let (landed, read) = compile_one(&ctx, "{ let f = saved; 7 }").await?;
-        await_update(&mut rx, landed, is(7)).await?;
+        await_update(&ctx, &mut rx, landed, is(7)).await?;
         drop(read);
         let mut inputs = [Some(declared), Some(implemented), Some(function)];
         for input in inputs.iter_mut() {
             drop(input.take());
             let (late, call) = compile_one(&ctx, "saved(3)").await?;
-            await_update(&mut rx, late, is(want)).await?;
+            await_update(&ctx, &mut rx, late, is(want)).await?;
             drop(call);
         }
     }
@@ -1291,17 +1291,17 @@ async fn a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_
         // the first declaration is gone before the second is made
         made.clear();
         let res = ctx.rt.compile(ArcStr::from(declare(name, k))).await?;
-        await_update(&mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
+        await_update(&ctx, &mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
         made.push(res);
         let (id, call) = compile_one(&ctx, format!("{name}(3)")).await?;
-        await_update(&mut rx, id, is(want)).await?;
+        await_update(&ctx, &mut rx, id, is(want)).await?;
         drop(call)
     }
     let (id, call) = compile_one(&ctx, "(old(3), new(3))").await?;
-    await_update(&mut rx, id, is_pair(18, 36)).await?;
+    await_update(&ctx, &mut rx, id, is_pair(18, 36)).await?;
     drop((call, made));
     let (id, call) = compile_one(&ctx, "(old(4), new(4))").await?;
-    await_update(&mut rx, id, is_pair(24, 48)).await?;
+    await_update(&ctx, &mut rx, id, is_pair(24, 48)).await?;
     drop(call);
     released(&ctx, &mut rx, &["old", "new"]).await?;
     let after = held(&ctx).await?;
