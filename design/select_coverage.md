@@ -67,9 +67,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (payload irrefutable) and or-patterns of them pool per position
   inside composite patterns, keyed by path (a partial struct pattern
   against the one member holding its fields, the rest any value; an open
-  scrutinee's members are its structural bound's; a union position's one
-  tuple or struct member holding no open cell is a head beside them, its
-  own positions counted under that head alone; an open cell at the
+  scrutinee's members are its structural bound's; each tuple or struct
+  member of a union position holding no open cell is a head beside them
+  (`Head::Composite(n)`, n its place among those members), its own
+  positions counted under that head alone and keyed by n after the
+  position, so two members' fields never share a path; an open cell at the
   position, a declared variable included, is a head of its own that only
   a name or `_` there admits, `Head::Open`, as is a primitive member's
   value but `bool` and `null`, `Head::Rest`), and an arm under

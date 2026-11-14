@@ -13528,3 +13528,80 @@ run!(
     refused("missing match cases: no arm covers `A(bool)");
     FuseExpect::None
 );
+
+run!(
+    two_struct_members_at_a_tuple_position_cover_it,
+    "{ type E = [{a: i64, d: i64}, {c: i64}]; let f = |x: (i64, E)| select x { (n, {a: _, d: _}) => 2, (n, {c: _}) => 1 }; [f((0, {a: 1, d: 2})), f((0, {c: 1}))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1]);
+    FuseExpect::Jit
+);
+
+run!(
+    two_struct_members_at_a_tuple_position_with_bool_fields_cover_it,
+    "{ type E = [{a: bool, d: i64}, {c: bool}]; let f = |x: (i64, E)| select x { (n, {a: true, d: _}) => 1, (n, {a: false, d: _}) => 2, (n, {c: true}) => 3, (n, {c: false}) => 4 }; [f((0, {a: true, d: 0})), f((0, {a: false, d: 0})), f((0, {c: true})), f((0, {c: false}))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 4]);
+    FuseExpect::Jit
+);
+
+run!(
+    two_tuple_members_at_a_tuple_position_with_bool_heads_cover_it,
+    "{ type E = [(bool, i64), (bool, i64, i64)]; let f = |x: (i64, E)| select x { (n, (true, _)) => 1, (n, (false, _)) => 2, (n, (true, b, c)) => 3, (n, (false, b, c)) => 4 }; [f((0, (true, 0))), f((0, (false, 0))), f((0, (true, 0, 0))), f((0, (false, 0, 0)))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 4]);
+    FuseExpect::Jit
+);
+
+run!(
+    two_struct_members_beside_null_and_a_bool_cover_it,
+    "{ type E = [{a: bool, d: i64}, {c: bool}, null]; let f = |x: (bool, E)| select x { (true, {a: _, d: _}) => 1, (true, {c: _}) => 2, (true, null) => 5, (false, _) => 3 }; [f((true, {a: true, d: 0})), f((true, {c: true})), f((true, null)), f((false, null))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 5, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    two_struct_members_at_a_tuple_position_miss_the_second,
+    "{ type E = [{a: i64, d: i64}, {c: i64}]; let f = |x: (i64, E)| select x { (n, {a: _, d: _}) => 2 }; f((0, {c: 1})) }",
+    refused("missing match cases: no arm covers (i64, E)");
+    FuseExpect::None
+);
+
+run!(
+    two_struct_members_with_one_bool_value_missing_miss_it,
+    "{ type E = [{a: bool, d: i64}, {c: bool}]; let f = |x: (i64, E)| select x { (n, {a: true, d: _}) => 1, (n, {a: false, d: _}) => 2, (n, {c: true}) => 3 }; f((0, {c: true})) }",
+    refused("missing match cases: no arm covers (i64, E)");
+    FuseExpect::None
+);
+
+run!(
+    struct_repeated_at_a_tuple_position_of_two_members_is_dead,
+    "{ type E = [{a: i64, d: i64}, {c: i64}]; let f = |x: (i64, E)| select x { (n, {a: _, d: _}) => 2, (n, {a: h, d: _}) => h, (n, {c: _}) => 1 }; f((0, {c: 1})) }",
+    refused("unreachable arm: every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    struct_after_the_cover_at_a_tuple_position_of_two_members_is_dead,
+    "{ type E = [{a: i64, d: i64}, {c: i64}]; let f = |x: (i64, E)| select x { (n, {a: _, d: _}) => 2, (n, {c: _}) => 1, _ => 3 }; f((0, {c: 1})) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    struct_after_the_cover_in_a_field_of_two_members_is_dead,
+    "{ type E = [{a: i64, d: i64}, {c: i64}]; let f = |x: {s: E, z: i64}| select x { {s: {a: _, d: _}, z} => 2, {s: {c: _}, z} => 1, {s: {c: h}, z} => h }; f({s: {c: 1}, z: 0}) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    tuple_repeated_at_a_tuple_position_of_two_members_is_dead,
+    "{ type E = [(i64, i64), (i64, i64, i64)]; let f = |x: (i64, E)| select x { (n, (a, b)) => 2, (n, (a, b)) => a, (n, (a, b, c)) => 1 }; f((0, (1, 2))) }",
+    refused("unreachable arm: every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    bool_struct_field_repeated_at_one_of_two_members_is_dead,
+    "{ type E = [{a: bool, d: i64}, {c: bool}]; let f = |x: (i64, E)| select x { (n, {a: true, d: _}) => 1, (n, {c: true}) => 2, (n, {c: false}) => 3, (n, {a: true, d: _}) => 4, (n, {a: false, d: _}) => 5 }; f((0, {c: true})) }",
+    refused("unreachable arm: every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);

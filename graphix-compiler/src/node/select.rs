@@ -1464,9 +1464,10 @@ enum Head {
     Null,
     /// A variant's tag and arity; its payload matches anything.
     Tag(ArcStr, usize),
-    /// A union's one tuple or struct member, whose own positions count
-    /// only under this head.
-    Composite,
+    /// One of a union's tuple or struct members, numbered in the order
+    /// the union lists them: its own positions count only under this
+    /// head, and a path into it names the number after the position.
+    Composite(u32),
     /// A value of an open cell the position holds, which only a name or
     /// `_` there matches.
     Open,
@@ -1567,7 +1568,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // coverage walk takes the second `A arm as covering `B. probes:
 // ~/ptmp/cr29/scratch/r25/25c/rev2/p5.txt, p6.txt, p7.txt (run with rb.sh)
 // (variant-dead-arm-unannotated-01)
-// CR claude for claude: [bug/low] An arm is not found dead behind arms that take
+// XCR claude for claude: [bug/low] An arm is not found dead behind arms that take
 // every value it matches where a position inside the scrutinee holds two tuple or
 // struct members: `type E = [{a: i64, d: i64}, {c: i64}]; |x: (i64, E)| select x { (n,
 // {a: _, d: _}) => 2, (n, {a: h, d: _}) => h, (n, {c: _}) => 1 }` checks, its second
@@ -1586,9 +1587,15 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // ~/ptmp/cr29/scratch/r24/24a/wsaf-rev/r4.txt, r5.txt (run.sh in ../wsaf runs each
 // line), gen2.py and c11.*.txt (the generated programs' verdicts)
 // (two-composite-position-dead-01)
+// 2026-11-14 claude: Head::Composite is numbered per tuple or struct member of a union
+// position and a path under it names the number, so two members at one position are a
+// finite set of heads and the pool reads positions inside them. Pins in
+// stdlib/graphix-tests/src/lang/select.rs (two_struct_members_*,
+// struct_*_two_members_is_dead, tuple_repeated_*, bool_struct_field_repeated_*) and the
+// cases fence in ide/skills/graphix-lang/select.md fail without the change.
 /// The heads `t` admits when it is a finite set of them: a union of
-/// `bool`, `null`, variants, at most one tuple or struct holding no open
-/// cell, [`Head::Rest`] for its other primitives and [`Head::Open`] for
+/// `bool`, `null`, variants, tuples and structs holding no open cell,
+/// [`Head::Rest`] for its other primitives and [`Head::Open`] for
 /// the open cells among them.
 fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
@@ -1597,13 +1604,13 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
         return Ok(None);
     }
     let mut out: SmallVec<[Head; 4]> = SmallVec::new();
-    let mut composite = false;
+    let mut composites = 0;
     for m in members.iter() {
         match m {
             Type::Variant(tag, ts, _) => out.push(Head::Tag(tag.clone(), ts.len())),
-            Type::Tuple(_) | Type::Struct(_) if !composite && !m.has_unbound() => {
-                composite = true;
-                out.push(Head::Composite)
+            Type::Tuple(_) | Type::Struct(_) if !m.has_unbound() => {
+                out.push(Head::Composite(composites));
+                composites += 1
             }
             Type::Primitive(p) => {
                 for typ in p.iter() {
@@ -1723,17 +1730,36 @@ fn pooled_leaves(
                 if !matches!(m, Type::Tuple(_) | Type::Struct(_)) {
                     return Ok(Some(Miss::Unread));
                 }
+                let number = ms
+                    .iter()
+                    .filter(|m| matches!(m, Type::Tuple(_) | Type::Struct(_)))
+                    .position(|c| std::ptr::eq(c, m))
+                    .map_or(0, |n| n as u32);
                 match heads(env, t)? {
-                    Some(domain) if domain.contains(&Head::Composite) => out.push(Leaf {
-                        path: path.clone(),
-                        heads: Some(smallvec![Head::Composite]),
-                        domain: Some(domain),
-                    }),
+                    Some(domain) if domain.contains(&Head::Composite(number)) => {
+                        out.push(Leaf {
+                            path: path.clone(),
+                            heads: Some(smallvec![Head::Composite(number)]),
+                            domain: Some(domain),
+                        });
+                        path.push(number);
+                        let r = member_leaves(env, sp, m, path, out);
+                        path.pop();
+                        return r;
+                    }
                     _ => return Ok(Some(Miss::Unread)),
                 }
-                m
             }
         };
+        member_leaves(env, sp, m, path, out)
+    }
+    fn member_leaves(
+        env: &Env,
+        sp: &StructPatternNode,
+        m: &Type,
+        path: &mut SmallVec<[u32; 4]>,
+        out: &mut SmallVec<[Leaf; 8]>,
+    ) -> Result<Option<Miss>> {
         let mut at =
             |i: usize, p: &StructPatternNode, t: &Type| -> Result<Option<Miss>> {
                 path.push(i as u32);
@@ -2529,13 +2555,13 @@ impl PoolGroup {
                     && positions.iter().zip(combo.iter()).any(|((q, _), g)| {
                         q.len() < p.len()
                             && p.starts_with(q)
-                            && !matches!(g, Head::Composite)
+                            && **g != Head::Composite(p[q.len()])
                     })
         })
     }
 
     fn nested(positions: &[(&[u32], &[Head])]) -> bool {
-        positions.iter().any(|(_, d)| d.iter().any(|h| matches!(h, Head::Composite)))
+        positions.iter().any(|(_, d)| d.iter().any(|h| matches!(h, Head::Composite(_))))
     }
 
     /// Some arm matches every combination the member admits, the last

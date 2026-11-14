@@ -317,6 +317,9 @@ no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }
 no "missing match cases" |x: (bool, [i64, string, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (false, null) => 3 }
+no "unreachable arm" type E = [{a: i64, d: i64}, {c: i64}]; |x: (i64, E)| select x { (n, {a: _, d: _}) => 2, (n, {a: h, d: _}) => h, (n, {c: _}) => 1 }
+no "unreachable arm" type E = [{a: i64, d: i64}, {c: i64}]; |x: (i64, E)| select x { (n, {a: _, d: _}) => 2, (n, {c: _}) => 1, _ => 3 }
+ok type E = [{a: bool, d: i64}, {c: bool}]; |x: (i64, E)| select x { (n, {a: true, d: _}) => 1, (n, {a: false, d: _}) => 2, (n, {c: true}) => 3, (n, {c: false}) => 4 }
 ok |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A(Array<i64>) as `A(a) => 2 }
 ok |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3 }
 ok |x: ([bool, Array<i64>], i64)| select x { (true, _) => 0, (false, _) => 1, ([a, ..], _) => 2, ([], _) => 3 }
