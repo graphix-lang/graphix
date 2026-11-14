@@ -1022,66 +1022,6 @@ impl Reach {
         let dead_at =
             |e: anyhow::Error| -> Result<Result<(), Dead>> { Ok(Err(Dead(e.at(site)))) };
         let empty = Type::Primitive(BitFlags::empty());
-        // XCR claude for claude: [bug/low] A catch-all arm behind a written test that
-        // takes every member is not found dead where the test's variable stands over
-        // a function in a tuple or a struct: over `u = select v { 0 => (7, 1), _ =>
-        // (fa, 2) }` (`fa = |x: i64| x + 100`), `select u { ('q, i64) as (r, n) => n,
-        // _ => 0 }` checks and prints (1, 2) for 0 and 1, and so does `(i64, 'q1, 'q2)
-        // as (a0, a1, a2) => 1, _ => 0` over `[(i64, fn(y: string) -> i64, i64), (i64,
-        // i64, fn(x: i64) -> i64)]` (base-r24 alike), and now the two-function forms
-        // (written-variable-told-01) admits (`('q, i64)` over `[(fa, i64), (fb,
-        // i64)]`, `{f: 'q, n: i64}`). The names arm `(r, n) => n, _ => 0`, the variant
-        // `` `K('q, i64) as `K(r, n) ``, and `('q, i64)` over `[(i64, i64), (string,
-        // i64)]` are refused, "unreachable arm". Of 600 generated selects 133 run with
-        // such an arm. Not diagnosed: what the arm covers is the written test, a
-        // product whose part is a union of the members' parts, and a difference
-        // subtracts a product only by the same type (diff-product-held-01). A fix here
-        // makes the accepted forms of (written-variable-told-01) need no catch-all,
-        // which (written-variable-settle-first-01) refuses today: fix that first.
-        // probes: ~/ptmp/cr29/scratch/r24/24a/wvt/{dead1,dead2,dead3,dead4,dead5,dead6,
-        // dead7}.gx, gen/g1-summary.txt (written-variable-dead-arm-01)
-        // 2026-11-13 claude: written-variable-told-01's reviewer: a union the test
-        // writes over references does the same since that review's correction (the
-        // held-member rule at the settle too): over `u = select v { 0 => (&mut a, 1), 1
-        // => (&mut b, 2), _ => (null, 3) }` with `type Y = [[&mut i64, null], &mut
-        // string]`, `select u { (Y, i64) as (r, n) => n, (x, n) => n + 10 }` checks and
-        // prints (1, 2, 3), the second arm never taken (base-r24 refuses the first arm,
-        // "can't tell"); the written test alone (`(Y, i64) as (r, n) => n`) checks too,
-        // so here no catch-all is needed. probe:
-        // ~/ptmp/cr29/scratch/r24/24a/wvt/review/h07.gx
-        // 2026-11-14 claude: (review of written-struct-absent-field-cover-01)
-        // r24-staging finds this arm dead: in a trial merge of lane 24a with it
-        // (variant-tuple-payload-dead-01 and diff-product-held-01 are there),
-        // lang::select::written_variable_binds_two_function_types fails in all four
-        // modes, 'unreachable arm: the earlier arms already cover the whole scrutinee'
-        // at the catch-all of its tuple, literal, field and twice selects, and the same
-        // selects without the catch-all are still refused 'can't tell fn(x: i64) -> i64
-        // from fn(y: string) -> string' (written-variable-settle-first-01), so only the
-        // payload form checks there. The pin holds at the landing only with
-        // settle-first fixed and its catch-alls dropped. probe:
-        // ~/ptmp/cr29/scratch/r24/24a/wsaf-rev/wv.txt (lines 1 to 10, lane against the
-        // merge)
-        // 2026-11-14 claude: (round 25, lane 25c) written-variable-settle-first-01 is
-        // fixed for a variable written once: the accepted forms of
-        // written-variable-told-01 (tuple, literal, field, array) check with no
-        // catch-all, so a fix of this one no longer waits on it; the twice form still
-        // does (see that note). Pin:
-        // lang::select::written_variable_once_binds_every_member_part.
-        // 2026-11-14 claude: (round 25, lane 25c) Stale on base-r25: dead1 to dead7
-        // (and the CR's tuple, struct, variant and two-undecided-position forms) are
-        // all refused 'unreachable arm: the earlier arms already cover the whole
-        // scrutinee', as the 2026-11-14 note found for r24-staging;
-        // diff-product-held-01 (1dd88f8a0) and variant-tuple-payload-dead-01
-        // (121d90e7f) closed it. The 600-select generator (seed 4711) on base-r25: 0
-        // selects run where the oracle says dead or missing (146 refused dead, was 133
-        // run). The catch-all is dead, since the test covers every member. Pins:
-        // lang::select::written_variable_over_every_member_leaves_a_{catch_all,names_catch_all,struct_catch_all,variant_catch_all}_dead,
-        // written_variable_two_positions_over_every_member_leaves_a_catch_all_dead
-        // (refused), and
-        // written_variable_over_a_member_the_test_leaves_keeps_its_catch_all (a null
-        // member keeps the catch-all live). They pass on the code as it is, so none
-        // fails without a change of this commit; revert the two commits above to see
-        // them fail. Probes: ~/ptmp/cr29/scratch/r25/25c/wvda/.
         if checking && (self.wildcard || self.atype == empty) {
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
