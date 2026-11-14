@@ -495,6 +495,14 @@ pins
 `lang::functions::undecided_binding_above_a_lower_bound_{refused,it_holds_joins}`,
 `undecided_parameter_within_a_conjunct_{refused,it_fits_joins}`).
 
+A part the formal writes as a union (`[Array<i64>, null]`) or as a union of
+primitives (`[i64, null]`, one `Type::Primitive` of two bits) that two of its
+members admit is left to the argument's own check: pre-unifying it would bind
+an undecided cell to the whole union before the argument's expression is
+checked (`|u| f((u, u + 1))` at `f: |y: ([i64, null], i64)|` is accepted and
+`u` is decided by `u + 1`; a bound `'x: ([i64, null], i64)` does the same).
+Pins: `lang::types::written_primitive_union_leaves_a_*_part_to_its_check`.
+
 A variable does not widen where a function type of the signature holds
 it (the first argument decides it, a callback's parameter being typed by
 it), nor where it stands in a union beside another undecided member

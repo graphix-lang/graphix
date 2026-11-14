@@ -15695,3 +15695,37 @@ run!(
 }"#,
     is(Value::I64(2))
 );
+
+// A union of primitives written in a parameter leaves an argument's
+// undecided part to the argument's own check, as a union's members do.
+run!(
+    written_primitive_union_leaves_a_tuple_part_to_its_check,
+    r#"{
+  let f = |y: ([i64, null], i64)| y;
+  let g = |u| f((u, u + 1));
+  g(1)
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(2)]),
+        _ => false,
+    }
+);
+run!(
+    written_primitive_union_leaves_a_struct_part_to_its_check,
+    r#"{
+  let f = |y: {p: [i64, null], q: i64}| y;
+  let g = |u| f({p: u, q: u});
+  g(1).p
+}"#,
+    is(Value::I64(1))
+);
+run!(
+    written_primitive_union_still_refuses_what_the_check_breaks,
+    r#"{
+  let f = |y: ([i64, null], i64)| y;
+  let g = |u| f((u, u + 1));
+  g(null)
+}"#,
+    refused("null");
+    FuseExpect::None
+);

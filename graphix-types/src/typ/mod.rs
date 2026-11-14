@@ -3233,7 +3233,7 @@ impl Type {
                         _ => whole(hist),
                     }
                 }
-                // CR claude for claude: [bug/low] A union of primitives written in a
+                // XCR claude for claude: [bug/low] A union of primitives written in a
                 // parameter binds an argument's undecided part at the pre-unification,
                 // before the argument's own expression is checked: `let f = |y: ([i64,
                 // null], i64)| y; let g = |u| f((u, u + 1)); g(1)` is refused, "cannot
@@ -3252,6 +3252,27 @@ impl Type {
                 // ~/ptmp/cr29/scratch/r24/24c/buba/pin/{y1,y5,y3,y7}.gx (refused),
                 // {y2,y6,y4}.gx (the bound forms, which run)
                 // (written-primitive-union-binds-early-01)
+                // 2026-11-14 claude: Fixed: pre_unify_seen's arm for a written union of
+                // primitives leaves the argument to its own check where two of the
+                // primitives admit it (as the Set arm does for a union's members). Pins:
+                // lang::types::written_primitive_union_leaves_a_{tuple,struct}_part_to_its_check
+                // fail without it. Census: one file newly accepted,
+                // design/review-2026-10-12/repro/t-contains-prim-union-constrained-cell.gx
+                // (its header expects accepted); guicheck 39642722354 base vs 39731644848
+                // lane. Needs a soak.
+                (Some(Type::Primitive(ps)), _) if ps.len() > 1 => {
+                    let mut admitting = 0;
+                    for p in ps.iter() {
+                        if Type::Primitive(p.into()).contains_with_flags(
+                            BitFlags::empty(),
+                            env,
+                            actual,
+                        )? {
+                            admitting += 1;
+                        }
+                    }
+                    if admitting > 1 { Ok(()) } else { whole(hist) }
+                }
                 _ => whole(hist),
             }
         })
