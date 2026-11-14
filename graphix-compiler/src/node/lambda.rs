@@ -729,34 +729,6 @@ impl InstanceTypes {
     /// instance's knowledge stands where either holds the other, and the
     /// instance is refused where a closed born type and a closed row are
     /// disjoint.
-    // XCR claude for claude: [risk/medium] A node of an instance born with a closed
-    // type its definition's row does not contain keeps the born type, and fused code
-    // then reads the value at the wrong representation. Type::take_row answers true
-    // wherever `typ` holds no open cell, whatever the row is (its last arm), so a born
-    // `string` against a row `i64` stands. One naming bug has reached this: on main
-    // be2c16a05 `let g = |p: 'a, n: i64| { let r = array::map([n], 'a: Any |s: 'a| {
-    // let v: 'a = s; v }); (p, array::len(r), r) }; println("[g("s", 1)]")` passes
-    // `--check`, prints ("s", 1, [1]) under --no-fusion, and fused aborts with
-    // "misaligned pointer dereference: address must be a multiple of 0x8 but is 0x1"
-    // in arcstr: the instance's `v` was born with `g`'s `'a` (string) for the
-    // callback's own (i64), and the kernel read the i64 as a string. That naming is
-    // fixed (lang::types::one_instance_lambdas_variable_shadows_in_a_body_annotation),
-    // but the next one would be read wrong again instead of refused. The born type
-    // may be narrower than the row, never disjoint from it: a settle that refuses the
-    // instance where the row does not contain a closed born type (as instance_types
-    // refuses a signature) makes this a refusal. It is one containment per such node
-    // per instance, so measure the build of the GUI examples before adding it. probe:
-    // ~/ptmp/cr29/scratch/r24/24c/ibsc-rev/b12.gx (instance-born-type-unchecked-01)
-    // 2026-11-14 claude: InstanceTypes::settle now refuses an instance where a node's
-    // closed born type and its closed row are disjoint (neither type holds the other;
-    // wider-than-row stands, as
-    // lang::types::undecided_value_after_a_literal_narrower_than_what_bounds_it
-    // needs). Probe b12.gx no longer reproduces on base-r25 (the naming bug is fixed);
-    // with that fix temporarily undone the lane refuses it: 'a node of an instance is
-    // 'a: string where its definition's check settled i64'. Pins: lambda.rs
-    // settle_tests (two unit tests; the refusal one fails without the check). lang
-    // 24298 pass, census 2967 files 0 verdict/message changes, guicheck +0.13% over
-    // the lane, deep_nesting ok.
     pub(crate) fn settle<R: Rt>(
         &mut self,
         ctx: &CompileCtx<R>,
