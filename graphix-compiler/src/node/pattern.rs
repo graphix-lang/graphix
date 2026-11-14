@@ -398,6 +398,18 @@ pub(super) enum Holder {
     Formal,
 }
 
+/// `t` as a hint writes it: each open cell by the binding whose type it
+/// is, else by the name it was written with, else numbered.
+pub(super) fn written_named(holders: &mut Holders, t: &Type) -> Option<Type> {
+    t.written_form(&mut |tv| match tv.is_bound() {
+        true => None,
+        false => holders
+            .name_cell(tv)
+            .or_else(|| tv.written_own())
+            .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
+    })
+}
+
 /// An [`UndecidedMembers`] refusal of a part of `whole`, the pattern
 /// `holder` holds, told with the bindings whose types the undecided cells
 /// are, a cell no binding names numbered.
@@ -410,15 +422,7 @@ pub(super) fn undecided_members(
 ) -> anyhow::Error {
     let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
     let mut holders = Holders::new(env, None);
-    let mut written = |t: &Type| {
-        t.written_form(&mut |tv| match tv.is_bound() {
-            true => None,
-            false => holders
-                .name_cell(tv)
-                .or_else(|| tv.written_own())
-                .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
-        })
-    };
+    let mut written = |t: &Type| written_named(&mut holders, t);
     let [a, b] = &u.members;
     let (a, b, meanings) = match (written(a), written(b)) {
         (Some(a), Some(b)) => {

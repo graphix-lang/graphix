@@ -1276,6 +1276,105 @@ run!(arm_behind_a_cover_leaves_the_covered_part_open, r#"{
     [f("s", true), f(0, true), f("s", false), f(0, false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
 
+// The cover holds the member whatever its cell becomes, so the cell stays
+// open wherever the cover sorts among the arms' tests: no test that would
+// decide it takes the member first.
+run!(arm_behind_a_cover_leaves_the_covered_part_open_tag_first, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f("s", true), f(0, true), f("s", false), f(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_the_covered_field_open, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => {k: `K, v: x}, false => {k: `L, v: 0} });
+        select *r { {k: `K, v: _} => 1, {k: _, v: 0} => 2, _ => 3 }
+    };
+    let g = |x, b: bool| {
+        let r = &mut (select b { true => {a: x, k: `K}, false => {a: 0, k: `L} });
+        select *r { {a: _, k: `K} => 1, {a: 0, k: _} => 2, _ => 3 }
+    };
+    [f("s", true), f(0, false), g("s", true), g(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 1, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_the_covered_payload_open, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => `P(`K, x), false => `P(`L, 0) });
+        select *r { `P(`K, _) => 1, `P(_, 0) => 2, _ => 3 }
+    };
+    let g = |x, b: bool| {
+        let r = &mut (select b { true => `P(x, `K), false => `P(0, `L) });
+        select *r { `P(_, `K) => 1, `P(0, _) => 2, _ => 3 }
+    };
+    [f("s", true), f(0, false), g("s", true), g(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 1, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_a_cell_inside_the_covered_part_open, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, (x, 1)), false => (`L, (0, 1)) });
+        select *r { (`K, _) => 1, (_, (0, _)) => 2, _ => 3 }
+    };
+    [f("s", true), f(0, true), f("s", false), f(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_both_covered_parts_open, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, _, _) => 1, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 }
+    };
+    [f("s", 5, true), f(5, "s", true), f("s", 5, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_an_abstract_parameter_part_open_tag_first, r#"{
+    type W<'p> = Abstract<'p>;
+    let f = |x, b: bool| {
+        let w = W(select b { true => (`K, x), false => (`L, 0) });
+        select w.0 { (`K, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f("s", true), f(0, true), f("s", false), f(0, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
+
+run!(arm_behind_an_or_cover_leaves_both_covered_parts_open, r#"{
+    let f = |x, y, b: i64| {
+        let r = &mut (select b { 0 => (`K, x), 1 => (`M, y), _ => (`L, 0) });
+        select *r { (`K, _) | (`M, _) => 1, (_, 0) => 3, _ => 4 }
+    };
+    [f("s", 2.5, 0), f("s", 2.5, 1), f("s", 2.5, 2)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 3]); FuseExpect::Jit);
+
+// No test holds the member as it stands (the cover binds a part), and two
+// tests could take it, each deciding another of its cells: which did would
+// follow their place in the arms' union.
+run!(built_part_two_tests_could_take_refused, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 }
+    };
+    [f(5, "s", true), f(5, "s", false)]
+}"#, refused("(`K, 'x, 'y), built into it, could go to (Any, Any, string) or (Any, i64, Any) of the types they test, neither of which holds it as it stands: annotate it, writing for 'x the type of `x`"); FuseExpect::None);
+
+run!(built_part_two_tests_could_take_in_another_order_refused, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (y, x, `K), false => ("a", 0, `L) });
+        select *r { (_, n, `K) => n, (_, 0, _) => 2, ("a", _, _) => 3, _ => 4 }
+    };
+    [f(5, "s", true), f(5, "s", false)]
+}"#, refused("('y, 'x, `K), built into it, could go to (Any, i64, Any) or (string, Any, Any) of the types they test, neither of which holds it as it stands: annotate it, writing for 'y the type of `y`"); FuseExpect::None);
+
+run!(built_part_two_tests_could_take_annotated, r#"{
+    let f = |x: i64, y: string, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 }
+    };
+    let g = |x: i64, y: string, b: bool| {
+        let r = &mut (select b { true => (y, x, `K), false => ("a", 0, `L) });
+        select *r { (_, n, `K) => n, (_, 0, _) => 2, ("a", _, _) => 3, _ => 4 }
+    };
+    [f(5, "s", true), f(5, "s", false), g(5, "s", true), g(5, "s", false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 2, 5, 2]); FuseExpect::Jit);
+
 run!(arm_behind_a_cover_of_a_member_below_an_abstract_parameter, r#"{
     type W<'p> = Abstract<'p>;
     let f = |x, b: bool| {
@@ -1359,6 +1458,15 @@ run!(later_use_decides_a_cell_of_a_covered_member_below_a_reference, r#"{
     x <- "s";
     s
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+run!(later_use_decides_a_cell_of_a_covered_member_tag_first, r#"{
+    let x = never();
+    let b = true;
+    let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+    let s = select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 };
+    x <- "s";
+    s
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
 
 // The arms up to a dead one are judged behind their covers too, so the
 // dead arm is what is refused.

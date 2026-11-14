@@ -121,7 +121,14 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`Uncovered`: over the referent of `` &mut (select b { true => (`K,
   x), false => (`L, 0) }) ``, `(_, 0)` behind `` (`K, _) `` meets no
   value of `x`; a member inside a part, `select (*r, 1)`, is not taken
-  out), and so does
+  out; the settle holds the cells of a member built into such a cell
+  that one of the arms' tests holding no cell holds whatever they
+  become, so no other test decides them by its place in the arms'
+  union, and `x` stays open there with the parts in either order; a
+  member no test holds so that two of them could take, `` (`K, x, y) ``
+  behind `` (`K, n, _) `` beside `(_, 0, _)` and `(_, _, "a")`, is
+  refused once no arm is refused for testing it, naming the bindings to
+  annotate: `built_standing`), and so does
   one those bounds hold that the arms leave open (`Deciding::left_open`:
   over `&mut [x, 0]`, `` [`J, _] `` beside `_` decides the referent
   `Array<Any>`, which holds `x`'s values without `x`), except a

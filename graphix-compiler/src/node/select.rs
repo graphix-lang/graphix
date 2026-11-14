@@ -3,7 +3,7 @@ use super::{
     compiler::compile,
     pattern::{
         ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
-        Tested, rigid_refusal, undecided_members, written_refusal,
+        Tested, rigid_refusal, undecided_members, written_named, written_refusal,
     },
     wake::{self, ArmMask, TrackedFires},
 };
@@ -583,6 +583,10 @@ struct Reach {
     refutable_slice: bool,
     /// What was built into a scrutinee cell the arms decided.
     built: Option<Built>,
+    /// The refusal of a part built into that cell that two of the arms'
+    /// tests could take ([`built_standing`]), for a select no arm of which
+    /// is refused for testing it.
+    apart: Option<anyhow::Error>,
 }
 
 /// The union of the lower bounds of a scrutinee cell the arms decide, as
@@ -602,11 +606,16 @@ impl Reach {
     /// any other scrutinee settles against copies of them, so a name is
     /// typed only where its arm narrows: its part of every member the arm
     /// can match. A copy the settle leaves open, the part an open cell
-    /// inside the scrutinee took, is the arm's own cell again.
+    /// inside the scrutinee took, is the arm's own cell again. A part
+    /// built into an open cell that one of the arms' tests holds whatever
+    /// its cells become keeps them open ([`built_standing`]), and one
+    /// two tests could take that neither holds so is refused, for a
+    /// definition's check (`checking`, where it is).
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
         arms: &[(PatternNode<R>, Node<R>)],
+        checking: Option<&Origin>,
     ) -> Result<Self> {
         let mut preds: LPooled<Vec<&PatternNode<R>>> = LPooled::take();
         // an arm that matches anything before narrowing steers only the
@@ -629,11 +638,13 @@ impl Reach {
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
         let mut built = None;
+        let (mut standing, mut apart) = (OpenCells::new(), None);
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
             if let Type::TVar(tv) = scrut
                 && let Some(cell) = tv.open_cell()
             {
                 let lower = cell.cell_lower();
+                (standing, apart) = built_standing(env, &itype, &lower, checking)?;
                 if !lower.is_empty() {
                     let mut cells: SmallVec<[(ArcStr, TVar); 2]> = SmallVec::new();
                     let typ = Type::Set(Arc::from_iter(lower)).written_form(&mut |tv| {
@@ -888,7 +899,7 @@ impl Reach {
             // literal arms, the read, the write): no check/build difference, verdicts and
             // outputs equal on base-r24 and the lane. probes:
             // ~/ptmp/cr29/scratch/r24/24b/pbas/ (README)
-            // CR claude for claude: [bug/low] A lower bound of a scrutinee cell the arms
+            // XCR claude for claude: [bug/low] A lower bound of a scrutinee cell the arms
             // decide goes to the first member of the arms' union that can take it, which
             // may decide a cell a later member would hold as it stands: `let f = |x, b:
             // bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select
@@ -905,6 +916,44 @@ impl Reach {
             // goes to a member that holds it deciding no cell before one that decides
             // one. probes: ~/ptmp/cr29/scratch/r23/23d/lvr-rev/{r1.txt,r4.txt} (run with
             // rb.sh), r1.txt lines 3 to 5 (lower-bound-first-member-01)
+            // 2026-11-14 claude: Reproduced on base-r24: the probe types x i64 with the tag
+            // first and leaves it open with the tag last, so f("s", true) is refused in one
+            // order of the parts and prints [1, 2] in the other; the struct, variant
+            // payload, nested and top-level forms alike, and an abstract's parameter. A
+            // pick by position, so not closed by D36. Fixed in the settle (Reach::new,
+            // select::built_standing): a part built into the scrutinee's cell that one of
+            // the arms' tests holding no cell holds whatever its cells become has those
+            // cells held rigid through the settle, so no test that would decide them takes
+            // the part first and x stays open in both orders, as lower-view-reach-01's pins
+            // and the skill say of the lucky order; a cell another part needs decided is
+            // not held. A part no such test holds so that two of them could take ((`K, x,
+            // y) behind (`K, n, _), beside (_, 0, _) and (_, _, "a"): base-r24 decides y
+            // with the tag first and x with it last) is refused once no arm is refused for
+            // testing it, "could go to (Any, Any, string) or (Any, i64, Any) of the types
+            // they test, neither of which holds it as it stands: annotate it, writing for
+            // 'x the type of `x`"; the annotated twins run. Not taken: refusing wherever
+            // two tests could take the part, as lane 24d's UndecidedTaker does for the same
+            // union written as an annotation (let r: [(Any, i64), (`K, Any)] = (`K, x)): it
+            // turns 7 accepting pins of lower-view-reach-01 and the skill's ok line into
+            // refusals (tests-refuse-only.log). The CR's bind form ((`K, _) => 1, (_, n) =>
+            // n + 1) types x i64 in both orders on base-r24 and here, and refuses x: string
+            // too: no position decides it, left. Pins, lang::select_undecided:
+            // arm_behind_a_cover_leaves_{the_covered_part_open_tag_first,
+            // the_covered_field_open, the_covered_payload_open,
+            // a_cell_inside_the_covered_part_open, both_covered_parts_open,
+            // an_abstract_parameter_part_open_tag_first},
+            // arm_behind_an_or_cover_leaves_both_covered_parts_open and
+            // later_use_decides_a_cell_of_a_covered_member_tag_first fail in all four modes
+            // with the hold undone; built_part_two_tests_could_take_refused and
+            // .._in_another_order_refused fail with the refusal undone;
+            // built_part_two_tests_could_take_annotated holds either way. Differential
+            // (gen.py: 8172 selects, each written in every order of its parts as a tuple, a
+            // struct and a variant, called with an i64 and a string): 79 families whose
+            // verdict follows the order on base-r24, none here; 95 newly accepted, each the
+            // mirror of one base-r24 runs, none newly refused; the 1588 accepted print what
+            // the arms say fused, --no-fusion, GRAPHIX_PAR=force and GRAPHIX_NO_SUBST=1, no
+            // GRAPHIX_ELAB_AUDIT report. Census 2967 files: 0 verdicts, 0 messages. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/lbfm/ (README)
             // CR claude for claude: [bug/low] Two undecided values that meet in one
             // part of a variant scrutinee are made one type by arms that bind that
             // part beside literals, and the refusal names no annotation: `let f = |x,
@@ -932,7 +981,10 @@ impl Reach {
             // (outer-cells-take-arm-cells-01)
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
+                    let gates: SmallVec<[_; 2]> =
+                        standing.iter().map(|c| c.open_rigid()).collect();
                     let _ = itype.contains_ordered(env, scrut);
+                    drop(gates)
                 }
                 false => {
                     // CR claude for claude: [bug/low] A written test's own variable
@@ -1017,6 +1069,7 @@ impl Reach {
             guarded_slice: false,
             refutable_slice: false,
             built,
+            apart,
         })
     }
 
@@ -3421,7 +3474,8 @@ impl<R: Rt> Select<R> {
             }
         }
         let scrut = self.arg.node.typ().clone();
-        let mut reach = Reach::new(&ctx.env, &scrut, &self.arms)?;
+        let at = checking.then_some(&*self.spec.ori);
+        let mut reach = Reach::new(&ctx.env, &scrut, &self.arms, at)?;
         deciding.decided(&mut decided);
         let mut reached: SmallVec<[Reached; 16]> = SmallVec::new();
         let spec_pats: &[_] = match &self.spec.kind {
@@ -3646,6 +3700,9 @@ impl<R: Rt> Select<R> {
                     lower.as_ref(),
                     false,
                 )?;
+                if let Some(e) = reach.apart.take() {
+                    return Err(e);
+                }
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
                     undecided.drain().map(|(_, c)| c).collect();
@@ -3929,6 +3986,92 @@ pub(super) fn lower_view(t: &Type) -> Option<Type> {
         v
     }
     go(t, &mut LPooled::take())
+}
+
+/// The open cells of the parts built into a scrutinee cell the arms
+/// decide (`lower`, its lower bounds) that the arms' settle holds as they
+/// stand: those of a part one of the arms' `tests` that hold no cell holds
+/// whatever its cells become, so no other test decides them by its place
+/// in the arms' union, but a cell another part needs decided. With them,
+/// when `checking`, the refusal of the first part no test holds so that
+/// two of them could take.
+fn built_standing(
+    env: &Env,
+    tests: &Type,
+    lower: &[Type],
+    checking: Option<&Origin>,
+) -> Result<(OpenCells, Option<anyhow::Error>)> {
+    let (mut held, mut apart) = (OpenCells::new(), None);
+    if lower.is_empty() {
+        return Ok((held, apart));
+    }
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    union_members(env, tests, &mut members)?;
+    members.retain(|m| !m.has_unbound());
+    if members.is_empty() {
+        return Ok((held, apart));
+    }
+    let mut built: SmallVec<[Type; 8]> = SmallVec::new();
+    let mut decided = OpenCells::new();
+    for l in lower {
+        union_members_with(env, l, &mut built, &mut |tv| decided.push(tv.clone()))?
+    }
+    for l in built.iter() {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        crate::typ::settle::position_cells(l, &mut cells);
+        let (rigid, open): (OpenCells, OpenCells) =
+            cells.values().filter_map(|tv| tv.open_cell()).partition(|c| c.is_rigid());
+        if open.is_empty() {
+            continue;
+        }
+        let all: OpenCells = rigid.iter().chain(open.iter()).cloned().collect();
+        let mut stands = false;
+        for m in members.iter() {
+            stands = stands || m.contains_holding(env, l, &all)?
+        }
+        if stands {
+            held.extend(open);
+            continue;
+        }
+        decided.extend(open);
+        let Some(at) = checking.filter(|_| apart.is_none()) else { continue };
+        let mut takers: SmallVec<[&Type; 2]> = SmallVec::new();
+        for m in members.iter() {
+            if takers.len() < 2 && m.contains_holding(env, l, &rigid)? {
+                takers.push(m)
+            }
+        }
+        if let [a, b] = takers[..] {
+            apart = Some(apart_refusal(env, l, [a, b], at))
+        }
+    }
+    held.retain(|c| !decided.iter().any(|d| d.stands_for() == c.stands_for()));
+    Ok((held, apart))
+}
+
+/// The refusal of `built`, which either of `takers` could take and
+/// neither holds as it stands, naming the binding whose type each of its
+/// open cells is.
+fn apart_refusal(
+    env: &Env,
+    built: &Type,
+    takers: [&Type; 2],
+    at: &Origin,
+) -> anyhow::Error {
+    let mut holders = Holders::new(env, None);
+    let mut written =
+        |t: &Type| written_named(&mut holders, t).unwrap_or_else(|| t.clone());
+    let (built, [a, b]) = (written(built), takers.map(&mut written));
+    let meanings = holders.meanings(at);
+    let annotate = match meanings.is_empty() {
+        true => format_compact!("annotate the scrutinee's type where it is built"),
+        false => format_compact!("annotate it{meanings}"),
+    };
+    anyhow!(
+        "the arms decide this scrutinee's type from their patterns, and {built}, built \
+         into it, could go to {a} or {b} of the types they test, neither of which holds \
+         it as it stands: {annotate}"
+    )
 }
 
 /// What reaches an arm of a select, and how many of [`Reach::covered`]
