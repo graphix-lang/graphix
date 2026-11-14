@@ -347,6 +347,14 @@ struct PayloadReps<'a> {
 /// or-pattern.
 type AlternativeParts = AHashMap<BindId, SmallVec<[SmallVec<[Type; 4]>; 2]>>;
 
+/// The names of `parts` in the order the pattern minted them: a map's own
+/// order differs between runs, and the first bind refused is the one told.
+fn in_bind_order<V>(parts: &AHashMap<BindId, V>) -> SmallVec<[BindId; 8]> {
+    let mut ids: SmallVec<[BindId; 8]> = parts.keys().copied().collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Bind the cell of `id` at the union of `ts`.
 fn bind_union(env: &Env, id: BindId, ts: &[Type], members: bool) -> Result<()> {
     if let Some(b) = env.by_id.get(&id) {
@@ -375,9 +383,9 @@ fn join_alternatives(
 ) -> Result<()> {
     let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
     for (_, _, own) in alternatives {
-        for id in own.keys() {
-            if !ids.contains(id) {
-                ids.push(*id)
+        for id in in_bind_order(own) {
+            if !ids.contains(&id) {
+                ids.push(id)
             }
         }
     }
@@ -1859,8 +1867,8 @@ impl StructPatternNode {
                             }
                         }
                         None => {
-                            for (id, ts) in parts.iter() {
-                                bind_union(env, *id, ts, members)?
+                            for id in in_bind_order(&parts) {
+                                bind_union(env, id, &parts[&id], members)?
                             }
                         }
                     }

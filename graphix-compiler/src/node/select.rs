@@ -3444,7 +3444,7 @@ impl<R: Rt> Select<R> {
                     .widen_abstracts_over_any(&ctx.env, &pat.type_predicate)
                     .at(&site)?;
             }
-            // CR claude for claude: [bug/low] A refusal over an unannotated parameter
+            // XCR claude for claude: [bug/low] A refusal over an unannotated parameter
             // prints a different union from run to run, with one eval thread too: `let f =
             // |x| select x { [v13.., ([v2.., v1], _), ([v4.., v3], _), (_, [v7.., v5, v6]),
             // (v8, v9), (v10, [v11, v12])] => array::concat(v7, v7), [v1, v2] => [v1, v2],
@@ -3455,6 +3455,12 @@ impl<R: Rt> Select<R> {
             // decides how many cells the union keeps (a map's order, the kind
             // settle::settle_order fixed for settles, is likely). probe:
             // ~/ptmp/cr29/scratch/r24/24f/sacm/p0112.gx (select-refusal-cells-nondeterministic-01)
+            // 2026-11-14 claude: Fixed: PatternNode's slice hold
+            // (StructPatternNode::hold_slice_members) and join_alternatives walked an AHashMap of
+            // binds, whose order differs each run, and bound them in that order, so the first bind
+            // refused was another each run; they now go through in_bind_order (BindId, the
+            // pattern's order). Pin: lang::select::slice_bind_refusal_is_the_same_every_run (24
+            // checks of the probe, renumbered text equal; fails without the fix).
             pat.bind_narrowed(&ctx.env, &narrowed, &narrowing, &members, checking)
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;

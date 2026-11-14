@@ -13709,3 +13709,32 @@ run!(
     prints(r#""x5""#);
     FuseExpect::Jit
 );
+
+// A refusal over the binds of a slice pattern names the same bind each run.
+#[tokio::test]
+async fn slice_bind_refusal_is_the_same_every_run() -> Result<()> {
+    let src = r#"{
+        let f = |x| select x {
+            [v13.., ([v2.., v1], _), ([v4.., v3], _), (_, [v7.., v5, v6]), (v8, v9), (v10, [v11, v12])] => array::concat(v7, v7),
+            [v1, v2] => [v1, v2],
+            [v1] => v1,
+            v1 => [v1]
+        };
+        0
+    }"#;
+    let mut first: Option<String> = None;
+    for _ in 0..24 {
+        let e = graphix_package_core::testing::refusal(src, crate::TEST_REGISTER).await?;
+        let e = graphix_package_core::testing::renumbered(&e).to_string();
+        match &first {
+            None => first = Some(e),
+            Some(f) => assert_eq!(f, &e),
+        }
+    }
+    let first = first.unwrap_or_default();
+    assert!(
+        first.contains("Array<['_0: unbound, '_1: unbound]> does not contain Any"),
+        "{first}"
+    );
+    Ok(())
+}
