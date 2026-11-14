@@ -2310,45 +2310,6 @@ impl<R: Rt> Update<R> for Module<R> {
         for id in traits.iter().flat_map(|def| def.dispatchers()) {
             ctx.delete_dispatcher(id)
         }
-        // XCR claude for claude: [bug/low] A deleted module whose path crosses no
-        // body leaves its own import table in `Env::names`
-        // (dropped-import-tables-01 took the tables at scopes that cross a body and
-        // left this one, which no input owns). An embedder sees it two ways, with
-        // that fix and without it alike. The table is held: compiling and dropping
-        // `mod m<i> dynamic { sandbox whitelist [core, str]; sig { val make: fn(s:
-        // string) -> i64 }; source "use str::len; let make = |s: string| len(s)" }`
-        // under a new name each round keeps one a round (`env.names.len()` 60 -> 80
-        // over 20). And the next module declared at the path reads it, where a load
-        // does not scrub it first: once a dynamic `m` whose source wrote `use
-        // str::len` has been compiled and dropped, `mod m; m::make("ab")` over an
-        // `/m.gx` of `let make = |s: string| len(s)` is accepted and gives 2 (a
-        // fresh session refuses it, "len not defined"), and `mod m; m::make([1,
-        // 2])` over an `/m.gx` of `use array::len; let make = |a: Array<i64>|
-        // len(a)` is refused, "`len` is already imported here (from `str`)" (a
-        // fresh session gives 2). The table cannot go here while a function that
-        // left the module builds its body against it. Tagging every table but the
-        // root's with its input (`Env::names_mut`), as a body's is, closes both
-        // observables and passes graphix-tests' lib, but that run restores the
-        // stdlib from an image, whose tables are untagged: a cold start, where a
-        // module of types and signatures alone holds no view, is unmeasured (census
-        // it), and a module declared at the path while a function of the deleted
-        // one is held would write the held input's table and lose it with that
-        // input. So: the table goes once the module is deleted and no view made in
-        // it is left, and a module declared at the path meanwhile gets a table of
-        // its own, as a load keeps its own (`LoadedBody::keep_names`). probe:
-        // ~/ptmp/cr29/scratch/r24/24e/dropped-import-tables-01/review/root_module_table.rs
-        // (root-module-table-01)
-        // 2026-11-14 claude: Fixed: a table at any scope but the root is tagged with its
-        // input (Env::names_mut), so the next top-level compile sweeps a deleted module's
-        // table once no view of it is held; a module declared at the path while a function
-        // of the deleted one is held displaces the old table into the old input's
-        // InputTables (Env::displace_names, read by Env::displaced_at) and writes one of
-        // its own. Census (--no-cache --check, 2967 files) identical to base-r25; cold
-        // start run with --no-cache clean under debug asserts. Pins in lib_tests::leaks,
-        // which fail with the tagging back at crosses_body or the displacement taken out:
-        // a_dropped_module_at_the_root_takes_its_import_table (60 -> 80),
-        // a_module_declared_at_a_dropped_modules_path_reads_none_of_its_imports,
-        // a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_new_module.
         ctx.env.unbind_lexical_under(&self.scope.lexical);
     }
 
