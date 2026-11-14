@@ -121,7 +121,10 @@ signature then carries; a judgment against a signature whose bounds are
 fixed (`Type::implies`, an interface's bounds: `ContainsFlags::Sealed`)
 merges an open cell into a rigid one only where the open cell's own
 conjuncts admit it, and there a rigid cell holds a predicate only where
-one of its own conjuncts implies it. The witness
+one of its own conjuncts implies it (`Ordered` implies `Discernible`,
+`Singleton` implies `OneNumber`), a member of a union as well as a cell
+alone: `NoError` and `OneNumber` read such a member as its caller's pick
+(their sections below). The witness
 of a cell with lower bounds is their union, so every settle binds it
 there, one a ⊥ was produced into as well (`CellFact::BottomFed`)
 included; a probe of a trait bound reads it so, and a commit settles it.
@@ -2475,7 +2478,14 @@ adds it; it is written, for a nullable number of one numeric type:
 
 - `OneNumber ⊇ t` (`Type::one_number_holds`) counts `t`'s numeric
   members the way `Singleton` counts its members; open cells are
-  admitted.
+  admitted. Against a fixed signature (`ContainsFlags::Sealed`) a rigid
+  member is its caller's pick (`UnionParts::count_rigid_numbers`): it
+  counts as the numeric types every closed type among its conjuncts
+  holds, all of them where it has none; where a conjunct implies
+  `OneNumber` and more than one of those is new to the union, as one
+  more, which no other member is known to be. So ``['a, `X]`` holds
+  under `'a: Number + OneNumber` and not under `'a: Number`, `['a, i64]`
+  under `'a: i64` and not under `'a: Number + OneNumber`.
 - A bind of a `OneNumber` cell hands the conjunct to its binding's open
   members while none of its members is numeric
   (`Type::require_one_number`). Beside a numeric member an open one may
@@ -2542,7 +2552,9 @@ it in its signature.
 
 - `NoError ⊇ t` (`Type::may_be_error` negated) reads `t`'s members
   through bindings and type references; an error nested in a collection
-  is no member. An open cell is admitted.
+  is no member. An open cell is admitted; against a fixed signature
+  (`ContainsFlags::Sealed`) a rigid member is its caller's pick, an
+  error unless one of its conjuncts implies `NoError`.
 - A bind of a `NoError` cell hands the conjunct to its binding's open
   members (`Type::require_no_error`).
 - A `NoError` cell below a union holding errors takes the union without

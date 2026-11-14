@@ -2083,12 +2083,14 @@ fn admits_lower(
 impl Type {
     /// Whether the declared bound `self` implies the bound `c`: it is `c`,
     /// or holds it of every type it admits (a predicate only where none of
-    /// those has an unknown part), and `Ordered` implies `Discernible`.
+    /// those has an unknown part), `Ordered` implies `Discernible` and
+    /// `Singleton` implies `OneNumber`.
     pub fn implies(&self, env: &Env, c: &Type) -> Result<bool> {
         if strictly_identical(self, c)
             || matches!(
                 (self, c),
                 (Type::Bound(Bound::Ordered), Type::Bound(Bound::Discernible))
+                    | (Type::Bound(Bound::Singleton), Type::Bound(Bound::OneNumber))
             )
         {
             return Ok(true);
@@ -3718,17 +3720,13 @@ impl Type {
         }
         // a fixed signature's variable is any type its conjuncts admit: it
         // holds a predicate only where one of them implies it
-        if flags.contains(ContainsFlags::Sealed)
+        let sealed = flags.contains(ContainsFlags::Sealed);
+        if sealed
             && let (Self::Bound(_), Self::TVar(tv)) = (self, t)
             && tv.binding().is_none()
             && tv.is_rigid()
         {
-            for c in tv.cell_constraints().iter() {
-                if c.implies(env, self)? {
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
+            return tv.conjunct_implies(env, self);
         }
         match (self, t) {
             (Self::Bound(Bound::Concrete), t) => Ok(t.concrete_holds(env)),
@@ -3739,9 +3737,9 @@ impl Type {
             (_, Self::Bound(Bound::Function)) => Ok(false),
             (Self::Bound(Bound::Singleton), t) => t.singleton_holds(env, commit),
             (_, Self::Bound(Bound::Singleton)) => Ok(false),
-            (Self::Bound(Bound::OneNumber), t) => t.one_number_holds(env, commit),
+            (Self::Bound(Bound::OneNumber), t) => t.one_number_holds(env, commit, sealed),
             (_, Self::Bound(Bound::OneNumber)) => Ok(false),
-            (Self::Bound(Bound::NoError), t) => Ok(!t.may_be_error(env, commit)?),
+            (Self::Bound(Bound::NoError), t) => Ok(!t.may_be_error(env, commit, sealed)?),
             (_, Self::Bound(Bound::NoError)) => Ok(false),
             (Self::Bound(Bound::Discernible), t) => {
                 Ok(t.indiscernible(env, Open::Benign, false).is_none())

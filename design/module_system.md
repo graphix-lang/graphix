@@ -490,7 +490,15 @@ variable only where one of the variable's bounds implies it, as for a
 paired cell: ``'p: Singleton`` stands for ``'a: [i64, string] +
 Singleton``, never for ``'a: [i64, string]`` (pins: `lang::interfaces`,
 `an_unpaired_variable_*`, `a_variable_inside_a_positions_bound_*`,
-`a_paired_variable_*`).
+`a_paired_variable_*`). Where the cell stands for a union the signature
+writes around a variable, the variable is still any type its bounds
+admit: ``'q: OneNumber`` holds ``x: ['a, `X]`` under ``'a: Number +
+OneNumber``, never under ``'a: Number``, and ``'q: NoError`` holds it
+only where a bound of `'a` implies `NoError`; the refusal names the bound
+to declare (`design/tvar_constraints.md`, the two predicates' sections;
+pins: `a_one_number_bound_*`, `a_no_error_bound_*`,
+`a_one_number_variable_*`, `a_variable_bounded_by_*`,
+`a_singleton_variable_*`).
 
 A variable only bounds name has no place of its own at an instance, which
 decides it where a bound naming it is held, by what stands there, or as

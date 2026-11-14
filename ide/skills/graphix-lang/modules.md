@@ -153,6 +153,11 @@ another shape than the signature's (``'q: ['p, `X, `Y]`` under ``'b: ['a,
 `X]``) is judged by what its own variables admit: `'p` stands for `'a`
 only where `'p`'s bound holds every type `'a`'s does (`'p: Singleton`
 only where `'a` declares `Singleton` or a bound that implies it). A
+signature variable inside a union is any type its bounds admit there
+too: ``x: ['a, `X]`` over `'q: OneNumber |x: 'q|` is refused under `'a:
+Number` (`declare 'a: OneNumber`) and holds under `'a: Number +
+OneNumber` (`Singleton` implies it); over `'q: NoError |x: 'q|` it holds
+only where a bound of `'a` admits no error. A
 variable only bounds name is one type wherever they name it. Named at two
 places of the signature it is its own bound's type, which must hold both
 (`'p: [i64, string]`, `'p: Any`); with no bound that is one type (none, a

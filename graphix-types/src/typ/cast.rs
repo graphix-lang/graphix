@@ -4457,7 +4457,7 @@ pub(crate) mod tests {
         assert!(!holds && n <= 2 * 39, "{n} names");
         assert!(names(&c).0);
         crate::typ::tvar::MAY_BE_ERROR_NAMES.with(|n| n.set(0));
-        assert!(!t.may_be_error(&env, false).unwrap());
+        assert!(!t.may_be_error(&env, false, false).unwrap());
         assert_eq!(crate::typ::tvar::MAY_BE_ERROR_NAMES.with(|n| n.get()), 39);
     }
 

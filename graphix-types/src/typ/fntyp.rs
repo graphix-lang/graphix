@@ -2621,6 +2621,10 @@ impl FnType {
             // it', and it waits on nothing of sig-unpaired-apart-01. probes:
             // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/ (README, the table under
             // 'with k4-drop.patch')
+            // 2026-11-13 claude: Round 24 (lane 24e, fixer of iface-predicate-member-01):
+            // that CR's hole is closed at the judgment in this commit (a predicate asked
+            // of a union holding a signature variable reads the variable as its caller's
+            // pick). The held-back k4-drop.patch was not run again over it.
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2645,7 +2649,7 @@ impl FnType {
                     }
                 }
                 Some(sig_type) => {
-                    // CR claude for claude: [bug/medium] A paired implementation cell's
+                    // XCR claude for claude: [bug/medium] A paired implementation cell's
                     // predicate conjunct is asked of the signature's concrete type as that type
                     // stands, where a signature variable that is a member of its union does not
                     // count as the types its bounds admit, though the caller may pick any of
@@ -2690,6 +2694,28 @@ impl FnType {
                     // signature variables (a bare member taking two members of a bound, `['a, `X]`) is judged
                     // by this arm too, a predicate asked of the union as it stands. probes:
                     // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/{z5,z7,z7n,z7m,z10,z11}/main.gx
+                    // 2026-11-13 claude: Round 24 (lane 24e fixer): fixed at the judgment. Under
+                    // ContainsFlags::Sealed, OneNumber and NoError asked of a union read a rigid member as
+                    // its caller's pick: NoError holds only where a conjunct of the variable implies it
+                    // (Type::may_be_error), OneNumber counts the variable as the numeric types every closed
+                    // type among its conjuncts holds, or as one more where a conjunct implies OneNumber and
+                    // several are new (UnionParts::count_rigid_numbers); Singleton already refused a variable
+                    // beside a member. Type::implies now knows Singleton implies OneNumber, so 'a: Number +
+                    // Singleton keeps holding an implementation's OneNumber (a16, a18; the bare a17 was
+                    // refused before and holds now). The refusal names the bound: 'declare 'a: OneNumber'. p9
+                    // p9n, a field (a15), a typedef's union (a2), under a bound (a6), a return (b8), an
+                    // unbounded variable (a13), a declared variable beside another number (a9) and a
+                    // bound-only variable settled to ['a, i64] (d1) all passed --check on base-r24 and failed
+                    // at the instance (b8 ran), and are refused now; their twins run. Newly refused though
+                    // every instance holds: a variable in a union whose only bound has a variable of its own
+                    // ('a: Array<'c> in ['a, null] under NoError, c2), as the bare variable always was (c1);
+                    // 'a: Array<'c> + NoError holds. Pins, lang::interfaces: a_one_number_bound_*,
+                    // a_no_error_bound_*, a_one_number_variable_beside_a_number_may_be_another,
+                    // an_unpaired_one_number_variable_*, a_variable_bounded_by_*, a_singleton_variable_*: the
+                    // 9 refusal pins fail in all 4 modes with sealed passed as false in
+                    // Type::contains_dispatch, the 2 Singleton pins with the implication removed. Census 0/0
+                    // of 2967 against base-r24. probes:
+                    // ~/ptmp/cr29/scratch/r24/24e/iface-predicate-member-01/ (README)
 
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside
@@ -2720,9 +2746,25 @@ impl FnType {
                             )
                             .unwrap_or(false);
                         if !ok {
+                            let member_predicate = matches!(
+                                impl_tc,
+                                Type::Bound(Bound::OneNumber | Bound::NoError)
+                            );
+                            let undeclared = match member_predicate {
+                                true => sig_type.rigid_member_without(env, &impl_tc)?,
+                                false => None,
+                            };
+                            let declare = match undeclared {
+                                None => CompactString::default(),
+                                Some(v) => format_compact!(
+                                    ": {v} is any type its bounds admit; declare {v}: \
+                                     {impl_tc}"
+                                ),
+                            };
                             bail!(
                                 "signature has concrete type {sig_type}, which the \
-                                 implementation constraint {impl_tc} does not admit{}",
+                                 implementation constraint {impl_tc} does not \
+                                 admit{}{declare}",
                                 one_type(&impl_tc)
                             )
                         }

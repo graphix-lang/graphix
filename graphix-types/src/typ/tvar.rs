@@ -2593,6 +2593,17 @@ impl TVar {
         self.read().cell.read().constraints.clone()
     }
 
+    /// Whether one of the cell's conjuncts implies the bound `c`
+    /// ([`Type::implies`]).
+    pub(crate) fn conjunct_implies(&self, env: &Env, c: &Type) -> Result<bool> {
+        for own in self.cell_constraints().iter() {
+            if own.implies(env, c)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// The cell's lower bounds (cloned out).
     pub fn cell_lower(&self) -> SmallVec<[Type; 1]> {
         self.read().cell.read().lower.clone()
@@ -4003,19 +4014,36 @@ impl Type {
 
     /// Whether `OneNumber ⊇ self` holds as the type stands: at most one
     /// numeric type among its members, read as [`Self::singleton_holds`]
-    /// reads them.
-    pub(crate) fn one_number_holds(&self, env: &Env, commit: bool) -> Result<bool> {
+    /// reads them. Against a fixed signature (`sealed`) a rigid open
+    /// member counts as the numeric types its caller may pick
+    /// ([`UnionParts::count_rigid_numbers`]).
+    pub(crate) fn one_number_holds(
+        &self,
+        env: &Env,
+        commit: bool,
+        sealed: bool,
+    ) -> Result<bool> {
         let mut parts = UnionParts::new(Measure::Numbers);
         self.union_parts(Some((env, commit)), &mut parts)?;
+        if sealed {
+            parts.count_rigid_numbers(env)?
+        }
         Ok(parts.known <= 1)
     }
 
     /// Whether a value of `self` may be an error as the type stands: a
     /// member is an `Error`, holds the primitive `error` or is `Any`.
     /// `NoError ⊇ self` is its negation; an open member may be anything
-    /// its own conjuncts admit and is not counted.
-    pub(crate) fn may_be_error(&self, env: &Env, commit: bool) -> Result<bool> {
-        self.may_be_error_past(env, commit, &mut LPooled::take())
+    /// its own conjuncts admit and is not counted, but against a fixed
+    /// signature (`sealed`) a rigid one is its caller's pick: an error
+    /// unless one of its conjuncts implies `NoError`.
+    pub(crate) fn may_be_error(
+        &self,
+        env: &Env,
+        commit: bool,
+        sealed: bool,
+    ) -> Result<bool> {
+        self.may_be_error_past(env, (commit, sealed), &mut LPooled::take())
     }
 
     /// [`Self::may_be_error`], each name expanded once a walk: one met
@@ -4023,7 +4051,7 @@ impl Type {
     fn may_be_error_past(
         &self,
         env: &Env,
-        commit: bool,
+        (commit, sealed): (bool, bool),
         named: &mut LPooled<Vec<RefKey>>,
     ) -> Result<bool> {
         ensure_sufficient(|| match self {
@@ -4031,15 +4059,18 @@ impl Type {
             Type::Primitive(p) => Ok(p.contains(netidx_value::Typ::Error)),
             Type::Set(ts) => {
                 for t in ts.iter() {
-                    if t.may_be_error_past(env, commit, named)? {
+                    if t.may_be_error_past(env, (commit, sealed), named)? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
             Type::TVar(tv) => match tv.binding() {
+                Some(b) => b.may_be_error_past(env, (commit, sealed), named),
+                None if sealed && tv.is_rigid() => {
+                    Ok(!tv.conjunct_implies(env, &Type::Bound(Bound::NoError))?)
+                }
                 None => Ok(false),
-                Some(b) => b.may_be_error_past(env, commit, named),
             },
             Type::Ref(tr) => {
                 if let Some(r) = tr.resolve_peek(env) {
@@ -4052,12 +4083,29 @@ impl Type {
                 #[cfg(test)]
                 MAY_BE_ERROR_NAMES.with(|n| n.set(n.get() + 1));
                 match self.lookup_ref_with(env, commit)? {
-                    Some(t) => t.may_be_error_past(env, commit, named),
+                    Some(t) => t.may_be_error_past(env, (commit, sealed), named),
                     None => Ok(true),
                 }
             }
             _ => Ok(false),
         })
+    }
+
+    /// A rigid open member of `self` read as a union, none of whose
+    /// conjuncts implies the bound `c`.
+    pub(crate) fn rigid_member_without(
+        &self,
+        env: &Env,
+        c: &Type,
+    ) -> Result<Option<TVar>> {
+        let mut parts = UnionParts::new(Measure::Members);
+        self.union_parts(Some((env, false)), &mut parts)?;
+        for tv in parts.open.iter().filter(|tv| tv.is_rigid()) {
+            if !tv.conjunct_implies(env, c)? {
+                return Ok(Some(tv.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// `self` without the members a value of which may be an error, its
@@ -4091,7 +4139,7 @@ impl Type {
                         true
                     }),
                 },
-                Type::Ref(_) if t.may_be_error(env, false)? => {
+                Type::Ref(_) if t.may_be_error(env, false, false)? => {
                     go(&t.lookup_ref(env)?, env, out)
                 }
                 t => Ok({
@@ -6853,6 +6901,37 @@ impl UnionParts {
                 }
             }
         }
+    }
+
+    /// Count each rigid open member, a fixed signature's variable, as the
+    /// numeric types its caller may pick: those every closed type among
+    /// its conjuncts holds, or one more where a conjunct implies
+    /// `OneNumber` and several of them are new.
+    fn count_rigid_numbers(&mut self, env: &Env) -> Result<()> {
+        let one_number = Type::Bound(Bound::OneNumber);
+        let open = mem::take(&mut self.open);
+        for (i, tv) in open.iter().enumerate() {
+            if !tv.is_rigid() || open[..i].iter().any(|o| o.same_cell(tv)) {
+                continue;
+            }
+            let mut numbers = netidx_value::Typ::number();
+            for c in tv.cell_constraints().iter() {
+                if !(c.is_predicate() || c.is_trait_ref(env) || c.holds_unknown(env)) {
+                    let mut own = UnionParts::new(Measure::Numbers);
+                    c.union_parts(Some((env, false)), &mut own)?;
+                    numbers &= own.prims;
+                }
+            }
+            let new = (numbers & !self.prims).len();
+            if new > 1 && tv.conjunct_implies(env, &one_number)? {
+                self.known += 1
+            } else {
+                self.prims |= numbers;
+                self.known += new
+            }
+        }
+        self.open = open;
+        Ok(())
     }
 
     /// What each open member is narrowed to for the union to be one

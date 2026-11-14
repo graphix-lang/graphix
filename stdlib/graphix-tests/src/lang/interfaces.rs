@@ -1854,6 +1854,196 @@ run!(
     "/test/m.gx" => "let f = 'p: Singleton, 'q: [Array<'p>, null] |x: 'q| -> i64 0"
 );
 
+// A member predicate (`OneNumber`, `NoError`) on an implementation
+// variable that stands for a union of the signature's holds of every
+// type a caller may pick: a signature variable that is a member of the
+// union is whatever its bounds admit.
+run!(
+    a_one_number_bound_over_a_union_holding_a_variable_must_be_declared,
+    refused("signature has concrete type ['a, `X], which the implementation constraint OneNumber does not admit: 'a is any type its bounds admit; declare 'a: OneNumber"),
+    "/test.gx" => "mod m; let result = { let v: [i64, f64, `X] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number>(x: ['a, `X]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_one_number_bound_over_a_union_holding_a_variable_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, `X] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber>(x: ['a, `X]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+);
+
+run!(
+    a_no_error_bound_over_a_union_holding_a_variable_must_be_declared,
+    refused("signature has concrete type ['a, `X], which the implementation constraint NoError does not admit: 'a is any type its bounds admit; declare 'a: NoError"),
+    "/test.gx" => "mod m; let result = { let v: [i64, Error<`E>, `X] = error(`E); m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: [i64, Error<`E>]>(x: ['a, `X]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_no_error_bound_over_a_union_holding_a_variable_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, `X] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: [i64, Error<`E>] + NoError>(x: ['a, `X]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+);
+
+run!(
+    a_no_error_bound_over_a_union_holding_an_unbounded_variable_must_be_declared,
+    refused("signature has concrete type [null, 'a], which the implementation constraint NoError does not admit: 'a is any type its bounds admit; declare 'a: NoError"),
+    "/test.gx" => "mod m; let result = { let v: [Error<`E>, null] = error(`E); m::f(v) }",
+    "/test/m.gxi" => "val f: fn(x: ['a, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_no_error_bound_over_a_union_holding_a_variable_no_error_can_be_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, null] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number>(x: ['a, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+);
+
+// The variable's one numeric type is the caller's pick too: another
+// beside it makes two, unless its bounds leave it no other.
+run!(
+    a_one_number_variable_beside_a_number_may_be_another,
+    refused("signature has concrete type [i64, 'a], which the implementation constraint OneNumber does not admit"),
+    "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber>(x: ['a, i64]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_bounded_by_the_number_beside_it_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, null] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: i64>(x: ['a, i64, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+);
+
+run!(
+    a_variable_bounded_by_a_type_of_one_number_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, string, null] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: ['a, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+);
+
+// The union may sit inside the signature's type, behind a typedef or
+// under a bound of the implementation's.
+run!(
+    a_one_number_bound_over_a_union_in_a_field_must_be_declared,
+    refused("signature has concrete type [null, 'a], which the implementation constraint OneNumber does not admit: 'a is any type its bounds admit; declare 'a: OneNumber"),
+    "/test.gx" => "mod m; let result = { let v: {a: [i64, f64, null]} = {a: i64:1}; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number>(x: {a: ['a, null]}) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber |x: {a: 'p}| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_one_number_bound_over_a_union_in_a_field_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: {a: [i64, null]} = {a: i64:1}; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber>(x: {a: ['a, null]}) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber |x: {a: 'p}| -> i64 0"
+);
+
+run!(
+    a_one_number_bound_over_a_typedefs_union_must_be_declared,
+    refused("signature has concrete type [null, 'a], which the implementation constraint OneNumber does not admit: 'a is any type its bounds admit; declare 'a: OneNumber"),
+    "/test.gx" => "mod m; let result = { let v: [i64, f64, null] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "type Opt<'x> = ['x, null]; val f: fn<'a: Number>(x: Opt<'a>) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_one_number_bound_over_a_typedefs_union_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, null] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "type Opt<'x> = ['x, null]; val f: fn<'a: Number + OneNumber>(x: Opt<'a>) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+);
+
+run!(
+    a_one_number_bound_under_a_bound_over_a_union_must_be_declared,
+    refused("signature has concrete type Array<['a, `X]>, which the implementation constraint Array<'p> does not admit"),
+    "/test.gx" => "mod m; let result = { let v: Array<[i64, f64, `X]> = [i64:1]; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number>(x: Array<['a, `X]>) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: Array<'p> |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_one_number_bound_under_a_bound_over_a_union_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: Array<[i64, `X]> = [i64:1]; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber>(x: Array<['a, `X]>) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: Array<'p> |x: 'q| -> i64 0"
+);
+
+// A variable only a bound names that takes two members of the
+// signature's bound is judged over that union the same way.
+run!(
+    an_unpaired_one_number_variable_over_a_variable_and_a_number_may_be_two,
+    refused("the implementation requires 'b: ['p, `Y], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber, 'b: ['a, i64, `Y]>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `Y] |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    an_unpaired_one_number_variable_over_a_variable_and_its_number_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, `Y] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: i64, 'b: ['a, i64, `Y]>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `Y] |x: 'q| -> i64 0"
+);
+
+run!(
+    an_unpaired_one_number_variable_over_a_variable_and_a_tag_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, `X] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + OneNumber, 'b: ['a, `X, `Y]>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `Y] |x: 'q| -> i64 0"
+);
+
+// A bound with a variable of its own inside implies no predicate, in a
+// union as alone: the signature declares it.
+run!(
+    a_no_error_bound_over_a_union_holding_a_variable_bounded_by_an_open_type_must_be_declared,
+    refused("signature has concrete type [null, 'a], which the implementation constraint NoError does not admit: 'a is any type its bounds admit; declare 'a: NoError"),
+    "/test.gx" => "mod m; let result = { let v: [Array<i64>, null] = [1]; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Array<'c>>(x: ['a, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_no_error_bound_over_a_union_holding_a_variable_bounded_by_an_open_type_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [Array<i64>, null] = [1]; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Array<'c> + NoError>(x: ['a, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+);
+
+// One type holds at most one numeric type: `Singleton` implies
+// `OneNumber`.
+run!(
+    a_singleton_variable_holds_a_one_number_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f(i64:1)",
+    "/test/m.gxi" => "val f: fn<'a: Number + Singleton>(x: 'a) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+);
+
+run!(
+    a_singleton_variable_in_a_union_holds_a_one_number_bound,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [i64, null] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number + Singleton>(x: ['a, null]) -> i64;",
+    "/test/m.gx" => "let f = 'q: [Number, null] + OneNumber |x: 'q| -> i64 0"
+);
+
 // An implementation variable only bounds name is one type at an instance:
 // what stands where the bound naming it is held, or, named at two places,
 // what its own bounds settle it to, which must then hold both. One whose
