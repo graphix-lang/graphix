@@ -124,6 +124,49 @@ fn reaches_no_open_cell(
     })
 }
 
+/// Whether a cell or a var's link `t` reaches, through the bindings,
+/// constraints and lower bounds [`would_cycle_inner`] walks, was written
+/// after the thread's [`cell_writes`] stood at `since`: what `t` reads is
+/// as it was then if not. A cell another thread wrote counts as written
+/// or not by that thread's own count, so no cell this thread reads may be
+/// written by another.
+pub(super) fn written_since(t: &Type, since: u64) -> bool {
+    fn walk(t: &Type, since: u64, seen: &mut AddrSet) -> ControlFlow<()> {
+        ensure_sufficient(|| {
+            if let Some(node) = node_addr(t)
+                && !seen.insert(node)
+            {
+                return ControlFlow::Continue(());
+            }
+            match t {
+                Type::TVar(tv) => {
+                    if tv.read().written > since {
+                        return ControlFlow::Break(());
+                    }
+                    let cell = tv.cell();
+                    if !seen.insert(cell.data_ptr().addr()) {
+                        return ControlFlow::Continue(());
+                    }
+                    let (binding, cons, below) = {
+                        let c = cell.read();
+                        if c.written > since {
+                            return ControlFlow::Break(());
+                        }
+                        (c.binding.clone(), c.constraints.clone(), c.lower.clone())
+                    };
+                    binding
+                        .iter()
+                        .chain(cons.iter())
+                        .chain(below.iter())
+                        .try_for_each(|c| walk(c, since, seen))
+                }
+                t => t.try_for_each_child(&mut |c| walk(c, since, seen)),
+            }
+        })
+    }
+    walk(t, since, &mut LPooled::take()).is_break()
+}
+
 /// Mark each of `cells`, if bound, as reaching no open cell at `epoch`,
 /// unless the epoch moved since the walk that proved them read it.
 fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
@@ -892,8 +935,11 @@ pub(super) fn cell_writes() -> u64 {
 }
 
 #[inline]
-fn count_write() {
-    CELL_WRITES.with(|n| n.set(n.get() + 1))
+fn count_write() -> u64 {
+    CELL_WRITES.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    })
 }
 
 /// A cell's lock: each write counts toward [`cell_writes`] and takes the
@@ -994,8 +1040,9 @@ impl CellLock {
 
     #[inline]
     pub(crate) fn write(&self) -> RwLockWriteGuard<'_, TCell> {
-        count_write();
+        let writes = count_write();
         let mut cell = self.0.write();
+        cell.written = writes;
         if let Some(place) = cell.place.take() {
             place.by.wrote(place.n)
         }
@@ -1535,6 +1582,8 @@ pub struct TCell {
     /// The cell's number by what it reaches, until its next write: boxed,
     /// so a cell no walk numbers pays one word for it.
     pub(crate) place: Option<Box<Place>>,
+    /// The [`cell_writes`] count of the thread that last wrote the cell.
+    pub(crate) written: u64,
 }
 
 // Every node-walked activation holds a cell.
@@ -1667,6 +1716,7 @@ impl Default for TCell {
             kept: Kept::default(),
             resolved: None,
             place: None,
+            written: 0,
         }
     }
 }
@@ -1887,6 +1937,8 @@ pub struct TVarLink {
     pub(crate) cell: Arc<CellLock>,
     /// The compile task that created the var ([`written`]).
     task: TaskId,
+    /// The [`cell_writes`] count of the thread that last wrote the link.
+    written: u64,
 }
 
 #[derive(Debug)]
@@ -2278,7 +2330,13 @@ impl TVar {
     ) -> Self {
         Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
-            link: RwLock::new(TVarLink { id, frozen, cell, task: TASK.get() }),
+            link: RwLock::new(TVarLink {
+                id,
+                frozen,
+                cell,
+                task: TASK.get(),
+                written: 0,
+            }),
         })))
     }
 
@@ -2646,8 +2704,10 @@ impl TVar {
     }
 
     pub fn write<'a>(&'a self) -> RwLockWriteGuard<'a, TVarLink> {
-        count_write();
-        self.link.write()
+        let writes = count_write();
+        let mut link = self.link.write();
+        link.written = writes;
+        link
     }
 
     /// Make self an alias for other; self's constraints merge into the

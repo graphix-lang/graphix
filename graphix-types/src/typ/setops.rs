@@ -9,7 +9,7 @@ use crate::{
         contains::{ContainsHist, find_open_cell, on_copies, renaming_linked},
         fntyp::LambdaIds,
         node_addr,
-        tvar::{Fresh, cell_writes},
+        tvar::{Fresh, cell_writes, written_since},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1013,7 +1013,7 @@ fn rebuilt(
     })
 }
 
-// CR claude for claude: [perf/medium] A cell written between two visits of one pair of
+// XCR claude for claude: [perf/medium] A cell written between two visits of one pair of
 // shared nodes makes every Meets entry stale, so alternatives whose shared parts sit on
 // both sides of a function part still meet once per path. `let x{i} = (x{i-1}, (|q| q,
 // x), x{i-1}); let y{i} = (y{i-1}, (|q| q, y), y{i-1});` over `x0 = (|q| q, x)`, `y0 =
@@ -1033,11 +1033,22 @@ fn rebuilt(
 // probe_standing let a contains probe verdict stand). probes:
 // ~/ptmp/cr29/scratch/r24/24f/review/{m10,m12,m14,s10,s12,t12,mn12}.gx, gen3.py
 // (meet-memo-writes-01)
+// 2026-11-14 claude: Fixed in Meets: an entry stands while this thread wrote no cell
+// since, or no cell its alternatives or met types reach was written (Meet::stands,
+// tvar::written_since over a write stamp each cell and var link takes). The probe .gx
+// files in the CR do not reproduce on base-r25 (m12 0.79G, empty program 0.75G), so the
+// pin is the unit twin: between_dag_meet takes 7164 meets at 10 links on base-r25's rule
+// and 130 now (130/200/339 at 10/20/40; 108/444/1788 at 4/6/8 with the memo off). Fail
+// without the fix: the_meet_of_two_dags_with_functions_between_takes_each_pair_once and
+// a_kept_meet_stands_until_a_cell_it_reaches_is_written (setops.rs). guicheck 52 GUI
+// examples: 39.720G without the walk, 39.794G with it; deep_nesting passes;
+// graphix-tests passes.
 /// The meets of one [`Type::meet_alternatives`] walk past
 /// [`NodePairs::EAGER`] steps, by the nodes the alternatives hold (a bound
 /// cell as the node it holds), each with the [`cell_writes`] it was made
-/// at: alternatives over shared nodes meet once while no cell is written,
-/// and the members rebuilt of them share what they met.
+/// at: alternatives over shared nodes meet once while no cell they or
+/// their met types reach is written ([`Meet::stands`]), and the members
+/// rebuilt of them share what they met.
 struct Meets {
     steps: u32,
     found: Lazy<AHashMap<MeetKey, Meet>>,
@@ -1051,7 +1062,20 @@ type MeetKey = (SmallVec<[NodeKey; 4]>, SmallVec<[u32; 4]>);
 struct Meet {
     met: Option<SmallVec<[Option<Type>; 4]>>,
     writes: u64,
-    _nodes: SmallVec<[Type; 4]>,
+    nodes: SmallVec<[Type; 4]>,
+}
+
+impl Meet {
+    /// Whether the meet is as the cells stand: this thread wrote none
+    /// since, or none the alternatives or the met types reach.
+    fn stands(&self) -> bool {
+        self.writes == cell_writes()
+            || !self
+                .nodes
+                .iter()
+                .chain(self.met.iter().flatten().flatten())
+                .any(|t| written_since(t, self.writes))
+    }
 }
 
 impl Meets {
@@ -1085,10 +1109,10 @@ impl Meets {
         Some(((key, tags.iter().copied().collect()), nodes))
     }
 
-    /// The meet of `ts` found under `key` while no cell has been written
-    /// since: an alternative it left as it stands is the one in `ts`.
+    /// The meet of `ts` found under `key` while it stands
+    /// ([`Meet::stands`]): an alternative it left as it stands is the one in `ts`.
     fn get(&self, key: &MeetKey, ts: &[&Type]) -> Option<Option<LPooled<Vec<Type>>>> {
-        let m = self.found.get()?.get(key).filter(|m| m.writes == cell_writes())?;
+        let m = self.found.get()?.get(key).filter(|m| m.stands())?;
         Some(m.met.as_ref().map(|met| {
             ts.iter()
                 .zip(met.iter())
@@ -1112,7 +1136,7 @@ impl Meets {
                 })
                 .collect()
         });
-        let m = Meet { met, writes: cell_writes(), _nodes: nodes };
+        let m = Meet { met, writes: cell_writes(), nodes };
         self.found.get_mut().insert(key, m);
     }
 }
@@ -3867,6 +3891,68 @@ pub(crate) mod tests {
         let Type::Set(ms) = &u else { panic!("two members: {u}") };
         let [m0, m1] = &ms[..] else { panic!("two members: {u}") };
         (super::MEET_STEPS.with(|s| s.get()), [m0.clone(), m1.clone()])
+    }
+
+    /// `(x, (fn(q: 'a) -> 'a, leaf), x)` under `n` links, each function its
+    /// own: its meet writes cells between the visits of the shared parts.
+    fn fn_between_dag(n: usize, leaf: Type) -> Type {
+        let part = || {
+            let f = parse_type("fn(q: 'a) -> 'a").unwrap();
+            f.alias_tvars(&mut AHashMap::default());
+            Type::Tuple(Arc::from_iter([f, leaf.clone()]))
+        };
+        (0..n).fold(part(), |x, _| Type::Tuple(Arc::from_iter([x.clone(), part(), x])))
+    }
+
+    /// The meets the union of alternatives takes over two DAGs of `n`
+    /// links ([`fn_between_dag`], over `i64` and over `Any`), and its two
+    /// members.
+    fn between_dag_meet(n: usize, memo: bool) -> (usize, [Type; 2]) {
+        let x = fn_between_dag(n, Type::Primitive(Typ::I64.into()));
+        let y = fn_between_dag(n, Type::Any);
+        super::NO_MEMO.with(|m| m.set(!memo));
+        super::MEET_STEPS.with(|s| s.set(0));
+        let u = Type::union_of_alternatives(&Env::default(), &[&x, &y]).unwrap();
+        super::NO_MEMO.with(|m| m.set(false));
+        let Type::Set(ms) = &u else { panic!("two members: {u}") };
+        let [m0, m1] = &ms[..] else { panic!("two members: {u}") };
+        (super::MEET_STEPS.with(|s| s.get()), [m0.clone(), m1.clone()])
+    }
+
+    // The meet of a pair of nodes stands through a write to a cell its
+    // alternatives do not reach, so a function part between two shared
+    // parts does not make each path meet again.
+    #[test]
+    fn the_meet_of_two_dags_with_functions_between_takes_each_pair_once() {
+        for (n, steps) in [(10, 130), (20, 200), (40, 339)] {
+            assert_eq!(between_dag_meet(n, true).0, steps, "{n} links");
+        }
+        let without = [4, 6, 8].map(|n| between_dag_meet(n, false).0);
+        assert_eq!(without, [108, 444, 1788]);
+        let print = |m: &Type| format_with_flags(PrintFlag::DerefTVars, || m.to_string());
+        let ([w0, w1], [o0, o1]) =
+            (between_dag_meet(6, true).1, between_dag_meet(6, false).1);
+        assert_eq!((print(&w0), print(&w1)), (print(&o0), print(&o1)));
+    }
+
+    // A kept meet stands through a write to a cell its alternatives and
+    // met types do not reach, and no longer once one of them is written.
+    #[test]
+    fn a_kept_meet_stands_until_a_cell_it_reaches_is_written() {
+        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
+        let node =
+            |c: &TVar| Type::Tuple(Arc::from_iter([Type::TVar(c.clone()), Type::Any]));
+        let (x, y) = (node(&a), node(&b));
+        let ts = [&x, &y];
+        let mut meets = super::Meets::new();
+        meets.steps = NodePairs::EAGER;
+        let (key, nodes) = meets.key(&ts, &[0, 1]).unwrap();
+        meets.insert(key.clone(), nodes, &ts, None);
+        assert!(meets.get(&key, &ts).is_some());
+        TVar::empty_named(literal!("w")).bind(Type::Primitive(Typ::I64.into()));
+        assert!(meets.get(&key, &ts).is_some());
+        b.bind(Type::Primitive(Typ::I64.into()));
+        assert!(meets.get(&key, &ts).is_none());
     }
 
     /// The nodes `t` holds, each once.
