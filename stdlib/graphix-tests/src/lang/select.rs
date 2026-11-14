@@ -6166,6 +6166,30 @@ run!(partial_struct_under_a_test_of_decided_members, r#"{
     r
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1]); FuseExpect::Jit);
 
+// A part of an arm's pattern is refused the same way, the test written
+// over the whole pattern, inferred or under a written test.
+run!(nested_partial_struct_over_undecided_members_refused, r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let r = select (v, 1) { ({a, ..}, n) => n };
+    x <- 1;
+    y <- "w";
+    r
+}"#, refused("told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as ({ a, .. }, n)`, or name every field, writing for 'x the type of `x`"); FuseExpect::None);
+
+run!(nested_partial_struct_under_a_test_of_undecided_members_refused, r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let r = select (v, 1) { ([{a: Array<i64>, c: 'p}, {a: Array<i64>, c: 'q}], i64) as ({a, ..}, n) => n };
+    x <- 1;
+    y <- 2;
+    r
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: 'p } and { a: Array<i64>, c: 'q }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as ({ a, .. }, n)`, or name every field"); FuseExpect::None);
+
 run!(partial_struct_unnamed_cell_beside_a_named_one_refused, r#"{
     let b = true;
     let x = never();

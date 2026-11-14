@@ -1411,7 +1411,9 @@ unless what reaches the arm leaves one: annotate the cells, the member,
 or name every field; a program whose cells end up equal is refused until
 annotated. A destructuring `let` and a parameter complete their pattern
 alike and refuse it alike, each in its own words ("at this let",
-annotated `let {a, ..}: T = ..`; "at this parameter"). The refusal
+annotated `let {a, ..}: T = ..`; "at this parameter"), the remedy written
+over the whole pattern its holder holds where the refused one is a part
+of it (`let ({a, ..}, n): T = ..`, `T as ({a, ..}, n)`). The refusal
 writes the two members as a program can (`pattern::undecided_members`,
 which every completion site calls with its `Holder`): an undecided cell
 as `'x` for the binding it waits for, one a let's annotation wrote as

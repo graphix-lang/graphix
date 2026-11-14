@@ -398,7 +398,13 @@ impl<R: Rt> Bind<R> {
                         match pat
                             .complete_type_predicate(&ctx.env, &ptyp, &typ)
                             .map_err(|e| {
-                                undecided_members(&ctx.env, e, &spec.ori, Holder::Let)
+                                undecided_members(
+                                    &ctx.env,
+                                    e,
+                                    &spec.ori,
+                                    Holder::Let,
+                                    pat,
+                                )
                             })
                             .at(&spec)?
                         {
@@ -673,7 +679,9 @@ impl<R: Rt> Bind<R> {
         let t = b
             .pattern
             .complete_type_predicate(&ctx.env, &ptyp, &self.typ)
-            .map_err(|e| undecided_members(&ctx.env, e, &spec.ori, Holder::Let))
+            .map_err(|e| {
+                undecided_members(&ctx.env, e, &spec.ori, Holder::Let, &b.pattern)
+            })
             .at(spec)?;
         let Some(t) = t else {
             if self.typ.with_deref(|t| t.is_none()) {

@@ -3284,7 +3284,8 @@ impl<R: Rt> Select<R> {
                     .structure_predicate
                     .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
                     .map_err(|e| {
-                        undecided_members(&ctx.env, e, &self.spec.ori, Holder::Arm)
+                        let whole = &spec_pat.structure_predicate;
+                        undecided_members(&ctx.env, e, &self.spec.ori, Holder::Arm, whole)
                     })
                     .at(&site)?;
                 if let Some(t) = t {

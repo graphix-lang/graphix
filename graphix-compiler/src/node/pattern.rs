@@ -170,6 +170,8 @@ struct PatCx<'a> {
     /// at parameters of its own.
     own_payloads: bool,
     holder: Holder,
+    /// The pattern `holder` holds, of which the one compiling is a part.
+    whole: &'a StructurePattern,
 }
 
 fn leaf_bind<R: Rt>(
@@ -392,14 +394,15 @@ pub(super) enum Holder {
     Formal,
 }
 
-/// An [`UndecidedMembers`] refusal of a pattern `holder` holds, told with
-/// the bindings whose types the undecided cells are, a cell no binding
-/// names numbered.
+/// An [`UndecidedMembers`] refusal of a part of `whole`, the pattern
+/// `holder` holds, told with the bindings whose types the undecided cells
+/// are, a cell no binding names numbered.
 pub(super) fn undecided_members(
     env: &Env,
     e: anyhow::Error,
     at: &Origin,
     holder: Holder,
+    whole: &StructurePattern,
 ) -> anyhow::Error {
     let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
     let mut holders = Holders::new(env, None);
@@ -422,26 +425,23 @@ pub(super) fn undecided_members(
         }),
     };
     let pat = &u.pattern;
-    let (head, site, fix) = match holder {
-        Holder::Arm => (
-            "the pattern",
-            "select",
-            format_compact!("the member you mean, e.g. `T as {pat}`"),
-        ),
+    let (site, fix) = match holder {
+        Holder::Arm => {
+            ("select", format_compact!("the member you mean, e.g. `T as {whole}`"))
+        }
         Holder::Let => (
-            "the pattern",
             "let",
-            format_compact!("the binding with the type it binds, `let {pat}: T = ..`"),
+            format_compact!("the binding with the type it binds, `let {whole}: T = ..`"),
         ),
         Holder::Formal => (
-            "the parameter",
             "parameter",
-            format_compact!("the parameter with the type it binds, `{pat}: T`"),
+            format_compact!("the parameter with the type it binds, `{whole}: T`"),
         ),
     };
     anyhow!(
-        "{head} {pat} matches two members, {a} and {b}, told apart by types not decided \
-         at this {site}; annotate those types, or {fix}, or name every field{meanings}"
+        "the pattern {pat} matches two members, {a} and {b}, told apart by types not \
+         decided at this {site}; annotate those types, or {fix}, or name every \
+         field{meanings}"
     )
 }
 
@@ -1928,8 +1928,15 @@ impl StructPatternNode {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Self> {
-        let cx =
-            PatCx { scope, pos, ori: &ori, inferred: false, own_payloads: false, holder };
+        let cx = PatCx {
+            scope,
+            pos,
+            ori: &ori,
+            inferred: false,
+            own_payloads: false,
+            holder,
+            whole: spec,
+        };
         Self::compile_with(ctx, cx, type_predicate, spec)
     }
 
@@ -2054,7 +2061,7 @@ impl StructPatternNode {
             // only the binds
             let shape = match spec
                 .complete_type_predicate(env, &shape, type_predicate)
-                .map_err(|e| undecided_members(env, e, cx.ori, cx.holder))?
+                .map_err(|e| undecided_members(env, e, cx.ori, cx.holder, cx.whole))?
             {
                 Some(t) => t,
                 None => shape,
@@ -3362,6 +3369,7 @@ impl<R: Rt> PatternNode<R> {
             inferred: !explicit,
             own_payloads: !explicit,
             holder: Holder::Arm,
+            whole: &spec.structure_predicate,
         };
         let structure_predicate = StructPatternNode::compile_with(
             ctx,

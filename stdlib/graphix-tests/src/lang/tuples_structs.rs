@@ -588,9 +588,60 @@ run!(
     f({a: 1, c: 1})
 }"#,
     refused(
-        "the parameter { a, .. } matches two members, { a: i64, c: 'p } and { a: i64, c: \
-         'q }, told apart by types not decided at this parameter; annotate those types, or \
+        "the pattern { a, .. } matches two members, { a: i64, c: 'p } and { a: i64, c: 'q \
+         }, told apart by types not decided at this parameter; annotate those types, or \
          the parameter with the type it binds, `{ a, .. }: T`, or name every field"
+    );
+    FuseExpect::None
+);
+
+// A part of a let's or a parameter's pattern is refused the same way, the
+// annotation written over the whole pattern.
+run!(
+    nested_let_partial_struct_over_undecided_members_refused,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let ({a, ..}, n) = (v, 1);
+    x <- 1;
+    y <- "w";
+    (a, n)
+}"#,
+    refused(
+        "told apart by types not decided at this let; annotate those types, or the \
+         binding with the type it binds, `let ({ a, .. }, n): T = ..`, or name every field, \
+         writing for 'x the type of `x`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    nested_let_partial_struct_annotated_over_undecided_members,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let ({a, ..}, n): ({a: Array<i64>, c: i64}, i64) = (v, 1);
+    x <- 3;
+    a
+}"#,
+    prints("[i64:1]")
+);
+
+run!(
+    nested_parameter_partial_struct_over_undecided_members_refused,
+    r#"{
+    type S<'p, 'q> = [{a: i64, c: 'p}, {a: i64, c: 'q}];
+    let f = |({a, ..}, n): (S<'p, 'q>, i64)| a + n;
+    f(({a: 1, c: 1}, 2))
+}"#,
+    refused(
+        "the pattern { a, .. } matches two members, { a: i64, c: 'p } and { a: i64, c: 'q \
+         }, told apart by types not decided at this parameter; annotate those types, or \
+         the parameter with the type it binds, `({ a, .. }, n): T`, or name every field"
     );
     FuseExpect::None
 );
