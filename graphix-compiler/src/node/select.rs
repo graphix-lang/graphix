@@ -3596,9 +3596,11 @@ impl<R: Rt> Select<R> {
                 }
             }
             wrap!(n, child(n, ctx))?;
-            if pat.type_predicate.has_unbound() {
+            let fn_over_any =
+                reaching.holds_any(&ctx.env) && pat.type_predicate.holds_fn(&ctx.env);
+            if fn_over_any || pat.type_predicate.has_unbound() {
                 reaching
-                    .close_over_any(&ctx.env, &pat.type_predicate)
+                    .close_over_any(&ctx.env, &pat.type_predicate, true)
                     .map_err(|e| {
                         let written =
                             spec_pats.get(i).map(|(p, _)| &p.structure_predicate);

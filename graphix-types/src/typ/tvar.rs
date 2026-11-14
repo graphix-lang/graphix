@@ -417,13 +417,15 @@ pub(super) fn bare_path(addr: usize, t: &Type, toward: Toward) -> LPooled<Vec<TV
 /// since it last bound a cell, and the cells it bound. `inside`: every
 /// cell open inside a part that is `Any` is bound too
 /// ([`Type::close_over_any`]); with `abstracts`, only the parameters of
-/// the abstract types there ([`Type::widen_abstracts_over_any`]).
+/// the abstract types there ([`Type::widen_abstracts_over_any`]); with
+/// `fns`, a part holding a function type there is refused.
 #[derive(Default)]
 struct AnyWalk {
     walked: NodePairs,
     binds: usize,
     inside: bool,
     abstracts: bool,
+    fns: bool,
 }
 
 /// A cell a select arm's test holds inside an `Any` part, open once the
@@ -4916,8 +4918,11 @@ impl Type {
     /// cell that cannot be `Any` is [`OpenOverAny`], a declared variable
     /// among them: a call that leaves it undecided tests nothing there. A
     /// declared variable `Any` meets stands, and so does a function type's.
-    pub fn close_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
-        let mut walk = AnyWalk { inside: true, ..AnyWalk::default() };
+    /// With `fns`, a part of `pred` at or inside an `Any` part that holds
+    /// a function type is refused: the test tells a function from a value,
+    /// not one signature from another.
+    pub fn close_over_any(&self, env: &Env, pred: &Type, fns: bool) -> Result<()> {
+        let mut walk = AnyWalk { inside: true, fns, ..AnyWalk::default() };
         self.open_over_any_int(env, pred, &mut walk)
     }
 
@@ -5011,8 +5016,14 @@ impl Type {
     /// another compile task owns is left to that task's refusal of the
     /// write.
     fn any_beneath(&self, env: &Env, walk: &mut AnyWalk) -> Result<()> {
+        if walk.fns && self.holds_fn(env) {
+            bail!(
+                "can't match on a type holding a function: a test tells a function from a \
+                 value, not one signature from another"
+            )
+        }
         let mut left: LPooled<AddrSet> = LPooled::take();
-        // CR claude for claude: [bug/medium] A cell an arm decides to a function type
+        // XCR claude for claude: [bug/medium] A cell an arm decides to a function type
         // inside an `Any` part is tested as "a function", whatever its signature. `|x:
         // Any| select x { (g, b) => { let h: fn(x: i64) -> i64 = g; h(1) }, _ => 0 - 1 }`
         // checks, and over `(|s: string| str::len(s), 2)` the run logs "h(1): binding the
@@ -5027,6 +5038,14 @@ impl Type {
         // `Any` part that holds a function type (Type::holds_fn) once the arm is checked
         // is refused with that message; census both repos. probes:
         // ~/ptmp/cr29/scratch/r24/24a/acb-rev/g1.gx, g2.gx, g3.gx (fn-cell-over-any-01)
+        // 2026-11-14 claude: A part of an inferred test at or inside an Any part that
+        // holds a function type once the arm is checked is refused with the written
+        // test's message (Type::close_over_any's fns flag, called from
+        // Select::typecheck0_with whenever reaching holds Any and the predicate holds a
+        // fn). Pins that fail without it:
+        // lang::select::any_part_cell_decided_to_a_function_refused,
+        // _to_an_open_function_refused, _to_a_function_under_a_part_refused; skill cases
+        // in select.md. Census of both repos: no file newly refused.
         loop {
             let mut unseen = |tv: &TVar| !left.contains(&tv.cell_addr());
             let Some(tv) = find_open_cell(self, false, &mut unseen) else { break };

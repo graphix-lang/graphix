@@ -298,7 +298,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   that leaves it undecided would pass every value to what the bound
   allows. One with no bound stands, since its body can do nothing with a
   value of it that depends on the type, and so do the cells of a function
-  type. Pins: `lang::select::any_part_cell_*`.
+  type. A part of the test at or inside an `Any` part that holds a
+  function type once the arm is checked (`(g, b) => { let h: fn(x: i64) ->
+  i64 = g; h(1) }`, `array::map([1], g)`) is refused with the written
+  test's message, "can't match on a type holding a function": a test tells
+  a function from a value, not one signature from another. Pins:
+  `lang::select::any_part_cell_*`.
 
 - **A written test's own variable is a part the arm binds, not one it
   tests.** Nothing declares it, and where the narrowing leaves it open it

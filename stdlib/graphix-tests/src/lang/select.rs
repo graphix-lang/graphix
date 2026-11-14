@@ -7698,6 +7698,51 @@ run!(
     refused("does not decide the type of `a`")
 );
 
+// A cell the arm decides to a function type inside an `Any` part would be
+// tested as "a function", whatever its signature: refused as the written
+// test is.
+run!(
+    any_part_cell_decided_to_a_function_refused,
+    r#"{
+    let f = |x: Any| select x { (g, b) => { let h: fn(x: i64) -> i64 = g; h(1) }, _ => 0 - 1 };
+    let v: Any = (|s: string| str::len(s), 2);
+    f(v)
+}"#,
+    refused(
+        "can't match on a type holding a function: a test tells a function from a value, not one signature from another"
+    )
+);
+
+run!(
+    any_part_cell_decided_to_an_open_function_refused,
+    r#"{
+    let f = |x: Any| select x { (g, b) => array::map([1], g), _ => [] };
+    let v: Any = (|s: string| str::len(s), 2);
+    f(v)
+}"#,
+    refused("can't match on a type holding a function")
+);
+
+run!(
+    any_part_cell_decided_to_a_function_under_a_part_refused,
+    r#"{
+    let f = |x: (Any, i64)| select x { ((g, b), n) => { let h: fn(x: i64) -> i64 = g; h(n) }, _ => 0 - 1 };
+    let v: Any = (|s: string| str::len(s), 2);
+    f((v, 1))
+}"#,
+    refused("can't match on a type holding a function")
+);
+
+run!(
+    any_part_cell_beside_a_function_unused_runs,
+    r#"{
+    let f = |x: Any| select x { (g, b) => 1, _ => 0 - 1 };
+    let v: Any = (|s: string| str::len(s), 2);
+    f(v)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
 run!(
     any_part_cell_a_generic_call_bounds_undecided_refused,
     r#"{

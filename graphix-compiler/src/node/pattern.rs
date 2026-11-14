@@ -1219,7 +1219,7 @@ impl StructPatternNode {
                     Type::union(env, &at.iter().collect::<SmallVec<[&Type; 2]>>())?;
                 held.narrow_pattern(env, rep)?;
                 for (p, o) in params.iter().flat_map(|ps| ps.iter().zip(own.iter())) {
-                    p.close_over_any(env, o)?
+                    p.close_over_any(env, o, false)?
                 }
                 bind.narrow_payloads(env, at)?
             }

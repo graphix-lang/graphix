@@ -150,7 +150,9 @@ select, and runtime forms. Each rule refuses and names the fix.
   a caller): a part the arm leaves open is `Any` (`(a, b) => a` gives
   `Any`), and one it constrains without deciding is refused, `(a, b) =>
   a + b` being a number of no one type. Write the test, `(i64, i64) as
-  (a, b)`, or decide it in the arm (`a + b + 1`). A written test's own
+  (a, b)`, or decide it in the arm (`a + b + 1`). A part the arm decides to a
+  function type is refused, as a written test of one is: a test tells a
+  function from a value, not one signature from another. A written test's own
   variable there is the arm's alike (`('q, i64) as (r, n) => r + n`
   tests an `i64`). A declared variable with a bound is no test there (a
   call that leaves it undecided would test nothing): `('t, 't) as (a,
@@ -245,6 +247,9 @@ no "does not decide the type of `a`" |x: Any| select x { (a, b) => a + b, _ => 0
 no "does not decide the type of `a`" |x: Any| -> i64 select x { (a, b) => a + b, _ => 0 }
 ok |x: Any| select x { (i64, i64) as (a, b) => a + b, _ => 0 }
 ok |x: Any| select x { (a, b) => a + b + 1, _ => 0 }
+no "can't match on a type holding a function" |x: Any| select x { (g, b) => { let h: fn(x: i64) -> i64 = g; h(1) }, _ => 0 }
+no "can't match on a type holding a function" |x: Any| select x { (g, b) => array::map([1], g), _ => [] }
+ok |x: Any| select x { (g, b) => 1, _ => 0 }
 no "cannot compute Any + i64" let f = |x: Any| select x { (a, b) => a, _ => never() }; let v: Any = (1, 2); f(v) + 1
 no "tests the declared variable 't inside a value that may be Any" 't: Number + Singleton |x: Any| -> 't select x { ('t, 't) as (a, b) => a + b, _ => never() }
 no "tests the declared variable `a` is of" 't: Number + Singleton |x: Any, y: 't| select x { (a, b) => a + y, _ => y }
