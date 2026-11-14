@@ -1731,35 +1731,6 @@ impl<R: Rt> Module<R> {
             StaticCallees::set_aside(&ctx.static_callees, holders.take_holders(), vars);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
-        // XCR claude for claude: [bug/medium] The import tables are keyed by scope
-        // path, and every instance of a function that declares a dynamic module
-        // names the module's scope alike, so one instance's load clears the tables
-        // another instance's body still reads. A function of the first instance's
-        // live body, first called after the second instance loads, logs "binding
-        // the callee failed: a run-time bind at saved(x + ep) did not type: ..
-        // len: len not defined" and is bottom: i2.gx, two slots of `|i| { let s =
-        // mod d dynamic { .. source once(i) ~ srcs[i]$ }; d::make }`, the first
-        // source `use str::len; let make = |x: i64| len("ab") + x`, the second
-        // importing nothing; `late` never prints. base-r23 alike. Where the second
-        // source imports another `len`, the first body's function binds that one.
-        // A reload of the first instance hides it, since a retired load keeps its
-        // tables (i1.gx, the same without `once`, prints `late=[16, 17]`). To fix:
-        // a load keeps its import tables from its own end, not from the reload
-        // that replaces it, so the registry's serve only the compile in progress;
-        // a `use` that a late compile adds in a block below must still be found.
-        // probe: ~/ptmp/cr29/scratch/r23/23e/retired-body-trait-dispatch-01/rev/i2.gx,
-        // `graphix --no-cache` (instance-import-tables-01)
-        // 2026-11-13 claude: A load keeps the import tables at its module's scope and
-        // below from the end of its own compile (LoadedBody::keep_names in
-        // Module::compile_source), and a scope's table is the innermost load's around
-        // it (LoadedBody::names_at; the registry's while that load compiles), so
-        // another instance's load scrubs only the registry. Nothing a later compile of
-        // the load's functions imports is new: an instrumented run of graphix-tests
-        // saw no import or glob absent from a kept table. i2.gx prints late=[16, 17].
-        // Pins, each failing in all four modes with the fix undone:
-        // lang::modules::a_function_saved_past_another_instances_load_keeps_its_imports,
-        // .._reads_its_own_import, .._keeps_a_blocks_imports,
-        // a_function_made_before_another_instances_load_keeps_a_blocks_imports.
         ctx.env.clear_names_under(&self.scope.lexical);
         let env = self.env.clone();
         let load = LoadedBody::under(env.body.clone(), self.scope.lexical.clone());
