@@ -3367,3 +3367,23 @@ run!(payload_bind_behind_arms_that_take_its_members, r#"{
     let k = |s| select s { `B(`A(null)) => 0, `B(`A(a)) => a + 1 };
     ([f(`A(null)), f(`A(3)), k(`B(`A(null))), k(`B(`A(5)))], [g(`A(`X)), g(`A(`Z))], [h(`Ok(null)), h(`Ok("x")), h(`Err("e"))])
 }"#, prints(r#"[[i64:0, i64:4, i64:0, i64:6], [i64:0, "Z"], ["none", "x", "e"]]"#); FuseExpect::Jit);
+
+// A bind before an arm testing null at its part takes the null: its arm
+// matches every payload, so the null arm after it is dead.
+run!(payload_bind_before_a_null_arm_refused, r#"{
+    let f = |s| select s { `A(a) => a + 1, `A(null) => 0 };
+    f(`A(null))
+}"#, refused("cannot compute null + i64"); FuseExpect::None);
+
+run!(payload_bind_before_a_null_arm_leaves_it_dead, r#"{
+    let f = |s| select s { `A(a) => "[a]", `A(null) => "n" };
+    f(`A(null))
+}"#, refused("unreachable arm"); FuseExpect::None);
+
+run!(payload_bind_behind_covers_beside_other_parts_and_tags, r#"{
+    let f = |s| select s { `B(null) => 0, `A(null) => 1, `A(a) => a + 1, `B(b) => b };
+    let g = |s| select s { `A(null) | `B(null) => 0, `B(b) => b, `A(a) => a + 1 };
+    let h = |s| select s { `A(1, x) => 7, `A(n, null) => n, `A(m, b) => m + b };
+    let k = |s| select s { `A(_, null) => 0, `A(m, b) => b + 1 };
+    ([f(`A(null)), f(`B(2)), f(`A(3))], [g(`A(null)), g(`B(null)), g(`A(1)), g(`B(4))], [h(`A(1, null)), h(`A(2, null)), h(`A(2, 3))], [k(`A("q", null)), k(`A("q", 2))])
+}"#, prints("[[i64:1, i64:2, i64:4], [i64:0, i64:0, i64:2, i64:4], [i64:7, i64:2, i64:5], [i64:0, i64:3]]"); FuseExpect::Jit);
