@@ -882,7 +882,10 @@ given the `Opt<i64>` is the mismatch on either side of `w`, since `w` is
 checked first (pins
 `lang::types::variable_beside_a_member_under_a_writable_reference_stands_for_a_later_reference_refused`,
 `_takes_a_later_reference_without_it`, `_stands_for_a_value_before_it_refused`,
-`variable_decided_with_the_member_first_holds_under_a_later_writable_reference`).
+`_stands_at_a_nested_alias_refused`,
+`variable_beside_a_member_under_an_abstract_stands_at_a_nested_alias_refused`,
+`variable_decided_with_the_member_first_holds_under_a_later_writable_reference`,
+`variable_decided_with_the_member_first_holds_under_a_later_abstract`).
 A rigid check never commits, so one that fails is asked again with such
 members as their members, committing no bound of the name's parameters
 (`Type::contains_unfolded`, under `ContainsFlags::RigidCheck` alone: every

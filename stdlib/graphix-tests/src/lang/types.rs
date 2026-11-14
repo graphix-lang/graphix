@@ -10611,6 +10611,52 @@ run!(
     FuseExpect::None
 );
 
+// The spelling of the value's type does not move the variable: a nested
+// alias gives it what the written union does, under a writable reference
+// and under an abstract type.
+run!(
+    variable_beside_a_member_under_a_writable_reference_stands_at_a_nested_alias_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let put = |w: &mut Opt<'a>, k: &mut 'a| -> Opt<'a> { *w <- once(*k); *w };
+  let n0: Opt<Opt<i64>> = null;
+  let d: Opt<i64> = 5;
+  put(&mut n0, &mut d)$
+}"#,
+    refused("&mut 'a: i64 does not contain &mut [i64, null]");
+    FuseExpect::None
+);
+run!(
+    variable_beside_a_member_under_an_abstract_stands_at_a_nested_alias_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  type B<'a> = Abstract<'a>;
+  let both = |w: B<Opt<'a>>, k: B<'a>| -> Opt<'a> k.0;
+  let n0: Opt<Opt<i64>> = null;
+  let d: Opt<i64> = 5;
+  let bw: B<Opt<Opt<i64>>> = B(n0);
+  let bk: B<Opt<i64>> = B(d);
+  both(bw, bk)$
+}"#,
+    refused("B<'a: i64> does not contain B<Opt<i64>>");
+    FuseExpect::None
+);
+run!(
+    variable_decided_with_the_member_first_holds_under_a_later_abstract,
+    r#"{
+  type Opt<'a> = ['a, null];
+  type B<'a> = Abstract<'a>;
+  let both = |k: B<'a>, w: B<Opt<'a>>| -> Opt<'a> k.0;
+  let n0: Opt<Opt<i64>> = null;
+  let d: Opt<i64> = 5;
+  let bw: B<Opt<Opt<i64>>> = B(n0);
+  let bk: B<Opt<i64>> = B(d);
+  both(bk, bw)$
+}"#,
+    is(Value::I64(5));
+    FuseExpect::Jit
+);
+
 run!(
     alias_over_a_variable_under_an_abstract_builds_at_a_nested_alias,
     r#"{
