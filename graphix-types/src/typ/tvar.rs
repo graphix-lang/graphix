@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
-    collections::hash_map::Entry,
+    collections::{VecDeque, hash_map::Entry},
     fmt::{self, Debug},
     hash::Hash,
     mem::{self, ManuallyDrop},
@@ -908,14 +908,37 @@ pub struct CellLock(RwLock<TCell>);
 pub(super) struct ConjunctsPassed {
     cells: RefCell<LPooled<AHashMap<usize, Arc<CellLock>>>>,
     own: LPooled<AHashSet<ArcStr>>,
+    /// The scope's own cells the walk met, in the order met, whose
+    /// conjuncts it passes at the scope's end ([`FnType::alias_scope`]).
+    met: RefCell<LPooled<VecDeque<TVar>>>,
+    /// In a nested signature's scope, the cells declared outside it that
+    /// the walk met, by cell, for the enclosing scope to meet.
+    outside: Option<RefCell<LPooled<AHashMap<usize, TVar>>>>,
 }
 
 impl ConjunctsPassed {
     /// The scope of the signature quantifying `own`.
     pub(super) fn within(own: &[ArcStr]) -> Self {
+        Self::scope(own, None)
+    }
+
+    /// The scope of a signature quantifying `own` nested in the walk's.
+    pub(super) fn nested(own: &[ArcStr]) -> Self {
+        Self::scope(own, Some(RefCell::new(LPooled::take())))
+    }
+
+    fn scope(
+        own: &[ArcStr],
+        outside: Option<RefCell<LPooled<AHashMap<usize, TVar>>>>,
+    ) -> Self {
         let mut names: LPooled<AHashSet<ArcStr>> = LPooled::take();
         names.extend(own.iter().cloned());
-        Self { cells: RefCell::new(LPooled::take()), own: names }
+        Self {
+            cells: RefCell::new(LPooled::take()),
+            own: names,
+            met: RefCell::new(LPooled::take()),
+            outside,
+        }
     }
 
     /// Whether `tv`'s cell is this scope's to pass, for the first time.
@@ -926,6 +949,34 @@ impl ConjunctsPassed {
         let cell = tv.cell();
         let addr = cell.data_ptr().addr();
         self.cells.borrow_mut().insert(addr, cell).is_none()
+    }
+
+    /// The walk met `tv`'s cell: one of the scope's own it has not passed
+    /// waits for the scope's end, and in a nested scope one declared
+    /// outside it waits for the enclosing scope.
+    pub(super) fn meet(&self, tv: &TVar) {
+        if self.own.contains(&tv.name) {
+            if !self.cells.borrow().contains_key(&tv.cell_addr()) {
+                self.met.borrow_mut().push_back(tv.clone())
+            }
+        } else if let Some(outside) = &self.outside {
+            outside.borrow_mut().entry(tv.cell_addr()).or_insert_with(|| tv.clone());
+        }
+    }
+
+    /// The next of the scope's own cells the walk met.
+    pub(super) fn next_met(&self) -> Option<TVar> {
+        self.met.borrow_mut().pop_front()
+    }
+
+    /// The enclosing scope `to` meets the cells declared outside this one
+    /// that its walk met.
+    pub(super) fn meet_outside_in(&self, to: &Self) {
+        if let Some(outside) = &self.outside {
+            for (_, tv) in outside.borrow_mut().drain() {
+                to.meet(&tv)
+            }
+        }
     }
 }
 
@@ -4371,7 +4422,7 @@ impl Type {
         self.alias_tvars_in(known, &ConjunctsPassed::within(&[]), Aliasing::Every)
     }
 
-    // CR claude for claude: [risk/low] The alias walk passes the conjuncts of
+    // XCR claude for claude: [risk/low] The alias walk passes the conjuncts of
     // a signature's position cells only, so a variable an enclosing signature
     // declares that a nested quantified signature names only in the bound of a
     // bound stays a cell of its own: in `fn<'z: Number>(x: fn<'b: 'c, 'c:
@@ -4439,6 +4490,42 @@ impl Type {
     // newly printed right, and g01880 went from refused as a formatter bug to
     // rewritten by the capture of (nested-quantifier-capture-01). probes:
     // ~/ptmp/cr29/scratch/r23/23f/nested-bound-alias/review/ (README)
+    // 2026-11-14 claude: Fixed. A signature holds what its positions name and,
+    // until nothing new arrives, what the bounds of its own quantifiers among
+    // them name (fntyp::collect_held: each own cell's bounds once, under no
+    // guard, so a nested signature's answer comes from the FREE memo; a cell
+    // declared outside it has its bounds read in its declarer's scope;
+    // free_cells cuts a signature reached again through its own bounds,
+    // HOLDING). free_cells and a nested declaration's record (so aliases_into
+    // and closed) use it, and printed_view takes it where a quantifier stands
+    // in no position. The alias walk passes the bounds of every own cell it
+    // meets in a scope, those no position names at the scope's end
+    // (FnType::alias_scope, ConjunctsPassed::meet/next_met); a nested scope
+    // hands the cells it met from outside itself to the scope around it
+    // (meet_outside_in), and a signature the walk does not enter hands its
+    // record (fntyp::meet_declared). So this CR's 'z is the outer cell,
+    // p2/p6/p7 (refused 'does not hold' on base-r24) print as written, and r2
+    // is refused as r1 is. Linear outside a parse: instructions:u nestbb-16
+    // --check 757.9M base-r24, 756.6M fix; fmt nestbb-40 43.0M lane before,
+    // 48.9M fix, nestbb-160 196.1M, 219.9M; posch-40/80/160 (refused at parse
+    // before) fmt 44.8M/85.8M/218.1M, --check flat. Pins that fail without it:
+    // typ::fntyp::tests::a_bound_of_a_bound_names_the_declarers_cell,
+    // a_bound_naming_an_outer_variable_is_the_outer_cell (this CR's case
+    // added), a_bound_held_through_a_nested_signature_keeps_its_scope,
+    // a_bound_reaching_its_variable_through_a_bound_of_a_bound_is_refused,
+    // nests_held_through_bounds_parse_in_linear_steps; the step pins
+    // nests_held_through_bounds_walk_in_linear_steps (constraint_view,
+    // collect_tvars, print, pretty, compare, alias; 8/16 and 40/160 deep) and
+    // nests_held_beside_a_bound_print_in_linear_steps also fail with a guard on
+    // the held walk's bounds, with collect_tvars as its first step, or with
+    // collect_tvars_through_bounds in printed_view. Census 2967 files: 0
+    // verdict, 0 message. 16000 generated nests (gen2.py q 101-404, gen3.py
+    // 9191): 30 fmt outcomes move, 13 toward printing as written, 5 printed
+    // and 7 refused as unheld now refused as genuine self-reaching bounds, 5
+    // refusals reworded. guicheck:
+    // lane before 39.54-39.63G, fix 39.68-39.88G (base-r24 39.46G). New CR
+    // free-cells-guarded-memo-01. probes:
+    // ~/ptmp/cr29/scratch/r24/24f/nested-bound-alias/ (README)
     pub(super) fn alias_tvars_in(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
@@ -4448,31 +4535,38 @@ impl Type {
         #[cfg(test)]
         super::fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => match known.entry(tv.name.clone()) {
-                Entry::Occupied(e) => {
-                    let v = e.get();
-                    v.freeze();
-                    tv.alias_enclosing(v);
-                }
-                Entry::Vacant(e) => {
-                    if how == Aliasing::Every {
-                        e.insert(tv.clone());
+            Type::TVar(tv) => {
+                match known.entry(tv.name.clone()) {
+                    Entry::Occupied(e) => {
+                        let v = e.get();
+                        v.freeze();
+                        tv.alias_enclosing(v);
+                    }
+                    Entry::Vacant(e) => {
+                        if how == Aliasing::Every {
+                            e.insert(tv.clone());
+                        }
                     }
                 }
-            },
-            Type::Fn(ft) if !super::fntyp::aliases_into(ft, known, how) => (),
+                passed.meet(tv)
+            }
+            Type::Fn(ft) if !super::fntyp::aliases_into(ft, known, how) => {
+                super::fntyp::meet_declared(ft, passed)
+            }
             // a nested fn type's own quantifiers are its own, whatever an
             // enclosing signature names alike
             Type::Fn(ft) if !ft.quantifiers.is_empty() => {
                 let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
                     ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
-                ft.alias_tvars_in(known, &ConjunctsPassed::within(&ft.quantifiers), how);
+                let inner = ConjunctsPassed::nested(&ft.quantifiers);
+                ft.alias_scope(known, &inner, how);
                 for (q, tv) in outer {
                     known.remove(&q);
                     if let Some(tv) = tv {
                         known.insert(q, tv);
                     }
                 }
+                inner.meet_outside_in(passed)
             }
             Type::Fn(ft) => ft.alias_tvars_in(known, passed, how),
             t => t.for_each_child(&mut |c| c.alias_tvars_in(known, passed, how)),

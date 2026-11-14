@@ -2445,7 +2445,7 @@ former consumer derives from the cells:
 - A nest of signatures is read once, however many of its signatures
   ask. Listing a signature reads the cells it names
   (`collect_tvars`), and a quantified signature inside it answers with
-  the cells it names from outside itself (`fntyp::free_cells`). Under
+  the cells it holds from outside itself (`fntyp::free_cells`). Under
   the outermost walk, comparison or print (`PartsDepth`) that answer
   is kept per signature beside its position cells, and dropped at any
   cell write on the thread (`tvar::cell_writes`). Only an answer no
@@ -2467,15 +2467,38 @@ former consumer derives from the cells:
   walks down through the signatures between it and the occurrence: a
   nest whose signatures name, beside their own variables, only ones
   the outermost declares or none does parses in time linear in its
-  size. An occurrence no enclosing walk
-  reaches (in a bound of a quantifier no position names) is aliased by
-  none of them.
+  size.
   Pins: `typ::fntyp::tests::nested_closed_signatures_parse_in_linear_steps`,
   `nested_open_signatures_parse_in_linear_steps`,
   `an_open_nest_names_its_declarers_cells`,
   `nested_quantified_types_compare_in_linear_steps`,
   `a_cell_write_drops_the_free_cells_read_before_it`,
   `a_closed_signature_nests_as_it_stands_alone`.
+- A signature holds the variables its positions name and, through
+  bounds, those the bound of each of its own quantifiers it holds names
+  (`fntyp::collect_held`): a quantifier held only through the bound of
+  a bound, or through a signature nested in it, is held, and the
+  variables its bound names are in the signature's record and its
+  answer. An alias walk passes the bounds of each own cell it meets in a
+  signature's scope, once: those of the cells the positions name with
+  the positions, the rest at the scope's end (`FnType::alias_scope`). A
+  nested signature's walk hands the cells it met from outside itself to
+  the scope around it, and one the walk does not enter hands it its
+  record (`tvar::ConjunctsPassed::meet`, `fntyp::meet_declared`), so an
+  occurrence in such a bound is its declarer's cell, never a name a
+  signature between them declares. The held walk reads each own cell's
+  bounds under no reentrancy guard, so a nested signature's answer comes
+  from the memo; a signature reached again through its own bounds while
+  its answer is collected is cut (`HOLDING`). A bound that reaches its
+  own variable this way is refused as any recursive bound is:
+  `fn<'a: fn<'d: 'z, 'z: Array<'a>>(qd: 'd) -> 'd>(qa: 'a) -> i64`.
+  Pins: `typ::fntyp::tests::a_bound_of_a_bound_names_the_declarers_cell`,
+  `a_bound_naming_an_outer_variable_is_the_outer_cell`,
+  `a_bound_held_through_a_nested_signature_keeps_its_scope`,
+  `a_bound_reaching_its_variable_through_a_bound_of_a_bound_is_refused`,
+  `nests_held_through_bounds_parse_in_linear_steps`,
+  `nests_held_through_bounds_walk_in_linear_steps`,
+  `nests_held_beside_a_bound_print_in_linear_steps`.
 - An alias walk aliases a bound's variables in the scope of the
   signature that declares the bound's variable: a signature's walk
   passes the bounds of its own quantifiers alone, and a walk no
