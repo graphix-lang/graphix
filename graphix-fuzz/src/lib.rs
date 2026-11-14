@@ -1414,6 +1414,22 @@ async fn run_subject(
     if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
+    // CR claude for claude: [test-gap/low] A run contained at its deadline can report
+    // its image write as failed for a reason the containment made, and the warm route
+    // then differs from the cold one: the soak nov13a (aieka, divergence_000001, main
+    // be2c16a05) recorded `jit/par/cold: Timeout(Deadline)` against `jit/par/warm:
+    // RuntimeErr(the program image write failed: the JIT is unavailable, so the program
+    // has no kernels)` as "image bug: the restored program differs from the cold one
+    // (jit)" for `let rec build = |n: i64, acc: N| -> N select n { 0 => acc, n =>
+    // build(n - 1, N(`Cons(n, acc))) }` called with i64's minimum, which never ends.
+    // `graphix-fuzz check` of it on ryouko says CONTAINED, not recorded, so the
+    // finding turns on the box's speed. Not diagnosed: whether the runtime writes
+    // the image after its JIT went (GX::new asks FusionCtx::available where it
+    // writes), or the write raced the abort below. Either the runtime writes no
+    // image once contained, or `restorable` reads this failure beside a containment
+    // as the cold outcome. probes: ~/ptmp/cr29/scratch/r24/coord/soak/d1.gx,
+    // fuzz/pending-triage/nov13a/aieka/divergence_000001.gx
+    // (contained-image-write-unavailable-01)
     let grace = Duration::from_secs(2);
     let image = match image_rx {
         None => no_image(),
