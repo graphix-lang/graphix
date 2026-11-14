@@ -5086,6 +5086,49 @@ impl Type {
         // [null, 'a: string])": its own check gives the callee's Array<'a> to the
         // decided Array<string>. Before and after that fix alike. probes:
         // ~/ptmp/cr29/scratch/r23/23b/ois/{o5,u5min}.gx, nest/{n1,n4,n5,n6}.gx
+        // 2026-11-13 claude: Re-run on base-r24 and lane 24h (bafcd4bc0), alike: s3,
+        // s4, b1, b3, n1, n4, n5, n6, o5 and u5min still check and run by default and
+        // are refused under GRAPHIX_NO_SUBST=1 as quoted above; b2 is refused at the
+        // check in both modes (the ordered call rule). Not fixed, since neither kind
+        // is local to the second check, which meets decided types where its definition
+        // met open cells. (A) s3, s4 and most generated splits: an instance's formal
+        // holds its site's decided type, so its second check makes the call its
+        // definition made with an open argument as the call written out with a decided
+        // one, and D36 refuses that on purpose. The wrapper 'let g = |u0| f(u0,
+        // (["s"], "s")); let k = |z| g(z); k(&["s"])' over 'f = |x0: &P<'b, 'a>, x1:
+        // (P<'a, 'b>, 'a)|' runs by default and its instance is refused under
+        // NO_SUBST, 'Array<string> could go to Array<'b> or Array<'a>', the message
+        // the default check gives 'f(&["s"], (["s"], "s"))' written out (w1, w2); s3
+        // written out with 'let p: [i64, string] = 1' is refused with s3's message
+        // where 'u <- p' comes before the annotation and runs after it (d5, d6). (B)
+        // b1, b3, n*, o5, u5min: an instance is built at its site's signature after
+        // resolve_tvars (CallSite::setup_static_bind), where a cell its input settled
+        // is a literal ⊥, and its second check relates the body's type to that return
+        // after the body, where the definition's return took the body's type whole;
+        // the callee's open {v: 'c} or Array<'a> then meets two decided members, {v:
+        // i64} and {v: _}, and goes to the first (lane 24d, since 093fa4399, refuses
+        // it there instead). Written out, the default check does the same by the order
+        // of the tuple's positions: 'let r: ([{v: i64}, {v: _}], i64, _) = f(2, {v:
+        // 2}, never())' over b3's f is refused with b3's message, and with the bare
+        // position first it runs (d1, d2; o5's types the other way round, d3 runs, d4
+        // is refused). Tried and reverted: reopening the instance's vacuous ⊥ cells
+        // for the second check in lambda::instantiate changed nothing (the ⊥ is
+        // literal by then); reopened before the resolve, base's Type::take would still
+        // give the open member to the decided {v: i64} before the undecided one and
+        // the unify-back would refuse it; on top of lane 24d's
+        // undecided-into-decided-member-01 rule it might agree, untried. Measured with
+        // lane 24d's genu.py, seed 9301, 1500 families, 6715 programs: base-r24 and
+        // lane 24h each accept 2286 by default, of which 324 differ under NO_SUBST,
+        // the same 324 on both: 270 member-choice refusals (A, all in wrapper or
+        // nested shapes) and 54 mismatches at an instance's return (B); lane 24d's
+        // reviewer measured 1866 of 6302 on 24d. Recommendation: since D36 a verdict
+        // follows the order its relations are met in, so a second check's refusal is
+        // no oracle for substitution; keep NO_SUBST as the A/B of what both modes
+        // accept (types, elaboration, values) and stop reading its refusals as splits,
+        // or let an instance whose second check refuses take its definition's types
+        // with the refusal logged. Whether NO_SUBST should keep refusing is a choice
+        // about the debug tool, not about what the language accepts. probes:
+        // ~/ptmp/cr29/scratch/r24/24h/uno/ (README, nsdiff.py, ns9301.txt)
         let mut undecided_free = s0
             .iter()
             .zip(&free)
