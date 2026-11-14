@@ -61,7 +61,8 @@ and never rides it. Pins: `findings/wake-stale-bottom-sep2026/`.
 
 A binding something writes keeps the value it holds at a wake (`Bind::update` holds a `<-` target back
 from a production that did not fire), and so does a target born `never()`, whose initializer's standing
-bottom is no write. Pins: `findings/wake-connect-target-sep2026/`.
+bottom is no write. A kernel holds no such binding (`strict_fusion.md`). Pins:
+`findings/wake-connect-target-sep2026/`, `findings/wake-mut-referent-nov2026/`.
 
 ## Builtins
 

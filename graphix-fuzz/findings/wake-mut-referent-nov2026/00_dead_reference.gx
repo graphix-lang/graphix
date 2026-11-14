@@ -1,0 +1,7 @@
+// nov13a aieka divergence_000000, minimized. `x` is a `&mut`'s referent,
+// so it is written, and a binding something writes keeps the value it
+// holds at a wake (design/sleep_and_wake.md). The arm sleeps for c = 3..5
+// while `inp` is written 100; at the wake (c = 6) `x` keeps 0 and `y`
+// takes 100. The kernel held `x` as a local and recomputed it from `inp`.
+// Expected (both engines): (0, 100) from c = 6 on.
+{ let c = 0; c <- select c { k if true => k + 1, _ => never() }; let sel = select c { 3 => false, 4 => false, 5 => false, _ => true }; let inp = 0; inp <- select c { 3 => c ~ 100, _ => never() }; let inner = select sel { true => { let x = inp; let y = inp; `U8(&mut x); (x, y) }, false => (-1, -1) }; inner }

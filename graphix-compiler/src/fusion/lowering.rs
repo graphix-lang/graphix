@@ -17,7 +17,7 @@ use crate::{
             try_freeze_for_abi_normalized,
         },
     },
-    node::{callsite::CallSite, lambda::GXLambda},
+    node::{bind::Bind, callsite::CallSite, lambda::GXLambda},
     profile::{self, Phase},
     typ::{Brief, FnArgKind, FnArgType, FnType, Type, TypeRef},
 };
@@ -191,6 +191,9 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt>(
                 failure = try_register_cast(tc, out).err();
                 return;
             }
+            NodeView::Bind(b) if binds_written(b, ctx) => {
+                Some("a binding something writes keeps its value at a wake")
+            }
             _ => fusion::effect_blocker(n)
                 .or_else(|| std::ptr::eq(n, node).then(|| root_blocker(n)).flatten()),
         };
@@ -201,6 +204,14 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt>(
         Some(failure) => Err(failure),
         None => Ok(()),
     }
+}
+
+/// Whether `b` binds a name something writes (a `<-` target, a `&mut`'s
+/// referent): its value is state, which a kernel local cannot hold.
+fn binds_written<R: Rt>(b: &Bind<R>, ctx: &CompileCtx<R>) -> bool {
+    let mut written = false;
+    b.pattern.ids(&mut |id| written |= ctx.var_written(id));
+    written
 }
 
 /// A root that can never emit a value. Nested, the same node may sit

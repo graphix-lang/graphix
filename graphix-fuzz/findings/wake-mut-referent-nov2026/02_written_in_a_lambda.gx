@@ -1,0 +1,4 @@
+// A `<-` inside a lambda the block never calls writes `x` all the same:
+// the kernel held it as a local and recomputed it at the wake.
+// Expected (both engines): 100 from c = 6 on.
+{ let c = 0; c <- select c { k if k < 8 => k + 1, _ => never() }; let sel = select c { 3 => false, 4 => false, 5 => false, _ => true }; let inp = 0; inp <- select c { 3 => c ~ 100, _ => never() }; let inner = select sel { true => { let x = inp; let f = |v| x <- v; let y = inp; x + y }, false => -1 }; inner }

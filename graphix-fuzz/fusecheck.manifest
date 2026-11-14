@@ -568,6 +568,9 @@
 10	wake-connect-target-sep2026/00_seq.gx
 4	wake-connect-target-sep2026/01_never_let.gx
 3	wake-connect-target-sep2026/02_arm_value.gx
+4	wake-mut-referent-nov2026/00_dead_reference.gx
+4	wake-mut-referent-nov2026/01_function_body.gx
+4	wake-mut-referent-nov2026/02_written_in_a_lambda.gx
 4	wake-outside-nov2026/00_moved_capture_routes_a_kernel.gx
 4	wake-outside-nov2026/01_moved_formal_under_an_operator.gx
 7	wake-outside-nov2026/02_moved_array_through_a_reference.gx

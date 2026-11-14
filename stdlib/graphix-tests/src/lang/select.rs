@@ -3882,6 +3882,49 @@ run!(
     }; FuseExpect::Jit
 );
 
+// A `&mut`'s referent is written, so at the wake (s = 2) it keeps the 0 it
+// held while `y` takes the 100 written during the sleep: no kernel holds
+// `x` as a local recomputed from its initializer.
+// findings/wake-mut-referent-nov2026/
+const WAKE_KEEPS_A_MUT_REFERENT: &str = r#"
+{
+  let s = array::iter([0, 1, 4, 2, 3]);
+  let inp = 0;
+  inp <- select s { 1 => s ~ 100, _ => never() };
+  let awake = select s { 1 | 4 => false, _ => true };
+  let inner = select awake {
+    true => { let x = inp; let y = inp; `U8(&mut x); (x, y) },
+    false => (-1, -1)
+  };
+  select s { 3 => s ~ inner.0 * 1000 + inner.1, _ => never() }
+}
+"#;
+
+run!(wake_keeps_a_mut_referent, WAKE_KEEPS_A_MUT_REFERENT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(100)))
+}; FuseExpect::Jit);
+
+// The same in a function's body: its `x` is written, so the call keeps it
+// at the wake.
+const WAKE_KEEPS_A_MUT_REFERENT_IN_A_FUNCTION: &str = r#"
+{
+  let s = array::iter([0, 1, 4, 2, 3]);
+  let inp = 0;
+  inp <- select s { 1 => s ~ 100, _ => never() };
+  let awake = select s { 1 | 4 => false, _ => true };
+  let g = |a| { let x = a; `U8(&mut x); x };
+  let inner = select awake { true => (g(inp), inp), false => (-1, -1) };
+  select s { 3 => s ~ inner.0 * 1000 + inner.1, _ => never() }
+}
+"#;
+
+run!(
+    wake_keeps_a_mut_referent_in_a_function,
+    WAKE_KEEPS_A_MUT_REFERENT_IN_A_FUNCTION,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(100)));
+    FuseExpect::Jit
+);
+
 // A reference cell born in a sleepable arm delivers the cycle it is
 // born: the deref fires and `dbg` runs.
 // findings/byref-wake-view-sep2026/

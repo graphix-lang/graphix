@@ -1,0 +1,4 @@
+// The same written `let` in a function's body: the call keeps `x` at the
+// wake, where a kernel of the body recomputed it from the formal.
+// Expected (both engines): (0, 100) from c = 6 on.
+{ let c = 0; c <- select c { k if k < 8 => k + 1, _ => never() }; let sel = select c { 3 => false, 4 => false, 5 => false, _ => true }; let inp = 0; inp <- select c { 3 => c ~ 100, _ => never() }; let g = |a| { let x = a; `U8(&mut x); x }; let inner = select sel { true => (g(inp), inp), false => (-1, -1) }; inner }
