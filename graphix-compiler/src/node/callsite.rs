@@ -3058,36 +3058,18 @@ impl<R: Rt> CallSite<R> {
                     },
                 )
             };
-        // XCR claude for claude: [bug/medium] A trait method call that omits a labeled default is
-        // checked with no default judged: the call's type is the trait's signature, which
-        // names no definition, so `defs` is empty here and the default is left to the bind,
-        // which refuses it. `trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
-        // impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" }; T::m(1, "q",
-        // 7)` passes --check, and its build fails "in the instance of T::m(1, "q", 7) at this
-        // call site .. in: 1: type mismatch 'z: string does not contain i64" (`T::m(1, 2, 7)`
-        // prints "1 2"). The same with the method's body written in the trait, and with a
-        // default that holds a defaulted function (`#w: fn(?#d: 'z, x: i64) -> string = |#d =
-        // 1, x: i64| ..`), which default-holds-defaulted-fn-01 judges only where a definition
-        // is known. base-r24 alike. A fix: where the self argument's type decides the impl at
-        // the check (Env::find_impl), judge that method's defaults here as a named function's
-        // are. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/{tplain, tplain_ok, trait2,
-        // traitd}.gx (trait-call-omitted-default-01)
-        // 2026-11-14 claude: trait-method-return-defaults-01 judges only what a method RETURNS,
-        // where the method is held to its signature (callsite::check_method_return); a default
-        // of the method's own label is still left to the call, as this CR says.
-        // lang::traits::method_own_default_is_left_to_its_calls pins the case that runs today
-        // (nothing else decides the label's variable).
-        // 2026-11-14 claude: A trait method call's omitted labeled default is judged at the
-        // check: CallSite::decided_method gives the impl method (or the trait's default body)
-        // the self type decides (no open cell, no union, no constructor or structural core
-        // trait), and check_omitted_defaults judges its defaults as a named function's.
-        // tplain/trait2/traitd/tplain_traitbody are refused at --check ('z: string does not
-        // contain i64); the fitting twins run. Pins
-        // lang::traits::{method_own_default_conflicting_with_an_argument_refused,
-        // trait_body_default_conflicting_with_an_argument_refused,
-        // method_own_default_holding_a_defaulted_fn_conflicting_refused} fail (interp: check
-        // alone passes) without it. Left: a union self's per-member defaults stay to the binds
-        // (method_own_default_is_left_to_its_calls); needs a soak.
+        // CR claude for claude: [bug/medium] A trait method call whose self is a union is
+        // checked with no omitted labeled default judged: CallSite::decided_method declines a
+        // union self, so the per-member defaults are left to the binds, which refuse what the
+        // check accepted. `trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string }; impl T
+        // for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" }; impl T for string {
+        // let m = |#w: 'z = "a", s, y: 'z, x: i64| "[w] [y]" }; let g = |s: [i64, string]|
+        // T::m(s, 2, 7); g(1)` passes --check and the build of g(1) fails "type mismatch 'z:
+        // i64 does not contain string" at the string impl's default. A fix: judge each member's
+        // impl default (Type::dispatch_members, Env::find_impl) against the call's own cells,
+        // one member at a time, not joined into one cell (the members' 'z are separate
+        // instances: method_own_default_is_left_to_its_calls must keep running).
+        // probe: ~/ptmp/cr29/scratch/r25/25d/p2.gx (trait-call-union-omitted-default-01)
         // CR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
         // function a call returns that is called with a labeled default omitted checks, and
         // is refused when its bind runs. `let mk = |k: i64| |#d = 1, x: i64|
