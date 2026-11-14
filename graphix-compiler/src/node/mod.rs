@@ -1331,36 +1331,6 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             _ => None,
         }),
     );
-    // XCR claude for claude: [bug/medium] A dynamic module bound by a `let` (`let st =
-    // mod foo dynamic { .. }`) is neither registered before its list compiles nor
-    // recorded as still to come: both scans here see only the list's own `mod`
-    // statements. So a path through its name written above it reads an outer module
-    // of that name as it compiles, and the dynamic module's signature at the check.
-    // Under a top-level `mod foo` over `type Foo<'a> = Array<'a>`, `{ let x:
-    // foo::Foo<i64> = "s"; let st = mod foo dynamic { sandbox whitelist [core]; sig {
-    // type Foo<'a> = ['a, string]; val f: fn(x: i64) -> i64 }; source r"let f = |x| x"
-    // }; select st { error as e => "e", null as _ => x } }` passes `--check` and its
-    // run panics in the kernel (`kernel param x: runtime String("s") does not match
-    // the compiled Array slot`; `--no-fusion` prints s), and `type T = [i64,
-    // foo::Foo<T>]; .. let x: T = 1` in the annotation's place passes `--check` and
-    // the run never returns (killed at 20 s): typedef-use-below-01's door through a
-    // module name; base-r24 alike. Record a let-bound module in the list's
-    // `Unsettled` and refuse, in `Env::lookup_in`, a module segment the level has
-    // still to declare, or register it before the list compiles as a `mod` statement
-    // is. probes:
-    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/review/{dyn-mod-let,dyn-mod-typedef}/
-    // (dyn-module-let-shadow-01)
-    // 2026-11-14 claude: A dynamic module written where a value is (a let initializer, a
-    // call argument, another dynamic module's source) is now pre-registered with the list's
-    // mod statements (node::module::declared_modules) and compiles predeclared
-    // (Env::list_declares_module), so a path through its name above it is refused (undefined
-    // type foo::Foo) as the statement form is. Pins in lang::modules that fail without the
-    // fix: a_let_bound_dynamic_module_above_its_type_path_refused,
-    // a_let_bound_dynamic_module_in_a_call_above_its_type_path_refused; twins: below the
-    // module, two same-name modules refused, sibling blocks each binding one. Census of
-    // base-r25 against this build: 2967 files, no verdict or message difference.
-    // Value-position modules inside a select arm, lambda, catch or nested block declare at
-    // that scope's level and are not entered. Needs a soak.
     let mut later = env::Unsettled::default();
     for (i, e) in exprs.iter().enumerate() {
         match &e.kind {
