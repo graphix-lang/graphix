@@ -710,42 +710,6 @@ impl<R: Rt> Bind<R> {
                 matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
             let contain = |t: &Type| t.check_contains(&ctx.env, &value);
             wrap!(self.node, contain(&self.typ))?;
-            // XCR claude for claude: [bug/medium] In a function's body, a `let` whose
-            // annotation leaves a label's type to a variable of its own, over a select
-            // whose arm is a lambda with a default, passes the check and is refused when
-            // the instance is built: `let j = 0; let mk = |t: Any| -> string { let v:
-            // fn(?#d: 'q, x: i64) -> string = select j { 0 => |#d = 1, x: i64|
-            // cast<string>(d)$, _ => never() }; "none" }; mk(1)` checks, and the run says
-            // "in the instance of mk(1) .. the functions met here share one #d .. in: 1:
-            // type mismatch 'q: _ does not contain i64" (GRAPHIX_ELAB_AUDIT=1 reports it
-            // at typecheck0). With `v(#d: "s", 7)` as the body's value the instance is
-            // refused "'q: string does not contain i64", where the same `let` at the top
-            // level prints s. The definition's check judges the default on a copy
-            // (Narrowing::Copy), which decides nothing, so 'q is what the body's calls
-            // make it or settles to bottom; the instance judges the default again
-            // against that. A lambda written directly, or as a block's value, runs; so
-            // does a call that omits the label. The same behind a union, a struct field
-            // or an array (`[fn(?#d: 'q, ..) -> string, null]`, `{cb: ..}`,
-            // `Array<..>`). base-r23 alike; 156 of gen.py's 9360 programs. probes:
-            // ~/ptmp/cr29/scratch/r23/23b/cud/{s1,s6,s7,s8,s9,s12}.gx, twins that run
-            // {s2,s13,s14,s15}.gx, gen.py, gen.out
-            // (let-annotation-default-instance-01)
-            // 2026-11-14 claude: An instance's let takes its definition's verdict on a
-            // function its annotation names the definitions of
-            // (callsite::Narrowing::Instance, from Bind::typecheck0_instance): the
-            // definition judged the default on a copy while the label's variable was
-            // open, and the instance read the variable as the body's calls or the settle
-            // left it. A function a typedef names is still judged as it stands. Pins
-            // lang::functions::default_under_a_bodys_annotation_{no_call,
-            // a_call_passes_the_label, returned}, default_under_a_bodys_{optional,
-            // struct, array}_annotation and
-            // default_of_a_factorys_variable_under_a_bodys_annotation fail with
-            // Narrowing::Copy passed there; .._a_call_omits_the_label and
-            // .._of_another_type_than_a_call_passes pin what the definition's check still
-            // decides and refuses. The 156 gen.py rows:
-            // ~/ptmp/cr29/scratch/r24/24c/ladi/sweep.out. Under GRAPHIX_NO_SUBST=1 two
-            // instances still split (annotation-names-sibling-lambdas-01), and a returned
-            // one by (nosubst-returned-default-01).
             if annotated {
                 let scope = Scope::root();
                 let (flags, top) = (BitFlags::empty(), self.spec.id);
