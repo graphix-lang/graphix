@@ -5624,6 +5624,30 @@ impl Type {
         // checks with the two names swapped, as the written-out [Array<i64>,
         // Array<Array<i64>>] does in either order (base-r24 alike). probes:
         // ~/ptmp/cr29/scratch/r24/24d/ius/e.txt lines 2-5 (hp2.sh; e.lane.out, e.base.out)
+        // 2026-11-14 claude: The same order where the holder is no union, with a ⊥ member:
+        // 'Array<'a> ⊇ [Array<_>, Array<i64>]' holds with the decided member first and is
+        // refused with the ⊥ first when the ⊥ is a cell's (one an input's end settled, or
+        // one a '_' required: 'let e = []; let z: Array<_> = e; let u = select b { true =>
+        // e, false => [1] }; array::map(u, |v| v + 1)' is refused in a script), since the
+        // open cell copies the ⊥ cell's binding (contains_tvars, the TT-LEFTCOPY arm) and
+        // the next member is a mismatch; a written 'let u: [Array<_>, Array<i64>]' runs,
+        // the (TVar, ⊥) arm binding nothing. In the REPL the members stand in the arms'
+        // order, so 'let f = |x| select x { [] => [], [a, ..] => [a] }', 'let r = f([1])',
+        // 'array::len(r)' is refused, "declare r's type where it is bound", and runs with
+        // the arms the other way; since union-order-forward-link-01 the unannotated
+        // function and its written twin agree in each order (pin
+        // lang::repl_inputs::settled_member_first_is_refused_as_the_written_twins holds the
+        // refusal for both). One level down ('[] => [[]], [a, ..] => [[a]]') the same, and
+        // there the written '[Array<Array<_>>, Array<Array<i64>>]' is refused too. Tried
+        // and not landed: a cell bound to ⊥ answering as ⊥ in that arm (no bind,
+        // bottom-fed). It runs the depth-0 forms in both orders and leaves the nested one
+        // refused; graphix-tests lib, graphix-types, regress and the census stayed green
+        // but for the printed type in
+        // lang::repl_inputs::load_write_is_held_to_the_program_binding ('fn(x: _) -> '_N'
+        // for '-> _'). It is a change to what every open cell above a ⊥ cell becomes,
+        // for half of this CR's order; the fix this CR names (the holder takes together
+        // what its variable must hold) covers it whole. probes:
+        // ~/ptmp/cr29/scratch/r24/24d/uofl/ (README; o03, o07, t2, c1, v1)
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a

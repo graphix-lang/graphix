@@ -966,11 +966,16 @@ other walks apart from one holding one, and a slice's rest beside an
 array element takes the element's cell only over the members (pin
 `lang::types::slice_rest_beside_an_array_element_behind_members_of_one_type`).
 A cell that is
-not copied stays open, with no link to a copy, so it stands among the
-members of a union where its written twin's variable does (an open cell
-sorts before one bound to another), and a later input reads the result
-of a ladder of three such arms as it reads the twin's (pin
-`lang::repl_inputs::slice_arms_result_reads_as_the_written_twins_in_a_later_input`).
+not copied stays open, with no link to a copy. A variable is ordered,
+compared and hashed as the cell it stands for, the end of the forward
+links merges left (`TVar::end_cell`), so a cell a copy did take stands
+among the members of a union where an open cell does, as its written
+twin's variable: which of two merged cells forwards to the other tells
+no two unions apart, and a later input reads the result of such arms as
+it reads the twin's (pins
+`lang::repl_inputs::slice_arms_result_reads_as_the_written_twins_in_a_later_input`,
+`forwarded_cell_stands_among_members_as_the_written_twins`,
+`typ::tvar::tests::a_forwarded_var_orders_as_the_cell_it_stands_for`).
 The
 elements of the arms' slices share a cell that way, and so do the arms'
 binds of another part of a tuple or a struct, however many arms bind it

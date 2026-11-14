@@ -2081,12 +2081,13 @@ impl Deref for TVar {
     }
 }
 
-/// Binding equality: two vars are equal when they share a cell or their
-/// bindings are equal, so two distinct unbound cells compare equal. Use
-/// [`union_identical`] where identity is meant.
+/// Binding equality: two vars are equal when they stand for one cell
+/// ([`TVar::end_cell`]) or those cells' bindings are equal, so two
+/// distinct unbound cells compare equal. Use [`union_identical`] where
+/// identity is meant.
 impl PartialEq for TVar {
     fn eq(&self, other: &Self) -> bool {
-        let (c0, c1) = (self.cell(), other.cell());
+        let (c0, c1) = (self.end_cell(), other.end_cell());
         Arc::ptr_eq(&c0, &c1) || c0.read().binding == c1.read().binding
     }
 }
@@ -2099,7 +2100,7 @@ impl PartialOrd for TVar {
     }
 }
 
-// CR claude for claude: [bug/low] The order of a union's members turns on which of
+// XCR claude for claude: [bug/low] The order of a union's members turns on which of
 // two merged cells holds the forward link, and a later input's verdict turns on
 // that order. An open cell compares equal to any other open cell and a cell
 // forwarded to an open one compares as bound, after them, so a function over an
@@ -2146,9 +2147,26 @@ impl PartialOrd for TVar {
 // "Array<'a: i64> does not contain [Array<'a1: i64>, Array<_>, Array<Any>]", fix
 // "Array<'a: _> does not contain [Array<_>, Array<Any>, Array<'a1: i64>]". probes:
 // ~/ptmp/cr29/scratch/r24/24f/sacm-rev/{p0289,p0394}.repl, t6.txt (run with rr.sh)
+// 2026-11-14 claude: TVar's Ord, Eq and Hash read through the forward links to the
+// cell a var stands for (TVar::end_cell; stands_for is its address), so which of two
+// merged cells forwards tells no two unions apart: the unannotated function's result
+// prints and sorts as its written twin's ('[Array<'_0>, Array<'_1>]' for the CR's
+// f), and the later 'array::map(r, ..)' / 'array::len(r)' runs for both. Fail
+// without it: typ::tvar::tests::a_forwarded_var_orders_as_the_cell_it_stands_for,
+// lang::repl_inputs::forwarded_cell_stands_among_members_as_the_written_twins (the
+// CR's form and one a level down). What is left is not the forward link: with the
+// arms the other way ('[] => [], [a, ..] => [a]') the settled ⊥ stands first in both
+// forms and the later read is refused for both alike (pin
+// settled_member_first_is_refused_as_the_written_twins; noted on
+// value-members-one-cell-order-01, whose order it is). Of 550 generated slice-arm
+// functions with later reads (gen5.py seeds 21, 22; lane head against the fix) 18
+// print their members in another order and one later read changes verdict, to its
+// written twin's; no --check or run differs, fused, --no-fusion, PAR=force and
+// ELAB_AUDIT agree. Census head against fix: 0 verdicts, 0 messages. probes:
+// ~/ptmp/cr29/scratch/r24/24d/uofl/ (README)
 impl Ord for TVar {
     fn cmp(&self, other: &Self) -> Ordering {
-        let (c0, c1) = (self.cell(), other.cell());
+        let (c0, c1) = (self.end_cell(), other.end_cell());
         if Arc::ptr_eq(&c0, &c1) {
             Ordering::Equal
         } else {
@@ -2159,7 +2177,7 @@ impl Ord for TVar {
 
 impl Hash for TVar {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.cell().read().binding.hash(state)
+        self.end_cell().read().binding.hash(state)
     }
 }
 
@@ -3249,15 +3267,23 @@ impl TVar {
 
     /// The cell this var stands for: its own, or the end of the forward
     /// links merges left ([`Self::open_cell`], bound or not).
-    pub fn stands_for(&self) -> usize {
-        let mut tv = self.clone();
+    fn end_cell(&self) -> Arc<CellLock> {
+        let mut cell = self.cell();
         loop {
-            let next = match &tv.cell().read().binding {
-                Some(Type::TVar(next)) => next.clone(),
-                _ => return tv.cell_addr(),
+            let next = match &cell.read().binding {
+                Some(Type::TVar(next)) => Some(next.cell()),
+                _ => None,
             };
-            tv = next;
+            match next {
+                Some(next) => cell = next,
+                None => return cell,
+            }
         }
+    }
+
+    /// The address of [`Self::end_cell`].
+    pub fn stands_for(&self) -> usize {
+        self.end_cell().data_ptr().addr()
     }
 
     /// Identity of the shared binding cell, for set membership tests.
@@ -6165,6 +6191,35 @@ mod tests {
             w[0].add_cell_constraint(array_of(&w[1]))
         }
         cells
+    }
+
+    /// A var a merge left forwarding to another cell is that cell to an
+    /// ordering, an equality and a hash, open or bound, so the two sort
+    /// alike among the members of a union.
+    #[test]
+    fn a_forwarded_var_orders_as_the_cell_it_stands_for() {
+        use netidx_value::Typ;
+        use std::hash::{BuildHasher, RandomState};
+        let cell = |n: &str| TVar::empty_named(ArcStr::from(n));
+        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+        a.bind(Type::TVar(b.clone()));
+        let hasher = RandomState::new();
+        for (x, y) in [(&a, &b), (&a, &c), (&c, &a)] {
+            assert_eq!(x.cmp(y), Ordering::Equal);
+            assert!(x == y);
+            assert_eq!(hasher.hash_one(x), hasher.hash_one(y));
+        }
+        for members in [[&a, &c], [&c, &a], [&b, &a]] {
+            assert!(members.map(array_of).is_sorted());
+        }
+        b.bind(Type::Primitive(Typ::I64.into()));
+        let d = cell("d");
+        d.bind(Type::Primitive(Typ::I64.into()));
+        assert_eq!(a.cmp(&d), Ordering::Equal);
+        assert!(a == d);
+        assert_eq!(hasher.hash_one(&a), hasher.hash_one(&d));
+        assert_eq!(c.cmp(&a), Ordering::Less);
+        assert_eq!(a.cmp(&c), Ordering::Greater);
     }
 
     /// Two chains of bounds merged link by link, first link first or last

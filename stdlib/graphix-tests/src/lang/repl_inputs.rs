@@ -688,6 +688,58 @@ async fn slice_arms_result_reads_as_the_written_twins_in_a_later_input() -> Resu
     .await
 }
 
+/// The element cell of an unannotated parameter that an arm's narrowing
+/// left forwarding to a copy sorts as the cell it stands for, so the
+/// result's members stand as the written twin's do and a later input
+/// reads both alike: the variable takes the decided member first, and
+/// holds the other.
+#[tokio::test(flavor = "current_thread")]
+async fn forwarded_cell_stands_among_members_as_the_written_twins() -> Result<()> {
+    for (f, read, len) in [
+        ("let f = |x| select x { [a, ..] => [a], [] => [] }", "array::len(r)", 1),
+        (
+            "let f = |x: Array<'e>| select x { [a, ..] => [a], [] => [] }",
+            "array::len(r)",
+            1,
+        ),
+        (
+            "let f = |x| select x { [a, ..] => [[a]], [] => [[]] }",
+            "array::fold(r, 0, |n, v| n + array::len(v))",
+            1,
+        ),
+        (
+            "let f = |x: Array<'e>| select x { [a, ..] => [[a]], [] => [[]] }",
+            "array::fold(r, 0, |n, v| n + array::len(v))",
+            1,
+        ),
+    ] {
+        session(&[Accept(f), Accept("let r = f([1])"), Produce(read, Value::I64(len))])
+            .await?;
+    }
+    Ok(())
+}
+
+/// With the arms the other way the settled ⊥ stands first in both forms,
+/// and a later read is refused for both alike, naming the binding to
+/// annotate.
+#[tokio::test(flavor = "current_thread")]
+async fn settled_member_first_is_refused_as_the_written_twins() -> Result<()> {
+    for f in [
+        "let f = |x| select x { [] => [], [a, ..] => [a] }",
+        "let f = |x: Array<'e>| select x { [] => [], [a, ..] => [a] }",
+    ] {
+        session(&[
+            Accept(f),
+            Accept("let r = f([1])"),
+            Refuse("array::len(r)", "declare r's type where it is bound"),
+            Accept("let r: Array<i64> = f([1])"),
+            Produce("array::len(r)", Value::I64(1)),
+        ])
+        .await?;
+    }
+    Ok(())
+}
+
 /// Lambdas of two inputs that meet in a third have their defaults judged
 /// in the order the inputs were given, not the order of their texts: `1`
 /// first, so `"q"` is refused.

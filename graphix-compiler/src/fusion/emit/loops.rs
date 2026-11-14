@@ -170,6 +170,23 @@ fn convert_collection_result(
 }
 
 impl Flavor {
+    // CR claude for claude: [bug/high] A collection HOF over an array source whose
+    // type is a union of arrays aborts the process while the source is bottom. `let
+    // xs: [Array<_>, Array<i64>] = never(); println(array::map(xs, |v| v))` panics
+    // "graphix: zero ValArray bits — JIT codegen bug" in graphix_valarray_len
+    // (array::fold and array::filter alike; array::len runs), and so does a source
+    // that arrives later (`= sys::time::after_idle(duration:10.ms, [1, 2])`), in the
+    // kernel's first run. --no-fusion runs both, and so does the same source typed
+    // `Array<i64>` or one that holds a value in the first cycle. base-r24 alike. A
+    // later REPL input reaches it with no annotation: `let f = |x| select x { [a] =>
+    // [a], [] => [], _ => never() }`, `let r = f([1, 2])`, `array::map(r, |v| v +
+    // 1)`, where `r` is `[Array<i64>, Array<_>]` and bottom. Not diagnosed: the
+    // source seems to reach the loop as a Value whose payload is read as ValArray
+    // bits with no test of its disc. What would likely fix it: the loop reads the
+    // source's length only where its disc says it is present, or a source whose ABI
+    // kind is not an array is not fused. probes:
+    // ~/ptmp/cr29/scratch/r24/24d/uofl/{jit1,jit2}.gx, jit3.repl
+    // (hof-union-source-bottom-abort-01)
     /// Emit the loop source as the scaffold's ValArray, whose disc drives
     /// the firing wrap.
     fn emit_source<R: Rt>(
