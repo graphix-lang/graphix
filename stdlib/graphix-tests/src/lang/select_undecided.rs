@@ -1344,6 +1344,53 @@ run!(arm_behind_an_or_cover_leaves_both_covered_parts_open, r#"{
     [f("s", 2.5, 0), f("s", 2.5, 1), f("s", 2.5, 2)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 3]); FuseExpect::Jit);
 
+// A cell the covered part holds through a select of its own, or twice, stays
+// open the same way.
+run!(arm_behind_a_cover_leaves_a_selected_cell_of_the_covered_part_open, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select b {
+            true => (`K, select c { true => x, false => 0 }),
+            false => (`L, 0)
+        });
+        select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 }
+    };
+    [f("s", true, true), f("s", true, false), f("s", false, true), f(0, true, true)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 1]); FuseExpect::Jit);
+
+run!(arm_behind_a_cover_leaves_a_cell_built_in_twice_open, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x, x), false => (`L, 0, "a") });
+        select *r { (`K, _, _) => 1, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 }
+    };
+    [f("s", true), f(1, true), f("s", false), f(1, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2, 2]); FuseExpect::Jit);
+
+// The referent the arms decided holds the covered part as `Any`: a second
+// select over it tests the value there at run time.
+run!(second_select_tests_the_part_a_cover_left_open, r#"{
+    let f = |x, b: bool| {
+        let r = &mut (select b { true => (`K, x), false => (`L, 0) });
+        let s = select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 };
+        let t = select *r { (_, 0) => 5, _ => 6 };
+        s * 10 + t
+    };
+    [f(0, true), f("s", true), f("s", false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [15, 16, 25]); FuseExpect::Jit);
+
+// A test that holds the member with one part annotated holds its other
+// cell, behind a cover that binds a part too.
+run!(test_holding_an_annotated_part_leaves_the_other_part_open, r#"{
+    let f = |x: i64, y, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 }
+    };
+    let g = |x: i64, y, b: bool| {
+        let r = &mut (select b { true => (y, x, `K), false => ("a", 0, `L) });
+        select *r { (_, n, `K) => n, (_, 0, _) => 2, ("a", _, _) => 3, _ => 4 }
+    };
+    [f(5, "s", true), f(5, 7, true), f(5, 7, false), g(5, "s", true), g(5, 7, true), g(5, 7, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 5, 2, 5, 5, 2]); FuseExpect::Jit);
+
 // No test holds the member as it stands (the cover binds a part), and two
 // tests could take it, each deciding another of its cells: which did would
 // follow their place in the arms' union.
