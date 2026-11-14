@@ -687,34 +687,21 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
 }
 
-// XCR claude for claude: [bug/medium] A labeled default that raises (`#d = e?`), in a function
-// a call reaches through a type that names no definition or hides the label, checks, and
-// its bind is refused: no call judges what the default raises. `trait T { val mk: fn(self)
-// -> fn(?#d: i64, x: i64) -> i64 }; impl T for i64 { let mk = |s| |#d = error(`E)?, x: i64|
-// d + x }; { catch(e) println("caught [e]"); println(T::mk(1)(7)) }` passes --check, and
-// the run logs "T::mk(1)(7): binding the callee failed: .. in: error(`E)?: this error
-// reaches a catch that saw no error when it was checked: annotate the catch with the errors
-// it takes". The same through a typedef (`type W = fn(?#d: i64, x: i64) -> i64; let mk =
-// |k: i64| -> W |#d = error(`E)?, x: i64| d + x; .. mk(0)(7)`) and through a written return
-// type that hides the label (`let mk = |k: i64| -> fn(x: i64) -> i64 |#d = error(`E)?, x:
-// i64| d + x`). With no return type written the call names the definition, its catch takes
-// the error and the run prints "caught ..". All three run once the declared function type
-// writes the raise (`.. -> i64 throws Error<ErrChain<`E>>`), or the catch is annotated
-// (`catch(e: Error<ErrChain<`E>>)`). base-r24 alike. The walks that judge a default as
-// its declaration stands (check_method_return, and hidden_defaults_at where the
-// declaration names no definition) judge its type alone, compiled under no handler of any
-// call: a fix holds what such a default raises to the declared function's `throws` there,
-// refused naming the `throws` to write, and for a label the type hides, to the function's
-// own. Found reviewing trait-method-return-defaults-01. probes:
-// ~/ptmp/cr29/scratch/r24/24c/tmrd-rev/{a14, a14d, a14e, r1, r4, r4b, r4c, r5, r5b, r5c}.gx
-// (returned-default-raise-01)
-// 2026-11-14 claude: A default judged as its declaration stands (judge_hidden_defaults) now
-// compiles under a RaiseProbe handler of its own, and what it raised must fit the declared
-// function type's throws: refused at the check, naming the throws to write. Pins that fail
-// without it: lang::functions::a_raising_default_behind_a_typedef,
-// a_raising_default_behind_a_hiding_return_type, a_raising_default_passed_to_an_open_throws,
-// lang::traits::method_returned_default_that_raises_is_refused. Annotated-catch twins
-// (catch(e: Error<ErrChain<`E>>)) are refused too: the declared type is the contract.
+// CR claude for claude: [bug/medium] A labeled default that raises through a type variable of
+// its factory (`#d = k?` over `k: Result<i64, 'e>`) checks, and its bind is refused at run
+// time, with no type hiding anything and whether or not the factory's return type writes
+// `throws Error<ErrChain<'e>>`: `let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; {
+// catch(e) println("caught [e.0.error]"); println(mk(error(`E))(7)) }` passes --check and the
+// run logs "mk(error(`E))(7): binding the callee failed: .. in: k?: this error reaches a catch
+// whose handler was checked to take Error<ErrChain<'e>>: type mismatch Error<ErrChain<'e: _>>".
+// The same with `-> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>>` written (the fix of
+// returned-default-raise-01 accepts it, as the throws fits), and with no throws written it is
+// refused there naming `throws Error<ErrChain<'e: unbound>>`, which cannot be written. A
+// closed `E in place of `'e` runs, and so does a non-default `|x: i64| k? + x`: the default's
+// raise joins the bind's catch through the factory's open cell, and the bind's check meets the
+// instance's `'e` as a different, unbound one. base-r25 alike. Found reviewing
+// returned-default-raise-01. probes: ~/ptmp/cr29/scratch/r25/25d/rdr/{g3, g4, g6, g8, g9}.gx
+// (default-raise-open-var-01)
 /// The defaults of the functions a method's value returns, judged where
 /// the method is held to its `declared` signature: against the declared
 /// return as it is written, every variable of the signature rigid, and
