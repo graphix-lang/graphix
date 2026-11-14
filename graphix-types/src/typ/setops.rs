@@ -1630,50 +1630,6 @@ impl Type {
                 }
                 Ok(t)
             }
-            // XCR claude for claude: [bug/low] A tuple, struct or variant is subtracted
-            // only by the same type, so one the subtrahend holds stays in the
-            // difference and a select arm that can match nothing is not refused:
-            // `type A = [([i64, string], i64), null]; type B = [(i64, i64), string];
-            // let x: [A, B] = (1, 2); select x { ([i64, string], i64) as t => "wide",
-            // (i64, i64) as t => "narrow", null as _ => "null", string as s => s }`
-            // passes --check and runs (`[A, B]` less `([i64, string], i64)` is `[null,
-            // B]`), where the same select over `Array<[i64, string]>` and `Array<i64>`
-            // is refused, "pattern Array<i64> will never match [null, string]", and so
-            // is the tuple one over the scrutinee `([i64, string], i64)` alone.
-            // base-r23 and lane 23b alike. A product the subtrahend contains could
-            // answer the empty type, as an Array does. probes:
-            // ~/ptmp/cr29/scratch/r23/23b/tdm-rv/u5.gx, u6.gx (diff-product-held-01)
-            // 2026-11-13 claude: variant-tuple-payload-dead-01's fix
-            // (setops::held_by_shape) reads a product position as held where the
-            // subtrahend there is Any or the same type, through parts of one shape at
-            // any depth, with a union or a name on the minuend's side read through; a
-            // union on the subtrahend's side (i64 in [i64, string], this CR's u5.gx)
-            // is not read, so u5.gx still checks. Tried first for that CR: a
-            // position's full difference (diff_int) per product position, empty
-            // meaning held. It is right but
-            // typ::setops::tests::residuals_over_two_families_of_recursive_unions_stay_shallow's
-            // four_a_side family then spent the whole 1000-pair budget
-            // (setops::WALK_PAIRS) on every arm, against 95/56/33 before: products
-            // inside recursive unions of two families multiply the paths, all cut at
-            // an ancestor so nothing is kept. A union on the subtrahend's side wants a
-            // walk that stops at the first member not held, not a residual.
-            // 2026-11-13 claude: setops::held_by_shape (now the Held walk, taking the diff's
-            // DiffHist) reads the subtrahend's side: a union there holds a position one of its
-            // members holds (a primitive flag by flag), a primitive by its flags, and a name
-            // there is read through against the walk's pair budget (WALK_PAIRS, counted in
-            // DIFF_PAIRS), never again on a path once the minuend has read a name since, so two
-            // recursive names stop at their first turn. u5.gx is refused as u6.gx is. Pins that
-            // fail with the change undone:
-            // lang::select::{product_position_union,struct_field_union,variant_payload_union,product_position_name,product_position_number,product_position_recursive_name}_holds_a_narrower_member,
-            // or_name_alternative_over_a_union_shadows_the_next,
-            // lang::select_undecided::annotated_payload_members_leave_no_other_arm (32 mode
-            // runs; the name/Number/recursive pins also with read_through alone undone),
-            // typ::setops::tests::diff_takes_a_product_a_union_or_name_holds_at_a_position,
-            // held_reads_a_subtrahends_name_until_both_sides_recur (1000 pairs without the
-            // recursion guard). Two fixtures had truly dead alternatives/arms and are rewritten
-            // (or_names_over_unions_keep_working, the annotated_payload pair). Census 0/0 of
-            // 2967. Distributive cases (a minuend position held only by two subtrahend members
-            // together) stay conservative.
             (Type::Tuple(_), Type::Tuple(_))
             | (Type::Struct(_), Type::Struct(_))
             | (Type::Variant(..), Type::Variant(..)) => {
