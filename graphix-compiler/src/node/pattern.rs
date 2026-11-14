@@ -639,33 +639,6 @@ pub(super) fn written_refusal(
     )
 }
 
-// XCR claude for claude: [bug/low] A variable a definition declares by no name a
-// program writes as a variable, a trait in argument position (`|s: Show|`, the cell
-// `#s`) or a trait default's receiver (`self`), is told here as if written, and the
-// remedy cannot be written: `|s: Show| select s { `J => 1, _ => 2 }` is refused "`J
-// tests inside a value of '#s, ..: replace the bound of '#s, Show, by the type it
-// tests, `'#s: T`, and write that type, `T as `J`", and a default `val tag: fn(self)
-// -> i64 = |x| select x { `J => 1, _ => 2 }` says 'self and "`'self: T`". base-r24
-// alike, and "the variable" where the pattern met a merged handle (`select [s] {
-// [`J] => .. }`), which now says '#s too. A fix: tell such a variable by
-// what the program wrote (the trait, `self`) and name a remedy it can write (declare
-// a named variable bounded by the trait in its place; under `self`, the type test).
-// probes: ~/ptmp/cr29/scratch/r24/24g/rru/t4.gx .. t7.gx (unwritten-rigid-name-01)
-// 2026-11-14 claude: call-result-rigid-name-01 makes the printer name a cell a
-// definition being checked declares by its declared name through any handle, so a
-// generated handle merged into the cell of |s: Show| now prints '#s: unbound within
-// Show (base-r24: '_8352), as the parameter's own handle already did; a fix here
-// that changes what such a cell is told by covers the printer too
-// (tvar::printed_name, TVar::declared_name).
-// 2026-11-14 claude: A variable no program writes as a variable is told by what the
-// program wrote: pattern.rs Var::of tells a trait in argument position as 'the trait
-// Show' with the remedy 'declare the parameter as a named variable bounded by the
-// type it tests, `'a: T`' (twin passes), and a default's receiver as 'self' with
-// 'write the type it tests, `T as ..`' (twin passes), through a merged handle too;
-// the 'the variable' wording is kept only where no signature names the cell. Pins:
-// lang::traits::test_inside_a_trait_argument_* / binding_inside_a_trait_argument_* /
-// test_inside_a_default_receiver_* (the refused ones fail in all four modes without
-// it); select.md cases fence.
 /// How a refusal tells a type variable its definition holds rigid: by what
 /// the program wrote for it.
 enum Var {
