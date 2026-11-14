@@ -793,32 +793,41 @@ places that used to rely on `Use::delete` scrub explicitly: a dynamic
 module recompile clears `names` under its scope; `unbind_scope_subtree`
 scrubs it for the LSP.
 
-**A body's table goes with its input.** A scope that crosses a body
-(a `#` component) is named by one top-level input's compile and no
-other, and the only code that compiles there afterwards runs under a
-lexical view made in that input: a definition's (`LambdaDef::env`, at
-each new instance) or a module's (`Module::env`, at each load). So
-each top-level compile (`compile_top`) makes an `InputHold`, which
-every view made while it compiles carries (`Lexical::input`), and a
-table made at such a scope is tagged with it, weakly
-(`ScopeNames::input`, `Env::names_mut`). The next top-level compile
-drops the tables whose input no view holds (`Env::sweep_names`): a
-dropped expression's go once the last function that left it is gone,
-and not before, since that function builds its body against them at
-every new call site. A table at a module's own path or at the root is
-no input's and stays: later inputs write it. A view decoded from an
-image holds no input, and the tables the image carries are untagged.
+**A table goes with its input.** A scope that crosses a body (a `#`
+component) is named by one top-level input's compile and no other, and
+the only code that compiles there afterwards runs under a lexical view
+made in that input: a definition's (`LambdaDef::env`, at each new
+instance) or a module's (`Module::env`, at each load). So each top-level
+compile (`compile_top`) makes an `InputHold`, which every view made while
+it compiles carries (`Lexical::input`), and a table made at any scope but
+the root is tagged with it, weakly (`ScopeNames::input`,
+`Env::names_mut`). The next top-level compile drops the tables whose input
+no view holds (`Env::sweep_names`): a dropped expression's go once the
+last function that left it is gone, and not before, since that function
+builds its body against them at every new call site; a deleted module's
+own, at a path that crosses no body, go the same way, so the next module
+declared at the path reads none of its imports. The root's table is no
+input's and stays: later inputs write it. A view decoded from an image
+holds no input, and the tables the image carries are untagged.
+A module declared at the path of a deleted one whose input is still held
+(a function that left it) does not write its table: the old input keeps
+the table for its views (`InputTables`, read by `Env::displaced_at`) and
+the registry gets a table of its own (`Env::displace_names`).
 A live expression that keeps no view (`{ use str::len; len("ab") }`)
 loses its tables at the next top-level compile too: nothing compiles
 there again, a type its block imported was resolved while it compiled
 (the cell is filled), the unused-import scan runs before the next
 compile, and a tool reads the copy of the env its check returned. A
-lookup asserts (debug) that a view made in one input reads no other
-input's table. Pins: `lib_tests::leaks::
+lookup at a scope that crosses a body asserts (debug) that a view made in
+one input reads no other input's table. Pins: `lib_tests::leaks::
 a_dropped_block_takes_its_import_table`,
 `a_function_escaping_a_dropped_block_keeps_its_imports_while_held`,
-`a_blocks_imported_type_outlives_its_table` and the
-`a_dropped_*module*` tests there, whose count includes `env.names`.
+`a_blocks_imported_type_outlives_its_table`,
+`a_dropped_module_at_the_root_takes_its_import_table`,
+`a_module_declared_at_a_dropped_modules_path_reads_none_of_its_imports`,
+`a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_new_module`
+and the `a_dropped_*module*` tests there, whose count includes
+`env.names`.
 
 ### Marked block components
 

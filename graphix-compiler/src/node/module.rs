@@ -2310,7 +2310,7 @@ impl<R: Rt> Update<R> for Module<R> {
         for id in traits.iter().flat_map(|def| def.dispatchers()) {
             ctx.delete_dispatcher(id)
         }
-        // CR claude for claude: [bug/low] A deleted module whose path crosses no
+        // XCR claude for claude: [bug/low] A deleted module whose path crosses no
         // body leaves its own import table in `Env::names`
         // (dropped-import-tables-01 took the tables at scopes that cross a body and
         // left this one, which no input owns). An embedder sees it two ways, with
@@ -2338,6 +2338,17 @@ impl<R: Rt> Update<R> for Module<R> {
         // its own, as a load keeps its own (`LoadedBody::keep_names`). probe:
         // ~/ptmp/cr29/scratch/r24/24e/dropped-import-tables-01/review/root_module_table.rs
         // (root-module-table-01)
+        // 2026-11-14 claude: Fixed: a table at any scope but the root is tagged with its
+        // input (Env::names_mut), so the next top-level compile sweeps a deleted module's
+        // table once no view of it is held; a module declared at the path while a function
+        // of the deleted one is held displaces the old table into the old input's
+        // InputTables (Env::displace_names, read by Env::displaced_at) and writes one of
+        // its own. Census (--no-cache --check, 2967 files) identical to base-r25; cold
+        // start run with --no-cache clean under debug asserts. Pins in lib_tests::leaks,
+        // which fail with the tagging back at crosses_body or the displacement taken out:
+        // a_dropped_module_at_the_root_takes_its_import_table (60 -> 80),
+        // a_module_declared_at_a_dropped_modules_path_reads_none_of_its_imports,
+        // a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_new_module.
         ctx.env.unbind_lexical_under(&self.scope.lexical);
     }
 

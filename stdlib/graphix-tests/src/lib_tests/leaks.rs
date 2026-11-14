@@ -920,6 +920,113 @@ async fn a_dropped_root_module_is_declared_again() -> Result<()> {
     .await
 }
 
+const DYNAMIC_LEN_MODULE: &str = r#"sandbox whitelist [core, str]; sig { val make: fn(s: string) -> i64 }; source "use str::len; let make = |s: string| len(s)""#;
+
+/// Compile and drop a dynamic module at `/m` whose source writes `use
+/// str::len`, and a unit after it, which takes the module's tables.
+async fn a_dynamic_module_declared_and_dropped(
+    ctx: &TestCtx,
+    rx: &mut Events,
+    name: &str,
+) -> Result<()> {
+    let (id, a) =
+        compile_one(ctx, format!("mod {name} dynamic {{ {DYNAMIC_LEN_MODULE} }}"))
+            .await?;
+    await_update(ctx, rx, id, |v| *v == Value::Null).await?;
+    drop(a);
+    let (id, x) = compile_one(ctx, "1").await?;
+    await_update(ctx, rx, id, |v| *v == Value::I64(1)).await?;
+    drop(x);
+    Ok(())
+}
+
+/// A deleted module's import table does not outlive it where its path
+/// crosses no body: each of a session's dynamic modules, declared under a
+/// name of its own and dropped, leaves none.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_module_at_the_root_takes_its_import_table() -> Result<()> {
+    let (ctx, mut rx) =
+        fixture_runtime([], crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let mut early = 0;
+    for i in 0..25 {
+        if i == 5 {
+            early = ctx.rt.get_env().await?.names.len()
+        }
+        a_dynamic_module_declared_and_dropped(&ctx, &mut rx, &format!("m{i}")).await?;
+    }
+    let late = ctx.rt.get_env().await?.names.len();
+    ctx.shutdown().await;
+    assert_eq!(early, late, "the import tables of dropped modules are held");
+    Ok(())
+}
+
+/// The module declared at a path reads no import table a deleted module
+/// at the path left: `len` is the new module's own to import.
+#[tokio::test(flavor = "current_thread")]
+async fn a_module_declared_at_a_dropped_modules_path_reads_none_of_its_imports()
+-> Result<()> {
+    let one = |text: &'static str| [("/m.gx", VfsEntry::from(ArcStr::from(text)))];
+    let (ctx, mut rx) = fixture_runtime(
+        one("let make = |s: string| len(s)"),
+        crate::TEST_REGISTER,
+        Mode::Interp,
+        |_| {},
+    )
+    .await?;
+    a_dynamic_module_declared_and_dropped(&ctx, &mut rx, "m").await?;
+    let Err(e) = ctx.rt.compile(literal!(r#"mod m; m::make("ab")"#)).await else {
+        bail!("a module read the import table of a deleted one")
+    };
+    ctx.shutdown().await;
+    let e = format!("{e:?}");
+    assert!(e.contains("len not defined"), "{e}");
+    let (ctx, mut rx) = fixture_runtime(
+        one("use array::len; let make = |a: Array<i64>| len(a)"),
+        crate::TEST_REGISTER,
+        Mode::Interp,
+        |_| {},
+    )
+    .await?;
+    a_dynamic_module_declared_and_dropped(&ctx, &mut rx, "m").await?;
+    let made = ctx.rt.compile(literal!("mod m; m::make([1, 2])")).await?;
+    await_update(&ctx, &mut rx, made.exprs[1].id, |v| *v == Value::I64(2)).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// A function that left a dropped module builds its body against the
+/// imports its source wrote, while a module declared at the path imports
+/// the names of its own.
+#[tokio::test(flavor = "current_thread")]
+async fn a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_new_module()
+-> Result<()> {
+    let files = [(
+        "/m.gx",
+        VfsEntry::from(ArcStr::from("use array::len; let make = |a: Array<i64>| len(a)")),
+    )];
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let _g = ctx.rt.compile(literal!("let g: fn(s: string) -> i64 = never();")).await?;
+    let (id, a) = compile_one(
+        &ctx,
+        format!("mod m dynamic {{ {DYNAMIC_LEN_MODULE} }}; g <- m::make; null"),
+    )
+    .await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::Null).await?;
+    let (id, read) = compile_one(&ctx, "{ let f = g; 7 }").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(7)).await?;
+    drop((a, read));
+    let (id, x) = compile_one(&ctx, "1").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(1)).await?;
+    drop(x);
+    let made = ctx.rt.compile(literal!("mod m; m::make([1, 2])")).await?;
+    await_update(&ctx, &mut rx, made.exprs[1].id, |v| *v == Value::I64(2)).await?;
+    let late = ctx.rt.compile(literal!(r#"g("abc")"#)).await?;
+    await_update(&ctx, &mut rx, late.exprs[0].id, |v| *v == Value::I64(3)).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// `ROUNDS` times over: compile `code`, which writes a function to the
 /// root `saved`, drop it, and call `saved(3)` at a site compiled after the
 /// drop, the first to build the function's body since. Each call answers

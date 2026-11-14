@@ -463,10 +463,10 @@ pub struct ScopeNames {
     /// abstract types from a same-named module's in another body
     /// ([`AbstractId::declared`]); a file module's source is its file.
     pub site: Option<ArcStr>,
-    /// The input whose bodies name the scope, where the scope crosses a
-    /// body: the table goes when no lexical view holds the input
+    /// The input that made the table, at every scope but the root: the
+    /// table goes when no lexical view holds the input
     /// ([`Env::sweep_names`]).
-    pub input: Option<Weak<()>>,
+    pub input: Option<Weak<InputTables>>,
 }
 
 /// A top-level input: a REPL input, a script, a statement an embedder
@@ -474,7 +474,16 @@ pub struct ScopeNames {
 /// does every view made under one of those, so it lives as long as
 /// anything can still compile in a scope one of its bodies names.
 #[derive(Clone, Debug, Default)]
-pub struct InputHold(std::sync::Arc<()>);
+pub struct InputHold(std::sync::Arc<InputTables>);
+
+/// What an input's views read in place of the registry's table at a scope
+/// a later input's module declared at: the tables of the scopes it made
+/// that the later module took the registry's slot of
+/// ([`Env::names_mut`]).
+#[derive(Debug, Default)]
+pub struct InputTables {
+    displaced: RwLock<Map<ModPath, ScopeNames>>,
+}
 
 impl ScopeNames {
     /// Whether a view made in `input` holds the table's input. A view
@@ -1857,11 +1866,16 @@ impl Env {
                 kind = kind()
             ))));
         }
-        let kept = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
+        let kept = self
+            .lexical
+            .body
+            .as_ref()
+            .and_then(|b| b.names_at(level))
+            .or_else(|| self.displaced_at(level));
         let mut later_module = None;
         if let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) {
             debug_assert!(
-                sn.held_by(self.lexical.input.as_ref()),
+                !crosses_body(level) || sn.held_by(self.lexical.input.as_ref()),
                 "{n} is looked up from {origin} through the import table at \
                  {level} by a view made in another input"
             );
@@ -3109,6 +3123,7 @@ impl Env {
         entry: ImportEntry,
         replace: bool,
     ) -> Result<()> {
+        self.displace_names(scope);
         if !replace {
             if let Some(e) = self.names.get(scope).and_then(|sn| sn.imports.get(key)) {
                 if e.scope == entry.scope && e.name == entry.name {
@@ -3209,17 +3224,39 @@ impl Env {
     /// already there is no write: two compile tasks registering it again
     /// would each replace the entry, which their joins refuse.
     pub fn import_glob(&mut self, scope: &ModPath, src: Glob) {
+        self.displace_names(scope);
         if self.names.get(scope).is_some_and(|sn| sn.globs.contains(&src)) {
             return;
         }
         Arc::make_mut(&mut self.names_mut(scope).globs).push(src)
     }
 
-    /// The table at `scope` to write, made where there is none: one at a
-    /// scope that crosses a body is the input's being compiled.
+    /// Where another input's table stands at `scope`, a module is declared
+    /// at the path of one that was dropped while a view of its input is
+    /// held: that input keeps its table for its views and the registry
+    /// has none at `scope` for the module to write.
+    fn displace_names(&mut self, scope: &ModPath) {
+        let Some(own) = self.lexical.input.as_ref().filter(|_| &*scope.0 != "/") else {
+            return;
+        };
+        let Some(owner) = self.names.get(scope).and_then(|sn| sn.input.clone()) else {
+            return;
+        };
+        if Weak::as_ptr(&owner) == std::sync::Arc::as_ptr(&own.0) {
+            return;
+        }
+        if let (Some(old), Some(table)) = (owner.upgrade(), self.names.get(scope)) {
+            old.displaced.write().insert_cow(scope.clone(), table.clone());
+        }
+        self.names.remove(scope);
+    }
+
+    /// The table at `scope` to write, made where there is none: one at any
+    /// scope but the root is the input's being compiled.
     fn names_mut(&mut self, scope: &ModPath) -> &mut ScopeNames {
+        self.displace_names(scope);
         let input = match (&self.lexical.input, self.names.get(scope)) {
-            (Some(input), None) if crosses_body(scope) => {
+            (Some(input), None) if &*scope.0 != "/" => {
                 Some(std::sync::Arc::downgrade(&input.0))
             }
             _ => None,
@@ -3229,6 +3266,12 @@ impl Env {
             sn.input = input
         }
         sn
+    }
+
+    /// The table at `level` a module declared there took the registry's
+    /// slot of, which the views of the input that made it read.
+    fn displaced_at(&self, level: &str) -> Option<ScopeNames> {
+        self.lexical.input.as_ref()?.0.displaced.read().get(level).cloned()
     }
 
     /// Begin a top-level input: the views made from here on hold it,
