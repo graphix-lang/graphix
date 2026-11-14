@@ -4862,6 +4862,24 @@ run!(
 ; FuseExpect::None);
 
 run!(
+    typedef_in_a_body_above_the_module_it_imports_from_refused,
+    refused("recursive type T refers back to itself through unions and aliases alone"),
+    "/test.gx" => "type Foo<'a> = Array<'a>; \
+        let r = { let f = |a: i64| { type T = [i64, Foo<T>]; let x: T = a; x }; \
+        use o::Foo; f(1) }; mod o; let result = 0",
+    "/test/o.gx" => "type Foo<'a> = ['a, string]"
+; FuseExpect::None);
+
+run!(
+    typedef_in_a_body_above_the_module_a_glob_imports_from_refused,
+    refused("recursive type T refers back to itself through unions and aliases alone"),
+    "/test.gx" => "type Foo<'a> = Array<'a>; \
+        let r = { let f = |a: i64| { type T = [i64, Foo<T>]; let x: T = a; x }; \
+        use o::*; f(1) }; mod o; let result = 0",
+    "/test/o.gx" => "type Foo<'a> = ['a, string]"
+; FuseExpect::None);
+
+run!(
     lambda_parameter_above_the_module_a_glob_imports_from_refused,
     refused("Option may name what a glob `use` of this module imports from module `/test/o`, which a later statement declares: declare the module before the name's first use"),
     "/test.gx" => "let f = |x: Option<f64>| x; mod o; use o::*; let result = 0",

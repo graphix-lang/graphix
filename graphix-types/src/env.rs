@@ -1781,60 +1781,6 @@ impl Env {
         self.lookup_in(origin, level, inside, n, depth, settle, f)
     }
 
-    // CR claude for claude: [risk/medium] A definition's snapshot holds nothing of a
-    // module declared below the definition, so in a function body above `mod o` a
-    // name a `use` imports from o finds nothing and falls through to an outer type or
-    // the prelude's, for good: with `let f = |a: [f64, string]| { let x: Option<f64>
-    // = a; x }; mod o; use o::Option` over o's `type Option<'a> = ['a, string]` the
-    // body's Option is the prelude's ("Option<f64> does not contain [f64, string]")
-    // while f's signature and every statement outside read the import. A typedef in
-    // such a body settles its shape on the outer type, and the check's end fills the
-    // name to the import (`Env::seed_typedef_refs` runs under the final env): under
-    // an outer `type Foo<'a> = Array<'a>`, `{ let f = |a: i64| { type T = [i64,
-    // Foo<T>]; let x: T = a; x }; use o::Foo; f(1) }; mod o` over o's `type Foo<'a> =
-    // ['a, string]` is accepted and prints 1 with T left `[i64, T, string]`:
-    // typedef-use-below-01's door through the snapshot (no hang found; base-r24
-    // alike). While the list compiles such a name is refused (`ChangesLater`), but a
-    // snapshot has no record that o was to come. An import whose target names nothing
-    // in the view (`import_target_exists`) could refuse in place of falling through,
-    // once (fn-typedef-unjudged-01) is closed: alone it leaves that T deferred and
-    // never judged, and the run does not return. probes:
-    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/{fn-body-import,fn-body-typedef,fn-body-typedef-glob}/
-    // (import-snapshot-fallthrough-01)
-    // 2026-11-13 claude: Reachable as a wrong value, not only a risk: `let f = |x: Option<f64>| x; mod o; use
-    // o::Option; let r = f("s"); let y = select r { null as _ => 0.0, f64 as v => v + 1.0 }; println(y)` over
-    // o's `type Option<'a> = ['a, string]` passes `--check` (the call reads the import, the body and its
-    // result the prelude's Option), prints 1.0 fused and logs "no arm matches "s": a coverage hole in the
-    // check" under `--no-fusion`; base-r24 alike. With `mod o` above f the select is refused as it should be
-    // (lang::types::lambda_parameter_above_the_use_reads_the_import pins that order). probe:
-    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/review/fn-above-mod-wrong-value/
-    // 2026-11-14 claude: r25 lane 25g: a definition's snapshot now keeps the lists open when it was made
-    // (Lexical::open, set by Env::lexical; Env::unsettled_module reads it beside Env::unsettled), so a name a
-    // use or a glob imports from a module declared below the definition is refused with the list's own
-    // ChangesLater message instead of falling through to the outer or prelude type. Closed: fn-body-import,
-    // review/fn-above-mod-wrong-value (the wrong value), the glob twin. Pins:
-    // lang::types::lambda_parameter_above_the_module_it_imports_from_refused,
-    // lambda_body_annotation_above_the_module_it_imports_from_refused,
-    // lambda_parameter_above_the_module_a_glob_imports_from_refused (12 runs fail without the fix), twins
-    // lambda_parameter_above_the_module_of_a_glob_reads_the_import and
-    // lambda_above_a_module_imports_nothing_it_names. STILL OPEN: fn-body-typedef and fn-body-typedef-glob.
-    // The name in a typedef a function body declares is now ChangesLater, T is deferred and never judged
-    // (fn-typedef-unjudged-01), and the run does not return (killed by the memory cap; --check passes):
-    // before this change it printed 1 over a wrong T. Closing fn-typedef-unjudged-01 closes them; re-run both
-    // probes then. probes: ~/ptmp/cr29/scratch/r25/25g/import-snapshot/
-    // 2026-11-14 claude: r25 lane 25g review: the fix holds. Pins fail without Env::lexical's fill (12 of 28
-    // runs of lang::types::lambda_ fail); census base vs lane 0 changes of 2967 files; guicheck 39.724G
-    // base-r25, 39.833G lane. Probes one step over refuse as the list's own rule does: a block above the mod,
-    // a nested closure, a path through a sibling module declared below (module a's 'use package::o::Option'
-    // with 'mod o' after 'mod a' in the root: base accepted and printed the right value only because the
-    // signature read the import and the body's annotation did not), 'use o::{self, Option}', 'use o as
-    // Alias'; each had a body reading the prelude's Option over a signature reading the import. The remaining
-    // part closes with fn-typedef-unjudged-01's fix (lane 25f, faf1c656c): applied to this lane in a scratch
-    // tree, fn-body-typedef and fn-body-typedef-glob are both refused as non-contractive (T = [i64, Foo<T>]
-    // over o's ['a, string]) and fn-body-import is still refused as above. Until 25f lands, those two probes
-    // hang (base-r25 printed 1). Delete this CR once both lanes are on r25-staging and the two probes are
-    // re-run (a pin for the pair belongs in whichever lane lands second). Probes:
-    // ~/ptmp/cr29/scratch/r25/25g/review/.
     /// [`Self::lookup_at`], with whether `origin` is inside the level's
     /// module already known: one chain's levels share their module.
     fn lookup_in<T>(
