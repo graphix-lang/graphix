@@ -123,6 +123,21 @@ impl AbstractRep {
         self.rep.replace_tvars(&self.formals(params))
     }
 
+    /// The parameters of the widest instance: each formal's bound, a
+    /// formal it names at `Any`, or `Any`. Every instance's parameters are
+    /// inside them.
+    pub fn widest(&self) -> SmallVec<[Type; 4]> {
+        let anys: SmallVec<[Type; 4]> = self.params.iter().map(|_| Type::Any).collect();
+        let known = self.formals(&anys);
+        self.params
+            .iter()
+            .map(|(_, bound)| match bound {
+                Some(bound) => bound.replace_tvars(&known),
+                None => Type::Any,
+            })
+            .collect()
+    }
+
     fn formals(&self, params: &[Type]) -> LPooled<AHashMap<ArcStr, Type>> {
         self.params
             .iter()

@@ -116,11 +116,13 @@ pub enum StructPatternNode {
         binds: Box<[StructPatternNode]>,
     },
     /// `T(p)`: a value of the abstract type `id`, its payload
-    /// destructured by `bind` against `rep` (the type's
-    /// representation at this scrutinee's parameters)
+    /// destructured by `bind` against `rep`, the representation of
+    /// `own`: the type at this scrutinee's parameters, or under an
+    /// inferred predicate at parameters of the pattern's own
     Abstract {
         id: AbstractId,
         all: Option<BindId>,
+        own: Type,
         rep: Type,
         bind: Box<StructPatternNode>,
     },
@@ -333,11 +335,14 @@ pub(super) struct Leaf {
     pub(super) fresh: bool,
 }
 
-/// An abstract pattern's own representation and payload pattern, with
-/// its representation at each instance that reaches it.
+/// An abstract pattern's own parameters, representation and payload
+/// pattern, with the parameters of each instance that reaches it and its
+/// representation at them.
 struct PayloadReps<'a> {
+    own: &'a [Type],
     rep: &'a Type,
     bind: &'a StructPatternNode,
+    params: SmallVec<[SmallVec<[Type; 4]>; 2]>,
     at: SmallVec<[Type; 2]>,
 }
 
@@ -991,22 +996,48 @@ impl StructPatternNode {
     }
 
     /// An abstract pattern's representation at `m`, one member of the
-    /// type at its position: at `m`'s parameters when `m` is an instance of
-    /// its type, at `Any` for each parameter when `m` is `Any`; `None` for
-    /// a member it cannot match.
+    /// type at its position ([`Self::member_params`]); `None` for a
+    /// member it cannot match.
     fn member_rep(&self, env: &Env, m: &Type) -> Option<Type> {
         let Self::Abstract { id, rep, .. } = self else { return None };
-        let at = |params: &[Type]| {
+        let params = self.member_params(env, m)?;
+        Some(
             env.abstract_reps
                 .get(id)
-                .map_or_else(|| rep.clone(), |r| r.instantiate_with(params))
-        };
+                .map_or_else(|| rep.clone(), |r| r.instantiate_with(&params)),
+        )
+    }
+
+    // CR claude for claude: [bug/high] An abstract pattern with no written test, over a
+    // value that is `Any`, types its payload at the widest instance, which is every
+    // instance's type only where the representation holds each parameter covariantly:
+    // `type W<'a> = Abstract<&mut 'a>; let i = 1; let f = |x: Any| select x { W(r) => *r
+    // <- "s", _ => never() }; f(W(&mut i)); println(i + 1)` checks (`r: &mut Any`), the
+    // node-walk logs an arith error and the fused run panics "kernel param `i`: runtime
+    // String("s") does not match the compiled Scalar(I64) slot". A parameter in a
+    // function's argument is the same hole, caught at run time: `Abstract<fn(x: 'a) ->
+    // i64>`, `W(g) => g("s")` over `W(|x: i64| x + 1)` logs "binding the callee failed: a
+    // run-time bind at g("s") did not type" and the call is bottom (as
+    // fn-cell-over-any-01). The written test is right: `W<Any> as W(r)` does not take a
+    // `W<i64>`. A plain pattern there is refused (`&mut 'q as r` over `Any`: "this
+    // pattern can't tell what the reference in .. refers to where the scrutinee may hold
+    // Any", Type::ref_over_any). Same on base-r24. A fix: refuse an abstract pattern an
+    // `Any` member reaches whose representation holds a parameter under a writable
+    // reference or in a function's argument, naming the written test (`W<T> as W(r)`);
+    // census both repos. probes: ~/ptmp/cr29/scratch/r24/24a/apa-rev/q07.gx, q08.gx;
+    // right: t01.gx (abstract-invariant-over-any-01)
+    /// The parameters an abstract pattern's type stands at in `m`, one
+    /// member of the type at its position: `m`'s own when `m` is an
+    /// instance of its type, the widest instance's when `m` is `Any`
+    /// ([`AbstractRep::widest`]); `None` for a member it cannot match.
+    fn member_params(&self, env: &Env, m: &Type) -> Option<SmallVec<[Type; 4]>> {
+        let Self::Abstract { id, .. } = self else { return None };
         match &expand(env, m)? {
-            Type::Abstract { id: t, params } if t == id => Some(at(params)),
+            Type::Abstract { id: t, params } if t == id => {
+                Some(params.iter().cloned().collect())
+            }
             Type::Any => {
-                let n = env.abstract_reps.get(id).map_or(0, |r| r.params.len());
-                let anys: SmallVec<[Type; 4]> = (0..n).map(|_| Type::Any).collect();
-                Some(at(&anys))
+                Some(env.abstract_reps.get(id).map_or_else(SmallVec::new, |r| r.widest()))
             }
             _ => None,
         }
@@ -1118,9 +1149,10 @@ impl StructPatternNode {
     /// predicate takes its parameters from the scrutinee, never from its
     /// payload. The arm's test reads an abstract's tag and its payload's
     /// shape, never the type of a part, so nothing the arm decides of a
-    /// payload is tested: each cell a payload's pattern holds at or inside
-    /// a part that is `Any` at an instance is `Any`. An abstract pattern
-    /// under a payload stands over the instances that payload holds.
+    /// payload is tested: each cell the pattern's own parameters hold at
+    /// or inside a parameter that is `Any` at an instance is `Any`,
+    /// wherever the representation holds it. An abstract pattern under a
+    /// payload stands over the instances that payload holds.
     fn narrow_payloads(&self, env: &Env, members: &[Type]) -> Result<()> {
         if !self.holds_abstract() {
             return Ok(());
@@ -1130,11 +1162,13 @@ impl StructPatternNode {
             for m in members {
                 self.payload_reps(env, m, &mut reps);
             }
-            for PayloadReps { rep, bind, at } in reps.iter() {
+            for PayloadReps { own, rep, bind, params, at } in reps.iter() {
                 let held =
                     Type::union(env, &at.iter().collect::<SmallVec<[&Type; 2]>>())?;
                 held.narrow_pattern(env, rep)?;
-                held.close_over_any(env, rep)?;
+                for (p, o) in params.iter().flat_map(|ps| ps.iter().zip(own.iter())) {
+                    p.close_over_any(env, o)?
+                }
                 bind.narrow_payloads(env, at)?
             }
             Ok(())
@@ -1156,12 +1190,31 @@ impl StructPatternNode {
             if union_members(env, typ, &mut members).is_err() {
                 return;
             }
-            if let Self::Abstract { rep, bind, .. } = self {
+            if let Self::Abstract {
+                own: Type::Abstract { params: own, .. },
+                rep,
+                bind,
+                ..
+            } = self
+            {
                 for m in members.iter() {
-                    let Some(r) = self.member_rep(env, m) else { continue };
+                    let (Some(ps), Some(r)) =
+                        (self.member_params(env, m), self.member_rep(env, m))
+                    else {
+                        continue;
+                    };
                     match out.iter_mut().find(|e| std::ptr::eq(e.rep, rep)) {
-                        Some(e) => e.at.push(r),
-                        None => out.push(PayloadReps { rep, bind, at: smallvec![r] }),
+                        Some(e) => {
+                            e.params.push(ps);
+                            e.at.push(r)
+                        }
+                        None => out.push(PayloadReps {
+                            own,
+                            rep,
+                            bind,
+                            params: smallvec![ps],
+                            at: smallvec![r],
+                        }),
                     }
                 }
                 return;
@@ -2213,7 +2266,7 @@ impl StructPatternNode {
                     )
                 };
                 let (atyp, rep) = r.instantiate(id);
-                let own = cx.own_payloads.then(|| r.instantiate(id).1);
+                let own = cx.own_payloads.then(|| r.instantiate(id));
                 type_predicate.check_contains_ordered(&ctx.env, &atyp)?;
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
@@ -2230,10 +2283,10 @@ impl StructPatternNode {
                 // the payload checks against the declared representation; under
                 // an inferred predicate, at parameters of its own, the
                 // predicate's being the scrutinee's (`leaves` types its binds)
-                let rep = own.unwrap_or(rep);
+                let (own, rep) = own.unwrap_or((atyp, rep));
                 let rep_cx = PatCx { inferred: false, ..cx };
                 let bind = Box::new(Self::compile_int(ctx, rep_cx, &rep, bind, mode)?);
-                Self::Abstract { id, all, rep, bind }
+                Self::Abstract { id, all, own, rep, bind }
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
                 match &type_predicate {
@@ -3522,9 +3575,10 @@ impl StructPatternNode {
             Self::Variant { tag, all, binds } => {
                 tag.encoded_len() + all.encoded_len() + boxed_len(binds)
             }
-            Self::Abstract { id, all, rep, bind } => {
+            Self::Abstract { id, all, own, rep, bind } => {
                 id.encoded_len()
                     + all.encoded_len()
+                    + own.encoded_len()
                     + rep.encoded_len()
                     + bind.encoded_len()
             }
@@ -3579,10 +3633,11 @@ impl StructPatternNode {
                 all.encode(buf)?;
                 boxed_encode(binds, buf)?
             }
-            Self::Abstract { id, all, rep, bind } => {
+            Self::Abstract { id, all, own, rep, bind } => {
                 buf.put_u8(8);
                 id.encode(buf)?;
                 all.encode(buf)?;
+                own.encode(buf)?;
                 rep.encode(buf)?;
                 bind.encode(buf)?
             }
@@ -3637,6 +3692,7 @@ impl StructPatternNode {
             8 => Self::Abstract {
                 id: Pack::decode(buf)?,
                 all: Pack::decode(buf)?,
+                own: Pack::decode(buf)?,
                 rep: Pack::decode(buf)?,
                 bind: Box::new(Pack::decode(buf)?),
             },

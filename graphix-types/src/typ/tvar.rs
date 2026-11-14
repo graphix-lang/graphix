@@ -415,12 +415,14 @@ pub(super) fn bare_path(addr: usize, t: &Type, toward: Toward) -> LPooled<Vec<TV
 /// What [`Type::open_over_any`] has done: the node pairs it walked whole
 /// since it last bound a cell, and the cells it bound. `inside`: every
 /// cell open inside a part that is `Any` is bound too
-/// ([`Type::close_over_any`]).
+/// ([`Type::close_over_any`]); with `abstracts`, only the parameters of
+/// the abstract types there ([`Type::widen_abstracts_over_any`]).
 #[derive(Default)]
 struct AnyWalk {
     walked: NodePairs,
     binds: usize,
     inside: bool,
+    abstracts: bool,
 }
 
 /// A cell a select arm's test holds inside an `Any` part, open once the
@@ -4631,6 +4633,55 @@ impl Type {
         self.open_over_any_int(env, pred, &mut walk)
     }
 
+    /// [`Self::close_over_any`] before the arm of the inferred test `pred`
+    /// is checked, for the abstract types `pred` holds alone: the test
+    /// of an abstract type reads its tag, never a parameter, so inside a
+    /// part that is `Any` each parameter is the widest instance's
+    /// ([`AbstractRep::widest`]), whatever the arm does with it.
+    pub fn widen_abstracts_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
+        let mut walk = AnyWalk { inside: true, abstracts: true, ..AnyWalk::default() };
+        self.open_over_any_int(env, pred, &mut walk)
+    }
+
+    /// The parameters of each abstract type `self` holds as a part a
+    /// pattern takes, at the widest instance's.
+    fn widest_abstracts(&self, env: &Env, walk: &mut AnyWalk) -> Result<()> {
+        ensure_sufficient(|| match &self.deref_cloned() {
+            Some(Type::Abstract { id, params }) => {
+                let widest = env.abstract_reps.get(id).map(|r| r.widest());
+                for (i, p) in params.iter().enumerate() {
+                    match widest.as_ref().and_then(|w| w.get(i)) {
+                        Some(w) if !matches!(w, Type::Any) => {
+                            w.contains_ordered(env, p)?;
+                        }
+                        _ => p.any_beneath(env, walk)?,
+                    }
+                }
+                Ok(())
+            }
+            Some(
+                t @ (Type::Tuple(_)
+                | Type::Struct(_)
+                | Type::Variant(..)
+                | Type::Array(_)
+                | Type::List(_)
+                | Type::Set(_)),
+            ) => {
+                let mut r = Ok(());
+                let _ =
+                    t.try_for_each_child(&mut |c| match c.widest_abstracts(env, walk) {
+                        Ok(()) => ControlFlow::Continue(()),
+                        Err(e) => {
+                            r = Err(e);
+                            ControlFlow::Break(())
+                        }
+                    });
+                r
+            }
+            Some(_) | None => Ok(()),
+        })
+    }
+
     /// Bind each free cell `self` holds as data to `Any`; a declared
     /// variable is only asked whether its bound admits `Any`. A cell
     /// another compile task owns is left to that task's refusal of the
@@ -4687,7 +4738,10 @@ impl Type {
     ) -> Result<()> {
         ensure_sufficient(|| {
             if walk.inside && matches!(self.head(env)?, Some(Type::Any)) {
-                return pred.any_beneath(env, walk);
+                return match walk.abstracts {
+                    true => pred.widest_abstracts(env, walk),
+                    false => pred.any_beneath(env, walk),
+                };
             }
             let Some(p) = pred.deref_cloned() else {
                 if matches!(self.head(env)?, Some(Type::Any)) {

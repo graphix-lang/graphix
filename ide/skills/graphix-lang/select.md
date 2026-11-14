@@ -123,6 +123,8 @@ select, and runtime forms. Each rule refuses and names the fix.
   shape, never the type of a part, so its arm decides nothing: over
   `W<Any>` or `Any`, each name `W((a, b))` takes out is `Any`, and `a +
   1` is refused. Select on the name (`select a { i64 as i => .. }`).
+  A whole capture over `Any` (`w@ W(_)`) is `W<Any>` the same way; a
+  parameter with a declared bound is its bound there.
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
@@ -231,4 +233,8 @@ no "cannot compute Any + i64" type W<'a> = Abstract<'a>; |x: W<Any>| select x { 
 no "cannot compute Any + i64" type W<'a> = Abstract<'a>; |x: Any| select x { (W((a, b)), n) => a + 1, _ => 0 }
 ok type W<'a> = Abstract<'a>; |x: W<Any>| select x { W((a, b)) => select a { i64 as i => i + 1, _ => 0 }, _ => 0 }
 ok type W<'a> = Abstract<'a>; |x: W<(i64, i64)>| select x { W((a, b)) => a + 1 }
+no "cannot compute Any + i64" type W<'a> = Abstract<Map<string, 'a>>; |x: W<Any>| select x { W(m) => m{"k"}$ + 1 }
+no "cannot compute Any + i64" type W<'a> = Abstract<'a>; |x: Any| select x { w@ W(_) => w.0 + 1, _ => 0 }
+ok type W<'a> = Abstract<'a>; |x: Any| select x { w@ W(_) => select w.0 { i64 as i => i + 1, _ => 0 }, _ => 0 }
+ok type W<'a: Number> = Abstract<'a>; |x: Any| select x { W(p) => "[p]", _ => "o" }
 ```

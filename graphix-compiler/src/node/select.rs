@@ -3233,6 +3233,11 @@ impl<R: Rt> Select<R> {
             // not hold, naming the written test (`T as pattern`). probes:
             // ~/ptmp/cr29/scratch/r23/23d/sab/ (narrow-verdict-dropped-01)
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
+            if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
+                reaching
+                    .widen_abstracts_over_any(&ctx.env, &pat.type_predicate)
+                    .at(&site)?;
+            }
             pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;
