@@ -1396,7 +1396,7 @@ pub(super) trait Forwards {
 /// bound cell's binding (a cell's address is another allocation, so the
 /// two share the map); and the chain ends of its forwarding cells.
 #[derive(Default)]
-struct CopyMemo {
+pub(super) struct CopyMemo {
     built: LPooled<AHashMap<usize, Option<Type>>>,
     ends: ChainEnds,
 }
@@ -3678,11 +3678,22 @@ impl HeldQuantifiers {
     // names, beside `ide::HeldSpan::cells`) would name their copies. probe:
     // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/ (README,
     // p8/main.gx `(|n, g)` and `let |m `) (hover-held-declared-names-01)
+    // 2026-11-14 claude: Lane 25g (display-open-auto-01):
+    // HeldQuantifiers::resolving (resolve_tvars_copying) now seeds each held
+    // cell's copy under the held handle's own name, so a cell of a held
+    // definition reached by an inferred handle prints under the declared name
+    // in a hover (inner in g2 hovers -> 'a). Check the probe in this CR against
+    // the 25g build; it may be closed by that.
     /// `typ` resolved ([`Type::resolve_tvars`]), and what it prints by: the
     /// copies of the open cells of `held` it holds.
     pub fn resolving(typ: &Type, held: &[TVar]) -> (Type, Self) {
         let (typ, held) = typ.resolve_tvars_copying(held);
         (typ, Self { held, declared: Declared::default() })
+    }
+
+    /// The copies of the held cells the resolved type holds.
+    pub fn cells(&self) -> &[TVar] {
+        &self.held
     }
 
     /// `f`, printing as the types stood where they were made.
@@ -4636,7 +4647,7 @@ impl Type {
     /// Self with each occurrence of a cell `pick` takes named `name`, its
     /// function types' included; `None` where none occurs. Each shared
     /// node (`memo`) is rebuilt once.
-    fn renamed_cells(
+    pub(super) fn renamed_cells(
         &self,
         pick: &dyn Fn(&TVar) -> bool,
         name: &ArcStr,

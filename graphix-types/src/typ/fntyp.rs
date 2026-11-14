@@ -936,14 +936,6 @@ impl FnType {
         Ok(ft)
     }
 
-    /// The tvar cells reachable from args / vargs / rtype / throws,
-    /// by name.
-    pub(crate) fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
-        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.for_each_type(&mut |t| t.collect_tvars(&mut known));
-        known
-    }
-
     /// [`Self::collect_tvars`] and then, until nothing new arrives, the
     /// cells the bounds of the cells found name: a quantifier only the
     /// bound of a bound names is reached too.
@@ -1401,13 +1393,15 @@ impl FnType {
         self.cow_walk(|t| t.replace_tvars_int(s, fresh))
     }
 
-    /// Replace auto type variables (`'_23`) that stand open with one
-    /// constraint by that constraint, for display; a decided one prints as
-    /// what it was decided to be, and one whose cell a declared variable
-    /// stands for prints as that variable. Call before
-    /// `Type::resolve_tvars`, which discards the cells.
-    pub fn replace_auto_constrained(&self) -> Self {
-        // CR claude for claude: [bug/low] A hover prints an open auto variable two
+    /// For display, each open generic auto variable (`'_23`) of the
+    /// signature named a letter no variable of it uses and listed in its
+    /// header, which prints it with its bounds: a variable the
+    /// signature's positions share stays one variable. A cell of a
+    /// declared quantifier, of `held` (a definition's own, which no call
+    /// picks) and of an implicit `throws` slot keep their handles. Call on
+    /// a resolved type ([`Type::resolve_tvars`]).
+    pub fn name_auto_variables(&self, held: &[TVar]) -> Self {
+        // XCR claude for claude: [bug/low] A hover prints an open auto variable two
         // ways, neither the one a message prints, and one reads as another type.
         // With `let h = 'a: Number |x: 'a| -> 'a x`: `let k = |q| h(q)` hovers (and
         // outlines, and completes in the REPL) `k: fn(q: Number) -> Number`, where
@@ -1440,32 +1434,78 @@ impl FnType {
         // while the definition's gate is open, so a hover, run after the check,
         // still reads the cell nameless; a name that outlives the gate is what the
         // hover half needs.
-        let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-        let mut sig = self.sig_tvars();
-        let declared: LPooled<AHashSet<usize>> = sig
-            .values()
-            .filter(|tv| !tv.generated())
-            .filter_map(TVar::open_cell)
-            .map(|open| open.cell_addr())
-            .collect();
-        // Read the cells directly: auto names are never declared, so
-        // `constraint_view` cannot see them.
-        for (name, tv) in sig.drain() {
-            if tv.generated()
-                && let Some(open) = tv.open_cell()
-                && open.generated()
-                && !declared.contains(&open.cell_addr())
-                && let [tc] = &open.cell_constraints()[..]
+        // 2026-11-14 claude: A hover, outline and completion name each open generic
+        // inferred variable by a letter listed in the signature header
+        // (FnType::name_auto_variables, run on the resolved type; the resolve keeps
+        // such a cell's bounds), so k hovers fn<'a: Number>(q: 'a) -> 'a, mk fn<'a:
+        // Number>(z: i64) -> fn(q: 'a) -> 'a, add fn<'a: Number + Singleton>(x: 'a,
+        // y: 'a) -> 'a, and inner in g2 hovers fn(y: i64) -> 'a (the held
+        // definition's declared name now survives the resolve). The fold is gone.
+        // Pins: lsp::an_open_inferred_variable_hovers_as_a_listed_letter and
+        // lsp::a_cell_merged_with_a_callee_hovers_under_one_name fail without the
+        // name_auto_variables call. Probes:
+        // ~/ptmp/cr29/scratch/r25/25g/display-open-auto-01/.
+        let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut all);
+        let mut standing: LPooled<AHashSet<usize>> = LPooled::take();
+        standing.extend(held.iter().filter_map(TVar::open_cell).map(|c| c.cell_addr()));
+        standing_cells(&Type::Fn(Arc::new(self.clone())), &mut standing);
+        let mut autos: LPooled<Vec<(ArcStr, usize)>> = LPooled::take();
+        for (name, tv) in all.iter() {
+            if let Some(open) = tv.open_cell()
+                && open.level().is_generic()
+                && !standing.contains(&open.cell_addr())
+                && !autos.iter().any(|(_, a)| *a == open.cell_addr())
             {
-                known.insert(name, tc.clone());
+                autos.push((name.clone(), open.cell_addr()));
             }
         }
-        let mut all_tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut all_tvars);
-        for (name, tv) in all_tvars.drain() {
-            known.entry(name).or_insert(Type::TVar(tv));
+        if autos.is_empty() {
+            return self.clone();
         }
-        self.replace_tvars(&known)
+        let mut order: LPooled<Vec<usize>> = LPooled::take();
+        self.for_each_type(&mut |t| occurrences(t, &mut order));
+        autos.sort_unstable_by_key(|(name, addr)| {
+            (order.iter().position(|o| o == addr), name.clone())
+        });
+        let mut taken: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        taken.extend(
+            all.iter()
+                .filter(|(_, tv)| {
+                    tv.open_cell()
+                        .is_none_or(|o| !autos.iter().any(|(_, a)| *a == o.cell_addr()))
+                })
+                .map(|(name, _)| name.clone()),
+        );
+        taken.extend(self.quantifiers.iter().cloned());
+        let mut ft = self.clone();
+        let mut quantifiers: Vec<ArcStr> = self.quantifiers.iter().cloned().collect();
+        let mut next = 0usize;
+        for (_, addr) in autos.drain(..) {
+            let name = loop {
+                let letter = char::from(b'a' + (next % 26) as u8);
+                let n = match next / 26 {
+                    0 => format_compact!("{letter}"),
+                    round => format_compact!("{letter}{round}"),
+                };
+                let n = ArcStr::from(n.as_str());
+                next += 1;
+                if !taken.contains(&n) {
+                    break n;
+                }
+            };
+            taken.insert(name.clone());
+            let mut memo = tvar::CopyMemo::default();
+            let pick = |tv: &TVar| tv.open_cell().is_some_and(|o| o.cell_addr() == addr);
+            if let Some(renamed) =
+                ft.cow_walk(|t| t.renamed_cells(&pick, &name, &mut memo))
+            {
+                ft = renamed;
+            }
+            quantifiers.push(name);
+        }
+        ft.quantifiers = Arc::from(quantifiers);
+        ft
     }
 
     pub fn has_unbound(&self) -> bool {
@@ -2588,6 +2628,34 @@ impl FnType {
         self.cow_walk(|t| t.scope_refs_int(scope, &mut copies))
             .unwrap_or_else(|| self.clone())
     }
+}
+
+/// The open cells `t` holds, in the order it prints them.
+fn occurrences(t: &Type, cells: &mut Vec<usize>) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => cells.extend(tv.open_cell().map(|open| open.cell_addr())),
+        t => t.for_each_child(&mut |c| occurrences(c, cells)),
+    })
+}
+
+/// The cells of `t` that a name or a header already stands for: those of
+/// the implicit `throws` slots, which print as nothing, and of the
+/// quantifiers its function types declare.
+fn standing_cells(t: &Type, cells: &mut AHashSet<usize>) {
+    crate::stack::ensure_sufficient(|| {
+        if let Type::Fn(ft) = t {
+            if !ft.explicit_throws
+                && let Type::TVar(tv) = &ft.throws
+                && let Some(open) = tv.open_cell()
+            {
+                cells.insert(open.cell_addr());
+            }
+            ft.each_quantifier(|_, tv| {
+                cells.extend(tv.open_cell().map(|open| open.cell_addr()))
+            });
+        }
+        t.for_each_child(&mut |c| standing_cells(c, cells))
+    })
 }
 
 impl FnType {
@@ -3789,7 +3857,7 @@ mod tests {
     fn polymorphic_sig_preserves_tvar_names() {
         let ft = parse_fn_type("fn(a: Array<'a>, @args: 'a) -> Array<'a>").unwrap();
         ft.alias_tvars(&mut LPooled::take());
-        let folded = ft.replace_auto_constrained();
+        let folded = ft.name_auto_variables(&[]);
         let resolved = folded.resolve_tvars();
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
         assert!(
@@ -3826,7 +3894,7 @@ mod tests {
     fn unbound_auto_throws_is_hidden() {
         let ft = parse_fn_type("fn(a: Array<'a>) -> i64").unwrap();
         ft.alias_tvars(&mut LPooled::take());
-        let folded = ft.replace_auto_constrained();
+        let folded = ft.name_auto_variables(&[]);
         let resolved = folded.resolve_tvars();
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
         assert!(!s.contains("throws"), "unbound auto throws should not appear, got: {s}");

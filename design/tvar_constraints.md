@@ -3139,15 +3139,23 @@ former consumer derives from the cells:
   `parser::test::a_nested_signature_prints_its_own_variables_bound`,
   `typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier`,
   `a_held_walk_reads_its_positions_in_its_own_name_scope`.
-- `replace_auto_constrained` reads inferred `'_N` pairs from the cells
-  directly (inference declares no header) and folds into its bound only a
-  cell that stands open and that no declared variable stands for: a
-  decided one prints as what it was decided to be, and one merged into a
-  declared variable (an inferred return `'a: Number |x: 'a| x`, an
-  inferred argument) as that variable, as a message prints it. A hover,
-  an outline and a completion, the REPL's included, print a binding's
+- `FnType::name_auto_variables` names, on the resolved type, each open
+  generic inferred cell (`'_N`, whose digits change from run to run) a
+  letter no other variable of the signature uses, in the order the
+  signature prints them, and lists it in the signature's header, so a
+  bound prints in the header (`fn<'a: Number>(q: 'a) -> 'a`) and a
+  variable the positions share stays one variable, in a nested signature
+  too (`fn<'a: Number>(z: i64) -> fn(q: 'a) -> 'a`). The resolve keeps the
+  bounds of such a cell (`ResolveTvarsCx::bounded`). It leaves alone a
+  cell a quantifier of the type stands for, an implicit `throws` slot,
+  and a cell of the definitions the cursor is inside (`held`): the
+  resolve copies those under the declared variable's own name, so a
+  local returning `'a` hovers `-> 'a`. A decided cell prints as what it
+  was decided to be. A hover, an outline and a completion, the REPL's
+  included, print a binding's
   type through one function, `graphix_lsp::display_type`. Pins:
   `lsp::a_decided_variable_hovers_as_its_type`,
+  `lsp::an_open_inferred_variable_hovers_as_a_listed_letter`,
   `completion::tests::a_completion_describes_a_binding_as_a_hover_does`.
   `sig_matches_int`'s impl-constraint check is SATISFACTION — the
   signature's concrete choice must be admitted by the impl's inferred

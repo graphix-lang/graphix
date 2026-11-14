@@ -132,6 +132,9 @@ pub(super) struct ResolveTvarsCx {
     /// An open cell's copy keeps its predicate conjuncts (`Concrete`,
     /// `Function`), which name no cell.
     predicates: bool,
+    /// An open generic cell no program named keeps its bounds, resolved,
+    /// as a quantifier's copy does.
+    bounded: bool,
     /// The open quantifiers of the function types met: their bounds are
     /// part of the type (`fn<'a: Function>(..)`), so a copy keeps them all.
     pub(super) quantifiers: LPooled<AddrSet>,
@@ -147,6 +150,7 @@ impl ResolveTvarsCx {
             in_progress: LPooled::take(),
             memo: LPooled::take(),
             predicates: false,
+            bounded: false,
             quantifiers: LPooled::take(),
             opened: 0,
         }
@@ -438,12 +442,17 @@ impl Type {
     }
 
     /// [`Self::resolve_tvars`], and the copy it made of the open cell of each
-    /// of `cells` it reached.
+    /// of `cells`, which keeps the name of the cell given.
     pub(super) fn resolve_tvars_copying(
         &self,
         cells: &[TVar],
     ) -> (Self, SmallVec<[TVar; 2]>) {
-        let mut cx = ResolveTvarsCx::take();
+        let mut cx = ResolveTvarsCx { bounded: true, ..ResolveTvarsCx::take() };
+        for c in cells {
+            if let Some(open) = c.open_cell() {
+                cx.fresh.entry(open.cell_addr()).or_insert_with(|| c.fresh_copy());
+            }
+        }
         let typ = self.resolve_tvars_seen_int(&mut cx).unwrap_or_else(|| self.clone());
         let copies = cells
             .iter()
@@ -504,7 +513,9 @@ impl Type {
                         cx.opened += 1;
                         let fresh = tv.fresh_copy();
                         cx.fresh.insert(addr, fresh.clone());
-                        if cx.quantifiers.contains(&addr) {
+                        if cx.quantifiers.contains(&addr)
+                            || (cx.bounded && tv.generated() && tv.level().is_generic())
+                        {
                             for c in tv.cell_constraints() {
                                 let c = c.resolve_tvars_seen_int(cx).unwrap_or(c);
                                 fresh.add_cell_constraint(c);

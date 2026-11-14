@@ -4,7 +4,6 @@
 mod harness;
 
 use graphix_compiler::typ::Brief;
-use graphix_package_core::testing::renumbered;
 use harness::Client;
 
 const MAIN: &str = "\
@@ -219,14 +218,44 @@ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] };
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     let hovers = [
-        ("one", "fn(x: '_0) -> Array<'_0>"),
-        ("pair", "fn(x: '_0) -> (Array<'_0>, '_0)"),
-        ("m", "fn(x: Array<'_0>) -> [Array<'_0>, Array<'_1>]"),
+        ("one", "fn(x: 'a) -> Array<'a>"),
+        ("pair", "fn(x: 'a) -> (Array<'a>, 'a)"),
+        ("m", "fn(x: Array<'a>) -> [Array<'a>, Array<'b>]"),
     ];
     for (name, typ) in hovers {
         let got = c.hover("main.gx", &format!("let |{name} "));
-        let sig = got.as_deref().and_then(|h| h.lines().nth(1)).map(renumbered);
-        assert_eq!(sig.as_deref(), Some(&*format!("{name}: {typ}")), "{got:?}");
+        let sig = got.as_deref().and_then(|h| h.lines().nth(1));
+        assert_eq!(sig, Some(&*format!("{name}: {typ}")), "{got:?}");
+    }
+}
+
+/// An inferred variable no call has decided hovers as a letter its
+/// signature's header lists with its bounds, in a nested signature and
+/// beside a variable a definition declares, not as the bound alone and not
+/// as a generated name.
+#[test]
+fn an_open_inferred_variable_hovers_as_a_listed_letter() {
+    const SRC: &str = "\
+let h = 'a: Number |x: 'a| -> 'a x;
+let k = |q| h(q);
+let mk = |z: i64| |q| h(q);
+let add = |x, y| x + y;
+let pair = |x, y| (x, y);
+let g2 = 'a: Number |x: 'a| { let inner = |y: i64| x; inner(1) };
+0
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let hovers = [
+        ("let |k ", "k: fn<'a: Number>(q: 'a) -> 'a"),
+        ("let |mk ", "mk: fn<'a: Number>(z: i64) -> fn(q: 'a) -> 'a"),
+        ("let |add ", "add: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a"),
+        ("let |pair ", "pair: fn(x: 'a, y: 'b) -> ('a, 'b)"),
+        ("let |inner ", "inner: fn(y: i64) -> 'a"),
+    ];
+    for (marker, typ) in hovers {
+        hover_is(&mut c, marker, typ);
     }
 }
 

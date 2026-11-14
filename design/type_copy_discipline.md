@@ -77,7 +77,7 @@ whose cell is one of that union's cells is one cell with the open ones
 | `node/callsite.rs` site instantiation | the def→site boundary: the def gate has closed and the signature holds what the body bound, relations between its positions included. This is THE instantiation. |
 | `node/genn.rs` builtin generic ftype | the same boundary |
 | `typ/fntyp.rs` settle witness snapshot | copies the constraint store's type; the store is finished by construction, and the copy is what keeps live inference from writing into the store |
-| `replace_auto_constrained` | display only |
+| `name_auto_variables` | display only |
 
 A new `reset_tvars` call must name its quiescence boundary the same
 way.
