@@ -127,6 +127,21 @@ no "which in a default is the trait's type variable" trait T { val m: fn(self) -
 ok trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: 'q) -> 'q }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) } } }; impl T for i64 {}; T::m(1)
 ```
 
+A method's value decides none of the variables its trait's signature
+declares: a lambda narrower than one is refused at the impl, and a
+variable beside a written type (`x: [Array<'a>, Array<string>]`) stays
+the method's variable. Leave the method's `let` unannotated: an
+annotation written there is decided by the value in the order of its
+positions, as any `let`'s is.
+
+```graphix,cases
+ok trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a }; impl T for i64 { let m = |s, x, y| y }; (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+ok trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a = |s, x, y| y }; impl T for i64 {}; (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+no "does not contain fn(s: i64, x: i64) -> i64" trait T { val m: fn(self, x: 'a) -> i64 }; impl T for i64 { let m = |s, x: i64| 0 }; T::m(1, 1)
+no "signature has type variable 'a where implementation has string" trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a }; impl T for i64 { let m: fn(self, x: [Array<'c>, Array<string>], y: 'c) -> 'c = |s, x, y| y }; T::m(1, [1], 2)
+ok trait T { val m: fn(self, y: 'a, x: [Array<'a>, Array<string>]) -> 'a }; impl T for i64 { let m: fn(self, y: 'c, x: [Array<'c>, Array<string>]) -> 'c = |s, y, x| y }; T::m(1, 2, [1])
+```
+
 A method, an impl's or a default, is generic where a `let` of its value
 is: a lambda, or a read of a generic binding or of a field or tuple of
 one (`let put = s.g`), with no annotation on the method's `let`. Any

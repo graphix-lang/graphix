@@ -386,6 +386,28 @@ and names the lambda, which takes the declared type
 (`design/module_system.md`; pins `lang::traits::method_value_read_*`,
 `default_method_value_read_*`,
 `method_value_made_by_a_call_under_a_wider_declaration`).
+Where a method's `let` took the signature, the signature's variables are
+the declaration's and the value decides none of them: they are held
+rigid while the impl's body, or the trait's defaults, are checked, and
+the trait's own are again where the impl holds the method's type to it
+(`traits::hold_declared`). A written member holds no rigid cell
+(`design/tvar_constraints.md`, "A union's member takes a type by rule"),
+so a variable beside one under one constructor, ahead of the position
+that decides it (`val m: fn(self, x: [Array<'a>, Array<string>], y: 'a)
+-> 'a`), is the method's own variable there, whether the lambda leaves
+`x` to the declaration or writes the declaration's type. A value
+narrower than a declared variable (`|s, x: i64|` under `x: 'a`) is
+refused where the `let` holds it, "fn(self: i64, x: 'a: unbound) -> i64
+does not contain fn(s: i64, x: i64) -> i64". An annotation the method
+writes on its own `let` is a `let`'s: its variables are the value's to
+decide in the order written, so `let m: fn(self, x: [Array<'c>,
+Array<string>], y: 'c) -> 'c` under that declaration gives 'c to the
+written member and is refused, "signature has type variable 'a where
+implementation has string", and with `y` first it holds (pins
+`lang::traits::method_variable_beside_a_written_member_*`,
+`default_method_variable_beside_a_written_member_ahead_of_its_decider`,
+`method_narrower_than_a_declared_variable_is_refused`,
+`method_let_annotation_variable_*`).
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,

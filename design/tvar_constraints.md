@@ -690,7 +690,12 @@ one member, chosen by rules that read the union alone:
 
 - a member identical to the type, or one that holds it as it stands,
   deciding no cell of its own or of the type (`takes_as_it_stands`:
-  `[Array<'a>, null] ⊇ null`), takes it and binds nothing;
+  `[Array<'a>, null] ⊇ null`), takes it and binds nothing. Two function
+  types are identical where their own cells pair, and the pairs weld
+  (`contains::Link`): a cell a merge left forwarding to another pairs as
+  that one, so a function over a cell that forwards to a rigid cell is
+  not one over another rigid cell (pin
+  `typ::contains::tests::a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell`);
 - else constructor members before bare variables (`Result<'a, 'e> ⊇
   Error<`X>` is `Error<'e>`'s, `['b, Array<'b>]` takes an array through
   `Array<'b>`);

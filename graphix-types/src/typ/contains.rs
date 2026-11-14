@@ -1476,6 +1476,15 @@ fn commit_conjuncts(
         // Array<'e> and `LOWER 'e above [i64, string]` before "s" is checked; `let w =
         // ["s"]; f(x, w)` and the parameter form print ["z"]. base-r24 alike. probes:
         // ~/ptmp/cr29/scratch/r24/24d/ubo/{r9e,r9c,r9b,d1,p1,e3,e13,e4,e14}.gx
+        // 2026-11-13 claude: Fixing method-union-member-order-01: a trait call's literal
+        // array is this CR's too, with the variable member decided first. Over 'trait T {
+        // val m: fn(self, x: [self, Array<string>]) -> i64 }; impl T for Array<i64> { let m
+        // = |s, x| 0 }', 'T::m([1], [2])' is refused, "Array<string> does not contain
+        // Array<i64>", after the receiver made self Array<i64>; 'let v = [2]; T::m([1], v)'
+        // prints 0, and so do the literal under the union written out ('x: [Array<i64>,
+        // Array<string>]') and the plain function '|s: Array<i64>, x: [Array<i64>,
+        // Array<string>]|'. Under 'impl<'t> T for Array<'t>' alike. base-r24 alike. probes:
+        // ~/ptmp/cr29/scratch/r24/24d/mum/{k3,k12,g1}.gx (refused), {k10,k1,k9,k8}.gx (run)
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
@@ -2427,8 +2436,9 @@ impl Link {
                         act => !self.commit || act.apply(a, b),
                     },
                     (Some(x), Some(y)) => self.equal(&x, &y),
-                    // Unreachable under an eq-true verdict.
-                    _ => true,
+                    // a var a merge left forwarding is the cell it forwards to
+                    (Some(x), None) => self.equal(&x, t1),
+                    (None, Some(y)) => self.equal(t0, &y),
                 }
             }
             (Type::Fn(f0), Type::Fn(f1)) => {
@@ -6363,6 +6373,37 @@ mod tests {
         assert!(identical_linked(&mut hist, &x, &y, true));
         cell(&f0, "a").bind(Type::Primitive(Typ::I64.into()));
         assert_eq!(cell(&f1, "b").binding(), Some(Type::Primitive(Typ::I64.into())));
+    }
+
+    // A cell a merge left forwarding to a rigid one is that cell: paired
+    // inside a function type with another rigid cell the two functions are
+    // two, and with an open one they are one, that cell welded to it.
+    #[test]
+    fn a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell() {
+        let f = |v: &str| {
+            crate::expr::parser::parse_type(&format!("fn(x: '{v}) -> i64")).unwrap()
+        };
+        let cell = |t: &Type, v: &str| {
+            let mut cells = AHashMap::default();
+            t.collect_tvars(&mut cells);
+            cells[v].clone()
+        };
+        let (f0, f1, f2) = (f("a"), f("b"), f("c"));
+        let (a, b, c) = (cell(&f0, "a"), cell(&f1, "b"), cell(&f2, "c"));
+        let rigid = b.open_rigid();
+        let sharing = TVar::empty_named(literal!("s"));
+        sharing.alias(&a);
+        sharing.alias_cells(&b);
+        assert_eq!(a.binding(), Some(Type::TVar(b.clone())));
+        let apart = c.open_rigid();
+        let mut hist = ContainsHist::new();
+        assert!(!identical_linked(&mut hist, &f0, &f2, false));
+        assert!(!identical_linked(&mut hist, &f0, &f2, true));
+        drop(apart);
+        let mut hist = ContainsHist::new();
+        assert!(identical_linked(&mut hist, &f0, &f2, true));
+        assert!(c.same_cell(&b));
+        drop(rigid);
     }
 
     // A union's member that is the function it takes, by pairing their

@@ -2781,7 +2781,7 @@ run!(impl_method_does_not_narrow_the_head, r#"{
   impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
   "[Box(41)]"
 }"#, refused(
-    "signature has type variable 'a where implementation has i64"
+    "fn(self: Box<'a: unbound>) -> string does not contain fn(b: Box<i64>) -> string"
 ); FuseExpect::None);
 
 // A core-trait hook site a dynamic load retires is deleted by whichever
@@ -5622,5 +5622,135 @@ run!(
         trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 };
         impl T for i64 { let m = 'p: [i64, string], 'o: [i64, string], 'q: (Number, 'p), 'r: (Number, 'o) |s, x: 'q, y: 'r, z| -> i64 0 };
         let result = T::m(1, (1, "s"), (1, 1), |x: i64| x)
+    "#
+);
+
+// A method's declared variables are the declaration's: its value decides
+// none of them. So a variable beside a written member under one
+// constructor, ahead of the position that decides it, is the method's own
+// variable there, and the written member takes neither.
+run!(
+    method_variable_beside_a_written_member_ahead_of_its_decider,
+    prints(r#"[i64:2, "b"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
+        impl T for i64 { let m = |s, x, y| y };
+        let result = (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+    "#
+);
+
+run!(
+    method_variable_beside_a_written_member_written_as_declared,
+    prints(r#"[i64:2, "b"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
+        impl T for i64 { let m = |s, x: [Array<'a>, Array<string>], y: 'a| y };
+        let result = (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+    "#
+);
+
+run!(
+    method_variable_beside_a_written_member_behind_a_typedef,
+    prints("[i64:2, null]"),
+    "/test.gx" => r#"
+        type P<'p, 'q> = [Array<'p>, Array<'q>];
+        type O<'t> = ['t, null];
+        trait T { val m: fn(self, x: P<'a, string>, y: O<'a>) -> O<'a> };
+        impl T for i64 { let m = |s, x, y| y };
+        let result = (T::m(1, [1], 2), T::m(1, ["a"], null))
+    "#
+);
+
+run!(
+    default_method_variable_beside_a_written_member_ahead_of_its_decider,
+    prints(r#"[i64:2, "b"]"#),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a = |s, x, y| y
+        };
+        impl T for i64 {};
+        let result = (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+    "#
+);
+
+// No other position decides the variable: the method's result holds it.
+run!(
+    method_variable_beside_a_written_member_alone,
+    prints(r#"[[i64:1], ["a"]]"#),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn(self, x: [Array<'a>, Array<string>]) -> [Array<'a>, Array<string>]
+        };
+        impl T for i64 { let m = |s, x| x };
+        let result = (T::m(1, [1]), T::m(1, ["a"]))
+    "#
+);
+
+// The call is held to the declaration as it stands: the array decides
+// the variable, and the later argument must fit it.
+run!(
+    method_variable_beside_a_written_member_holds_its_call,
+    refused("'a: f64 does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
+        impl T for i64 { let m = |s, x, y| y };
+        let result = T::m(1, [1.5], 2)
+    "#
+);
+
+// A lambda narrower than a declared variable is no value of the
+// declaration.
+run!(
+    method_narrower_than_a_declared_variable_is_refused,
+    refused("fn(self: i64, x: 'a: unbound) -> i64 does not contain fn(s: i64, x: i64) -> i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> i64 };
+        impl T for i64 { let m = |s, x: i64| 0 };
+        let result = T::m(1, 1)
+    "#
+);
+
+// The impl's head variable is no declared variable of the method: a
+// function member written over it is not the declaration's member, where
+// the two differ only in those variables.
+run!(
+    method_head_variable_for_a_declared_one_in_a_function_member_is_refused,
+    refused("y: 'a: unbound) -> 'a: unbound does not contain fn(s: Array<'t: unbound>"),
+    "/test.gx" => r#"
+        trait T {
+            val m: fn(self, x: [fn(q: 'a) -> i64, fn(q: string) -> i64], y: 'a) -> 'a
+        };
+        impl<'t> T for Array<'t> {
+            let m = |s, x: [fn(q: 't) -> i64, fn(q: string) -> i64], y| y
+        };
+        let result = T::m([true], |q: i64| 0, 1)
+    "#
+);
+
+// A method's own `let` annotation is a `let`'s: its variables are the
+// value's to decide, in the order written, so one beside a written member
+// ahead of its decider is the written member's, which is not the
+// declaration.
+run!(
+    method_let_annotation_variable_ahead_of_its_decider_is_the_written_members,
+    refused("signature has type variable 'a where implementation has string"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
+        impl T for i64 {
+            let m: fn(self, x: [Array<'c>, Array<string>], y: 'c) -> 'c = |s, x, y| y
+        };
+        let result = T::m(1, [1], 2)
+    "#
+);
+
+run!(
+    method_let_annotation_variable_after_its_decider_holds,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, y: 'a, x: [Array<'a>, Array<string>]) -> 'a };
+        impl T for i64 {
+            let m: fn(self, y: 'c, x: [Array<'c>, Array<string>]) -> 'c = |s, y, x| y
+        };
+        let result = T::m(1, 2, [1])
     "#
 );

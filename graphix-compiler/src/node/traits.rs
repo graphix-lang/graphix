@@ -35,7 +35,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
-        seed_conjuncts, settle::VariableUnion,
+        seed_conjuncts, settle::VariableUnion, tvar::RigidGate,
     },
     wrap,
 };
@@ -48,7 +48,7 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::cell::OnceCell;
+use std::{cell::OnceCell, iter};
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
@@ -78,7 +78,7 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-// CR claude for claude: [bug/medium] A method whose declared signature holds a variable
+// XCR claude for claude: [bug/medium] A method whose declared signature holds a variable
 // beside a written member under one constructor, ahead of the position that decides the
 // variable, cannot be implemented: `trait T { val m: fn(self, x: [Array<'a>,
 // Array<string>], y: 'a) -> i64 }; impl T for i64 { let m = |s, x, y| 0 }` is refused,
@@ -96,6 +96,27 @@ pub(crate) fn method_sig(
 // base-r23 alike. Found reviewing open-instance-signature-01. probes:
 // ~/ptmp/cr29/scratch/r23/23b/ois-review/{v9,v8,v1,v13,v11,v14,v15}.gx, gxi1/
 // (method-union-member-order-01)
+// 2026-11-13 claude: A method that took its trait's signature (traits::signature_of)
+// holds the signature's variables rigid while the impl's body, or the trait's defaults,
+// are checked (traits::hold_declared), so a written member does not take the
+// declaration's variable; and the impl's last containment holds the trait's copy rigid,
+// where it narrowed the method's type after implements had judged it (check accepted,
+// build refused, with the first half alone). contains::Link pairs a cell a merge left
+// forwarding as the cell it forwards to: without that a function member over the impl
+// head's variable passed for the declaration's under the gates (q3.gx: check accepted,
+// build refused). The CR's forms v9, v8, v1, v13 run. Pins:
+// lang::traits::method_variable_beside_a_written_member_{ahead_of_its_decider,
+// written_as_declared, behind_a_typedef, alone, holds_its_call},
+// default_method_variable_beside_a_written_member_ahead_of_its_decider,
+// method_narrower_than_a_declared_variable_is_refused and
+// impl_method_does_not_narrow_the_head (its message is the let's now) fail with the
+// gates off, the first four with the last containment's gate off alone;
+// method_head_variable_for_a_declared_one_in_a_function_member_is_refused and
+// typ::contains::tests::a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell fail with
+// Link's two arms back. Left: a let rec method (rec-method-union-member-01), and an
+// annotation the method writes on its own let, which is a let's and decided in the order
+// written (D36; pins method_let_annotation_variable_*). probes:
+// ~/ptmp/cr29/scratch/r24/24d/mum/ (README)
 /// Whether `implemented`, a method's type as its body checked it, is
 /// the `declared` signature: its shape, its variables, and no bound the
 /// declaration does not carry ([`FnType::sig_matches`], as an interface
@@ -487,6 +508,18 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
     (!reads_binding(value)).then(|| Type::Fn(Arc::new(sig.clone())))
 }
 
+/// Rigid gates on every open cell `declared` reach: a declaration's
+/// variables, which nothing held to it decides. A value's own variable
+/// beside a written member (`x: [Array<'a>, Array<string>]`) takes the
+/// declaration's there, and the written member takes neither.
+fn hold_declared<'a>(
+    declared: impl Iterator<Item = &'a Type>,
+) -> LPooled<Vec<RigidGate>> {
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    declared.for_each(|t| super::held_cells(t, &mut cells));
+    cells.values().map(|tv| tv.open_rigid()).collect()
+}
+
 /// Fill a method lambda's missing parameter and return annotations
 /// from the declared signature (positional by position, labeled by
 /// name), through parentheses. Written annotations are kept.
@@ -740,7 +773,17 @@ impl<R: Rt> Update<R> for Trait<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        // a default that took the declared signature ([`signature_of`])
+        // decides none of its variables
+        let declared = {
+            let record = ctx.env.trait_def(self.def.id);
+            let methods = record.iter().flat_map(|r| r.methods.iter());
+            let took = methods.filter(|m| !self.default_reads_binding(&m.name));
+            let binds = took.filter_map(|m| ctx.env.by_id.get(&m.default?));
+            hold_declared(binds.map(|b| &b.typ))
+        };
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
+        drop(declared);
         let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
         // every written name in a method's signature must name something by
         // the check's end, and it writes no union of two of its variables
@@ -1225,14 +1268,26 @@ fn narrow_to_implementation<R: Rt>(
 }
 
 impl<R: Rt> Impl<R> {
-    /// Whether method `name` took its value's type: it writes no
-    /// annotation and [`signature_of`] gave it none.
-    fn method_reads_binding(&self, name: &str) -> bool {
+    /// Whether method `name` writes no annotation and its value reads a
+    /// binding, or not, as `reads` says ([`reads_binding`]).
+    fn unannotated_method(&self, name: &str, reads: bool) -> bool {
         matches!(&self.spec.kind, ExprKind::Impl(im)
             if im.methods.iter().any(|m| matches!(&m.kind, ExprKind::Bind(b)
                 if b.typ.is_none()
                     && b.pattern.single_bind().is_some_and(|n| &**n == name)
-                    && reads_binding(&b.value))))
+                    && reads_binding(&b.value) == reads)))
+    }
+
+    /// Whether method `name` took its value's type: it writes no
+    /// annotation and [`signature_of`] gave it none.
+    fn method_reads_binding(&self, name: &str) -> bool {
+        self.unannotated_method(name, true)
+    }
+
+    /// Whether method `name` took the declared signature as its
+    /// annotation ([`signature_of`]).
+    fn method_took_declared(&self, name: &str) -> bool {
+        self.unannotated_method(name, false)
     }
 
     // CR claude for claude: [bug/low] An impl entry given back while its trait's
@@ -1359,7 +1414,16 @@ impl<R: Rt> Update<R> for Impl<R> {
                 self.def.target
             ))
         )?;
+        // a method that took the declared signature ([`signature_of`])
+        // decides none of its variables
+        let declared = {
+            let methods = self.def.methods.iter();
+            let took = methods.filter(|(name, _)| self.method_took_declared(name));
+            let binds = took.filter_map(|(_, id)| ctx.env.by_id.get(id));
+            hold_declared(binds.map(|b| &b.typ))
+        };
         wrap!(self.body, self.body.typecheck0(ctx))?;
+        drop(declared);
         // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
@@ -1378,6 +1442,7 @@ impl<R: Rt> Update<R> for Impl<R> {
                 Told::over(e, &told)
             })?;
             let expected = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
+            let _declared = hold_declared(iter::once(&expected));
             expected.check_contains(&ctx.env, &implemented).map_err(|e| {
                 let told = format_compact!(
                     "method {} of impl {} for {} has type {}, the trait declares {}",

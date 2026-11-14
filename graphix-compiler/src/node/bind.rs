@@ -371,6 +371,20 @@ impl<R: Rt> Bind<R> {
             let pattern = compile_pattern(ctx, &typ)?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
+            // CR claude for claude: [bug/low] A `let rec` method whose declared signature
+            // holds a variable beside a written member under one constructor, ahead of the
+            // position that decides it, cannot be implemented: `trait T { val m: fn(self, x:
+            // [Array<'a>, Array<string>], y: 'a) -> i64 }; impl T for i64 { let rec m = |s,
+            // x, y| select s { 0 => 0, n => m(n - 1, x, y) } }` is refused, "signature has
+            // type variable 'a where implementation has string", where the same method
+            // without `rec` runs (method-union-member-order-01) and so does `rec` with `y`
+            // first. This containment runs at compile, before traits::hold_declared holds
+            // the declared signature's variables rigid for the impl's check, so the written
+            // member Array<string> takes the declaration's Array<'a>. base-r24 alike. A fix:
+            // hold the annotation's variables rigid here where the `let` took its trait's
+            // signature (traits::signature_of), which this compile cannot tell from an
+            // annotation the method wrote, whose variables the value decides. probes:
+            // ~/ptmp/cr29/scratch/r24/24d/mum/{r1,r2}.gx (rec-method-union-member-01)
             if !typ.contains(&ctx.env, ntyp).at(&spec)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bailat!(spec, "match error {ntyp} can't be matched by {typ}")
