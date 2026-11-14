@@ -419,6 +419,17 @@ fn judge_hidden_defaults<R: Rt>(
 // no wrong verdict or value in the probes; a call through `v` in an instance names
 // three definitions where it could name one. probes:
 // ~/ptmp/cr29/scratch/r24/24c/ladi/{e8,e8b,e11,e12}.gx (annotation-names-sibling-lambdas-01)
+// 2026-11-14 claude: A bug in the default build, not only under GRAPHIX_NO_SUBST: a check
+// that runs after an instance was built names that instance's lambda. In the REPL, `let mk =
+// |t: 'a| { let v: fn(?#d: 'q, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$; v }`,
+// then `mk(1)(7)` prints "1", then `mk("z")(8)` is refused at the default `t`, "'q: string
+// does not contain i64": the call that omits the label judges the default of the lambda
+// mk(1) built, in that instance's environment. The same function without the annotation
+// (`let v = |#d = t, ..| ..; v`) runs both inputs, and one script holding both calls runs
+// (its check ends before any instance is built). base-r24 alike. Under NO_SUBST the same
+// reaches an annotation that hides the label (`let w: fn(x: i64) -> string = select j { 0 =>
+// v, _ => never() }`, ladi/e13.gx). probe:
+// ~/ptmp/cr29/scratch/r24/24c/ladi-rev/repl_siblings.txt
 /// The definitions a function of type `ft` may be, in the order the
 /// program writes them ([`LambdaDef::written_order`]); an id no definition
 /// is registered for comes last.

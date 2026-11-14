@@ -4245,6 +4245,70 @@ run!(default_of_a_factorys_variable_under_a_bodys_annotation, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 z"); FuseExpect::None);
 
+// The same wherever an instance is built: at a run-time bind, in a seq's
+// steps, per element of a collection, in a factory inside a factory, and
+// twice with the label decided two ways.
+run!(default_under_a_bodys_annotation_at_a_run_time_bind, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        v(#d: "s", 7)
+    };
+    let f: fn(t: Any) -> string = never();
+    f <- mk;
+    f(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::None);
+
+run!(default_under_a_bodys_annotation_in_a_seqs_steps, r#"
+{
+    let mk = |t: 'a| {
+        let v: fn(?#d: 'q, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$;
+        v
+    };
+    seq { let a = mk(1)(7); let b = mk("z")(8); "[a] [b]" }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 z"); FuseExpect::Jit);
+
+run!(default_under_a_bodys_annotation_per_element, r#"
+{
+    let mk = |t: 'a| {
+        let v: fn(?#d: 'q, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$;
+        v
+    };
+    "[array::map([1, 2], |x| mk(x)(7))] [array::map(["a", "b"], |x| mk(x)(8))]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == r#"["1", "2"] ["a", "b"]"#); FuseExpect::None);
+
+run!(default_under_a_nested_bodys_annotation, r#"
+{
+    let j = 0;
+    let mk = |t: 'a| -> string {
+        let inner = |u: 'b| -> string {
+            let v: fn(?#d: 'q, x: i64) -> string =
+                select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+            v(#d: u, 7)
+        };
+        "[inner(1)] [inner("k")] [inner(t)]"
+    };
+    "[mk(1)] [mk("z")]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 k 1 1 k z"); FuseExpect::None);
+
+run!(default_under_a_bodys_annotation_returned_twice, r#"
+{
+    let j = 0;
+    let mk = |t: Any| {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        v
+    };
+    "[mk(1)(#d: "s", 7)] [mk(2)(8)]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s 1"); FuseExpect::None);
+
 // An abstract type's constructor holds its argument through the type's
 // representation, which no reader of the payload names a function by: a
 // default bounds the construction's parameter from below, so the
