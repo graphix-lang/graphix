@@ -3603,6 +3603,19 @@ impl HeldQuantifiers {
         Self { held, declared: Declared::current() }
     }
 
+    // CR claude for claude: [readability/low] A hover in a definition's
+    // text names a cell the definition declares by whatever handle reached
+    // it, where a message made in the body names it by its declared name
+    // (`Declared`): in `let rec rf = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a|
+    // -> 'a select x { n => rf(n, g) }` the arm's `n` hovers `n: '_<id>`,
+    // and in `let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e|
+    // e); x }` `m` hovers `m: Array<'b>` (map's variable), both on base-r24
+    // too, where a mismatch over `[n]` in that arm prints `Array<'a: unbound
+    // within Number>`. `resolving` holds the quantifiers but passes no
+    // `Declared`; the held definitions' declared names (each_quantifier's
+    // names, beside `ide::HeldSpan::cells`) would name their copies. probe:
+    // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/ (README,
+    // p8/main.gx `(|n, g)` and `let |m `) (hover-held-declared-names-01)
     /// `typ` resolved ([`Type::resolve_tvars`]), and what it prints by: the
     /// copies of the open cells of `held` it holds.
     pub fn resolving(typ: &Type, held: &[TVar]) -> (Type, Self) {
@@ -3756,6 +3769,17 @@ impl Drop for Printing {
     }
 }
 
+// CR claude for claude: [readability/low] A message names one open cell
+// twice where a handle a call copied is bound to a declared variable's:
+// `let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e| e); let
+// z: string = m; x }` prints `type mismatch string does not contain
+// Array<'a: 'a1: unbound within Number>` (base-r24: `Array<'b: 'a: unbound
+// within Number>`), so the program's 'a reads as two variables, one named
+// 'a1, which it never wrote. The handle map's 'b is copied to takes 'a by
+// `declared_name` (its open cell is k's 'a), and k's own handle, keyed apart
+// by `cell_addr`, is numbered away from it. probe:
+// ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/p6/k.gx
+// (declared-alias-two-names-01)
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for any
