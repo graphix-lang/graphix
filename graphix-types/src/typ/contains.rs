@@ -7615,6 +7615,25 @@ mod tests {
         assert_eq!(member_prints(&level(depth)), (prints, prints, expected));
     }
 
+    /// A var prints as the name it is reached by, so two names of one cell,
+    /// one generated, print apart, and members alike but for them keep
+    /// both, as their text would.
+    #[test]
+    fn members_over_one_cell_under_two_names_print_as_their_text_would() {
+        let generated = TVar::empty_named(literal!("_5"));
+        generated.bind(prim(Typ::String));
+        let written = generated.renamed(literal!("a"));
+        let member = |v: &TVar| {
+            let open = Type::TVar(TVar::empty_named(literal!("_7")));
+            Type::Tuple(Arc::from_iter([Type::TVar(v.clone()), open]))
+        };
+        let t = Type::Set(Arc::from_iter([member(&generated), member(&written)]));
+        assert_eq!(
+            member_prints(&t),
+            (2, 2, String::from("[(string, '_7: unbound), ('a: string, '_7: unbound)]"))
+        );
+    }
+
     /// `&T` and `&mut T` over one inner allocation are two types to every
     /// memo and every walk that visits a shared node once.
     #[test]

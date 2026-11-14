@@ -477,13 +477,25 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
 }
 
 /// Whether a member prints as a kept one did, told from their parts, so
-/// a part the two share prints for neither: one node prints as itself,
-/// and two of one head as their parts do. A cell, or a part standing
-/// where the other holds one, prints alone after `text` beside its
-/// counterpart, the two within the `left` bytes the kept member's text
-/// leaves them, a union in either refusing to print ([`ALONE`]). False
-/// where that cannot tell: two heads, or a union, function or application
-/// that is not one node.
+/// a part the two share prints for neither: one node prints as itself (a
+/// var only under one name: two of one cell may print apart), and two of
+/// one head as their parts do. A cell, or a part standing where the other
+/// holds one, prints alone after `text` beside its counterpart, the two
+/// within the `left` bytes the kept member's text leaves them, a union in
+/// either refusing to print ([`ALONE`]). False where that cannot tell: two
+/// heads, or a union, function or application that is not one node.
+// CR claude for claude: [risk/low] `Parts` takes a kept member's part to print now as it did when
+// the member printed, and it need not: a cell's printed name can change within one message. A
+// generated name's cell prints its own name until a written name of it prints (`printed_name`),
+// and a signature's quantifier can number apart on a second print (`quantifiers_apart`). So a
+// member whose text differs from every kept one can be dropped: k = ('_6@X, c1), t = ('b@X, i64),
+// u = ('z@X, c3), X one open cell, c1 and c3 open cells of one generated name, prints
+// "[('_6: unbound, '_7: unbound), ('b: unbound, i64)]" where the text alone keeps u as
+// "('b: unbound, '_7: unbound)": k's '_6 reprints as 'b once t named X. `strictly_identical`
+// already merges whole members on the same assumption. A fix settles a cell's printed name at its
+// first print in a message (a generated name's too), or has `Parts` refuse a reprint of a kept
+// part after a name it shows changed. No program has shown it. probe:
+// ~/ptmp/cr29/scratch/r24/24f/ple-review/registry.rs (print-parts-renamed-01)
 struct Parts<'a> {
     text: &'a mut String,
     left: usize,
@@ -496,7 +508,11 @@ impl Parts<'_> {
     }
 
     fn alike(&mut self, k: &Type, t: &Type) -> bool {
-        if k.node_key().is_some_and(|a| t.node_key() == Some(a)) {
+        let one_node = match (k, t) {
+            (Type::TVar(a), Type::TVar(b)) => a.name == b.name && a.same_cell(b),
+            _ => k.node_key().is_some_and(|a| t.node_key() == Some(a)),
+        };
+        if one_node {
             return true;
         }
         crate::stack::ensure_sufficient(|| match (k, t) {
