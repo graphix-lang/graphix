@@ -4992,6 +4992,72 @@ run!(
 );
 
 run!(
+    written_variable_over_every_member_leaves_a_names_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let u = select v > 0 { true => (|x: i64| x, 1), false => (|y: string| y, 2) };
+            select u { (r, n) => n, _ => 0 }
+        };
+        k(1)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_over_every_member_leaves_a_struct_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let s = select v > 0 { true => {f: |x: i64| x, n: 1}, false => {f: |y: string| y, n: 2} };
+            select s { {f: 'q, n: i64} as {f, n} => n, _ => 0 }
+        };
+        k(1)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_over_every_member_leaves_a_variant_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let w = select v > 0 { true => `K(|x: i64| x, 1), false => `K(|y: string| y, 2) };
+            select w { `K('q, i64) as `K(r, n) => n, _ => 0 }
+        };
+        k(1)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_two_positions_over_every_member_leaves_a_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (7, |y: string| y, 7), _ => (7, 7, |x: i64| x) };
+            select u { (i64, 'q1, 'q2) as (a0, a1, a2) => 1, _ => 0 }
+        };
+        k(0)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_over_a_member_the_test_leaves_keeps_its_catch_all,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => null, 1 => (|x: i64| x, 1), _ => (|y: string| y, 2) };
+            select u { ('q, i64) as (r, n) => n, _ => 0 }
+        };
+        [k(0), k(1), k(2)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [0, 1, 2]);
+    FuseExpect::None
+);
+
+run!(
     written_variable_bind_holds_both_function_types,
     r#"{
         let k = |v: i64| {

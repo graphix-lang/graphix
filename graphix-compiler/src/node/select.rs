@@ -1022,7 +1022,7 @@ impl Reach {
         let dead_at =
             |e: anyhow::Error| -> Result<Result<(), Dead>> { Ok(Err(Dead(e.at(site)))) };
         let empty = Type::Primitive(BitFlags::empty());
-        // CR claude for claude: [bug/low] A catch-all arm behind a written test that
+        // XCR claude for claude: [bug/low] A catch-all arm behind a written test that
         // takes every member is not found dead where the test's variable stands over
         // a function in a tuple or a struct: over `u = select v { 0 => (7, 1), _ =>
         // (fa, 2) }` (`fa = |x: i64| x + 100`), `select u { ('q, i64) as (r, n) => n,
@@ -1067,6 +1067,21 @@ impl Reach {
         // catch-all, so a fix of this one no longer waits on it; the twice form still
         // does (see that note). Pin:
         // lang::select::written_variable_once_binds_every_member_part.
+        // 2026-11-14 claude: (round 25, lane 25c) Stale on base-r25: dead1 to dead7
+        // (and the CR's tuple, struct, variant and two-undecided-position forms) are
+        // all refused 'unreachable arm: the earlier arms already cover the whole
+        // scrutinee', as the 2026-11-14 note found for r24-staging;
+        // diff-product-held-01 (1dd88f8a0) and variant-tuple-payload-dead-01
+        // (121d90e7f) closed it. The 600-select generator (seed 4711) on base-r25: 0
+        // selects run where the oracle says dead or missing (146 refused dead, was 133
+        // run). The catch-all is dead, since the test covers every member. Pins:
+        // lang::select::written_variable_over_every_member_leaves_a_{catch_all,names_catch_all,struct_catch_all,variant_catch_all}_dead,
+        // written_variable_two_positions_over_every_member_leaves_a_catch_all_dead
+        // (refused), and
+        // written_variable_over_a_member_the_test_leaves_keeps_its_catch_all (a null
+        // member keeps the catch-all live). They pass on the code as it is, so none
+        // fails without a change of this commit; revert the two commits above to see
+        // them fail. Probes: ~/ptmp/cr29/scratch/r25/25c/wvda/.
         if checking && (self.wildcard || self.atype == empty) {
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
