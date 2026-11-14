@@ -1388,6 +1388,29 @@ mod tests {
         assert!(matches!(frozen, Type::Tuple(ref ts) if ts.len() == 2));
     }
 
+    /// A ref's expansion is the same wherever it is met: over two types
+    /// that name each other, `B` in `(A, B)` unrolls as `B` alone does,
+    /// whichever site expanded `A` before it.
+    #[test]
+    fn expansion_is_the_same_wherever_the_ref_is_met() {
+        let defs = [
+            ("A".to_string(), "[`A, `X(B)]".to_string()),
+            ("B".into(), "[`B, `Y(A)]".into()),
+        ];
+        let expanded = |root: &str| {
+            let (env, t) = typed(&defs, root);
+            crate::fusion::lowering::expand_refs(&t, &env)
+        };
+        let ab = expanded("(A, B)");
+        let Type::Tuple(ab) = &ab else { panic!("a tuple") };
+        let ba = expanded("(B, A)");
+        let Type::Tuple(ba) = &ba else { panic!("a tuple") };
+        assert_eq!(ab[0].to_string(), expanded("A").to_string());
+        assert_eq!(ab[1].to_string(), expanded("B").to_string());
+        assert_eq!(ba[0].to_string(), expanded("B").to_string());
+        assert_eq!(ba[1].to_string(), expanded("A").to_string());
+    }
+
     /// A ref named twice where no ref encloses it, `(T1, T1)` over
     /// `type T_i = [null, (T_{i+1}, T_{i+1})]`, freezes once too.
     #[test]

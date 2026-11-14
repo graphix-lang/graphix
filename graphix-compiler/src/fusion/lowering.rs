@@ -658,8 +658,9 @@ pub(crate) fn unfolds_past(t: &Type, cap: u32) -> bool {
 }
 
 /// State of one top-level resolve. Memo entries are keyed by the
-/// expansion plus the `Seen` keys it consulted, so an entry is valid on
-/// any path containing all its dependencies and a resolve costs the
+/// expansion plus the `Seen` keys it consulted and the refs it
+/// expanded, so an entry is valid on any path containing all its
+/// dependencies and none of its expansions, and a resolve costs the
 /// number of distinct types, not paths.
 struct ResolveCx {
     /// Ref expansions by [`expand_key_fp`] of their key.
@@ -669,6 +670,9 @@ struct ResolveCx {
     /// `Seen` keys the current frame consulted; a frame's own key is
     /// not a dependency on its caller's path.
     consulted: RefCell<LPooled<Vec<TypeRef>>>,
+    /// Refs the current frame expanded: a ref on the path would have been
+    /// left as it stands there.
+    expanded: RefCell<LPooled<Vec<TypeRef>>>,
     /// The current frame's result was truncated and must not be memoized.
     poisoned: Cell<bool>,
     expansions: Cell<u32>,
@@ -685,6 +689,7 @@ impl Default for ResolveCx {
             memo: Default::default(),
             nodes: Default::default(),
             consulted: Default::default(),
+            expanded: Default::default(),
             poisoned: Default::default(),
             expansions: Default::default(),
             budget: 65_536,
@@ -698,12 +703,14 @@ struct NodeEntry {
     /// The key's owner: the key is its address.
     _key: Type,
     deps: Vec<(u64, TypeRef)>,
+    expanded: Vec<(u64, TypeRef)>,
     resolved: Option<Type>,
     size: u32,
 }
 
 struct FrameResult {
     deps: Vec<(u64, TypeRef)>,
+    expanded: Vec<(u64, TypeRef)>,
     poisoned: bool,
     size: u32,
 }
@@ -711,6 +718,7 @@ struct FrameResult {
 struct MemoEntry {
     key: Arc<TypeRef>,
     deps: Vec<(u64, TypeRef)>,
+    expanded: Vec<(u64, TypeRef)>,
     /// `None` when nothing beneath the ref resolved: the ref stays opaque.
     resolved: Option<Type>,
     /// Tree-wise node count of `resolved`, charged on every hit.
@@ -733,7 +741,26 @@ impl ResolveCx {
         }
     }
 
-    // CR claude for claude: [risk/low] An entry holds where its deps (the refs it met on
+    /// Record that the current frame's result expanded `key`.
+    fn expand_mark(&self, key: &TypeRef) {
+        let mut cur = self.expanded.borrow_mut();
+        if !cur.contains(key) {
+            cur.push(key.clone());
+        }
+    }
+
+    /// Whether an entry with these dependencies and expansions reads the
+    /// same on `seen`'s path: every dependency is on it and no expansion is.
+    fn holds(
+        deps: &[(u64, TypeRef)],
+        expanded: &[(u64, TypeRef)],
+        seen: Option<&Seen>,
+    ) -> bool {
+        deps.iter().all(|(fp, d)| Seen::find_fp(seen, *fp, d).is_some())
+            && expanded.iter().all(|(fp, x)| Seen::find_fp(seen, *fp, x).is_none())
+    }
+
+    // XCR claude for claude: [risk/low] An entry holds where its deps (the refs it met on
     // the path) are on the path, but nothing checks that the refs it expanded are off it,
     // so `expand_refs` unrolls a type by where it met it before: over `type A = [`A,
     // `X(B)]` and `type B = [`B, `Y(A)]`, `(A, B)` expands its B to `[`B, `Y([`A, `X([`B,
@@ -744,16 +771,26 @@ impl ResolveCx {
     // refs it met and which of those were open, as kernel_abi's Freeze does, makes it
     // exact. probe: ~/ptmp/cr29/scratch/r24/24f/freeze-recursive-paths-review/
     // lowering_memo_probe.rs (resolve-memo-open-refs-01)
+    // 2026-11-14 claude: Entries (MemoEntry, NodeEntry) now also record the refs expanded
+    // under them (ResolveCx::expanded, merged up each frame and on each hit) and
+    // ResolveCx::holds requires none of them on the path, so a ref reads the same
+    // wherever it is met. Pin:
+    // kernel_abi::tests::expansion_is_the_same_wherever_the_ref_is_met fails without it
+    // ((A, B)'s B unrolled A's cached B).
     fn lookup(&self, key: &TypeRef, seen: Option<&Seen>) -> Option<Option<Type>> {
         let memo = self.memo.borrow();
-        let e = memo.get(&expand_key_fp(key))?.iter().find(|e| {
-            &*e.key == key
-                && e.deps.iter().all(|(fp, d)| Seen::find_fp(seen, *fp, d).is_some())
-        })?;
+        let e = memo
+            .get(&expand_key_fp(key))?
+            .iter()
+            .find(|e| &*e.key == key && Self::holds(&e.deps, &e.expanded, seen))?;
         self.count_nodes(e.size);
         for (_, d) in &e.deps {
             self.consult(d);
         }
+        for (_, x) in &e.expanded {
+            self.expand_mark(x);
+        }
+        self.expand_mark(key);
         Some(e.resolved.clone())
     }
 
@@ -777,12 +814,15 @@ impl ResolveCx {
     ) -> Option<Option<Type>> {
         let nodes = self.nodes.borrow();
         let e = nodes.get(key)?;
-        if !e.deps.iter().all(|(fp, d)| Seen::find_fp(seen, *fp, d).is_some()) {
+        if !Self::holds(&e.deps, &e.expanded, seen) {
             return None;
         }
         self.count_nodes(e.size);
         for (_, d) in &e.deps {
             self.consult(d);
+        }
+        for (_, x) in &e.expanded {
+            self.expand_mark(x);
         }
         Some(e.resolved.clone())
     }
@@ -793,23 +833,32 @@ impl ResolveCx {
     fn node_frame<R>(&self, f: impl FnOnce(&Self) -> R) -> (R, FrameResult) {
         let saved_consulted =
             std::mem::replace(&mut *self.consulted.borrow_mut(), LPooled::take());
+        let saved_expanded =
+            std::mem::replace(&mut *self.expanded.borrow_mut(), LPooled::take());
         let saved_poisoned = self.poisoned.replace(false);
         let before = self.unfolded.get();
         let r = f(self);
         let mut delta =
             std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
+        let mut expanded =
+            std::mem::replace(&mut *self.expanded.borrow_mut(), saved_expanded);
         let poisoned = self.poisoned.get();
         let size = self.unfolded.get() - before;
         let deps: Vec<(u64, TypeRef)> =
             delta.iter().map(|k| (expand_key_fp(k), k.clone())).collect();
+        let exp: Vec<(u64, TypeRef)> =
+            expanded.iter().map(|k| (expand_key_fp(k), k.clone())).collect();
         for k in delta.drain(..) {
             let mut cur = self.consulted.borrow_mut();
             if !cur.contains(&k) {
                 cur.push(k);
             }
         }
+        for k in expanded.drain(..) {
+            self.expand_mark(&k);
+        }
         self.poisoned.set(saved_poisoned || poisoned);
-        (r, FrameResult { deps, poisoned, size })
+        (r, FrameResult { deps, expanded: exp, poisoned, size })
     }
 
     /// Charge one expansion against the budget; `false` when exhausted.
@@ -841,13 +890,18 @@ impl ResolveCx {
     ) -> Option<Type> {
         let saved_consulted =
             std::mem::replace(&mut *self.consulted.borrow_mut(), LPooled::take());
+        let saved_expanded =
+            std::mem::replace(&mut *self.expanded.borrow_mut(), LPooled::take());
         let saved_poisoned = self.poisoned.replace(false);
         let unfolded_before = self.unfolded.get();
         let resolved = f();
         let mut deps =
             std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
+        let mut expanded =
+            std::mem::replace(&mut *self.expanded.borrow_mut(), saved_expanded);
         let poisoned = self.poisoned.get();
         deps.retain(|k| *k != *key);
+        self.expand_mark(&key);
         // An unbound tvar param compares equal to any other unbound
         // cell, so an open key would hand one site's cells to another.
         if memoize && !poisoned && key_closed(&key) {
@@ -855,6 +909,10 @@ impl ResolveCx {
             let entry = MemoEntry {
                 key,
                 deps: deps.iter().map(|k| (expand_key_fp(k), k.clone())).collect(),
+                expanded: expanded
+                    .iter()
+                    .map(|k| (expand_key_fp(k), k.clone()))
+                    .collect(),
                 resolved: resolved.clone(),
                 size: self.unfolded.get() - unfolded_before,
             };
@@ -865,6 +923,9 @@ impl ResolveCx {
             if !cur.contains(&k) {
                 cur.push(k);
             }
+        }
+        for k in expanded.drain(..) {
+            self.expand_mark(&k);
         }
         self.poisoned.set(saved_poisoned || poisoned);
         resolved
@@ -906,6 +967,7 @@ fn expand_ref_d_inner<'a>(
             NodeEntry {
                 _key: typ.clone(),
                 deps: frame.deps,
+                expanded: frame.expanded,
                 resolved: r.clone(),
                 size: frame.size,
             },
