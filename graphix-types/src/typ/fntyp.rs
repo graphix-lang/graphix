@@ -314,9 +314,10 @@ thread_local! {
     /// The cells whose conjuncts a walk is visiting: a normalized copy of a
     /// signature is a new FnType but holds the same cells.
     static CONJUNCTS: RefCell<AddrSet> = RefCell::new(AddrSet::default());
-    /// The signatures whose free cells `free_cells` is collecting. It cuts
-    /// no walk the parse built: a signature reaches itself through its
-    /// bounds only where a bound reaches its own cell, which is refused.
+    /// The cells whose bounds `collect_held` is reading, apart from
+    /// [`CONJUNCTS`], which the memo heeds. It cuts no walk the parse
+    /// built: a walk reaches a cell again through its bounds only where a
+    /// bound reaches its own cell, which is refused.
     static HOLDING: RefCell<AddrSet> = RefCell::new(AddrSet::default());
     /// How deep `for_each_part` calls nest on this thread.
     static PARTS_DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -501,8 +502,9 @@ pub(super) fn meet_declared(ft: &Arc<FnType>, passed: &tvar::ConjunctsPassed) {
 /// or through a signature nested in it, is held with every cell its bounds
 /// name. A cell declared outside `ft` has its bounds read in its
 /// declarer's scope, never in `ft`'s. Each own cell's bounds are read
-/// once, under no guard, so the free cells of a signature nested in them
-/// are read from the memo ([`free_cells`]).
+/// once, under no guard the memo heeds, so the free cells of a signature
+/// nested in them are read from the memo ([`free_cells`]); a cell reached
+/// again while its bounds are read is cut ([`HOLDING`]).
 fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
     let _depth = PartsDepth::enter();
     let mut seen = TVarsSeen::take();
@@ -511,6 +513,9 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
     todo.extend(ft.quantifiers.iter().filter_map(|q| known.get(q).cloned()));
     let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     while let Some(tv) = todo.pop() {
+        let Some(_holding) = Walking::enter_key(&HOLDING, tv.cell_addr()) else {
+            continue;
+        };
         for tc in tv.cell_constraints() {
             match tc.normalize_int(&mut seen.norm) {
                 Some(n) => n.collect_tvars_seen(&mut found, &mut seen),
@@ -549,8 +554,7 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
 /// ([`collect_held`]), its own quantifiers' left out, into `known`:
 /// memoized while a `for_each_part` walk is in progress. A walk no guard
 /// cut is the same under every guard, and one that found nothing finds
-/// nothing under any. A signature reached again through its own bounds
-/// while its cells are collected is cut ([`HOLDING`]).
+/// nothing under any.
 pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
     let key = Arc::as_ptr(ft) as usize;
     let unguarded = || {
@@ -570,7 +574,6 @@ pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
         return;
     }
     let cuts = CUTS.with(|c| c.get());
-    let Some(_holding) = Walking::enter(&HOLDING, ft) else { return };
     let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     collect_held(ft, &mut inner);
     inner.retain(|name, _| !ft.quantifiers.contains(name));
@@ -626,7 +629,7 @@ impl Walking {
         if !entered {
             CUTS.with(|c| c.set(c.get() + 1));
         }
-        entered.then_some(Walking { set, key })
+        entered.then(|| Walking { set, key })
     }
 }
 
@@ -3357,6 +3360,39 @@ mod tests {
         let mut after = ahash::AHashMap::default();
         ft.args[0].typ.collect_tvars(&mut after);
         assert!(after.contains_key("w"));
+    }
+
+    // A refused entry leaves the walk that holds the key holding it: every
+    // later entry is refused until that walk ends.
+    #[test]
+    fn a_refused_entry_leaves_the_key_held() {
+        use super::{CONSTRAINING, Walking};
+        let key = 8;
+        let held = Walking::enter_key(&CONSTRAINING, key).unwrap();
+        assert!(Walking::enter_key(&CONSTRAINING, key).is_none());
+        assert!(Walking::enter_key(&CONSTRAINING, key).is_none());
+        drop(held);
+        assert!(Walking::enter_key(&CONSTRAINING, key).is_some());
+    }
+
+    // The held walk reads no bound of a cell whose bounds it is reading
+    // already, whichever signature holds the cell: a normalized copy of a
+    // signature is another signature holding the same cells.
+    #[test]
+    fn a_held_walk_cuts_a_cell_whose_bounds_it_is_reading() {
+        use super::{FnType, HOLDING, Walking, collect_held};
+        use crate::typ::Type;
+        let ft = parse_fn_type("fn<'b: 'c, 'c: Array<'q>>(y: 'b) -> 'b").unwrap();
+        let Type::TVar(b) = &ft.args[0].typ else { panic!("{ft}") };
+        let Type::TVar(c) = &b.cell_constraints()[0] else { panic!("{ft}") };
+        let mut held = ahash::AHashMap::default();
+        collect_held(&ft, &mut held);
+        assert!(held.contains_key("c") && held.contains_key("q"), "{held:?}");
+        let copy: FnType = ft.clone();
+        let _reading = Walking::enter_key(&HOLDING, c.cell_addr()).unwrap();
+        let mut cut = ahash::AHashMap::default();
+        collect_held(&copy, &mut cut);
+        assert!(cut.contains_key("c") && !cut.contains_key("q"), "{cut:?}");
     }
 
     /// The tvar-walk steps printing an `n`-deep nest of quantified function

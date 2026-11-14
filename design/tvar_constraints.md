@@ -2487,10 +2487,12 @@ former consumer derives from the cells:
   record (`tvar::ConjunctsPassed::meet`, `fntyp::meet_declared`), so an
   occurrence in such a bound is its declarer's cell, never a name a
   signature between them declares. The held walk reads each own cell's
-  bounds under no reentrancy guard, so a nested signature's answer comes
-  from the memo; a signature reached again through its own bounds while
-  its answer is collected is cut (`HOLDING`). A bound that reaches its
-  own variable this way is refused as any recursive bound is:
+  bounds under no reentrancy guard the memo heeds, so a nested
+  signature's answer comes from the memo; a cell reached again while its
+  bounds are read is cut (`HOLDING`), by any signature that holds it, a
+  normalized copy included; a refused entry leaves the walk that holds
+  the key holding it. A bound that reaches its own variable this way is
+  refused as any recursive bound is:
   `fn<'a: fn<'d: 'z, 'z: Array<'a>>(qd: 'd) -> 'd>(qa: 'a) -> i64`.
   Pins: `typ::fntyp::tests::a_bound_of_a_bound_names_the_declarers_cell`,
   `a_bound_naming_an_outer_variable_is_the_outer_cell`,
@@ -2498,7 +2500,9 @@ former consumer derives from the cells:
   `a_bound_reaching_its_variable_through_a_bound_of_a_bound_is_refused`,
   `nests_held_through_bounds_parse_in_linear_steps`,
   `nests_held_through_bounds_walk_in_linear_steps`,
-  `nests_held_beside_a_bound_print_in_linear_steps`.
+  `nests_held_beside_a_bound_print_in_linear_steps`,
+  `a_held_walk_cuts_a_cell_whose_bounds_it_is_reading`,
+  `a_refused_entry_leaves_the_key_held`.
 - An alias walk aliases a bound's variables in the scope of the
   signature that declares the bound's variable: a signature's walk
   passes the bounds of its own quantifiers alone, and a walk no
