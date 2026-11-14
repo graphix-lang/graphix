@@ -4861,6 +4861,31 @@ run!(
     FuseExpect::None
 );
 
+// A member another part tells from the test hides no member after it
+// that passes the test.
+run!(
+    product_test_a_told_member_hides_no_later_one,
+    r#"{
+        type X = {r: &i64};
+        type Y = {r: &string};
+        type T = [(X, string, bool), (Y, i64, i64), (Y, string, bool)];
+        let a = 1;
+        let b = "s";
+        let x: X = {r: &a};
+        let y: Y = {r: &b};
+        let t0: T = (x, "q", true);
+        let t1: T = (y, 5, 5);
+        let t2: T = (y, "q", true);
+        let k = |v: i64| {
+            let t = select v { 0 => t0, 1 => t1, _ => t2 };
+            select t { (X, string, bool) as (p, s, _) => *p.r + str::len(s), _ => 0 }
+        };
+        k(2)
+    }"#,
+    refused("this pattern can't tell &i64 from &string");
+    FuseExpect::None
+);
+
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };

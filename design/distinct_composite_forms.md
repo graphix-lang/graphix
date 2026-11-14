@@ -216,7 +216,15 @@ passes the test for any, and a reference or function the test for any
 other, so `(Array<i64>, &i64)` over `[(Array<i64>, &i64), (Array<string>,
 &string)]` is refused; a part not decided (an open cell, a declared
 variable, `Any`) may pass, and so may a pair of names met inside itself
-or a pair past the walk's budget (`MAX_PASS_PAIRS`). The judgments beside
+or a pair past the walk's budget (`MAX_PASS_PAIRS`). A walk holds the
+pairs of names it has met clear, which is so only while its first
+collision ends it, so no walk drops a collision it found: the first walk
+of a test's judgment tells nothing, and where it finds a collision a
+second (`cast.rs::test_collision`) passes over each product a part tells
+apart before it looks inside. A member a part tells apart so hides none
+after it: with `X` and `Y` naming two structs that hold a `&i64` and a
+`&string`, `(X, string, bool)` over `[(X, string, bool), (Y, i64, i64),
+(Y, string, bool)]` is refused for the last member. The judgments beside
 a select arm (a comparison, a map key, a union trait dispatch) report the
 first part's collision whatever the others hold: an ordering reads its
 parts in turn. A slice pattern's predicate is a

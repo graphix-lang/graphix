@@ -3149,6 +3149,25 @@ impl<R: Rt> PatternNode<R> {
         scrut: &Type,
         leaves: &mut SmallVec<[Leaf; 4]>,
     ) -> Result<()> {
+        // CR claude for claude: [bug/medium] A written test that is `_` where a
+        // declared variable stands types its name at bottom, and the run-time test
+        // for bottom passes every value: `let k = |z: 'a| select z { _ as w => w + 1,
+        // _ => 0 }; println(k("q"))` passes --check; fused it panics ("kernel param
+        // `w`: runtime String("q") does not match the compiled Scalar(I64) slot") and
+        // --no-fusion logs an arith error. Alike under a bound (`'a: [i64, string]`),
+        // and where a union of products holds the variable: `(i64, _) as (n, w)` over
+        // `[(i64, 'a), (string, 'a)]` checks with `n + w`. Over a closed type the
+        // same test is refused ("pattern _ will never match [i64, string]"), and
+        // under one product (`(_, i64) as (w, n)` over `('a, i64)`, `Array<_> as [w,
+        // ..]` over `Array<'a>`) the name keeps the variable and `w + 1` is refused.
+        // Same on base-r24. Not diagnosed further: the name is typed by the test
+        // where the test does not hold the scrutinee around it, and
+        // StructurePattern::meets_rigid_written refuses `_` only for a pattern that
+        // tests or binds inside the variable's value. What would close it: refuse
+        // `_` at a part of a written test where a declared variable stands, as
+        // written_refusal does inside one, naming `Any`. probes:
+        // ~/ptmp/cr29/scratch/r24/24a/tba/review/{h1,h3,h4,h5,h7}.gx
+        // (bottom-test-over-variable-01)
         let parts = self.type_predicate.matching_parts(env, scrut)?;
         let mut inside: SmallVec<[Leaf; 4]> = SmallVec::new();
         self.structure_predicate.leaves(

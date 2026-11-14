@@ -2421,6 +2421,18 @@ fn open_collision(
             };
         }
         let mut why = None;
+        // CR claude for claude: [risk/low] A collision this loop found is dropped
+        // where a later bound of the cell does not collide (`found?`), and outside a
+        // test (`tested` false) the bounds are judged on the walk's own `seen`: the
+        // pairs of names met under the dropped collision stay held clear, and a later
+        // part of the walk that meets one again reads it so. A walk's memory is sound
+        // only while its first collision ends it (test_collision): the review of
+        // told-by-another-part-01 found a dropped collision accepting `(X, string,
+        // bool)` among `[(Y, i64, i64), (Y, string, bool)]`. No witness here: it needs
+        // a cell with two bounds that are types, the first colliding with a type
+        // through a pair of names the walk meets again. What would close it: judge
+        // each bound on a walk of its own, as under `tested`.
+        // (open-bound-collision-dropped-01)
         for b in typed.iter() {
             let judge = |seen: &mut RepSeen| {
                 rep_collision(env, seen, Subject::Beside, Open::Unknown, ordered, t, b)
@@ -2503,6 +2515,9 @@ struct Expanded<
     /// abstract's implementations or representation, a head it could not
     /// resolve): a verdict it reached holds in this environment only.
     env_read: bool,
+    /// Whether the walk passes over a product no value of the other side
+    /// passes ([`parts_collision`]).
+    told: bool,
 }
 
 impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Default
@@ -2515,6 +2530,7 @@ impl<K: std::hash::Hash + Eq + 'static, N: std::hash::Hash + Eq + 'static> Defau
             built: LPooled::take(),
             depth: 0,
             env_read: false,
+            told: false,
         }
     }
 }
@@ -2739,9 +2755,8 @@ fn heads_may_pass(env: &Env, seen: &mut Passes, binds: bool, a: &Type, b: &Type)
 }
 
 /// The collision of two products part by part: the first one a part
-/// holds, unless the products are a select arm's test and what else
-/// reaches the arm, and another part of the test passes no value of its
-/// counterpart: then no value of the other product passes the test.
+/// holds. A walk that tells ([`test_collision`]) passes over a select
+/// arm's test one of whose parts passes no value of its counterpart.
 fn parts_collision<'a>(
     env: &Env,
     seen: &mut RepSeen,
@@ -2750,9 +2765,11 @@ fn parts_collision<'a>(
     ordered: bool,
     parts: impl Iterator<Item = (&'a Type, &'a Type)> + Clone,
 ) -> Option<Indiscernible> {
-    let (at, why) = parts.clone().enumerate().find_map(|(i, (x, y))| {
-        Some((i, rep_collision(env, seen, subject, open, ordered, x, y)?))
-    })?;
+    let first = |seen: &mut RepSeen| {
+        parts
+            .clone()
+            .find_map(|(x, y)| rep_collision(env, seen, subject, open, ordered, x, y))
+    };
     // CR claude for claude: [bug/low] A union trait dispatch is refused for a part
     // whose members share a runtime form though another part tells the members
     // apart, as a select arm's test was (told-by-another-part-01): with `trait Show
@@ -2766,15 +2783,40 @@ fn parts_collision<'a>(
     // a dispatch's members as tests (a subject of its own), so the rule below this
     // return reaches them. probe: ~/ptmp/cr29/scratch/r24/24a/tba/d1.gx
     // (dispatch-told-by-another-part-01)
-    if subject == Subject::Beside {
-        return Some(why);
+    // 2026-11-14 claude: Review of told-by-another-part-01: the rule below this
+    // return runs only in the second walk of a test's judgment
+    // (cast.rs::test_collision, the walk's told flag), made where a first walk
+    // without it found a collision. A walk that drops a collision it found holds
+    // the pairs of names under it clear, and a later member read them so: (X,
+    // string, bool) among [(Y, i64, i64), (Y, string, bool)], X and Y naming
+    // structs of a &i64 and a &string, was accepted. A dispatch told the same way
+    // takes both walks.
+    if subject == Subject::Beside || !seen.told {
+        return first(seen);
     }
     let passes = &mut Passes { names: RefHist::new(), pairs: 0 };
     let binds = subject == Subject::Binds;
-    let told = parts
-        .enumerate()
-        .any(|(i, (x, y))| i != at && !may_pass(env, passes, binds, x, y));
-    (!told).then_some(why)
+    match parts.clone().all(|(x, y)| may_pass(env, passes, binds, x, y)) {
+        true => first(seen),
+        false => None,
+    }
+}
+
+/// A select arm's test `a` against `b`, what else reaches it. A walk holds
+/// the pairs it met clear, so it ends at its first collision: a second
+/// walk, made where the first found one, passes over what a part tells.
+fn test_collision(
+    env: &Env,
+    subject: Subject,
+    open: Open,
+    a: &Type,
+    b: &Type,
+) -> Option<Indiscernible> {
+    let judge = |told: bool| {
+        let seen = &mut RepSeen { told, ..RepSeen::default() };
+        rep_collision(env, seen, subject, open, false, a, b)
+    };
+    judge(false).and_then(|_| judge(true))
 }
 
 /// Two parts of `a` and `b` a runtime test can't tell apart, or,
@@ -2984,7 +3026,7 @@ impl Type {
         open: Open,
         t: &Type,
     ) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), Subject::Binds, open, false, self, t)
+        test_collision(env, Subject::Binds, open, self, t)
     }
 
     /// [`Self::rep_collision`] for a select arm's written test `self`
@@ -2993,8 +3035,7 @@ impl Type {
     /// of `t` that a union of the test's holds collides with nothing: a
     /// value of it that passes is typed as it.
     pub fn rep_collision_written(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        let seen = &mut RepSeen::default();
-        rep_collision(env, seen, Subject::Written, Open::Benign, false, self, t)
+        test_collision(env, Subject::Written, Open::Benign, self, t)
     }
 }
 
@@ -4316,6 +4357,43 @@ pub(crate) mod tests {
         ];
         for (test, rest) in untold {
             assert!(judged(test, rest), "{test} among {rest}");
+        }
+    }
+
+    /// A member another part tells from a product test clears no pair of
+    /// names for the members after it: one that passes the test collides
+    /// in either order, met again or reached through a name under it.
+    #[test]
+    fn a_told_member_clears_no_pair_for_the_next() {
+        let defs = [
+            ("X", "{r: &i64}"),
+            ("Y", "{r: &string}"),
+            ("PA", "(DA, &i64)"),
+            ("PB", "(DB, &string)"),
+            ("DA", "[`N(PA), `E]"),
+            ("DB", "[`N(PB), `E]"),
+        ];
+        let (env, _) = typed(&defs, "null");
+        let cases = [
+            ("(X, i64)", "(Y, string)", "(Y, i64)"),
+            ("(PA, i64, DA)", "(PB, string, DB)", "(PA, i64, DB)"),
+        ];
+        for (test, told, passes) in cases {
+            let test = parsed(&env, test);
+            for members in [[told, passes], [passes, told]] {
+                let rest = Type::Set(Arc::from_iter(members.map(|m| parsed(&env, m))));
+                assert!(
+                    test.rep_collision_written(&env, &rest).is_some(),
+                    "{test} among {rest}"
+                );
+                let open = super::Open::Unknown;
+                assert!(
+                    test.rep_collision_tested(&env, open, &rest).is_some(),
+                    "{test} among {rest}"
+                );
+            }
+            let told = parsed(&env, told);
+            assert!(test.rep_collision_written(&env, &told).is_none(), "{test}, {told}");
         }
     }
 
