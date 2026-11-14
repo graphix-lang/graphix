@@ -1568,31 +1568,6 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // coverage walk takes the second `A arm as covering `B. probes:
 // ~/ptmp/cr29/scratch/r25/25c/rev2/p5.txt, p6.txt, p7.txt (run with rb.sh)
 // (variant-dead-arm-unannotated-01)
-// XCR claude for claude: [bug/low] An arm is not found dead behind arms that take
-// every value it matches where a position inside the scrutinee holds two tuple or
-// struct members: `type E = [{a: i64, d: i64}, {c: i64}]; |x: (i64, E)| select x { (n,
-// {a: _, d: _}) => 2, (n, {a: h, d: _}) => h, (n, {c: _}) => 1 }` checks, its second
-// arm never taken, and so do the arms `(n, {a: _, d: _}) => 2, (n, {c: _}) => 1`
-// followed by `_ => 3` or `(n, _) => 3`, the same in a variant's payload (`` `A({a: _,
-// d: _}) `` twice over `` [`A(E), `B] ``) and in a struct's field (`{s: {a: _, d: _},
-// z}` twice), and `(n, (a, b))` twice over `(i64, [(i64, i64), (i64, i64, i64)])`. The
-// same arms over `E` itself are refused, and so are `(n, (a, b))` twice over `(i64,
-// [(i64, i64), i64])` and the written form (`T as (n, {a: _, d: _})` twice, "an earlier
-// arm matches the same values"). base-r24, lane 24a and a trial merge of it with
-// r24-staging alike; of 900 generated selects of struct patterns over a union of structs
-// (gen2.py: at the top, in a tuple, a payload, a field), the merge checks 106 with a dead
-// arm at a nested position and 6 at the top (those by a literal or a guard written
-// twice). Not traced past this: a position holding a second tuple or struct has no
-// finite set of heads here, so the pool does not read it. probes:
-// ~/ptmp/cr29/scratch/r24/24a/wsaf-rev/r4.txt, r5.txt (run.sh in ../wsaf runs each
-// line), gen2.py and c11.*.txt (the generated programs' verdicts)
-// (two-composite-position-dead-01)
-// 2026-11-14 claude: Head::Composite is numbered per tuple or struct member of a union
-// position and a path under it names the number, so two members at one position are a
-// finite set of heads and the pool reads positions inside them. Pins in
-// stdlib/graphix-tests/src/lang/select.rs (two_struct_members_*,
-// struct_*_two_members_is_dead, tuple_repeated_*, bool_struct_field_repeated_*) and the
-// cases fence in ide/skills/graphix-lang/select.md fail without the change.
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, tuples and structs holding no open cell,
 /// [`Head::Rest`] for its other primitives and [`Head::Open`] for
