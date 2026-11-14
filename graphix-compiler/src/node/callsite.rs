@@ -4280,44 +4280,6 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // XCR claude for claude: [bug/low] A call through a dynamic module does not
-    // follow a reload where both bodies give the val the same function of the code
-    // around the module and differ in an impl it dispatches to. The site keeps its
-    // instance, whose dispatch was resolved against the impl the first body
-    // registered. r7.gx: the root declares `trait Sh` and `let app = |x: Sh|
-    // Sh::sh(x) + 5`, each body is `impl Sh for i64 { let sh = |c: i64| c + K }; let
-    // make = app` (K 1, then 2000), and at ep 14 `d::make(ep)` prints 20, the retired
-    // body's `sh`, for 2019; `saved`, the same function taken from the first body,
-    // prints 20 in the instance alive across the reload and `[2019, 2020]` where it
-    // is first called after it, so two instances of one function at one type
-    // disagree. A bind that failed is not tried again either: under a second body
-    // that implements nothing a first call of `saved` logs "an instance at fn(x:
-    // i64) -> i64 of a definition typed fn(x: '#x: unbound within Sh) -> i64" and
-    // stays bottom through a third body that implements it (r7c.gx: no `late` line
-    // to ep 18). base-r24 alike. To fix: a reload
-    // that replaces or removes an impl entry rebinds the sites outside the module
-    // whose instances resolved a dispatch through it (the instance records the
-    // impls its dispatches read, or the val's write at a reload always rebinds). A
-    // ruling may be wanted on what `saved` means here: the function is not the
-    // body's own, so D33 (a) does not say. probes:
-    // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/review/{r7,r7c}.gx,
-    // `graphix --no-cache` (reload-same-fn-impl-01)
-    // 2026-11-14 claude: A run-time bind records the registry impls its dispatches
-    // chose (CompileCtx::impl_reads, read_impl at resolve_trait_call and
-    // lower_trait_union; an impl a load's own view supplies is not recorded, so D33
-    // stays: Env::is_registered_impl), and CallSite::rebind builds the instance again
-    // when one is no longer registered; a Callee::Failed carries the registry's impl
-    // table and retries when it changed. r7.gx and r7c.gx on the lane build: ep 14
-    // new=2019 alive=2019 late=[2019, 2020], and r7c's late line recovers at ep 13.
-    // What saved means: a function outside every load called from outside every load
-    // dispatches by the registry as it stands, so a saved one moves with a reload too
-    // (the function is the root's app, not the body's own; D33 (a) says nothing of
-    // it); written in design/module_system.md and the graphix-lang skill. Pins that
-    // fail without it:
-    // lang::modules::a_call_of_an_outside_function_follows_a_reloaded_impl and
-    // .._binds_again_once_a_reload_implements_its_trait;
-    // .._keeps_its_instance_over_a_reload_that_leaves_its_impl guards state. Needs a
-    // soak.
     /// Bind the definition `v` unless it is the one bound, or the one
     /// whose bind failed; true when a fresh callee was bound.
     fn rebind(
