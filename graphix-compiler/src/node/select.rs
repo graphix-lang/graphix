@@ -691,6 +691,11 @@ impl Reach {
             // the 24 runs of the five fail with the merge undone;
             // .._used_as_a_number_then_written_a_string_refused holds either way). probes:
             // ~/ptmp/cr29/scratch/r24/24b/soa/
+            // 2026-11-13 claude: Review: the stale claim holds (the four probes on base-r24 and the lane; q01 and
+            // q05 refused again and 20 of the 24 pin runs failing with the merge undone). What is left of this
+            // shape is another defect, or-slice-name-union-01: over a written parameter the or-arm runs only
+            // where the alternatives' elements are one type, so the one cell an unannotated parameter gets has no
+            // annotation that passes for two.
             // CR claude for claude: [bug/low] A `_` in one arm at a part another arm
             // binds types that part `Any` over an unannotated parameter, and the bind's
             // uses are refused by a message that names no annotation: `let f = |s| select

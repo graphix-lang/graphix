@@ -1680,6 +1680,42 @@ impl StructPatternNode {
                             parts.entry(l.id).or_default().push(l.typ)
                         }
                     }
+                    // CR claude for claude: [bug/low] A name the slices of two
+                    // or-alternatives bind takes the first alternative's elements
+                    // alone, so an or-arm over a written union whose alternatives'
+                    // elements differ is refused, by a message that names no
+                    // annotation: `|x: [`A(Array<i64>), `B(Array<string>)]| select x {
+                    // `A([h, ..]) | `B([h, ..]) => "[h]", _ => "" }` says "type
+                    // mismatch i64 does not contain string" at the pattern, check and
+                    // build alike. So do the same arm with a rest, the list form,
+                    // `[h, ..] | [<h, ..>]` over `[Array<i64>, List<string>]`, and
+                    // `[h, ..] | (h, _)` over `[Array<i64>, (string, i64)]` in either
+                    // order ("i64 does not contain [i64, string]"). The verdict follows
+                    // the alternatives' order: with `` `B(Array<[i64, string]>) ``
+                    // second the arm is refused, with the wider member first it runs.
+                    // The same binds outside a slice (`` `A(h) | `B(h) ``, `` `A((h,
+                    // _)) | `B((h, _)) ``), the slices in arms of their own, the or
+                    // inside a slice element and the arm under a written test (``
+                    // [`A(Array<i64>), `B(Array<string>)] as .. ``) run, `h` being
+                    // `[i64, string]`, the union design/or_patterns.md (Same binds)
+                    // gives a shared name. This loop binds the name's cell at each
+                    // slice it visits and the alternatives share the name: the first
+                    // slice's elements bind it and the next must fit it, and
+                    // PatternNode::bind_narrowed's union of the alternatives' leaves
+                    // comes after. A fix joins the name over the alternatives (each
+                    // slice's union here, and the leaf of an alternative with no
+                    // slice) before anything binds it; not built. Over an unannotated
+                    // parameter the alternatives' slices are one cell by rule
+                    // (design/tvar_constraints.md; slice-or-arm-cells-01), so `let f =
+                    // |x| select x { `A([h, ..]) | `B([h, ..]) => h, _ => 0 }` is
+                    // refused for an argument of two element types and for one instance
+                    // called at two (pin lang::types::
+                    // slice_in_each_alternative_of_an_or_arm_as_two_types_in_one_instance_refused),
+                    // where `` `A(h) | `B(h) `` and the slices in two arms print (1,
+                    // "a"): that refusal names no annotation either, and writing the
+                    // parameter is refused as above. base-r24 and lane 24b alike.
+                    // probes: ~/ptmp/cr29/scratch/r24/24b/soa-rev/ (README)
+                    // (or-slice-name-union-01)
                     for (id, ts) in parts.iter() {
                         if let Some(b) = env.by_id.get(id) {
                             let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
