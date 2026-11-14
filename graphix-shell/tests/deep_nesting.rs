@@ -1534,6 +1534,34 @@ fn written_holder_chains_check_in_linear_time() {
 // with it 39.58-39.59 G (three runs); with the test called at every step it was
 // 39.58-39.80 G. The figures and pins above stand (--no-fusion --expand at 1280 links
 // 4.95 G, the written chain's --check at 1280 3.04 G).
+// 2026-11-14 claude: Review (round 24) of cf7f4572a and f50cd3b33: the partial fix
+// holds. base-r24 -> lane, debug, --no-cache, G instructions: 'x{i} = mk(x{i-1})' at
+// 1280 links --no-fusion --expand 9.96 -> 5.06, --expand 15.77 -> 10.92, --check 1.27
+// -> 1.26; the written chain's --check 13.24 -> 3.04; fn-in-pair --check at 320 1.67
+// -> 1.67. With each part switched off alone (an env toggle, since removed): no keep,
+// the chain's --expand passed 2000 G before its 120 s cut (contains_int asks a fresh
+// resolution at each step), so the three parts stand together; no same_resolution 7.42
+// / 8.09 (expand / written check), no monomorphic part 4.98 / 13.94, all three off
+// 10.05 / 13.37; the deep_nesting pin fails in each of the last three. The resolution
+// matches what resolve_tvars built (a ground cell reaches no open cell, so no fresh
+// copy, quantifier or predicate enters it), and monomorphic's instance of a ground
+// cell holding no Fn or Ref is that substitution exactly. Correction af1f93d91: the
+// two unit pins read the process-wide GROUND_EPOCH between their proof and their
+// counts and failed in 3 of 5 runs of '--lib -- a_ground_' (the cast pins rebind a
+// ground cell on another thread); they now measure in normalize::tests::while_ground,
+// which measures again until no write fell inside; new pin
+// a_ground_cell_takes_only_its_resolutions_own_parts_at_once (an equal copy is walked,
+// a pair with a part of another type refused, both ways; fails with resolves_to's
+// parts test loosened); resolves_to's cell-against-cell arm removed, as a resolution
+// holds no cell. Census 2967 files 0 verdict / 0 message changes against base-r24;
+// regress 585/0/0; graphix-types lib 604, graphix-compiler 87, deep_nesting 49 pass;
+// guicheck base-r24 39.555 G, lane 39.557 G; peak RSS of four checks within 2% of
+// base. Runtime probes (plain, written, union, typedef, fn-in-pair, variant, struct,
+// reference chains) agree with base fused, --no-fusion, GRAPHIX_PAR=force, from a warm
+// image and in a REPL session. (c)'s remainder is (a)'s mechanism: perf of the written
+// chain's --check at 1280 puts ContainsHist::closure at 13.6% self, walking the
+// cell-free resolution monomorphic now returns. probes:
+// ~/ptmp/cr29/scratch/r24/24f/call-dag-arg-walk-01/review/
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,

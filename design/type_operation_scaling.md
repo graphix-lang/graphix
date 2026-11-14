@@ -197,7 +197,8 @@ structure is returned SHARED, never copied.
   below the cell leaves it, as it means the same type. Pins:
   `deep_nesting::generic_pair_call_chains_share_their_resolutions`,
   `typ::normalize::tests::a_ground_chain_resolves_once`,
-  `typ::contains::tests::a_ground_cell_holds_its_resolutions_parts_at_once`.
+  `typ::contains::tests::a_ground_cell_holds_its_resolutions_parts_at_once`,
+  `typ::contains::tests::a_ground_cell_takes_only_its_resolutions_own_parts_at_once`.
   What stays quadratic in such a chain: a pair that holds a generic
   function value holds the function's quantifiers open, so nothing
   above it is ground; and a resolution holds no cell, so nothing keeps a
