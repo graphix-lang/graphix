@@ -91,5 +91,5 @@ async fn clipboard_text_round_trips() -> anyhow::Result<()> {
     let back = |h: &mut super::GuiTestHarness| {
         h.get_watched("test::got") == Some(&Value::from("graphix_clip"))
     };
-    h.wait_until(back, std::time::Duration::from_secs(5), "read back").await
+    h.wait_until(back, "read back").await
 }

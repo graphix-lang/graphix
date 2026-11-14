@@ -7,7 +7,7 @@ use anyhow::Result;
 use arcstr::literal;
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
-use std::{fmt::Write, time::Duration};
+use std::fmt::Write;
 
 fn table_code(code: &str) -> CompactString {
     format_compact!(
@@ -509,7 +509,6 @@ let result = data_table(
             let snap = h.dt_snapshot();
             snap.row_basenames == vec!["r1", "r2", "r0"]
         },
-        Duration::from_secs(10),
         "the initial sort",
     )
     .await?;
@@ -526,7 +525,6 @@ let result = data_table(
             let snap = h.dt_snapshot();
             snap.row_basenames == vec!["r2", "r0", "r1"]
         },
-        Duration::from_secs(10),
         "the resort",
     )
     .await?;
@@ -582,7 +580,6 @@ let result = data_table(
             snap.row_basenames.first().map(|s| s.as_str()) == Some("r119")
                 && mem_ok(&snap)
         },
-        Duration::from_secs(10),
         "the sorted window's mem cells",
     )
     .await?;
@@ -690,7 +687,6 @@ let result = data_table(
     let _ = h.watch("test::heard").await?;
     h.wait_until(
         |h| h.dt_snapshot().row_basenames.first().map(|s| s.as_str()) == Some("r119"),
-        Duration::from_secs(10),
         "the descending sort",
     )
     .await?;
@@ -699,7 +695,6 @@ let result = data_table(
     h.set_var("test::flip", Value::I64(1))?;
     h.wait_until(
         |h| h.get_watched("test::heard") == Some(&Value::Bool(true)),
-        Duration::from_secs(10),
         "on_update for r0 once it shows",
     )
     .await?;
@@ -758,13 +753,8 @@ let result = data_table(
         expected: &[String],
         why: &str,
     ) -> Result<()> {
-        let converged = h
-            .wait_until(
-                |h| h.dt_snapshot().row_basenames == expected,
-                Duration::from_secs(10),
-                why,
-            )
-            .await;
+        let converged =
+            h.wait_until(|h| h.dt_snapshot().row_basenames == expected, why).await;
         if converged.is_ok() {
             return Ok(());
         }
@@ -1173,7 +1163,6 @@ let result = data_table(
     let _ = h.watch("test::log").await?;
     h.wait_until(
         |h| matches!(h.get_watched("test::log"), Some(Value::String(s)) if !s.is_empty()),
-        Duration::from_secs(10),
         "on_update's log",
     )
     .await?;
@@ -1207,8 +1196,7 @@ let result = data_table(
         matches!(h.get_watched("test::log"), Some(Value::Array(a))
             if a.iter().any(|p| p == &Value::String(path.into())))
     };
-    h.wait_until(|h| heard(h, "/local/dt_map/r0/c1"), Duration::from_secs(10), "c1")
-        .await?;
+    h.wait_until(|h| heard(h, "/local/dt_map/r0/c1"), "c1").await?;
     h.drain().await?;
     assert!(!heard(&h, "/local/dt_map/r0/c0"), "{:?}", h.get_watched("test::log"));
     Ok(())
@@ -1230,12 +1218,7 @@ let result = data_table(
     let mut h = dt(code).await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1");
     h.set_var("test::a", Value::String(arcstr::literal!("v1b")))?;
-    h.wait_until(
-        |h| h.dt_snapshot().grid[0][0] == "v1b",
-        Duration::from_secs(10),
-        "the new value",
-    )
-    .await?;
+    h.wait_until(|h| h.dt_snapshot().grid[0][0] == "v1b", "the new value").await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1b");
     Ok(())
 }
@@ -1422,7 +1405,6 @@ let result = data_table(
                 let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
                 vs.contains(&(v as f64))
             },
-            std::time::Duration::from_secs(5),
             "the sparkline to receive the value",
         )
         .await?;
@@ -1731,7 +1713,6 @@ let result = data_table(
             let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
             vs.contains(&5.0)
         },
-        std::time::Duration::from_secs(2),
         "sparkline update to land without panicking on invalid history_seconds",
     )
     .await?;
@@ -1810,7 +1791,6 @@ let result = data_table(
             let real_i = snap.col_names.iter().position(|n| n == "real");
             real_i.map(|i| snap.grid[0][i] == "real-val").unwrap_or(false)
         },
-        std::time::Duration::from_secs(2),
         "real column value to arrive",
     )
     .await?;
@@ -1837,7 +1817,7 @@ async fn settle(
     why: &str,
     mut pred: impl FnMut(&GuiTestHarness) -> bool,
 ) -> Result<()> {
-    h.wait_until(|h| pred(h), std::time::Duration::from_secs(5), why).await
+    h.wait_until(|h| pred(h), why).await
 }
 
 /// A table whose one column `k` holds the stored values `vals` per row.
@@ -2459,10 +2439,9 @@ let result = table(&[table_column(&text(&"t"))], &[[dt]])
             order(&mut h.root.w).is_some_and(|o| o == want)
         }
     };
-    h.wait_until(wait(["r1", "r0"]), std::time::Duration::from_secs(5), "first sort")
-        .await?;
+    h.wait_until(wait(["r1", "r0"]), "first sort").await?;
     h.set_var("test::v1", Value::F64(100.0))?;
-    h.wait_until(wait(["r0", "r1"]), std::time::Duration::from_secs(5), "re-sort").await
+    h.wait_until(wait(["r0", "r1"]), "re-sort").await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2516,12 +2495,7 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
         let tbl = {rows: ["/local/dt_review06/r0"], columns: [{name: "load", typ: typ, display_name: null, source: &`Netidx(null), width: &null, on_resize: &null}]};
         let result = data_table(#table: &tbl)
     "#).await?;
-    h.wait_until(
-        |h| h.dt_snapshot().grid[0][0] == "0",
-        Duration::from_secs(5),
-        "initial live value",
-    )
-    .await?;
+    h.wait_until(|h| h.dt_snapshot().grid[0][0] == "0", "initial live value").await?;
     let change = h.compile_named_callable("test::change").await?;
     h.call_callback(change, ValArray::from_iter([Value::Null])).await?;
     for v in [1, 2] {
@@ -2532,7 +2506,6 @@ async fn switching_a_live_column_to_sparkline_records_updates() -> Result<()> {
                     .dt_sparkline_values("r0", "load")
                     .is_some_and(|vs| vs.last() == Some(&(v as f64)))
             },
-            Duration::from_secs(5),
             "sparkline point after type change",
         )
         .await?;
@@ -2557,12 +2530,7 @@ async fn a_live_column_flipping_types_keeps_its_subscription() -> Result<()> {
         let tbl = {rows: ["/local/dt_flip/r0"], columns: [{name: "load", typ: typ, display_name: null, source: &`Netidx(null), width: &null, on_resize: &null}]};
         let result = data_table(#table: &tbl)
     "#).await?;
-    h.wait_until(
-        |h| h.dt_snapshot().grid[0][0] == "0",
-        Duration::from_secs(5),
-        "initial live value",
-    )
-    .await?;
+    h.wait_until(|h| h.dt_snapshot().grid[0][0] == "0", "initial live value").await?;
     let sub = h.dt().dt_cell_subscription("r0", "load");
     let spark = h.compile_named_callable("test::spark").await?;
     let text = h.compile_named_callable("test::text").await?;
@@ -2579,7 +2547,6 @@ async fn a_live_column_flipping_types_keeps_its_subscription() -> Result<()> {
                     .is_some_and(|vs| vs.last() == Some(&(k as f64))),
                 false => h.dt_snapshot().grid[0][0] == format!("{k}"),
             },
-            Duration::from_secs(5),
             "the flipped column's value",
         )
         .await?;

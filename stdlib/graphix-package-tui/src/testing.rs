@@ -17,6 +17,7 @@ use graphix_package::Ended;
 use graphix_package_core::testing::{self, Fixture, PackageRef, TestState};
 use graphix_rt::{GXEvent, NoExt};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use poolshark::global::GPooled;
 pub use ratatui::style::Color;
 use ratatui::{
     Terminal,
@@ -109,48 +110,69 @@ impl TuiTestHarness {
         Ok(testing::drain_idle(gx, rx, deliver).await?.1.map(|t| t.into_std()))
     }
 
-    /// Wait up to `timeout` for the runtime to send an update, then
-    /// `drain`. False when nothing arrived.
-    pub async fn next_update(&mut self, timeout: Duration) -> Result<bool> {
-        let deadline = tokio::time::Instant::now() + timeout;
+    /// Wait for the runtime to send an update, then `drain`. A runtime that
+    /// settles without one fails at once, since nothing outstanding can
+    /// bring it; otherwise the wait lasts as long as the program's work
+    /// does under the box's load, up to [`testing::HANG_GUARD`].
+    pub async fn next_update(&mut self) -> Result<()> {
+        let gx = self.f.gx.clone();
+        let settled = gx.wait_settled();
+        tokio::pin!(settled);
+        let hang = tokio::time::sleep(testing::HANG_GUARD);
+        tokio::pin!(hang);
         loop {
-            match tokio::time::timeout_at(deadline, self.f.rx.recv()).await {
-                Ok(Some(mut batch)) => {
+            let mut batch = tokio::select! {
+                biased;
+                batch = self.f.rx.recv() => batch.context("the runtime is gone")?,
+                r = &mut settled => {
+                    r.context("the runtime died")?;
                     let mut updated = false;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            updated = true;
-                            self.f.watches.note(id, &v);
-                            self.screen
-                                .update(id, v)
-                                .await
-                                .context("widget handle_update")?;
-                        }
+                    while let Ok(mut batch) = self.f.rx.try_recv() {
+                        updated |= self.deliver_updates(&mut batch).await?;
                     }
                     if updated {
                         self.drain().await?;
-                        return Ok(true);
+                        return Ok(());
                     }
+                    bail!("the runtime settled without an update")
                 }
-                Ok(None) => bail!("the runtime is gone"),
-                Err(_) => return Ok(false),
+                () = &mut hang => {
+                    bail!("no update in {:?}", testing::HANG_GUARD)
+                }
+            };
+            if self.deliver_updates(&mut batch).await? {
+                self.drain().await?;
+                return Ok(());
             }
         }
     }
 
-    /// Take updates until `done` holds, for at most `timeout`; past it,
-    /// an error showing the last render.
+    async fn deliver_updates(
+        &mut self,
+        batch: &mut GPooled<Vec<GXEvent>>,
+    ) -> Result<bool> {
+        let mut updated = false;
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(id, v) = e {
+                updated = true;
+                self.f.watches.note(id, &v);
+                self.screen.update(id, v).await.context("widget handle_update")?;
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Take updates until `done` holds. A runtime that settles with it
+    /// still false fails at once, with the last render.
     pub async fn wait_for(
         &mut self,
-        timeout: Duration,
         mut done: impl FnMut(&mut Self) -> Result<bool>,
     ) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
         while !done(self)? {
-            if tokio::time::Instant::now() > deadline {
-                bail!("timed out; render:\n{}", self.render_lines()?.join("\n"))
+            if let Err(e) = self.next_update().await {
+                let render = self.render_lines()?.join("\n");
+                return Err(e.context(format!("render:\n{render}")));
             }
-            self.next_update(Duration::from_millis(500)).await?;
         }
         Ok(())
     }

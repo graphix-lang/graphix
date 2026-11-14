@@ -1390,6 +1390,23 @@ async fn a_two_hop_echo_keeps_the_edit() -> Result<()> {
     Ok(())
 }
 
+/// A wait nothing outstanding can end fails when the runtime settles, not
+/// at a wall deadline.
+#[tokio::test(flavor = "current_thread")]
+async fn a_wait_the_program_cannot_end_fails_when_it_settles() -> Result<()> {
+    let code = format_compact!("{IMPORTS}; let result = text(&\"static\")");
+    let mut h = GuiTestHarness::new(&code).await?;
+    let e = h.wait_until(|_| false, "a value nothing brings").await.unwrap_err();
+    assert!(format!("{e:#}").contains("settled"), "{e:#}");
+    let e = loop {
+        if let Err(e) = h.deliver_batch().await {
+            break e;
+        }
+    };
+    assert!(format!("{e:#}").contains("settled without a batch"), "{e:#}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_text_input_returns_to_the_program_value() -> Result<()> {
     rejected_text_edit("text_input", "on_input").await

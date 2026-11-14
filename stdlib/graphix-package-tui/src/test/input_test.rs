@@ -7,7 +7,6 @@ use crate::testing::TuiTestHarness;
 use anyhow::{Context, Result, bail};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use std::time::Duration;
 
 fn strings(v: &[&str]) -> Value {
     Value::Array(ValArray::from_iter(v.iter().map(|s| Value::from(s.to_string()))))
@@ -372,7 +371,7 @@ let result = browser(
     )
     .await?;
     h.watch("test::selected_path").await?;
-    h.wait_for(Duration::from_secs(10), |h| {
+    h.wait_for(|h| {
         Ok(h.get_watched("test::selected_path") == Some(&Value::from("/local/browse/r0")))
     })
     .await
@@ -411,7 +410,7 @@ let result = browser(#cursor, #selected_row: &mut sel, #size: {width: 40, height
     )
     .await?;
     h.watch("test::seen").await?;
-    h.wait_for(Duration::from_secs(10), |h| {
+    h.wait_for(|h| {
         Ok(matches!(h.get_watched("test::seen"),
             Some(Value::Array(a)) if a.last() == Some(&Value::Null)))
     })
@@ -478,10 +477,8 @@ let result = b
     )
     .await?;
     h.watch("test::answer").await?;
-    h.wait_for(Duration::from_secs(10), |h| {
-        Ok(matches!(h.get_watched("test::answer"), Some(Value::I64(_))))
-    })
-    .await?;
+    h.wait_for(|h| Ok(matches!(h.get_watched("test::answer"), Some(Value::I64(_)))))
+        .await?;
     assert_eq!(h.get_watched("test::answer"), Some(&Value::I64(1)));
     Ok(())
 }
@@ -490,10 +487,8 @@ let result = b
 /// repeats.
 async fn seen_by_the_end(h: &mut TuiTestHarness) -> Result<Vec<Value>> {
     h.watch("test::done").await?;
-    h.wait_for(Duration::from_secs(10), |h| {
-        Ok(matches!(h.get_watched("test::done"), Some(Value::Array(_))))
-    })
-    .await?;
+    h.wait_for(|h| Ok(matches!(h.get_watched("test::done"), Some(Value::Array(_)))))
+        .await?;
     let Some(Value::Array(a)) = h.get_watched("test::done") else { unreachable!() };
     let mut seen: Vec<Value> = a.iter().cloned().collect();
     seen.dedup();
@@ -587,15 +582,11 @@ let result = b
 
 /// Wait for `test::done` to read `expected`. A report that follows the
 /// browser reaches it once netidx's listing has caught up, however late
-/// that is; a browser that never gets there times out.
+/// that is; a browser that never gets there fails when the runtime settles, or at the hang guard.
 async fn done_reaches(h: &mut TuiTestHarness, expected: &'static str) -> Result<()> {
     h.watch("test::done").await?;
     let want = Value::from(expected);
-    let reached = h
-        .wait_for(Duration::from_secs(15), |h| {
-            Ok(h.get_watched("test::done") == Some(&want))
-        })
-        .await;
+    let reached = h.wait_for(|h| Ok(h.get_watched("test::done") == Some(&want))).await;
     match reached {
         Ok(()) => Ok(()),
         Err(e) => {

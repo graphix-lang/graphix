@@ -7,11 +7,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{Event, KeyCode};
 use futures::{StreamExt, stream};
 use ratatui::style::Color;
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{fs, path::PathBuf};
 
 const VIEWPORT: (u16, u16) = (80, 24);
 
@@ -32,27 +28,14 @@ fn shows(h: &mut TuiTestHarness, text: &str) -> Result<bool> {
     Ok(h.render_lines()?.iter().any(|l| l.contains(text)))
 }
 
-/// How long an example may take to draw its first frame: some wait on a
-/// timer or a netidx listing.
-const FIRST_FRAME: Duration = Duration::from_secs(10);
-
-/// `name` draws a first frame within [`FIRST_FRAME`], after a few cycles.
+/// `name` draws a first frame: some examples wait on a timer or a netidx
+/// listing, and one whose program settles without drawing one fails at once.
 async fn renders(name: &str) -> Result<()> {
     let mut h = harness(name).await?;
     h.drain().await?;
     h.render()?;
-    for _ in 0..3 {
-        if !h.next_update(Duration::from_millis(10)).await? {
-            break;
-        }
-        h.render()?;
-    }
-    let deadline = Instant::now() + FIRST_FRAME;
     while h.render_lines()?.iter().all(|l| l.trim().is_empty()) {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() || !h.next_update(left).await? {
-            bail!("draws nothing")
-        }
+        h.next_update().await.context("draws nothing")?;
         h.render()?;
     }
     Ok(())

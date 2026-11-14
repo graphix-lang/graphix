@@ -4,7 +4,6 @@
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn suspend_without_a_display_is_an_error() -> Result<()> {
@@ -24,7 +23,7 @@ let result = paragraph(&status)
         10,
     )
     .await?;
-    h.wait_for(Duration::from_secs(30), |h| {
+    h.wait_for(|h| {
         let lines = h.render_lines()?;
         if lines.iter().any(|l| l.contains("suspended") || l.contains("idle errored")) {
             anyhow::bail!(
@@ -37,6 +36,24 @@ let result = paragraph(&status)
         }))
     })
     .await
+}
+
+/// A wait nothing outstanding can end fails when the runtime settles, not
+/// at a wall deadline.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_the_program_cannot_end_fails_when_it_settles() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::paragraph::{self, *};
+let result = paragraph(&"static")
+"#,
+    )
+    .await?;
+    let e = h.wait_for(|_| Ok(false)).await.unwrap_err();
+    assert!(format!("{e:#}").contains("settled without an update"), "{e:#}");
+    let e = h.next_update().await.unwrap_err();
+    assert!(format!("{e:#}").contains("settled without an update"), "{e:#}");
+    Ok(())
 }
 
 #[tokio::test]

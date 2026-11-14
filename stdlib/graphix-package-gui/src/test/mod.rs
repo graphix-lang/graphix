@@ -185,15 +185,35 @@ impl GuiTestHarness {
         }
     }
 
-    /// Deliver the runtime's next batch, waiting for it, and nothing
+    /// Deliver the runtime's next batch, waiting for it (an empty one is the
+    /// answer to a wait request, not a batch), and nothing
     /// after it: the widgets see one cycle's updates and not the idle
     /// verdicts after it. Returns whether the batch held an update.
     async fn deliver_batch(&mut self) -> Result<bool> {
         let Self { f: Fixture { gx, rx, watches, .. }, root, rt_handle, .. } = self;
-        let mut batch = tokio::time::timeout(Duration::from_secs(10), rx.recv())
-            .await
-            .context("no batch came")?
-            .context("the runtime is gone")?;
+        let settled = gx.wait_settled();
+        tokio::pin!(settled);
+        let hang = tokio::time::sleep(testing::HANG_GUARD);
+        tokio::pin!(hang);
+        let mut batch = 'next: loop {
+            let batch = tokio::select! {
+                biased;
+                batch = rx.recv() => batch.context("the runtime is gone")?,
+                r = &mut settled => {
+                    r.context("the runtime died")?;
+                    while let Ok(batch) = rx.try_recv() {
+                        if !batch.is_empty() {
+                            break 'next batch
+                        }
+                    }
+                    bail!("the runtime settled without a batch")
+                }
+                () = &mut hang => bail!("no batch in {:?}", testing::HANG_GUARD),
+            };
+            if !batch.is_empty() {
+                break batch;
+            }
+        };
         let mut updated = false;
         for e in batch.drain(..) {
             match e {
@@ -301,7 +321,7 @@ impl GuiTestHarness {
         self.root.w.before_view()
     }
 
-    // CR claude for claude: [risk/low] The GUI and TUI harnesses still give a wait for
+    // XCR claude for claude: [risk/low] The GUI and TUI harnesses still give a wait for
     // something a correct program brings a short wall deadline: this `wait_until`'s
     // `within` (2 to 10 s at its callers in data_table_test and clipboard_test),
     // `deliver_batch`'s 10 s, and in graphix-package-tui's `testing` the
@@ -312,18 +332,28 @@ impl GuiTestHarness {
     // settle with the predicate still false fails at once), `testing::HANG_GUARD` its only
     // wall limit; a wait that a widget's own timer or an iced/crossterm event must end
     // needs that source counted first. (harness-wall-deadlines-gui-tui-01)
-    /// Drain and `before_view` in a loop until `pred(self)` holds;
-    /// returns an error when `within` elapses.
-    async fn wait_until<F>(
-        &mut self,
-        mut pred: F,
-        within: Duration,
-        why: &str,
-    ) -> Result<()>
+    // 2026-11-14 claude: The GUI and TUI harnesses wait with no short wall deadline:
+    // GuiTestHarness::wait_until, deliver_batch and TuiTestHarness::next_update/wait_for
+    // take no duration, race GXHandle::wait_settled (a settle with the wait unmet fails at
+    // once, naming it) and are bounded only by testing::HANG_GUARD; examples_test's
+    // FIRST_FRAME is gone. A wait on a widget's own spawned task (the data table's
+    // dispatch task) never settles, so it is only hang-guarded. No pin can fail for a load
+    // flake; the check is that the suites pass, and a wait nothing can end now fails as
+    // soon as the runtime settles.
+    /// Drain and `before_view` until `pred(self)` holds. The runtime
+    /// settling with `pred` still false fails at once, since nothing
+    /// outstanding can bring what it waits for; otherwise the wait lasts as
+    /// long as the program's work does under the box's load, up to
+    /// [`testing::HANG_GUARD`].
+    async fn wait_until<F>(&mut self, mut pred: F, why: &str) -> Result<()>
     where
         F: FnMut(&mut Self) -> bool,
     {
-        let deadline = tokio::time::Instant::now() + within;
+        let gx = self.f.gx.clone();
+        let settled = gx.wait_settled();
+        tokio::pin!(settled);
+        let hang = tokio::time::sleep(testing::HANG_GUARD);
+        tokio::pin!(hang);
         let mut iters = 0;
         loop {
             self.drain().await?;
@@ -332,13 +362,21 @@ impl GuiTestHarness {
             if pred(self) {
                 return Ok(());
             }
-            if tokio::time::Instant::now() >= deadline {
-                bail!(
-                    "wait_until timed out after {iters} iterations / {:?}: {why}",
-                    within,
-                );
+            tokio::select! {
+                r = &mut settled => {
+                    r.context("the runtime died")?;
+                    self.drain().await?;
+                    self.before_view();
+                    if pred(self) {
+                        return Ok(());
+                    }
+                    bail!("the runtime settled after {iters} iterations without: {why}")
+                }
+                () = &mut hang => {
+                    bail!("no {why} after {iters} iterations in {:?}", testing::HANG_GUARD)
+                }
+                () = tokio::time::sleep(Duration::from_millis(10)) => (),
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 

@@ -35,6 +35,11 @@ How `run!` fixtures run, and what a landing owes.
   load makes it take. `Collect::Settled` takes every value until the
   settle, under the same guard. A test takes no deadline of its own for
   a value that must come; a wall window is only for what must not come.
+  The GUI and TUI harnesses (`GuiTestHarness::wait_until`/`deliver_batch`,
+  `TuiTestHarness::next_update`/`wait_for`) wait the same way, with no
+  duration argument: a settle with the wait unmet fails at once, and a
+  widget's own spawned task (the data table's dispatch task) keeps the
+  runtime from settling, leaving `HANG_GUARD` its only limit.
   `Collect::Quiet` also ends a collection at the first gap of its window
   after a value, for a program with a standing source that never
   settles; a program that ends by itself collects `Settled`. The window
