@@ -2891,3 +2891,66 @@ run!(body_deciding_a_member_a_later_union_drops, r#"{
         (a, _) => a
     }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+// The same under a written test, in an or-pattern, and where the union is
+// built in a later arm's body or in a function an arm builds.
+run!(written_test_deciding_a_member_the_result_union_drops_refused, r#"{
+    let z = never();
+    let k: [i64, null] = 1;
+    let u = select k { i64 as n => {a: n}, _ => {a: z} };
+    let r = select u { {a: i64} as {a: 7} => u, v => u };
+    r.a
+}"#, refused("{ a: i64 } as { a: 7 } tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(written_test_over_an_annotated_member_the_result_union_drops, r#"{
+    let z: i64 = never();
+    let k: [i64, null] = 1;
+    let u = select k { i64 as n => {a: n}, _ => {a: z} };
+    let r = select u { {a: i64} as {a: 7} => u, v => u };
+    r.a
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+run!(or_test_deciding_a_member_the_result_union_drops_refused, r#"{
+    let z = never();
+    let k: [i64, null] = 1;
+    let u = select k { i64 as n => {a: n}, _ => {a: z} };
+    let r = select u { {a: 7} | {a: 8} => u, v => u };
+    r.a
+}"#, refused("{ a: 7 } | { a: 8 } tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(test_deciding_a_member_a_later_arm_body_drops_refused, r#"{
+    let z = never();
+    let k: [i64, null] = 1;
+    let u = select k { i64 as n => {a: n}, _ => {a: z} };
+    select u {
+        {a: 7} => 0,
+        v => { let w = select k { null as _ => u, _ => u }; w.a }
+    }
+}"#, refused("{ a: 7 } tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+run!(test_deciding_a_member_a_function_in_its_arm_drops_refused, r#"{
+    let z = never();
+    let k: [i64, null] = 1;
+    let u = select k { i64 as n => {a: n}, _ => {a: z} };
+    select u {
+        {a: 7} => { let g = || select k { null as _ => u, _ => u }; g().a },
+        v => 0
+    }
+}"#, refused("{ a: 7 } tests a value of 'z, a type not decided at this select"); FuseExpect::None);
+
+// A pattern that only takes a part apart decides its shape: the union a
+// body then drops a member from is judged with that decision, as before.
+run!(take_apart_deciding_a_part_a_body_union_drops, r#"{
+    let f = |z, y| {
+        let k: [i64, null] = 1;
+        let u = select k { i64 as n => (z, 0), _ => (y, 0) };
+        select u {
+            ((p, q), _) => {
+                let s: i64 = p + q;
+                let w = select k { null as _ => u, _ => u };
+                s + w.1
+            }
+        }
+    };
+    f((1, 2), (3, 4))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
