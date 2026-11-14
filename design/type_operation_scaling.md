@@ -410,6 +410,19 @@ can keep the original member slice.
   `typ::contains::tests::a_walk_over_held_cells_keeps_its_verdicts`
   (40 000 steps, 11.6 M with no memo), `lang::types::
   two_members_of_one_head_over_a_recursive_typedef_check`.
+- A choice between a union's members walks each member that admits the
+  type on copies (`Type::take`), and each such walk takes the
+  applications below it, so under a hold, where two members of one head
+  over a recursive definition are a choice at every application, the
+  walks on copies take every path through them. A commit that can
+  decide no cell of the member or the type (`contains::decides_no_cell`)
+  is the probe that admitted the member, which then takes the type with
+  no walk on copies. Pin `typ::contains::tests::
+  a_choice_no_commit_can_decide_walks_no_copies` (224 k and 76 k steps;
+  5.3 M and 832 k with the walks). A choice whose commit decides a cell,
+  a decided member taking an undecided type between two definitions with
+  one body, walks each member on copies still: over three parameters,
+  568 walks taking 2.9 M of a commit's 4.0 M steps.
 - The trial of a union with a bare open member starts with the pairs
   its walk is expanding in progress, on its copies
   (`ContainsHist::seed`), so it meets their recursion by assumption. A

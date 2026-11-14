@@ -1182,6 +1182,31 @@ fn undecided(t: &Type) -> bool {
     find_open_cell(t, true, &mut |tv| !tv.is_rigid()).is_some()
 }
 
+/// Whether a commit can decide no cell `t` reaches: each open cell is held
+/// rigid, and so is each open cell their conjuncts and lower bounds reach.
+fn decides_no_cell(t: &Type) -> bool {
+    let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+    let mut seen: LPooled<AddrSet> = LPooled::take();
+    let reach = |t: &Type, todo: &mut Vec<TVar>| {
+        find_open_cell(t, true, &mut |tv| {
+            todo.push(tv.clone());
+            false
+        });
+    };
+    reach(t, &mut todo);
+    while let Some(tv) = todo.pop() {
+        if !tv.is_rigid() {
+            return false;
+        }
+        if seen.insert(tv.cell_addr()) {
+            for c in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
+                reach(c, &mut todo)
+            }
+        }
+    }
+    true
+}
+
 /// A variable whose chain of bindings ends open.
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
@@ -4542,16 +4567,17 @@ impl Type {
     /// probe judges each part apart, so it admits `fn(i: 'c) -> 'c` into
     /// `fn(path: string) -> i64`, which a commit refuses after binding 'c:
     /// where another member admits `t` too, a member takes it only once it
-    /// holds on copies. A member that holds it as it stands, deciding no
-    /// cell of the union or of `t`, takes it first; else the one member
-    /// that holds it, in the first tier where one does. Two that could
-    /// are a choice only the order of the check's relations would make
-    /// ([`AmbiguousMember`]), and so is a decided member beside another
-    /// for a type a pre-unification meets undecided; a walk on copies
-    /// takes the first, and a
-    /// trial commits its members directly: a trial nested in each would
-    /// double the walk at every level of a union typedef chain. Where none
-    /// holds it, the last admitted answers.
+    /// holds on copies, unless a commit can decide no cell of either
+    /// ([`decides_no_cell`]): that commit is the probe that admitted it. A
+    /// member that holds it as it stands, deciding no cell of the union
+    /// or of `t`, takes it first; else the one member that holds it, in
+    /// the first tier where one does. Two that could are a choice only the
+    /// order of the check's relations would make ([`AmbiguousMember`]),
+    /// and so is a decided member beside another for a type a
+    /// pre-unification meets undecided; a walk on copies takes the first,
+    /// and a trial commits its members directly: a trial nested in each
+    /// would double the walk at every level of a union typedef chain.
+    /// Where none holds it, the last admitted answers.
     fn take(
         s: &[Type],
         tiers: [&[&Type]; 2],
@@ -4592,6 +4618,7 @@ impl Type {
                 }
             }
         }
+        let mut fixed_t = None;
         for tier in tiers {
             let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
             for m in tier.iter().copied() {
@@ -4625,9 +4652,31 @@ impl Type {
                 // ~/ptmp/cr29/scratch/r23/23c/oact/{s2311_0140_two,s2311_0224_two,
                 // s2311_0289_two}.gx, generator ~/ptmp/cr29/scratch/r20/20c/x1/gen2.py
                 // (MODE=perm, seed 2311) (take-member-trials-01)
-                let holds = on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
-                    m.contains_int(flags, env, trial, &t)
-                })?;
+                // 2026-11-13 claude: Partial. A choice whose commit can decide no cell of
+                // the member or the type (contains::decides_no_cell: every open cell held
+                // rigid, and every one their conjuncts and lower bounds reach) is given to
+                // the first member the probe admits, with no walk on copies: all 1516 walks
+                // of the lead probe were such, under a member taking a type as it stands.
+                // Pin typ::contains::tests::a_choice_no_commit_can_decide_walks_no_copies
+                // (5.30M -> 224k and 832k -> 76k steps; fails with the rule undone).
+                // --no-cache --check instructions, base-r24 -> lane: s2311_0140_two 22.25G
+                // -> 1.65G, s2311_0289_two 4.45G -> 1.08G, s2311_0224_two 23.56G -> 17.84G.
+                // What stands is 0224's: decided members (F0's two Error members) taking an
+                // undecided type in the walk itself, 568 walks on copies taking 2.9M of the
+                // commit's 4.0M steps; those commits decide a cell, so each needs its
+                // trial. The untried memo above would still ask 364 of the 568 even keyed
+                // by the pair's text with no validity check, and one walk reporting every
+                // member's verdict at most halves them: each walk takes the applications
+                // below on fresh copies. What would end it: a commit tried in place and
+                // undone (a trail of writes) instead of on copies, or the placement a trial
+                // allows taking a choice between decided members as its trial did. Probes
+                // and generators: ~/ptmp/cr29/scratch/r24/24f/tmt/ (README).
+                let fixed = decides_no_cell(m)
+                    && *fixed_t.get_or_insert_with(|| decides_no_cell(t));
+                let holds = fixed
+                    || on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
+                        m.contains_int(flags, env, trial, &t)
+                    })?;
                 if !holds {
                     continue;
                 }
@@ -6537,6 +6586,40 @@ mod tests {
         held.check_contains(&env, &open).unwrap();
         let steps = CONTAINS_STEPS.with(|n| n.get());
         assert!(steps <= 40_000, "a commit took {steps} steps");
+    }
+
+    // A member takes a type as it stands in a walk with every cell held
+    // rigid, where two members of one head over a recursive definition
+    // are a choice at every application: a commit there can decide no
+    // cell, so the probe that admitted a member answers, and a walk on
+    // copies of each member walks the applications below at every choice.
+    #[test]
+    fn a_choice_no_commit_can_decide_walks_no_copies() {
+        let cases = [
+            (
+                "[Error<D<'a0, 'a1, null>>, Error<D<'a1, 'a0, 'a2>>, `Y(D<'a1, 'a2, 'a0>)]",
+                "fn(z: 'q0, k: D<'q0, 'q1, 'q2>) -> 'q0",
+                "fn(z: Any, k: F<Any, i64, Any>) -> Any",
+                400_000,
+            ),
+            (
+                "[`Y(D<null, 'a1, 'a2>), Error<D<'a1, 'a0, 'a2>>, `Y(D<'a1, 'a2, 'a0>)]",
+                "fn(k: (D<'q0, 'q1, 'q2>, D<'q1, 'q1, 'q2>), z: 'q0) -> 'q0",
+                "fn(k: (F<i64, i64, i64>, F<Any, i64, Any>), z: string) -> string",
+                150_000,
+            ),
+        ];
+        for (body, open, held, most) in cases {
+            let twin = body.replace("D<", "F<");
+            let defs = [("D<'a0, 'a1, 'a2>", body), ("F<'a0, 'a1, 'a2>", &*twin)];
+            let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+            let open = at_root(&env, open);
+            let held = at_root(&env, held);
+            CONTAINS_STEPS.with(|n| n.set(0));
+            held.check_contains(&env, &open).unwrap();
+            let steps = CONTAINS_STEPS.with(|n| n.get());
+            assert!(steps <= most, "{body}: a commit took {steps} steps");
+        }
     }
 
     // The trial gives the first array to `Array<'a>`, deciding 'a, and
