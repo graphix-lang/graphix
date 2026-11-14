@@ -5249,54 +5249,6 @@ impl Type {
                 }
             })
         }
-        // XCR claude for claude: [bug/high] A bind beside another arm's literal at one
-        // part of a variant's payload does not hold the literal's type, and the check
-        // accepts a use of the bind that the literal's values reach: `let f = |s| select
-        // s { `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 }; f(`A(1, "x"))` checks as
-        // `fn(s: `A(i64, [i64, string])) -> i64` and runs `a + 1` over a string (it
-        // prints 1); `` `A(1, a) => a, `A(2, true) => 0, _ => 1 `` called with `` `A(1,
-        // false) `` dies fused ("runtime did not respond"; --no-fusion prints false), and
-        // `` `A(1, a) => a, `A(2, null) => 0, _ => 1 `` types `f(`A(1, null)) + 1` as
-        // i64. GRAPHIX_NO_SUBST=1 refuses each. The tuple forms hold the literal's type
-        // in the bind (`(1, a) => a + 1, (2, "x") => 0, _ => 0` is refused, "cannot
-        // compute string + i64"). The arms' predicates join as `` `A(i64, ['a, string])
-        // ``, and this function takes the cells of that union only. Tried: every member
-        // of the union to the bind (Type::narrow_per_member over all of them). It
-        // refuses the three above, but also `` `A(null) => 0, `A(a) => a + 1 ``, ``
-        // `A(`X) => 0, `A(a) => a `` called with `` `A(`Y) `` and `` `Ok(null) =>
-        // "none", `Ok(v) => v, `Err(e) => e ``, which are right today because the
-        // literal's arm, unguarded, takes every value of its type before the bind's arm.
-        // Nothing tells the narrowing so: what reaches the second arm is still ``
-        // `A([null, 'a]) ``, since Type::diff subtracts a variant only by the same type
-        // (diff-product-held-01). What would close it: the difference of two variants
-        // of one tag that differ in one part, taken at that part (`` `A([null, 'a]) ``
-        // less `` `A(null) `` is `` `A('a) ``), and then every member of the union
-        // that still reaches the arm goes to its bind. That difference also narrows a
-        // bind under an annotated payload (`|s: `A([i64, null])| select s { `A(null) =>
-        // 0, `A(a) => a + 1 }`, refused today, "cannot compute [i64, null] + i64"),
-        // which is a change of the language. base-r24 alike. probes:
-        // ~/ptmp/cr29/scratch/r24/24b/vpb/lit.txt (run with rb.sh)
-        // (payload-bind-beside-literal-01)
-        // 2026-11-14 claude: Fixed: Type::binds_beside gives the bind every member of the
-        // union at its part, not its cells alone, and before an arm narrows
-        // node::select::uncovered_parts leaves out of that union each member that is no
-        // cell whose whole value there (the member's other parts as they reach the arm)
-        // the earlier unguarded arms cover (Reach::covered), so `A(null) => 0, `A(a) => a
-        // + 1, `A(`X) => 0, `A(a) => a and the `Ok(null) select still check and run. The
-        // CR's three probes are refused at the definition ('cannot compute string + i64',
-        // 'cannot compute [i64, null] + i64'), the bool one prints false fused; the
-        // annotated-payload form is unchanged (no cell there, Type::diff untouched).
-        // Newly refused and right at run time before: an earlier arm that tests a literal
-        // at another part covers nothing, so `A(1, null) => 0, `A(1, a) => a + 1, _ => 5
-        // is refused 'cannot compute null + i64', as its tuple twin (0, null) => 0, (0,
-        // a) => a + 1 is on base-r25. Pins, the five refusals failing in all four modes
-        // without the fix (the bool and literal twins in jit):
-        // lang::select_undecided::payload_bind_beside_{a_later_literal,an_earlier_literal,a_null,a_literal_in_a_nested_payload,a_guarded_null}_refused,
-        // payload_bind_beside_{a_literal,a_bool}_holds_it;
-        // payload_bind_behind_arms_that_take_its_members holds the valid forms; unit test
-        // normalize::narrowing_a_cell_of_a_payload_union_makes_its_cells_one now asserts
-        // the non-cell member reaches the cell. Census 0/0. probes:
-        // ~/ptmp/cr29/scratch/r25/25b/pbl/
         let Type::TVar(c) = pred else { return None };
         let c = c.open_cell()?;
         let t @ Type::Set(_) = self.deref_cloned()? else { return None };
