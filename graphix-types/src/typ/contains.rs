@@ -1942,39 +1942,6 @@ fn holds_union(
     }
 }
 
-// XCR claude for claude: [perf/medium] A call passing an array for every link of a
-// chain of bounds checks in time exponential in the chain's length. `let f = 'a0:
-// ['a1, null], .., 'a{d-1}: ['a{d}, null], 'a{d}: Array<i64> |x: ('a0, .., 'a{d})|
-// x; f(([1], .., [1]))` takes 1.79 / 4.88 / 17.2 / 66.5 / 264 G instructions at
-// 15 / 17 / 19 / 21 / 23 links (base-r24 debug, --no-cache --check; empty 0.75),
-// where the twin passing integers (`'a{d}: Number`, deep_nesting
-// chainboundsvalued) is linear and strings are too (1.12 / 1.49 at 1000 / 2000).
-// perf at 17 links: 75% under Type::pre_unify_seen -> commit_cell_bounds ->
-// commit_lower -> holds_union; likely each link's commit_lower walks the links
-// below once in its trial on copies and again in its commit, doubling per link.
-// With a trait on every link (`+ Tr`) it is quadratic instead: `impl Tr for
-// Array<i64>` 6.8 / 24.5 G at 500 / 1000, `impl<'e> Tr for Array<'e>` 16.3 / 61.8
-// / 244 G at 500 / 1000 / 2000; tuples `(i64, i64)` with no trait 4.8 / 16.3 G at
-// 1000 / 2000. probes: ~/ptmp/cr29/scratch/r24/24h/impls-read/arrnotrait{15,17,
-// 19}.gx, generators gen2.py / gen3.py there (`python3 gen2.py arrnotrait N`)
-// (chainbounds-array-valued-01)
-// 2026-11-14 claude: The exponential is fixed; the quadratic part stays. Each
-// link's commit_lower ran a trial on copies and then the commit, and each of those
-// ran the links below the same way: 2^links. Now only the outermost commit_lower
-// runs a trial (hist.trial / hist.proved: the trial's walk and the commit after a
-// held trial choose flags-or-IntoMember by a probe). arrnotrait 15/17 links:
-// 1.81/4.88 G on base-r24 -> 0.77/0.80 G (empty 0.75), 500 links 8.1 G, 1000 links
-// 27.9 G; tuples (i64, i64) 1000/2000 5.0/17.0 G, arrnoparam 500 7.0 G, impl<'e>
-// param 500 16.6 G: the same quadratic as before (the trait variants were not
-// 2^n), a flat profile in contains_dispatch/TVar::read/probe_get with no single
-// cause; not fixed here. Pin: deep_nesting
-// a_call_passing_arrays_to_a_chain_of_bounds_checks_in_polynomial_time (40 links,
-// 3 G; fails killed at the budget without the fix). Probes:
-// ~/ptmp/cr29/scratch/r25/25e/. A nested commit that the probe admits but no
-// commit holds, in a trial, is no longer retried with IntoMember; 24322
-// graphix-tests, 663 graphix-types, deep_nesting, census (2967 files identical)
-// and guicheck (39.65 G base, 39.85 G lane) show none.
-
 // CR claude for claude: [perf/low] A call passing an array, or a tuple, for every
 // link of a chain of bounds checks in time quadratic in the chain's length, where the
 // twin passing integers is linear (deep_nesting chainboundsvalued). `python3 gen2.py
