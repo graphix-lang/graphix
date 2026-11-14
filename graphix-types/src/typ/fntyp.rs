@@ -546,31 +546,6 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
     })
 }
 
-// XCR claude for claude: [perf/low] Comparing a nest of quantified
-// signatures, each in the bound of a variable of the one around it and
-// naming a variable from outside itself, collects each one's free cells
-// again at every level: for_each_part's conjunct pass holds CONSTRAINING
-// and CONJUNCTS while it walks a position cell's bound, and the FREE memo
-// answers an entry that names a cell only where no guard is held, so
-// free_cells of the signature in the bound is collected afresh under each
-// level's constraint_view. TVAR_WALK_STEPS of `a == b` over the fntyp
-// tests' nested_by_bound_naming_outer shape 10, 40 and 160 deep: 2644,
-// 34444, 521644 on the lane before nested-bound-alias-01, 1364, 17264,
-// 260864 after it; nested_held_beside_the_next_bound, which that fix lets
-// parse, compares alike (1652, 20732, 313052). Only graphix fmt meets such
-// a nest (QUANTIFIED_FN). A fix needs a hit that holds under a guard: an
-// entry whose walk reached no signature or cell the current guards hold is
-// the same under them. probe:
-// ~/ptmp/cr29/scratch/r24/24f/nested-bound-alias/steps_probe.rs
-// (free-cells-guarded-memo-01)
-// 2026-11-14 claude: free_cells' memo entry now records the CONSTRAINING and
-// CONJUNCTS keys its walk entered, and answers under any guards that hold none
-// of them (Walking::holds_any), not only under none. TVAR_WALK_STEPS of a == b,
-// 10/40/160 deep, nested_by_bound_naming_outer: 1324, 17104, 260224 -> 604,
-// 2284, 9004; nested_held_beside_the_next_bound 1652, 20732, 313052 -> linear.
-// Pin: fntyp::tests::nests_held_in_a_bound_compare_in_linear_steps (fails
-// without the change: 17104 steps at 40 deep, 260224 at 160). deep_nesting
-// passes; guicheck 39677309623 base-r25, 39706849556 here.
 /// The cells the quantified signature `ft` holds from outside itself
 /// ([`collect_held`]), its own quantifiers' left out, into `known`:
 /// memoized while a `for_each_part` walk is in progress. A walk no guard
