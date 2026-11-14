@@ -729,50 +729,6 @@ impl Reach {
             // normalizes a union of the bound cells (Kept::merge_with, Identity::same),
             // quadratic per arm. probes:
             // ~/ptmp/cr29/scratch/r25/25b/pbl/bench/{s8_100,s8_200,t8_100,t8_200}.gx, m.sh
-            // XCR claude for claude: [bug/low] Two undecided values that meet in one
-            // part of a variant scrutinee are made one type by arms that bind that
-            // part beside literals, and the refusal names no annotation: `let f = |x,
-            // y, c| { let u = select c { true => x, false => y }; select `A(1, u) {
-            // `A(1, a) => "[a]", `A(2, a) => "[a]", _ => "" } }; f(1, "s", true)` says
-            // "type mismatch i64 does not contain string", `f` being `fn(x: 'a, y: 'a,
-            // c: bool) -> string`. The tuple and struct forms (`select (1, u) { (1, a)
-            // => .., (2, a) => .. }`) check as `fn(x: 'a, y: 'b, c: bool)` and print
-            // "1", and so do `|x: 'a, y: 'b, c: bool|` and the select with `` `A(_, a)
-            // `` for its second arm. Two lets over `never()` written into one binding
-            // (`v <- `A(1, x); v <- `A(2, y)`, then `x <- t ~ 1; y <- t ~ "s"`) say "y
-            // is i64, inferred from an earlier use, and cannot hold string; declare y:
-            // [i64, string]", which runs when written. base-r24 refused each too, by
-            // another message ("i64 could go to '_N or '_N of the union ['_N, '_N],
-            // which nothing has decided .. write the type of the parameter"), `f`
-            // being `fn(x: ['_N, '_N], y: ['_N, '_N], c: bool) -> string`: the settle
-            // below gave each of the scrutinee's two cells the union of the arms' two,
-            // where a tuple's members each take the scrutinee's union whole, and since
-            // variant-payload-bind-cells-01 the arms' cells are one (Type::binds_beside),
-            // so the scrutinee's are. Not traced beyond the types printed. What would
-            // likely close it: a part of the arms' joined predicate that is only their
-            // binds decides nothing of the scrutinee's part here, and each arm's bind
-            // takes that part as it stands when the arm narrows. probes:
-            // ~/ptmp/cr29/scratch/r24/24b/vpb-rev/{r2.txt,r6.txt} (run with rb.sh)
-            // (outer-cells-take-arm-cells-01)
-            // 2026-11-14 claude: Select's settle (Reach::new, the
-            // scrutinee-is-no-open-cell branch) now contains the scrutinee in the arms'
-            // joined predicate with each tuple, struct or variant part that is a union of
-            // two or more arm binds and nothing else made Any (Type::binds_apart):
-            // containing the scrutinee's part in ['a1, 'a2] committed both of an
-            // undecided union's members to the first cell, so x and y became one type.
-            // Each arm's bind takes the part as it stands when it narrows. The variant
-            // forms of the CR (a let over a select, array::map over built variants, the
-            // inline select) check as fn(x: 'a, y: 'b, c: bool) and print ["1", "s"].
-            // Pins
-            // lang::select::arms_binding_one_variant_part_leave_two_undecided_values_apart
-            // (fails in all four modes without binds_apart) and
-            // arms_binding_one_variant_part_used_as_one_type_refuse_another_value (the
-            // sound twin: a+1 over a string is still refused). Not closed, and not this
-            // select's: two lets over never() written into one binding (v <- A(1, x); v
-            // <- A(2, y)) are refused 'y is i64, inferred from an earlier use .. declare
-            // y' with no select at all (the tuple twin v <- (1, x); v <- (2, y) alike),
-            // so that refusal names its annotation and stands. probes
-            // ~/ptmp/cr29/scratch/r25/25c/outer/
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let gates: SmallVec<[_; 2]> =
