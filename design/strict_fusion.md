@@ -21,7 +21,9 @@ referent, `CompileCtx::var_written`) is state, kept at a wake
 (`sleep_and_wake.md`), so it never becomes a kernel local: discovery
 refuses a region holding one (`lowering::walk_node_for_builtin_calls`),
 also where the write is in a lambda or a statement the kernel would not
-emit. Pins: `findings/wake-mut-referent-nov2026/`.
+emit, and in a collection callback the loop runs inline, the loop's own
+body's region included (`fusion::for_each_emitted_node`). Pins:
+`findings/wake-mut-referent-nov2026/`.
 
 The one effect a kernel holds is an `Effect::Io` call (`dbg`, `log`,
 `print`, `println`), so debugging a kernel does not change it. Its

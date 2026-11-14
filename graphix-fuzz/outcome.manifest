@@ -571,6 +571,7 @@ trace	wake-connect-target-sep2026/02_arm_value.gx
 trace	wake-mut-referent-nov2026/00_dead_reference.gx
 trace	wake-mut-referent-nov2026/01_function_body.gx
 trace	wake-mut-referent-nov2026/02_written_in_a_lambda.gx
+trace	wake-mut-referent-nov2026/03_map_callback.gx
 trace	wake-outside-nov2026/00_moved_capture_routes_a_kernel.gx
 trace	wake-outside-nov2026/01_moved_formal_under_an_operator.gx
 trace	wake-outside-nov2026/02_moved_array_through_a_reference.gx

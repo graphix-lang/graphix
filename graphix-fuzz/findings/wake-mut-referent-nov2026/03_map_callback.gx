@@ -1,0 +1,4 @@
+// The same written `let` in a collection callback, whose body the loop's
+// kernel runs inline where the loop is a function's own body.
+// Expected (both engines): ([1, 2], 100) from c = 6 on.
+{ let c = 0; c <- select c { k if k < 8 => k + 1, _ => never() }; let sel = select c { 3 => false, 4 => false, 5 => false, _ => true }; let inp = 0; inp <- select c { 3 => c ~ 100, _ => never() }; let inner = select sel { true => (array::map([1, 2], |e| { let x = inp + e; `U8(&mut x); x }), inp), false => ([-1], -1) }; inner }

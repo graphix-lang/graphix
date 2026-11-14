@@ -1294,6 +1294,16 @@ pub(crate) enum Typing {
     Restored,
 }
 
+/// The callback instance whose body the collection loop at `node` (a
+/// collection-bodied lambda's body) runs, which a fused loop emits inline.
+pub(crate) fn loop_callback<R: Rt>(node: &Node<R>) -> Option<&GXLambda<R>> {
+    match node.view() {
+        NodeView::MapQ(map) => map.callback(),
+        NodeView::FoldQ(fold) => fold.callback(),
+        _ => None,
+    }
+}
+
 impl<R: Rt> GXLambda<R> {
     /// The definition's id, shared by every instance of it.
     pub fn id(&self) -> LambdaId {
@@ -1321,11 +1331,7 @@ impl<R: Rt> GXLambda<R> {
     /// The callback instance of a collection-bodied lambda, whose body a
     /// fused loop emits inline.
     pub(crate) fn inline_callback(&self) -> Option<&GXLambda<R>> {
-        match self.body.view() {
-            NodeView::MapQ(map) => map.callback(),
-            NodeView::FoldQ(fold) => fold.callback(),
-            _ => None,
-        }
+        loop_callback(&self.body)
     }
 
     /// Argument-binding patterns, parallel to `self.typ().args`.

@@ -30,7 +30,7 @@ use crate::{
         self,
         callsite::CallNode,
         genn,
-        lambda::{DefOrigin, GXLambda},
+        lambda::{DefOrigin, GXLambda, loop_callback},
     },
     profile::{self, Phase},
     typ::{Brief, FnType, Type},
@@ -962,17 +962,26 @@ pub(crate) fn for_each_emitted_node_in<'a, R: Rt>(
         let mut inline: LPooled<Vec<(&'a Node<R>, Owners<'a, R>)>> = LPooled::take();
         for_each_node(node, &mut |node| {
             f(node, &owners);
-            let NodeView::CallSite(callsite) = node.view() else { return };
-            let Some(ApplyView::Lambda(lambda)) = callsite.resolved_apply() else {
-                return;
-            };
-            if let Some(callback) = lambda.inline_callback() {
+            if let Some(callback) = inline_callback(node) {
                 let mut held = owners.clone();
                 held.push(callback);
                 inline.push((callback.body(), held));
             }
         });
         stack.extend(inline.drain(..));
+    }
+}
+
+/// The collection callback a kernel emitting `node` runs inline: the
+/// loop's at a region rooted at a collection-bodied lambda's body, or the
+/// loop's of the lambda a call resolves to.
+fn inline_callback<'a, R: Rt>(node: &'a Node<R>) -> Option<&'a GXLambda<R>> {
+    match node.view() {
+        NodeView::CallSite(callsite) => match callsite.resolved_apply()? {
+            ApplyView::Lambda(lambda) => lambda.inline_callback(),
+            _ => None,
+        },
+        _ => loop_callback(node),
     }
 }
 

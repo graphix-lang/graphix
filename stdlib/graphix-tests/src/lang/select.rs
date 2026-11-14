@@ -3925,6 +3925,29 @@ run!(
     FuseExpect::Jit
 );
 
+// The same in a collection callback, whose body the loop's kernel runs
+// inline: each slot's `x` keeps the 1 and 2 it held.
+const WAKE_KEEPS_A_MUT_REFERENT_IN_A_CALLBACK: &str = r#"
+{
+  let s = array::iter([0, 1, 4, 2, 3]);
+  let inp = 0;
+  inp <- select s { 1 => s ~ 100, _ => never() };
+  let awake = select s { 1 | 4 => false, _ => true };
+  let inner = select awake {
+    true => (array::map([1, 2], |e| { let x = inp + e; `U8(&mut x); x }), inp),
+    false => ([-1, -1], -1)
+  };
+  select s { 3 => s ~ inner.0[0]$ * 10000 + inner.0[1]$ * 1000 + inner.1, _ => never() }
+}
+"#;
+
+run!(
+    wake_keeps_a_mut_referent_in_a_callback,
+    WAKE_KEEPS_A_MUT_REFERENT_IN_A_CALLBACK,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(12100)));
+    FuseExpect::Jit
+);
+
 // A reference cell born in a sleepable arm delivers the cycle it is
 // born: the deref fires and `dbg` runs.
 // findings/byref-wake-view-sep2026/
