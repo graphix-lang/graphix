@@ -1730,12 +1730,8 @@ impl<R: Rt> Module<R> {
         let _aside =
             StaticCallees::set_aside(&ctx.static_callees, holders.take_holders(), vars);
         // `names` is a global registry: a recompile must scrub the
-        // previous source's imports or they accumulate, and the replaced
-        // body keeps its own
-        if let Some(body) = own_load(&self.base, env) {
-            body.retire(ctx.env.names_under(&self.scope.lexical))
-        }
-        // CR claude for claude: [bug/medium] The import tables are keyed by scope
+        // previous source's imports or they accumulate
+        // XCR claude for claude: [bug/medium] The import tables are keyed by scope
         // path, and every instance of a function that declares a dynamic module
         // names the module's scope alike, so one instance's load clears the tables
         // another instance's body still reads. A function of the first instance's
@@ -1753,9 +1749,21 @@ impl<R: Rt> Module<R> {
         // a `use` that a late compile adds in a block below must still be found.
         // probe: ~/ptmp/cr29/scratch/r23/23e/retired-body-trait-dispatch-01/rev/i2.gx,
         // `graphix --no-cache` (instance-import-tables-01)
+        // 2026-11-13 claude: A load keeps the import tables at its module's scope and
+        // below from the end of its own compile (LoadedBody::keep_names in
+        // Module::compile_source), and a scope's table is the innermost load's around
+        // it (LoadedBody::names_at; the registry's while that load compiles), so
+        // another instance's load scrubs only the registry. Nothing a later compile of
+        // the load's functions imports is new: an instrumented run of graphix-tests
+        // saw no import or glob absent from a kept table. i2.gx prints late=[16, 17].
+        // Pins, each failing in all four modes with the fix undone:
+        // lang::modules::a_function_saved_past_another_instances_load_keeps_its_imports,
+        // .._reads_its_own_import, .._keeps_a_blocks_imports,
+        // a_function_made_before_another_instances_load_keeps_a_blocks_imports.
         ctx.env.clear_names_under(&self.scope.lexical);
         let env = self.env.clone();
-        self.env.body = Some(LoadedBody::under(env.body.clone()));
+        let load = LoadedBody::under(env.body.clone(), self.scope.lexical.clone());
+        self.env.body = Some(load.clone());
         let sig_env = match &self.body {
             Body::Static => None,
             Body::Dynamic { sig_env, .. } => Some(sig_env.clone()),
@@ -1794,6 +1802,8 @@ impl<R: Rt> Module<R> {
                 *sig_env = saved_sig;
             }
             saved.restore(ctx);
+        } else {
+            load.keep_names(ctx.env.names_under(&self.scope.lexical))
         }
         res
     }
@@ -2251,6 +2261,14 @@ impl<R: Rt> Update<R> for Module<R> {
         // every instance of a function names its body's scopes alike
         // (instance-import-tables-01). To fix with that one: a table goes with
         // the last view that names its scope. (dropped-import-tables-01)
+        // 2026-11-13 claude: Since instance-import-tables-01 a load reads its own
+        // tables (LoadedBody::keep_names, from the end of its compile), never the
+        // registry's, at every scope it registered: a function that outlives a
+        // dynamic module no longer needs the registry's tables under the module's
+        // scope, so Module::delete of a dynamic module could scrub them
+        // (Env::clear_names_under) once no other instance's load is compiling. A
+        // static module's and a dropped expression's blocks still read the
+        // registry.
     }
 
     fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {

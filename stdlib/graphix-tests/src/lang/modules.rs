@@ -2406,6 +2406,110 @@ run!(
     FuseExpect::Jit
 );
 
+/// Two slots of a function whose body declares a dynamic module, the
+/// first loading `first` and the second `second`; the first slot's `make`
+/// is saved and first called after the second slot's load.
+fn a_function_saved_past_another_instances_load(first: &str, second: &str) -> String {
+    format!(
+        r#"
+let ep = 0;
+ep <- select ep {{ n if n < 14 => n + 1, _ => never() }};
+let srcs = ["{first}", "{second}"];
+let xs0: Array<i64> = never();
+xs0 <- select ep {{ 2 => [0], 6 => [0, 1], _ => never() }};
+let f = |i: i64| {{
+    let s = mod d dynamic {{
+        sandbox unrestricted;
+        sig {{ val make: fn(x: i64) -> i64 }};
+        source once(i) ~ srcs[i]$
+    }};
+    d::make
+}};
+let slots = array::map(xs0, |i| f(i));
+let saved: fn(x: i64) -> i64 = never();
+saved <- select ep {{ 4 => ep ~ slots[0]$, _ => never() }};
+let other = slots[1]$;
+let xs: Array<i64> = never();
+xs <- select ep {{ 10 => [0, 1], _ => never() }};
+let late = array::map(xs, |x| saved(x + ep));
+let result = select ep {{ 14 => ep ~ "[late] [other(ep)]", _ => never() }}
+"#
+    )
+}
+
+// What one instance's body imported is in scope for its `make` after
+// another instance of the function loads a source that imports nothing.
+run!(
+    a_function_saved_past_another_instances_load_keeps_its_imports,
+    is(Value::String("[16, 17] 14000".into())),
+    "/test.gx" => a_function_saved_past_another_instances_load(
+        r#"use str::len; let make = |x: i64| len(\"ab\") + x"#,
+        "let make = |x: i64| x * 1000"
+    );
+    FuseExpect::Jit
+);
+
+// Each instance's body reads the `len` its own source imports.
+run!(
+    a_function_saved_past_another_instances_load_reads_its_own_import,
+    is(Value::String("[16, 17] 14003".into())),
+    "/test.gx" => a_function_saved_past_another_instances_load(
+        r#"use str::len; let make = |x: i64| len(\"ab\") + x"#,
+        r"use array::len; let make = |x: i64| len(\[1, 2, 3\]) + x * 1000"
+    );
+    FuseExpect::Jit
+);
+
+// A function written in a block of the body reads the block's import.
+run!(
+    a_function_saved_past_another_instances_load_keeps_a_blocks_imports,
+    is(Value::String("[16, 17] 14000".into())),
+    "/test.gx" => a_function_saved_past_another_instances_load(
+        r#"let make = { use str::len; |x: i64| len(\"ab\") + x }"#,
+        "let make = |x: i64| x * 1000"
+    );
+    FuseExpect::Jit
+);
+
+// A function made by a call of the saved one, between the two loads, and
+// first called after the second reads the import of the block it is
+// written in.
+run!(
+    a_function_made_before_another_instances_load_keeps_a_blocks_imports,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let srcs = [
+        r#"let mk = |k: i64| { use str::len; |x: i64| len("ab") + x + k }"#,
+        "let mk = |k: i64| |x: i64| x * 1000 + k"
+    ];
+    let xs0: Array<i64> = never();
+    xs0 <- select ep { 2 => [0], 6 => [0, 1], _ => never() };
+    let f = |i: i64| {
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val mk: fn(k: i64) -> fn(x: i64) -> i64 };
+            source once(i) ~ srcs[i]$
+        };
+        d::mk
+    };
+    let slots = array::map(xs0, |i| f(i));
+    let saved: fn(k: i64) -> fn(x: i64) -> i64 = never();
+    saved <- select ep { 4 => ep ~ slots[0]$, _ => never() };
+    let g: fn(x: i64) -> i64 = never();
+    g <- select ep { 5 => ep ~ saved(100), _ => never() };
+    let xs: Array<i64> = never();
+    xs <- select ep { 10 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| g(x + ep));
+    select ep { 14 => ep ~ late, _ => never() }
+}"##,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => a[..] == [Value::I64(116), Value::I64(117)],
+        _ => false,
+    };
+    FuseExpect::Jit
+);
+
 // A dynamic module declared in a loaded body resolves the names its own
 // source imports, from its first load on.
 run!(

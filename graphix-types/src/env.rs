@@ -888,13 +888,17 @@ impl Lexical {
 /// What one load of a dynamic module's source registered, shared by the
 /// lexical view of every definition made in it. The registries name one
 /// trait record, one impl of a trait for a type and one import table a
-/// scope, and a reload gives each to the source that replaces this one;
-/// a function made here still compiles its body against these, whenever
-/// it is first called.
+/// scope; a reload gives each to the source that replaces this one, and
+/// a load of another instance of the module's function takes the import
+/// tables. A function made here still compiles its body against these,
+/// whenever it is first called.
 #[derive(Debug)]
 pub struct LoadedBody {
     /// The load around the module, when it is declared in one.
     outer: Option<Arc<LoadedBody>>,
+    /// The module's scope: the load's import tables are the ones there
+    /// and below.
+    scope: ModPath,
     /// Never held across a call into the env: a name looked up under it
     /// reads it again.
     state: RwLock<LoadedState>,
@@ -906,8 +910,8 @@ struct LoadedState {
     traits: SmallVec<[Arc<TraitDef>; 1]>,
     /// Each impl it writes, by the bindings of the methods it writes.
     impls: SmallVec<[Arc<ImplDef>; 2]>,
-    /// The import tables at its module's scope and below as it left
-    /// them, once a reload replaced it.
+    /// The import tables at its module's scope and below as its compile
+    /// left them.
     names: Option<Arc<Map<ModPath, ScopeNames>>>,
     /// The dispatchers and impl methods the interfaces of the modules
     /// it declares minted. Their traits and impls stand in the
@@ -925,8 +929,8 @@ struct Given {
 }
 
 impl LoadedBody {
-    pub fn under(outer: Option<Arc<LoadedBody>>) -> Arc<Self> {
-        Arc::new(Self { outer, state: RwLock::default() })
+    pub fn under(outer: Option<Arc<LoadedBody>>, scope: ModPath) -> Arc<Self> {
+        Arc::new(Self { outer, scope, state: RwLock::default() })
     }
 
     fn chain(&self) -> impl Iterator<Item = &LoadedBody> {
@@ -961,18 +965,15 @@ impl LoadedBody {
         given.impls.extend(new.impls)
     }
 
-    /// A reload replaced the load: `names` are its import tables.
-    pub fn retire(&self, names: Map<ModPath, ScopeNames>) {
+    /// The load's source compiled: `names` are its import tables.
+    pub fn keep_names(&self, names: Map<ModPath, ScopeNames>) {
         self.state.write().names = Some(Arc::new(names))
     }
 
-    /// The reload that would have replaced the load failed: its import
-    /// tables and what its modules' interfaces declared are the
-    /// registry's again.
+    /// The reload that would have replaced the load failed: what its
+    /// modules' interfaces declared is the registry's again.
     pub fn revive(&self) {
-        let mut st = self.state.write();
-        st.names = None;
-        st.given = None
+        self.state.write().given = None
     }
 
     fn trait_def(&self, id: TraitId) -> Option<Arc<TraitDef>> {
@@ -992,8 +993,11 @@ impl LoadedBody {
         }
     }
 
+    /// The table at `level` of the innermost load around it, once that
+    /// load's compile has ended.
     fn names_at(&self, level: &str) -> Option<ScopeNames> {
-        self.chain().find_map(|b| b.state.read().names.as_ref()?.get(level).cloned())
+        let own = self.chain().find(|b| scope_is_under(level, &b.scope))?;
+        own.state.read().names.as_ref()?.get(level).cloned()
     }
 
     /// The bindings a dispatch in this load can reach: its traits'
@@ -1463,8 +1467,8 @@ impl Env {
         if !inside {
             return Ok(None);
         }
-        let retired = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
-        let Some(sn) = retired.as_ref().or_else(|| self.names.get(level)) else {
+        let kept = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
+        let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) else {
             return Ok(None);
         };
         if depth > MAX_IMPORT_DEPTH {

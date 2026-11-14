@@ -298,13 +298,20 @@ retired body compiles its body in that body's lexical view whenever it is
 first called, so the view carries the load (`Lexical::body`, one
 `LoadedBody` shared by every definition made in the load): the traits it
 declares, with their own dispatchers and defaults; the impls it writes,
-with the bindings of the methods they write; and, from the reload on,
-the import tables under the module's scope as it left them. A module
-declared in a loaded body starts from the load around it
-(`LoadedBody::under`), and only a load of the module's own source is
-retired: its first load leaves the one around it reading the registry.
-`Env::trait_def`, `impls_of`, `find_impl` and name resolution read the
-load's own first and the registries after. A call in a loaded body
+with the bindings of the methods they write; and the import tables at
+the module's scope and below as its compile left them
+(`LoadedBody::keep_names`, at the end of `Module::compile_source`). The
+tables are the load's from its own end, not from the reload that
+replaces it: every instance of a function whose body declares the module
+names the module's scope alike, so another instance's load scrubs the
+registry's tables as a reload does. They are whole at that end: a load's
+blocks are named by their place in its source, so a function of the load
+compiled later imports into the scopes its definition's check did. The
+registry's tables serve the compile in progress. A module declared in a
+loaded body starts from the load around it (`LoadedBody::under`), and a
+scope's table is the innermost load's around it, the registry's while
+that load compiles. `Env::trait_def`, `impls_of`, `find_impl` and name
+resolution read the load's own first and the registries after. A call in a loaded body
 therefore resolves to the body's own method binding from the start, a
 method the impl leaves out to the body's own default, never to the
 declared entry's binding (the val's side, which the next body joins): an
@@ -324,6 +331,9 @@ view, so a dispatch inside it reads the registries whoever called it
 a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 `.._dispatches_past_a_declared_impl`,
 `.._dispatches_an_outside_trait_to_its_own_impl`, `.._keeps_its_imports`,
+`a_function_saved_past_another_instances_load_keeps_its_imports`,
+`.._reads_its_own_import`, `.._keeps_a_blocks_imports`,
+`a_function_made_before_another_instances_load_keeps_a_blocks_imports`,
 `a_function_saved_across_a_nested_reload_dispatches_to_its_own_bodys_methods`,
 `a_dynamic_module_in_a_loaded_body_reads_its_own_imports` and
 `lib_tests::leaks::
