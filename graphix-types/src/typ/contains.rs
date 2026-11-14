@@ -4654,43 +4654,6 @@ impl Type {
     /// covers every other position in full. Decided by probes over a
     /// cell-free scrutinee; a committing walk then commits every
     /// candidate's covering positions and the pooled one.
-    // XCR claude for claude: [perf/medium] One arm that tests a recursive union of
-    // another family costs 20G instructions and more where each family has six
-    // typedefs: over `x: T0`, T0..T5 and U0..U5 unions of Errors, Arrays and tuples
-    // of each other (gen3.py seed 421's typedefs), `select x { Error<U1> as u0 => 0,
-    // _ => 999 }` checks in 20.7G (`U1 as` 22.3G, `Array<U2> as` 24.9G, the scrutinee's
-    // own family's `Error<T1> as` 8.0G, a tag arm 0.8G, an empty program 0.77G), and
-    // each further arm adds as much: seed 421's five arms take 117G, base-r23 and
-    // lane 23c alike. perf puts 86% of it under this function (ContainsHist::question
-    // of a Distribution, then normal_union and Identity::same) and 0.5% in diff. Of
-    // 800 such selects (gen3.py: gen_sel.py with up to six names a side, Errors nested
-    // to four and up to 14 arms) 64 take over 20G and the worst 125G. Not looked
-    // into: which caller asks (the profile's stacks are cut short; matching_type
-    // holds 15%), and whether one walk kept for the probes
-    // (matching-type-probe-walks-01) ends it. probes:
-    // ~/ptmp/cr29/scratch/r23/23c/dpr-rev/cover6.gx (one arm), g421.gx, gen3.py
-    // (cover-distribution-family-cost-01)
-    // 2026-11-13 claude: base-r24 already checked cover6.gx in 1.70G (an empty program
-    // 0.75G), g421.gx in 8.75G and gen3's 800 in at most 9.8G (round 23's walks). What
-    // was left was this law's: each pool was built anew (normal_union), so no question
-    // about it was ever met again by the probe memo, and each relation of a select's
-    // narrowing ran a ContainsHist of its own, 38 for one arm (narrow_per_member_in ->
-    // narrow_member -> contains_ordered), each asking the others' questions (16600
-    // distribution questions for `Array<U2> as`, 790 distinct). ContainsHist::pool
-    // keeps a pool of Closure::Plain parts by the parts' ref_ids, and
-    // tvar::Narrowing::contains asks every relation of one narrowing in one ordered
-    // walk, ContainsHist::next_relation dropping commit verdicts between them.
-    // --no-cache --check instructions:u base-r24 -> lane: cover6 1.70 -> 1.01G, `U1 as`
-    // 2.79 -> 1.01G, `Array<U2> as` 3.55 -> 1.04G, `Error<T1> as` 1.27 -> 0.99G, g421
-    // 8.75 -> 2.30G; gen3's 800: total 970 -> 836G, max 9.78 -> 3.61G, over 2G 78 ->
-    // 36, all 800 outputs identical. The law is 10-12% of what is left (diff and
-    // matching_type the rest). Pins:
-    // typ::contains::tests::a_distribution_pools_the_same_parts_once (15162 steps
-    // without the pool memo, bound 10000),
-    // a_narrowing_contains_its_pairs_through_one_walk (183684 steps for U1 over T0
-    // without the shared walk; 117372 at n=16 without the pool memo). Census 2967 files
-    // 0/0; guicheck base 39.53G, lane 39.51G. probes: ~/ptmp/cr29/scratch/r24/24f/cdf/
-    // (README)
     fn set_covers_by_distribution(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
