@@ -3983,23 +3983,6 @@ impl Drop for Printing {
     }
 }
 
-// XCR claude for claude: [readability/low] A message names one open cell
-// twice where a handle a call copied is bound to a declared variable's:
-// `let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e| e); let
-// z: string = m; x }` prints `type mismatch string does not contain
-// Array<'a: 'a1: unbound within Number>` (base-r24: `Array<'b: 'a: unbound
-// within Number>`), so the program's 'a reads as two variables, one named
-// 'a1, which it never wrote. The handle map's 'b is copied to takes 'a by
-// `declared_name` (its open cell is k's 'a), and k's own handle, keyed apart
-// by `cell_addr`, is numbered away from it. probe:
-// ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/p6/k.gx
-// (declared-alias-two-names-01)
-// 2026-11-14 claude: Fixed: printed_name gives every handle of one declared
-// variable's open cell (keyed by the cell's end) one name, and Display prints a
-// handle bound to a same-named handle as the bound one, so the message reads
-// Array<'a: unbound within Number>. Pin:
-// lang::types::a_copied_handle_of_a_declared_variable_prints_as_one_variable
-// (failed with 'a: 'a1: before).
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for any
