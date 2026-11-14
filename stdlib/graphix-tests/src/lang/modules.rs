@@ -2612,6 +2612,74 @@ run!(
     FuseExpect::Jit
 );
 
+// The second body implements nothing, so the registry holds no impl of
+// `Sh` when `late` binds the outside function at run time: the bind's
+// bound and its dispatch are both the first body's.
+run!(
+    a_function_saved_across_a_reload_binds_an_outside_function_the_next_body_implements_nothing_for,
+    is(Value::String(
+        " 9000 15 [15, 16] 10000 16 [16, 17] 11000 17 [17, 18] 12000 18 [18, 19] 13000 19 [19, 20]"
+            .into()
+    )),
+    "/test.gx" => {
+        let (first, _) = bodies_implementing_sh(
+            "Sh, app, app2",
+            "",
+            "{ let f: fn(x: C) -> i64 = select x >= 0 { true => app, false => app2 }; f(C(x)) }",
+        );
+        a_function_saved_across_a_reload(
+            &format!("{OUTSIDE_APP} let app2 = |x: Sh| Sh::sh(x) + 500;"),
+            "val make: fn(x: i64) -> i64",
+            &first,
+            "let make = |x: i64| x * 1000",
+        )
+    };
+    FuseExpect::Jit
+);
+
+// The call is to a method of an outside impl whose head is generic over
+// `Sh`: the method's instance dispatches its element to the first body's
+// impl.
+run!(
+    a_function_saved_across_a_reload_dispatches_an_outside_impls_method_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh("Sh, Out", "", r"Out::o(\[C(x)\])");
+        a_function_saved_across_a_reload(
+            "trait Sh { val sh: fn(self) -> i64 }; trait Out { val o: fn(self) -> i64 }; \
+             impl<'a: Sh> Out for Array<'a> { \
+                 let o = |a| array::fold(array::map(a, |e| Sh::sh(e)), 5, |p, q| p + q) \
+             };",
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// The call is a seq's step in the first body's function, built at each
+// run of the seq. A seq drops the triggers that fire while it runs, so
+// `late` has one value by the end, of the run its slots' births began.
+run!(
+    a_function_saved_across_a_reload_dispatches_a_seq_steps_call_to_its_own_impl,
+    is(Value::String(" 20140 15 [15, 16]".into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh(
+            "Sh, app",
+            "",
+            "seq x { let r = app(C(x)); r }",
+        );
+        a_function_saved_across_a_reload(
+            OUTSIDE_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
 // What the first body imported is in scope for its `make` after a reload
 // whose source imports nothing.
 run!(

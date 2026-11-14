@@ -4143,6 +4143,28 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
+    // CR claude for claude: [bug/low] A call through a dynamic module does not
+    // follow a reload where both bodies give the val the same function of the code
+    // around the module and differ in an impl it dispatches to. The site keeps its
+    // instance, whose dispatch was resolved against the impl the first body
+    // registered. r7.gx: the root declares `trait Sh` and `let app = |x: Sh|
+    // Sh::sh(x) + 5`, each body is `impl Sh for i64 { let sh = |c: i64| c + K }; let
+    // make = app` (K 1, then 2000), and at ep 14 `d::make(ep)` prints 20, the retired
+    // body's `sh`, for 2019; `saved`, the same function taken from the first body,
+    // prints 20 in the instance alive across the reload and `[2019, 2020]` where it
+    // is first called after it, so two instances of one function at one type
+    // disagree. A bind that failed is not tried again either: under a second body
+    // that implements nothing a first call of `saved` logs "an instance at fn(x:
+    // i64) -> i64 of a definition typed fn(x: '#x: unbound within Sh) -> i64" and
+    // stays bottom through a third body that implements it (r7c.gx: no `late` line
+    // to ep 18). base-r24 alike. To fix: a reload
+    // that replaces or removes an impl entry rebinds the sites outside the module
+    // whose instances resolved a dispatch through it (the instance records the
+    // impls its dispatches read, or the val's write at a reload always rebinds). A
+    // ruling may be wanted on what `saved` means here: the function is not the
+    // body's own, so D33 (a) does not say. probes:
+    // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/review/{r7,r7c}.gx,
+    // `graphix --no-cache` (reload-same-fn-impl-01)
     /// Bind the definition `v` unless it is the one bound, or the one
     /// whose bind failed; true when a fresh callee was bound.
     fn rebind(

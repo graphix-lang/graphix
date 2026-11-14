@@ -370,8 +370,11 @@ function returns to a body dispatches to that body's impl when no
 function of the body's own is left. Run-time bound instances share
 kernels by definition, type and the callees their bodies resolved
 (`fusion::fuse_instance`, `lowering::body_fingerprint`), so two loads'
-instances of one outside function at one type share none. An image holds
-no scope with a load (`image::scope_encode`). Pins: `lang::modules::
+instances of one outside function at one type share none. An instance of
+a retired load's function built after the reload binds that load's own
+functions at run time and fuses none of those calls (CR
+`orphan-fn-late-bind-defuse-01`). An image holds no scope with a load
+(`image::scope_encode`). Pins: `lang::modules::
 a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl`,
 `.._an_outside_default_to_its_own_impl`,
 `.._an_outside_function_to_its_own_i64_impl`,
@@ -380,6 +383,9 @@ a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl`
 `.._a_builtins_callback_to_its_own_impl`,
 `.._a_defaults_call_to_its_own_impl`,
 `.._an_outside_union_call_to_its_own_impls`,
+`.._an_outside_impls_method_to_its_own_impl`,
+`.._a_seq_steps_call_to_its_own_impl`,
+`a_function_saved_across_a_reload_binds_an_outside_function_the_next_body_implements_nothing_for`,
 `a_function_saved_across_a_reload_shares_no_run_time_bind_with_the_next_body`,
 `a_closure_an_outside_function_made_for_a_reloaded_body_dispatches_to_that_bodys_impl`,
 `a_function_saved_across_a_nested_reload_dispatches_the_outer_loads_function_to_its_own_impl`

@@ -1376,6 +1376,17 @@ impl<X: GXExt> GX<X> {
         Ok(ProgramRoot { id, output, typ, warnings: vec![] })
     }
 
+    // CR claude for claude: [risk/low] A callable is a call under `Scope::root()`,
+    // so it is in no load: where a widget built in a dynamic module's body is handed
+    // a function of the code around the module (`#on_press: handler`, a tui
+    // `input_handler`'s `#handle`), the handler's instance dispatches by the
+    // registry, the next body's impl once a reload retired the body, where a builtin
+    // that calls the function it is handed through `genn::Callback` dispatches in
+    // the body's load (retired-body-outside-dispatch-01, `Lexical::called_in`). Not
+    // shown reachable: the handler must dispatch a trait on its argument's type and
+    // each body must implement it for that type. To fix: the builtin passes the
+    // `Scope` its `init` was given, and the callable's apply is built under it.
+    // (callable-scope-root-01)
     fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {
         let lb = v
             .downcast_ref::<LambdaDef<GXRt<X>>>()

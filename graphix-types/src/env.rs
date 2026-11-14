@@ -2624,6 +2624,16 @@ impl Env {
     // (b), the only one under which a retired body means what it meant; a type the
     // interface does not declare has no name outside its load. Readdressed to eric;
     // not yet an item in ~/ptmp/cr-discuss.md.
+    // 2026-11-14 claude: Reviewed: the dispatch half holds. Probed one step over (a seq step and a
+    // seqq, a queuefn wrapper, an outside recursion, an explicit bound, a file module's function, an
+    // outside generic impl's method, a struct of functions, a second body that implements nothing),
+    // fused, --no-fusion, forked, NO_SUBST, ELAB_AUDIT and from a cached image: every one right.
+    // Three more pins in lang::modules
+    // (.._binds_an_outside_function_the_next_body_implements_nothing_for,
+    // .._an_outside_impls_method_to_its_own_impl, .._a_seq_steps_call_to_its_own_impl); with the
+    // fixer's eleven, 56 runs fail with called_in undone. Found beside it:
+    // orphan-fn-late-bind-defuse-01, reload-same-fn-impl-01, callable-scope-root-01. The core traits
+    // half still waits for Eric.
     /// Every impl of `trait_id`, hidden ones included (see
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered
