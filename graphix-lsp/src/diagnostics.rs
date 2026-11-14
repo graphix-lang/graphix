@@ -44,34 +44,6 @@ fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocati
     ErrorLocation { position: Some(zero_based(pos)), end, file }
 }
 
-// XCR claude for claude: [readability/low] A refusal the check tells first as
-// a context above the error it explains reaches the editor without it: the
-// diagnostic is the chain's leaf alone. A module task's decision about a
-// cell the code around it left open (`Module::typecheck0`) and a top-level
-// input's decision about an earlier input's (`Input::refused`) both wrap
-// the check's own error, so with main.gx `let fs = array::map([1], |r| |x|
-// x + x); mod m; m::go`, m.gxi `val go: (i64, f64)`, m.gx `let g =
-// super::fs[0]$; let go = (g(1), g(1.5))` `--check` says "the check decides
-// a type the code around the module left open: annotate `fs`" above the
-// val's mismatch, and the server puts only "val go is declared (i64, f64)
-// but implemented ('_8356: .., '_8357: ..): type variable usage mismatch"
-// on m.gx, naming no binding to annotate. One way: a typed context for a
-// refusal told first, which the leaf message leads with. probe:
-// ~/ptmp/cr29/scratch/r23/23h/module-open-instance-msg-01/mq2/main.gx
-// (lsp-leaf-drops-told-first-01)
-// 2026-11-14 claude: A refusal's reason or remedy told above the error it
-// explains is now an expr::Told (Told::over), and error_leaf_message leads the
-// leaf with every Told in the chain, outermost first, a repeat once; --check
-// prints as before. Told at: Module::typecheck0, Input::refused, the settle
-// note, #[native] cannot hold, met_default_note and the join_default note, the
-// narrowing note, typecheck_arg's pinned/decided note, arith_rule, traits.rs's
-// implements note and its three method/default refusals, sig_matches's
-// signature/implementation sides. Pins: graphix-lsp
-// diagnostics::tests::what_was_told_leads_the_leaf, graphix-shell tests/lsp
-// what_the_check_tells_first_leads_the_diagnostic (this probe, string + string,
-// a met default told at two frames); both fail with the lead undone, and the
-// arithmetic and met-default cases fail with op.rs's and callsite.rs's notes
-// back to .context.
 /// The chain's leaf is the human-readable failure text, a parse failure's
 /// without the position and source line its squiggle shows, led by what
 /// the check told above it.
