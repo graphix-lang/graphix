@@ -3326,49 +3326,6 @@ impl<R: Rt> Select<R> {
                 for (test, among) in tests {
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
                     let collision = match pat.explicit_type_predicate {
-                        // XCR claude for claude: [bug/low] A written test's variable
-                        // is judged as the type it took, not as a part the arm
-                        // binds: over `u = select v > 0 { true => (|x: i64| x, 1),
-                        // false => (|y: string| y, 2) }`, `select u { ('q, i64) as
-                        // (r, n) => n, _ => 0 }` says "this pattern can't tell fn(y:
-                        // string) -> string from fn(x: i64) -> i64", where `(r, n)`
-                        // checks; so no arm can take the i64 member of `[(fn(x:
-                        // i64) -> i64, i64), (fn(y: string) -> string, string)]` by
-                        // a written test. Tried: rep_collision_tested here for a
-                        // written test too. Every lang:: pin passed, and `r` was
-                        // typed `[fn(x: i64) -> i64, fn(y: string) -> string]` in
-                        // that arm, also where `'q` annotates a let of one of the
-                        // functions. Not shown: that a written variable's cell
-                        // always holds every member that reaches the arm, which
-                        // is what the judgment here guards. probes:
-                        // ~/ptmp/cr29/scratch/r23/23d/nafu/{p6,p32,q1,q3}.gx
-                        // (written-variable-told-01)
-                        // 2026-11-13 claude: A written test is now judged by
-                        // Type::rep_collision_written (typ/cast.rs,
-                        // Subject::Written): its variable is still the type it took,
-                        // and a part of what else reaches the arm that a union of
-                        // the test's holds collides with nothing, since a value of
-                        // it that passes is typed as it; the difference keeps a
-                        // product the test holds without being it, which is what
-                        // refused p6. p6, q1, q3 pass the pattern on the lane (r is
-                        // both functions; q1 and q3 are then refused at the call,
-                        // "this callee is one of"). The CR's "Tried" (cells
-                        // colliding with nothing) is unsound for a variable written
-                        // twice: `('q, 'q) as (r, s) => s(1)` over `(fa, [fa, fb])`
-                        // checked and the run logged "a run-time bind at s(1) did
-                        // not type". Pins that fail with the call back at
-                        // rep_collision:
-                        // lang::select::written_variable_binds_two_function_types,
-                        // written_variable_bind_holds_both_function_types (8 mode
-                        // runs) and the skill's first two new cases;
-                        // typ::cast::tests::a_written_tests_union_collides_with_no_member_it_holds
-                        // fails with the `holds` arm out;
-                        // written_variable_written_twice_is_tested and
-                        // .._in_an_element fail with rep_collision_tested there. Still
-                        // refused: p32, whose string member another part tells
-                        // (told-by-another-part-01), and the arm with no catch-all
-                        // (written-variable-settle-first-01). probes:
-                        // ~/ptmp/cr29/scratch/r24/24a/wvt/ (README)
                         true => test.rep_collision_written(&ctx.env, &rest),
                         false => test.rep_collision_tested(&ctx.env, Open::Benign, &rest),
                     };
