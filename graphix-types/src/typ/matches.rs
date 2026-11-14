@@ -1,6 +1,7 @@
 use crate::{
     AddrSet, PrintFlag,
     env::Env,
+    expr::Told,
     format_with_flags,
     ids::AddrHasher,
     stack::ensure_sufficient,
@@ -834,11 +835,12 @@ impl Type {
                 let r = e0.sig_matches_int(env, &e1, tvar_map, hist);
                 hist.remove(&key);
                 r.map_err(|e| {
-                    e.context(format_compact!(
+                    let told = format_compact!(
                         "signature has {}, implementation has {}",
                         side(t0),
                         side(t1)
-                    ))
+                    );
+                    Told::over(e, &told)
                 })
             }
             (Self::Fn(f0), Self::Fn(f1)) => {

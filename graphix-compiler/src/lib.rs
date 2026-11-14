@@ -63,7 +63,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 pub use enumflags2::BitFlags;
-use expr::{Attr, Expr};
+use expr::{Attr, Expr, Told};
 use futures::channel::mpsc;
 use log::{info, warn};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -4672,7 +4672,7 @@ impl Input {
     ) -> anyhow::Error {
         match self.earlier_decision(ctx) {
             None => e,
-            Some(m) => e.context(m),
+            Some(m) => Told::over(e, &m),
         }
     }
 
@@ -4788,11 +4788,14 @@ fn settle_input<R: Rt>(
     let mut types: LPooled<Vec<&Type>> = made.iter().map(|b| &b.typ).collect();
     types.extend(typ);
     typ::settle::settle_input(&ctx.env, &types).map_err(|(i, e)| match made.get(i) {
-        Some(b) => e.context(format_compact!(
-            "settling the type of `{}` ({})",
-            b.name,
-            typ::tvar::BoundAt(b, None)
-        )),
+        Some(b) => Told::over(
+            e,
+            &format_compact!(
+                "settling the type of `{}` ({})",
+                b.name,
+                typ::tvar::BoundAt(b, None)
+            ),
+        ),
         None => e,
     })
 }
@@ -4810,7 +4813,7 @@ pub(crate) fn check_attribute_census<R: Rt>(ctx: &CompileCtx<R>) -> Result<()> {
             attrs.iter().any(|a| a.name == native)
         });
         if let Some(spec) = spec {
-            let e = expr::At::at(e.context("#[native] cannot hold"), spec);
+            let e = expr::At::at(Told::over(e, "#[native] cannot hold"), spec);
             drop(census);
             return Err(e);
         }

@@ -5,7 +5,7 @@
 use crate::text::zero_based;
 use graphix_compiler::{
     SourcePosition,
-    expr::{ErrorContext, ErrorSite, ParserContext, Source, WrittenAt, parser},
+    expr::{ErrorContext, ErrorSite, ParserContext, Source, Told, WrittenAt, parser},
 };
 use lsp_types::Position;
 use std::path::PathBuf;
@@ -44,7 +44,7 @@ fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocati
     ErrorLocation { position: Some(zero_based(pos)), end, file }
 }
 
-// CR claude for claude: [readability/low] A refusal the check tells first as
+// XCR claude for claude: [readability/low] A refusal the check tells first as
 // a context above the error it explains reaches the editor without it: the
 // diagnostic is the chain's leaf alone. A module task's decision about a
 // cell the code around it left open (`Module::typecheck0`) and a top-level
@@ -59,13 +59,41 @@ fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocati
 // refusal told first, which the leaf message leads with. probe:
 // ~/ptmp/cr29/scratch/r23/23h/module-open-instance-msg-01/mq2/main.gx
 // (lsp-leaf-drops-told-first-01)
-/// The chain's leaf is the human-readable failure text; a parse
-/// failure's without the position and source line its squiggle shows.
+// 2026-11-14 claude: A refusal's reason or remedy told above the error it
+// explains is now an expr::Told (Told::over), and error_leaf_message leads the
+// leaf with every Told in the chain, outermost first, a repeat once; --check
+// prints as before. Told at: Module::typecheck0, Input::refused, the settle
+// note, #[native] cannot hold, met_default_note and the join_default note, the
+// narrowing note, typecheck_arg's pinned/decided note, arith_rule, traits.rs's
+// implements note and its three method/default refusals, sig_matches's
+// signature/implementation sides. Pins: graphix-lsp
+// diagnostics::tests::what_was_told_leads_the_leaf, graphix-shell tests/lsp
+// what_the_check_tells_first_leads_the_diagnostic (this probe, string + string,
+// a met default told at two frames); both fail with the lead undone, and the
+// arithmetic and met-default cases fail with op.rs's and callsite.rs's notes
+// back to .context.
+/// The chain's leaf is the human-readable failure text, a parse failure's
+/// without the position and source line its squiggle shows, led by what
+/// the check told above it.
 pub fn error_leaf_message(err: &anyhow::Error) -> String {
-    if let Some(p) = err.downcast_ref::<parser::ParseFailure>() {
-        return p.summary.clone();
+    let leaf = match err.downcast_ref::<parser::ParseFailure>() {
+        Some(p) => p.summary.clone(),
+        None => {
+            err.chain().last().map(|c| c.to_string()).unwrap_or_else(|| "error".into())
+        }
+    };
+    match err.downcast_ref::<Told>() {
+        None => leaf,
+        Some(told) => {
+            let mut message = String::new();
+            for line in told.lines() {
+                message.push_str(line);
+                message.push('\n');
+            }
+            message.push_str(&leaf);
+            message
+        }
     }
-    err.chain().last().map(|c| c.to_string()).unwrap_or_else(|| "error".into())
 }
 
 #[cfg(test)]
@@ -127,6 +155,28 @@ mod tests {
         let loc = error_location(&err);
         assert_eq!(loc.position, Some(Position { line: 0, character: 0 }));
         assert_eq!(loc.file, Some(PathBuf::from("/tmp/util.gxi")));
+    }
+
+    /// What the check told above an error leads its leaf, outermost
+    /// first, through the frames between, a line told twice running once;
+    /// the frames themselves are not told.
+    #[test]
+    fn what_was_told_leads_the_leaf() {
+        let o = ori("/tmp/foo.gx");
+        let err = anyhow!("type mismatch i64 does not contain string").at(&expr_at(
+            3,
+            2,
+            o.clone(),
+        ));
+        let err = Told::over(err, "annotate `g`");
+        let err = Told::over(err.at(&expr_at(2, 1, o.clone())), "annotate `fs`");
+        let err = Told::over(err, "annotate `fs`").context("compiling module m");
+        assert_eq!(
+            error_leaf_message(&err),
+            "annotate `fs`\nannotate `g`\ntype mismatch i64 does not contain string"
+        );
+        let plain = anyhow!("missing not defined").at(&expr_at(1, 1, o));
+        assert_eq!(error_leaf_message(&plain), "missing not defined");
     }
 
     /// Parser failures wrap their error in `ParserContext`. The LSP

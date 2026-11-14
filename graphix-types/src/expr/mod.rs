@@ -7,7 +7,7 @@ use crate::{
 use arcstr::{ArcStr, literal};
 pub use binop::BinOp;
 use compact_str::CompactString;
-pub use context::{At, ErrorContext, ErrorSite, ParserContext};
+pub use context::{At, ErrorContext, ErrorSite, ParserContext, Told};
 pub use modpath::ModPath;
 use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;

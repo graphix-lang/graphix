@@ -54,6 +54,13 @@ warning on each import it added that no lookup went through
 publishes the warnings of a root's last SUCCESSFUL check and, when the
 current one failed, the error beside them. An error's position is its `ErrorSite`, the innermost wrap: contexts are
 attached with `.at(&spec)` (`expr::At`), `wrap!` or `bailat!`, never
-`ErrorContext(..)` by hand. Pins: `graphix-shell/tests/lsp/` (the real
+`ErrorContext(..)` by hand. Its message is the chain's leaf, led by what
+the check told above it (`diagnostics::error_leaf_message`): a context
+that says why a refusal was made or what to annotate (a module's or an
+input's decision about another's type, an operator's remedy, the binding
+a met default names) is an `expr::Told` (`Told::over`), every `Told` in
+the chain a line, outermost first; any other context is a frame (`in
+the instance of ..`, `compiling module m`), which the message drops.
+Pins: `graphix-shell/tests/lsp/` (the real
 server over `Connection::memory()`; positions are `"let y = |x + 1"`
 markers).

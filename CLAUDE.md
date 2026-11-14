@@ -220,7 +220,9 @@ server share one path (`GXRt::check`). A query resolves the cursor to a
 target from the check's sinks, never by looking a word up. A parser site
 that builds an `Expr` gives it its end (`Expr::ending`). Errors take
 context by `.at(&spec)`, `wrap!` or `bailat!`, never `ErrorContext(..)` by
-hand. Pins: `graphix-shell/tests/lsp/`.
+hand; a context saying why a refusal was made or what to annotate is
+`Told::over`, never a bare `.context`: the editor shows the leaf and what
+is told, no other context. Pins: `graphix-shell/tests/lsp/`.
 
 **Types** (`graphix-types/src/typ/`, `design/tvar_constraints.md`): `Type`
 (structural), `TVar` (inference cells), `FnType`. `contains` expands

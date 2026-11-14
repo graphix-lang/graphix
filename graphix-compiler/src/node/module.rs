@@ -9,7 +9,7 @@ use crate::{
     errf,
     expr::{
         At, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext,
-        Sandbox, Sig, SigItem, SigKind, Source, TypeDefBody, TypeDefExpr, UseItem,
+        Sandbox, Sig, SigItem, SigKind, Source, Told, TypeDefBody, TypeDefExpr, UseItem,
         WrittenAt, add_interface_modules, parser,
     },
     format_with_flags,
@@ -2304,7 +2304,7 @@ impl<R: Rt> Update<R> for Module<R> {
                         );
                         match res {
                             Ok(()) => Err(anyhow!("{m}")),
-                            Err(e) => Err(e.context(m)),
+                            Err(e) => Err(Told::over(e, &m)),
                         }
                     }
                 };

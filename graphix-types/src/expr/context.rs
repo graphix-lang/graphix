@@ -4,6 +4,7 @@ use crate::{
     SourcePosition,
     expr::{Expr, Origin, Source, parser, print::Bare},
 };
+use arcstr::ArcStr;
 use poolshark::local::LPooled;
 use std::fmt::{self, Write};
 use triomphe::Arc;
@@ -233,6 +234,50 @@ impl fmt::Display for ParserContext {
 }
 
 impl std::error::Error for ParserContext {}
+
+/// What a check tells above an error it explains: why it refused, or what
+/// to annotate. A tool that shows an error's leaf alone leads it with
+/// [`Told::lines`].
+pub struct Told(Arc<Line>);
+
+/// One thing told, and what was told under it in the chain.
+struct Line {
+    text: ArcStr,
+    under: Option<Arc<Line>>,
+}
+
+impl Told {
+    /// `e` with `text` told above it; told again right above itself, it
+    /// is one line.
+    pub fn over(e: anyhow::Error, text: &str) -> anyhow::Error {
+        let under = e.downcast_ref::<Told>().map(|t| t.0.clone());
+        let line = match under {
+            Some(under) if under.text == text => under,
+            under => Arc::new(Line { text: text.into(), under }),
+        };
+        e.context(Told(line))
+    }
+
+    /// Everything told from here down the chain, outermost first.
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        std::iter::successors(Some(&*self.0), |l| l.under.as_deref())
+            .map(|l| l.text.as_str())
+    }
+}
+
+impl fmt::Debug for Told {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for Told {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.text)
+    }
+}
+
+impl std::error::Error for Told {}
 
 #[cfg(test)]
 mod test {

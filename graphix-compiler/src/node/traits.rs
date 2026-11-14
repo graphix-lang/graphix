@@ -25,7 +25,7 @@ use crate::{
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
         ImplExpr, ImplHead, LambdaExpr, ModPath, Name, Origin, Pattern, SelectExpr,
-        StructurePattern, TraitExpr, TraitMethod, WrittenAt,
+        StructurePattern, Told, TraitExpr, TraitMethod, WrittenAt,
     },
     ide::ModuleRefSite,
     image::{
@@ -113,7 +113,8 @@ fn implements<R: Rt>(
     reads: impl Fn() -> bool,
 ) -> Result<()> {
     let told = |e: anyhow::Error| match reads() {
-        true => e.context(
+        true => Told::over(
+            e,
             "its value reads a binding, so the method has exactly that binding's \
              type; written as a lambda it takes the declared one",
         ),
@@ -757,11 +758,13 @@ impl<R: Rt> Update<R> for Trait<R> {
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
             let declared = m.typ.reset_tvars();
             let reads = || self.default_reads_binding(&m.name);
-            implements(ctx, &declared, &bind.typ, id, reads).with_context(|| {
-                format!(
+            implements(ctx, &declared, &bind.typ, id, reads).map_err(|e| {
+                let told = format_compact!(
                     "the default {} of trait {} does not implement the declared {declared}",
-                    m.name, self.def.name
-                )
+                    m.name,
+                    self.def.name
+                );
+                Told::over(e, &told)
             })?;
         }
         Ok(())
@@ -1359,25 +1362,27 @@ impl<R: Rt> Update<R> for Impl<R> {
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let declared = method_sig_at(&d.typ, &self.def.target);
             let reads = || self.method_reads_binding(&d.name);
-            implements(ctx, &declared, &bind.typ, *id, reads).with_context(|| {
-                format!(
+            implements(ctx, &declared, &bind.typ, *id, reads).map_err(|e| {
+                let told = format_compact!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,
                     self.trait_def.name,
                     self.def.target,
                     declared.resolve_tvars()
-                )
+                );
+                Told::over(e, &told)
             })?;
             let expected = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-            expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
-                format!(
+            expected.check_contains(&ctx.env, &bind.typ).map_err(|e| {
+                let told = format_compact!(
                     "method {} of impl {} for {} has type {}, the trait declares {}",
                     d.name,
                     self.trait_def.name,
                     self.def.target,
                     bind.typ.resolve_tvars(),
                     expected.resolve_tvars()
-                )
+                );
+                Told::over(e, &told)
             })?;
         }
         Ok(())

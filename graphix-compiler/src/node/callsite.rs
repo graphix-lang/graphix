@@ -14,7 +14,7 @@ use crate::{
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
     StaticHold, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
-    expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
+    expr::{ApplyExpr, At, Expr, ExprId, ExprKind, Told},
     fusion::{
         self,
         emit::{
@@ -421,7 +421,7 @@ fn met_default_note<R: Rt>(
     name: &ArcStr,
 ) -> anyhow::Error {
     match met_defaults::<R>(defs, name) {
-        Some(note) => e.context(note),
+        Some(note) => Told::over(e, &note),
         None => e,
     }
 }
@@ -646,7 +646,7 @@ fn hidden_defaults_at<R: Rt>(
                 }
                 narrowing => match narrowing.note() {
                     Some(note) if formal.has_unbound() => {
-                        judge(ctx, formal).context(note)
+                        judge(ctx, formal).map_err(|e| Told::over(e, note))
                     }
                     Some(_) | None => judge(ctx, formal),
                 },
@@ -920,7 +920,7 @@ fn typecheck_arg<R: Rt>(
         _ => None,
     };
     let refused = |e: anyhow::Error| match pinned.as_ref().or(note.as_ref()) {
-        Some(note) => e.context(note.clone()),
+        Some(note) => Told::over(e, note),
         None => e,
     };
     let unchecked = !named && n.typ().with_deref(|t| t.is_none());
@@ -2595,7 +2595,7 @@ impl<R: Rt> CallSite<R> {
             |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, undecided| {
                 widening.join_default(env, callee, ftype, formal, typ, undecided).map_err(
                     |e| match met_defaults::<R>(&defs, name) {
-                        Some(shared) => e.context(shared),
+                        Some(shared) => Told::over(e, &shared),
                         None => e,
                     },
                 )

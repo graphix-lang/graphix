@@ -1224,6 +1224,41 @@ fn an_interface_mismatch_is_reported_where_it_is() {
     assert_eq!(d[0].0, c.at("api.gxi", "|val y").line);
 }
 
+/// What the check tells above the error it explains leads the
+/// diagnostic: the binding a module's refusal names to annotate, an
+/// operator's remedy, and a note told at two frames, once.
+#[test]
+fn what_the_check_tells_first_leads_the_diagnostic() {
+    let mut c = Client::start(&[
+        ("main.gx", "let fs = array::map([1], |r| |x| x + x);\nmod m;\nm::go\n"),
+        ("m.gxi", "val go: (i64, f64);\n"),
+        ("m.gx", "let g = super::fs[0]$;\nlet go = (g(1), g(1.5))\n"),
+    ]);
+    c.open("main.gx");
+    c.open("m.gx");
+    let d = c.diagnostics("m.gx");
+    let told = "the check decides a type the code around the module left open: \
+                annotate `fs` (line 1, column 5)\nval go is declared (i64, f64)";
+    assert!(matches!(&d[..], [(1, 0, m)] if m.starts_with(told)), "{d:?}");
+    let mut c = Client::start(&[("a.gx", "let s = \"a\";\ns + \"b\"\n")]);
+    c.open("a.gx");
+    let told = "cannot compute string + string: arithmetic takes numbers (to join \
+                strings, interpolate: \"[a][b]\")\ntype mismatch Number does not \
+                contain string";
+    assert_eq!(c.diagnostics("a.gx"), [(1, 0, told.into())]);
+    let mut c = Client::start(&[(
+        "a.gx",
+        "let f = |#d = 1, x: i64| x;\nlet g = |#d = \"s\", x: i64| x;\n\
+         let h = [f, g];\nh[0]$(1)\n",
+    )]);
+    c.open("a.gx");
+    let d = c.diagnostics("a.gx");
+    let told = "the functions met here share one #d: annotate the binding that holds \
+                them with a function type whose #d holds every default\ntype mismatch \
+                i64 does not contain string";
+    assert!(matches!(&d[..], [(_, _, m)] if m == told), "{d:?}");
+}
+
 #[test]
 fn a_lone_module_is_checked_against_its_interface() {
     let mut c =
