@@ -1111,6 +1111,17 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // contains::commit_conjuncts, settle::TerminalRun::take (gdb stacks at 1000 links).
 // The decided shape stays with carries-typedef-chain-01. probes
 // ~/ptmp/cr29/scratch/r25/25h/ (fa*.gx from gen4.py fnargs N)
+// 2026-11-14 claude: Round 25 review of the partial fix (5f71ae1a9): holds as a
+// partial. fa250/500/1000 --check --no-cache instructions, base-r25 -> lane:
+// 4.17/22.43/154.58 G -> 1.96/5.27/19.14 G. The pin
+// a_chain_of_bounds_passed_function_references_checks_in_quadratic_time fails with
+// the Subst memo undone and fails with the shared lowering set undone. deep_nesting
+// 51 pass, graphix-types lib 656 pass, regress 585 programs 0 regressions, census of
+// 2967 files base-r25 vs lane 0 verdict and 0 message differences, guicheck 39.616 ->
+// 39.795 G (+0.45%). Memo and lowering-set keys (node addresses) name nodes that stay
+// alive through the copy; a quantified fn type's inner Subst has its own memo. The CR
+// stays for what remains quadratic (shape_hash_node under Widening::join,
+// commit_conjuncts, TerminalRun::take).
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
