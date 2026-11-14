@@ -385,8 +385,6 @@ impl<R: Rt> Bind<R> {
             // signature (traits::signature_of), which this compile cannot tell from an
             // annotation the method wrote, whose variables the value decides. probes:
             // ~/ptmp/cr29/scratch/r24/24d/mum/{r1,r2}.gx (rec-method-union-member-01)
-            // a method's containment is `check_value`'s, with the declaration's
-            // variables held rigid by its impl or trait
             // 2026-11-14 claude: A method-block let rec no longer runs the compile-time
             // containment of its annotation against the lambda: that one ran before
             // Impl/Trait::typecheck0 held the declaration's variables rigid, so a written
