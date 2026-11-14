@@ -800,13 +800,13 @@ fn written_own(known: &AHashMap<ArcStr, TVar>, enclosing: &AHashSet<ArcStr>) -> 
 }
 
 /// The variables the definitions around the body being compiled declare,
-/// by name, the innermost's where two share one ([`BodyCompile::declared`]).
+/// by name, the innermost's where two share one ([`Around::declared`]).
 pub(super) fn enclosing_tvars<R: Rt>(
     ctx: &CompileCtx<R>,
     known: &mut AHashMap<ArcStr, TVar>,
 ) {
     if let Some(body) = &ctx.body {
-        for tv in body.declared.iter().rev() {
+        for tv in body.around.declared.iter().rev() {
             known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
         }
     }
@@ -833,6 +833,24 @@ fn written_tvars(
     def.written_tvars().drain(..).map(|(_, tv)| held(tv)).collect()
 }
 
+/// What a body takes from the definitions lexically around it, innermost
+/// last.
+#[derive(Debug, Clone)]
+pub struct Around {
+    /// The variables their signatures write, each the cell this compile
+    /// holds for it.
+    pub declared: Arc<[TVar]>,
+    /// The types of their instances, which a run-time bind's kernels are
+    /// kept by ([`crate::fusion::BoundKey`]).
+    pub instances: Arc<[Arc<FnType>]>,
+}
+
+impl Around {
+    fn nothing() -> Self {
+        Self { declared: Arc::from_iter([]), instances: Arc::from_iter([]) }
+    }
+}
+
 /// The body compiling now: what it shares, and whether this compile is
 /// its definition's check, which alone records specs.
 #[derive(Debug, Clone)]
@@ -840,9 +858,7 @@ pub(crate) struct BodyCompile {
     pub(crate) share: BodyShare,
     pub(crate) checking: bool,
     pub(crate) types: Option<InstanceTypes>,
-    /// The variables the signatures of the definitions around the body
-    /// write, innermost last, each the cell this compile holds for it.
-    pub(crate) declared: Arc<[TVar]>,
+    pub(crate) around: Around,
 }
 
 impl BodyShared {
@@ -922,7 +938,7 @@ impl<R: Rt> LambdaDef<R> {
         body: DefBody,
         flags: BitFlags<CFlag>,
         spec: Arc<Expr>,
-        enclosing: Arc<[TVar]>,
+        enclosing: Around,
     ) -> Self {
         let init = make_init(
             id,
@@ -1031,10 +1047,9 @@ pub enum DefOrigin {
         body: DefBody,
         flags: BitFlags<CFlag>,
         spec: Expr,
-        /// The variables the definitions lexically around the literal
-        /// declare, innermost last, as the compile that met the literal
-        /// held them ([`BodyCompile::declared`]).
-        enclosing: Arc<[TVar]>,
+        /// What the definitions lexically around the literal give its
+        /// body, as the compile that met the literal held them.
+        enclosing: Around,
     },
     Runtime,
 }
@@ -1146,6 +1161,7 @@ impl<R: Rt> LambdaDef<R> {
                 DefOrigin::Source { enclosing: a, .. },
                 DefOrigin::Source { enclosing: b, .. },
             ) => {
+                let (a, b) = (&a.declared, &b.declared);
                 a.len() == b.len()
                     && a.iter().zip(b.iter()).all(|(a, b)| a.cell_addr() == b.cell_addr())
             }
@@ -1166,15 +1182,15 @@ impl<R: Rt> LambdaDef<R> {
         types: Option<InstanceTypes>,
         f: impl FnOnce(&mut CompileCtx<R>) -> T,
     ) -> T {
-        let declared = match &self.origin {
+        let around = match &self.origin {
             DefOrigin::Source { enclosing, .. } => enclosing.clone(),
-            DefOrigin::Runtime => Arc::from_iter([]),
+            DefOrigin::Runtime => Around::nothing(),
         };
         let outer = ctx.body.replace(BodyCompile {
             share: BodyShare::default(),
             checking: false,
             types,
-            declared,
+            around,
         });
         let r = f(ctx);
         ctx.body = outer;
@@ -1699,22 +1715,27 @@ impl<R: Rt> GXLambda<R> {
             },
             (_, _) => written_tvars(&typ, None),
         };
+        let own = typ.clone();
         let build = |ctx: &mut CompileCtx<R>, _: &[StructPatternNode]| {
             let outer = ctx.body.as_mut().map(|b| {
+                let around = &b.around;
                 let declared = match written.is_empty() {
-                    true => b.declared.clone(),
-                    false => b.declared.iter().chain(written.iter()).cloned().collect(),
+                    true => around.declared.clone(),
+                    false => {
+                        around.declared.iter().chain(written.iter()).cloned().collect()
+                    }
                 };
+                let instances = around.instances.iter().chain([&own]).cloned().collect();
                 (
                     mem::replace(&mut b.types, types.clone()),
-                    mem::replace(&mut b.declared, declared),
+                    mem::replace(&mut b.around, Around { declared, instances }),
                 )
             });
             let body = compile(ctx, flags, body, scope, tid);
-            if let Some((types, declared)) = outer {
+            if let Some((types, around)) = outer {
                 let b = ctx.body.as_mut().expect("compiling body");
                 b.types = types;
-                b.declared = declared;
+                b.around = around;
             }
             body
         };
@@ -2063,7 +2084,7 @@ pub(crate) fn make_init<R: Rt>(
     def_argspec: Arc<[Arg]>,
     def_spec: Arc<Expr>,
     body: DefBody,
-    enclosing: Arc<[TVar]>,
+    enclosing: Around,
     table: SArc<DefTables>,
     shared: BodyShare,
 ) -> InitFn<R> {
@@ -2078,7 +2099,7 @@ pub(crate) fn make_init<R: Rt>(
                     share: shared.clone(),
                     checking: matches!(mode, BindMode::Definition),
                     types: None,
-                    declared: enclosing.clone(),
+                    around: enclosing.clone(),
                 };
                 let outer = ctx.body.replace(compiling);
                 let instance =
@@ -2434,9 +2455,9 @@ impl Lambda {
         let (shared, enclosing) = match &ctx.body {
             Some(outer) => (
                 outer.share.lock().literals.entry(spec.id).or_default().clone(),
-                outer.declared.clone(),
+                outer.around.clone(),
             ),
-            None => (BodyShare::default(), Arc::from_iter([])),
+            None => (BodyShare::default(), Around::nothing()),
         };
         let facts = match &body {
             DefBody::Expr(_) | DefBody::Collection(_) => LambdaFacts::PURE,

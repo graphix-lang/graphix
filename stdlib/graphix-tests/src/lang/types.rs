@@ -13113,7 +13113,7 @@ run!(
   let f = |w: Array<'a>| g(w, null);
   f([null])
 }"#,
-    refused("'c: unbound does not contain null");
+    refused("'a: unbound does not contain null");
     FuseExpect::None
 );
 run!(

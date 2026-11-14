@@ -2047,21 +2047,6 @@ impl fmt::Display for TVar {
                     }
                     _ => write!(f, "'{}: ", ShortName(&printed_name(self)))?,
                 }
-                // CR claude for claude: [readability/low] A callee's variable merged into
-                // the caller's declared variable prints under the callee's name, as an
-                // unbound variable, so a refusal names a variable the caller never wrote
-                // and says nothing of the one that is held. `let g = |x: Array<['c,
-                // null]>, s: 'c| x; let f = |w: Array<'a>| g(w, null)` is refused, rightly
-                // ('c is 'a once the array is met, and 'a holds no null), "type mismatch
-                // 'c: unbound does not contain null"; with `g(w, [w])` it prints "'c:
-                // unbound does not contain Array<Array<'c: unbound>>", the wrapper's own
-                // `Array<'a>` renamed too. base-r24 alike, and the same under a declared
-                // bound (`'b: Array<['c, null]> |x: 'b, s: 'c|`) since
-                // rigid-narrowed-by-callee-bound-01. A fix prints a rigid cell by the
-                // name its declaration gave it (the cell does not keep one today), or
-                // says "'c, the declared 'a". probes:
-                // ~/ptmp/cr29/scratch/r24/24c/rnb/{un,un2}.gx
-                // (merged-rigid-prints-callee-name-01)
                 let Some(t) = typ else {
                     write!(f, "unbound")?;
                     for (i, c) in cons.iter().enumerate() {

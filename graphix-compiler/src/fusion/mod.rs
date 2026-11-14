@@ -387,7 +387,7 @@ impl BoundKey {
     fn of<R: Rt>(def: &LambdaDef<R>, g: &GXLambda<R>, ctx: &CompileCtx<R>) -> Self {
         let enclosing = match &def.origin {
             DefOrigin::Source { enclosing, .. } => {
-                enclosing.iter().map(|t| t.resolve_tvars()).collect()
+                enclosing.instances.iter().map(|t| t.resolve_tvars()).collect()
             }
             DefOrigin::Runtime => Box::default(),
         };

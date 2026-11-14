@@ -13,10 +13,10 @@ use crate::{
     effects::LambdaFacts,
     expr::{Arg, Expr, ExprId},
     node::lambda::{
-        BodyShare, BodyShared, DefBody, DefOrigin, LambdaDef, tables_decode,
+        Around, BodyShare, BodyShared, DefBody, DefOrigin, LambdaDef, tables_decode,
         tables_encode,
     },
-    typ::{FnType, TVar},
+    typ::FnType,
 };
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
@@ -134,7 +134,8 @@ pub(crate) fn def_encode<R: Rt>(
     body_encode(body, buf)?;
     flags_encode(*flags, buf)?;
     spec.encode(buf)?;
-    enclosing.encode(buf)?;
+    enclosing.declared.encode(buf)?;
+    enclosing.instances.encode(buf)?;
     tables_encode(table.get(), buf)?;
     shared_encode(&shared.lock(), buf)
 }
@@ -157,7 +158,8 @@ pub(crate) fn def_decode<R: Rt>(
     let body = body_decode(buf)?;
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
-    let enclosing: Arc<[TVar]> = Pack::decode(buf)?;
+    let enclosing =
+        Around { declared: Pack::decode(buf)?, instances: Pack::decode(buf)? };
     let table = std::sync::Arc::new(tables_decode(buf)?);
     let shared = BodyShare::new(Mutex::new(shared_decode(buf)?));
     ctx.wrap_lambda(LambdaDef::of_source(
