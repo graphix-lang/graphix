@@ -8,7 +8,7 @@ use crate::{
     typ::{Bound, Mutability, Type, TypeRef, strictly_identical, tvar::Printing},
 };
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
@@ -203,6 +203,27 @@ pub struct Brief<'a>(pub &'a Type);
 impl Brief<'_> {
     pub const BYTES: usize = 512;
     pub const MOST: usize = 1 << 16;
+    /// The longest declaration a refusal writes for a program to copy.
+    pub const DECLARATION: usize = 1024;
+
+    /// `typ` as printed under the current flags, `None` where it is
+    /// longer than `bytes`; the print stops at the first byte past them.
+    pub fn within(typ: &Type, bytes: usize) -> Option<CompactString> {
+        struct Limit {
+            out: CompactString,
+            left: usize,
+        }
+        impl Write for Limit {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.left = self.left.checked_sub(s.len()).ok_or(fmt::Error)?;
+                self.out.push_str(s);
+                Ok(())
+            }
+        }
+        let mut limit = Limit { out: CompactString::new(""), left: bytes };
+        let _shown = Restore::replace(&SHOWN, SHOWN.get().min(bytes));
+        write!(limit, "{typ}").ok().map(|()| limit.out)
+    }
 }
 
 impl fmt::Display for Brief<'_> {

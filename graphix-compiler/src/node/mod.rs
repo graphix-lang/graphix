@@ -24,7 +24,8 @@ use crate::{
     },
     prune::ReadStamp,
     typ::{
-        AmbiguousMember, CastInput, Mutability, TVal, TVar, Type, TypeMismatch, TypeRef,
+        AmbiguousMember, Brief, CastInput, Mutability, NodeKey, TVal, TVar, Type,
+        TypeMismatch, TypeRef,
         tvar::{
             AtLevel, BoundAt, InTask, Level, TaskContext, TaskId, current_task, new_task,
         },
@@ -3032,7 +3033,7 @@ pub(crate) fn generic_target(
     (name, hint)
 }
 
-// CR claude for claude: [bug/medium] A refused `<-` of what a select's arms leave of a test
+// XCR claude for claude: [bug/medium] A refused `<-` of what a select's arms leave of a test
 // written `d` Errors deep (the shared residual of (residual-message-tree-01)) still costs
 // 2^d. write_mismatch walks it as a tree in its `holds_fn` and in `Type::written_form`
 // (the remedy's `declare q: [i64, ..]`), and the remedy prints under default flags, which
@@ -3046,6 +3047,13 @@ pub(crate) fn generic_target(
 // and the remedy is written only when its print is short, else "declare q with a type
 // holding both". probes: ~/ptmp/cr29/scratch/r24/24g/residual-message-tree/review/
 // {conn16,conn20,conndecl16,struct2_16}.gx (write-mismatch-shared-tree-01)
+// 2026-11-14 claude: write_mismatch prints the held and written types through Brief;
+// holds_fn and Type::written_form visit a shared node once (a per-node memo); a remedy that
+// prints longer than Brief::DECLARATION is not written, the refusal asks for a type holding
+// both. conn16 1.08G -> 0.76G instructions (1.1 MB -> 1.7 KB of message), conn20 5.46G ->
+// 0.78G (17 MB -> 1.7 KB). Pins:
+// lang::select::shared_residual_{connect_is_brief,connect_asks_for_a_type_holding_both,declared_target_is_brief,struct_write_is_brief}
+// fail without the fix.
 /// A written `<-` whose value `bind` cannot hold: the target, its type,
 /// and the declaration that would hold both. `reads_target`: what is
 /// written reads `bind`.
@@ -3073,31 +3081,44 @@ fn write_mismatch(
     // a type variable is declared, and no declaration widens it; nor does
     // one widen what holds a function, as two function types share a
     // runtime form; what was settled is declared as what is written
-    fn holds_fn(t: &Type) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::Fn(_) => true,
-            Type::TVar(tv) => tv.binding().is_some_and(|b| holds_fn(&b)),
-            t => {
-                let mut any = false;
-                t.for_each_child(&mut |c| any |= holds_fn(c));
-                any
+    fn holds_fn(t: &Type, seen: &mut AHashSet<NodeKey>) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            if t.node_key().is_some_and(|k| !seen.insert(k)) {
+                return false;
+            }
+            match t {
+                Type::Fn(_) => true,
+                Type::TVar(tv) => tv.binding().is_some_and(|b| holds_fn(&b, seen)),
+                t => {
+                    let mut any = false;
+                    t.for_each_child(&mut |c| any = any || holds_fn(c, seen));
+                    any
+                }
             }
         })
     }
+    let holds_fn = |t: &Type| holds_fn(t, &mut LPooled::take());
     if !infinite
         && settled.is_none()
         && (matches!(held, Type::TVar(_)) || holds_fn(&held) || holds_fn(&written))
     {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
-            || anyhow!("{name} is {held} and cannot hold {}", lower_shown(&written)),
+            || {
+                anyhow!(
+                    "{name} is {} and cannot hold {}",
+                    Brief(&held),
+                    Brief(&lower_shown(&written))
+                )
+            },
         );
     }
     let refusal = |declare: &str, meanings: &str| {
         format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
             format_compact!(
-                "{name} is {held}{inferred} and cannot hold {}; {declare} ({}){meanings}",
-                lower_shown(&written),
+                "{name} is {}{inferred} and cannot hold {}; {declare} ({}){meanings}",
+                Brief(&held),
+                Brief(&lower_shown(&written)),
                 BoundAt(bind, Some(at))
             )
         })
@@ -3127,6 +3148,7 @@ fn write_mismatch(
         false => {
             let write = |t: &Type, holders: &mut Holders| {
                 t.written_form(&mut |tv| holders.name_open(tv))
+                    .filter(|t| Brief::within(t, Brief::DECLARATION).is_some())
             };
             // a parameter decided apart is held by no union of parameters
             let both = match settled.as_ref().and_then(|t| write(t, &mut holders)) {

@@ -5945,52 +5945,64 @@ impl Type {
         &self,
         name: &mut impl FnMut(&TVar) -> Option<Type>,
     ) -> Option<Type> {
+        struct Walk {
+            walking: LPooled<AHashSet<usize>>,
+            written: LPooled<AHashMap<NodeKey, Option<Type>>>,
+            unwritable: bool,
+        }
         fn go(
             t: &Type,
             name: &mut impl FnMut(&TVar) -> Option<Type>,
-            walking: &mut AHashSet<usize>,
-            unwritable: &mut bool,
+            w: &mut Walk,
         ) -> Option<Type> {
-            ensure_sufficient(|| match t {
+            let key = t.node_key();
+            if let Some(r) = key.and_then(|k| w.written.get(&k)) {
+                return r.clone();
+            }
+            let r = ensure_sufficient(|| match t {
                 Type::TVar(tv) => Some(match name(tv) {
                     Some(t) => t,
-                    None if !walking.insert(tv.cell_addr()) => {
-                        *unwritable = true;
+                    None if !w.walking.insert(tv.cell_addr()) => {
+                        w.unwritable = true;
                         Type::Bottom
                     }
                     None => {
                         let r = match tv.binding() {
-                            Some(b) => go(&b, name, walking, unwritable).unwrap_or(b),
+                            Some(b) => go(&b, name, w).unwrap_or(b),
                             None => {
                                 let lower: SmallVec<[Type; 4]> = tv
                                     .cell_lower()
                                     .iter()
-                                    .map(|l| {
-                                        go(l, name, walking, unwritable)
-                                            .unwrap_or_else(|| l.clone())
-                                    })
+                                    .map(|l| go(l, name, w).unwrap_or_else(|| l.clone()))
                                     .collect();
                                 match (lower.is_empty(), tv.written_open()) {
                                     (false, _) => Type::Set(Arc::from_iter(lower)),
                                     (true, Some(t)) => t,
                                     (true, None) => {
-                                        *unwritable = true;
+                                        w.unwritable = true;
                                         Type::Bottom
                                     }
                                 }
                             }
                         };
-                        walking.remove(&tv.cell_addr());
+                        w.walking.remove(&tv.cell_addr());
                         r
                     }
                 }),
-                t => t.cow_children(&mut |c| go(c, name, walking, unwritable)),
-            })
+                t => t.cow_children(&mut |c| go(c, name, w)),
+            });
+            if let Some(k) = key {
+                w.written.insert(k, r.clone());
+            }
+            r
         }
-        let mut unwritable = false;
-        let t = go(self, name, &mut LPooled::take(), &mut unwritable)
-            .unwrap_or_else(|| self.clone());
-        (!unwritable).then(|| t.normalize())
+        let mut w = Walk {
+            walking: LPooled::take(),
+            written: LPooled::take(),
+            unwritable: false,
+        };
+        let t = go(self, name, &mut w).unwrap_or_else(|| self.clone());
+        (!w.unwritable).then(|| t.normalize())
     }
 
     /// A copy of self with every TVar named in `known` replaced by the

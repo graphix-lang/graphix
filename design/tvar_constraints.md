@@ -3335,7 +3335,9 @@ A hint's declaration writes a type as a
 program can (`Type::written_form`): an open cell as `'x` for the binding
 `x` it waits for (`node::Holders`), an unnamed referent's as `'r` for the
 binding `r` holding its reference, else as the variable a program wrote,
-else none, and the hint names no type. A refused write into a payload
+else none, and the hint names no type; it visits a shared node once, and
+a declaration printing longer than `Brief::DECLARATION` is not written
+(the hint asks for "a type holding both"). A refused write into a payload
 an earlier use decided is told both: the payload union, then a named
 recursive type for a value that reads the target; one whose own
 references name the target is told the recursive type alone

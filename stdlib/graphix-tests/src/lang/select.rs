@@ -12919,3 +12919,37 @@ run!(
     refused_within("cannot compute Error<[Error<", Brief::MOST + 4 * Brief::BYTES);
     FuseExpect::None
 );
+
+// A refused write of what the arms leave prints it through Brief, and the
+// declaration that would hold both, which would print as a tree, is not
+// written past Brief::DECLARATION: the refusal asks for a type holding both.
+run!(
+    shared_residual_connect_is_brief,
+    shared_residual("`A => 1, e => { let q = 1; q <- e; q }"),
+    refused_within(
+        "q is i64 and cannot hold Error<[Error<",
+        4 * Brief::BYTES
+    );
+    FuseExpect::None
+);
+
+run!(
+    shared_residual_connect_asks_for_a_type_holding_both,
+    shared_residual("`A => 1, e => { let q = 1; q <- e; q }"),
+    refused_within("declare q with a type holding both where it is bound", 4 * Brief::BYTES);
+    FuseExpect::None
+);
+
+run!(
+    shared_residual_declared_target_is_brief,
+    shared_residual("`A => 1, e => { let q: i64 = 1; q <- e; q }"),
+    refused_within("declare q with a type holding both where it is bound", 4 * Brief::BYTES);
+    FuseExpect::None
+);
+
+run!(
+    shared_residual_struct_write_is_brief,
+    shared_residual("`A => 1, e => { let s = {a: 1, b: 2}; s <- {a: e, b: 2}; 2 }"),
+    refused_within("declare s with a type holding both where it is bound", 4 * Brief::BYTES);
+    FuseExpect::None
+);
