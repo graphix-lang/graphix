@@ -11142,6 +11142,54 @@ run!(
 );
 
 run!(
+    variable_beside_a_member_under_a_writable_reference_takes_what_the_argument_leaves_it_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let nest = |w: &mut Opt<'a>| -> &mut 'a never();
+  let n0: Opt<i64> = null;
+  let x: &mut Opt<i64> = nest(&mut n0);
+  0
+}"#,
+    refused("&mut Opt<i64> does not contain &mut 'a: i64");
+    FuseExpect::None
+);
+run!(
+    variable_beside_a_member_under_a_writable_reference_takes_what_the_argument_leaves_it_twin,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let nest = |w: &mut Opt<'a>| -> &mut 'a never();
+  let n0: Opt<i64> = null;
+  let x: &mut i64 = nest(&mut n0);
+  0
+}"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+run!(
+    variable_beside_a_member_under_a_writable_reference_after_the_variable_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let nest = |w: &mut Opt<'a>, k: &mut 'a| -> i64 0;
+  let n0: Opt<i64> = null;
+  let d: Opt<i64> = 1;
+  nest(&mut n0, &mut d)
+}"#,
+    refused("&mut 'a: i64 does not contain &mut [i64, null]");
+    FuseExpect::None
+);
+run!(
+    variable_beside_a_member_under_a_writable_reference_before_the_variable_twin,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let nest = |k: &mut 'a, w: &mut Opt<'a>| -> i64 0;
+  let n0: Opt<i64> = null;
+  let d: Opt<i64> = 1;
+  nest(&mut d, &mut n0)
+}"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+run!(
     alias_over_a_variable_under_an_abstract_builds_at_a_nested_alias,
     r#"{
   type Opt<'a> = ['a, null];
