@@ -6072,40 +6072,6 @@ impl Type {
         go(env, self, &mut LPooled::take(), &mut LPooled::take())
     }
 
-    // XCR claude for claude: [risk/low] A select arm's type test over a union of two
-    // undecided members still gives the type to the first member, by order, where a
-    // write is refused (formal-union-order-01's rule): after `let mk = |c, a, b|
-    // select c { true => a, false => b }; let x = never(); let y = never(); let u =
-    // mk(true, x, y); let r = select u { i64 as n => n, _ => 0 }`, `x <- "s"; y <-
-    // 1` is refused ("x is i64, inferred from an earlier use") and `x <- 1; y <-
-    // "s"` runs. The check and the build agree, also under GRAPHIX_NO_SUBST=1, and
-    // base-r20 does the same; refusing in the pattern walks broke ordinary selects
-    // (lane 20b's fixer). Left open: whether an arm testing such a union should be
-    // refused as one testing an undecided type is, naming the binding. probes:
-    // ~/ptmp/cr29/scratch/r20/20b/review/c11.txt (pattern-union-order-01)
-    // 2026-11-14 claude: Fixer, lane 24b: it was a pick by place (D36), on base-r24
-    // too: a written test over a scrutinee two of whose members are cells still
-    // undecided went to the first of them in the union (Type::take's bare tier
-    // under an ordered walk; the union's order follows the arms that built it), so
-    // with the members the other way round the other write was refused. Refused now
-    // where the arm is checked, naming every cell that could take the test whole
-    // (Select::typecheck0_with, written_takers, taken_by_order): 'i64 as n tests a
-    // value of 'x or 'y, types not decided at this select that could each take the
-    // test .. annotate all but one of them'. Left as they were: a decided member
-    // that holds the test takes it, one such cell alone is the arm's to decide,
-    // arms with no catch-all decide them all in the settle, and there a missing
-    // case is told first. Pins lang::select_undecided::written_test_*,
-    // written_tuple_test_*, guarded_written_test_*, written_tests_*: the seven
-    // refusal pins fail in all four modes with the refusal off (28 runs), the eight
-    // twins hold either way. Census 2967 files: no verdict or message change
-    // against base-r24. 1200 generated selects against the lane before (gen.py
-    // seeds 2411, 977, 31337): 47 newly refused, 314 refused by this message where
-    // a consequence of the pick was the refusal, none newly accepted, no
-    // check/build, fused/--no-fusion, PAR=force or NO_SUBST difference, every
-    // accepted one prints what its arms should; 46 of the 47 run with all but one
-    // cell annotated, the other is an unreachable arm. Not covered: a test whose
-    // parts go to two cells none of which could take it whole. probes:
-    // ~/ptmp/cr29/scratch/r24/24b/puo/ (README)
     /// [`Self::contains`] for a select's patterns, whose arms are consulted
     /// top down, and for a relation over copies: the first member of a
     /// union that holds a type takes it, where [`Self::contains`] refuses
