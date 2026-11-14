@@ -234,64 +234,6 @@ impl TVar {
     ///
     /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
-        // XCR claude for claude: [bug/medium] A `never()` at a variable a bound holds is
-        // refused where the bound's holder took its argument as a lower bound: `type
-        // O<'t> = ['t, null]; let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: string |x5:
-        // 'a5, x3: 'a3| x5; f(never(), ["s"])` fails "unsatisfiable constraints on 'a4:
-        // Array<'a5: _>", in either order of the parameters, through a wrapper, and with
-        // the union written out (`'a3: ['a4, null]`). `f(never<string>(), ["s"])` runs,
-        // and so does the chain whose first link is no union (`'a3: Array<'a4>`,
-        // `f(never(), [["s"]])`): there 'a4 binds to the argument, and its bound gives
-        // 'a5 `string`. Under the union 'a4 stands above `Array<string>` (LOWER under
-        // GRAPHIX_DBG_BIND; contains::conjuncts_admit only probes the bound, so nothing
-        // reaches 'a5), the terminal settle takes 'a5 first, fed ⊥ alone and above no
-        // lower bound, to ⊥ here, and the union of 'a4's lower bounds is then outside
-        // `Array<_>`. What a cell stands above is not handed to the cells its conjuncts
-        // hold before they settle. base-r23 alike. 5 of 1200 generated programs
-        // (~/ptmp/cr29/scratch/r20/coord/rebase/mix.py, seeds 31 and 32) end this way.
-        // Found on bound-chain-conjunct-cells-01. probes:
-        // ~/ptmp/cr29/scratch/r23/23b/bcc/{b5,b5r,b4,c1,c6,c8}.gx
-        // (never-under-union-bound-01)
-        // 2026-11-13 claude: Review of bound-chain-conjunct-cells-01: a wrapper passing
-        // its declared variables each beside an inferred parameter (`let p = (y, e);
-        // f(p, ..)`) is refused this way now, as its direct call is; base-r23 ran the
-        // wrapper. probes: ~/ptmp/cr29/scratch/r23/23b/bccrev/nev1_{wrapper,direct}.gx
-        // 2026-11-13 claude: Learned fixing bound-chain-lower-settle-01 (lane 24c): a
-        // settle at a cell's lower bounds now commits its conjuncts
-        // (TVar::commit_conjuncts), so 'a4 settled at Array<string> would give 'a5
-        // string. The probes are refused as before (b5, b5r, c6, c8 on the lane's
-        // build): the terminal settle still takes 'a5 first, to bottom. What is left of
-        // this CR is that order alone.
-        // 2026-11-13 claude: Review of bound-chain-lower-settle-01 (lane 24c): a
-        // widening now commits its variable's conjuncts, so a call that widens a bound's
-        // holder reaches this refusal where base-r24 ran. `let f = 'a0: ['a1, string],
-        // 'a1: ['a2, string] |x0: 'a0, x1: 'a0| x0; let w0: [string, duration] = "s";
-        // f("s", w0)` is refused "unsatisfiable constraints on 'a1: [string, 'a2: _]"
-        // (base-r24 prints s), as the same call the other way round, `f(w0, "s")`, and
-        // the one-parameter `f(w0)` and `f(duration:1.s)` already were on base-r24;
-        // alike under `'a1: Array<'a2>` and `'a1: [Array<'a2>, null]` with `w0: [string,
-        // Array<i64>]`. No argument holds 'a1 or 'a2, so nothing at the call can be
-        // annotated. These have no never(): the fix of this CR must run them (q3, q7, q9
-        // newly refused; q1, q2, q5, q8, q10 refused on base-r24 too). probes:
-        // ~/ptmp/cr29/scratch/r24/24c/bclsrev/q{1..10}.gx
-        // 2026-11-13 claude: Fixed in FnType::settle_terminal (settle::TerminalRun): a
-        // cell that would settle to bottom or to a type holding an open cell (open,
-        // above no type, and bottom-fed or with no closed conjunct) waits while a cell
-        // whose conjuncts reach it stands above a type or waits for one that does, and
-        // settles after it; every other cell keeps the order (a cell with a type below
-        // it or closed conjuncts settles before its holder). The CR's probes and the
-        // review's q1..q10 run, fused = --no-fusion = PAR=force = NO_SUBST = a warm
-        // image. Pins that fail with TerminalRun::waits answering false:
-        // typ::settle::test::a_terminal_settle_takes_a_cell_above_a_type_before_its_bounds_cells;
-        // lang::types::never_under_a_union_bound_{takes_the_holders_argument,takes_the_holders_argument_holder_first,takes_the_holders_argument_through_wrappers,chain_through_a_struct,of_two_arrays_refused},
-        // unheld_variables_under_a_union_bound_chain_take_the_argument,
-        // unheld_variable_under_a_{union,structured}_bound_holds_a_widened_argument (32
-        // of 32 mode runs). Pins that hold the order of the other cells (they fail if
-        // every open cell above no type waits):
-        // closed_bound_under_a_union_bound_settles_before_its_holder,
-        // bound_closed_by_its_own_chain_settles_before_its_holder. 7200 generated
-        // programs before / after: 0 newly refused, 15 newly accepted, 0 check/build
-        // splits; census 0/0. probes: ~/ptmp/cr29/scratch/r24/24c/nuub/ (README)
         if self.cell().read().facts.contains(CellFact::BottomFed) && !self.above_a_type()
         {
             return self.settle_bottom();
