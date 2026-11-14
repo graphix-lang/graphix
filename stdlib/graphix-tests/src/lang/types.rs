@@ -2192,6 +2192,19 @@ run!(
     FuseExpect::None
 );
 run!(
+    a_quantifier_only_an_enclosing_bound_names_is_refused,
+    "{ let f = 'a: Number, 'z: Array<'a> |w: 'z| { \
+       let g = 'a: Any |x: 'z| -> i64 0; g(w) }; f([1]) }",
+    refused("'a is declared but the signature does not hold it");
+    FuseExpect::None
+);
+run!(
+    a_nested_definition_naming_an_enclosing_bounded_variable_checks,
+    "{ let f = 'a: Number, 'z: Array<'a> |w: 'z| { \
+       let g = |x: 'z| -> i64 0; g(w) }; f([1]) }",
+    prints("i64:0")
+);
+run!(
     a_written_fn_types_unheld_quantifier_is_refused,
     "{ type F = fn<'a: Number>(x: i64) -> i64; let f: F = |x| x; f(1) }",
     refused("'a is declared but the signature does not hold it");

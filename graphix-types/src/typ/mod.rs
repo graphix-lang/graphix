@@ -468,16 +468,26 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
 
 /// A `collect_tvars` walk's state: each node walked (`nodes` holds it, so
 /// a normalized conjunct dropped mid-walk cannot lend its address to a
-/// node never walked), and one normal form for every conjunct it meets,
-/// so a conjunct met again is the node walked before.
+/// node never walked), one normal form for every conjunct it meets, so a
+/// conjunct met again is the node walked before, and the quantifiers of
+/// the signature it is in (`scope`, [`FnType::in_name_scope`]).
 struct TVarsSeen {
     nodes: LPooled<AHashMap<usize, Type>>,
     norm: normalize::NormCx,
+    scope: Option<LPooled<AHashSet<ArcStr>>>,
 }
 
 impl TVarsSeen {
     fn take() -> Self {
-        Self { nodes: LPooled::take(), norm: normalize::NormCx::take() }
+        Self { nodes: LPooled::take(), norm: normalize::NormCx::take(), scope: None }
+    }
+
+    /// Whether the walk passes `tv`'s conjuncts. A signature's walk passes
+    /// those of its own quantifiers alone: a cell declared outside it is
+    /// its declarer's, whose bounds name its declarer's variables, never
+    /// the signature's. A walk no signature encloses passes every cell's.
+    fn passes(&self, tv: &TVar) -> bool {
+        self.scope.as_ref().is_none_or(|own| own.contains(&tv.name))
     }
 }
 

@@ -731,22 +731,31 @@ fn seed_conjuncts_aliasing<'a>(
 }
 
 /// `known` and, until nothing new arrives, the cells the bounds of its
-/// cells name.
-fn close_through_bounds(known: &mut AHashMap<ArcStr, TVar>, seen: &mut TVarsSeen) {
-    let mut todo: LPooled<Vec<TVar>> = LPooled::take();
-    todo.extend(known.values().cloned());
-    let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    while let Some(tv) = todo.pop() {
-        for tc in tv.cell_constraints() {
-            tc.collect_tvars_seen(&mut found, seen);
-        }
-        for (name, tv) in found.drain() {
-            if !known.contains_key(&name) {
-                known.insert(name, tv.clone());
-                todo.push(tv);
+/// cells `ft`'s walk passes name ([`FnType::in_name_scope`]).
+fn close_through_bounds(
+    ft: &FnType,
+    known: &mut AHashMap<ArcStr, TVar>,
+    seen: &mut TVarsSeen,
+) {
+    ft.in_name_scope(seen, |seen| {
+        let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+        todo.extend(known.values().cloned());
+        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        while let Some(tv) = todo.pop() {
+            if !seen.passes(&tv) {
+                continue;
+            }
+            for tc in tv.cell_constraints() {
+                tc.collect_tvars_seen(&mut found, seen);
+            }
+            for (name, tv) in found.drain() {
+                if !known.contains_key(&name) {
+                    known.insert(name, tv.clone());
+                    todo.push(tv);
+                }
             }
         }
-    }
+    })
 }
 
 /// The variables `t` names, in order, a signature's conjuncts included.
@@ -817,7 +826,7 @@ impl FnType {
     pub fn collect_tvars_through_bounds(&self, known: &mut AHashMap<ArcStr, TVar>) {
         let mut seen = TVarsSeen::take();
         self.collect_tvars_seen(known, &mut seen);
-        close_through_bounds(known, &mut seen)
+        close_through_bounds(self, known, &mut seen)
     }
 
     /// Whether a trait method's `self` occurs in a bound of a variable the
@@ -843,7 +852,7 @@ impl FnType {
         let mut reached: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut reached);
         if !self.quantifiers.iter().all(|q| reached.contains_key(q)) {
-            close_through_bounds(&mut reached, &mut TVarsSeen::take());
+            close_through_bounds(self, &mut reached, &mut TVarsSeen::take());
         }
         self.view_of(&mut reached, &mut view);
         view
@@ -1109,15 +1118,16 @@ impl FnType {
     /// conjuncts are guarded per `FnType` address: one can reach back.
     #[doc(hidden)]
     pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
-        self.for_each_part_passing(&mut |_| true, f)
+        self.for_each_part_passing(&mut (), |_, _| true, &mut |_, t, c| f(t, c))
     }
 
-    /// [`Self::for_each_part`], passing the conjuncts only of the cells
-    /// `pass` admits.
-    fn for_each_part_passing(
+    /// [`Self::for_each_part`] over the walk state `cx`, passing the
+    /// conjuncts only of the cells `pass` admits.
+    fn for_each_part_passing<C>(
         &self,
-        pass: &mut impl FnMut(&TVar) -> bool,
-        f: &mut impl FnMut(&Type, bool),
+        cx: &mut C,
+        pass: impl Fn(&C, &TVar) -> bool,
+        f: &mut impl FnMut(&mut C, &Type, bool),
     ) {
         let _depth = PartsDepth::enter();
         let FnType {
@@ -1130,12 +1140,12 @@ impl FnType {
             lambda_ids: _,
         } = self;
         for arg in args.iter() {
-            f(&arg.typ, false)
+            f(cx, &arg.typ, false)
         }
         if let Some(vargs) = vargs {
-            f(vargs, false)
+            f(cx, vargs, false)
         }
-        f(rtype, false);
+        f(cx, rtype, false);
         if let Some(_guard) = Walking::enter(&CONSTRAINING, self) {
             // the cells the positions name, each nested signature's own
             // conjunct pass left to that signature's walk
@@ -1144,15 +1154,15 @@ impl FnType {
             self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells, &mut seen));
             for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
                 if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr())
-                    && pass(&tv)
+                    && pass(cx, &tv)
                 {
                     for tc in tv.cell_constraints() {
-                        f(&tc, true);
+                        f(cx, &tc, true);
                     }
                 }
             }
         }
-        f(throws, false);
+        f(cx, throws, false);
     }
 
     pub fn unbind_tvars(&self) {
@@ -1336,7 +1346,7 @@ impl FnType {
         passed: &tvar::ConjunctsPassed,
         how: Aliasing,
     ) {
-        self.for_each_part_passing(&mut |tv| passed.first(tv), &mut |t, _| {
+        self.for_each_part_passing(&mut (), |_, tv| passed.first(tv), &mut |_, t, _| {
             t.alias_tvars_in(known, passed, how)
         })
     }
@@ -1392,24 +1402,28 @@ impl FnType {
             return Ok(());
         }
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        let mut seen = TVarsSeen::take();
-        self.collect_tvars_seen(&mut held, &mut seen);
-        let mut todo: LPooled<Vec<TVar>> = held.values().cloned().collect();
-        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        while let Some(tv) = todo.pop() {
-            for tc in tv.cell_constraints() {
-                match tc.normalize_int(&mut seen.norm) {
-                    Some(n) => n.collect_tvars_seen(&mut found, &mut seen),
-                    None => tc.collect_tvars_seen(&mut found, &mut seen),
+        self.in_name_scope(&mut TVarsSeen::take(), |seen| {
+            self.collect_tvars_seen(&mut held, seen);
+            let mut todo: LPooled<Vec<TVar>> = held.values().cloned().collect();
+            let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            while let Some(tv) = todo.pop() {
+                if !seen.passes(&tv) {
+                    continue;
+                }
+                for tc in tv.cell_constraints() {
+                    match tc.normalize_int(&mut seen.norm) {
+                        Some(n) => n.collect_tvars_seen(&mut found, seen),
+                        None => tc.collect_tvars_seen(&mut found, seen),
+                    }
+                }
+                for (name, tv) in found.drain() {
+                    if !held.contains_key(&name) {
+                        todo.push(tv.clone());
+                        held.insert(name, tv);
+                    }
                 }
             }
-            for (name, tv) in found.drain() {
-                if !held.contains_key(&name) {
-                    todo.push(tv.clone());
-                    held.insert(name, tv);
-                }
-            }
-        }
+        });
         match self.quantifiers.iter().find(|q| !held.contains_key(*q)) {
             None => Ok(()),
             Some(q) => bail!(
@@ -1536,7 +1550,7 @@ impl FnType {
         self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
-    // CR claude for claude: [bug/low] A name walk over a quantified signature
+    // XCR claude for claude: [bug/low] A name walk over a quantified signature
     // reads a bound of a cell declared outside it under the signature's own
     // names. This walk passes the conjuncts of every position cell
     // (for_each_part) and close_through_bounds those of every cell found, both
@@ -1560,18 +1574,62 @@ impl FnType {
     // signature's walk reads the bounds of its own quantifiers alone. probes:
     // ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/ (README)
     // (name-walk-outer-bound-01)
+    // 2026-11-13 claude: Fixed: the name walks take the alias walk's scope
+    // rule. FnType::collect_tvars_seen, close_through_bounds and
+    // check_quantifiers_held pass the conjuncts of the signature's own
+    // quantifiers alone (FnType::in_name_scope, TVarsSeen::passes, a set of the
+    // names); an unquantified signature walks in the scope it is in, and only a
+    // walk no signature encloses passes every cell's. h1.gx is now refused ('a
+    // is declared but the signature does not hold it), the five rewritten nests
+    // and g303_s00747.gx print as written, and a nested signature's
+    // collect_tvars_through_bounds finds its own cell at every call. Pins that
+    // fail without it:
+    // lang::types::a_quantifier_only_an_enclosing_bound_names_is_refused,
+    // parser::test::a_nested_signature_prints_its_own_variables_bound,
+    // typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier.
+    // a_cell_write_drops_the_free_cells_read_before_it now writes the nested
+    // signature's own quantifier, the cell its walk reads. Census 2967 files: 0
+    // verdict and 0 message changes. 12000 gen2.py nests: 6 rewritten on base
+    // print as written, no other change. 3000 genlam.py programs: same
+    // verdicts, 121 refusals now name an unheld quantifier or give the remedy.
+    // probes: ~/ptmp/cr29/scratch/r24/24g/name-walk-outer-bound/
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
         seen: &mut TVarsSeen,
     ) {
-        self.for_each_part(&mut |t, constraint| match constraint {
-            true => match t.normalize_int(&mut seen.norm) {
-                Some(n) => n.collect_tvars_seen(known, seen),
-                None => t.collect_tvars_seen(known, seen),
-            },
-            false => t.collect_tvars_seen(known, seen),
+        self.in_name_scope(seen, |seen| {
+            self.for_each_part_passing(
+                seen,
+                TVarsSeen::passes,
+                &mut |seen, t, constraint| match constraint {
+                    true => match t.normalize_int(&mut seen.norm) {
+                        Some(n) => n.collect_tvars_seen(known, seen),
+                        None => t.collect_tvars_seen(known, seen),
+                    },
+                    false => t.collect_tvars_seen(known, seen),
+                },
+            )
         })
+    }
+
+    /// `f` of `seen` in the scope of a name walk over `self`
+    /// ([`TVarsSeen::passes`]): its own quantifiers, or, where it declares
+    /// none, the scope `seen` is in.
+    fn in_name_scope<R>(
+        &self,
+        seen: &mut TVarsSeen,
+        f: impl FnOnce(&mut TVarsSeen) -> R,
+    ) -> R {
+        if self.quantifiers.is_empty() {
+            return f(seen);
+        }
+        let mut own: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        own.extend(self.quantifiers.iter().cloned());
+        let enclosing = std::mem::replace(&mut seen.scope, Some(own));
+        let r = f(seen);
+        seen.scope = enclosing;
+        r
     }
 
     /// Index of the first positional parameter (`args.len()` when all
@@ -2633,6 +2691,34 @@ mod tests {
         }
     }
 
+    /// A nested signature's walk through bounds reads the bounds of its own
+    /// quantifiers alone: the bound of an enclosing variable it names, in a
+    /// position or through a bound, never brings in the enclosing `'z` under
+    /// the name of its own, at any call, whatever order a map holds them in.
+    #[test]
+    fn a_walk_through_bounds_finds_its_own_quantifier() {
+        use crate::typ::{TVar, Type};
+        use ahash::AHashMap;
+        use arcstr::ArcStr;
+        for src in [
+            "fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, w: 'z) -> 'b",
+            "fn<'f: Array<'z>, 'c: 'f, 'z: Any>(x: fn<'d: 'e, 'e: 'z, 'z: i64>(y: 'd, \
+             v: 'c) -> i64, w: 'z) -> 'c",
+        ] {
+            for _ in 0..16 {
+                let ft = parse_fn_type(src).unwrap();
+                let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
+                let mut found: AHashMap<ArcStr, TVar> = AHashMap::default();
+                nested.collect_tvars_through_bounds(&mut found);
+                let bound = found["z"].cell_constraints();
+                assert_eq!(
+                    bound.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                    ["i64"]
+                );
+            }
+        }
+    }
+
     /// A cell a union's member holds takes what stands at that member's
     /// place where the two unions stand member for member, and its own
     /// place first where it has one, whichever the signature holds first.
@@ -3012,16 +3098,19 @@ mod tests {
     }
 
     // What a nested signature names from outside itself is read again
-    // after a cell write: a conjunct added to a cell it names is seen.
+    // after a cell write: a conjunct added to its quantifier's cell is seen.
     #[test]
     fn a_cell_write_drops_the_free_cells_read_before_it() {
         use crate::typ::{TVar, Type};
         let ft = parse_fn_type("fn(x: fn<'b: Any>(y: 'b, q: 'z) -> 'b) -> 'z").unwrap();
+        let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
         let _scope = super::PartsDepth::enter();
         let mut before = ahash::AHashMap::default();
         ft.args[0].typ.collect_tvars(&mut before);
         assert!(before.contains_key("z") && !before.contains_key("w"));
-        before["z"].add_cell_constraint(Type::TVar(TVar::empty_named("w".into())));
+        let mut own = None;
+        nested.each_quantifier(|_, tv| own = Some(tv.clone()));
+        own.unwrap().add_cell_constraint(Type::TVar(TVar::empty_named("w".into())));
         let mut after = ahash::AHashMap::default();
         ft.args[0].typ.collect_tvars(&mut after);
         assert!(after.contains_key("w"));

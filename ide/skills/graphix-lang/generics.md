@@ -5,7 +5,8 @@ value. Every rule here refuses and names the fix.
 
 A declared type variable must appear in the signature: on a parameter,
 the return type, the throws, or in the bound of another declared
-variable that does. `'a: Number |x: i64| -> i64 { let v: 'a = 1; x }`
+variable that does (never the bound of an enclosing definition's
+variable). `'a: Number |x: i64| -> i64 { let v: 'a = 1; x }`
 is refused (no call could choose `'a`), and so is a written
 `fn<'a: Number>(x: i64) -> i64`. A bound may not name its own variable,
 directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
@@ -20,6 +21,7 @@ then one type, the first call's.
 ```graphix,cases
 no "declared but the signature does not hold" 'a: Number |x: i64| -> i64 { let v: 'a = 1; x }
 no "declared but the signature does not hold" let f: fn<'a: Number>(x: i64) -> i64 = |x| x; f(1)
+no "declared but the signature does not hold" let f = 'a: Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z| -> i64 0; g(w) }; f([1])
 no "bound names" 'a: [i64, Array<'a>] |x: 'a| x
 no "bound reaches" 'a: 'b, 'b: 'a |x: 'a, y: 'b| x
 ok let f = 'x: Array<['a, null]> |y: 'x| y; f([1])

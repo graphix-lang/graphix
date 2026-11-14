@@ -2842,6 +2842,15 @@ fn a_bound_naming_two_variables_keeps_both() {
     assert_ne!(both, one);
 }
 
+/// A nested signature prints the bound of its own variable, though a bound
+/// of an enclosing variable it names names the enclosing one alike.
+#[test]
+fn a_nested_signature_prints_its_own_variables_bound() {
+    let src = "type F = fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, \
+               w: 'z) -> 'b";
+    assert_eq!(parse_one(src).unwrap().to_string(), src);
+}
+
 /// A refusal reads as its reason: the token after the refused fn type is
 /// not reported as unexpected.
 #[test]
