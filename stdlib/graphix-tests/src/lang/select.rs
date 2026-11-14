@@ -4919,6 +4919,63 @@ run!(
     FuseExpect::Jit
 );
 
+// A variable a test writes once binds the part of every member the test
+// admits, with no arm beside it to take a member.
+run!(
+    written_variable_once_binds_every_member_part,
+    r#"{
+        let k = |v: i64| {
+            let fa = |x: i64| x;
+            let fb = |y: string| y;
+            let u = select v > 0 { true => (fa, 1), false => (fb, 2) };
+            let s = select v > 0 { true => {f: fa, n: 1}, false => {f: fb, n: 2} };
+            let tuple = select u { ('q, i64) as (r, n) => n };
+            let literal = select u { ('q, i64) as (r, 1) => 5, ('q, i64) as (r, n) => n };
+            let field = select s { {f: 'q, n: i64} as {f, n} => n };
+            let array = select [u, u] { Array<('q, i64)> as [(r, n), ..] => n, _ => 0 };
+            [tuple, literal, field, array]
+        };
+        array::concat(k(1), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 5, 1, 1, 2, 2, 2, 2]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_variable_once_over_a_third_member_binds_every_part,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 1 => (|x: i64| x, 1), 2 => (|y: string| y, 2), _ => (1, 2) };
+            select u { ('q, i64) as (r, n) => n }
+        };
+        [k(1), k(2), k(3)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 2, 2]);
+    FuseExpect::Jit
+);
+
+// A variable a test writes twice stays one binding of the first member's
+// part: a member that holds another type there is told apart, not passed.
+run!(
+    written_variable_twice_over_an_undecided_part_is_refused,
+    r#"{
+        let fa = |x: i64| x + 100;
+        let k = |v: i64| {
+            let u = select v {
+                0 => {f0: null, f1: 7},
+                1 => {f0: null, f1: fa},
+                _ => {f0: 7, f1: [1, 2]}
+            };
+            select u { {f0: 'q, f1: 'q} as {f0: a0, f1: a1} => { let z: bool = a1; 0 } }
+        };
+        k(0)
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
 // A written test whose variable took every member leaves nothing for a
 // catch-all behind it.
 run!(

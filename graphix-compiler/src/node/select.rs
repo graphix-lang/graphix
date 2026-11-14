@@ -862,10 +862,39 @@ impl Reach {
                     // catch-all are the probes:
                     // ~/ptmp/cr29/scratch/r24/24a/fin/wv{2,4,6,10}.gx (pin.gx is the
                     // fixture as it stands, dead.gx the refused twin).
+                    // 2026-11-14 claude: (round 25, lane 25c fixer) PARTIAL: the settle now
+                    // leaves a written variable that stands at ONE position of the test
+                    // (Type::position_counts, a typedef's argument counting twice) to its arm's
+                    // narrowing, as an inferred predicate's cell is, so the tuple, literal,
+                    // field, array and third-member probes (wvt/{p6c,s1,a1b,d2}.gx,
+                    // fin/wv{2,4,6}.gx) check and run right with no catch-all arm (pins
+                    // lang::select::written_variable_once_binds_every_member_part and
+                    // written_variable_once_over_a_third_member_binds_every_part fail in all
+                    // four modes without it); a variable written TWICE stays kept out of the
+                    // copy as before, so the twice forms (fin/wv10.gx, 'q beside 'q over [(fa,
+                    // fa), (fb, fb)]) are still refused "can't tell" and x1.gx still "will never
+                    // match" (pin written_variable_twice_over_an_undecided_part_is_refused fails
+                    // in four modes under the plain is_bound-or-rigid retain, which reaches the
+                    // open variable of written-variable-twice-open-01). What remains: the twice
+                    // form without a catch-all, which waits on written-variable-twice-open-01
+                    // (lane 25a); then the count condition in Select's settle goes, and
+                    // written_variable_binds_two_function_types can drop its null member. Census
+                    // 2967 files no change, graphix-tests lib 24125 pass (1 fail,
+                    // test_beside_a_variable_bounded_by_any_written::jit, the same on main),
+                    // deep_nesting 50 ok, guicheck 39,721,487,097 (base-r25) vs 39,666,524,724
+                    // (lane, with its earlier commits).
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    let mut counts: LPooled<AHashMap<usize, (TVar, u32)>> =
+                        LPooled::take();
                     for p in preds.iter().filter(|p| p.explicit_type_predicate) {
-                        p.type_predicate.reached_cells(&mut written)
+                        p.type_predicate.reached_cells(&mut written);
+                        p.type_predicate.position_counts(&mut counts)
                     }
+                    written.retain(|addr, tv| {
+                        tv.is_bound()
+                            || tv.is_rigid()
+                            || counts.get(addr).is_none_or(|(_, n)| *n != 1)
+                    });
                     if !itype.contains_through_copy(env, &mut written, scrut)? {
                         bail!(
                             "the arms decide this scrutinee's type from their patterns, \
@@ -1032,6 +1061,12 @@ impl Reach {
         // settle-first fixed and its catch-alls dropped. probe:
         // ~/ptmp/cr29/scratch/r24/24a/wsaf-rev/wv.txt (lines 1 to 10, lane against the
         // merge)
+        // 2026-11-14 claude: (round 25, lane 25c) written-variable-settle-first-01 is
+        // fixed for a variable written once: the accepted forms of
+        // written-variable-told-01 (tuple, literal, field, array) check with no
+        // catch-all, so a fix of this one no longer waits on it; the twice form still
+        // does (see that note). Pin:
+        // lang::select::written_variable_once_binds_every_member_part.
         if checking && (self.wildcard || self.atype == empty) {
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
