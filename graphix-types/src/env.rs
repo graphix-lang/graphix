@@ -549,6 +549,21 @@ pub struct TraitDef {
 }
 
 impl TraitDef {
+    // CR claude for claude: [bug/medium] A method whose return type takes `self` as a
+    // function's parameter is called over a union, and the check accepts what the build
+    // refuses. `trait T { val mk: fn(self) -> {cb: fn(d: self) -> string, n: i64} }; impl T
+    // for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} }; impl T for string { let mk = |s|
+    // {cb: |d: string| d, n: 2} }; let v: [i64, string] = "u"; T::mk(v).n` passes --check,
+    // and its run fails "T::mk(v) .. type mismatch { cb: fn(d: 'self: [i64, string]) ->
+    // string, n: i64 } does not contain [{ cb: fn(d: i64) -> string, n: i64 }, { cb: fn(d:
+    // string) -> string, n: i64 }]": the dispatch's arms return each member's function,
+    // which takes that member alone, and the declared return takes the union. With `self`
+    // in the return as data (`-> {v: self, n: i64}`) the call runs. base-r24 alike. This
+    // test looks at the other parameters and the bounds, never at the return: a fix counts
+    // a `self` under a function parameter of the return as beyond the receiver (the
+    // refusal names "select on the value"), or types the union call's result as the union
+    // of its arms' returns. Found fixing trait-method-return-defaults-01. probes:
+    // ~/ptmp/cr29/scratch/r24/24c/tmrd/{u1,u2}.gx (union-self-in-returned-fn-param-01)
     /// The first method that takes `self` beyond its receiver, in another
     /// parameter's type or in the bound of a variable its signature holds:
     /// a union cannot implement such a trait, since a call narrows only

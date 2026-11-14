@@ -1295,6 +1295,32 @@ An image carries each cell's level and each definition's depth.
   The typedef's body written out in the declaration keeps the per-call
   judgment. Pins `lang::functions::default_behind_a_typedef_return_type`
   and its neighbours.
+- A trait method's declared return is read the same way: a call of the
+  method takes the trait's signature, a copy that names no impl's
+  function, so `T::mk(x).cb(7)` judges no default and the bind would
+  meet the signature's variable as bottom. So where a method's value is
+  held to its signature (`traits::implements`: an impl's method and a
+  trait's default, whatever the value is, a lambda, a block or a
+  binding's read), the functions its return holds are walked against the
+  declared return as it is written (`callsite::check_method_return`,
+  `Narrowing::Method`). The walk runs on a fresh copy of the signature,
+  every variable rigid, and on a copy of the method's own return, so it
+  decides nothing of the method's scheme or of the impl's variables (a
+  merge with the impl's own cell would take the copy's level, and no
+  call would copy that variable again). `trait T { val mk: fn(self) ->
+  {cb: fn(?#d: 'z, x: i64) -> string} }` over `#d = 1` is refused,
+  "write the default's type in the trait's signature" (`?#d: i64`),
+  whatever the calls pass. A default of the signature's own variable
+  fits (`fn(self, v: 'z) -> ..` over `#d = v`), and so does one whose
+  type is its own to decide (`[]` under `Array<'z>`, `never()`). A
+  default whose type holds a cell every use shares (it reads a binding
+  nothing has decided yet) would tie that binding to the copy's
+  variable, so under a label that holds a declared variable it is
+  refused, naming the binding to annotate; under a written label it
+  takes that type. The walk judges the return alone: a default of the
+  method's own label is left to the call that omits it. Pins
+  `lang::traits::method_return_default_under_a_declared_variable_refused`
+  and its neighbours.
 - The walk reaches a function wherever the two types give one at the
   same place: a part of a struct, tuple, variant, array, list, map or
   reference, a union's member built by the value's constructor, and what

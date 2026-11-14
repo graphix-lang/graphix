@@ -5181,3 +5181,312 @@ run!(
         let result = T::m(1, "s")
     "#
 );
+
+// A call of a method reads its trait's signature, which names no impl's
+// function, so no call judges the default of a function the method
+// returns: the method's value is held to the declared return as it is
+// written. A declared variable refuses the default, and the written type,
+// a default of the variable's own type and a hidden label pass.
+run!(
+    method_return_default_under_a_declared_variable_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_refused_whatever_the_calls_pass,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        let result = T::mk(1).cb(#d: "s", 7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_written_in_the_signature,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 1 s"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: i64, x: i64) -> string, n: i64} };
+        trait U { val mk: fn(self) -> {cb: fn(?#d: [i64, string], x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        impl U for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        let result = "[T::mk(1).cb(7)] [U::mk(1).cb(7)] [U::mk(1).cb(#d: "s", 7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_of_the_signatures_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "s 2 3 1 2"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self, v: 'z) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        trait U { val mk: fn(self, v: 'z) -> {cb: fn(?#d: Array<'z>, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s, v| {cb: |#d = v, x: i64| cast<string>(d)$, n: 1} };
+        impl U for i64 { let mk = |s, v| {cb: |#d = [v], x: i64| "[array::len(d)]", n: 1} };
+        let a = "[T::mk(1, "s").cb(7)] [T::mk(1, 2).cb(7)] [T::mk(1, 2).cb(#d: 3, 7)]";
+        let result = "[a] [U::mk(1, "s").cb(7)] [U::mk(1, 2).cb(#d: [3, 4], 7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_open_under_the_declared_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "7 8 7"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} };
+        trait U { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> i64, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = [], x: i64| array::len(d) + x, n: 1} };
+        impl U for i64 { let mk = |s| {cb: |#d = never(), x: i64| x, n: 1} };
+        let result = "[T::mk(1).cb(7)] [T::mk(1).cb(#d: ["a"], 7)] [U::mk(1).cb(#d: 4, 7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_hidden_by_the_signature,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+// The rule holds whatever the method's value is: a block, a binding's
+// read, a default body, a returned function, a part of the return.
+run!(
+    block_method_return_default_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = { let k = 1; |s| {cb: |#d = k, x: i64| cast<string>(d)$, n: 1} } };
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_reading_a_binding_return_default_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        let helper = |s: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = helper };
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_reading_a_binding_return_default_holds,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 s s 3"),
+    "/test.gx" => r#"
+        let helper = |s: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
+        let other = |s: i64, v: 'a| {cb: |#d = v, x: i64| cast<string>(d)$, n: 1};
+        trait T { val mk: fn(self) -> {cb: fn(?#d: i64, x: i64) -> string, n: i64} };
+        trait U { val mk: fn(self, v: 'z) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = helper };
+        impl U for i64 { let mk = other };
+        let a = "[T::mk(1).cb(7)] [helper(1).cb(#d: "s", 7)]";
+        let result = "[a] [U::mk(1, "s").cb(7)] [U::mk(1, 2).cb(#d: 3, 7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    default_method_return_default_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T {
+            val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} =
+                |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1}
+        };
+        impl T for i64 { let mk = |s| {cb: |#d = never(), x: i64| cast<string>(x)$, n: 1} };
+        let result = T::mk(1).cb(#d: 4, 7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    default_method_return_default_of_self,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "a a"),
+    "/test.gx" => r#"
+        trait T {
+            val mk: fn(self) -> {cb: fn(?#d: self, x: i64) -> string, n: i64} =
+                |s| {cb: |#d = s, x: i64| "a", n: 1}
+        };
+        impl T for i64 {};
+        impl T for string {};
+        let result = "[T::mk(1).cb(7)] [T::mk("s").cb(#d: "t", 7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_returned_function_default_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> fn(?#d: 'z, x: i64) -> string };
+        impl T for i64 { let mk = |s| |#d = 1, x: i64| cast<string>(d)$ };
+        let result = T::mk(1)(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_in_an_array_of_options_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> Array<[fn(?#d: 'z, x: i64) -> string, null]> };
+        impl T for i64 { let mk = |s| [|#d = 1, x: i64| cast<string>(d)$] };
+        let result = select T::mk(1)[0]$ { null as _ => "n", f => f(7) }
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_under_a_bounded_variable_refused,
+    refused("'z: unbound within Number does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val mk: fn<'z: Number>(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+// The judgment decides nothing of the impl's own variables: the method
+// of a generic impl is still each call's own.
+run!(
+    generic_impl_method_return_default_of_self,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 2 1 s"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: self, x: i64) -> string, n: i64} };
+        impl<'a> T for Array<'a> { let mk = |s| {cb: |#d = s, x: i64| "[array::len(d)]", n: 1} };
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        impl T for string { let mk = |s| {cb: |#d = s, x: i64| d, n: 1} };
+        let a = "[T::mk([1]).cb(7)] [T::mk(["a"]).cb(#d: ["b", "c"], 7)]";
+        let result = "[a] [T::mk(1).cb(7)] [T::mk("s").cb(7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    generic_impl_method_return_default_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl<'a> T for Array<'a> { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
+        let result = T::mk([1]).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+// A default whose type nothing has decided where the method is held to
+// its signature cannot stand under a declared variable; under a written
+// type it takes that type.
+run!(
+    method_return_default_undecided_under_a_declared_variable_refused,
+    refused("`k` is undecided here; annotate `k`"),
+    "/test.gx" => r#"
+        let k = never();
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = k, x: i64| cast<string>(d)$, n: 1} };
+        k <- 1;
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_undecided_array_under_a_declared_variable_refused,
+    refused("`k` is undecided here; annotate `k`"),
+    "/test.gx" => r#"
+        let k = [];
+        trait T { val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} };
+        impl T for i64 { let mk = { let j = 1; |s| {cb: |#d = k, x: i64| array::len(d) + x, n: j} } };
+        k <- ["a"];
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_default_undecided_under_a_written_type,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1"),
+    "/test.gx" => r#"
+        let k = never();
+        trait T { val mk: fn(self) -> {cb: fn(?#d: i64, x: i64) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |#d = k, x: i64| cast<string>(d)$, n: 1} };
+        k <- 1;
+        let result = T::mk(1).cb(7)
+    "#
+    ; FuseExpect::None
+);
+
+// The walk judges the return alone: a method's own labeled default is
+// left to the call that omits it, a union self's included.
+run!(
+    method_own_default_is_left_to_its_calls,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "q 1 2.0"),
+    "/test.gx" => r#"
+        trait T { val cb: fn(?#d: 'z, self, x: i64) -> string };
+        impl T for i64 { let cb = |#d = 1, s, x: i64| cast<string>(d)$ };
+        impl T for string { let cb = |#d = "q", s, x: i64| cast<string>(d)$ };
+        let v: [i64, string] = "a";
+        let result = "[T::cb(v, 7)] [T::cb(1, 7)] [T::cb(#d: 2.0, 1, 7)]"
+    "#
+);
+
+// The walk goes as deep as the defaults nest, and reaches an impl of a
+// trait an interface declares.
+run!(
+    method_returned_functions_default_holding_a_defaulted_fn_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> fn(?#w: fn(?#d: 'z, x: i64) -> string, x: i64) -> string };
+        impl T for i64 {
+            let mk = |s| |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x)
+        };
+        let result = T::mk(1)(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_returned_functions_default_holding_a_defaulted_fn_written,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 12"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> fn(?#w: fn(?#d: i64, x: i64) -> string, x: i64) -> string };
+        impl T for i64 {
+            let mk = |s| |#w: fn(?#d: i64, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x)
+        };
+        let result = "[T::mk(1)(7)] [T::mk(1)(#w: |#d = 5, x: i64| cast<string>(d + x)$, 7)]"
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    interface_trait_method_return_default_refused,
+    refused("write the default's type in the trait's signature"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::T::mk(1).cb(7)
+    "#,
+    "/test/inner.gxi" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
+        impl T for i64
+    "#,
+    "/test/inner.gx" => r#"
+        impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} }
+    "#
+    ; FuseExpect::None
+);

@@ -4753,6 +4753,13 @@ impl Type {
         found.into_inner()
     }
 
+    /// An open cell no call copies ([`Level::copied_by`]) anywhere
+    /// beneath, through bindings: one every use shares.
+    #[doc(hidden)]
+    pub fn has_shared_open(&self, open: &IntSet<LambdaId>) -> bool {
+        self.open_beneath(&|tv| !tv.level().copied_by(open))
+    }
+
     /// An open cell held rigid anywhere beneath, through bindings.
     pub fn has_rigid(&self) -> bool {
         self.open_beneath(&|tv| tv.is_rigid())

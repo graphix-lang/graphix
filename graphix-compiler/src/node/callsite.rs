@@ -319,11 +319,24 @@ fn checked_default<R: Rt>(
     };
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
         Some(t) => {
+            // the declared variables are a copy's, which a cell every use
+            // shares must not meet
+            if let Judge::Check(Narrowing::Method) = judge
+                && t.has_unbound()
+                && node.typ().has_shared_open(&ctx.rec_defs)
+            {
+                let note = undecided_binds(ctx, &node, "here")
+                    .unwrap_or(CompactString::const_new("annotate the binding it reads"));
+                bail!(
+                    "the declared #{name} holds a variable each call picks, and \
+                     this default's type is not decided: {note}"
+                )
+            }
             match join {
                 Some(join) => {
                     let undecided = typ
                         .has_free_in_data()
-                        .then(|| undecided_binds(ctx, &node))
+                        .then(|| undecided_binds(ctx, &node, "at this call"))
                         .flatten();
                     join(&ctx.env, name, &t, typ, undecided)
                 }
@@ -412,6 +425,7 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(value),
                 Judge::Check(match narrowing {
                     Narrowing::Constructed => Narrowing::Constructed,
+                    Narrowing::Method => Narrowing::Method,
                     Narrowing::Site
                     | Narrowing::Written
                     | Narrowing::Copy
@@ -422,7 +436,8 @@ fn judge_hidden_defaults<R: Rt>(
                     Narrowing::Site
                     | Narrowing::Written
                     | Narrowing::Copy
-                    | Narrowing::Instance => None,
+                    | Narrowing::Instance
+                    | Narrowing::Method => None,
                 },
             );
             ctx.leave_default(f.id, name);
@@ -591,6 +606,11 @@ pub(crate) enum Narrowing {
     /// definition's verdict, given before the body's calls decided the
     /// declaration. One that names none is judged as it stands.
     Instance,
+    /// A method's declared return ([`check_method_return`]): a call reads
+    /// the trait's signature, which names no implementation's function,
+    /// so every function is judged as the signature stands, its
+    /// variables rigid, and a default under one of them is decided.
+    Method,
 }
 
 impl Narrowing {
@@ -608,6 +628,12 @@ impl Narrowing {
                 "a function read through a typedef's function type is not known \
                  where it is called, so this default must fit the declared type as \
                  it is written: write the default's type in the declared type",
+            ),
+            Narrowing::Method => Some(
+                "a method is called through its trait's signature, which names no \
+                 implementation's function, so this default must fit the declared \
+                 return type as it is written: write the default's type in the \
+                 trait's signature",
             ),
         }
     }
@@ -647,6 +673,37 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     let walk =
         &mut HiddenWalk { narrowing, visited: LPooled::take(), copies: LPooled::take() };
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
+}
+
+/// The defaults of the functions a method's value returns, judged where
+/// the method is held to its `declared` signature: against the declared
+/// return as it is written, every variable of the signature rigid, and
+/// on copies of both, which decide nothing of the method's own type or
+/// of its impl's. The method's own defaults are left to its calls.
+pub(crate) fn check_method_return<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    top_id: ExprId,
+    declared: &FnType,
+    implemented: &FnType,
+) -> Result<()> {
+    if !may_hold_fn(&declared.rtype, &mut LPooled::take())
+        || !holds_defaulted(ctx, &implemented.rtype, &mut LPooled::take())
+    {
+        return Ok(());
+    }
+    let declared = declared.reset_tvars();
+    let mut own: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    declared.collect_tvars_through_bounds(&mut own);
+    let _gates: LPooled<Vec<RigidGate>> =
+        own.values().map(|tv| tv.open_rigid()).collect();
+    let value = implemented.rtype.instantiate_with(&mut LPooled::take(), &ctx.rec_defs);
+    let walk = &mut HiddenWalk {
+        narrowing: Narrowing::Method,
+        visited: LPooled::take(),
+        copies: LPooled::take(),
+    };
+    let (flags, scope) = (BitFlags::empty(), Scope::root());
+    hidden_defaults_at(ctx, flags, &scope, top_id, &declared.rtype, &value, 0, walk)
 }
 
 /// Whether a reader of `formal` finds every definition `value` may be:
@@ -2129,7 +2186,7 @@ fn decided_elsewhere(
 /// What to annotate where the argument `n` is undecided at its call: the
 /// bindings it reads whose types are undecided, else the argument.
 fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
-    undecided_binds(ctx, n).unwrap_or(CompactString::const_new(
+    undecided_binds(ctx, n, "at this call").unwrap_or(CompactString::const_new(
         "this argument is undecided at this call; annotate it (bind it to a `let` \
          with its type written)",
     ))
@@ -2149,8 +2206,13 @@ fn undecided_taker<R: Rt>(
     }
 }
 
-/// The bindings `n` reads whose types are undecided, to annotate.
-fn undecided_binds<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> Option<CompactString> {
+/// The bindings `n` reads whose types are undecided `at` the place that
+/// needs them, to annotate.
+fn undecided_binds<R: Rt>(
+    ctx: &CompileCtx<R>,
+    n: &Node<R>,
+    at: &str,
+) -> Option<CompactString> {
     let mut refs = Refs::without_callees();
     n.refs(&mut refs);
     let mut binds: SmallVec<[_; 2]> = SmallVec::new();
@@ -2167,7 +2229,7 @@ fn undecided_binds<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> Option<CompactStr
     match &*binds {
         [] => None,
         [b] => Some(format_compact!(
-            "`{}` is undecided at this call; annotate `{}` ({})",
+            "`{}` is undecided {at}; annotate `{}` ({})",
             b.name,
             b.name,
             BoundAt(b, None)
@@ -2178,7 +2240,7 @@ fn undecided_binds<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> Option<CompactStr
                 let sep = if i == 0 { "" } else { ", " };
                 write!(names, "{sep}`{}` ({})", b.name, BoundAt(b, None)).unwrap();
             }
-            write!(names, " are undecided at this call; annotate them").unwrap();
+            write!(names, " are undecided {at}; annotate them").unwrap();
             Some(names)
         }
     }
@@ -2872,6 +2934,11 @@ impl<R: Rt> CallSite<R> {
         // the check (Env::find_impl), judge that method's defaults here as a named function's
         // are. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/{tplain, tplain_ok, trait2,
         // traitd}.gx (trait-call-omitted-default-01)
+        // 2026-11-14 claude: trait-method-return-defaults-01 judges only what a method RETURNS,
+        // where the method is held to its signature (callsite::check_method_return); a default
+        // of the method's own label is still left to the call, as this CR says.
+        // lang::traits::method_own_default_is_left_to_its_calls pins the case that runs today
+        // (nothing else decides the label's variable).
         // CR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
         // function a call returns that is called with a labeled default omitted checks, and
         // is refused when its bind runs. `let mk = |k: i64| |#d = 1, x: i64|

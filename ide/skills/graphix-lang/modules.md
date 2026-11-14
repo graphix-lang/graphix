@@ -112,6 +112,25 @@ ok let f = |s: i64| -> i64 s + 1; trait T { val m: fn(self) -> [i64, null] }; im
 ok let mk = |z| |s: i64| -> i64 s + z; trait T { val m: fn(self) -> [i64, null] }; impl T for i64 { let m = mk(1) }; T::m(1)
 ```
 
+A call of a method reads the trait's signature, where a function the
+method returns is not known, so no call judges that function's labeled
+default: the method's value must fit the declared return as it is
+written. Under a declared variable (`fn(self) -> {cb: fn(?#d: 'z, x:
+i64) -> string}` over `#d = 1`) it is refused, whatever the calls pass:
+write the default's type in the trait's signature (`?#d: i64`), or give
+the default the variable's type (`fn(self, v: 'z) -> ..` over `#d = v`).
+A default that reads a binding nothing has decided yet is refused there
+too, naming the binding to annotate. A default of the method's own
+label is left to the call that omits it.
+
+```graphix,cases
+no "write the default's type in the trait's signature" trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string} }; impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$} }; T::mk(1).cb(7)
+ok trait T { val mk: fn(self) -> {cb: fn(?#d: i64, x: i64) -> string} }; impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$} }; T::mk(1).cb(7)
+ok trait T { val mk: fn(self, v: 'z) -> {cb: fn(?#d: 'z, x: i64) -> string} }; impl T for i64 { let mk = |s, v| {cb: |#d = v, x: i64| cast<string>(d)$} }; T::mk(1, "s").cb(7)
+no "`k` is undecided here; annotate `k`" let k = never(); trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string} }; impl T for i64 { let mk = |s| {cb: |#d = k, x: i64| cast<string>(d)$} }; k <- 1; T::mk(1).cb(7)
+ok trait T { val cb: fn(?#d: 'z, self, x: i64) -> string }; impl T for i64 { let cb = |#d = 1, s, x: i64| cast<string>(d)$ }; T::cb(1, 7)
+```
+
 A trait method's `#[pure]` or `#[sync]` holds for every implementation, even
 an uncalled one. Builds reject violating bodies; dynamic modules fail to load.
 Callback parameters retain caller-dependent effects, as in ordinary definitions.

@@ -10,7 +10,7 @@
 use super::{
     Block,
     bind::lower_over_operands,
-    callsite::{ArgKey, CallSite},
+    callsite::{ArgKey, CallSite, check_method_return},
     coretraits::method_ftype,
     genn::SynthCall,
     lambda::LambdaDef,
@@ -167,6 +167,22 @@ fn implements<R: Rt>(
             ),
         }
     })
+}
+
+/// [`check_method_return`] of a method [`implements`] held to `declared`.
+fn returns_declared<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    top_id: ExprId,
+    declared: &FnType,
+    implemented: &Type,
+) -> Result<()> {
+    match implemented.with_deref(|t| match t {
+        Some(Type::Fn(ft)) => Some(ft.clone()),
+        _ => None,
+    }) {
+        Some(ft) => check_method_return(ctx, top_id, declared, &ft),
+        None => Ok(()),
+    }
 }
 
 /// A trait method as the trait declares it: its signature
@@ -511,7 +527,7 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         };
         Arg { constraint, ..a.clone() }
     }));
-    // CR claude for claude: [bug/medium] A method whose declared return type holds a function
+    // XCR claude for claude: [bug/medium] A method whose declared return type holds a function
     // type with an optional label is called with no default judged. `trait T { val mk: fn(self)
     // -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} }; impl T for i64 { let mk = |s| {cb: |#d
     // = 1, x: i64| cast<string>(d)$, n: 1} }; T::mk(1).cb(7)` passes --check, and the run logs
@@ -527,6 +543,25 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
     // ~/ptmp/cr29/scratch/r23/23b/trdrev/{tr1_trait_typedef, tr2_trait_struct,
     // tr4_trait_ret_declared}.gx
     // (trait-method-return-defaults-01)
+    // 2026-11-14 claude: Fixed where a method is held to its signature (Impl::typecheck0 and
+    // Trait::typecheck0, after traits::implements): callsite::check_method_return walks the
+    // functions the method's return holds against a fresh copy of the declared return, every
+    // variable rigid (Narrowing::Method), so the default is refused at the impl or the trait's
+    // default body, 'write the default's type in the trait's signature', whatever the method's
+    // value is (a lambda, a block, a binding's read) and whatever the calls pass. A default
+    // whose type holds a cell every use shares, under a label with a declared variable, is
+    // refused naming the binding. The lambda's own return check was not the place: a block or a
+    // binding's read has none. Pins that fail without it:
+    // lang::traits::method_return_default_under_a_declared_variable_refused,
+    // ..refused_whatever_the_calls_pass, block_method_.., method_reading_a_binding_..,
+    // default_method_.., method_returned_function_.., ..in_an_array_of_options_refused,
+    // ..under_a_bounded_variable_refused, generic_impl_method_return_default_refused,
+    // ..undecided_under_a_declared_variable_refused, ..undecided_array_..,
+    // method_returned_functions_default_holding_a_defaulted_fn_refused,
+    // interface_trait_method_return_default_refused; generic_impl_method_return_default_of_self
+    // guards the impl's own variables (a first version judged against the impl's cells and
+    // broke it). Census of both repos: no verdict or message changed. probes
+    // ~/ptmp/cr29/scratch/r24/24c/tmrd/ (README)
     let rtype = l.rtype.clone().or_else(|| Some(sig.rtype.clone()));
     let throws =
         l.throws.clone().or_else(|| sig.explicit_throws.then(|| sig.throws.clone()));
@@ -756,9 +791,10 @@ impl<R: Rt> Update<R> for Trait<R> {
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
+            let implemented = bind.typ.clone();
             let declared = m.typ.reset_tvars();
             let reads = || self.default_reads_binding(&m.name);
-            implements(ctx, &declared, &bind.typ, id, reads).map_err(|e| {
+            implements(ctx, &declared, &implemented, id, reads).map_err(|e| {
                 let told = format_compact!(
                     "the default {} of trait {} does not implement the declared {declared}",
                     m.name,
@@ -766,6 +802,9 @@ impl<R: Rt> Update<R> for Trait<R> {
                 );
                 Told::over(e, &told)
             })?;
+            returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
+                || format!("in the default {} of trait {}", m.name, self.def.name),
+            )?;
         }
         Ok(())
     }
@@ -1360,9 +1399,10 @@ impl<R: Rt> Update<R> for Impl<R> {
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
+            let implemented = bind.typ.clone();
             let declared = method_sig_at(&d.typ, &self.def.target);
             let reads = || self.method_reads_binding(&d.name);
-            implements(ctx, &declared, &bind.typ, *id, reads).map_err(|e| {
+            implements(ctx, &declared, &implemented, *id, reads).map_err(|e| {
                 let told = format_compact!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,
@@ -1373,17 +1413,25 @@ impl<R: Rt> Update<R> for Impl<R> {
                 Told::over(e, &told)
             })?;
             let expected = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-            expected.check_contains(&ctx.env, &bind.typ).map_err(|e| {
+            expected.check_contains(&ctx.env, &implemented).map_err(|e| {
                 let told = format_compact!(
                     "method {} of impl {} for {} has type {}, the trait declares {}",
                     d.name,
                     self.trait_def.name,
                     self.def.target,
-                    bind.typ.resolve_tvars(),
+                    implemented.resolve_tvars(),
                     expected.resolve_tvars()
                 );
                 Told::over(e, &told)
             })?;
+            returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
+                || {
+                    format!(
+                        "in method {} of impl {} for {}",
+                        d.name, self.trait_def.name, self.def.target
+                    )
+                },
+            )?;
         }
         Ok(())
     }
