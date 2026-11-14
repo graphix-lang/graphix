@@ -16791,6 +16791,63 @@ run!(
     FuseExpect::None
 );
 
+// A lower bound a bound's holder puts on a variable reaches the open
+// cells of that variable's own bounds when it is put, so a call of the
+// enclosing definition that decides one of them is refused at the check,
+// as one bound alone refuses it.
+run!(
+    lower_bound_reaches_the_bounds_own_cells_decided_by_a_caller_refused,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+  let w0: [null, string] = null;
+  let g = |u| f(w0, u);
+  g(1)
+}"#,
+    refused("does not contain i64");
+    FuseExpect::None
+);
+run!(
+    lower_bound_reaches_the_bounds_own_cells_decided_by_a_caller_in_a_block_refused,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+  let w0: [null, string] = null;
+  { let g = |u| f(w0, u); g(1) }
+}"#,
+    refused("does not contain i64");
+    FuseExpect::None
+);
+run!(
+    lower_bound_reaches_the_bounds_own_cells_decided_by_a_caller_within_it,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+  let w0: [null, string] = null;
+  let g = |u| f(w0, u);
+  g("s")
+}"#,
+    prints(r#""s""#)
+);
+run!(
+    lower_bound_reaches_the_bounds_own_cells_decided_by_a_caller_annotated,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+  let w0: [null, string] = null;
+  let g = |u: [null, string]| f(w0, u);
+  g("s")
+}"#,
+    prints(r#""s""#)
+);
+run!(
+    lower_bound_reaches_the_bounds_own_cells_through_three_links,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration], 'a2: ['a3, null] |x0: 'a0, x3: 'a3| x3;
+  let w0: [i64, string] = 1;
+  let g = |u| f(w0, u);
+  g(1.5)
+}"#,
+    refused("does not contain f64");
+    FuseExpect::None
+);
+
 run!(
     narrower_argument_under_a_bound_chain_over_a_recursive_typedef,
     r#"{

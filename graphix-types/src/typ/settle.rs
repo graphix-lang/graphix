@@ -797,6 +797,78 @@ impl FnType {
         let mut nodes: LPooled<AddrSet> = LPooled::take();
         self.for_each_type(&mut |t| reached(t, out, &mut nodes))
     }
+
+    /// The decided lower bounds of this site's open cells whose conjuncts
+    /// reach a cell of `kept` (a definition's signature, left open for its
+    /// callers), passed on to the cells those conjuncts hold, as a settle
+    /// of the cell does ([`TVar::commit_conjuncts`]): a caller of the
+    /// definition then meets a kept cell above what the site put there, not
+    /// above nothing until the site settles. Each cell passes before the
+    /// cells its conjuncts hold, so a chain passes down it.
+    pub fn lower_into_kept(&self, env: &Env, kept: &AHashMap<usize, TVar>) {
+        fn children(tv: &TVar) -> SmallVec<[TVar; 2]> {
+            let mut out = SmallVec::new();
+            for c in tv.cell_constraints().iter() {
+                super::contains::find_open_cell(c, false, &mut |o| {
+                    out.push(o.clone());
+                    false
+                });
+            }
+            out
+        }
+        fn reaches(
+            tv: &TVar,
+            kept: &AHashMap<usize, TVar>,
+            memo: &mut AHashMap<usize, bool>,
+        ) -> bool {
+            let addr = tv.cell_addr();
+            if kept.contains_key(&addr) {
+                return true;
+            }
+            if let Some(r) = memo.get(&addr) {
+                return *r;
+            }
+            memo.insert(addr, false);
+            let r = crate::stack::ensure_sufficient(|| {
+                children(tv).iter().any(|c| reaches(c, kept, memo))
+            });
+            memo.insert(addr, r);
+            r
+        }
+        fn postorder(tv: &TVar, seen: &mut AHashSet<usize>, out: &mut Vec<TVar>) {
+            if seen.insert(tv.cell_addr()) {
+                crate::stack::ensure_sufficient(|| {
+                    for c in children(tv).iter() {
+                        postorder(c, seen, out)
+                    }
+                });
+                out.push(tv.clone())
+            }
+        }
+        if self.quantifiers.is_empty() {
+            return;
+        }
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.reached_cells(&mut cells);
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut order: LPooled<Vec<TVar>> = LPooled::take();
+        let named = cells.drain().map(|(_, tv)| (tv.name.clone(), tv));
+        for (_, tv) in super::fntyp::sorted_tvars(named).iter() {
+            postorder(tv, &mut seen, &mut order)
+        }
+        let mut memo: LPooled<AHashMap<usize, bool>> = LPooled::take();
+        for tv in order.iter().rev() {
+            if !tv.is_bound()
+                && !tv.is_rigid()
+                && !kept.contains_key(&tv.cell_addr())
+                && reaches(tv, kept, &mut memo)
+            {
+                for l in tv.cell_lower().iter().filter(|l| !l.has_unbound()) {
+                    let _ = tv.commit_conjuncts(env, l);
+                }
+            }
+        }
+    }
 }
 
 /// The end of the check of an input (a REPL input, a script, a dynamic

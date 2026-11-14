@@ -2559,6 +2559,19 @@ a gate), and the gate hands them to the enclosing statement's drain with
 every cell its signature reaches exempt (`DefGate::close`): a cell the
 definition owns is judged at the definition, called or not; a
 signature's cell stays generalized and each call settles its copy.
+A site settles with the statement, after the calls of the definition that
+the statement makes have instantiated its signature, so the gate passes the
+decided lower bounds of the site's open cells on at its close
+(`FnType::lower_into_kept`): a cell whose conjuncts reach a cell of the
+signature gives it its lower bound as its own settle would
+(`TVar::commit_conjuncts`), each cell before the cells its conjuncts hold,
+so a chain of bounds passes it down. A call of the definition then meets
+the signature's cell above that bound, as one bound alone has it at the
+site's bind (`lang::types::lower_bound_reaches_the_bounds_own_cells_*`).
+An undecided lower bound waits for the settle. A lower bound given at the
+moment a cell takes it was tried and breaks the programs a cell above a
+bound that a narrower argument meets later
+(`lang::types::a_bound_chain_in_one_argument_settles_in_the_chains_order`).
 
 ### Generic only where a binding names it
 
