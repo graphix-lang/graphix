@@ -6203,16 +6203,36 @@ run!(
     "#
 );
 
-// Where the declaration holds the method's type from above (its result,
-// a callback's parameter) and no parameter before it holds the variable,
-// the lambda's own variable there could be the declaration's or the
-// written member's: the position is written with the member it gives.
+// A method's positions the declaration fills are the declaration's own
+// variables: where it holds the method's type from above (its result, a
+// callback's parameter) beside a written member, the value fits the member
+// it gives.
 run!(
-    method_result_variable_beside_a_written_member_is_refused,
-    refused("could go to Array<string> or Array<'a1: unbound> of the union"),
+    method_result_variable_beside_a_written_member,
+    prints(r#"["x"]"#),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
         impl T for i64 { let m = |s| ["x"] };
+        let result = T::m(1)
+    "#
+);
+
+run!(
+    default_result_variable_beside_a_written_member,
+    prints(r#"["x"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] = |s| ["x"] };
+        impl T for i64 {};
+        let result = T::m(1)
+    "#
+);
+
+run!(
+    method_result_declared_variable_beside_a_written_member_is_refused,
+    refused("does not contain"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| [1] };
         let result = T::m(1)
     "#
 );
@@ -6228,8 +6248,8 @@ run!(
 );
 
 run!(
-    method_callback_variable_beside_a_written_member_is_refused,
-    refused("could go to { a: string } or { a: 'a1: unbound } of the union"),
+    method_callback_variable_beside_a_written_member,
+    is(Value::I64(7)),
     "/test.gx" => r#"
         trait T { val m: fn(self, k: fn(v: [{a: 'a}, {a: string}]) -> i64, y: 'a) -> i64 };
         impl T for i64 { let m = |s, k, y| k({a: "x"}) };

@@ -469,7 +469,7 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
     (!reads_binding(value)).then(|| Type::Fn(Arc::new(sig.clone())))
 }
 
-// CR claude for claude: [bug/low] A method whose declared signature holds a variable
+// XCR claude for claude: [bug/low] A method whose declared signature holds a variable
 // beside a written member under one constructor at a place the declaration holds the
 // method's type from above (its result, a field of the result, a callback's parameter),
 // with no parameter before it that holds the variable, is implemented only with that
@@ -496,6 +496,34 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
 // st_cbp_plain}.gx (refused), {e9,f3}.gx (run), gen2.py with run2.py and cmp2.py (154
 // programs: 36 that ran with hold_declared's gates off are refused)
 // (method-covariant-union-member-01)
+// 2026-11-14 claude: Fixed for the positions the declaration fills: the let's annotation
+// and the lambda's filled signature mint each declared variable once (Bind::compile,
+// lambda::MethodCells), so the variable beside a written member is one cell on both sides.
+// Pins
+// lang::traits::{method_result,default_result,method_callback}_variable_beside_a_written_member
+// fail without it (the first two are the old _is_refused pins, rewritten: the old verdict
+// was the defect). What remains is a type the method writes (the result written as
+// declared, a let annotation over 'a or 'c, a read of a generic binding): new CR
+// method-written-variable-union-member-01.
+// CR claude for claude: [bug/low] A type a method's lambda or `let` writes names variables
+// of its own, even one named like the declaration's, so beside a written member under a
+// place the declaration holds from above they are undecided takers of the union:
+// `trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s|
+// -> [Array<'a>, Array<string>] ["x"] }` is refused, "Array<'a: unbound> could go to
+// Array<string> or Array<'a1: unbound> of the union", and so are the method's `let`
+// annotation over `'a` or over `'c` (`let m: fn(self) -> [Array<'c>, Array<string>] =
+// |s| ["x"]`, "method m of impl T for i64 has type .., the trait declares ..") and a
+// binding's read of a generic function (`let m = g`, `g = |s: i64| -> [Array<'a>,
+// Array<string>] ["x"]`). The hint, "annotate the value (bind it to a `let` with its type
+// written)", fits no method: what runs is the place left to the declaration, or written
+// as the member it gives (`|s| -> Array<string> ["x"]`). A fix is a rule for what a
+// written variable of a method means against the declaration's (by name, which turns a
+// typedef-expanded union of two written variables (`x: E<'a, 'b>`) into an instance's
+// refusal, pins lang::traits::impl_method_typedef_union_refused and
+// default_body_typedef_union_refused), or a hint that names the remedy; the
+// implementation's own quantifier instantiated against a rigid declaration is the
+// UndecidedTaker rule's case, not a placement. probes:
+// ~/ptmp/cr29/scratch/r25/25f/{f7,f7a,f7b,f8}.gx (method-written-variable-union-member-01)
 /// Rigid gates on every open cell `declared` reach: a declaration's
 /// variables, which nothing held to it decides. A value's own variable
 /// beside a written member (`x: [Array<'a>, Array<string>]`) takes the

@@ -3,7 +3,7 @@ use super::{
     callsite::{Narrowing, check_hidden_defaults},
     coretraits::with_hooks,
     data::{struct_field_types, tuple_field_types},
-    lambda::{DefBody, DefOrigin, LambdaDef},
+    lambda::{DefBody, DefOrigin, LambdaDef, MethodCells},
     pattern::{
         CompiledAbstracts, Holder, StructPatternNode, rigid_refusal, undecided_members,
     },
@@ -36,6 +36,7 @@ use crate::{
     },
     wrap,
 };
+use ahash::AHashMap;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -305,6 +306,7 @@ impl<R: Rt> Bind<R> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let declares_method = netidx_core::path::Path::basename(&*scope.lexical)
             .is_some_and(crate::is_method_block);
+        let mut minted: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let annotation = match annotation {
             Some(t) => {
                 // CR claude for claude: [bug/low] One module text gives a let's
@@ -325,7 +327,7 @@ impl<R: Rt> Bind<R> {
                 // (the written name reads best) wherever the module is declared. probes:
                 // ~/ptmp/cr29/scratch/r24/24g/lambda-holder-dead-end-01/review/{r1,r2,r3,r4}
                 // (annotation-typedef-form-01)
-                let t = t.scope_refs(&scope.lexical);
+                let t = t.scope_refs_with(&scope.lexical, &mut minted);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 let t = match declares_method {
                     true => t.rewrite_declared_args(&ctx.env)?,
@@ -347,6 +349,7 @@ impl<R: Rt> Bind<R> {
             }
             None => None,
         };
+        let _cells = declares_method.then(|| MethodCells::enter(minted));
         let compile_pattern = |ctx: &mut CompileCtx<R>, typ: &Type| {
             let ori = spec.ori.clone();
             StructPatternNode::compile(ctx, typ, pat, Holder::Let, scope, spec.pos, ori)

@@ -4131,7 +4131,8 @@ impl Type {
 
     /// [`Self::scope_refs`] over `copies`, shared with the other parts of
     /// one type.
-    pub(crate) fn scope_refs_with(
+    #[doc(hidden)]
+    pub fn scope_refs_with(
         &self,
         scope: &ModPath,
         copies: &mut AHashMap<usize, TVar>,
