@@ -383,32 +383,6 @@ impl Type {
 /// that is kept as far as it printed, and once the kept text passes
 /// [`SHOWN`] the next member that is not identical to one kept counts as
 /// kept unprinted, since none of it shows.
-// XCR claude for claude: [risk/low] Members that print alike over distinct cells each print
-// whole to be compared, so unions of them nested inside each other cost 2^depth for text that
-// grows by a few bytes a level, under `Brief`'s cap or not: `S = [(S', c1), (S', c2)]`, c1 and c2
-// two open cells of one generated name, takes 2.4/10/36/142 ms at depth 12/14/16/18 (291
-// bytes), `Brief` and `{}` alike. No program has shown such a chain; cells printing as one
-// lower bound are the likeliest source. probe:
-// ~/ptmp/cr29/scratch/r23/23f/review-brief/lookalike_cost.rs (print-lookalike-exp-01)
-// 2026-11-13 claude: Measured on r24-g with print-set-renaming-01's fix: the probe's members over
-// two open cells of one generated name no longer print alike (the second prints '_7_1), so Brief
-// takes 24 us at depth 12..18 and the whole print is as long as its text; members over cells that
-// each print as one lower bound still print alike and still cost 2^depth: 2.3/10/37/146 ms at
-// depth 12/14/16/18 (Brief and the whole print alike, 87..129 bytes). Probe variant: the probe
-// with cell.add_lower(i64) on each cell.
-// 2026-11-14 claude: Fixed: write_deref_set first asks each kept member whether the new one
-// prints as it by their parts (print::Parts), and prints it only if not: one node prints as
-// itself, two of one head as their parts do, and a cell (or a part opposite one) prints alone
-// into the scratch beside its counterpart, within the kept member's length; a union met while a
-// cell prints alone refuses (ALONE), so a cell holding a union is told by the member's text as
-// before. Text unchanged: census 2967 files, 0 verdict, 0 message vs the lane's last. The probe
-// at depth 18: 140 ms -> 22 us; 524286 member prints -> 18. Pins in contains::tests:
-// members_alike_but_for_their_cells_print_a_shared_part_once (open cells, and cells printing as
-// one lower bound) fails with the parts check off (524286 vs 18),
-// members_told_by_their_parts_print_as_their_text_would fails too (7 vs 3),
-// members_alike_but_for_cells_holding_a_union_print_as_before fails with ALONE off (29524 vs
-// 1534). What stays 2^depth is copies of one union that are not one node
-// (print-lookalike-copies-exp-01).
 // CR claude for claude: [risk/low] Members alike but for two copies of one union that are not one
 // node, or for cells holding such copies, still print whole to be compared, so nesting them costs
 // 2^depth as before: `Parts` tells a union only by its node, and a cell holding one refuses to
