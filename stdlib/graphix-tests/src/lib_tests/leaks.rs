@@ -244,7 +244,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
-async fn held(ctx: &TestCtx) -> Result<[usize; 15]> {
+async fn held(ctx: &TestCtx) -> Result<[usize; 16]> {
     let s = ctx.rt.env_stats().await?;
     let env = ctx.rt.get_env().await?;
     macro_rules! names {
@@ -268,6 +268,7 @@ async fn held(ctx: &TestCtx) -> Result<[usize; 15]> {
         names!(env.lexical.traits),
         env.lexical.modules.len(),
         env.names.len(),
+        env.kept_impls.len(),
     ])
 }
 
@@ -1384,6 +1385,89 @@ async fn a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_plain_h
     .await
 }
 
+/// Impls of a plain head declared again while the trait stands: each
+/// function calls the impl it was made under, through a union too.
+async fn a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait(
+    mode: Mode,
+) -> Result<()> {
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _roots = ctx
+        .rt
+        .compile(literal!(
+            "trait Sh { val sh: fn(self) -> i64 }; \
+             let old: fn(x: i64) -> i64 = never(); let new: fn(x: i64) -> i64 = never();"
+        ))
+        .await?;
+    let is = |n: i64| move |v: &Value| *v == Value::I64(n);
+    let declare = |name: &str, k: i64| {
+        format!(
+            "impl Sh for i64 {{ let sh = |c: i64| c * {k} }}; \
+             impl Sh for string {{ let sh = |c: string| {k} }}; \
+             {name} <- |x: i64| {{ let u: [i64, string] = x; Sh::sh(u) + Sh::sh(x) }}; 1"
+        )
+    };
+    for (name, k, want) in [("old", 2, 12), ("new", 3, 18)] {
+        let res = ctx.rt.compile(ArcStr::from(declare(name, k))).await?;
+        await_update(&ctx, &mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
+        drop(res);
+        let (id, call) = compile_one(&ctx, format!("{name}(3)")).await?;
+        await_update(&ctx, &mut rx, id, is(want)).await?;
+        drop(call)
+    }
+    let (id, call) = compile_one(&ctx, "(old(3), new(3))").await?;
+    await_update(&ctx, &mut rx, id, is_pair(12, 18)).await?;
+    drop(call);
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// A generic function and a closure made beside the impl of a dropped block
+/// dispatch to it while the trait stands.
+async fn a_function_over_a_generic_one_beside_a_dropped_impl_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         let app = |v: Sh| Sh::sh(v); \
+         saved <- |x: i64| { let g = |y: i64| app(C(y)); g(x) }; 1 }",
+    )
+    .await
+}
+
+/// A union of two impls of a dropped block dispatches to both while the trait stands.
+async fn a_union_over_two_dropped_impls_of_a_standing_trait_dispatches_to_both(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         type D = Abstract<i64>; impl Sh for D { let sh = |c: D| 1 }; let u: [C, D] = C(3); \
+         saved <- |x: i64| Sh::sh(u) + Sh::sh(C(x)) - 30; 1 }",
+    )
+    .await
+}
+
+/// A function value passed through a higher-order function reaches the dropped
+/// impl of a standing trait.
+async fn a_function_passed_to_another_beside_a_dropped_impl_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         let mk = |x: i64| C(x); let ap = |f: fn(x: i64) -> C| Sh::sh(f(3)); \
+         saved <- |x: i64| ap(mk); 1 }",
+    )
+    .await
+}
+
 /// The same for an impl a module's interface declares of a trait
 /// declared outside the module.
 async fn a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches(
@@ -1516,6 +1600,10 @@ modes!(
     a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it,
     a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait,
     a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_plain_head,
+    a_function_over_a_generic_one_beside_a_dropped_impl_dispatches_to_it,
+    a_union_over_two_dropped_impls_of_a_standing_trait_dispatches_to_both,
+    a_function_passed_to_another_beside_a_dropped_impl_dispatches_to_it,
+    a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
     a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration,
     a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls,
