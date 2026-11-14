@@ -411,9 +411,18 @@ lambda, a lambda, or a literal of lambdas for a val that is no function;
 the binding named is one the lambdas the implementation holds reach
 through the lambdas they capture: one whose own type is the cell, else
 one that holds it in data, else one that holds a function and that
-something writes, else one that holds it in lambdas it holds as data; of
-several alike the nearest, then the one the program writes first, so its
-annotation lifts the refusal, `module::Holder::of`). A written binding
+something writes, else one that holds it only in functions no lambda of
+which captures what holds it, else one that holds it in lambdas it holds
+as data; of several alike the nearest, then the one the program writes
+first, so its annotation lifts the refusal, `module::Holder::of`). A
+binding that holds the cell only in such functions holds one instance (a
+call's result: `let k = mk()`, `{h: mk()}`, a generic read of either),
+whose annotation lifts nothing where the implementation returns the
+cell; it is named with the way out that always works, a lambda in that
+function's place (`h: |x| x`), never its type. Pins: `lang::interfaces::
+val_capturing_a_struct_holding_a_call_result_names_a_lambda` and its
+siblings, `lang::traits::
+method_over_a_struct_holding_a_call_result_names_a_lambda`. A written binding
 that holds a function (`let k = |x| x; k <- |x| x`, a written read `let
 j = s.g; j <- ..`, a written call's result) is no scheme: every read
 shares its type, so it is named as written and its lambdas are not

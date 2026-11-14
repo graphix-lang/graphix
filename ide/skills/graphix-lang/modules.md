@@ -93,9 +93,14 @@ one (`let put = s.g`), with no annotation on the method's `let`. Any
 other value (a call's result, a literal's projection) is one instance,
 refused under a variable each call picks. A method that reads a binding
 has exactly that binding's type: under a wider declaration, write a
-lambda or annotate the method's `let`.
+lambda or annotate the method's `let`. A lambda method that calls a call's
+result a binding holds (`s0.h` over `let s0 = {h: mk()}`) shares that one
+instance: the refusal names the binding and asks for a lambda in that
+function's place.
 
 ```graphix,cases
+no "in that function's place" let mk = || |s, x| x; let s0 = {g: |s, x| x, h: mk()}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put = |s, x| s0.h(s, x) }; (Put::put(1, 1), Put::put(1, "s"))
+ok let s0 = {g: |s, x| x, h: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put = |s, x| s0.h(s, x) }; (Put::put(1, 1), Put::put(1, "s"))
 ok type C = Abstract<i64>; let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for C { let put = s.g }; (Put::put(C(1), 1), Put::put(C(1), "s"))
 ok let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a = s.g }; impl Put for i64 {}; (Put::put(1, 1), Put::put(1, "s"))
 no "so no call copies its types" let s = {g: |s, x| x}; trait Put { val put: fn(self, x: 'a) -> 'a }; impl Put for i64 { let put: fn(self, x: 'a) -> 'a = s.g }; (Put::put(1, 1), Put::put(1, "s"))

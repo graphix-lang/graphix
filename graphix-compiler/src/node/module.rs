@@ -552,6 +552,15 @@ fn check_val(
             ", that of {b}, a binding outside its let that something writes: declare \
              the val at one type"
         ),
+        (true, Holder::Instance(b)) => format_compact!(
+            ", that of {b}, a binding outside its let holding a function that is one \
+             instance, as a call's result is: declare the val at one type, or write a \
+             lambda over variables of its own in that function's place"
+        ),
+        (false, Holder::Instance(b)) => format_compact!(
+            ", that of {b}, a binding outside its let holding a function that is one \
+             instance, as a call's result is: declare the val at one type"
+        ),
         (true, Holder::Lambda) => format_compact!(
             ", that of a binding outside its let: declare the val at one type, or give \
              that binding a type that holds every {v}"
@@ -580,6 +589,10 @@ pub(crate) enum Holder {
     /// a function and that something writes, by name: no read copies its
     /// type.
     Written(CompactString),
+    /// A binding the lambdas the implementation holds capture that holds
+    /// the cell only in functions that are one instance (a call's result),
+    /// by name: no lambda they hold captures what holds it.
+    Instance(CompactString),
     /// The implementation is a lambda, and no binding it captures holds
     /// the cell.
     Lambda,
@@ -589,7 +602,7 @@ pub(crate) enum Holder {
 }
 
 impl Holder {
-    // CR claude for claude: [bug/low] A binding ranked Holds::InLambdas whose lambdas
+    // XCR claude for claude: [bug/low] A binding ranked Holds::InLambdas whose lambdas
     // lead to no holder (they are a call's result, capturing nothing) is still named,
     // and its annotation lifts the refusal only where the cell stands in argument
     // positions: under `val f: fn(x: 'a) -> 'a`, `let mk = || |x| x; let s0 = {g: |x|
@@ -602,16 +615,35 @@ impl Holder {
     // call's result as one instance (a lambda in its place) beside or instead of the
     // binding. probes: ~/ptmp/cr29/scratch/r23/23h/val-call-result-remedy-01/review/
     // {p1,p1b,p2,p2b,p2d,p2e} (lambda-holder-dead-end-01)
+    // 2026-11-13 claude: Holder::of ranks a capture that holds the cell only in
+    // functions none of whose lambdas capture what holds it (Holds::InInstance, after
+    // Written, before InLambdas) and Holder::Instance names it with a lambda in that
+    // function's place, never its type; a capture holding the cell in data beside
+    // lambdas now ranks InData (Type::data_cells), so its annotation stays the remedy.
+    // Covers the CR's p1 (j) and p2 (s0), a captured call result (let k = mk()), a
+    // select of lambdas, and the method case; a chain names the struct holding the call
+    // (b1, not b0). Pins that fail without it:
+    // lang::interfaces::{val_capturing_a_struct_holding_a_call_result_names_a_lambda,
+    // val_capturing_a_generic_read_of_a_call_result_names_a_lambda,
+    // val_capturing_a_call_result_names_a_lambda,
+    // val_names_the_struct_holding_the_call_result_past_one_calling_into_it,
+    // written_val_capturing_a_struct_holding_a_call_result_names_one_type},
+    // lang::traits::method_over_a_struct_holding_a_call_result_names_a_lambda;
+    // val_struct_holding_the_cell_beside_lambdas_names_its_type fails without the data
+    // rank; each has a running twin.
     /// What holds `tv` for the implementation's binding `id`: a binding the
     /// lambdas it holds capture, or the lambdas those capture, whose type
     /// reaches the cell, the binding an annotation can widen. One whose own
     /// type is the cell comes first, then one that holds it in data, then
     /// one that holds a function and that something writes, then one that
-    /// holds it in lambdas it holds as data (a struct of them), which are
-    /// followed to what they capture; of two alike the nearer, then the one
-    /// the program writes first: a binding built from another is written
-    /// after it. A written binding's lambdas are not followed: every read
-    /// of it shares its type, whatever they capture.
+    /// holds it only in functions no lambda of which captures what holds
+    /// it (one instance, a call's result, which a lambda in its place makes
+    /// generic where no annotation does), then one that holds it in
+    /// lambdas it holds as data (a struct of them), which are followed to
+    /// what they capture; of two alike the nearer, then the one the program
+    /// writes first: a binding built from another is written after it. A
+    /// written binding's lambdas are not followed: every read of it shares
+    /// its type, whatever they capture.
     pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
         use crate::env::Bind as Held;
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -619,6 +651,7 @@ impl Holder {
             Itself,
             InData,
             Written,
+            InInstance,
             InLambdas,
         }
         let mut level: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
@@ -629,6 +662,22 @@ impl Holder {
         let written_before = |b: &Held, f: &Held| {
             place_order((&b.ori, b.pos), (&f.ori, f.pos)).then(b.id.cmp(&f.id)).is_lt()
         };
+        let reaches = |cells: fn(&Type, &mut AHashMap<usize, TVar>), t: &Type| {
+            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            cells(t, &mut reached);
+            reached.contains_key(&tv.cell_addr())
+        };
+        let leads_on = |def: &LambdaDef<R>| {
+            let mut leads = false;
+            def.captured_ids(&mut |id| {
+                leads |= ctx
+                    .env
+                    .by_id
+                    .get(&id)
+                    .is_some_and(|b| reaches(Type::reached_cells, &b.typ))
+            });
+            leads
+        };
         let mut seen: LPooled<AHashSet<BindId>> = LPooled::take();
         let mut followed: LPooled<AHashSet<LambdaId>> = LPooled::take();
         let mut best: Option<((Holds, usize), &Held)> = None;
@@ -638,12 +687,7 @@ impl Holder {
             for def in level.drain(..).filter(|d| followed.insert(d.id)) {
                 def.captured_ids(&mut |id| {
                     let Some(b) = ctx.env.by_id.get(&id) else { return };
-                    if !seen.insert(id) {
-                        return;
-                    }
-                    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                    b.typ.reached_cells(&mut cells);
-                    if !cells.contains_key(&tv.cell_addr()) {
+                    if !seen.insert(id) || !reaches(Type::reached_cells, &b.typ) {
                         return;
                     }
                     let mut holds_fn = false;
@@ -653,16 +697,18 @@ impl Holder {
                     } else {
                         let before = next.len();
                         held_lambdas(ctx, id, &mut next);
-                        let holds_lambdas = next.len() > before;
+                        if next.len() > before && held_lambda(ctx, id).is_some() {
+                            return;
+                        }
                         match &b.typ {
-                            _ if holds_lambdas && held_lambda(ctx, id).is_some() => {
-                                return;
-                            }
-                            _ if holds_lambdas => Holds::InLambdas,
                             Type::TVar(t) if t.stands_for() == tv.stands_for() => {
                                 Holds::Itself
                             }
-                            _ => Holds::InData,
+                            t if reaches(Type::data_cells, t) => Holds::InData,
+                            _ if next[before..].iter().any(|d| leads_on(d)) => {
+                                Holds::InLambdas
+                            }
+                            _ => Holds::InInstance,
                         }
                     };
                     let rank = (how, depth);
@@ -681,6 +727,7 @@ impl Holder {
         }
         match (best, held_lambda(ctx, id)) {
             (Some(((Holds::Written, _), b)), _) => Self::Written(b.name.clone()),
+            (Some(((Holds::InInstance, _), b)), _) => Self::Instance(b.name.clone()),
             (Some((_, b)), _) => Self::Captured(b.name.clone()),
             (None, Some(_)) => Self::Lambda,
             (None, None) => Self::NoLambda,

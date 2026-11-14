@@ -147,6 +147,11 @@ fn implements<R: Rt>(
                 ", that of {b}, a binding outside its let that something writes, which \
                  holds one type for every reader: give {b} a type that holds every {v}"
             ),
+            (Holder::Instance(b), _) => format_compact!(
+                ", that of {b}, a binding outside its let holding a function that is \
+                 one instance, as a call's result is: write a lambda over variables of \
+                 its own in that function's place"
+            ),
             (Holder::Lambda, _) => format_compact!(
                 ", that of a binding outside its let: give that binding a type that \
                  holds every {v}"

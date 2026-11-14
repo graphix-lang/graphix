@@ -3137,6 +3137,34 @@ run!(
     refused("that of y, a binding outside its let: give y a type that holds every 'a")
 );
 
+// A method that calls into a struct holding a call's result is told the
+// function is one instance: a lambda in its place lifts the refusal.
+run!(
+    method_over_a_struct_holding_a_call_result_names_a_lambda,
+    r#"{
+    let mk = || |s, x| x;
+    let s0 = {g: |s, x| x, h: mk()};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for i64 { let put = |s, x| s0.h(s, x) };
+    (Put::put(1, 1), Put::put(1, "s"))
+}"#,
+    refused(
+        "that of s0, a binding outside its let holding a function that is one instance, as a call's result is: write a lambda over variables of its own in that function's place"
+    )
+);
+
+run!(
+    method_over_a_struct_holding_a_lambda_in_place_of_the_call,
+    r#"{
+    let s0 = {g: |s, x| x, h: |s, x| x};
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for i64 { let put = |s, x| s0.h(s, x) };
+    (Put::put(1, 1), Put::put(1, "s"))
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
 // A method that calls a lambda something writes is told that binding, by
 // name: every read of it shares its type.
 run!(

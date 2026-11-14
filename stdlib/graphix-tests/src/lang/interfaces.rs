@@ -2520,6 +2520,108 @@ run!(
     "/test/m.gx" => "let s0 = {g: |x| x, h: |x| x}; let f = s0.h"
 ; FuseExpect::None);
 
+// A capture that holds the cell only in a function that is one instance (a
+// call's result), whose lambdas capture nothing that holds it, is told so:
+// its annotation would lift nothing where the function returns the cell,
+// and a lambda in that function's place does.
+macro_rules! one_instance {
+    ($b:literal) => {
+        concat!("that of ", $b, ", a binding outside its let holding a function that is one instance, as a call's result is: declare the val at one type, or write a lambda over variables of its own in that function's place")
+    };
+}
+
+run!(
+    val_capturing_a_struct_holding_a_call_result_names_a_lambda,
+    refused(one_instance!("s0")),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = |x| s0.h(x)"
+);
+
+run!(
+    val_capturing_a_struct_holding_a_lambda_in_place_of_the_call,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let s0 = {g: |x| x, h: |x| x}; let f = |x| s0.h(x)"
+; FuseExpect::None);
+
+run!(
+    val_capturing_a_generic_read_of_a_call_result_names_a_lambda,
+    refused(one_instance!("j")),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let j = s0.h; let f = |x| j(x)"
+);
+
+run!(
+    val_capturing_a_generic_read_of_a_lambda_in_place_of_the_call,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let s0 = {g: |x| x, h: |x| x}; let j = s0.h; let f = |x| j(x)"
+; FuseExpect::None);
+
+run!(
+    val_capturing_a_call_result_names_a_lambda,
+    refused(one_instance!("k")),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let k = mk(); let f = |x| k(x)"
+);
+
+run!(
+    val_capturing_a_lambda_in_place_of_the_call,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let k = |x| mk()(x); let f = |x| k(x)"
+; FuseExpect::None);
+
+// Past a struct whose lambda calls into another, to the one holding the
+// call's result.
+run!(
+    val_names_the_struct_holding_the_call_result_past_one_calling_into_it,
+    refused(one_instance!("b1")),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let b1 = {h: mk()}; let b0 = {g: |x| b1.h(x)}; let f = |x| b0.g(x)"
+);
+
+run!(
+    val_struct_calling_into_one_holding_a_lambda_in_place_of_the_call,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let b1 = {h: |x| x}; let b0 = {g: |x| b1.h(x)}; let f = |x| b0.g(x)"
+; FuseExpect::None);
+
+run!(
+    written_val_capturing_a_struct_holding_a_call_result_names_one_type,
+    refused("that of s0, a binding outside its let holding a function that is one instance, as a call's result is: declare the val at one type"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = |x| s0.h(x); f <- |x| s0.h(x)"
+);
+
+// A struct of lambdas that holds the cell in data beside them is named as a
+// holder in data, and its annotation lifts the refusal.
+run!(
+    val_struct_holding_the_cell_beside_lambdas_names_its_type,
+    refused("that of s0, a binding outside its let: declare the val at one type, or give s0 a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let s0 = {g: |x| x, r: &mut y}; let f = |x| { let r = s0.r; *r <- x; x }"
+);
+
+run!(
+    val_struct_holding_the_cell_beside_lambdas_annotated,
+    prints("[i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let y = never(); let s0: {g: fn(x: Any) -> Any, r: &mut Any} = {g: |x| x, r: &mut y}; let f = |x| { let r = s0.r; *r <- x; x }"
+; FuseExpect::None);
+
 run!(
     val_struct_update_holding_a_call_result_at_one_type,
     prints("[i64:1, \"s\", i64:2]"),

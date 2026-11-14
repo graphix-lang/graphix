@@ -220,8 +220,10 @@ The implementation must be as general as its `val`. Under `val f: fn(x:
 outside it, `let y = never(); let f = |x| { y <- x; x }`, has one type
 for every call, and is refused: give `y` a type that holds every `'a`
 (`let y: Any = never()`), or declare `f` at one type. So is one that
-something writes, `let f = |x| x; f <- |x| x`, whose writers share one
-type: declare `f` at one type.
+calls a function a call returned, `let k = mk(); let f = |x| k(x)`: the
+call's result is one instance, so write a lambda in its place, `let k =
+|x| ..`. So is one that something writes, `let f = |x| x; f <- |x| x`,
+whose writers share one type: declare `f` at one type.
 
 A `val` whose type holds a variable is generic wherever its function
 types stand: in a struct (`val c: {f: fn(x: 'a) -> 'a}`), an array or a
