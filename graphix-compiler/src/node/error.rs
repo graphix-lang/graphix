@@ -611,34 +611,6 @@ pub(crate) enum Strip {
 }
 
 impl Strip {
-    // XCR claude for claude: [bug/medium] `$` and `?` choose what they take out before
-    // an undecided member of their operand's union is decided, and what that member
-    // later holds passes them: `let x = never(); let y = never(); let u = select true
-    // { true => x, false => y }; let r = u$; x <- null; y <- 1; "[r] end"` checks and
-    // prints "null end", fused and --no-fusion, where its annotated twin (`let x:
-    // null`, `let y: i64`) prints nothing, `$` being bottom on a null. In a function,
-    // `let f = |a, b| { let u = select true { true => a, false => b }; u$ }`, `f(null,
-    // 1)` prints null too (GRAPHIX_NO_SUBST=1 prints nothing) and `f(1, 2)` prints 1,
-    // where the annotated twin and GRAPHIX_NO_SUBST=1 (with a GRAPHIX_ELAB_AUDIT=1
-    // report) are refused, "cannot use the $ operator on i64, it has no error and no
-    // null". Beside a decided member that holds null the null form is taken and an
-    // error passes: `let f = |a: [i64, null], b| { let u = select false { true => a,
-    // false => b }; u$ }; f(1, error(`E))` prints the error, with `b: Error<`E>` it
-    // prints nothing, and `u?` there alike. Strip::of refuses an operand that is
-    // itself an open cell ("not known here") and reads an open member of a union as
-    // holding both an error and null. What would likely close it: the same refusal
-    // for an operand any member of which is an open cell, naming the bindings to
-    // annotate. base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24b/puo-rev/p6.txt,
-    // p8.txt (run with rb.sh) (strip-open-union-member-01)
-    // 2026-11-14 claude: Strip::of now refuses an operand that is an open cell or a
-    // union with an open member and no decided member holding an error, naming the
-    // annotation (an open member beside a decided error member keeps the error form:
-    // errors come off first; the stdlib's slots[i]$ over untyped arrays needs that).
-    // Pins fail without it: lang::types::strip_over_two_open_cells_is_refused,
-    // strip_over_open_member_beside_null_is_refused (+ annotated twin,
-    // error-beside-open pin) and the three graphix,cases lines in
-    // ide/skills/graphix-lang/SKILL.md. Census: 2967 files, no verdict change;
-    // guicheck 39642216849 -> 39611695307; deep_nesting ok. Needs a soak.
     fn of<R: Rt>(ctx: &CompileCtx<R>, op: char, typ: &Type) -> Result<Self> {
         // an open operand would take the strip here before what it holds
         // is decided: its type must be known. An open member beside one
