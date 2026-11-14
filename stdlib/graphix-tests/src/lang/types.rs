@@ -13321,3 +13321,22 @@ run!(
     refused("[i64, null, string] & [i64, null]> does not contain Array<string>");
     FuseExpect::None
 );
+
+// Beside conjunct-lower-cycle-settle-01: a wrapper over a bound that is a
+// name applied over a union of its variable, given a value that leaves
+// that variable undecided, runs where it declares the callee's own bound
+// on the variable, where the argument's type is written, and where the
+// value decides the variable.
+run!(
+    partial_wrapper_bound_under_a_name_leaves_its_variable_undecided,
+    r#"{
+  type O<'t> = ['t, null];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a3: T<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let whole = 'b3: T<O<'b4>>, 'b4: [i64, null] |y3: 'b3| f(y3);
+  let wide = 'c3: T<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
+  let v: T<null> = `Node([`Leaf(null)]);
+  (whole(`Node([`Leaf(null)])), whole(`Node([])), wide(v), wide(`Node([`Leaf(1)])))
+}"#,
+    prints("[i64:7, i64:7, i64:7, i64:7]")
+);

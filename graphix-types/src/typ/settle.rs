@@ -374,6 +374,36 @@ impl TVar {
     /// refused instead. Only the terminal walk uses this (an earlier call
     /// would foreclose writers not yet typechecked).
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
+        // CR claude for claude: [bug/medium] Two open cells no argument decides, one within
+        // a union over the other and that other above it, have no settle: `type O<'t> =
+        // ['t, null]; let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7; let h =
+        // 'b3: Array<O<'b4>> |y3: 'b3| f(y3); h([null])` is refused, "unsatisfiable
+        // constraints on 'b4: [null, 'a4: _] & [i64, null]", a valid call ('b4 is null, or
+        // any type in [i64, null]) and a message that names nothing to annotate; with
+        // `'b4: [i64, null, string]` declared, `h([null])` and `h([])` alike. These run:
+        // the argument annotated (`let v: Array<null> = [null]; h(v)`), a value that
+        // decides 'b4 (`h([1])`), the wrapper with the callee's own bound declared (`'b4:
+        // [i64, null]`), the wrapper inferred (`|y3| f(y3)`) and the direct call. The
+        // call's commit of 'b3's second conjunct over the element `[null, 'b4]` records
+        // one relation twice: 'b4 within `[null, 'a4]` (contains::commit_parts) and 'a4
+        // above 'b4 (the Lower step of contains::commit_conjuncts). FnType::settle_terminal
+        // reaches the settle_bottom below for 'a4 first (GRAPHIX_DBG_BIND_BT), 'b4 open
+        // among its lower bounds, and 'b4 then has no witness in TVar::own_witness:
+        // would_cycle_open answers true for `[null, 'a4]`, 'a4 bound to ⊥ and 'b4 still
+        // among its lower bounds, so that conjunct is no candidate, and `[null, _]` does
+        // not hold the other, `[i64, null]`. base-r24 alike for these. Since
+        // partial-wrapper-instance-01's fix the same holds where the bound is a name over
+        // the variable: under `type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)]`, `'a3:
+        // T<O<'a4>>` and `'b3: T<O<'b4>>`, `h(`Node([`Leaf(null)]))` and `h(`Node([]))`
+        // are refused this way, where base-r24, whose walk stopped at the name and left
+        // 'b4 free, printed 7 (3 of 938 generated wrapper programs, gen2.py seeds
+        // 301-303, each with the wrapper's last bound wider than the callee's). ⊥ for a
+        // cell that stands above an open one is the wrong step: a fix settles the two as
+        // one cell (they are a cycle through a union alone), or takes the lower one
+        // first. Found reviewing partial-wrapper-instance-01. probes:
+        // ~/ptmp/cr29/scratch/r24/24c/pwirev/w4{c,,d}.gx (refused, base-r24 too),
+        // w2{c,,d}.gx and w1.gx (refused; base-r24 runs them), w4{a,b,e,g}.gx and
+        // w2{a,e,f,g}.gx (run) (conjunct-lower-cycle-settle-01)
         if !self.cell_constraints().is_empty() || !self.cell_lower().is_empty() {
             self.settle(env)?;
         }
