@@ -2318,8 +2318,7 @@ run!(
     FuseExpect::None
 );
 
-// An eta-expansion's own names are no source name: a label spelled like
-// one is the method's label.
+// An eta-expansion's labels are the method's, whatever they spell.
 run!(
     trait_method_value_label_named_like_its_parameters,
     r#"{
@@ -2329,6 +2328,60 @@ run!(
     g(#eta1: 5, "x")
 }"#,
     prints(r#""x5""#)
+);
+
+// A trait method as a value prints under the trait's names: its
+// parameters, its variables, and the receiver as the trait.
+run!(
+    trait_method_value_prints_the_traits_names,
+    r#"{
+    trait T { val m: fn<'b: Number>(self, x: 'b) -> 'b };
+    impl T for i64 { let m = |s, x| x };
+    let g: string = T::m;
+    g
+}"#,
+    refused(
+        "string does not contain fn<'b: Number>(self: '#self: unbound within T, \
+         x: 'b: unbound within Number) -> 'b: unbound within Number"
+    )
+);
+
+// An unbounded variable of the method that a definition around the value
+// declares is the value's own, named apart.
+run!(
+    trait_method_value_variable_named_like_an_enclosing_one,
+    r#"{
+    trait T { val m: fn(self, x: 'a) -> 'a };
+    impl T for i64 { let m = |s, x| x };
+    let f = |y: 'a| { let g = T::m; "[y] [g(1, "s")]" };
+    f(2)
+}"#,
+    prints(r#""2 s""#)
+);
+
+run!(
+    trait_method_value_variable_named_apart_in_a_message,
+    r#"{
+    trait T { val m: fn(self, x: 'a) -> 'a };
+    impl T for i64 { let m = |s, x| x };
+    let f = |y: 'a| { let g: string = T::m; y };
+    f(2)
+}"#,
+    refused("x: 'a1: unbound) -> 'a1: unbound")
+);
+
+// A parameter named like the method a `use` brought takes a name of its
+// own.
+run!(
+    trait_method_value_parameter_named_like_the_method,
+    r#"{
+    trait T { val m: fn(self, m: i64) -> i64 };
+    impl T for i64 { let m = |s, x| s + x };
+    use T::m;
+    let g = m;
+    g(1, 2)
+}"#,
+    is(Value::I64(3))
 );
 
 // A trait method named as a value is its eta-expansion: an ordinary

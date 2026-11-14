@@ -2734,6 +2734,22 @@ impl TVar {
                 return;
             }
         }
+        // CR claude for claude: [readability/low] A declared variable a call in its
+        // body meets prints its bound twice: `let f = 'a: Number |x: 'a| -> 'a x; let
+        // g: string = 'c: Number |y: 'c| -> 'c f(y)` says "fn<'c: Number>(y: 'c:
+        // unbound within Number & Number) -> 'c: unbound within Number & Number", the
+        // header once and the positions twice; inside a definition the header too
+        // (`'q: T + T` for `'q: T |s: 'q| -> i64 T::m(s)` in a lambda's body), and a
+        // bound holding a variable gains the callee copy's (`'a: unbound within
+        // Array<'b1: ..> & Array<'b: ..>` where the definition wrote `Array<'b>`, the
+        // printer numbering the declared `'b` apart from the copy's). The copy merged
+        // into the rigid cell here looks to bring its conjuncts, which new_conjuncts
+        // keeps unless union_identical to one the cell has, so the callee's `Number`
+        // stands beside the definition's own. A fix keeps a declared variable's
+        // bounds as its signature writes them (the call's bound is checked, not
+        // added). base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24g/tmv/dupbound.gx,
+        // dupbound2.gx, dupbound3.gx (declared-bound-doubled-01)
+
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {
             (LPooled::take(), BitFlags::empty())

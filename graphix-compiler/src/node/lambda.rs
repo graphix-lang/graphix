@@ -784,7 +784,10 @@ fn written_own(known: &AHashMap<ArcStr, TVar>, enclosing: &AHashSet<ArcStr>) -> 
 /// by name, the innermost's where two share one: those each definition's
 /// signature writes, never a cell its check named after a body's written
 /// type (a result bound to a let's annotated type).
-fn enclosing_tvars<R: Rt>(ctx: &CompileCtx<R>, known: &mut AHashMap<ArcStr, TVar>) {
+pub(super) fn enclosing_tvars<R: Rt>(
+    ctx: &CompileCtx<R>,
+    known: &mut AHashMap<ArcStr, TVar>,
+) {
     if let Some(body) = &ctx.body {
         for typ in body.declared.iter().rev() {
             let written = typ

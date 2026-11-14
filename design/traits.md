@@ -491,10 +491,21 @@ The generated select fuses over a union of primitives
 over a union of abstract types it de-fuses (coverage residue). A
 dispatcher is only ever a call's own function: a trait method named as a
 value is its eta-expansion at the method's signature
-(`node/compiler.rs::eta_dispatcher`: `Desc::desc` is `'eta_self: Desc
-|eta0: 'eta_self| -> string Desc::desc(eta0)`, its variables generic as
+(`node/compiler.rs::eta_dispatcher`: `Desc::desc` is `'#self: Desc
+|self: '#self| -> string Desc::desc(self)`, its variables generic as
 written ones are), an ordinary function value that can be passed,
-stored, written and called polymorphically. A variadic method has no
+stored, written and called polymorphically. It carries the trait's
+names, so a message or a hover prints the method's signature
+(`fn<'b: Number>(self: T, x: 'b) -> 'b`): its parameters', except one
+named like the method as the body calls it (`use T::m`), which takes
+`#eta<i>`; its variables', except that the receiver is `#self`, as
+`|self: T|` names its quantifier (`self` would name an impl's receiver),
+and an unbounded variable a definition around it declares is numbered
+apart (`'a1`), since by name it would be that definition's (a bounded one
+is the expansion's own, its constraint declares it). Pins
+`lang::traits::trait_method_value_{prints_the_traits_names,
+variable_named_like_an_enclosing_one, parameter_named_like_the_method}`.
+A variadic method has no
 expansion (a lambda cannot pass its rest on) and is refused as a
 value, and so is one with an optional label: its default is each
 impl's, which no expansion can give.

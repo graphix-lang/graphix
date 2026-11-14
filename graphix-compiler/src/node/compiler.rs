@@ -31,11 +31,12 @@ use crate::{
     stack::ensure_sufficient,
     typ::{TVar, Type},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
@@ -692,7 +693,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
              (wrap the call in a lambda)"
         )
     }
-    // CR claude for claude: [readability/low] A trait method read as a value prints
+    // XCR claude for claude: [readability/low] A trait method read as a value prints
     // this expansion's minted names in a message: `trait T { val m: fn<'b:
     // Number>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| { let g: string =
     // T::m; x } }` says "type mismatch string does not contain fn(#eta0: '#eta_self:
@@ -701,19 +702,54 @@ pub(super) fn eta_dispatcher<R: Rt>(
     // `'#eta_b`; the message should print the trait's own names (`'b`, `x`, the
     // receiver as its trait). probe:
     // ~/ptmp/cr29/scratch/r23/23h/rec-self-review/t1.gx (trait-method-value-names-01)
+    // 2026-11-14 claude: eta_dispatcher names the expansion as the trait does:
+    // positional parameters by the trait's names (#eta<i> only for one named like the
+    // method as the body calls it, after a use), variables by theirs, the receiver
+    // #self as |self: T| names its quantifier, and an unbounded variable a definition
+    // around the value declares numbered apart ('a1, via lambda::enclosing_tvars).
+    // The probe now prints fn<'b: Number>(self: '#self: unbound within T & T, x: 'b:
+    // unbound within Number) -> 'b: unbound within Number, and the hover of let g =
+    // T::m is fn<'b: Number>(self: T, x: 'b) -> 'b (base: fn(#eta0: T, #eta1: Number)
+    // -> Number). The T & T is a merge printing a declared bound twice, a separate CR
+    // (declared-bound-doubled-01); '#self is how every trait-typed parameter prints
+    // under DerefTVars. Pins:
+    // lang::traits::trait_method_value_prints_the_traits_names and
+    // _variable_named_apart_in_a_message fail on base's naming;
+    // _variable_named_like_an_enclosing_one fails without the numbering apart,
+    // _parameter_named_like_the_method without the #eta fallback.
 
-    // the signature over variables of its own, as an annotation writes
-    // it; `self` would name an impl's receiver
-    let mut tvs: AHashMap<ArcStr, TVar> = AHashMap::new();
+    // the signature over variables of its own under the trait's names, the
+    // receiver's `#self` as `|self: T|` names it (`self` names an impl's);
+    // an unbounded one a definition around this one declares would be that
+    // one's by name, so it is numbered apart
+    let view = ft.constraint_view();
+    let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     ft.collect_tvars(&mut tvs);
-    let renamed: AHashMap<ArcStr, Type> = tvs
-        .keys()
-        .map(|n| {
-            (n.clone(), Type::TVar(TVar::empty_generic(arcstr::format!("#eta_{n}"))))
-        })
-        .collect();
-    let constraints: SmallVec<[(TVar, Type); 2]> = ft
-        .constraint_view()
+    let mut enclosing: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    super::lambda::enclosing_tvars(ctx, &mut enclosing);
+    let mut taken: LPooled<AHashSet<ArcStr>> =
+        enclosing.keys().chain(tvs.keys()).cloned().collect();
+    let mut renamed: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+    for n in tvs.keys() {
+        let own = match n.as_str() {
+            "self" => arcstr::literal!("#self"),
+            _ => n.clone(),
+        };
+        let bounded = view.iter().any(|(tv, _)| tv.name == *n);
+        let own = match bounded || !enclosing.contains_key(&own) {
+            true => own,
+            false => {
+                let apart = (1u64..)
+                    .map(|i| arcstr::format!("{own}{i}"))
+                    .find(|a| !taken.contains(a))
+                    .unwrap();
+                taken.insert(apart.clone());
+                apart
+            }
+        };
+        renamed.insert(n.clone(), Type::TVar(TVar::empty_generic(own)));
+    }
+    let constraints: SmallVec<[(TVar, Type); 2]> = view
         .iter()
         .filter_map(|(tv, bound)| match renamed.get(&tv.name) {
             Some(Type::TVar(r)) => Some((r.clone(), bound.replace_tvars(&renamed))),
@@ -724,10 +760,25 @@ pub(super) fn eta_dispatcher<R: Rt>(
     let at = |kind| Expr::synth(spec, kind);
     let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
+    // CR claude for claude: [bug/low] A label named like the method as the body
+    // calls it hides the method: `trait T { val m: fn(#m: i64, self) -> i64 }; impl
+    // T for i64 { let m = |#m, s| s + m }; use T::m; let g = m; g(#m: 1, 2)` is
+    // refused "expected fn not i64", the expansion's body `m(#m: m, self)` calling
+    // its own label. A positional parameter takes a name apart there; a label
+    // cannot, its bind being its name. A fix calls the method by a path no
+    // parameter can hide (the binding itself, as `#bind::N` names one, with the
+    // reference a poly binding's call takes). base-r24 alike. probe:
+    // ~/ptmp/cr29/scratch/r24/24g/tmv/label.gx (eta-label-hides-method-01)
+
+    // a positional parameter takes the trait's name for it unless it would
+    // hide the method the body calls
     for (i, a) in ft.args.iter().enumerate() {
-        let (kind, label, var) = match a.label() {
-            Some(l) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
-            None => (ArgKind::Positional, None, arcstr::format!("#eta{i}")),
+        let (kind, label, var) = match (a.label(), a.name()) {
+            (Some(l), _) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
+            (None, Some(n)) if *name != [n.as_str()] => {
+                (ArgKind::Positional, None, n.clone())
+            }
+            (None, _) => (ArgKind::Positional, None, arcstr::format!("#eta{i}")),
         };
         args.push(Arg {
             comments: Default::default(),
