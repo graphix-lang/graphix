@@ -543,41 +543,6 @@ fn check_val(
         (false, Holder::Captured(b)) => format_compact!(
             ", that of {b}, a binding outside its let: declare the val at one type"
         ),
-        // XCR claude for claude: [bug/low] A generic lambda implementation whose shared cell
-        // a written lambda binding it captures holds is told "that of a binding outside its
-        // let: declare the val at one type, or give that binding a type that holds every
-        // 'a", and no type on that binding lifts it: `let k = |x| x; k <- |x| x; let f =
-        // |x| k(x)` under `val f: fn(x: 'a) -> 'a` gets it, `let k: fn(x: Any) -> Any`
-        // there is refused for f's result, and only `k` unwritten checks. Holder::of follows
-        // a captured lambda binding to the lambda it is (capturing nothing here) and never
-        // ranks it, so nothing is named; the trait arm in traits::implements says the same
-        // for `impl Put for C { let put = |s, x| k(s, x) }`. A fix: name the written binding
-        // and say it is written (one instance), not that its type should widen. probes:
-        // ~/ptmp/cr29/scratch/r23/23h/val-call-result-remedy-01/{v1,v1b,v1c,t/t7.gx}
-        // (written-capture-remedy-01)
-        // 2026-11-13 claude: Holder::of ranks a captured binding that holds lambdas and that
-        // something writes as Holds::Written (after InData, before InLambdas) and names it,
-        // Holder::Written: no read of it copies its type, so its lambdas are not followed
-        // (base named d, what they capture, in w5/w11, whose annotation lifts nothing).
-        // check_val and traits::implements tell it 'that of k, a binding outside its let
-        // that something writes, which holds one type for every reader: declare the val at
-        // one type, or give k a type that holds every 'a' (the method: the widening alone;
-        // a written implementation's val: the val at one type alone). Judged: the
-        // widening is kept, not dropped as the CR proposed: it lifts the refusal where the
-        // implementation hands the binding its values and takes none back ({ k(x); x } over
-        // k: fn(x: Any) -> Any runs, as the pinned written st/st2 struct holders do); not
-        // where it takes them back (k(x)), which no type alone can tell. Pins failing
-        // without it (all 4 modes):
-        // lang::interfaces::val_names_a_written_lambda_{it_calls,it_hands_its_argument,behind_a_generic_one,not_what_it_captures,over_an_open_capture},
-        // val_names_a_written_struct_of_lambdas_not_what_they_capture,
-        // val_written_implementation_names_the_written_lambda_it_calls,
-        // val_names_the_lambda_holder_written_first,
-        // val_names_the_second_lambda_holder_once_the_first_is_annotated,
-        // lang::traits::method_over_a_written_lambda_names_it; twins that run:
-        // val_written_lambda_it_hands_its_argument_annotated,
-        // val_unwritten_lambda_it_calls_is_generic,
-        // method_handing_a_written_lambda_its_argument_annotated. Probes
-        // ~/ptmp/cr29/scratch/r24/24g/wcr/
         (true, Holder::Written(b)) => format_compact!(
             ", that of {b}, a binding outside its let that something writes, which \
              holds one type for every reader: declare the val at one type, or give {b} \
