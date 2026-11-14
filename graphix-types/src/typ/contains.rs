@@ -5580,40 +5580,6 @@ impl Type {
             let mut on_copies = trial();
             hist.seed(&mut on_copies, &mut known, env, inherit);
             if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
-                // XCR claude for claude: [perf/low] ContainsHist::chose changes no verdict any
-                // test or the differential shows, and costs trials. It was added for the stale
-                // answer set-commit-stale-closure-01 fixed: a trial that had met a choice could
-                // have read a member as undecided where its placement read it decided. Now a
-                // trial marks a choice in Type::take, Type::residue_member and
-                // Type::applications_hold, and the placement that follows it meets the same
-                // choice in the same function and clears `as_tried` itself
-                // (ContainsHist::strays), but for one undecided member admitted alone in
-                // residue_member, which both take. With `!on_copies.chose` dropped here
-                // graphix-types (602) and graphix-tests lib (21286) pass, and of 320k random
-                // pairs (the differential of set-commit-stale-closure-01, seeds 31..38, two
-                // styles) none differs in verdict or binding while 4503 take fewer contains
-                // steps (3.44M to 2.64M over those) and none more: the unions between a
-                // trial's start and its first choice ask no trial of their own. That corpus
-                // has no pair whose verdict `as_tried` decides (a trial at every union
-                // differs in none either), so the argument above is the evidence that the
-                // placement is right without the mark. The test that pinned it
-                // (a_trial_that_chose_a_member_allows_no_placement_below) went with that fix:
-                // its pair held only by the stale answer. Delete the field, its half of
-                // `strays` and the sentences in design/type_operation_scaling.md and
-                // design/tvar_constraints.md ("allows it for no union below"), or pin a pair
-                // that needs it. probes: ~/ptmp/cr29/scratch/r24/24d/scs-rev/ (README;
-                // port.py knob 4) (trial-chose-redundant-01)
-                // 2026-11-14 claude: ContainsHist::chose and its half of strays are deleted:
-                // the placement a trial allows (place_in_order) now takes the trial's word for
-                // the unions it walks ahead of the first choice, and clears as_tried itself
-                // where it meets one. Pin
-                // typ::contains::tests::a_union_ahead_of_a_choice_between_members_asks_no_trial_of_its_own
-                // (steps per union ahead of the choice: 62 with chose, 48 without; fails with
-                // chose restored: n=1 234 steps against 172). graphix-types 667, graphix-tests
-                // lib 24322, deep_nesting 51 pass; no verdict pin changed. Docs:
-                // design/tvar_constraints.md and type_operation_scaling.md. guicheck
-                // instructions base-r25 39.717e9, lane 39.761e9 (earlier lane commits
-                // included).
                 let tried = hist.as_tried || on_copies.trial;
                 let outer = mem::replace(&mut hist.as_tried, tried);
                 let r = place(flags, env, hist, t0, s0, order);
