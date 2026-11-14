@@ -1727,7 +1727,7 @@ fn holds_a_variable(t: &Type) -> bool {
 /// a type turns on what the cells are, so the first argument that meets
 /// it decides it.
 fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
-    // CR claude for claude: [bug/low] A variable only bounds hold takes no argument wider
+    // CR claude for eric: [bug/low] A variable only bounds hold takes no argument wider
     // than the first that reached it through a bound. Over `let f = 'a1: Array<'a3>, 'a2:
     // Array<'a3> |x1: 'a1, x2: 'a2| 7; let v: Array<[i64, null]> = [1]; let u: Array<i64>
     // = [1]`, `f(u, v)` is refused, "'a2: unbound within Array<'a3: i64> does not contain
@@ -1749,6 +1749,41 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     // ~/ptmp/cr29/scratch/r24/24c/pwi/array_narrow_wide.gx (refused),
     // array_{wide_narrow,written}.gx (run), inner.gx (runs; refused under
     // GRAPHIX_NO_SUBST=1) (bound-var-no-widen-01)
+    // 2026-11-14 claude: Measured both options (lane 25d, base-r25; probes, generator and the two
+    // prototype patches in ~/ptmp/cr29/scratch/r25/25d/bvnw/, no code committed). Corpus gen.py:
+    // 4800 programs, two holders ('a1: S<'c>, 'a2: S<'c>) over six shapes (Array, Array<Array>,
+    // variant, tuple, struct, [Array, null]) with arguments of five element widths in both
+    // orders, each with its written twin (|x1: S<'c>, x2: S<'c>|), a join-annotated variant, a
+    // depth-2 chain (bound of a bound) and a wrapper. Base: 504 of the 1440 pair programs are
+    // refused where the twin runs (all narrow-then-wide; wide-then-narrow runs; an incomparable
+    // pair is refused in both forms, 432), plus 42 wrapper (h) and 42 depth-2 (d) cases. OPTION A
+    // (widen): not one edit. (1) widenable() must admit a variable only bounds hold (insert it in
+    // the bounds walk) and Widening::open must open the copies of cells that are bound
+    // (reset_tvars copies the binding, so collect_tvars never sees 'a3; replace_tvars_copied
+    // does): with that, the call's check accepts 546 of the 588 (all but the depth-2 ones),
+    // census 2967 files 0 verdict changes. (2) But all 546 then fail at the build, "an instance
+    // at fn(x1: Array<i64>, x2: Array<[i64, null]>) of a definition typed fn<'a1: Array<'a3>,
+    // 'a2: Array<'a3>>(..)": the instance-signature judgment (FnType::held_at via
+    // instance.check_contains over the definition's copy) binds 'a3 first-come from 'a1's bound,
+    // so 'a2's bound refuses; this is the same first-come behaviour GRAPHIX_NO_SUBST shows on
+    // inner.gx. A would also need held_at to take a variable only bounds hold as the join of what
+    // its holders bring, and a holder (here 'a1) keeps its narrower binding, which is sound.
+    // held_at is the area of nosubst-bound-upcast-01 and inst-settle-all-01. So A newly accepts
+    // up to 588 of this corpus (the twin's set), refuses nothing, but is a change to the instance
+    // judgment, not to widenable(); it is also what D39 (b) needs. OPTION B (refuse, name the
+    // annotation): no verdict changes anywhere (corpus 0 newly ok / 0 newly not of 4800, census 0
+    // of 2967, zero check-ok run-not); prototype note at Widening::widen where a bound-held
+    // variable would widen (about 25 lines): "'a3 is held only by the bounds of the parameters,
+    // and an argument before this one decided it narrower than this argument holds; annotate that
+    // argument with a type that holds both (bind it to a let with its type written)". It lands on
+    // 504 of 504 pair refusals and 42 of 42 wrapper ones, on no program base ran, and the
+    // join-annotated variant runs for all 504 (and for the 432 incomparable pairs). Not covered:
+    // the 42 depth-2 refusals, where the cell is the middle bound's ('m), which the prototype's
+    // bound-held check missed. Recommendation: B now (sound, local, the remedy is one annotation,
+    // and it removes the "names nothing to annotate" defect the CR records), A together with D39
+    // (b) only if Eric wants a bound-held variable to widen like a position one, as one change
+    // covering held_at. Left to Eric: which rule. Fixer did not pick it; no code change in the
+    // tree.
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
