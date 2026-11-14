@@ -612,7 +612,8 @@ pub(crate) enum Holder {
     /// A binding the lambdas the implementation holds capture, by name.
     Captured(CompactString),
     /// A binding the lambdas the implementation holds capture that holds
-    /// lambdas and that something writes, by name: no read copies its type.
+    /// a function and that something writes, by name: no read copies its
+    /// type.
     Written(CompactString),
     /// The implementation is a lambda, and no binding it captures holds
     /// the cell.
@@ -640,7 +641,7 @@ impl Holder {
     /// lambdas it holds capture, or the lambdas those capture, whose type
     /// reaches the cell, the binding an annotation can widen. One whose own
     /// type is the cell comes first, then one that holds it in data, then
-    /// one that holds lambdas and that something writes, then one that
+    /// one that holds a function and that something writes, then one that
     /// holds it in lambdas it holds as data (a struct of them), which are
     /// followed to what they capture; of two alike the nearer, then the one
     /// the program writes first: a binding built from another is written
@@ -680,20 +681,24 @@ impl Holder {
                     if !cells.contains_key(&tv.cell_addr()) {
                         return;
                     }
-                    let before = next.len();
-                    held_lambdas(ctx, id, &mut next);
-                    let holds_lambdas = next.len() > before;
-                    let how = match &b.typ {
-                        _ if holds_lambdas && ctx.connect_targets.contains(&id) => {
-                            next.truncate(before);
-                            Holds::Written
+                    let mut holds_fn = false;
+                    b.typ.each_held_fn(&mut |_| holds_fn = true);
+                    let how = if holds_fn && ctx.connect_targets.contains(&id) {
+                        Holds::Written
+                    } else {
+                        let before = next.len();
+                        held_lambdas(ctx, id, &mut next);
+                        let holds_lambdas = next.len() > before;
+                        match &b.typ {
+                            _ if holds_lambdas && held_lambda(ctx, id).is_some() => {
+                                return;
+                            }
+                            _ if holds_lambdas => Holds::InLambdas,
+                            Type::TVar(t) if t.stands_for() == tv.stands_for() => {
+                                Holds::Itself
+                            }
+                            _ => Holds::InData,
                         }
-                        _ if holds_lambdas && held_lambda(ctx, id).is_some() => return,
-                        _ if holds_lambdas => Holds::InLambdas,
-                        Type::TVar(t) if t.stands_for() == tv.stands_for() => {
-                            Holds::Itself
-                        }
-                        _ => Holds::InData,
                     };
                     let rank = (how, depth);
                     if best.is_none_or(|(r, f)| {

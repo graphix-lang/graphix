@@ -2359,6 +2359,42 @@ run!(
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| k(x); f <- |x| k(x)"
 );
 
+// A function binding written through a reference, a written read of a
+// generic function and a written call's result are each one type for every
+// reader, named as written as a written lambda is.
+run!(
+    val_names_a_lambda_a_reference_writes,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k = |x| x; let r = &mut k; *r <- |x| x; let f = |x| k(x)"
+);
+
+run!(
+    val_names_a_written_read_of_a_function,
+    refused("that of j, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give j a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let s0 = {g: |x| x}; let j = s0.g; j <- |x| x; let f = |x| j(x)"
+);
+
+run!(
+    val_written_read_of_a_function_it_hands_its_argument_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let s0 = {g: |x| x}; let j: fn(x: Any) -> Any = s0.g; j <- |x| x; let f = |x| { j(x); x }"
+    ; FuseExpect::None
+);
+
+run!(
+    val_names_a_written_call_result,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let mk = || |x| x; let k = mk(); k <- |x| x; let f = |x| k(x)"
+);
+
 // A capture whose own type is the cell is named before one that holds it
 // in data, whichever lambda is written first: only its annotation lifts
 // the refusal.
