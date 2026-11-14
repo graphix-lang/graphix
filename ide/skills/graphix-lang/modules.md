@@ -145,10 +145,11 @@ declares: a lambda narrower than one is refused at the impl, and a
 variable beside a written type (`x: [Array<'a>, Array<string>]`) stays
 the method's variable. Leave the method's `let` unannotated: an
 annotation written there is decided by the value in the order of its
-positions, as any `let`'s is. Where such a union stands in the method's
-result or in a callback's parameter, and no parameter before it holds the
-variable, the check cannot tell whose the lambda's variable is: write
-that place on the lambda with the member it gives.
+positions, as any `let`'s is. A union stood in the method's result or in
+a callback's parameter takes the lambda's value as it is. A type the
+lambda writes names variables of its own, even one named like the
+declaration's, and the check cannot tell whose it is: write that place
+as the member the lambda gives.
 
 ```graphix,cases
 ok trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a }; impl T for i64 { let m = |s, x, y| y }; (T::m(1, [1], 2), T::m(1, ["a"], "b"))
@@ -156,7 +157,8 @@ ok trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a = |s, x
 no "does not contain fn(s: i64, x: i64) -> i64" trait T { val m: fn(self, x: 'a) -> i64 }; impl T for i64 { let m = |s, x: i64| 0 }; T::m(1, 1)
 no "signature has type variable 'a where implementation has string" trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a }; impl T for i64 { let m: fn(self, x: [Array<'c>, Array<string>], y: 'c) -> 'c = |s, x, y| y }; T::m(1, [1], 2)
 ok trait T { val m: fn(self, y: 'a, x: [Array<'a>, Array<string>]) -> 'a }; impl T for i64 { let m: fn(self, y: 'c, x: [Array<'c>, Array<string>]) -> 'c = |s, y, x| y }; T::m(1, 2, [1])
-no "could go to Array<string> or Array<'a1: unbound>" trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| ["x"] }; T::m(1)
+ok trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| ["x"] }; T::m(1)
+no "could go to Array<string> or Array<'a1: unbound>" trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| -> [Array<'a>, Array<string>] ["x"] }; T::m(1)
 ok trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| -> Array<string> ["x"] }; T::m(1)
 ok trait T { val m: fn(self, k: fn(v: [{a: 'a}, {a: string}]) -> i64, y: 'a) -> i64 }; impl T for i64 { let m = |s, k: fn(v: {a: string}) -> i64, y| k({a: "x"}) }; T::m(1, |v: [{a: i64}, {a: string}]| 7, 2)
 ```

@@ -6597,7 +6597,7 @@ mod tests {
             // the annotation would decide the open referent
             ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),
             (
-                "{ let x = list::head(list::nil(null))$; let r = &mut x; let y = x + 1; y }",
+                "{ let x = str::parse(\"1\")$; let r = &mut x; let y = x + 1; y }",
                 "ref-widen#",
             ),
             // the call decides the open first argument's type
