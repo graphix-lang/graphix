@@ -1617,6 +1617,103 @@ run!(dead_arm_behind_a_pool_of_a_member_below_a_reference_refused, r#"{
     f(1, true, true)
 }"#, refused("unreachable arm"); FuseExpect::None);
 
+// A pool counts every head the member's part admits: three for a nullable
+// bool, and two of the three free no arm behind them.
+run!(arm_behind_a_pool_of_three_heads_below_a_reference, r#"{
+    let f = |x, b: [bool, null], c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (false, _) => 2, (null, _) => 5, (_, 0) => 3, _ => 4 }
+    };
+    [f("s", true, true), f("s", null, true), f(0, null, true), f(0, false, true), f(0, true, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 5, 5, 2, 3]); FuseExpect::Jit);
+
+run!(arm_behind_two_heads_of_three_below_a_reference_refused, r#"{
+    let f = |x, b: [bool, null], c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    f(0, null, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+// Each member of the bound has a pool of its own, and an or-arm's
+// alternatives pool each against the member it takes.
+run!(arm_behind_the_pools_of_two_members_below_a_reference, r#"{
+    let f = |x, y, a: bool, b: bool, c: bool| {
+        let r = &mut (select c { true => (a, x), false => (`L, b, y) });
+        select *r {
+            (true, _) => 1,
+            (false, _) => 2,
+            (`L, true, _) => 3,
+            (`L, false, _) => 4,
+            (_, 0) => 5,
+            (_, _, 0) => 6,
+            _ => 7
+        }
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) | (`L, 1) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    [
+        f("s", "t", true, true, true), f("s", "t", false, true, true),
+        f("s", "t", true, true, false), f(0, 0, false, false, false),
+        g("s", true, true), g("s", false, true), g("s", true, false), g(0, true, true)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 4, 1, 2, 3, 1]); FuseExpect::Jit);
+
+// The member is the one the bound holds, however it was built: a binding,
+// a call's result, the open cell inside a part of it.
+run!(arm_behind_a_pool_of_a_member_built_elsewhere_below_a_reference, r#"{
+    let mk = |b: bool, x| (b, x);
+    let f = |x, b: bool, c: bool| {
+        let p = (b, x);
+        let r = &mut (select c { true => p, false => (`L, 0) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => mk(b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    let h = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, {v: [x]}), false => (`L, {v: [0]}) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, {v: [0]}) => 3, _ => 4 }
+    };
+    [
+        f("s", true, true), f("s", false, true), f("s", true, false), f(0, true, true),
+        g("s", true, true), g("s", false, true), g("s", true, false), g(0, true, true),
+        h("s", true, true), h("s", false, true), h("s", true, false), h(0, true, true)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 1, 1, 2, 3, 1, 1, 2, 3, 1]); FuseExpect::Jit);
+
+// The select stands where the reference is read: a closure, a seq step,
+// an arm entered later.
+run!(arm_behind_a_pool_in_a_closure_a_step_and_an_arm, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        let g = |u: null| select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 };
+        g(null)
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        seq c {
+            let s = select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 };
+            s + 10
+        }
+    };
+    let h = |x, b: bool, c: bool, k: i64| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select k {
+            0 => 0,
+            n => n ~ select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+        }
+    };
+    [
+        f("s", true, true), f("s", false, true), f("s", true, false), f(0, true, true),
+        g("s", true, true), g("s", false, true), g("s", true, false), g(0, true, true),
+        h("s", true, true, 1), h("s", false, true, 1), h("s", true, false, 1), h(0, true, true, 0)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 1, 11, 12, 13, 11, 1, 2, 3, 0]); FuseExpect::Jit);
+
 run!(arm_behind_a_cover_tests_the_member_that_reaches_it_refused, r#"{
     let f = |x, y, b: bool| {
         let r = &mut (select b { true => (`K, x), false => (`L, y) });

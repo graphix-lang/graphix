@@ -4953,6 +4953,22 @@ impl Type {
         // callback whose parameter holds the union). A fix refuses where two decided members
         // could take a type that holds a cell to decide, naming the annotation; census first.
         // probes: ~/ptmp/cr29/scratch/r21/21t/rev/fp.txt (undecided-into-two-decided-01)
+        // 2026-11-14 claude: A referent the arms of a select decide holds such members by
+        // construction, and a later write through the reference meets this choice. Over `|x, y,
+        // c: bool| { let r = &mut (select c { true => (`K, x), false => (`L, 0) }); let s =
+        // select *r { (`K, _) => 1, (_, 0) => 3, _ => 4 }; *r <- once(s) ~ (`K, y); s }` the
+        // arms decide the referent `[(Any, i64), (`K, Any)]` and leave x open; the write gives
+        // `(`K, y)` to `(Any, i64)`, so `f("s", "t", true)` is refused, "i64 does not contain
+        // string", and with the parts the other way round (`(x, `K)`, `(0, `L)`, `(_, `K)`,
+        // `(0, _)`, `*r <- (y, `K)`) it runs and prints 1. A call does the same with no select:
+        // `let g = |v: [(Any, i64), (`K, Any)]| 1; let f = |y| g((`K, y))` refuses `f("t")`,
+        // and `[(i64, Any), (Any, `K)]` with `(y, `K)` takes it. Here one decided member holds
+        // the type as it stands, deciding nothing, which takes_as_it_stands asks of undecided
+        // members only. The pool form lower-view-pool-cover-01 lets through alike (`*r <-
+        // (false, x)` behind `(true, _)`, `(false, _)`, `(_, 0)`). No wrong value: the cell is
+        // bound before any instance. base-r24 and lane 24b alike. probes:
+        // ~/ptmp/cr29/scratch/r24/24b/lvp-rev/r5.txt programs 1, 2, 5, 6 and r4.txt program 3
+        // (run with ../lvp/rb.sh)
         let Some(last) = tiers.iter().rev().find_map(|tier| tier.last()) else {
             return Ok(None);
         };

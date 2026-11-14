@@ -2333,6 +2333,24 @@ enum Claim {
 }
 
 impl LiteralPool {
+    // CR claude for claude: [bug/low] Arms that pool over a referent they decide do not
+    // exhaust it, with nothing undecided: `|b: bool, c: bool| { let r = &mut (select c {
+    // true => (b, "s"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) =>
+    // 2, (_, `Z) => 3 } }` is refused, "missing match cases: no arm covers (bool, Any)".
+    // The plain twin `select (select c { .. }) { .. }` and the referent annotated
+    // `[(bool, string), (`L, `Z)]` check and print [1, 2, 3] for the three values; a
+    // cover in place of the pool (`(`K, _)`, `(_, `Z)` over `(`K, "s")`) and a catch-all
+    // added check too. The arms decide the referent `[(Any, `Z), (bool, Any)]`, whose
+    // members overlap: `(true, _)` has leaves against both, so it pools against neither
+    // (the second member reached in claim_among), no group completes and
+    // Reach::exhausted finds `(bool, Any)` uncovered. Uncovered::pool counts the pair
+    // over the lower view's members for the undecided check alone
+    // (lower-view-pool-cover-01's fix), so that select needs the catch-all it has.
+    // base-r24 and lane 24b alike. A fix to try: an atom two members admit pools against
+    // each of them, since it takes those heads of both, where it pools against none;
+    // census and the generated selects of lower-view-pool-cover-01 (its gen.py without
+    // the last arm) first. probes: ~/ptmp/cr29/scratch/r24/24b/lvp-rev/r6.txt (run with
+    // ../lvp/rb.sh) (referent-pool-exhaust-01)
     /// Pool the unguarded atom `sp` over the scrutinee's members;
     /// `explicit`, its arm's written type test.
     fn claim(
