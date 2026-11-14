@@ -574,8 +574,7 @@ quantified annotation on the `let`, or, for an implementation that is no
 lambda, a lambda, or a literal of lambdas for a val that is no function;
 the binding named is one the lambdas the implementation holds reach
 through the lambdas they capture: one whose own type is the cell, else
-one that holds it in data (a typedef by its expansion, as a file's module
-keeps `let s0: H<'b>` written), else one that holds a function and that
+one that holds it in data (a typedef by its expansion), else one that holds a function and that
 something writes, else one that holds it only in functions no lambda of
 which captures what holds it, else one that holds it in lambdas it holds
 as data; of several alike the nearest, then the one the program writes

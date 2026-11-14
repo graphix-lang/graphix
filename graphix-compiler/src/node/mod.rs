@@ -1416,6 +1416,7 @@ pub(crate) fn later_typedef<R: Rt>(ctx: &CompileCtx<R>, tr: &TypeRef) -> bool {
         names.iter().any(|n| n.as_str() == name)
             && Path::is_parent(&**block, &*tr.scope)
             && !Path::dirnames(&*tr.scope)
+                .rev()
                 .filter(|s| Path::is_parent(&**block, s))
                 .any(declared)
     })

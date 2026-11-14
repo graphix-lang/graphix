@@ -431,3 +431,22 @@ the state of a fix, and Graphix's side.
   turns up, a paste in the GUI blocks the window's thread while it holds the
   process's one clipboard (`gui::clipboard`), and a `gui::clipboard` builtin's
   call never answers.
+
+## netidx-core 0.32: `Path::dirnames` walked forward drops a one-level path's own name
+
+- **Bug.** `Path::dirnames("/m")` yields `["/"]` where the documented walk
+  from the root ends with the entire path (`["/", "/m"]`). `next` advances
+  `base` past the separator and stops at `base >= all.len()` before it
+  yields `all` itself, so the last level goes missing exactly when the
+  path has one level. Longer paths yield every level, and `next_back`
+  (`.rev()`) yields every level of any path.
+- **Repro.** `Path::dirnames("/m").collect::<Vec<_>>()` is `["/"]`;
+  `Path::dirnames("/a/b").collect::<Vec<_>>()` is `["/", "/a", "/a/b"]`.
+- **Upstream fix.** `DirNames::next` yielding `all` for a path whose first
+  separator ends it.
+- **Graphix's side.** Worked around (a module the root script declares was
+  judged as if it declared the typedefs of its own body below their use:
+  `let (a, b): P = ..` under a `type P` above it was refused "names the type
+  a later statement of this block declares", and a `let`'s typedef
+  annotation kept its written form there where every other module expands
+  it): `node::later_typedef` walks the path with `.rev()`. Not reported.

@@ -1,6 +1,4 @@
-//! A module loaded from a file keeps a `let` annotation's typedef as
-//! written, and a val's refusal tells what holds the cell by the typedef's
-//! expansion: a parameter that stands only in a function type a call
+//! A val's refusal tells what holds the cell by the typedef's expansion: a parameter that stands only in a function type a call
 //! returned is one instance, told to put a lambda there; one under a
 //! reference is data, told to give the holder a type.
 
