@@ -38,7 +38,6 @@ use std::{
     collections::hash_map::Entry,
     mem,
     ops::{ControlFlow, Deref, DerefMut},
-    slice,
 };
 use triomphe::Arc;
 
@@ -2358,7 +2357,7 @@ fn bound_members(env: &Env, b: &Type, commit: bool) -> Result<SmallVec<[Type; 8]
     }
     let members = match b {
         Type::Set(ms) => &ms[..],
-        b => slice::from_ref(b),
+        b => std::slice::from_ref(b),
     };
     Type::unfolded_members(env, members, commit, names)
 }
@@ -3324,28 +3323,6 @@ pub(super) fn any_part_pair(
 /// The deref/expansion steps [`Type::set_covers_by_distribution`] takes
 /// to reach a head constructor before giving up on a chain of aliases.
 const HEAD_CHAIN_LIMIT: usize = 64;
-
-/// `m` through its binding and the names it is, [`HEAD_CHAIN_LIMIT`] of
-/// them: what it stands for as a union's member. A name's parameter
-/// bounds are committed where `commit`.
-fn union_head(env: &Env, m: &Type, commit: bool) -> Result<Type> {
-    let mut head = m.clone();
-    for _ in 0..HEAD_CHAIN_LIMIT {
-        head = match head.with_deref(|d| d.cloned()) {
-            Some(d @ Type::Ref(_)) if commit => d.lookup_ref(env)?,
-            Some(d @ Type::Ref(_)) => match d.lookup_ref_probe(env) {
-                Some((_, x)) => x,
-                None => break,
-            },
-            Some(d) => d,
-            None => break,
-        };
-        if !matches!(head, Type::Ref(_)) {
-            break;
-        }
-    }
-    Ok(head)
-}
 
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
@@ -4429,8 +4406,7 @@ impl Type {
             {
                 let flat = Self::unfolded(env, s0, true)?;
                 let held = t.with_deref(|t| match t {
-                    Some(Self::Set(s1)) => Self::unfolded_held(env, s1, true)
-                        .map(|ms| Some(Self::Set(Arc::from_iter(ms)))),
+                    Some(Self::Set(s1)) => Self::unfolded_held(env, s1).map(Some),
                     _ => Ok(None),
                 })?;
                 flat.contains_int(flags, env, hist, held.as_ref().unwrap_or(t))
@@ -4977,7 +4953,21 @@ impl Type {
                 }
                 _ => (),
             }
-            let head = union_head(env, m, commit)?;
+            let mut head = m.clone();
+            for _ in 0..HEAD_CHAIN_LIMIT {
+                head = match head.with_deref(|d| d.cloned()) {
+                    Some(d @ Type::Ref(_)) if commit => d.lookup_ref(env)?,
+                    Some(d @ Type::Ref(_)) => match d.lookup_ref_probe(env) {
+                        Some((_, x)) => x,
+                        None => break,
+                    },
+                    Some(d) => d,
+                    None => break,
+                };
+                if !matches!(head, Type::Ref(_)) {
+                    break;
+                }
+            }
             ensure_sufficient(|| match &head {
                 Type::Set(ms) => ms.iter().try_for_each(|m| {
                     unfold(env, m, (commit, names), (cells, applied), depth + 1, out)
@@ -5005,18 +4995,15 @@ impl Type {
     /// that names a union as what it names ([`names_union`]) and its
     /// primitives a type apiece, so each goes to the holder's member that
     /// takes it and only what none takes to an open one.
-    fn unfolded_held(env: &Env, s: &[Type], commit: bool) -> Result<SmallVec<[Type; 8]>> {
-        let members = Self::unfolded_members(env, s, commit, names_union)?;
-        Ok(members
-            .iter()
-            .flat_map(|m| {
-                let (bits, whole) = match m {
-                    Self::Primitive(p) => (Some(p.iter()), None),
-                    m => (None, Some(m.clone())),
-                };
-                bits.into_iter().flatten().map(|b| Self::Primitive(b.into())).chain(whole)
-            })
-            .collect())
+    fn unfolded_held(env: &Env, s: &[Type]) -> Result<Type> {
+        let members = Self::unfolded_members(env, s, true, names_union)?;
+        Ok(Self::Set(Arc::from_iter(members.iter().flat_map(|m| {
+            let (bits, whole) = match m {
+                Self::Primitive(p) => (Some(p.iter()), None),
+                m => (None, Some(m.clone())),
+            };
+            bits.into_iter().flatten().map(|b| Self::Primitive(b.into())).chain(whole)
+        }))))
     }
 
     /// Decide `s ⊇ t` by the member that takes `t` ([`Self::take`]),
@@ -5669,146 +5656,9 @@ impl Type {
         Ok(true)
     }
 
-    /// Give `m` to the member of the union `s0` that takes it
-    /// ([`Self::take`]), of those not `free` on entry; `None` where it is
-    /// left to the open member: none admits it, or it is free itself.
-    fn place_covered(
-        s0: &[Type],
-        free: &[bool],
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-        m: &Type,
-    ) -> Result<Option<bool>> {
-        let commit = flags.contains(ContainsFlags::Commit);
-        // one of the union's own cells is covered reflexively
-        let own_cell = matches!(m, Self::TVar(mtv) if s0.iter().any(
-            |c| matches!(c, Self::TVar(ctv) if one_variable(ctv, mtv))
-        ));
-        if own_cell {
-            return Ok(Some(true));
-        }
-        // a constructor member would bind a free one greedily; left
-        // over, it aliases with the union's bare member
-        if is_unbound_tvar(m) {
-            return Ok(None);
-        }
-        let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
-        for (c, _) in s0.iter().zip(free).filter(|(_, free)| !**free) {
-            if c.contains_int(guide(flags), env, hist, m)? {
-                admit.push(c);
-                if !commit || hist.binds_nothing(c, m) {
-                    admit.truncate(0);
-                    admit.push(c);
-                    break;
-                }
-            }
-        }
-        match admit.is_empty() {
-            true => Ok(None),
-            false if !commit => Ok(Some(true)),
-            false => Self::take(s0, [&admit, &[]], flags, env, hist, m),
-        }
-    }
-
-    // CR claude for claude: [bug/high] The part-at-a-time rule gives the open member the
-    // narrowest type, so a later position of the same containment that holds the
-    // variable wider is a mismatch, and an instance whose definition's variable stands
-    // under an alias and bare takes the slow way to its types. (1) `type M<'x> = ['x,
-    // null]; let f = |x: (M<'a>, 'a)| 0; let v: (M<M<i64>>, M<i64>) = (1, null); f(v)`
-    // ran on base-r24 and r24-staging (a254a41ba) and is refused since
-    // union-prim-member-whole-01, "type mismatch (M<'a: i64>, 'a: i64) does not contain
-    // (M<M<i64>>, M<i64>)", naming nothing to annotate: `M<'a>` takes the M<M<i64>> a
-    // part at a time, 'a the i64, and the second part of the tuple, [i64, null], is
-    // wider. `let g: fn(x: (M<M<i64>>, M<i64>)) -> i64 = f` alike (ch5.gx). Two
-    // arguments (`|x: M<'a>, y: 'a|`) run: a call widens between arguments, a
-    // containment does not between a tuple's parts. (2) FnType::held_at meets the same
-    // mismatch at an instance of `'a0: M<'a1>, .. |x: ('a0, 'a1, ..)|` (the bound of 'a0
-    // gives 'a1 the narrow type before 'a1's own place), its containment as it stands
-    // fails, and FnType::place_cells, which holds, costs more than a step a link:
-    // `--expand --no-cache` of that chain (deep_nesting's chainboundsalias) takes
-    // 0.83/0.90/1.34G instructions at 120/250/1000 links on r24-staging and 5.9/79.5G at
-    // 120/250 here (1000 does not end in 100 s), so
-    // deep_nesting::a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time
-    // fails its 8G budget at 10000 links (staging 6.56G). The level-at-a-time walk below
-    // ended the eager unfold's failure past 64 names ("a union's member names itself")
-    // and left the cost where it was (4.9/75G before it): 72% of the samples are
-    // holds_cell under conjuncts_admit, from place_cell, walking a conjunct through the
-    // names a placed cell is bound to, where first_expansion compares each name's
-    // parameters with every other's (strictly_identical, a walk of the chain each).
-    // Tried: conjuncts_admit asking the conjunct's containment before holds_cell, which
-    // skips that walk where the conjunct holds: 2.13/6.29/84.3G, but a conjunct that
-    // holds its own cell then never returns (the graphix-types suite passes 24G of
-    // memory), so holds_cell stays first. With it, one history for the placement walk
-    // (place_in_order): 1.82/5.12/67.8G; what was left was place_members under
-    // conjuncts_admit (65%) and lookup_ref_by (30%), each placement a walk of the chain.
-    // Not tried: an attempt in held_at, after the containment as it stands fails, that
-    // binds each cell to what stands at its own place unjudged and lets the containment
-    // judge the whole (a cell only bounds name would stay open); or the rule itself: a
-    // variable a part-at-a-time placement decided widens to a later part of the same
-    // value, as a call's later argument widens it. probes:
-    // ~/ptmp/cr29/scratch/r24/24d/fin/{ch5,ch6}.gx (refused; base-r24 and staging run),
-    // alias{120,250,1000}.gx with m.sh (prim-split-wider-later-01)
-    /// Give the parts of `m`, which no member of `s0` takes whole
-    /// ([`Self::place_covered`]), each to the member that takes it, and
-    /// what none takes to `residue`: the types of several primitives, the
-    /// members of the union `m` stands for ([`union_head`]), and the parts
-    /// of each of those in turn. The walk goes a level at a time, so a
-    /// chain of names costs a step a link. `None` where no part is taken:
-    /// `m` is in `residue` whole, under its name.
-    fn place_parts(
-        s0: &[Type],
-        free: &[bool],
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-        m: &Type,
-        cells: &mut AddrSet,
-        residue: &mut Vec<Type>,
-    ) -> Result<Option<bool>> {
-        ensure_sufficient(|| {
-            let commit = flags.contains(ContainsFlags::Commit);
-            let again = matches!(m, Self::TVar(tv) if !cells.insert(tv.cell_addr()));
-            let parts: SmallVec<[Type; 8]> = match again {
-                true => SmallVec::new(),
-                false => union_head(env, m, commit)?.with_deref(|h| match h {
-                    Some(Self::Set(ms)) => ms.iter().cloned().collect(),
-                    Some(Self::Primitive(p)) if p.len() > 1 => {
-                        p.iter().map(|b| Self::Primitive(b.into())).collect()
-                    }
-                    _ => SmallVec::new(),
-                }),
-            };
-            let held = residue.len();
-            let mut taken = false;
-            for part in parts.iter() {
-                let placed = match Self::place_covered(s0, free, flags, env, hist, part)?
-                {
-                    None => Self::place_parts(
-                        s0, free, flags, env, hist, part, cells, residue,
-                    )?,
-                    placed => placed,
-                };
-                match placed {
-                    Some(true) => taken = true,
-                    Some(false) => return Ok(Some(false)),
-                    None => (),
-                }
-            }
-            if taken {
-                return Ok(Some(true));
-            }
-            residue.truncate(held);
-            residue.push(m.clone());
-            Ok(None)
-        })
-    }
-
     /// `t0`, a union `s0` holding an open member, contains the members
-    /// `s1` in that order: each goes to the constructor member that takes
-    /// it, one none takes whole that is several primitives or names a
-    /// union a part at a time ([`Self::place_parts`]), and what none
-    /// takes to the open member.
+    /// `s1` in that order: each goes to the first constructor member that
+    /// fits it, and what none takes to the open member.
     fn place_members(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -5822,6 +5672,7 @@ impl Type {
         // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
         // reaches it
         let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
+        let probe = guide(flags);
         let mut residue: LPooled<Vec<Type>> = LPooled::take();
         // CR claude for claude: [bug/medium] Two members of the value that one constructor
         // member of the holder could take, where that member holds a variable, are met in
@@ -5912,6 +5763,10 @@ impl Type {
         // refused, each at this relation; no --check or run of the scripts differs. Of 400
         // with annotated twins, 96 split from the twin before and 95 after (two no longer,
         // one newly). probes: ~/ptmp/cr29/scratch/r24/24d/uofl-rev/ (README; t/, flips/)
+        // 2026-11-14 claude: union-prim-member-whole-01's fix was taken out at the landing
+        // of lane 24d, so what this says changed since that fix stands as on base-r24 again
+        // (a named union goes whole to the open member, two Results under a two-arm handler
+        // are taken); the forms marked base-r24 alike stand.
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a
@@ -5922,23 +5777,87 @@ impl Type {
             if reflexive {
                 continue;
             }
-            match Self::place_covered(s0, &free, flags, env, hist, m)? {
-                Some(true) => continue,
-                Some(false) => return Ok(false),
-                None => (),
+            // An rhs member that is one of the lhs's own cells
+            // is covered reflexively too.
+            let own_cell = match m {
+                Self::TVar(mtv) => s0.iter().any(|c| match c {
+                    Self::TVar(ctv) => one_variable(ctv, mtv),
+                    _ => false,
+                }),
+                _ => false,
+            };
+            if own_cell {
+                continue;
             }
-            let mut cells: LPooled<AddrSet> = LPooled::take();
-            let placed = Self::place_parts(
-                s0,
-                &free,
-                flags,
-                env,
-                hist,
-                m,
-                &mut cells,
-                &mut residue,
-            )?;
-            if placed == Some(false) {
+            // A free rhs member is residue too: the coverage
+            // loop would bind it greedily; in the residue it
+            // aliases with the bare lhs member.
+            if is_unbound_tvar(m) {
+                residue.push(m.clone());
+                continue;
+            }
+            let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
+            for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
+                if c.contains_int(probe, env, hist, m)? {
+                    admit.push(c);
+                    if !commit || hist.binds_nothing(c, m) {
+                        admit.truncate(0);
+                        admit.push(c);
+                        break;
+                    }
+                }
+            }
+            // CR claude for claude: [bug/medium] A union with a bare variable takes a
+            // member of several primitive types whole: where no one constructor member
+            // admits all of it, the whole member goes to the variable, the types a
+            // constructor member covers included. `let f = 'a: Number |x: [['a, null],
+            // Array<i64>]| x; let v: [i64, null, Array<i64>] = 1; f(v)` is refused,
+            // "[null, 'a: unbound within Number, Array<i64>] does not contain [i64, null,
+            // Array<i64>]", where 'a = i64 holds it (base-r20 alike). Unbounded, `let f =
+            // |x: ['a, null]| -> 'a x$` over `v: [Array<i64>, i64, null]` gives 'a the
+            // null too: `select f(v) { i64 as i => .., Array<i64> as a => .. }` is refused
+            // for a null arm that can never be taken. A primitive alone (`v: [i64, null]`)
+            // is taken a type at a time (contains_dispatch's `Self::Primitive(p) if p.len()
+            // > 1` arm), and so is the alias spelling of the first (`[Opt<'a>,
+            // Array<i64>]` checks and runs, Type::unfolded_held): the alias accepts what
+            // its written-out twin refuses. What would fix it: a primitive member no
+            // constructor member admits whole gives each of its types to the constructor
+            // member that admits it and only the rest to the residue. That moves what a
+            // call infers (the second example's select must drop its null arm), so it
+            // wants a census of both repos first. probes:
+            // ~/ptmp/cr29/scratch/r20/coord/x5/{h2,h3,k1,k2}.gx (h3 is h2's alias
+            // spelling) (union-prim-member-whole-01)
+            // 2026-11-14 claude: Round 24, lane 24d fixed this by taking such a member a
+            // part at a time, named unions too (branch r24-d-split, ce7305c51 to
+            // e3de250c2), and the coordinator took the fix out at the landing, so this
+            // stands as on base-r24. Two things stopped it. Cost: an instance whose
+            // definition's variable stands under an alias and bare (deep_nesting's
+            // chainboundsalias, 'a0: M<'a1>, .. |x: ('a0, 'a1, ..)| over type M<'x> = ['x,
+            // null]) no longer holds by FnType::held_at's containment as it stands, since
+            // the bound gives the next variable the narrowest type before its own place,
+            // and falls to FnType::place_cells, which is not linear over a chain of names:
+            // --expand takes 5.9G/79.5G instructions at 120/250 links against 0.83G/0.90G,
+            // and
+            // a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time
+            // fails its budget. Reach: the named spelling takes the narrowest type too, so
+            // 'let f = |x: (M<'a>, 'a)| 0' over 'v: (M<M<i64>>, M<i64>)', which base-r24
+            // runs, is refused as its written-out twin ([i64, null] twice) already is on
+            // base-r24, naming nothing to annotate, and two members of a named union then
+            // compete for one constructor member's variable by the typedefs' names
+            // (value-members-one-cell-order-01). A fix that lands needs held_at to hold
+            // such an instance without place_cells (or place_cells linear over names: 72%
+            // of the samples were contains::holds_cell under conjuncts_admit,
+            // first_expansion comparing each name's parameters with every other's), and a
+            // decision on a variable widening to a later part of the same value. Tried at
+            // the landing and not enough: a same-name shortcut in conjuncts_admit never
+            // fires, the instance's types are expanded unions. The finisher's measurements
+            // and what it tried: ~/ptmp/cr29/r24/prim-split-wider-later-01.txt; probes
+            // ~/ptmp/cr29/scratch/r24/24d/fin/ (README), upm/, upm-rev/.
+            if admit.is_empty() {
+                residue.push(m.clone());
+            } else if commit
+                && Self::take(s0, [&admit, &[]], flags, env, hist, m)? != Some(true)
+            {
                 return Ok(false);
             }
         }
@@ -6073,22 +5992,6 @@ impl Type {
         // takes its definition's types, runs every one of them. probes:
         // ~/ptmp/cr29/scratch/r24/24d/udm-rev/{u3,p10,p11}.gx, diff-pre/sound.txt,
         // diff-base/sound-summary.txt
-        // 2026-11-13 claude: Closing invariant-union-two-solutions-01 (D36): a wrapper
-        // that passes an undecided parameter to an invariant position holding a
-        // variable beside a member splits the same way. 'type Opt<'x> = ['x, null];
-        // let put = |w: &mut Opt<'a>, k: &mut 'a| -> Opt<'a> { *w <- once(*k); *w };
-        // let n0: Opt<i64> = null; let d: Opt<i64> = 5; let g = |u| put(u, &mut d);
-        // g(&mut n0)' checks and runs (u takes the formal as it stands and k decides
-        // 'a at [i64, null]), and under GRAPHIX_NO_SUBST=1 g's instance, its u
-        // decided, gives 'a the i64 and is refused, "&mut 'a: i64 does not contain
-        // &mut [i64, null]", as the direct call put(&mut n0, &mut d) is. Beside a
-        // member that is no primitive ('x beside {x: i64}) the instance checked again
-        // is refused where the formal names the alias and runs where it writes the
-        // union out. Of 4317 accepted programs of gen.py (seeds 501-503, 640 families)
-        // 40 are refused under NO_SUBST, all of this wrapper shape; the default build
-        // runs every one alike plain, --no-fusion, PAR=force and under ELAB_AUDIT.
-        // probes:
-        // ~/ptmp/cr29/scratch/r24/24d/ius/{ns_alias,ns_written,ns185_alias,ns185_written}.gx
         let mut undecided_free = s0
             .iter()
             .zip(&free)
@@ -6157,6 +6060,43 @@ impl Type {
         }
     }
 
+    // CR claude for claude: [bug/low] An invariant position holding a union of a variable
+    // and a member decides the variable by how the argument's type is spelled, and by
+    // the order of the parameters, where the argument already holds the member: `['a,
+    // null]` equal to `[i64, null]` holds at 'a = i64 and at 'a = [i64, null], and the
+    // first containment takes one. Over `type Opt<'a> = ['a, null]; let nest = |w: &mut
+    // Opt<'a>| -> &mut 'a never()`, `let x: &mut Opt<i64> = nest(&mut n0)` checks for
+    // `n0: Opt<Opt<i64>>` (the member `Opt<i64>` goes to 'a whole) and is refused for
+    // `n0: [i64, null]`, `Opt<i64>` and `Opt<[i64, null]>`, "&mut Opt<i64> does not
+    // contain &mut 'a: i64"; `let x: &mut i64` the other way round. The formal's
+    // spelling changes nothing (`w: &mut ['a, null]` gives the same verdicts). A call
+    // only the wider solution types depends on parameter order: `|w: &mut Opt<'a>, k:
+    // &mut 'a| -> i64 0` at `(&mut n0, &mut d)` with `n0: Opt<i64>` and `d: Opt<i64>`
+    // is refused, "&mut 'a: i64 does not contain &mut [i64, null]", and `|k: &mut 'a, w:
+    // &mut Opt<'a>|` runs; with `k: 'a` both orders are refused, "'a: i64 does not
+    // contain [i64, null]", and `n0: Opt<Opt<i64>>` runs in every one. Nothing unsound,
+    // and the check and the build agree (base-r23 alike; found closing
+    // alias-instance-signature-01). What would fix it is a rule, not looked into: the
+    // variable waits for its other positions as one in a data position does, or the
+    // choice is refused naming what to annotate. probes:
+    // ~/ptmp/cr29/scratch/r23/23b/alias/w.txt (one program a line, run by hp.sh; w/h1.gx
+    // to h23.gx) (invariant-union-two-solutions-01)
+    // 2026-11-12 claude: The check and the build agree in the default mode only. A
+    // substituted instance loses the argument's spelling, so an instance checked again
+    // (GRAPHIX_NO_SUBST=1) takes the other solution: `let nest = |w: &mut Opt<'a>| ->
+    // &mut 'a never(); let wrap = |n| nest(n); let n0: Opt<Opt<i64>> = null; let x: &mut
+    // Opt<i64> = wrap(&mut n0)` checks and runs, and under GRAPHIX_NO_SUBST=1 wrap's
+    // instance is refused, "&mut [i64, null] does not contain &mut 'a: i64"; `B<Opt<'a>>`
+    // and a wrapper typed `|n: &mut Opt<'q>|` alike. 240 of 2688 accepted programs that
+    // call through a wrapper split this way, on base-r23 and the lane alike, none in the
+    // default mode (see union-nosubst-order-01 for the kind). probes:
+    // ~/ptmp/cr29/scratch/r23/23b/alias-review/ns1.gx to ns5.gx, gen.py, res.lane
+    // 2026-11-14 claude: Round 24, lane 24d deleted this as closed by D36 on top of
+    // union-prim-member-whole-01's fix (319158a98 on branch r24-d-split: the spelling no
+    // longer decided, only the parameters' order was left, which D36 rules no defect).
+    // That fix was taken out at the landing (see the note there), so the spelling decides
+    // again and this stands as written; the lane's pins and its 640-family generator
+    // (~/ptmp/cr29/scratch/r24/24d/ius/) are on that branch.
     /// Containment both ways: an invariant position.
     fn equal_int(
         &self,
@@ -8677,44 +8617,6 @@ mod tests {
         let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
         assert!(held.contains(&env, &parsed("null")).unwrap());
         assert!(held.has_unbound());
-    }
-
-    // a member of several primitive types that no constructor member
-    // takes whole goes a type at a time: the open member takes only the
-    // types none does, and the member as it stands where none takes any
-    /// A member named a hundred deep is taken a part at a time as one named
-    /// once is: the open member takes what the last name holds.
-    #[test]
-    fn a_member_named_deep_is_taken_a_part_at_a_time() {
-        use crate::typ::cast::tests::{parsed, typed};
-        let (env, _) = typed(&[("M<'x>", "['x, null]")], "null");
-        let deep = (0..100).fold("i64".to_string(), |t, _| format!("M<{t}>"));
-        let union = parsed(&env, "['a, null]");
-        assert!(union.contains(&env, &parsed(&env, &deep)).unwrap());
-        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        union.collect_tvars(&mut tvs);
-        let a = Type::TVar(tvs["a"].clone()).deref_cloned().unwrap();
-        assert!(matches!(a, Type::Primitive(p) if p == Typ::I64), "{a}");
-    }
-
-    #[test]
-    fn an_open_member_takes_only_the_primitives_no_member_does() {
-        let env = Env::default();
-        for (union, t, open) in [
-            ("['a, null]", "[i64, null, Array<i64>]", "[i64, Array<i64>]"),
-            ("['a, i64]", "[i64, null, Array<i64>]", "[null, Array<i64>]"),
-            ("['a, string]", "[i64, null, Array<i64>]", "[i64, null, Array<i64>]"),
-            ("['a, null, Array<'b>]", "[i64, string, null, Array<i64>]", "[i64, string]"),
-        ] {
-            let union = parsed(union);
-            assert!(union.contains(&env, &parsed(t)).unwrap(), "{union}");
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            union.collect_tvars(&mut tvs);
-            let a = Type::TVar(tvs["a"].clone()).deref_cloned().unwrap();
-            let open = parsed(open);
-            assert!(open.contains(&env, &a).unwrap(), "{union}: {a}");
-            assert!(a.contains(&env, &open).unwrap(), "{union}: {a}");
-        }
     }
 
     // a type holding a cell to decide that two decided members could

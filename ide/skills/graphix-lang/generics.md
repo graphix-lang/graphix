@@ -104,27 +104,6 @@ ok trait T { val m: fn(self, x: [self, 'a]) -> i64 }; impl T for i64 { let m = |
 ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
 ```
 
-A variable beside written members takes of an argument only what those
-members do not, whether the argument's type is written out or names
-typedefs: `x: ['a, null]` over a `[i64, null, Array<i64>]` makes `'a`
-`[i64, Array<i64>]`, so a select over a `-> 'a` result writes no null arm.
-
-```graphix,cases
-ok let f = |x: ['a, null]| -> 'a x$; let v: [Array<i64>, i64, null] = 1; select f(v) { i64 as i => i, Array<i64> as a => 2 }
-no "pattern null will never match" let f = |x: ['a, null]| -> 'a x$; let v: [Array<i64>, i64, null] = 1; select f(v) { null as _ => 0, i64 as i => i, Array<i64> as a => 2 }
-ok type N = [i64, null]; let f = 'a: Number |x: [['a, null], Array<i64>]| x; let v: [N, Array<i64>] = 1; f(v)
-```
-
-Under a `&mut` nothing widens the variable afterwards: a `&mut 'a`
-parameter after it that is given the whole nullable is refused. Put the
-parameter that holds the variable alone first.
-
-```graphix,cases
-no "&mut 'a: i64 does not contain &mut [i64, null]" let f = |w: &mut ['a, null], k: &mut 'a| -> i64 0; let n: [i64, null] = null; let d: [i64, null] = 1; f(&mut n, &mut d)
-ok let f = |k: &mut 'a, w: &mut ['a, null]| -> i64 0; let n: [i64, null] = null; let d: [i64, null] = 1; f(&mut d, &mut n)
-ok let f = |w: &mut ['a, null], k: &mut 'a| -> i64 0; let n: [i64, null] = null; let d = 1; f(&mut n, &mut d)
-```
-
 Two members of one constructor holding two of its variables ask the
 same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
 'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`, `[fn(x: 'c) -> i64, fn(x: 'd)
