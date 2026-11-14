@@ -1499,28 +1499,6 @@ impl TypeRef {
         }
     }
 
-    // XCR claude for claude: [bug/low] A bounded parameter's bound decides, or refuses,
-    // an undecided argument that is not a bare open variable. `type N<'t: Number> = ['t,
-    // null]; type I<'t> = 't; let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y); let h = |v|
-    // f(v, null); let z: i64 = h(2).0` is refused, "i64 does not contain [Int, Real]": h
-    // is fn(v: [Int, Real]) -> .., where under `'a: N<'b>` it is fn(v: '_N: unbound
-    // within Number) -> .. and the program prints 2. The lookup of N<I<'b>> relates the
-    // bound to the argument (`bound.check_contains(env, arg)` below), which binds 'b to
-    // Number where a bare 'b takes Number as a conjunct; a variable whose cell is bound
-    // to an open one (`tv.is_bound()`) goes the same way. With the name in a parameter,
-    // `|x: 'b, y: N<I<'b>>|`, h(2) is refused, "Number does not contain I<'b:
-    // unbound>". base-r24 alike. A bare cycle's dropped bound is held the same way
-    // (contains.rs merge_bare_cycle), so `'a: N<I<'b>>, 'b: Number |x0: 'a, x1: 'b, x2:
-    // 'b|` called `f(w, w, v)` over two `never()` lets gives every part [Int, Real], and
-    // `let z: i64 = r.0` is refused where base-r24 ran it. probes:
-    // ~/ptmp/cr29/scratch/r24/24c/bcnb/{i1,i2,i3,t2,p00107}.gx
-    // (named-bound-arg-decides-01)
-    // 2026-11-14 claude: An argument that is an open variable through a typedef name
-    // (I<'b> with type I<'t> = 't) or through a cell bound to one now takes the bound as
-    // a conjunct, as a bare variable does (Type::open_cell in hold_bounds_of and
-    // check_application); i1, i2, i3 and p00107 check and run, 2. Pins that fail without
-    // it: types.rs bound_name_argument_through_*. guicheck 39679980616 -> 39840669707;
-    // deep_nesting green; census: no verdict or message change from this commit.
     /// Hold the arguments to `def`'s parameter bounds, as an expansion
     /// does: an open argument cell takes its bound when `commit`, any
     /// other argument must meet it, refused by error when `commit`, else
