@@ -1119,49 +1119,6 @@ impl Reach {
                 }
                 let explicit = pat.explicit_type_predicate.then_some(at);
                 if unguarded {
-                    // XCR claude for claude: [bug/high] A slice whose element is a tuple or
-                    // struct of names claims its lengths of an array member whose element
-                    // type is a union holding other members, so the check accepts a select
-                    // that has no arm for a value: `let f = |x: Array<[(i64, i64), i64]>|
-                    // select x { [(a, b), ..] => 1, [] => 0 }; f([3])` passes --check and
-                    // the run logs "no arm matches [i64:3]: a coverage hole in the check",
-                    // and `Array<[(i64, i64), (i64, i64, i64)]>` with `f([(1, 2, 3)])`
-                    // alike; `|x: Array<(i64, i64)>|` is the twin that runs. base-r24
-                    // alike. array_len_coverage reads an element pattern by
-                    // matches_anything, which takes a tuple of names as irrefutable
-                    // whatever the element type is, and the inferred predicate holds each
-                    // element over its own member, so `at` contains the member. The same
-                    // hole inside a tuple, struct or variant position is closed (the
-                    // nested ladder reads elements by elements_cover since
-                    // slice-position-other-member-01). What would close it: without a
-                    // written test, claim a member only where sp.elements_cover holds of
-                    // it (any_member only under `explicit`); tried, h12/h15 are then
-                    // refused and five twins run, but the refusal's hint then says the
-                    // ladder "needs a rest pattern" where it has one: refutable_slice
-                    // wants setting where a member's elements are not covered. probes:
-                    // ~/ptmp/cr29/scratch/r24/24h/spom/hole/{h12,h15,k02}.gx
-                    // (slice-element-union-hole-01)
-                    // 2026-11-14 claude: Fixed: without a written test a slice arm claims
-                    // its lengths only of the members whose elements it covers
-                    // (elements_cover); a member it reaches but whose elements its names
-                    // do not take marks the ladder untaken, and the refusal says so ('a
-                    // slice arm's element patterns do not take every element of T, so it
-                    // covers none of its lengths') in place of 'needs a rest pattern'.
-                    // elements_cover now takes a union element type member by member
-                    // (StructPatternNode::covers_each_member), so a tuple of names over
-                    // Array<[(i64, i64), (string, string)]> still claims its lengths, top
-                    // level (nested_union_binds_take_every_member) and nested (newly
-                    // accepted: `A(Array<P>)). Pins in lang::select that fail without the
-                    // fix (32 runs): slice_tuple_element_over_a_union_claims_nothing,
-                    // slice_tuple_element_over_another_tuple_claims_nothing,
-                    // slice_struct_element_over_a_union_claims_nothing,
-                    // list_tuple_element_over_a_union_claims_nothing,
-                    // slice_suffix_tuple_element_over_a_union_claims_nothing,
-                    // slice_tuple_element_beside_null_claims_nothing,
-                    // slice_tuple_element_over_a_union_leaves_later_arms_live (base
-                    // refused those arms as dead),
-                    // slice_tuple_element_over_a_union_of_its_arity_claims_its_lengths.
-                    // probes ~/ptmp/cr29/scratch/r25/25b/seh/
                     let irrefutable = sp.array_len_coverage(env, explicit).is_some();
                     let any_member = irrefutable && explicit.is_some();
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
