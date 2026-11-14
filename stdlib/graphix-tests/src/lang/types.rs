@@ -16016,3 +16016,137 @@ run!(
 }"#,
     prints("[null]")
 );
+
+run!(
+    two_array_members_one_cell_hold_it_together,
+    r#"{
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [Array<i64>, Array<string>, null] = null;
+  let n: [i64, string] = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+
+run!(
+    two_array_members_one_cell_are_not_the_first_member,
+    r#"{
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [Array<i64>, Array<string>, null] = null;
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_array_members_one_cell_are_not_the_last_member,
+    r#"{
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [Array<i64>, Array<string>, null] = null;
+  let n: string = f(v);
+  0
+}"#,
+    refused("string does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_named_array_members_one_cell_hold_it_together_in_either_name_order,
+    r#"{
+  type T0 = Array<string>;
+  type T1 = Array<i64>;
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: [i64, string] = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+
+run!(
+    two_named_array_members_one_cell_are_refused_as_the_first_name_is_not_first,
+    r#"{
+  type T0 = Array<string>;
+  type T1 = Array<i64>;
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_named_array_members_one_cell_are_refused_as_the_second_name_is_not_first,
+    r#"{
+  type T1 = Array<string>;
+  type T0 = Array<i64>;
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_array_members_of_declared_variables_one_cell_do_not_follow_the_names,
+    r#"{
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let g = |p: 'q, q: 'p| {
+    let v: [Array<'p>, Array<'q>, null] = null;
+    f(v)
+  };
+  let n: i64 = g(1, "s");
+  0
+}"#,
+    refused("i64 does not contain");
+    FuseExpect::None
+);
+
+run!(
+    two_error_members_one_cell_hold_both_tags,
+    r#"{
+  let f = |x: ['a, Error<'e>]| x?;
+  let v: [i64, string, Error<`A>, Error<`B>] = error(`B);
+  let r = {
+    catch(e) e ~ select e.0.error { `A => -1, `B => -2 };
+    f(v)
+  };
+  0
+}"#,
+    prints("i64:0")
+);
+
+run!(
+    two_error_members_one_cell_are_refused_a_handler_for_one_tag,
+    r#"{
+  let f = |x: ['a, Error<'e>]| x?;
+  let v: [i64, string, Error<`A>, Error<`B>] = error(`B);
+  let r = {
+    catch(e) e ~ select e.0.error { `A => -1 };
+    f(v)
+  };
+  0
+}"#,
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    one_array_member_one_cell_still_decides_it,
+    r#"{
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let v: [Array<i64>, null] = null;
+  let n: i64 = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);

@@ -1242,6 +1242,14 @@ fn decides_no_cell(t: &Type) -> bool {
 }
 
 /// A variable whose chain of bindings ends open.
+/// The parameter of an `Array`, `List` or `Error`.
+fn ctor_param(t: &Type) -> Option<&Type> {
+    match t {
+        Type::Array(p) | Type::List(p) | Type::Error(p) => Some(p),
+        _ => None,
+    }
+}
+
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
@@ -5637,6 +5645,99 @@ impl Type {
         Ok(true)
     }
 
+    /// `s1` with the members that only one constructor member of `s0`
+    /// admits, and that bind a cell of it, replaced by one member that
+    /// holds them together (`Array<'b> ⊇ [Array<i64>, Array<string>]` is
+    /// `'b ⊇ [i64, string]`), so that the order they stand in decides
+    /// nothing. `None` where no two members share a taker.
+    fn join_cell_sharing(
+        s0: &[Type],
+        free: &[bool],
+        s1: &[Type],
+        env: &Env,
+        hist: &mut ContainsHist,
+    ) -> Result<Option<LPooled<Vec<Type>>>> {
+        let probe = BitFlags::empty();
+        let mut takers: LPooled<Vec<Option<usize>>> = LPooled::take();
+        let mut shapes: LPooled<Vec<Type>> = LPooled::take();
+        let mut shared = false;
+        for m in s1.iter() {
+            let mut taker = None;
+            let shape = match m {
+                Type::Ref(_) => m.lookup_ref_with(env, false)?,
+                _ => None,
+            };
+            let shape = shape.as_ref().unwrap_or(m);
+            shapes.push(shape.clone());
+            if ctor_param(shape).is_some() {
+                let mut found = None;
+                let mut many = false;
+                for (i, c) in s0.iter().enumerate().filter(|(i, _)| !free[*i]) {
+                    if c.contains_int(probe, env, hist, shape)? {
+                        many |= found.is_some();
+                        found = Some(i);
+                    }
+                }
+                if let Some(i) = found
+                    && !many
+                    && !hist.binds_nothing(&s0[i], shape)
+                {
+                    shared |= takers.contains(&Some(i));
+                    taker = Some(i);
+                }
+            }
+            takers.push(taker);
+        }
+        if !shared {
+            return Ok(None);
+        }
+        let mut out: LPooled<Vec<Type>> = LPooled::take();
+        let mut done: SmallVec<[usize; 4]> = SmallVec::new();
+        for (m, taker) in s1.iter().zip(takers.iter()) {
+            let Some(i) = *taker else {
+                out.push(m.clone());
+                continue;
+            };
+            if done.contains(&i) {
+                continue;
+            }
+            let group = shapes
+                .iter()
+                .zip(takers.iter())
+                .filter_map(|(m, t)| (*t == Some(i)).then_some(m));
+            done.push(i);
+            match Self::join_ctor(group, hist) {
+                Some(joined) => out.push(joined),
+                None => out.extend(
+                    s1.iter()
+                        .zip(takers.iter())
+                        .filter_map(|(m, t)| (*t == Some(i)).then(|| m.clone())),
+                ),
+            }
+        }
+        Ok(Some(out))
+    }
+
+    /// The one type that holds every member of `group`, applications of
+    /// one single-parameter constructor.
+    fn join_ctor<'a>(
+        group: impl Iterator<Item = &'a Type> + Clone,
+        hist: &mut ContainsHist,
+    ) -> Option<Type> {
+        let first = group.clone().next()?;
+        let kind = std::mem::discriminant(first);
+        if group.clone().any(|m| std::mem::discriminant(m) != kind) {
+            return None;
+        }
+        let inner = Arc::new(hist.normal_union(group.filter_map(ctor_param)));
+        match first {
+            Self::Array(_) => Some(Self::Array(inner)),
+            Self::List(_) => Some(Self::List(inner)),
+            Self::Error(_) => Some(Self::Error(inner)),
+            _ => None,
+        }
+    }
+
     /// `t0`, a union `s0` holding an open member, contains the members
     /// `s1` in that order: each goes to the first constructor member that
     /// fits it, and what none takes to the open member.
@@ -5654,6 +5755,11 @@ impl Type {
         // reaches it
         let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
         let probe = guide(flags);
+        let joined = match commit {
+            true => Self::join_cell_sharing(s0, &free, s1, env, hist)?,
+            false => None,
+        };
+        let s1: &[Type] = joined.as_deref().map_or(s1, |j| &j[..]);
         let mut residue: LPooled<Vec<Type>> = LPooled::take();
         // CR claude for claude: [bug/medium] Two members of the value that one constructor
         // member of the holder could take, where that member holds a variable, are met in
@@ -5748,6 +5854,26 @@ impl Type {
         // of lane 24d, so what this says changed since that fix stands as on base-r24 again
         // (a named union goes whole to the open member, two Results under a two-arm handler
         // are taken); the forms marked base-r24 alike stand.
+        // 2026-11-14 claude: Round 25, lane 25e, PARTIAL. Done: place_members now joins the
+        // members of the value that only one constructor member of the holder admits and
+        // that decide a cell of it (Array, List, Error, a name standing for one included)
+        // into one member before the walk (join_cell_sharing), so ['a, Array<'b>] over
+        // [Array<i64>, Array<string>, null] gives 'b [i64, string] in every order, whatever
+        // the typedefs' or declared variables' names (order.txt lines 1-4, 8, 11, 12 now
+        // agree; ['a, Error<'e>] over two error tags gives 'e both, so the handler with
+        // both arms passes and the one with the A arm alone is refused at the check,
+        // errs/catch lines, which was check-accepted and build-refused for
+        // qop-open-member-errors-01 on a written-out union). Pins:
+        // lang::types::two_array_members_one_cell_* and two_error_members_one_cell_* (24
+        // failures across the modes with the join disabled). Not done: a named union's
+        // parts still go whole to the open member (order.txt 5-7, 9-10, errs/catch with
+        // Result aliases: the union-prim-member-whole-01 mechanism, still taken out), the
+        // invariant form under &mut (ius), and the bottom-cell form; a member that two
+        // constructor members could take, and members of other constructors (variants,
+        // tuples, maps), are not joined. Census of 2967 files: no verdict or message
+        // differs; guicheck 39.54G base, 39.66G lane; deep_nesting 50 passed; graphix-types
+        // and graphix-tests lib green. Needs a soak. probes: ~/ptmp/cr29/scratch/r25/25e/
+        // (order.txt, errs.txt, catch.txt, cmp.sh)
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a

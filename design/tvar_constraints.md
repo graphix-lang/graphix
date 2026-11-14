@@ -771,6 +771,19 @@ one member, chosen by rules that read the union alone:
   `[Array<['a, 'b]>, Array<'a>]`). The same count says whether a union has
   two undecided members for an undecided type to take whole
   (`place_members`), so `['a, 'a]` is `'a` there.
+- two members of the type that one constructor member would take, and that
+  decide a cell of it, are taken together as one: `['a, Array<'b>] ⊇
+  [Array<i64>, Array<string>, null]` is `'b ⊇ [i64, string]` and `'a ⊇
+  null`, in either order of the members, whatever the typedefs' or the
+  declared variables' names (`place_members`, `join_cell_sharing`: `Array`,
+  `List` and `Error` members, a name standing for one included). Over
+  `|x: ['a, Error<'e>]| x?` a value of two error tags gives `'e` both, so a
+  handler for one tag is refused as missing the other (pins
+  `lang::types::two_array_members_one_cell_hold_it_together`,
+  `two_named_array_members_one_cell_are_refused_as_the_second_name_is_not_first`,
+  `two_error_members_one_cell_hold_both_tags`). A member that two
+  constructor members could take, a name standing for a union, and a member
+  of another constructor are not joined and keep the walk's order.
 - of several that could, the one that holds each of the others as it
   stands (`contains::widest`) takes the type, where taking it decides
   every cell another of them would (`contains::decides_each`): what any
