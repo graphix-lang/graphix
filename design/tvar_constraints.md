@@ -968,15 +968,25 @@ array element takes the element's cell only over the members (pin
 A cell that is
 not copied stays open, with no link to a copy. A variable is ordered,
 compared and hashed as the cell it stands for, the end of the forward
-links merges left (`TVar::end_cell`), so a cell a copy did take stands
-among the members of a union where an open cell does, as its written
-twin's variable: which of two merged cells forwards to the other tells
-no two unions apart, and a later input reads the result of such arms as
-it reads the twin's (pins
+links merges left (`TVar::end_cell`), so which of two merged cells
+forwards to the other tells no two unions apart, and a later input reads
+the result of arms that give back their slices' parts (`[a, ..] => [a],
+[] => []`) as it reads the written twin's (pins
 `lang::repl_inputs::slice_arms_result_reads_as_the_written_twins_in_a_later_input`,
 `forwarded_cell_stands_among_members_as_the_written_twins`,
 `typ::tvar::tests::a_forwarded_var_orders_as_the_cell_it_stands_for`).
-The
+Members that differ only in open cells compare equal, so they stand in
+the order the union was built in, which is not always the twin's: an
+unannotated parameter the arms narrowed, read whole beside an arm's `[]`
+(`select k { 0 => [], _ => p }`), stands first in either order of the
+arms, where the twin's `Array<'e>` stands in the arms' order (pin
+`lang::repl_inputs::narrowed_parameter_read_whole_stands_first_among_members`).
+A cell an input's end settled to ⊥ sorts as ⊥ through its links too,
+before a cell bound to a type, in a union a later input builds (`r.0`
+over a union of tuples; pin
+`settled_member_read_out_of_a_tuple_stands_as_the_one_met_whole`). What
+a later read makes of the members' order is CR
+value-members-one-cell-order-01. The
 elements of the arms' slices share a cell that way, and so do the arms'
 binds of another part of a tuple or a struct, however many arms bind it
 (`([a, c, ..], b) => .., ([d], b) => .., ([], b) => ..`), literal arms'

@@ -740,6 +740,70 @@ async fn settled_member_first_is_refused_as_the_written_twins() -> Result<()> {
     Ok(())
 }
 
+/// A parameter its arms narrowed, read whole beside an arm's `[]`, stands
+/// first among the result's members in either order of the arms, so a
+/// later input's read takes its elements. Its written twin's `Array<'e>`
+/// stands in the arms' order: the read is refused where `[]` stands
+/// first, naming the binding to annotate.
+#[tokio::test(flavor = "current_thread")]
+async fn narrowed_parameter_read_whole_stands_first_among_members() -> Result<()> {
+    for (f, r) in [
+        (
+            "let f = |k: i64, p| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => [], _ => p } }",
+            "let r = f(1, [2])",
+        ),
+        (
+            "let f = |k: i64, p| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => p, _ => [] } }",
+            "let r = f(0, [2])",
+        ),
+        (
+            "let f = |k: i64, p| select k { 0 => select p { [h, ..] => [h], [] => [] }, _ => p }",
+            "let r = f(1, [2])",
+        ),
+        (
+            "let f = |k: i64, p: Array<'e>| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => p, _ => [] } }",
+            "let r = f(0, [2])",
+        ),
+    ] {
+        session(&[Accept(f), Accept(r), Produce("array::len(r)", Value::I64(1))]).await?;
+    }
+    session(&[
+        Accept(
+            "let f = |k: i64, p: Array<'e>| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => [], _ => p } }",
+        ),
+        Accept("let r = f(1, [2])"),
+        Refuse("array::len(r)", "declare r's type where it is bound"),
+        Accept("let r: Array<i64> = f(1, [2])"),
+        Produce("array::len(r)", Value::I64(1)),
+    ])
+    .await
+}
+
+/// A member whose cell an input's end settled to ⊥ sorts as ⊥, before one
+/// bound to a type, where a later input builds a union of its own (the
+/// first parts of a union of tuples), as it stands where a call's result
+/// holds it first: the read is refused for both alike, naming the binding
+/// to annotate.
+#[tokio::test(flavor = "current_thread")]
+async fn settled_member_read_out_of_a_tuple_stands_as_the_one_met_whole() -> Result<()> {
+    session(&[
+        Accept(
+            "let g = |k: i64, p0: Array<'a>, p1: Array<'b>| select k { 0 => p0, _ => p1 }",
+        ),
+        Accept("let s = g(1, [], [\"s\"])"),
+        Refuse("array::len(s)", "declare s's type where it is bound"),
+        Accept(
+            "let f = |k: i64, p0: Array<'a>, p1: Array<'b>, p2: Array<'c>| select k { 0 => (p0, [p1]), _ => (p1, p2) }",
+        ),
+        Accept("let r = f(1, [], [\"s\", \"s\"], [\"t\"])"),
+        Accept("let m = r.0"),
+        Refuse("array::len(m)", "declare r's type where it is bound"),
+        Accept("let m: Array<string> = r.0"),
+        Produce("array::len(m)", Value::I64(2)),
+    ])
+    .await
+}
+
 /// Lambdas of two inputs that meet in a third have their defaults judged
 /// in the order the inputs were given, not the order of their texts: `1`
 /// first, so `"q"` is refused.

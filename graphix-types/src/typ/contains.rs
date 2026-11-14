@@ -5648,6 +5648,27 @@ impl Type {
         // for half of this CR's order; the fix this CR names (the holder takes together
         // what its variable must hold) covers it whole. probes:
         // ~/ptmp/cr29/scratch/r24/24d/uofl/ (README; o03, o07, t2, c1, v1)
+        // 2026-11-14 claude: Review of union-order-forward-link-01: a forward link no
+        // longer places a member, and where a member is built still does, so later reads
+        // still turn on this order and an unannotated function still differs from its
+        // written twin in other forms. 'let f = |k: i64, p| { let n = select p { [h, ..] =>
+        // 1, [] => 0 }; select k { 0 => [], _ => p } }', 'let r = f(1, [2])',
+        // 'array::len(r)' runs since that fix (r is '[Array<i64>, Array<_>]': the narrowed
+        // parameter, whose type is the arms' members '[Array<['x, 'x]>, Array<'x>]' until
+        // they collapse, stands first in either order of the arms) and was refused before
+        // it, as its twin 'p: Array<'e>' is on both ('[Array<_>, Array<'e: i64>]'); pin
+        // lang::repl_inputs::narrowed_parameter_read_whole_stands_first_among_members. The
+        // other way: a cell settled to ⊥ now sorts as ⊥ through its links, so over 'let f =
+        // |k: i64, p0: Array<'a>, p1: Array<'b>, p2: Array<'c>| select k { 0 => (p0, [p1]),
+        // _ => (p1, p2) }', 'let r = f(1, [], ["s", "s"], ["t"])', 'let m = r.0',
+        // 'array::len(m)' is refused where it ran, as 'g(1, [], ["s"])' over 'select k { 0
+        // => p0, _ => p1 }' is on both; pin
+        // settled_member_read_out_of_a_tuple_stands_as_the_one_met_whole. Of 850 generated
+        // functions with later reads (head against that fix) 50 transcripts print another
+        // member order and 4 change a later read's verdict, three to running and one to
+        // refused, each at this relation; no --check or run of the scripts differs. Of 400
+        // with annotated twins, 96 split from the twin before and 95 after (two no longer,
+        // one newly). probes: ~/ptmp/cr29/scratch/r24/24d/uofl-rev/ (README; t/, flips/)
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a
