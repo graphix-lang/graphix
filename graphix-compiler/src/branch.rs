@@ -339,35 +339,6 @@ impl VarAliases {
         (taken, visited)
     }
 
-    // XCR claude for claude: [perf/low] A branch's table keeps every pair
-    // its syncs and merges took in, so once retirements drop joins from the
-    // readings, each later reading the branch takes in differs from its
-    // table at every retired pair, spread over the map, and with_kept walks
-    // most of the reading's pairs though it adds none. st.gx
-    // (~/ptmp/cr29/scratch/r24/24f/abw/, with m.gx, m.gxi), debug,
-    // GRAPHIX_PAR=force: 3183 of 3251 with_kept calls take a table read
-    // later than these, of up to 6.1 k pairs, into these of up to 7.0 k,
-    // which hold it whole: 12.1 M pairs visited, about 15% of the run's
-    // instructions (17.8 G; GRAPHIX_PAR=off 12.2 G, auto 12.9 G). Where these
-    // hold the reading before the one taken in whole, only the pairs the
-    // step between those two readings changed can be missing from these:
-    // a table could keep the last reading it took in whole and compare the
-    // next with it (env::each_unshared of the two readings, which share all
-    // but the step's paths). (alias-retired-union-walk-01)
-    // 2026-11-14 claude: with_kept no longer walks the reading against the
-    // whole parent table when the parent took in an earlier reading of the same
-    // lineage: VarAliases keeps that reading's map (took) and compares the next
-    // against it, so only the step's pairs are visited. Probe st.gx
-    // (~/ptmp/cr29/scratch/r25/25h/), debug, GRAPHIX_PAR=force: 18.10 G ->
-    // 14.70 G instructions:u (par=off 12.5 G, auto unchanged at about 13.2 G);
-    // sc1000, ctl4000 unchanged. Pins that fail without it:
-    // branch::tests::a_table_of_a_lineage_the_kept_one_took_in_is_compared_by_its_steps
-    // (pairs visited per step bounded; whole-table walk reaches 670),
-    // absorbing_a_lineage_keeps_the_union_of_its_readings (the union model,
-    // with removals from the parent). Needs a soak.
-    // 2026-11-14 claude: Correction: only the first pin fails without the fix; the
-    // second guards the correctness of the took path (union model with removals from
-    // the parent) and passes either way.
     /// Take in the table of a branch forked from these: its aliases, and
     /// every one of these it lacks, read at the later of the two.
     pub(crate) fn absorb(&mut self, child: &Self) {
