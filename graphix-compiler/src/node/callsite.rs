@@ -3075,34 +3075,6 @@ impl<R: Rt> CallSite<R> {
         // one member at a time, not joined into one cell (the members' 'z are separate
         // instances: method_own_default_is_left_to_its_calls must keep running).
         // probe: ~/ptmp/cr29/scratch/r25/25d/p2.gx (trait-call-union-omitted-default-01)
-        // XCR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
-        // function a call returns that is called with a labeled default omitted checks, and
-        // is refused when its bind runs. `let mk = |k: i64| |#d = 1, x: i64|
-        // cast<string>(d)$` and then `let b = mk(4); b(7)` print "-: string" and log "b(7):
-        // binding the callee failed: .. in: 1: type mismatch _ does not contain i64: it holds
-        // the type of `b` .., settled when its input ended; declare b's type where it is
-        // bound"; `mk(4)(7)` alike, and so the three statements on one line. In the later
-        // statement the id the callee's type names has no registered definition (`defs` is
-        // [None] here), so no default is judged and #d's cell is left to the bind, and the
-        // input's end settles the cell first. The same text as a script prints 1 (its
-        // definitions are all registered and nothing settles before the bind); with `#d: i64
-        // = 1` the REPL prints it too. base-r24 alike. A fix judges the default here from the
-        // definition the earlier input left (or keeps it registered), so the label's cell is
-        // decided at the check. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/repl/{f1, f2,
-        // f3}.txt (`graphix --no-cache < f1.txt`), f4.gx (the script)
-        // (repl-returned-default-bind-01)
-        // 2026-11-14 claude: A function a definition's body returns keeps the definition its
-        // check made of the literal, and the bindings it captures, registered until the
-        // enclosing definition is deleted (BodyShared::held, LambdaDef::hold_returned in
-        // lambda.rs); checked_default puts the captured bindings back for its judgment
-        // (LambdaDef::restore_captures). A later input's call that omits the label now judges
-        // the default at the check: the cell the earlier input settled is refused there with
-        // the 'declare b's type' text (the REPL's settle rule), an annotated twin runs and
-        // prints, and mk(4)(7) in one statement prints. No bind-time failure remains in f1-f4
-        // (probes ~/ptmp/cr29/scratch/r25/25d/rdb/). Pins fail without the hold:
-        // lang::repl_inputs::returned_default_is_judged_in_a_later_input,
-        // returned_default_reading_a_capture_is_judged_in_a_later_input,
-        // lib_tests::leaks::returned_definitions_go_with_their_enclosing_definition.
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
