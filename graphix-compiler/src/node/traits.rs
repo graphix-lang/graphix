@@ -784,64 +784,6 @@ impl<R: Rt> Update<R> for Trait<R> {
         for m in self.def.methods.iter() {
             ctx.delete_dispatcher(m.dispatcher)
         }
-        // XCR claude for claude: [bug/low] A function that outlives the
-        // declaration of a trait it dispatches binds at no new call site. This
-        // delete gives the trait's record back and `Impl::give_back` the impl's
-        // entry, and `Module::delete` does both for an interface's
-        // (deleted-module-impl-leak-01), while a function value made under them
-        // still names the dispatcher. Only an embedder reaches it, by dropping a
-        // compiled expression whose function it kept: over a root `let saved:
-        // fn(x: i64) -> i64 = never()`, compile `{ type C = Abstract<i64>; trait
-        // Sh { val sh: fn(self) -> i64 }; impl Sh for C { let sh = |c: C| c.0 * 10
-        // }; saved <- |x: i64| Sh::sh(C(x)); 1 }`, drop it, then compile
-        // `saved(3)`: it logs "binding the callee failed: a run-time bind at
-        // saved(3) did not elaborate: .. trait method call through an unknown
-        // trait" and is bottom. The same for `{ mod m; saved <- m::get; 1 }` over
-        // an interface file that declares the trait and the impl, and for a
-        // function outside the module that calls `m::Sh::sh` (both answered 30
-        // while the interface's record and entry leaked); a function made in a
-        // dynamic module's load answers 30, since its view carries the load
-        // (`LoadedBody`). To fix: a function made under a static declaration
-        // keeps the trait's record and its impls as one made in a load does, and
-        // they go with the last value naming a dispatcher. probe:
-        // `escaped_dispatch` in
-        // ~/ptmp/cr29/scratch/r23/23e/deleted-module-impl-leak-01/escape.rs
-        // (escaped-fn-dropped-trait-01)
-        // 2026-11-13 claude: The same for a function made in a dynamic module's
-        // load where the trait and the impl are declared by the interface of a
-        // module that load declares, once an embedder drops the expression: over
-        // the root saved, compile a block whose mod d dynamic source declares mod
-        // inner dynamic with sig { trait Sh { val sh: fn(self) -> i64 }; type C;
-        // impl Sh for C; val mk: fn(x: i64) -> C } and let make = |x: i64|
-        // inner::Sh::sh(inner::mk(x)) + 1, write saved <- d::make, drop the block,
-        // compile saved(3): trait method call through an unknown trait, bottom. A
-        // reload of d keeps it (the replaced load takes what the registries give
-        // back, LoadedBody::give in Module::unregister; pin
-        // lang::modules::a_function_saved_across_a_reload_around_an_interface_module_dispatches_to_its_own);
-        // Module::delete gives the load nothing, so the fix for this one is the
-        // same hand-over at a delete that no unregister came before.
-        // 2026-11-14 claude: Fixed: a trait declaration deleted while a function value names one of its
-        // dispatchers is kept by those dispatchers (Env::kept_traits, KeptTrait: the record of record with
-        // its defaults, the impl entries the registry gives back from then on, and the typedefs their
-        // signatures and heads name), opened by ExecCtx::keep_trait at Trait::delete and at Module::delete
-        // for an interface's (with the dispatchers its splice into the body minted), released per dispatcher
-        // at ExecCtx::delete_dispatcher or with the last value (Env::release_dispatcher). A view reads it
-        // where its binding at the trait's path is one of the declaration's dispatchers (Env::kept_trait,
-        // under Env::trait_def and impls_all), so a redeclaration at the same path is left alone. A function
-        // that names a dispatcher pins the trait's defaults and every registered impl's methods
-        // (Env::dispatch_bindings at Lambda::update). The note's case (a load around an interface module,
-        // dropped) is closed the same way, with no hand-over to the load. Pins, lib_tests::leaks, four modes
-        // each: a_function_escaping_a_dropped_block_dispatches_to_its_impl, .._to_its_defaults,
-        // a_function_escaping_a_dropped_interface_module_dispatches_to_its_impl,
-        // a_function_over_a_dropped_interface_modules_trait_dispatches_to_its_impl,
-        // a_function_over_a_dropped_dynamic_modules_trait_dispatches_to_its_impl,
-        // a_function_escaping_a_dropped_load_around_an_interface_module_dispatches,
-        // a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration,
-        // a_function_outliving_another_inputs_trait_dispatches_to_its_impl: 32 runs fail with the view's
-        // lookup off, 28 with the pins off, 32 with keep_impl off, 4 with the typedefs unowned, 4 without
-        // the splice's dispatchers, 51 leaks runs with the release off, and the redeclaration pin with the
-        // view test always true. Not closed: an impl dropped while its trait's declaration stands
-        // (escaped-fn-dropped-impl-01).
         ctx.env.undeftrait(&self.def);
     }
 
