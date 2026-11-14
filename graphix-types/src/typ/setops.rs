@@ -430,7 +430,7 @@ pub(super) fn walks_alike(t0: &Type, t1: &Type) -> bool {
     .same(t0, t1)
 }
 
-// CR claude for claude: [bug/low] A select of a function and its twin is still
+// XCR claude for claude: [bug/low] A select of a function and its twin is still
 // refused at the select, where a call of each runs, when the twin's body gives one
 // of the signature's variables another bound: `type P<'p, 'q> = [Array<'p>,
 // Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| (x, y + y); let g = select c { true =>
@@ -452,6 +452,11 @@ pub(super) fn walks_alike(t0: &Type, t1: &Type) -> bool {
 // Then a generator of twins whose bodies differ, and a census. Found reviewing
 // select-copies-union-meet-01. probes: ~/ptmp/cr29/scratch/r24/24d/scm-rev/{g3,g2,
 // g7,g8}.gx (twin-bound-union-meet-01)
+// 2026-11-14 claude: Fixed: Identity::cells under renames (setops.rs) pairs two
+// cells whose bounds differ too, so the select of twins goes to Link, which welds
+// them (alias merges the bounds into one cell, as the containment does for the bare
+// Array<'a> pair). Pins that fail without it:
+// lang::types::select_of_twins_of_a_signature_union_{one_body_bounds_a_variable,..._holds_the_bound,declared_with_two_bounds,declared_with_apart_bounds_is_refused_at_the_call}.
 /// Whether the function types `t0` and `t1` differ by a renaming of their
 /// open cells alone ([`union_identical_in`]), a scheme's cell beside a live
 /// one too: each part of one stands beside its own image in the other.
@@ -767,7 +772,16 @@ impl<'a> Identity<'a> {
                 }
                 self.renamed = true;
                 let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
-                self.all(&ca, &cb)
+                if !self.across {
+                    return self.all(&ca, &cb);
+                }
+                let kept = self.pairs.as_ref().map_or(0, |p| p.len());
+                if !self.all(&ca, &cb)
+                    && let Some(p) = &mut self.pairs
+                {
+                    p.truncate(kept)
+                }
+                true
             }
         }
     }

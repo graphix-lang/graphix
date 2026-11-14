@@ -11150,6 +11150,54 @@ run!(
     refused("within Number & Singleton does not contain string");
     FuseExpect::None
 );
+run!(
+    select_of_twins_of_a_signature_union_one_body_bounds_a_variable,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let c = false;
+  let g = select c { true => f, false => |y: 'a, x: P<'a, 'b>| (x, y) };
+  (g(1, ["s"]).1, f(2.5, [1]).1)
+}"#,
+    prints("[i64:1, f64:5.]");
+    FuseExpect::Jit
+);
+run!(
+    select_of_twins_of_a_signature_union_one_body_bounds_a_variable_holds_the_bound,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let c = false;
+  let g = select c { true => f, false => |y: 'a, x: P<'a, 'b>| (x, y) };
+  g("t", ["s"]).1
+}"#,
+    refused("within Number & Singleton does not contain string");
+    FuseExpect::None
+);
+run!(
+    select_of_twins_of_a_signature_union_declared_with_two_bounds,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let c = false;
+  let g = select c { true => f, false => 'a: Ordered |y: 'a, x: P<'a, 'b>| (x, y) };
+  g(1, ["s"]).1
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    select_of_twins_of_a_signature_union_declared_with_apart_bounds_is_refused_at_the_call,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = 'a: Int |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let c = false;
+  let g = select c { true => f, false => 'a: Float |y: 'a, x: P<'a, 'b>| (x, y) };
+  g(1, ["s"]).1
+}"#,
+    refused("within Float & Int & Singleton does not contain i64");
+    FuseExpect::None
+);
 
 // A function a call returned is one instance, its variables open cells
 // its calls decide: read through a field it keeps its signature's union
