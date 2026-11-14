@@ -462,6 +462,121 @@ run!(
     "#
 );
 
+// One typedef at two parameters shares what its expansions share, the
+// empty array of each, wherever the members hold it.
+run!(
+    trait_union_dispatch_one_typedef_at_two_parameters_refused,
+    refused(
+        "a value may be both (Arr<i64>, i64) and (Arr<string>, i64), neither of which \
+         holds the other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Arr<'a> = Array<'a>;
+        impl Show for (Arr<i64>, i64) { let show = |x| "ai" };
+        impl Show for (Arr<string>, i64) { let show = |x| "as" };
+        let p: (Arr<string>, i64) = ([], 1);
+        let x: [(Arr<i64>, i64), (Arr<string>, i64)] = p;
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
+// Whatever the two members are named.
+run!(
+    trait_union_dispatch_one_typedef_at_two_parameters_named_refused,
+    refused(
+        "a Show call over [Abe, Zed] tests each member, and a value may be both \
+         (Arr<string>, i64) and (Arr<i64>, i64), neither of"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Arr<'a> = Array<'a>;
+        impl Show for (Arr<i64>, i64) { let show = |x| "ai" };
+        impl Show for (Arr<string>, i64) { let show = |x| "as" };
+        type Zed = (Arr<i64>, i64);
+        type Abe = (Arr<string>, i64);
+        let p: (Arr<string>, i64) = ([], 1);
+        let x: [Zed, Abe] = p;
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
+// A recursive typedef at two parameters shares the value that holds
+// neither parameter.
+run!(
+    trait_union_dispatch_recursive_typedef_at_two_parameters_refused,
+    refused(
+        "a value may be both (L<i64>, i64) and (L<string>, i64), neither of which \
+         holds the other"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type L<'a> = [`Cons('a, L<'a>), `Nil];
+        impl Show for (L<i64>, i64) { let show = |x| "li" };
+        impl Show for (L<string>, i64) { let show = |x| "ls" };
+        let p: (L<string>, i64) = (`Nil, 1);
+        let x: [(L<i64>, i64), (L<string>, i64)] = p;
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
+// Members that hold one typedef at two parameters and share no value are
+// apart, and so are two instantiations of an abstract type where one's
+// parameter is a declared variable: they are one type or share no value.
+run!(
+    trait_union_dispatch_one_typedef_at_two_parameters_apart,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s)) if s == "as ls ps w 2 w 1"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Arr<'a> = Array<'a>;
+        type L<'a> = [`Cons('a, L<'a>), `Nil];
+        type P<'a> = ('a, i64);
+        type W<'a> = Abstract<Array<'a>>;
+        impl Show for (Arr<i64>, i64) { let show = |x| "ai" };
+        impl Show for (Arr<string>, string) { let show = |x| "as" };
+        impl Show for (L<i64>, i64) { let show = |x| "li" };
+        impl Show for (L<string>, string) { let show = |x| "ls" };
+        impl Show for (P<i64>, i64) { let show = |x| "pi" };
+        impl Show for (P<string>, i64) { let show = |x| "ps" };
+        impl<'a> Show for W<'a> { let show = |x| "w [array::len(x.0)]" };
+        let a: (Arr<string>, string) = ([], "s");
+        let x: [(Arr<i64>, i64), (Arr<string>, string)] = a;
+        let l: (L<string>, string) = (`Nil, "s");
+        let y: [(L<i64>, i64), (L<string>, string)] = l;
+        let p: (P<string>, i64) = (("a", 1), 1);
+        let z: [(P<i64>, i64), (P<string>, i64)] = p;
+        let g = |x: [W<'a>, W<i64>]| Show::show(x);
+        let ws: W<string> = W(["a", "b"]);
+        let wi: W<i64> = W([1]);
+        let result = "[Show::show(x)] [Show::show(y)] [Show::show(z)] [g(ws)] [g(wi)]"
+    "#
+);
+
+// The refusal prints the union a select inferred.
+run!(
+    trait_union_dispatch_crossing_names_an_inferred_union,
+    refused(
+        "a Show call over [Array<[i64, null]>, Array<[i64, string]>] tests each member"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
+        impl Show for Array<[i64, null]> { let show = |x| "arr-in" };
+        let s: Array<[i64, string]> = [1];
+        let n: Array<[i64, null]> = [1];
+        let b = true;
+        let x = select b { true => s, false => n };
+        let result = Show::show(x)
+    "#
+    ; FuseExpect::None
+);
+
 // A member whose every value the members before it take has no arm: its
 // values go to theirs.
 run!(

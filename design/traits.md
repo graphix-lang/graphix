@@ -537,13 +537,19 @@ still run at one member's type or the other's. What is shared is
 `Type::shares_value`: `could_match` either way, where two arrays, two
 lists and two maps share the empty one whatever they hold, and two
 instantiations of an abstract type made in Graphix share a value only at
-the same parameters, which a value carries. So `[Array<i64>,
+the same parameters, which a value carries. One typedef at two
+parameters that are apart shares what its expansions share, so the walk
+expands it there: `(Arr<i64>, i64)` beside `(Arr<string>, i64)` over
+`type Arr<'a> = Array<'a>` share `([], 1)`. So `[Array<i64>,
 Array<string>]` is refused too, and `[Array<i64>, Array<[i64, string]>]`
 is not: the narrower is tested first, by rule. An open cell is any type
 it may yet bind. A member holding one crosses whatever it may share a
 value with (`('a, Array<i64>)` beside `(string, Array<string>)`), so a
-generic definition is refused where one of its instances would be. A
-member that is one is left to the form rule (`dispatch_collision`), so
+generic definition is refused where one of its instances would be. Two
+members that are instantiations of one abstract type made in Graphix
+never cross, a cell in their parameters or not (`[W<'a>, W<i64>]`): they
+are one type or share no value. A member that is an open cell is left
+to the form rule (`dispatch_collision`), so
 `['a, null]` dispatches; with typed bounds it crosses a member whose
 form another type shares where every bound may share a value with that
 member. Two recursive types met again inside their own pair are read as
@@ -554,7 +560,11 @@ members_that_cross_named_a1_b1_refused, crossing_members_one_at_a_time,
 two_arrays_cross_refused, two_tuples_cross_refused,
 crossing_under_an_impl_bound_refused,
 declared_variable_may_cross_refused, ring_of_members_refused,
-members_apart}`,
+members_apart, one_typedef_at_two_parameters_refused,
+one_typedef_at_two_parameters_named_refused,
+recursive_typedef_at_two_parameters_refused,
+one_typedef_at_two_parameters_apart,
+crossing_names_an_inferred_union}`,
 `typ::setops::tests::dispatch_crossing_is_a_shared_value_neither_member_holds`.
 The generated select fuses over a union of primitives
 (`lang::traits::native_on_a_union_dispatch` holds a `#[native]` call);

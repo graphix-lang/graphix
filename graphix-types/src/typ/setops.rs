@@ -3474,7 +3474,14 @@ pub(crate) mod tests {
     // the other; the empty array is a value of every array type.
     #[test]
     fn dispatch_crossing_is_a_shared_value_neither_member_holds() {
-        let defs = [("S", "Array<[i64, string]>"), ("N", "Array<[i64, null]>")];
+        let defs = [
+            ("S", "Array<[i64, string]>"),
+            ("N", "Array<[i64, null]>"),
+            ("Arr<'a>", "Array<'a>"),
+            ("Rec<'a>", "{v: Array<'a>}"),
+            ("L<'a>", "[`Cons('a, L<'a>), `Nil]"),
+            ("P<'a>", "('a, i64)"),
+        ];
         let crossing = |t: &str| {
             let (env, t) = typed(&defs, t);
             let members = Type::dispatch_members(&env, &t).unwrap();
@@ -3490,6 +3497,10 @@ pub(crate) mod tests {
             "[`T(Array<i64>), `T(Array<string>)]",
             "[{a: Array<i64>}, {a: Array<string>}]",
             "[(i64, Array<i64>), (i64, Array<string>)]",
+            "[(Arr<i64>, i64), (Arr<string>, i64)]",
+            "[(Rec<i64>, i64), (Rec<string>, i64)]",
+            "[(L<i64>, i64), (L<string>, i64)]",
+            "[Error<Arr<i64>>, Error<Arr<string>>]",
         ] {
             assert!(crossing(t), "{t}")
         }
@@ -3503,6 +3514,10 @@ pub(crate) mod tests {
             "[{a: Array<i64>}, {b: Array<string>}]",
             "[Array<i64>, Map<string, i64>, List<i64>]",
             "[(i64, Array<i64>), (string, Array<string>)]",
+            "[(Arr<i64>, i64), (Arr<string>, string)]",
+            "[(L<i64>, i64), (L<string>, string)]",
+            "[(P<i64>, i64), (P<string>, i64)]",
+            "[L<i64>, L<string>]",
         ] {
             assert!(!crossing(t), "{t}")
         }

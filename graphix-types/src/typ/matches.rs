@@ -510,22 +510,27 @@ impl Type {
         {
             return self.could_match_int(env, hist, &filled);
         }
-        match (self, t) {
-            (Self::Ref(tr0), Self::Ref(tr1))
-                if tr0.scope == tr1.scope
-                    && tr0.name == tr1.name
-                    && tr0.same_definition(tr1, env) =>
-            {
-                Ok(tr0.params.len() == tr1.params.len()
-                    && tr0.hold_bounds_with(tr1, env, true)?
-                    && tr0
-                        .params
-                        .iter()
-                        .zip(tr1.params.iter())
-                        .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
-                        .collect::<Result<AndAc>>()?
-                        .0)
+        if let (Self::Ref(tr0), Self::Ref(tr1)) = (self, t)
+            && tr0.scope == tr1.scope
+            && tr0.name == tr1.name
+            && tr0.same_definition(tr1, env)
+        {
+            let alike = tr0.params.len() == tr1.params.len()
+                && tr0.hold_bounds_with(tr1, env, true)?
+                && tr0
+                    .params
+                    .iter()
+                    .zip(tr1.params.iter())
+                    .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
+                    .collect::<Result<AndAc>>()?
+                    .0;
+            // one definition at parameters that are apart may still share
+            // a value, the empty array of each: its expansions say
+            if alike || !hist.shared {
+                return Ok(alike);
             }
+        }
+        match (self, t) {
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 if memo_on() && hist.refuted.get().is_some_and(|m| m.contains_key(&key)) {

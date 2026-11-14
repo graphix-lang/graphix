@@ -3539,6 +3539,18 @@ impl Type {
         ))
     }
 
+    // CR claude for claude: [readability/low] A type whose impl's bound refuses a
+    // union is told only that it does not implement the trait: with `impl<'a: Show>
+    // Show for Array<'a>` and `type U = [(i64, [i64, string]), ([i64, null], i64)]`,
+    // `Show::show(xs)` over `xs: Array<U>` is refused "Array<U> does not implement
+    // Show", though Array has an impl and what fails is its bound over U, whose two
+    // members cross (Type::dispatch_crossing); the same call over `U` itself names
+    // the two members and the annotation. A bound that fails by a form collision
+    // (two function types) reads the same way, on base-r24 too. To fix: where a
+    // member has an impl whose head holds it, ask this refusal of each bound of
+    // that impl over the type its parameter took, and say that one. probes:
+    // ~/ptmp/cr29/scratch/r24/24d/ihsv-rv/a8.gx, a13.gx
+    // (trait-bound-refusal-untold-01)
     /// An open cell bounded by a trait refuses a type with a member that
     /// has no impl of it: name the member, and an impl a sibling module
     /// holds but leaves out of its interface.
@@ -3703,7 +3715,13 @@ impl Type {
             }
             return Ok(true);
         }
-        if !self.shares_value(env, t)? {
+        // of one abstract type made in Graphix they are one type or share
+        // no value, whatever a cell in their parameters becomes
+        let made = |t: &Type| match t {
+            Type::Abstract { id, .. } => env.abstract_reps.contains_key(id),
+            _ => false,
+        };
+        if (made(self) && made(t)) || !self.shares_value(env, t)? {
             return Ok(false);
         }
         if self.has_unbound() || t.has_unbound() {
@@ -3733,8 +3751,9 @@ impl Type {
     /// cross.
     pub fn crossing_refusal(name: &str, t: &Type, a: &Type, b: &Type) -> anyhow::Error {
         anyhow::anyhow!(
-            "a {name} call over {t} tests each member, and a value may be both {} and \
+            "a {name} call over {} tests each member, and a value may be both {} and \
              {}, neither of which holds the other: give the value one member's type",
+            t.resolve_tvars(),
             a.resolve_tvars(),
             b.resolve_tvars()
         )
