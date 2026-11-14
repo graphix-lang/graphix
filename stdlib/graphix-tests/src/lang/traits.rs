@@ -114,6 +114,19 @@ run!(
     ; FuseExpect::None
 );
 
+// A select inside a value of an impl's variable names it as the impl
+// declares it, met through a cell the method's body made too.
+run!(
+    impl_variable_met_in_a_method_body_named_as_declared,
+    refused("[`J] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [`J]`, or bound 'a"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl<'a> Show for Array<'a> { let show = |x| select [x[0]$] { [`J] => "j", _ => "o" } };
+        let result = Show::show([1])
+    "#
+    ; FuseExpect::None
+);
+
 // A required method missing from an implementation is a compile error.
 run!(
     trait_missing_method_refused,

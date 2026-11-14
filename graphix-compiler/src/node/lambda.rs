@@ -1731,7 +1731,7 @@ impl<R: Rt> GXLambda<R> {
                 let ids = expr::StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
                 if let Some(tv) = a.pattern.meets_rigid(&ctx.env, &ids, &atyp.typ)? {
                     let (pat, typ) = (&a.pattern, &atyp.typ);
-                    let e = rigid_refusal(&ctx.env, &ids, pat, typ, &tv, Holder::Formal);
+                    let e = rigid_refusal(ctx, &ids, pat, typ, &tv, Holder::Formal);
                     return Err(e);
                 }
             }

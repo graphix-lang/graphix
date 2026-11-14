@@ -11608,18 +11608,62 @@ run!(
     prints(r#""v""#)
 );
 
-// An inferred variable is described by its bound.
+// A declared variable met through a call's result is named as the
+// definition declares it, never by the cell the call made.
 run!(
-    unnamed_variable_advice_names_its_bound,
+    variable_met_through_a_call_named_as_declared,
     r#"{
         let id = |v| v;
         let g = 'b: [`A(i64), `B(i64)] |x: 'b| select id(x) { `A(z) => z + 1.5, _ => 0.0 };
         let o: [`A(i64), `B(i64)] = `A(3);
         g(o)
     }"#,
-    refused("`A(z) tests inside a value of a type variable of the definition bounded by [`A(i64), `B(i64)], which types none of its parts: write the type it tests, ``A(i64) as `A(z)`");
+    refused("`A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, ``A(i64) as `A(z)`");
     FuseExpect::None
 );
+
+run!(variable_met_through_a_callee_declaring_another_named_as_declared, r#"{
+    let id = |y: 'b| -> Array<'b> [y];
+    let f = |x: 'a| select id(x) { [`J] => 1, _ => 3 };
+    [f(`M), f(`J)]
+}"#, refused("[`J] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [`J]`, or bound 'a"); FuseExpect::None);
+
+run!(variable_alone_below_a_reference_named_as_declared, r#"{
+    let f = |x: 'a| { let r = &mut x; select *r { `J => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("`J tests inside a value of 'a, a type variable of the definition, which types none of its parts: bound 'a by the type it tests, `'a: T`, and write that type, `T as `J`"); FuseExpect::None);
+
+run!(variable_in_an_array_named_as_declared, r#"{
+    let f = |x: 'a| select [x] { [`J] => 1, _ => 3 };
+    [f(`M), f(`J)]
+}"#, refused("[`J] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [`J]`, or bound 'a"); FuseExpect::None);
+
+run!(variable_in_a_list_named_as_declared, r#"{
+    let f = |x: 'a| select [<x>] { [<`J>] => 1, _ => 3 };
+    [f(`M), f(`J)]
+}"#, refused("[<`J>] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [<`J>]`, or bound 'a"); FuseExpect::None);
+
+run!(variable_in_an_array_below_a_reference_named_as_declared, r#"{
+    let f = |x: 'a| { let r = &mut [x]; select *r { [`J] => 1, _ => 3 } };
+    [f(`M), f(`J)]
+}"#, refused("[`J] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [`J]`, or bound 'a"); FuseExpect::None);
+
+run!(let_inside_a_variable_met_through_a_call_named_as_declared, r#"{
+    let g = |x: 'a| { let id = |v| v; let (n, s) = id(x); n };
+    g((1, "a"))
+}"#, refused("the pattern (n, s) binds inside a value of 'a, a type variable of the definition, which types none of its parts: bound 'a by the type it binds, `'a: T`, and annotate the binding with it, `let (n, s): T = ..`"); FuseExpect::None);
+
+run!(written_test_inside_a_variable_in_an_array_named_as_declared, r#"{
+    let g = 'b: [`A(i64), `B(i64)] |x: 'b| select [x] { Array<`A(_)> as [`A(z)] => z + 1.5, _ => 0.0 };
+    let o: [`A(i64), `B(i64)] = `A(3);
+    g(o)
+}"#, refused("[`A(z)] tests inside a value of 'b, a type variable of the definition, and its type test types none of it: `A(_) holds `_`, which is bottom; write the type it tests, `Array<[`A(i64), `B(i64)]> as [`A(z)]`"); FuseExpect::None);
+
+run!(dead_arm_over_a_variable_met_through_a_call_named_as_declared, r#"{
+    let g = 'b: [`A(i64), `B(i64)] |x: 'b| { let id = |v| v; select id(x) { `C => 1, _ => 0 } };
+    let o: [`A(i64), `B(i64)] = `A(3);
+    g(o)
+}"#, refused("unreachable arm: `C matches no value of 'b, whose bound is [`A(i64), `B(i64)], unused match cases"); FuseExpect::None);
 
 // An abstract type's parameter inside a struct field is found through the
 // typedef name.

@@ -172,6 +172,7 @@ ok |x: ['a, null]| select x { null as _ => 0, _ => 1 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { 'c as `A(z) => 1, _ => 2 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| select x { `A(_) as `A(z) => 1, _ => 2 }
 no "[`J, _] tests inside a value of 'a" |x: 'a| { let r = &mut [x, 0]; select *r { [`J, _] => 1, _ => 3 } }
+no "[`J] tests inside a value of 'a" |x: 'a| select [x] { [`J] => 1, _ => 3 }
 ok 'a: [`J, `M] |x: 'a| { let r = &mut [x, 0]; select *r { Array<[i64, `J, `M]> as [`J, _] => 1, _ => 3 } }
 no "[`J, _] tests inside a value of 'a" type W<'a> = Abstract<'a>; |x: 'a| select W([x, 0]).0 { [`J, _] => 1, _ => 3 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| { let r = &mut (x, 0); select *r { (`A(_), i64) as (`A(z), _) => 1, _ => 2 } }

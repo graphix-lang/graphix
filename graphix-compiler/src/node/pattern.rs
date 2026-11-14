@@ -2,6 +2,7 @@ use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
+    analysis::lambda_def,
     env::Env,
     expr::{
         AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, UndecidedMembers,
@@ -448,15 +449,15 @@ pub(super) fn undecided_members(
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
 /// a value of `tv`, a type variable its definition holds rigid
 /// ([`StructurePattern::meets_rigid`]), told as the type to write.
-pub(super) fn rigid_refusal(
-    env: &Env,
+pub(super) fn rigid_refusal<R: Rt>(
+    ctx: &CompileCtx<R>,
     ids: &AbstractOf,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
     holder: Holder,
 ) -> anyhow::Error {
-    // CR claude for claude: [bug/low] A declared variable met at a cell whose open
+    // XCR claude for claude: [bug/low] A declared variable met at a cell whose open
     // end is a handle the checker made up loses its name, and the refusal names a fix
     // nobody can write. `|x: 'a| { let r = &mut x; select *r { `J => 1, _ => 3 } }` is
     // refused "`J tests inside a value of a type variable of the definition, which
@@ -470,11 +471,25 @@ pub(super) fn rigid_refusal(
     // declared it (the cell's rigid mark could carry the written name), never by the
     // handle. Same on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/rlb/review/msg1.gx,
     // msg2.gx (rigid-refusal-unnamed-01)
-    let named = tv.written_open().is_some();
-    let var = match named {
-        true => format_compact!("'{}", tv.name),
-        false => format_compact!("the variable"),
-    };
+    // 2026-11-13 claude: Fixed: rigid_refusal and written_refusal name the variable by
+    // declared_var, the name a signature being checked (CompileCtx::rec_defs) declares
+    // the cell by, never by the handle meets_rigid ended at, which was a generated one
+    // or a callee's (`let id = |y: 'b| -> Array<'b> [y]; |x: 'a| select id(x) { [`J] =>
+    // .. }` said 'b). The CR's probes, a list, below a reference, a let, a written
+    // test, a dead arm and an impl's variable met in a method body now name 'a / 'b.
+    // Pins: lang::select::*_named_as_declared (8 new, and
+    // unnamed_variable_advice_names_its_bound, which pinned the bug, now
+    // variable_met_through_a_call_named_as_declared),
+    // lang::traits::impl_variable_met_in_a_method_body_named_as_declared; all 40 mode
+    // runs fail with declared_var reading the handle; a select.md case. The unnamed
+    // wording (the variable, bounded by) stays the fallback where no signature being
+    // checked names the cell; I found no program that reaches it now. A trait in
+    // argument position or a default's self is told by a name nobody writes:
+    // unwritten-rigid-name-01.
+    let env = &ctx.env;
+    let declared = declared_var(ctx, tv);
+    let named = declared.is_some();
+    let var = declared.unwrap_or_else(|| format_compact!("the variable"));
     let bounds = tv.typed_bounds(env);
     let what = match (named, &bounds[..]) {
         (true, _) => format_compact!(
@@ -592,18 +607,16 @@ pub(super) fn rigid_refusal(
 /// or binding inside a value of `tv`, a type variable its definition holds
 /// rigid, where the test's part over it, `part`, holds `_` or an open cell
 /// ([`StructurePattern::meets_rigid_written`]).
-pub(super) fn written_refusal(
-    env: &Env,
+pub(super) fn written_refusal<R: Rt>(
+    ctx: &CompileCtx<R>,
     ids: &AbstractOf,
     pat: &StructurePattern,
     typ: &Type,
     tv: &TVar,
     part: &Type,
 ) -> anyhow::Error {
-    let var = match tv.written_open().is_some() {
-        true => format_compact!("'{}", tv.name),
-        false => format_compact!("the variable"),
-    };
+    let env = &ctx.env;
+    let var = declared_var(ctx, tv).unwrap_or_else(|| format_compact!("the variable"));
     let fix = match rigid_written(env, ids, pat, typ, tv) {
         Some(t) => format_compact!("write the type it tests, `{t} as {pat}`"),
         None => {
@@ -626,6 +639,39 @@ pub(super) fn written_refusal(
         "{pat} tests inside a value of {var}, a type variable of the definition, and its \
          type test types none of it: {why}; {fix}"
     )
+}
+
+// CR claude for claude: [bug/low] A variable a definition declares by no name a
+// program writes as a variable, a trait in argument position (`|s: Show|`, the cell
+// `#s`) or a trait default's receiver (`self`), is told here as if written, and the
+// remedy cannot be written: `|s: Show| select s { `J => 1, _ => 2 }` is refused "`J
+// tests inside a value of '#s, ..: replace the bound of '#s, Show, by the type it
+// tests, `'#s: T`, and write that type, `T as `J`", and a default `val tag: fn(self)
+// -> i64 = |x| select x { `J => 1, _ => 2 }` says 'self and "`'self: T`". base-r24
+// alike, and "the variable" where the pattern met a merged handle (`select [s] {
+// [`J] => .. }`), which now says '#s too. A fix: tell such a variable by
+// what the program wrote (the trait, `self`) and name a remedy it can write (declare
+// a named variable bounded by the trait in its place; under `self`, the type test).
+// probes: ~/ptmp/cr29/scratch/r24/24g/rru/t4.gx .. t7.gx (unwritten-rigid-name-01)
+/// `tv`, a variable a definition being checked holds rigid, by the name
+/// its signature declares (`'a`): a pattern meets the variable at whatever
+/// handle a merge left, which the checker may have made up or a callee
+/// declared. `None` where no signature being checked names it.
+fn declared_var<R: Rt>(ctx: &CompileCtx<R>, tv: &TVar) -> Option<CompactString> {
+    let mut found: Option<ArcStr> = None;
+    for def in ctx.rec_defs.iter().filter_map(|id| lambda_def(ctx, *id)) {
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        def.typ.collect_tvars_through_bounds(&mut named);
+        for (name, v) in named.drain() {
+            if v.written_open().is_some()
+                && v.open_cell().is_some_and(|c| c.same_cell(tv))
+                && found.as_ref().is_none_or(|f| name < *f)
+            {
+                found = Some(name)
+            }
+        }
+    }
+    found.map(|n| format_compact!("'{n}"))
 }
 
 /// Whether `typ` is the variable `tv` itself.
@@ -3359,7 +3405,7 @@ impl<R: Rt> PatternNode<R> {
             let ids = StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
             if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, &type_predicate)? {
                 let tp = &type_predicate;
-                return Err(rigid_refusal(&ctx.env, &ids, sp, tp, &tv, Holder::Arm));
+                return Err(rigid_refusal(ctx, &ids, sp, tp, &tv, Holder::Arm));
             }
         }
         let cx = PatCx {
