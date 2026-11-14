@@ -6036,6 +6036,26 @@ impl Type {
         // takes its definition's types, runs every one of them. probes:
         // ~/ptmp/cr29/scratch/r24/24d/udm-rev/{u3,p10,p11}.gx, diff-pre/sound.txt,
         // diff-base/sound-summary.txt
+        // 2026-11-14 claude: Round 25 lane 25e, re-run on base-r25 (3fcf32fc0): s3 and
+        // s4 (r19/19g), b1 and b3 (r21/21t/d32/nsb), o5 (r23/23b/ois), l1t
+        // (r24/24c/rnb/l) and p0563-b (r24/24c/buba/g3) all still check and run by
+        // default and are refused under GRAPHIX_NO_SUBST=1 with the messages quoted
+        // above (AmbiguousMember or UndecidedTaker on an open member, or 'c: null does
+        // not contain i64). Not fixed, and left a CR (PARTIAL): every one is a case
+        // where the instance's second check meets decided types (its site's) at the
+        // point its definition's check met open cells, so making it agree means either
+        // putting the open cells back for the second check (tried in lane 24h, the
+        // cells are literal bottom by then) or reordering the relations of the second
+        // check (order chasing, dropped under D36), and neither is local or small. The
+        // shipped mode is sound in all of them (identical fused, --no-fusion and
+        // PAR=force). The one local change left is the debug tool's, not the
+        // checker's: an instance whose second check refuses takes its definition's
+        // types with the refusal logged. That changes only what NO_SUBST refuses, so
+        // it is Eric's choice about the A/B and not made here. Recommendation
+        // unchanged from the 2026-11-13 note: read NO_SUBST refusals as the A/B of
+        // types, elaboration and values over what both modes accept, not as a split;
+        // if that is ruled, delete this CR and the same-kind ones at select.rs (the
+        // two NO_SUBST notes near the select arm walk).
         let mut undecided_free = s0
             .iter()
             .zip(&free)
