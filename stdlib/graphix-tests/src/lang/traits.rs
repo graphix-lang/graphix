@@ -705,6 +705,57 @@ run!(
     ; FuseExpect::None
 );
 
+// A dispatch over products that share a form at one part is taken where
+// another part tells them apart.
+run!(
+    trait_union_dispatch_told_by_another_part,
+    is(Value::String(literal!("a,b"))),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for (&i64, i64) { let show = |s| "a" };
+        impl Show for (&string, string) { let show = |s| "b" };
+        let a = 1;
+        let b = "s";
+        let d = |x: [(&i64, i64), (&string, string)]| Show::show(x);
+        let result = "[d((&a, 1))],[d((&b, "s"))]"
+    "#
+    ; FuseExpect::None
+);
+
+// Where no other part tells them apart it is refused.
+run!(
+    trait_union_dispatch_untold_by_other_parts_refused,
+    refused("can't tell &i64 from &string"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for (&i64, Array<i64>) { let show = |s| "a" };
+        impl Show for (&string, Array<string>) { let show = |s| "b" };
+        let a = 1;
+        let d = |x: [(&i64, Array<i64>), (&string, Array<string>)]| Show::show(x);
+        let result = d((&a, [1]))
+    "#
+    ; FuseExpect::None
+);
+
+// A member another part tells from the first clears no pair of names
+// for a later one that shares its form.
+run!(
+    trait_union_dispatch_told_member_clears_no_pair_refused,
+    refused("can't tell &i64 from &string"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type X = {r: &i64};
+        type Y = {r: &string};
+        impl Show for (X, string, bool) { let show = |s| "a" };
+        impl Show for (Y, i64, i64) { let show = |s| "b" };
+        impl Show for (Y, string, bool) { let show = |s| "c" };
+        let a = 1;
+        let d = |x: [(X, string, bool), (Y, i64, i64), (Y, string, bool)]| Show::show(x);
+        let result = d(({r: &a}, "s", true))
+    "#
+    ; FuseExpect::None
+);
+
 // So is one over an open member beside one whose form it may yet share.
 run!(
     trait_union_dispatch_open_member_refused,

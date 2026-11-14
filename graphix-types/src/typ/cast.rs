@@ -2753,7 +2753,7 @@ fn parts_collision<'a>(
             .clone()
             .find_map(|(x, y)| rep_collision(env, seen, subject, open, ordered, x, y))
     };
-    // CR claude for claude: [bug/low] A union trait dispatch is refused for a part
+    // XCR claude for claude: [bug/low] A union trait dispatch is refused for a part
     // whose members share a runtime form though another part tells the members
     // apart, as a select arm's test was (told-by-another-part-01): with `trait Show
     // { val show: fn(self) -> string }`, an impl for `(&i64, i64)` and one for
@@ -2774,7 +2774,16 @@ fn parts_collision<'a>(
     // string, bool) among [(Y, i64, i64), (Y, string, bool)], X and Y naming
     // structs of a &i64 and a &string, was accepted. A dispatch told the same way
     // takes both walks.
-    if subject == Subject::Beside || !seen.told {
+    // 2026-11-14 claude: A dispatch's member pairs are judged by
+    // Type::rep_collision_open through test_collision, the two walks a select arm's
+    // test takes (cast.rs), and the told rule no longer excludes Subject::Beside (a
+    // walk is told only where test_collision makes it so, comparisons never). Pins
+    // that fail without it: traits.rs trait_union_dispatch_told_by_another_part (a
+    // Show call over [(&i64, i64), (&string, string)]) and cast.rs
+    // a_dispatch_member_is_told_by_another_part; refusals kept by
+    // trait_union_dispatch_untold_by_other_parts_refused and
+    // trait_union_dispatch_told_member_clears_no_pair_refused.
+    if !seen.told {
         return first(seen);
     }
     let passes = &mut Passes { names: RefHist::new(), pairs: 0 };
@@ -2785,7 +2794,7 @@ fn parts_collision<'a>(
     }
 }
 
-/// A select arm's test `a` against `b`, what else reaches it. A walk holds
+/// A run-time test `a` against `b`, what else reaches it. A walk holds
 /// the pairs it met clear, so it ends at its first collision: a second
 /// walk, made where the first found one, passes over what a part tells.
 fn test_collision(
@@ -2942,10 +2951,11 @@ impl Type {
     }
 
     /// [`Self::rep_collision`] with an open cell read as any type it may
-    /// yet bind ([`Open::Unknown`]): what a definition must rule out.
+    /// yet bind ([`Open::Unknown`]), and a product no value of the other
+    /// passes, for another part, passed over ([`test_collision`]): what a
+    /// definition must rule out.
     pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        let seen = &mut RepSeen::default();
-        rep_collision(env, seen, Subject::Beside, Open::Unknown, false, self, t)
+        test_collision(env, Subject::Beside, Open::Unknown, self, t)
     }
 
     /// [`Self::rep_collision`] for a select arm testing for `self` among
@@ -4349,6 +4359,21 @@ pub(crate) mod tests {
         assert!(x.rep_collision_open(&env, &y).is_some());
         assert!(y.rep_collision_open(&env, &x).is_some());
         assert!(tuple(&cell, &y).rep_collision_open(&env, &tuple(&y, &x)).is_some());
+    }
+
+    /// A dispatch's members collide at a part only where every other part
+    /// of one passes a value of the other, as a select arm's test does.
+    #[test]
+    fn a_dispatch_member_is_told_by_another_part() {
+        let (env, _) = typed(&[], "null");
+        let judged = |a: &str, b: &str| {
+            let (a, b) = (parsed(&env, a), parsed(&env, b));
+            a.rep_collision_open(&env, &b).is_some()
+        };
+        assert!(!judged("(&i64, i64)", "(&string, string)"));
+        assert!(!judged("`K(&i64, i64)", "`K(&string, null)"));
+        assert!(judged("(&i64, Array<i64>)", "(&string, Array<string>)"));
+        assert!(judged("(&i64, i64)", "(&string, 'a)"));
     }
 
     /// What tells a product test's part from its counterpart is looked
