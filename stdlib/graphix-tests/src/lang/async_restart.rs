@@ -1,6 +1,6 @@
-use super::dense_deltas::run_delta;
+use super::dense_deltas::{run_delta, run_delta_with};
 use anyhow::Result;
-use graphix_package_core::testing::{Mode, as_i64s};
+use graphix_package_core::testing::{Collect, Mode, as_i64s};
 use netidx_value::Value;
 
 async fn seq_timers(mode: Mode) -> Result<()> {
@@ -90,7 +90,7 @@ async fn seq_composed_iterators(mode: Mode) -> Result<()> {
 
 modes!(seq_composed_iterators);
 
-// CR claude for claude: [test-gap/low] This test races a timer against a file
+// XCR claude for claude: [test-gap/low] This test races a timer against a file
 // read: `go` fires at 150 ms and 300 ms, and the second fire is dropped where
 // the first run has not answered by then (a `seq` drops a trigger that meets a
 // busy machine). `jit_par` failed so once in a gate of r23-staging at load
@@ -99,22 +99,37 @@ modes!(seq_composed_iterators);
 // `seq_timers` does (`go <- .. once(out)`). evidence:
 // ~/ptmp/cr29/scratch/r23/23e/finisher/seq_io-jit_par-gate2.txt
 // (seq-io-timer-race-01)
+// 2026-11-13 claude: seq_io's second run now follows from the first's answer
+// (go <- once(out) ~ 2 after a one-shot timer), so no trigger meets a busy
+// machine, and it collects with Collect::Settled, so a slow second read is not
+// cut by the 700 ms quiet window either. The race is shown in the harness with
+// the read slowed by a 200 ms after_idle step: the old shape gives [first] in
+// all four modes, the new shape gives both; slowed by 900 ms, the new shape
+// under QUIET gives [first] and under Settled both. Probes:
+// ~/ptmp/cr29/scratch/r24/24h/seq-io/{old_slow,new_slow}.gx (base-r24: first /
+// first second). The pin is the test itself (lang::async_restart::seq_io, four
+// modes); a plain run cannot fail without the fix, since only load exposes the
+// race.
 async fn seq_io(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("1"), "first")?;
     std::fs::write(dir.path().join("2"), "second")?;
     let path = dir.path().to_string_lossy().replace('\\', "/");
+    // the second run starts once the first answers, never into a busy
+    // machine, and the program ends by itself, so a slow read loses nothing
     let code = format!(
         r#"{{
-            let go = count(sys::time::timer(duration:150.ms, 2)?);
-            seq go {{
+            let go = count(sys::time::timer(duration:10.ms, false)?);
+            let out = seq go {{
                 let reply = sys::fs::read_all("{path}/[go]")?;
                 reply
-            }}
+            }};
+            go <- once(out) ~ 2;
+            out
         }}"#
     );
-    let (values, _) = run_delta(&code, mode).await?;
-    assert_eq!(values, [Value::from("first"), Value::from("second")]);
+    let d = run_delta_with(&code, mode, |_| (), Collect::Settled).await?;
+    assert_eq!(d.values, [Value::from("first"), Value::from("second")]);
     Ok(())
 }
 
@@ -526,6 +541,17 @@ async fn iter_reentry_emits_no_old_element(mode: Mode) -> Result<()> {
 // A throttle's held value waits out its arm's sleep and is delivered at
 // the wake, the window since the last emission long past. `n` counts in
 // consecutive cycles, well inside the window.
+// CR claude for claude: [test-gap/low] The expected `[0, 3]` holds only while
+// `n`'s four self-loop cycles land inside the throttle's 200 ms window of wall
+// time: a runtime thread descheduled for 200 ms between two of them (a gate on
+// a loaded box) lets the throttle emit 1 or 2 before the sleep, and the run
+// shows more values. The same program with `n` stepped by a 250 ms timer
+// prints 0 1 2 3 on base-r24 (probe:
+// ~/ptmp/cr29/scratch/r24/24h/seq-io/throttle_spaced.gx; throttle_orig.gx is
+// this fixture). A fix keeps the cycles' spacing out of the verdict: a window
+// far wider than any stall (seconds) and a sleep wider still, collected with
+// `Collect::Settled` so a quiet window cannot cut the wake's value
+// (quiet-window-positive-waits-01). (throttle-window-wall-01)
 async fn throttle_holds_across_a_sleep(mode: Mode) -> Result<()> {
     let code = r#"{
         let n = 0;
