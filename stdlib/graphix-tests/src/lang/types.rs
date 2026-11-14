@@ -11885,6 +11885,38 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s")
 );
 
+run!(
+    union_bound_a_variable_member_decided_first_takes_a_literal_array,
+    r#"{
+    let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v;
+    let r = f(["s"], ["x"]);
+    r[0]$
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "x")
+);
+
+// A value with no structure yet waits within the bound: what decides the
+// variable member afterwards decides what the value may hold.
+run!(union_bound_an_open_variable_member_holds_a_bare_undecided_value, r#"{
+    let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v;
+    let z = never();
+    let r = f(z, ["s"]);
+    z <- [1.5];
+    r
+}"#, refused("and cannot hold Array<f64>"); FuseExpect::None);
+
+run!(
+    union_bound_an_open_variable_member_bare_undecided_value_accepts,
+    r#"{
+    let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v;
+    let z = never();
+    let r = f(z, ["s"]);
+    z <- ["x"];
+    r[0]$
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "x")
+);
+
 run!(union_bound_an_abstract_member_takes_no_array, r#"{
     type C = Abstract<i64>;
     let f = 'a: [Array<[i64, null]>, C] |v: 'a| v;

@@ -538,9 +538,11 @@ follow a later use. Where only one member can hold it that member decides
 it (`(z, 1)` at `[(i64, i64), (string, string)]` makes `z` an `i64`). A
 member written as a name, or as a variable another argument has decided,
 counts as what it stands for. A variable member nothing has decided yet
-takes an open value only after the other members: `[z]` at `'a:
-[Array<i64>, 'b]` makes `z` an `i64` while `'b` is open. Declare the
-parameter that decides `'b` first, or pass a value whose type is decided.
+takes a value only after the other members, and an array literal written
+in the call is met before its elements are: `[z]` and `["x"]` at `'a:
+[Array<i64>, 'b]` go to `Array<i64>` while `'b` is open, so `z` is an
+`i64` and `["x"]` a mismatch. Declare the parameter that decides `'b`
+first, or bind the array to a `let` whose element type is decided.
 
 ```graphix,cases
 no "nothing has decided which: `z` is undecided at this call; annotate `z`" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
@@ -553,6 +555,9 @@ no "nothing has decided which" let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; le
 ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; let z = never(); let r = f("s", [z]); z <- 1; r
 no "z is i64, inferred from an earlier use, and cannot hold string" let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let z = never(); let r = f([z], ["s"]); z <- "s"; r
 ok let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let z: string = never(); let x = [z]; let r = f(x, ["s"]); z <- "s"; r
+no "Array<i64> does not contain Array<string>" let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; f(["x"], ["s"])
+ok let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let x = ["x"]; f(x, ["s"])
+ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; f(["s"], ["x"])
 ```
 
 A bound holds through a chain of bounds. Under `'a0: ['a1, null], 'a1:
