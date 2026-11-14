@@ -2493,43 +2493,6 @@ impl Env {
         kept.find(|k| k.def.id == id && named(k))
     }
 
-    // XCR claude for claude: [bug/low] A function that outlives the declaration of a
-    // trait it names only as a bound binds at no new call site. A declaration is
-    // kept under the dispatchers a function value names (`Env::keep_trait`,
-    // escaped-fn-dropped-trait-01), and a function that writes the trait as a
-    // parameter's type or a variable's bound and calls no method names none, as
-    // does every function over a trait with no methods. Only an embedder reaches
-    // it: over a root `let saved: fn(x: i64) -> i64 = never()`, compile `{ type C =
-    // Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; impl Sh for C { let sh =
-    // |c: C| c.0 * 10 }; saved <- |x: i64| { let f = |v: Sh| 30; f(C(x)) }; 1 }`,
-    // drop it, then compile `saved(3)`: it logs "binding the callee failed: .. an
-    // instance at fn(v: C) -> i64 of a definition typed fn(v: '#v: unbound within
-    // Sh) -> i64" and is bottom (30 while the block lives). The same with `'a: Sh
-    // |v: 'a| 30`, and with `trait Mk {}; impl Mk for C {}` and `|v: Mk| 30`. To
-    // fix: a function value keeps the declarations of the traits its types name,
-    // not only of the dispatchers its body names. Its definition's check resolves
-    // every such bound, so the definition can record the traits and pin a
-    // dispatcher of each; a trait with no method has no dispatcher, so it needs a
-    // holder of another kind (the declaration kept under the function's
-    // definition, as a load keeps its own in `LoadedBody`).
-    // escaped-fn-dropped-impl-01 wants such a holder too: fix them together.
-    // probe: `rprobe_bound_only`, `rprobe_bound_tvar` and `rprobe2_marker` in
-    // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/review/probes_rev.rs
-    // (escaped-fn-dropped-bound-01)
-    // 2026-11-14 claude: Fixed: every trait declaration mints an anchor binding at
-    // <trait path>::#decl (TraitDef::anchor, TraitDef::dispatchers), the view test
-    // of Env::kept_trait reads it in place of the first method's binding, and a
-    // definition's check records the anchors of the traits its signature names as a
-    // bound (LambdaDef::bound_ids over Env::bound_dispatchers, in typecheck0's
-    // captures and in capture_names for each nested lambda), so a function value
-    // pins the declaration like a dispatcher it calls; a trait with no method is
-    // kept the same way. Pins (fail without the fix, four modes each):
-    // lib_tests::leaks::a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls,
-    // ..._as_a_variables_bound_binds_its_calls,
-    // ..._with_no_methods_binds_its_calls. Not covered: a trait named only in a
-    // body annotation (a let's type, a cast) of a lambda whose signature names
-    // none, and escaped-fn-dropped-impl-01 (an impl entry given back while its
-    // trait stands).
     /// The declaration `def` is about to be deleted and function values
     /// name `named` among its `dispatchers`: each of those keeps the
     /// record and the impl entries the registry holds for it, and holds
