@@ -478,20 +478,15 @@ pub(super) fn rigid_refusal(
     tv: &TVar,
     holder: Holder,
 ) -> anyhow::Error {
-    let declared = declared_var(tv);
-    let named = declared.is_some();
-    let var = declared.unwrap_or_else(|| format_compact!("the variable"));
+    let var = Var::of(tv);
     let bounds = tv.typed_bounds(env);
-    let what = match (named, &bounds[..]) {
-        (true, _) => format_compact!(
-            "a value of {var}, a type variable of the definition, which types none of \
-             its parts"
-        ),
-        (false, [b]) => format_compact!(
+    let what = match (var.what(), &bounds[..]) {
+        (Some(what), _) => what,
+        (None, [b]) => format_compact!(
             "a value of a type variable of the definition bounded by {b}, which types \
              none of its parts"
         ),
-        (false, _) => format_compact!(
+        (None, _) => format_compact!(
             "a value of a type variable of the definition, which types none of its \
              parts"
         ),
@@ -501,7 +496,10 @@ pub(super) fn rigid_refusal(
         && let Some(b) =
             bounds.iter().find(|b| !pat.may_hold(env, ids, b).unwrap_or(true))
     {
-        let what = format_compact!("{pat} matches no value of {var}, whose bound is {b}");
+        let what = format_compact!(
+            "{pat} matches no value of {}, whose bound is {b}",
+            var.label()
+        );
         return match holder {
             Holder::Arm => anyhow!("unreachable arm: {what}, unused match cases"),
             Holder::Let | Holder::Formal => anyhow!("{what}"),
@@ -517,8 +515,8 @@ pub(super) fn rigid_refusal(
         return anyhow!(
             "{pat} tests inside {what}; an abstract type's parameter holds the variable, \
              and a type test of the abstract matches only the parameters it writes: bind \
-             the payload by a name and test that, {test}, or declare no {var}, writing \
-             its bound in its place"
+             the payload by a name and test that, {test}, or {}",
+            var.replaced("its bound")
         );
     }
     let written = rigid_written(env, ids, pat, typ, tv);
@@ -545,40 +543,50 @@ pub(super) fn rigid_refusal(
             ),
         };
         return anyhow!(
-            "{head}: the bound of {var} holds {c}, which no type bounds; bound {c} by one, \
-             `{c}: T`, then {fix}"
+            "{head}: the bound of {} holds {c}, which no type bounds; bound {c} by one, \
+             `{c}: T`, then {fix}",
+            var.label()
         );
     }
-    let or_bound = or_bound(tv, &var);
+    let or_bound = var.or_bound(tv);
     match (holder, written) {
         (Holder::Arm, Some(t)) if t.holds_fn(env) => anyhow!(
             "{pat} tests inside {what}, and no type test holds its function type: \
-             declare no {var}, writing its bound in its place"
+             {}",
+            var.replaced("its bound")
         ),
         (Holder::Arm, Some(t)) => {
             anyhow!("{pat} tests inside {what}: write the type it tests, `{t} as {pat}`")
         }
-        (Holder::Arm, None) if alone && bounds.is_empty() => anyhow!(
-            "{pat} tests inside {what}: {}, `{var}: T`, and write that type, `T as {pat}`",
-            bounding(tv, &var, "tests")
-        ),
+        (Holder::Arm, None)
+            if alone
+                && bounds.is_empty()
+                && let Some(how) = var.bounding(tv, "tests") =>
+        {
+            anyhow!("{pat} tests inside {what}: {how}, and write that type, `T as {pat}`")
+        }
         (Holder::Arm, None) => anyhow!(
             "{pat} tests inside {what}: write the type it tests, `T as {pat}`{or_bound}"
         ),
         (Holder::Let, _) if in_abstract_param(env, typ, tv) => anyhow!(
             "the pattern {pat} binds inside {what}; an abstract type's parameter holds \
-             the variable, which no annotation widens: declare no {var}, writing the type \
-             it binds in its place"
+             the variable, which no annotation widens: {}",
+            var.replaced("the type it binds")
         ),
         (Holder::Let, Some(t)) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding, `let {pat}: \
              {t} = ..`"
         ),
-        (Holder::Let, None) if alone && bounds.is_empty() => anyhow!(
-            "the pattern {pat} binds inside {what}: {}, `{var}: T`, and annotate the \
-             binding with it, `let {pat}: T = ..`",
-            bounding(tv, &var, "binds")
-        ),
+        (Holder::Let, None)
+            if alone
+                && bounds.is_empty()
+                && let Some(how) = var.bounding(tv, "binds") =>
+        {
+            anyhow!(
+                "the pattern {pat} binds inside {what}: {how}, and annotate the binding \
+                 with it, `let {pat}: T = ..`"
+            )
+        }
         (Holder::Let, None) => anyhow!(
             "the pattern {pat} binds inside {what}: annotate the binding with the type \
              it binds, `let {pat}: T = ..`{or_bound}"
@@ -606,11 +614,11 @@ pub(super) fn written_refusal(
     tv: &TVar,
     part: &Type,
 ) -> anyhow::Error {
-    let var = declared_var(tv).unwrap_or_else(|| format_compact!("the variable"));
+    let var = Var::of(tv);
     let fix = match rigid_written(env, ids, pat, typ, tv) {
         Some(t) => format_compact!("write the type it tests, `{t} as {pat}`"),
         None => {
-            format_compact!("write the type it tests, `T as {pat}`{}", or_bound(tv, &var))
+            format_compact!("write the type it tests, `T as {pat}`{}", var.or_bound(tv))
         }
     };
     let why = match (part.holds_bottom(env), part) {
@@ -626,12 +634,12 @@ pub(super) fn written_refusal(
         },
     };
     anyhow!(
-        "{pat} tests inside a value of {var}, a type variable of the definition, and its \
-         type test types none of it: {why}; {fix}"
+        "{pat} tests inside {}, and its type test types none of it: {why}; {fix}",
+        var.holder()
     )
 }
 
-// CR claude for claude: [bug/low] A variable a definition declares by no name a
+// XCR claude for claude: [bug/low] A variable a definition declares by no name a
 // program writes as a variable, a trait in argument position (`|s: Show|`, the cell
 // `#s`) or a trait default's receiver (`self`), is told here as if written, and the
 // remedy cannot be written: `|s: Show| select s { `J => 1, _ => 2 }` is refused "`J
@@ -649,37 +657,143 @@ pub(super) fn written_refusal(
 // Show (base-r24: '_8352), as the parameter's own handle already did; a fix here
 // that changes what such a cell is told by covers the printer too
 // (tvar::printed_name, TVar::declared_name).
-/// `tv`, a variable a definition being checked holds rigid, by the name
-/// its signature declares (`'a`, [`TVar::declared_name`]): a pattern meets
-/// the variable at whatever handle a merge left, which the checker may have
-/// made up or a callee declared. `None` where no signature being checked
-/// names it.
-fn declared_var(tv: &TVar) -> Option<CompactString> {
-    tv.declared_name().map(|n| format_compact!("'{n}"))
+// 2026-11-14 claude: A variable no program writes as a variable is told by what the
+// program wrote: pattern.rs Var::of tells a trait in argument position as 'the trait
+// Show' with the remedy 'declare the parameter as a named variable bounded by the
+// type it tests, `'a: T`' (twin passes), and a default's receiver as 'self' with
+// 'write the type it tests, `T as ..`' (twin passes), through a merged handle too;
+// the 'the variable' wording is kept only where no signature names the cell. Pins:
+// lang::traits::test_inside_a_trait_argument_* / binding_inside_a_trait_argument_* /
+// test_inside_a_default_receiver_* (the refused ones fail in all four modes without
+// it); select.md cases fence.
+/// How a refusal tells a type variable its definition holds rigid: by what
+/// the program wrote for it.
+enum Var {
+    /// A variable the program declared, `'a`.
+    Written(CompactString),
+    /// A trait in argument position, `|s: Show|`.
+    Trait(CompactString),
+    /// The receiver of a trait default, `self`.
+    Receiver,
+    /// A variable no signature being checked names.
+    Unnamed,
+}
+
+impl Var {
+    /// `tv`, a variable a definition being checked holds rigid, as the
+    /// program wrote it ([`TVar::declared_name`]): a pattern meets the
+    /// variable at whatever handle a merge left, which the checker may have
+    /// made up or a callee declared.
+    fn of(tv: &TVar) -> Self {
+        match tv.declared_name() {
+            None => Self::Unnamed,
+            Some(n) if &*n == "self" => Self::Receiver,
+            Some(n) if n.starts_with('#') => match &tv.cell_constraints()[..] {
+                [c] => Self::Trait(format_compact!("{c}")),
+                _ => Self::Unnamed,
+            },
+            Some(n) => Self::Written(format_compact!("'{n}")),
+        }
+    }
+
+    /// The value a pattern tests or binds inside.
+    fn holder(&self) -> CompactString {
+        match self {
+            Self::Written(v) => {
+                format_compact!("a value of {v}, a type variable of the definition")
+            }
+            Self::Trait(t) => format_compact!("a value of the trait {t}"),
+            Self::Receiver => format_compact!("a value of self"),
+            Self::Unnamed => {
+                format_compact!(
+                    "a value of the variable, a type variable of the definition"
+                )
+            }
+        }
+    }
+
+    /// [`Self::holder`] and that no type test types any part of it; `None`
+    /// where no signature names the variable.
+    fn what(&self) -> Option<CompactString> {
+        match self {
+            Self::Unnamed => None,
+            _ => {
+                Some(format_compact!("{}, which types none of its parts", self.holder()))
+            }
+        }
+    }
+
+    /// The variable as a message names it.
+    fn label(&self) -> CompactString {
+        match self {
+            Self::Written(v) => v.clone(),
+            Self::Trait(t) => format_compact!("the trait {t}"),
+            Self::Receiver => format_compact!("self"),
+            Self::Unnamed => format_compact!("the variable"),
+        }
+    }
+
+    /// How to write `what` in place of the variable.
+    fn replaced(&self, what: &str) -> CompactString {
+        match self {
+            Self::Written(_) | Self::Unnamed => {
+                format_compact!(
+                    "declare no {}, writing {what} in its place",
+                    self.label()
+                )
+            }
+            Self::Trait(t) => format_compact!(
+                "declare no parameter of the trait {t}, writing a type in its place"
+            ),
+            Self::Receiver => format_compact!("write the type in place of self"),
+        }
+    }
+
+    /// How to give `tv` the type a pattern `verb`s (tests or binds) as its
+    /// bound, in place of the bound it has, as the whole of what to write
+    /// for it; `None` where the program writes no declaration of it.
+    fn bounding(&self, tv: &TVar, verb: &str) -> Option<CompactString> {
+        match self {
+            Self::Written(v) => {
+                let cs = tv.cell_constraints();
+                let how = match &cs[..] {
+                    [] => format_compact!("bound {v} by the type it {verb}"),
+                    [c] => format_compact!(
+                        "replace the bound of {v}, {c}, by the type it {verb}"
+                    ),
+                    _ => {
+                        format_compact!("replace the bounds of {v} by the type it {verb}")
+                    }
+                };
+                Some(format_compact!("{how}, `{v}: T`"))
+            }
+            Self::Trait(_) => Some(format_compact!(
+                "declare the parameter as a named variable bounded by the type it \
+                 {verb}, `'a: T`"
+            )),
+            Self::Receiver | Self::Unnamed => None,
+        }
+    }
+
+    /// The tail of a remedy that writes the type: ", or ..." where the
+    /// variable has no bound a program wrote yet.
+    fn or_bound(&self, tv: &TVar) -> CompactString {
+        match self {
+            Self::Written(v) if tv.cell_constraints().is_empty() => {
+                format_compact!(", or bound {v}")
+            }
+            Self::Trait(_) => format_compact!(
+                ", or declare the parameter as a named variable bounded by the type it \
+                 tests, `'a: T`"
+            ),
+            _ => CompactString::default(),
+        }
+    }
 }
 
 /// Whether `typ` is the variable `tv` itself.
 fn is_alone(typ: &Type, tv: &TVar) -> bool {
     matches!(typ, Type::TVar(t) if t.open_cell().is_some_and(|c| c.same_cell(tv)))
-}
-
-/// How to give `tv` the type a pattern `verb`s (tests or binds) as its
-/// bound: in place of the bound it has.
-fn bounding(tv: &TVar, var: &str, verb: &str) -> CompactString {
-    let cs = tv.cell_constraints();
-    match &cs[..] {
-        [] => format_compact!("bound {var} by the type it {verb}"),
-        [c] => format_compact!("replace the bound of {var}, {c}, by the type it {verb}"),
-        _ => format_compact!("replace the bounds of {var} by the type it {verb}"),
-    }
-}
-
-/// ", or bound {var}" where `tv` has no bound declared yet.
-fn or_bound(tv: &TVar, var: &str) -> CompactString {
-    match tv.cell_constraints().is_empty() {
-        true => format_compact!(", or bound {var}"),
-        false => CompactString::default(),
-    }
 }
 
 /// Whether `c` is a variable a program wrote, held rigid with no bound of

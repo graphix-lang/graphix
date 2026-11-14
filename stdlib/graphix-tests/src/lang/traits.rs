@@ -127,6 +127,86 @@ run!(
     ; FuseExpect::None
 );
 
+// A test inside a value a trait declares by no name a program writes as a
+// variable, a trait in argument position or a default's receiver, is told by
+// what the program wrote, with a remedy it can write.
+run!(
+    test_inside_a_trait_argument_told_by_the_trait,
+    refused("`J tests inside a value of the trait Show, which types none of its parts: declare the parameter as a named variable bounded by the type it tests, `'a: T`, and write that type, `T as `J`"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "i" };
+        let f = |s: Show| select s { `J => 1, _ => 2 };
+        let result = f(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    test_inside_a_trait_argument_met_through_a_handle_told_by_the_trait,
+    refused("[`J] tests inside a value of the trait Show, which types none of its parts: write the type it tests, `T as [`J]`, or declare the parameter as a named variable bounded by the type it tests, `'a: T`"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "i" };
+        let f = |s: Show| select [s] { [`J] => 1, _ => 2 };
+        let result = f(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    binding_inside_a_trait_argument_told_by_the_trait,
+    refused("the pattern `J binds inside a value of the trait Show, which types none of its parts: declare the parameter as a named variable bounded by the type it binds, `'a: T`, and annotate the binding with it, `let `J: T = ..`"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "i" };
+        let f = |s: Show| { let `J = s; 1 };
+        let result = f(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    test_inside_a_trait_argument_declared_by_a_named_variable,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        let f = 'a: [`J, i64] |s: 'a| select s { [`J, i64] as `J => 1, _ => 2 };
+        let result = f(1)
+    "#
+);
+
+run!(
+    test_inside_a_default_receiver_told_as_self,
+    refused("`J tests inside a value of self, which types none of its parts: write the type it tests, `T as `J`"),
+    "/test.gx" => r#"
+        trait Tag { val tag: fn(self) -> i64 = |x| select x { `J => 1, _ => 2 } };
+        impl Tag for i64 {};
+        let result = Tag::tag(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    test_inside_a_default_receiver_met_through_a_handle_told_as_self,
+    refused("[`J] tests inside a value of self, which types none of its parts: write the type it tests, `T as [`J]`"),
+    "/test.gx" => r#"
+        trait Tag { val tag: fn(self) -> i64 = |x| select [x] { [`J] => 1, _ => 2 } };
+        impl Tag for i64 {};
+        let result = Tag::tag(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    test_inside_a_default_receiver_written_as_a_type_test,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        trait Tag { val tag: fn(self) -> i64 = |x| select x { [`J, i64] as `J => 1, _ => 2 } };
+        impl Tag for i64 {};
+        let result = Tag::tag(1)
+    "#
+);
+
 // A required method missing from an implementation is a compile error.
 run!(
     trait_missing_method_refused,

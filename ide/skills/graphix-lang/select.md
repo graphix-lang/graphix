@@ -259,6 +259,9 @@ no "[`J] tests inside a value of 'a" |x: 'a| select [x] { [`J] => 1, _ => 3 }
 ok 'a: [`J, `M] |x: 'a| { let r = &mut [x, 0]; select *r { Array<[i64, `J, `M]> as [`J, _] => 1, _ => 3 } }
 no "[`J, _] tests inside a value of 'a" type W<'a> = Abstract<'a>; |x: 'a| select W([x, 0]).0 { [`J, _] => 1, _ => 3 }
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| { let r = &mut (x, 0); select *r { (`A(_), i64) as (`A(z), _) => 1, _ => 2 } }
+no "`J tests inside a value of the trait Show" trait Show { val show: fn(self) -> string }; |s: Show| select s { `J => 1, _ => 2 }
+ok 'a: [`J, i64] |s: 'a| select s { [`J, i64] as `J => 1, _ => 2 }
+no "`J tests inside a value of self" trait Tag { val tag: fn(self) -> i64 = |x| select x { `J => 1, _ => 2 } }; 1
 no "((a, b), c) binds inside a value of 'a" 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c) = *r; a + b }
 ok 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c): ((i64, i64), i64) = *r; a + b }
 no "does not decide the type of `a`" |x: Any| select x { (a, b) => a + b, _ => 0 }
