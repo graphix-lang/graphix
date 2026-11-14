@@ -1701,6 +1701,19 @@ impl Env {
     // (fn-typedef-unjudged-01), and the run does not return (killed by the memory cap; --check passes):
     // before this change it printed 1 over a wrong T. Closing fn-typedef-unjudged-01 closes them; re-run both
     // probes then. probes: ~/ptmp/cr29/scratch/r25/25g/import-snapshot/
+    // 2026-11-14 claude: r25 lane 25g review: the fix holds. Pins fail without Env::lexical's fill (12 of 28
+    // runs of lang::types::lambda_ fail); census base vs lane 0 changes of 2967 files; guicheck 39.724G
+    // base-r25, 39.833G lane. Probes one step over refuse as the list's own rule does: a block above the mod,
+    // a nested closure, a path through a sibling module declared below (module a's 'use package::o::Option'
+    // with 'mod o' after 'mod a' in the root: base accepted and printed the right value only because the
+    // signature read the import and the body's annotation did not), 'use o::{self, Option}', 'use o as
+    // Alias'; each had a body reading the prelude's Option over a signature reading the import. The remaining
+    // part closes with fn-typedef-unjudged-01's fix (lane 25f, faf1c656c): applied to this lane in a scratch
+    // tree, fn-body-typedef and fn-body-typedef-glob are both refused as non-contractive (T = [i64, Foo<T>]
+    // over o's ['a, string]) and fn-body-import is still refused as above. Until 25f lands, those two probes
+    // hang (base-r25 printed 1). Delete this CR once both lanes are on r25-staging and the two probes are
+    // re-run (a pin for the pair belongs in whichever lane lands second). Probes:
+    // ~/ptmp/cr29/scratch/r25/25g/review/.
     /// [`Self::lookup_at`], with whether `origin` is inside the level's
     /// module already known: one chain's levels share their module.
     fn lookup_in<T>(
