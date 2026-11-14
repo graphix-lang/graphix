@@ -1241,6 +1241,39 @@ fn undecided(t: &Type) -> bool {
     find_open_cell(t, true, &mut |tv| !tv.is_rigid()).is_some()
 }
 
+/// Whether `t` reaches an undecided cell other than a function's throws:
+/// without it, only what a function throws is open.
+fn undecided_outside_throws(t: &Type) -> bool {
+    fn walk(t: &Type, seen: &mut AddrSet) -> bool {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => walk(&b, seen),
+                None => !tv.is_rigid(),
+            },
+            t => {
+                if let Some(a) = node_addr(t)
+                    && !seen.insert(a)
+                {
+                    return false;
+                }
+                match t {
+                    Type::Fn(f) => {
+                        f.args.iter().any(|a| walk(&a.typ, seen))
+                            || f.vargs.iter().any(|v| walk(v, seen))
+                            || walk(&f.rtype, seen)
+                    }
+                    t => {
+                        let mut found = false;
+                        t.for_each_child(&mut |c| found = found || walk(c, seen));
+                        found
+                    }
+                }
+            }
+        })
+    }
+    walk(t, &mut LPooled::take())
+}
+
 /// Whether a commit can decide no cell `t` reaches: each open cell is held
 /// rigid, and so is each one their conjuncts and lower bounds reach, and
 /// none is one an earlier task left open outside a top-level input: a
@@ -2932,6 +2965,7 @@ pub struct UndecidedTaker {
     typ: Type,
     members: SmallVec<[Type; 2]>,
     at: TakerUnion,
+    throws_only: bool,
 }
 
 impl UndecidedTaker {
@@ -2947,6 +2981,7 @@ impl UndecidedTaker {
             typ: t.clone(),
             members: members.iter().map(|m| (*m).clone()).collect(),
             at,
+            throws_only: undecided(t) && !undecided_outside_throws(t),
         })
     }
 
@@ -2954,7 +2989,13 @@ impl UndecidedTaker {
         self.at
     }
 
-    // CR claude for claude: [readability/low] The refusal prints a lambda whose only open
+    /// Whether what the type throws is the only part of it nothing has
+    /// decided.
+    pub fn throws_only(&self) -> bool {
+        self.throws_only
+    }
+
+    // XCR claude for claude: [readability/low] The refusal prints a lambda whose only open
     // cell is what it throws as a decided type and calls it undecided. `let g = |k: [fn(x:
     // i64) -> i64 throws `A, fn(x: i64) -> i64 throws `B]| 4; g(|x: i64| 0)` is refused,
     // "fn(x: i64) -> i64 could go to fn(x: i64) -> i64 throws `A or fn(x: i64) -> i64
@@ -2968,6 +3009,12 @@ impl UndecidedTaker {
     // "what it throws is undecided" and the note says to write the lambda's throws.
     // Found in the review of undecided-into-two-decided-01. probes:
     // ~/ptmp/cr29/scratch/r24/24d/u2d-rev/{c5,c8,c10,c11}.gx (undecided-taker-open-throws-01)
+    // 2026-11-14 claude: UndecidedTaker records whether the type's only undecided cells are
+    // function throws (contains.rs undecided_outside_throws); the fact then says what it
+    // throws decides which and nothing has decided that, and the call's note says to write
+    // the lambda's throws (callsite.rs undecided_note). Pins: four lines after the `f(|x:
+    // [i64, string]| 0)` case in ide/skills/graphix-lang/generics.md (skill_fences_check),
+    // the two refusals fail with throws_only forced false.
     /// The refusal without what to annotate, for a site that names it.
     pub fn fact(&self) -> impl std::fmt::Display + '_ {
         struct Fact<'a>(&'a UndecidedTaker);
@@ -2981,11 +3028,13 @@ impl UndecidedTaker {
                         TakerUnion::Bound => "bound",
                         TakerUnion::Holder | TakerUnion::Value => "union",
                     };
-                    write!(
-                        f,
-                        " of the {held} {}, and nothing has decided which",
-                        Brief(&u.union)
-                    )
+                    let decides = match u.throws_only {
+                        true => {
+                            "what it throws decides which, and nothing has decided that"
+                        }
+                        false => "nothing has decided which",
+                    };
+                    write!(f, " of the {held} {}, and {decides}", Brief(&u.union))
                 })
             }
         }

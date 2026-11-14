@@ -2050,7 +2050,7 @@ impl Widening {
             ArgFit::Decided => self.join(env, def, inst, formal, n.typ()),
             ArgFit::Undecided(copied) => {
                 rejoin(&copied);
-                let note = || Some(undecided_note(ctx, n));
+                let note = || Some(undecided_note(ctx, n, false));
                 self.take(env, def, inst, formal, n.typ(), note)
             }
         };
@@ -2301,10 +2301,23 @@ fn decided_elsewhere(
 
 /// What to annotate where the argument `n` is undecided at its call: the
 /// bindings it reads whose types are undecided, else the argument.
-fn undecided_note<R: Rt>(ctx: &CompileCtx<R>, n: &Node<R>) -> CompactString {
+fn undecided_note<R: Rt>(
+    ctx: &CompileCtx<R>,
+    n: &Node<R>,
+    throws_only: bool,
+) -> CompactString {
     undecided_binds(ctx, n, "at this call").unwrap_or(CompactString::const_new(
-        "this argument is undecided at this call; annotate it (bind it to a `let` \
-         with its type written)",
+        match throws_only {
+            true => {
+                "what this argument throws is undecided at this call; write the \
+                 lambda's throws (`-> T throws E`), or bind it to a `let` with its \
+                 type written"
+            }
+            false => {
+                "this argument is undecided at this call; annotate it (bind it to a \
+                 `let` with its type written)"
+            }
+        },
     ))
 }
 
@@ -2337,7 +2350,9 @@ fn undecided_taker<R: Rt>(
                 u.fact()
             )
         ),
-        Some(u) => wrap!(n, anyhow!("{}: {}", u.fact(), undecided_note(ctx, n))),
+        Some(u) => {
+            wrap!(n, anyhow!("{}: {}", u.fact(), undecided_note(ctx, n, u.throws_only())))
+        }
         None => e,
     }
 }
