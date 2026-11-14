@@ -1752,42 +1752,6 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
-    // XCR claude for claude: [bug/medium] A variable a bound holds under a function type
-    // or exactly widens, and the bound no longer holds what its variable took: the check
-    // accepts and the build refuses the instance. `let f = 'a: fn(q: 'c) -> i64 |v: 'a,
-    // c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)` passes `--check` and the
-    // run fails "an instance at fn(v: fn(q: string) -> i64, c: [i64, string]) -> [i64,
-    // string] of a definition typed fn<'a: fn(q: 'c: unbound) -> i64>(..)". Alike: `'a:
-    // &mut 'c` with `f(&mut s, n)` over `let s = "s"`; `'a: [fn(q: 'c) -> i64, 'b] |v:
-    // 'a, y: 'b, c: 'c|` with `f(|q: string| 0, "s", n)`; a bound of a bound (`'a:
-    // Array<'d>, 'd: fn(q: 'c) -> i64`); a recursive typedef's function member; an
-    // omitted default `#c: 'c = n`. The function type written in the parameter (`|v:
-    // fn(q: 'c) -> i64, c: 'c|`) is refused, "'c: string does not contain [i64,
-    // string]". base-r24 alike. The walk below reads the positions and not their cells'
-    // bounds, so 'c counts as held by data alone. Walking the bounds too (each cell's
-    // cell_constraints, transitively, with a DataPositions that passes a recursive
-    // typedef's application met inside its own expansion, else
-    // lang::types::a_member_of_a_bound_variables_lower_bound_fits and four neighbours
-    // are refused) closes every form above with that mismatch, census 0 of 2967, but
-    // then lang::types::callback_into_a_union_bound_takes_the_members_parameter passes
-    // the check and fails the build: its 'a2, held under a function by the bound of
-    // 'a0, no longer widens, and its lambda goes through
-    // (unwidenable-bound-callback-01). That one first. Found deciding
-    // union-bound-open-member-order-01 (gen.py: 2 of 1500 families). probes, and the
-    // walk as a patch: ~/ptmp/cr29/scratch/r24/24d/ubo/{t1,t4,t6,t15,y1,v5,i7}.gx,
-    // static-walk.patch (bound-held-variable-widens-01)
-    // 2026-11-14 claude: unwidenable-bound-callback-01, the one this CR says to fix
-    // first, is fixed in the lane 25d build (pre_unify_seen no longer binds a variable
-    // bounded by a union of function types to an ambiguous callback early); its static
-    // walk can be tried again.
-    // 2026-11-14 claude: Fixed: callsite::widenable also walks each candidate variable's
-    // cell constraints, transitively (DataPositions::passing_repeats passes a recursive
-    // typedef application met inside its own expansion), so a variable a bound holds
-    // under a function, a writable reference or a nominal type no longer widens; t1 t4
-    // t6 t15 y1 v5 i7 are now refused at --check with the parameter form's message.
-    // Fails without it: the 6 refused pins
-    // lang::types::a_variable_held_by_a_bound_*_refused in all 4 modes (24 runs); their
-    // annotated twins and a_variable_held_by_a_bound_in_data_alone_still_widens run.
     let mut positions = DataPositions::new(env).telling_members();
     inst.for_each_type(&mut |t| {
         positions.walk(t, Held::default(), &mut |tv, held| {
