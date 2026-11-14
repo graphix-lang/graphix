@@ -1169,23 +1169,6 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     {
         return OracleTier::Excluded;
     }
-    // CR claude for claude: [bug/low] A program that reads the order of
-    // handles is value-nondeterministic by the language's rule (handles
-    // order by identity, a run's: book/src/stdlib/sys.md), and no marker
-    // here says so: it stays FinalValues and the image pair reports the
-    // program's own difference as "writing the program image changed the
-    // program". `graphix-fuzz check`, on base-r23 and on r23-e alike: an
-    // `array::sort` of `(sys::io::stdout(null), v)` pairs mapped back to
-    // `v` is `[1, 2, 100]` with no cache and `[2, 100, 1]` cold; a
-    // `map::fold` of a map keyed by handles into an array is `[2, 4, 200]`
-    // against `[200, 2, 4]`. Fix: exclude a program that makes a handle
-    // and orders it, as the lambda rule above does for `Any` (`sort` and
-    // `map::fold` are the witnessed readers; a comparison of two handles
-    // and a cast of such a map have no marker as narrow). Ordering
-    // handles by something no run decides instead is a language rule,
-    // and Eric's. probes: ~/ptmp/cr29/scratch/r23/23e/p9_sort.gx,
-    // p2_fold.gx (handle-order-oracle-01)
-
     // An fs mutation racing an fs observation: nothing orders two async
     // IO builtins unless the program threads a data edge between them.
     // One-sided fs programs keep their value comparison.
@@ -1233,6 +1216,49 @@ pub fn oracle_tier(code: &str) -> OracleTier {
             "range(", "group(", "hold(",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| mentions(code, m)) {
+            return OracleTier::Excluded;
+        }
+        // XCR claude for claude: [bug/low] A program that reads the order of
+        // handles is value-nondeterministic by the language's rule (handles
+        // order by identity, a run's: book/src/stdlib/sys.md), and no marker
+        // here says so: it stays FinalValues and the image pair reports the
+        // program's own difference as "writing the program image changed the
+        // program". `graphix-fuzz check`, on base-r23 and on r23-e alike: an
+        // `array::sort` of `(sys::io::stdout(null), v)` pairs mapped back to
+        // `v` is `[1, 2, 100]` with no cache and `[2, 100, 1]` cold; a
+        // `map::fold` of a map keyed by handles into an array is `[2, 4, 200]`
+        // against `[200, 2, 4]`. Fix: exclude a program that makes a handle
+        // and orders it, as the lambda rule above does for `Any` (`sort` and
+        // `map::fold` are the witnessed readers; a comparison of two handles
+        // and a cast of such a map have no marker as narrow). Ordering
+        // handles by something no run decides instead is a language rule,
+        // and Eric's. probes: ~/ptmp/cr29/scratch/r23/23e/p9_sort.gx,
+        // p2_fold.gx (handle-order-oracle-01)
+        // 2026-11-13 claude: oracle_tier's async branch now excludes a program
+        // that names a handle maker (stdin/stdout/stderr, ::open, tcp::, tls::,
+        // watch::, db::, sqlite::, http::) and a reader of their order (sort,
+        // dedup, map::fold, print, dbg; min/max were already fire-count markers
+        // there). p9_sort.gx and p2_fold.gx check EXCLUDED on the lane's
+        // graphix-fuzz (base-r24: image-bug DIVERGENCE). Comparisons, casts and
+        // string interpolation are left out on purpose: as markers they moved
+        // 45 of about 485 FinalValues programs (a 20k-mutation, 5k-generated,
+        // seed and regress sample) to Excluded, against 3 for the narrow list
+        // and none in the regression corpus; design/graphix_fuzz.md says their
+        // findings are the program's. Pin:
+        // tests::a_program_reading_handle_order_is_excluded_tier (fails with
+        // the rule off).
+
+        // Handles order by identity, a run's (book/src/stdlib/sys.md): a
+        // sort of them, or a fold or print of a map they key, differs
+        // between two runs by the language's own rule
+        let handles = [
+            "stdin", "stdout", "stderr", "::open", "tcp::", "tls::", "watch::", "db::",
+            "sqlite::", "http::",
+        ];
+        let orders = ["sort", "dedup", "map::fold", "print", "dbg("];
+        if handles.iter().any(|m| mentions(code, m))
+            && orders.iter().any(|m| mentions(code, m))
+        {
             return OracleTier::Excluded;
         }
         return OracleTier::FinalValues;
@@ -6063,6 +6089,35 @@ mod tests {
             oracle_tier("sys::tcp::connect(\"127.0.0.1:5000\")"),
             OracleTier::FinalValues
         );
+    }
+
+    #[test]
+    fn a_program_reading_handle_order_is_excluded_tier() {
+        // handles order by identity, a run's: a sort of them, or a fold or
+        // print of a map they key, differs between two runs of one program
+        let hm = "let hm = map::map(m, |(k, v)| (sys::io::stdout(null), v))";
+        for prog in [
+            "array::map(array::sort(array::map(m, |v| (sys::io::stdout(null), v))), |(h, v)| v)"
+                .to_string(),
+            format!("{{ {hm}; map::fold(hm, [], |acc, (k, v)| array::push(acc, v)) }}"),
+            format!("{{ {hm}; println(hm) }}"),
+            format!("{{ {hm}; dbg(hm) }}"),
+            "{ let t = sys::tcp::connect(a)?; let u = sys::tcp::connect(b)?; array::dedup([t, u]) }"
+                .into(),
+            "{ use sys::io; let a = io::stdout(null); array::sort([a, io::stderr(null)]) }".into(),
+        ] {
+            assert_eq!(oracle_tier(&prog), OracleTier::Excluded, "{prog}");
+        }
+        // the trace names a handle-keyed map's entries in an order no run
+        // decides; a reader named in a string, or a sort with no handle,
+        // reads no handle's order
+        for prog in [
+            format!("{{ {hm}; hm }}"),
+            "{ let out = sys::io::stdout(null); Write::write_exact(out, \"sort, print\") }".into(),
+            "array::sort(array::map(sys::fs::readdir(p)$, |e| e.path))".into(),
+        ] {
+            assert_eq!(oracle_tier(&prog), OracleTier::FinalValues, "{prog}");
+        }
     }
 
     #[test]

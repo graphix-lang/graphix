@@ -158,7 +158,8 @@ epoch its exit lands in is the wall clock's), an fs mutation racing
 an fs observation, and a `sys::`/`http::` program whose state is
 fire-count or arrival-order sensitive (`<-`, `count(`, `hold(`,
 `group(`, and `iter(`, one element per cycle, so an async value
-landing beside it samples whichever element that cycle held; …): no
+landing beside it samples whichever element that cycle held; …), and
+one that makes a handle and reads the handles' order, a run's: no
 value comparison is sound at any strength, the shapes still run so
 crashes surface, and divergences never record. The Excluded list is empirical and
 `selfcheck` polices it: a missing marker shows up as a finals-strength
@@ -259,9 +260,11 @@ entries alike in that form keep the map's order. Where such entries alias
 unseen handles differently (`{a => a, b => c}`) their numbers are still a
 run's, and a divergence that shows nothing else is the trace's: the exact
 form is a graph canonization. A program that reads
-handle order any other way (a sort of handles, a fold over such a map
-into an array, a print of it) differs between runs by the language's own
-rule and the trace reports it: such a finding is the program's.
+handle order any other way differs between runs by the language's own
+rule: one that makes a handle and sorts, dedups, folds a map or prints is
+`Excluded` (`oracle_tier`). A comparison of two handles, a cast of such a
+map and a string interpolating one have no marker as narrow, so the trace
+reports them: such a finding is the program's.
 
 **One route.** Every run reaches the runtime the way the shell's
 script path does (`GXConfig::program`: the subject's module table
