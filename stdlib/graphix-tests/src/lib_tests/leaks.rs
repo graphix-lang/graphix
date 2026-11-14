@@ -1375,6 +1375,45 @@ async fn a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_
     Ok(())
 }
 
+async fn a_function_over_a_dropped_trait_bound_in_a_nested_function_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| { let g = |v: Sh| 30; let f = |w: i64| g(C(w)); f(x) }; 1 }",
+    )
+    .await
+}
+
+async fn a_function_over_a_dropped_trait_bound_in_a_function_it_names_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         let g = |v: Sh| 30; saved <- |x: i64| g(C(x)); 1 }",
+    )
+    .await
+}
+
+async fn a_function_over_a_dropped_trait_bound_inferred_through_a_callee_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         let g = |v: Sh| 30; saved <- |x: i64| { let h = |w| g(w); h(C(x)) }; 1 }",
+    )
+    .await
+}
+
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
@@ -1400,4 +1439,7 @@ modes!(
     a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls,
     a_function_over_a_dropped_trait_as_a_variables_bound_binds_its_calls,
     a_function_over_a_dropped_trait_with_no_methods_binds_its_calls,
+    a_function_over_a_dropped_trait_bound_in_a_nested_function_binds_its_calls,
+    a_function_over_a_dropped_trait_bound_in_a_function_it_names_binds_its_calls,
+    a_function_over_a_dropped_trait_bound_inferred_through_a_callee_binds_its_calls,
 );

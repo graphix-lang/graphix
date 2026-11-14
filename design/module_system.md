@@ -523,7 +523,9 @@ a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches`,
 `a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls`,
 `a_function_over_a_dropped_trait_as_a_variables_bound_binds_its_calls`,
-`a_function_over_a_dropped_trait_with_no_methods_binds_its_calls`
+`a_function_over_a_dropped_trait_with_no_methods_binds_its_calls`,
+`.._bound_in_a_nested_function_..`, `.._bound_in_a_function_it_names_..` and
+`.._bound_inferred_through_a_callee_..` (the same `binds_its_calls`)
 and `reference::test::a_holder_pins_what_it_holds_until_it_goes`.
 
 ### A `val`'s type variables
