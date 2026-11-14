@@ -4505,6 +4505,15 @@ impl<R: Rt> CallSite<R> {
         // '_8369: unbound within Number + i64" where the parameter's twin names 'b;
         // so the fix belongs where the call's result is shown, not only at this
         // check.
+        // 2026-11-13 claude: A third witness, a call's result handed on to another
+        // call: |x: 'a| { let id = |v| v; let g = |v: (i64, i64)| v.0; g(id(x)) }
+        // reads "type mismatch (i64, i64) does not contain '_8342: unbound" where
+        // g(x) says 'a (base-r24 and lane 24g alike), probe
+        // ~/ptmp/cr29/scratch/r24/24g/rru/review/r10.gx. pattern.rs's declared_var
+        // (rigid-refusal-unnamed-01) finds a rigid cell's name in the signatures
+        // being checked (CompileCtx::rec_defs); the printer could take the same
+        // name for a rigid cell's merged handle, which would serve every site here
+        // at once.
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
