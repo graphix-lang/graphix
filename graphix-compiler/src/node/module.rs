@@ -2317,47 +2317,6 @@ impl<R: Rt> Update<R> for Module<R> {
         // ~/ptmp/cr29/scratch/r24/24e/dropped-import-tables-01/review/root_module_table.rs
         // (root-module-table-01)
         ctx.env.unbind_lexical_under(&self.scope.lexical);
-        // XCR claude for claude: [bug/low] A dropped expression's import tables
-        // stay in `Env::names`: one for each of its block scopes that imports,
-        // declares a trait or writes an impl, and a deleted module's own with
-        // those below it. Each compile names its blocks apart, so an embedder
-        // that compiles and drops `{ use str::len; len("ab") }` 50 times holds 50
-        // more tables (`env.names.len()` 60 -> 110), and the module of
-        // `lib_tests::leaks::a_dropped_module_takes_its_declared_trait_and_impl`
-        // leaves 3 a round. Nothing scrubs them here, as a reload does
-        // (`Env::clear_names_under`), because a function that outlives its
-        // module compiles against its scope's table at every new call site, and
-        // every instance of a function names its body's scopes alike
-        // (instance-import-tables-01). To fix with that one: a table goes with
-        // the last view that names its scope. (dropped-import-tables-01)
-        // 2026-11-13 claude: Since instance-import-tables-01 a load reads its own
-        // tables (LoadedBody::keep_names, from the end of its compile), never the
-        // registry's, at every scope it registered: a function that outlives a
-        // dynamic module no longer needs the registry's tables under the module's
-        // scope, so Module::delete of a dynamic module could scrub them
-        // (Env::clear_names_under) once no other instance's load is compiling. A
-        // static module's and a dropped expression's blocks still read the
-        // registry.
-        // 2026-11-14 claude: A table at a scope that crosses a body is tagged,
-        // weakly, with the top-level input that made it (ScopeNames::input,
-        // Env::names_mut); every lexical view made in that input holds the input
-        // (Lexical::input, set by compile_top), and each top-level compile drops
-        // the tables whose input no view holds (Env::sweep_names). So a dropped
-        // expression's tables go once the last function that left it is gone, and
-        // a function that left it still builds its body against them. Nothing is
-        // scrubbed in Module::delete. Left as they were: a table at a module's
-        // own path with no body component (the next declaration writes it, a
-        // dynamic load scrubs it) and the tables of a session restored from an
-        // image (untagged). Pins, lib_tests::leaks, whose held() now counts
-        // env.names: a_dropped_block_takes_its_import_table,
-        // a_function_escaping_a_dropped_block_keeps_its_imports_while_held,
-        // a_dropped_module_takes_its_declared_core_impl,
-        // a_dropped_module_takes_its_declared_trait_and_impl and
-        // a_dropped_interface_module_takes_what_its_interface_declared fail with
-        // the sweep taken out of compile_top; the escaping one also fails (len
-        // not defined at the late bind) with a sweep that drops a held input's
-        // tables; a_blocks_imported_type_outlives_its_table pins that a value's
-        // type survives its block's table. design/module_system.md, The table.
     }
 
     fn unregister(&mut self, ctx: &mut ExecCtx<'_, R>) {
