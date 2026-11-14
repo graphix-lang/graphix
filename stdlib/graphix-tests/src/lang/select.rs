@@ -13052,3 +13052,29 @@ run!(
     is(Value::I64(1));
     FuseExpect::None
 );
+
+run!(
+    rec_instance_over_a_typedef_union_of_two_variables,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let rec loop = |n: i64, k: fn(q: P<'b, 'a>) -> i64| select n { 0 => k, _ => loop(n - 1, k) };
+  let g = |t| loop(3, never());
+  let r = g(1);
+  7
+}"#,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+run!(
+    rec_instance_over_a_typedef_union_declared_result,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let rec loop = |n: i64, k: fn(q: P<'b, 'a>) -> i64| -> fn(q: P<'b, 'a>) -> i64 select n { 0 => k, _ => loop(n - 1, k) };
+  let g = |t| loop(3, never());
+  let r = g(1);
+  7
+}"#,
+    is(Value::I64(7));
+    FuseExpect::None
+);

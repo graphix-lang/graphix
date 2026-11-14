@@ -3210,7 +3210,7 @@ impl<R: Rt> Select<R> {
         );
         let rtypes: LPooled<Vec<&Type>> =
             self.arms.iter().map(|(_, n)| n.typ()).collect();
-        // CR claude for claude: [bug/medium] A build refuses a call the check accepted
+        // XCR claude for claude: [bug/medium] A build refuses a call the check accepted
         // where a recursive function over a typedef union of two of its variables is
         // called from a wrapper with that parameter undecided: `type P<'p, 'q> =
         // [Array<'p>, Array<'q>]; let rec loop = |n: i64, k: fn(q: P<'b, 'a>) -> i64|
@@ -3233,6 +3233,16 @@ impl<R: Rt> Select<R> {
         // undecided-into-decided-member-01's fix. Found reviewing that CR. probes:
         // ~/ptmp/cr29/scratch/r24/24d/udm-rev/{t07,t01}.gx (refused at the run),
         // {t15,t08,t14}.gx (run) (rec-instance-arm-cells-01)
+        // 2026-11-14 claude: Stale on base-r25: t07 and t01 (and the CR's one-line form)
+        // check and run on main 3fcf32fc0 in every mode (plain, --no-fusion, PAR=force,
+        // ELAB_AUDIT, NO_SUBST), while base-r24 still refuses them at the run with the
+        // ELAB-AUDIT unify-back text. One of round 24's finisher/review commits after
+        // 2d64f2a4f closed it (the union-order and member-placement commits d83fafe64,
+        // e3de250c2 are the candidates; not bisected). Pins added:
+        // lang::select::rec_instance_over_a_typedef_union_of_two_variables and
+        // rec_instance_over_a_typedef_union_declared_result (all four modes pass here;
+        // the program is the one base-r24 refuses). Reviewer: bisecting which commit
+        // fixed it is optional.
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         Ok(())
     }
