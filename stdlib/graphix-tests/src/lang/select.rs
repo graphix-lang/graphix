@@ -12577,6 +12577,94 @@ run!(
     FuseExpect::Jit
 );
 
+// A written test of one declared variable takes no collection of another
+// out of what reaches the next arm: the two may differ in an instance.
+run!(
+    written_array_of_another_declared_variable_covers_nothing,
+    r#"{
+        let f = |x: [Array<'a>, i64], y: 'b| select x { Array<'b> as a => 1, v => select v { i64 as n => n } };
+        [f([1], "s"), f(3, "s")]
+    }"#,
+    refused("missing match cases: no arm covers Array<'a");
+    FuseExpect::None
+);
+
+run!(
+    written_list_of_another_declared_variable_covers_nothing,
+    r#"{
+        let f = |x: [List<'a>, i64], y: 'b| select x { List<'b> as a => 1, v => select v { i64 as n => n } };
+        [f([<1>], "s"), f(3, "s")]
+    }"#,
+    refused("missing match cases: no arm covers List<'a");
+    FuseExpect::None
+);
+
+run!(
+    written_array_of_array_of_another_declared_variable_covers_nothing,
+    r#"{
+        let f = |x: [Array<Array<'a>>, i64], y: 'b| select x { Array<Array<'b>> as a => 1, v => select v { i64 as n => n } };
+        [f([[1]], "s"), f(3, "s")]
+    }"#,
+    refused("missing match cases: no arm covers Array<Array<'a");
+    FuseExpect::None
+);
+
+run!(
+    written_map_of_another_declared_variable_covers_nothing,
+    r#"{
+        let f = |x: [Map<'a, i64>, i64], y: 'b| select x { Map<'b, i64> as a => 1, v => select v { i64 as n => n } };
+        [f({1 => 1}, "s"), f(3, "s")]
+    }"#,
+    refused("missing match cases: no arm covers Map<'a");
+    FuseExpect::None
+);
+
+run!(
+    written_abstract_of_another_declared_variable_covers_nothing,
+    r#"{
+        type W<'x> = Abstract<Array<'x>>;
+        let f = |x: [W<'a>, i64], y: 'b| select x { W<'b> as a => 1, v => select v { i64 as n => n } };
+        [f(W([1]), "s"), f(3, "s")]
+    }"#,
+    refused("missing match cases: no arm covers W<'a");
+    FuseExpect::None
+);
+
+run!(
+    written_error_of_another_declared_variable_covers_nothing,
+    r#"{
+        let f = |x: [Error<Array<'a>>, i64], y: 'b| select x { Error<Array<'b>> as e => 1, v => select v { i64 as n => n } };
+        [f(error([1]), "s"), f(3, "s")]
+    }"#,
+    refused("missing match cases: no arm covers Error<Array<'a");
+    FuseExpect::None
+);
+
+// The annotated twin: an arm for the scrutinee's own variable takes what
+// the other declared variable's test leaves, in an instance where the two
+// are one type and in one where they differ.
+run!(
+    written_collection_of_another_declared_variable_leaves_its_own,
+    r#"{
+        type W<'x> = Abstract<Array<'x>>;
+        let arr = |x: [Array<'a>, i64], y: 'b| select x { Array<'b> as a => 1, Array<'a> as a => 2, i64 as n => n };
+        let lst = |x: [List<'a>, i64], y: 'b| select x { List<'b> as a => 1, List<'a> as a => 2, i64 as n => n };
+        let map = |x: [Map<'a, i64>, i64], y: 'b| select x { Map<'b, i64> as a => 1, Map<'a, i64> as a => 2, i64 as n => n };
+        let abs = |x: [W<'a>, i64], y: 'b| select x { W<'b> as a => 1, W<'a> as a => 2, i64 as n => n };
+        let err = |x: [Error<Array<'a>>, i64], y: 'b| select x { Error<Array<'b>> as e => 1, Error<Array<'a>> as e => 2, i64 as n => n };
+        [
+            arr([1], "s"), arr([1], 1), arr(3, "s"),
+            lst([<1>], "s"), lst([<1>], 1), lst(4, "s"),
+            map({1 => 1}, "s"), map({1 => 1}, 1), map(5, "s"),
+            abs(W([1]), "s"), abs(W([1]), 1), abs(6, "s"),
+            err(error([1]), "s"), err(error([1]), 1), err(7, "s")
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [2, 1, 3, 2, 1, 4, 2, 1, 5, 2, 1, 6, 2, 1, 7]);
+    FuseExpect::Jit
+);
+
 /// A select over `T` whose first arm tests 14 Errors deep, then `arms`:
 /// what reaches the later arms is exact and shares its levels, 2^14 paths
 /// through 14 nodes.

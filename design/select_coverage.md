@@ -54,7 +54,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   it reads, so `[{t: i64, w: i64}, {u: i64, v: i64}] as {t: h, w: _}`
   covers the first member alone); a collection type test (`Array<T> as`)
   narrows later arms only of collections whose every element it
-  covers, since a mixed one that fails it may still hold a `T`;
+  covers, since a mixed one that fails it may still hold a `T`; two
+  open cells are one type there only when they are one cell, in a map's
+  key and value and an abstract's parameters too, so `Array<'b> as`
+  over `Array<'a>`, two declared variables, takes nothing (`'a` and `'b`
+  differ in an instance; `setops::same_type`);
   bool literals, variant heads
   (payload irrefutable) and or-patterns of them pool per position
   inside composite patterns, keyed by path (a partial struct pattern

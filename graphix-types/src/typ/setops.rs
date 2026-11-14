@@ -2010,7 +2010,7 @@ impl Type {
             // elements that pass it: one that is not all `t1` is any
             // collection of `t0`, so only a `t1` covering every element
             // subtracts anything.
-            // CR claude for claude: [bug/high] `t0 == t1` holds for two distinct
+            // XCR claude for claude: [bug/high] `t0 == t1` holds for two distinct
             // open cells (TVar's equality reads bindings, None == None), so a written
             // test of one declared variable takes an array of another out of what
             // reaches the next arm: `let f = |x: [Array<'a>, i64], y: 'b| select x {
@@ -2024,8 +2024,22 @@ impl Type {
             // element here wants the same, and the Map arm's key and value. probe:
             // ~/ptmp/cr29/scratch/r24/24h/vtp-rev/r5.txt lines 1 and 3, run by
             // run.sh beside it (diff-collection-open-cells-01)
+            // 2026-11-14 claude: setops::same_type (the Map, Fn, Abstract and
+            // App/Hole/Bound arms) and the List/Array and Error arms of
+            // Type::diff_int compare by union_identical, so two open cells are one
+            // type only when they are one cell, bound cells read as their binding
+            // (identical_normal past a bound cell; same_normal deleted). Pins that
+            // fail without it:
+            // lang::select::written_{array,list,array_of_array,map,abstract,error}_of_another_declared_variable_covers_nothing
+            // (refused, base-r25 accepted and ran fused reading the array as an i64),
+            // the twin
+            // lang::select::written_collection_of_another_declared_variable_leaves_its_own
+            // (base-r25 refused its second arm as never matching), unit
+            // typ::setops::tests::diff_tells_two_open_cells_apart;
+            // diff_reads_bound_cells_through now builds its 'k<..> pair over one
+            // constructor cell. Census: no file changes verdict.
             (Type::List(t0), Type::List(t1)) | (Type::Array(t0), Type::Array(t1)) => {
-                let covered = t0 == t1
+                let covered = union_identical(t0, t1)
                     || matches!(
                         t0.diff_int(env, hist, t1)?,
                         Type::Primitive(p) if p.is_empty()
@@ -2078,7 +2092,7 @@ impl Type {
                 }
             }
             (Type::Error(e0), Type::Error(e1)) => {
-                if e0 == e1 {
+                if union_identical(e0, e1) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     match e0.diff_int(env, hist, e1)? {
@@ -2311,19 +2325,16 @@ fn is_any(t: &Type) -> bool {
     t.with_deref(|t| matches!(t, Some(Type::Any)))
 }
 
-/// Equality read through bound type variables.
+/// Equality read through bound type variables, where two open cells are
+/// one type only when they are one cell.
 fn same_type(t0: &Type, t1: &Type) -> bool {
     let bound = |t: &Type| cell_beneath(t, |tv, _| tv.binding().is_some());
-    t0 == t1 || (bound(t0) || bound(t1)) && same_normal(t0, t1)
+    union_identical(t0, t1) || (bound(t0) || bound(t1)) && identical_normal(t0, t1)
 }
 
-/// Equality of both sides read through bound type variables, normalized.
-fn same_normal(t0: &Type, t1: &Type) -> bool {
-    t0.resolve_tvars().normalize() == t1.resolve_tvars().normalize()
-}
-
-/// [`same_normal`] where two open cells are one type only when they are
-/// one cell: two declared variables may differ in every instance.
+/// Both sides read through bound type variables and normalized, where two
+/// open cells are one type only when they are one cell: two declared
+/// variables may differ in every instance.
 fn identical_normal(t0: &Type, t1: &Type) -> bool {
     union_identical(&t0.resolve_tvars().normalize(), &t1.resolve_tvars().normalize())
 }
@@ -2632,13 +2643,16 @@ pub(crate) mod tests {
 
     // diff reads a bound cell as its binding wherever it compares parts:
     // a map's, a function's, an abstract type's parameters and an open
-    // constructor's argument.
+    // constructor's argument, under one constructor cell.
     #[test]
     fn diff_reads_bound_cells_through() {
         let (env, _) =
             typed(&[("S", "Map<i64, i64>"), ("Box<'a>", "Abstract<'a>")], "null");
         let bound = |t: &str| bound(&env, t);
         let expanded = |t: Type| t.lookup_ref(&env).unwrap();
+        let app = bound("'k<'c>");
+        let Type::App(k, _) = &app else { unreachable!() };
+        let app_i64 = Type::App(k.clone(), Arc::new(Type::Primitive(Typ::I64.into())));
         for (t0, t1) in [
             (bound("Map<'c, i64>"), parsed(&env, "Map<i64, i64>")),
             (parsed(&env, "Map<i64, i64>"), bound("Map<'c, i64>")),
@@ -2648,10 +2662,31 @@ pub(crate) mod tests {
             ),
             (bound("fn(x: 'c) -> i64"), parsed(&env, "fn(x: i64) -> i64")),
             (expanded(bound("Box<'c>")), expanded(parsed(&env, "Box<i64>"))),
-            (bound("'k<'c>"), parsed(&env, "'k<i64>")),
+            (app, app_i64),
         ] {
             let d = t0.diff(&env, &t1).unwrap();
             assert!(d.is_uninhabited(), "{t0:?} - {t1:?} = {d:?}");
+        }
+    }
+
+    // Two open cells are one type only when they are one cell, wherever
+    // diff compares parts: an array's or a list's element, a map's key, an
+    // error's payload, an abstract type's parameter and a constructor.
+    #[test]
+    fn diff_tells_two_open_cells_apart() {
+        let (env, _) = typed(&[("Box<'a>", "Abstract<'a>")], "null");
+        let expanded = |t: &str| parsed(&env, t).lookup_ref(&env).unwrap();
+        for (t0, t1) in [
+            (parsed(&env, "Array<'a>"), parsed(&env, "Array<'b>")),
+            (parsed(&env, "List<'a>"), parsed(&env, "List<'b>")),
+            (parsed(&env, "Array<Array<'a>>"), parsed(&env, "Array<Array<'b>>")),
+            (parsed(&env, "Map<'a, i64>"), parsed(&env, "Map<'b, i64>")),
+            (parsed(&env, "Error<Array<'a>>"), parsed(&env, "Error<Array<'b>>")),
+            (expanded("Box<'a>"), expanded("Box<'b>")),
+            (parsed(&env, "'k<i64>"), parsed(&env, "'j<i64>")),
+        ] {
+            let d = t0.diff(&env, &t1).unwrap();
+            assert!(union_identical(&d, &t0), "{t0} - {t1} = {d}");
         }
     }
 
