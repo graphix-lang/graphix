@@ -16150,3 +16150,16 @@ run!(
     prints("i64:0");
     FuseExpect::None
 );
+
+run!(
+    two_array_members_one_cell_under_a_writable_reference_are_refused,
+    r#"{
+  let f = |w: &mut ['a, Array<'b>], y: Array<'b>| { *w <- y; 0 };
+  let n: [Array<i64>, Array<string>] = [1];
+  let y: Array<i64> = [1];
+  f(&mut n, y);
+  0
+}"#,
+    refused("does not contain &mut [Array<i64>, Array<string>]");
+    FuseExpect::None
+);

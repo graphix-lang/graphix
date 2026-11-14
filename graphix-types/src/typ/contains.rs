@@ -1241,7 +1241,6 @@ fn decides_no_cell(t: &Type) -> bool {
     })
 }
 
-/// A variable whose chain of bindings ends open.
 /// The parameter of an `Array`, `List` or `Error`.
 fn ctor_param(t: &Type) -> Option<&Type> {
     match t {
@@ -1250,6 +1249,7 @@ fn ctor_param(t: &Type) -> Option<&Type> {
     }
 }
 
+/// A variable whose chain of bindings ends open.
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
@@ -5874,6 +5874,18 @@ impl Type {
         // differs; guicheck 39.54G base, 39.66G lane; deep_nesting 50 passed; graphix-types
         // and graphix-tests lib green. Needs a soak. probes: ~/ptmp/cr29/scratch/r25/25e/
         // (order.txt, errs.txt, catch.txt, cmp.sh)
+        // 2026-11-14 claude: Round 25, lane 25e review (CORRECTED, CR stays): the join of
+        // join_cell_sharing also holds under an invariant position, which equal_int meets
+        // as two containments, so it newly refuses what the first member used to decide:
+        // 'let f = |w: &mut [`a, Array<`b>], y: Array<`b>| { *w <- y; 0 }; let n:
+        // [Array<i64>, Array<string>] = [1]; let y: Array<i64> = [1]; f(&mut n, y)' checked
+        // on base-r25 (and was refused with y: Array<string>, the order again) and is now
+        // refused in both, "&mut ['a: unbound, Array<'b: [i64, string]>] does not contain
+        // &mut [Array<i64>, Array<string>]", with no annotation to name. Sound, and the
+        // verdict no longer follows the order; pin
+        // lang::types::two_array_members_one_cell_under_a_writable_reference_are_refused.
+        // Skipping the join there would need a flag on the walk (ContainsFlags is a full
+        // u8). Probes ~/ptmp/cr29/scratch/r25/25e/review/m.txt, m2.txt.
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a

@@ -783,7 +783,11 @@ one member, chosen by rules that read the union alone:
   `two_named_array_members_one_cell_are_refused_as_the_second_name_is_not_first`,
   `two_error_members_one_cell_hold_both_tags`). A member that two
   constructor members could take, a name standing for a union, and a member
-  of another constructor are not joined and keep the walk's order.
+  of another constructor are not joined and keep the walk's order. Under a
+  writable reference the join holds too: `&mut ['a, Array<'b>]` against a
+  `&mut` of two arrays is refused in either order of the members (pin
+  `two_array_members_one_cell_under_a_writable_reference_are_refused`), where
+  the first member used to decide it.
 - of several that could, the one that holds each of the others as it
   stands (`contains::widest`) takes the type, where taking it decides
   every cell another of them would (`contains::decides_each`): what any
