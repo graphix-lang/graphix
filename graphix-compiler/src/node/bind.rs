@@ -444,39 +444,6 @@ impl<R: Rt> Bind<R> {
                             None => (ptyp, false),
                         }
                     };
-                    // XCR claude for claude: [bug/medium] A let's partial struct
-                    // pattern over two members whose named field holds composite
-                    // types that differ leaves the name's type open, and the name
-                    // never fires. `let v: [{a: Array<i64>, c: string}, {a:
-                    // Array<string>, c: string}] = {a: [1], c: "x"}; let {a, ..} =
-                    // v; println("[a]")` checks and prints nothing (r5.gx); the
-                    // REPL gives `a` the type `_`, and `let z: string = a` checks
-                    // beside it (r9.gx). Alike `(i64, i64)` against `(string,
-                    // string)` and `i64` against `Array<string>` (rt.txt); `i64`
-                    // against `string` types `a` as `[i64, string]`, and naming
-                    // every field (`let {a, c: _} = v`) prints [1] (r6.gx). Here
-                    // the completion `{a: '_, c: string}` fits every member, then
-                    // `binds` infers the pattern's own `{a: '_}` again, not the
-                    // completion, and Type::narrow_per_member decides nothing of
-                    // it against `{a, c}` members (a temporary print in
-                    // fits_every_member: pred `{ a: '_8340: unbound }`, Ok). With
-                    // the value unannotated (`x: string`, `y: string` lets in a
-                    // select's arms) it is refused "match error .. can't be
-                    // matched by { a: Array<i64>, c: string }" instead (r4.gx).
-                    // Same on base-r24. probes: ~/ptmp/cr29/scratch/r24/24g/lumr/
-                    // (let-partial-open-bind-01)
-                    // 2026-11-14 claude: A let's partial struct pattern over
-                    // members whose named field holds composite types that differ
-                    // now types its names by the union of their parts:
-                    // Bind::compile hands fits_every_member the completion (fresh
-                    // cells), not the pattern's own inferred predicate, and
-                    // Bind::complete_partial (value type known late) holds the
-                    // completion to every member through fits_every_member instead
-                    // of one contains that bound the cell to the first member.
-                    // Pins that fail without it:
-                    // lang::tuples_structs::let_partial_struct_over_members_with_composite_fields,
-                    // ..._is_their_union, ..._with_tuple_fields,
-                    // let_partial_struct_over_a_select_of_members_with_composite_fields.
 
                     // a `_` matches what the value holds, deciding none of it
                     if !completed && pat.has_partial_struct() {
