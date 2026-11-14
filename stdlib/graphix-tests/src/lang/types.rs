@@ -9123,6 +9123,66 @@ run!(
     )
 );
 run!(
+    slices_of_an_or_arm_over_a_written_union_whose_elements_differ_bind_their_union,
+    r#"{
+  let f = |x: [`A(Array<i64>), `B(Array<string>)]| select x {
+    `A([h, ..]) | `B([h, ..]) => "[h]", _ => ""
+  };
+  let rest = |x: [`A(Array<i64>), `B(Array<string>)]| select x {
+    `A([h, t..]) | `B([h, t..]) => ("[h]", t), _ => ("", [])
+  };
+  let nested = |x: [`X([`A(Array<i64>), `B(Array<f64>)]), `Y(Array<string>)]| select x {
+    `X(`A([h, ..]) | `B([h, ..])) | `Y([h, ..]) => "[h]", _ => ""
+  };
+  let beside = |x: [`A(Array<i64>, bool), `B(Array<string>, bool), `C(string)]| select x {
+    `A([h, ..], _) | `B([h, ..], _) | `C(h) => "[h]", _ => ""
+  };
+  (
+    (f(`A([1])), f(`B(["a"])), f(`B([]))),
+    (rest(`A([1, 2])), rest(`B(["q", "r"]))),
+    (nested(`X(`A([3]))), nested(`X(`B([2.5]))), nested(`Y(["s"]))),
+    (beside(`A([1], true)), beside(`B(["b"], true)), beside(`C("c")))
+  )
+}"#,
+    prints(
+        r#"[["1", "a", ""], [["1", [i64:2]], ["q", ["r"]]], ["3", "2.5", "s"], ["1", "b", "c"]]"#
+    )
+);
+run!(
+    slices_of_an_or_arm_over_a_written_union_of_other_shapes_bind_their_union,
+    r#"{
+  let list = |x: [Array<i64>, List<string>]| select x {
+    [h, ..] | [<h, ..>] => "[h]", _ => ""
+  };
+  let tuple = |x: [Array<i64>, (string, i64)]| select x {
+    [h, ..] | (h, _) => "[h]", _ => ""
+  };
+  let tuple_first = |x: [Array<i64>, (string, i64)]| select x {
+    (h, _) | [h, ..] => "[h]", _ => ""
+  };
+  let wide = |x: [`A(Array<i64>), `B(Array<[i64, string]>)]| select x {
+    `A([h, ..]) | `B([h, ..]) => "[h]", _ => ""
+  };
+  (
+    (list([1]), list([<"a">]), list([])),
+    (tuple([1]), tuple(("a", 1)), tuple_first([2]), tuple_first(("b", 1))),
+    (wide(`A([1])), wide(`B(["a"])))
+  )
+}"#,
+    prints(r#"[["1", "a", ""], ["1", "a", "2", "b"], ["1", "a"]]"#)
+);
+run!(
+    slices_of_an_or_arm_over_a_written_union_used_as_a_number_refused,
+    r#"{
+  let f = |x: [`A(Array<i64>), `B(Array<string>)]| select x {
+    `A([h, ..]) | `B([h, ..]) => h + 1, _ => 0
+  };
+  f(`A([1]))
+}"#,
+    refused("cannot compute [i64, string] + i64");
+    FuseExpect::None
+);
+run!(
     slice_in_each_alternative_of_an_or_arm_binds_one_cell_in_one_instance,
     r#"{
   let mk = |z| |x| select x { `A([h, ..]) | `B([h, ..]) => h, _ => 0 };

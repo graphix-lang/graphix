@@ -342,6 +342,86 @@ struct PayloadReps<'a> {
     at: SmallVec<[Type; 2]>,
 }
 
+/// The types a name takes at each slice that binds it, one union per
+/// slice, gathered by [`StructPatternNode::hold_slice_members`] under an
+/// or-pattern.
+type AlternativeParts = AHashMap<BindId, SmallVec<[SmallVec<[Type; 4]>; 2]>>;
+
+/// Bind the cell of `id` at the union of `ts`.
+fn bind_union(env: &Env, id: BindId, ts: &[Type], members: bool) -> Result<()> {
+    if let Some(b) = env.by_id.get(&id) {
+        let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
+        let joined = if members {
+            Type::union_exact_of_members(env, &ts)?
+        } else {
+            Type::union_exact_of_alternatives(env, &ts)?
+        };
+        b.typ.check_contains_ordered(env, &joined)?
+    }
+    Ok(())
+}
+
+/// Each name the slices of an or-pattern's alternatives bind takes the
+/// union of its types over every alternative: the types of its slice
+/// elements where an alternative binds it in a slice, its leaf where not.
+/// Where a part of that union is open the slices bind the cell one after
+/// the other, which makes the open cells of their elements one. Under an
+/// outer or-pattern what would bind the cell joins that alternative's in
+/// `joined`.
+fn join_alternatives(
+    env: &Env,
+    alternatives: &[(&StructPatternNode, Type, LPooled<AlternativeParts>)],
+    mut joined: Option<&mut AlternativeParts>,
+) -> Result<()> {
+    let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
+    for (_, _, own) in alternatives {
+        for id in own.keys() {
+            if !ids.contains(id) {
+                ids.push(*id)
+            }
+        }
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut leaves: SmallVec<[SmallVec<[Leaf; 4]>; 4]> = SmallVec::new();
+    for (c, t, _) in alternatives {
+        let mut ls = SmallVec::new();
+        c.leaves(env, t, true, false, &mut ls)?;
+        leaves.push(ls)
+    }
+    for id in ids {
+        let mut slices: SmallVec<[SmallVec<[Type; 4]>; 2]> = SmallVec::new();
+        let mut all: SmallVec<[Type; 4]> = SmallVec::new();
+        for ((_, _, own), ls) in alternatives.iter().zip(&leaves) {
+            match own.get(&id) {
+                Some(us) => {
+                    for u in us {
+                        all.extend(u.iter().cloned());
+                        slices.push(u.clone())
+                    }
+                }
+                None => {
+                    all.extend(ls.iter().filter(|l| l.id == id).map(|l| l.typ.clone()))
+                }
+            }
+        }
+        if !all.iter().any(|t| t.has_unbound()) {
+            slices.clear();
+            slices.push(all)
+        }
+        match joined.as_deref_mut() {
+            Some(j) => j.entry(id).or_default().extend(slices),
+            None => {
+                for u in slices {
+                    bind_union(env, id, &u, false)?
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `leaves` gathered over several members or alternatives, each name
 /// once, at the union of its types, their functions met
 /// ([`Type::union_of_alternatives`]).
@@ -1702,6 +1782,7 @@ impl StructPatternNode {
         typ: &Type,
         matched: &[Type],
         open: bool,
+        mut joined: Option<&mut AlternativeParts>,
     ) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, true) else { return Ok(()) };
@@ -1764,7 +1845,7 @@ impl StructPatternNode {
                             parts.entry(l.id).or_default().push(l.typ)
                         }
                     }
-                    // CR claude for claude: [bug/low] A name the slices of two
+                    // XCR claude for claude: [bug/low] A name the slices of two
                     // or-alternatives bind takes the first alternative's elements
                     // alone, so an or-arm over a written union whose alternatives'
                     // elements differ is refused, by a message that names no
@@ -1800,16 +1881,37 @@ impl StructPatternNode {
                     // parameter is refused as above. base-r24 and lane 24b alike.
                     // probes: ~/ptmp/cr29/scratch/r24/24b/soa-rev/ (README)
                     // (or-slice-name-union-01)
-                    for (id, ts) in parts.iter() {
-                        if let Some(b) = env.by_id.get(id) {
-                            let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
-                            let joined = match c {
-                                Self::Or { .. } => {
-                                    Type::union_exact_of_alternatives(env, &ts)?
-                                }
-                                _ => Type::union_exact_of_members(env, &ts)?,
-                            };
-                            b.typ.check_contains_ordered(env, &joined)?
+                    // 2026-11-14 claude: Built: hold_slice_members passes a collector down an
+                    // or-pattern's alternatives and join_alternatives (node/pattern.rs) binds each
+                    // shared name once, at the union of every slice's element types and the leaf of
+                    // an alternative that binds it outside a slice, so the written-union probes
+                    // (soa-rev s04 s07 s09 s11 s12 t09 t10 u01 u03 u05) run and the order of the
+                    // alternatives no longer decides (u03/u04). Where a part of the union is an
+                    // open cell the slices still bind the name one after the other, which keeps the
+                    // one-cell rule of slice-or-arm-cells-01 (the unannotated-parameter refusals,
+                    // r04 t08 and the one-instance pin, stand, and an annotated parameter now
+                    // checks); a join over open cells split the cell in two and de-fused the pin
+                    // slice_in_each_alternative_of_an_or_arm_over_a_binding_written_later. Pins:
+                    // lang::types::slices_of_an_or_arm_over_a_written_union_whose_elements_differ_bind_their_union,
+                    // _of_other_shapes_bind_their_union, _used_as_a_number_refused (all 4 modes
+                    // fail with the collector disabled). Census base-r25 vs mine 2967 files, 0
+                    // changes; deep_nesting 50 ok; guicheck 39614504941 base, 39680497015 lane.
+                    let members = !matches!(c, Self::Or { .. });
+                    match joined.as_deref_mut() {
+                        Some(j) => {
+                            for (id, ts) in parts.drain() {
+                                let own: SmallVec<[Type; 4]> = if members {
+                                    let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
+                                    smallvec![Type::union_exact_of_members(env, &ts)?]
+                                } else {
+                                    ts
+                                };
+                                j.entry(id).or_default().push(own)
+                            }
+                        }
+                        None => {
+                            for (id, ts) in parts.iter() {
+                                bind_union(env, *id, ts, members)?
                         }
                     }
                 }
@@ -1828,6 +1930,10 @@ impl StructPatternNode {
                 .collect();
             let mut held: SmallVec<[Type; 8]> = SmallVec::new();
             let mut reach: SmallVec<[Type; 8]> = SmallVec::new();
+            let or = matches!(self, Self::Or { .. });
+            let mut alternatives: SmallVec<
+                [(&Self, Type, LPooled<AlternativeParts>); 4],
+            > = SmallVec::new();
             for (i, (c, t)) in self.children().into_iter().zip(ts).enumerate() {
                 let Some((t, _)) = t else { continue };
                 held.clear();
@@ -1852,7 +1958,17 @@ impl StructPatternNode {
                         reach.push(m)
                     }
                 }
-                c.hold_slice_members(env, &t, &reach, open && matched.is_empty())?
+                let open = open && matched.is_empty();
+                if or {
+                    let mut own: LPooled<AlternativeParts> = LPooled::take();
+                    c.hold_slice_members(env, &t, &reach, open, Some(&mut *own))?;
+                    alternatives.push((c, t, own))
+                } else {
+                    c.hold_slice_members(env, &t, &reach, open, joined.as_deref_mut())?
+                }
+            }
+            if or {
+                join_alternatives(env, &alternatives, joined)?
             }
             Ok(())
         })
@@ -3299,7 +3415,8 @@ impl<R: Rt> PatternNode<R> {
             }
             self.structure_predicate.narrow_payloads(env, &matched)?;
             let open = reaching.is_empty();
-            self.structure_predicate.hold_slice_members(env, narrowed, &matched, open)?;
+            self.structure_predicate
+                .hold_slice_members(env, narrowed, &matched, open, None)?;
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(

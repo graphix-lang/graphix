@@ -74,7 +74,17 @@ select x {
   across the members its arm matches (`PatternNode::wholes_by_member`),
   across the alternatives over one member (`merge_leaves`) and across
   the members of a slice's element
-  (`StructPatternNode::hold_slice_members`). Over `` `A(|x| x, 1) `` and
+  (`StructPatternNode::hold_slice_members`). A name the slices of
+  several alternatives bind is joined over them before anything binds
+  its cell (`join_alternatives`: each slice's union, and the leaf of an
+  alternative that binds it outside a slice), so alternatives whose
+  elements differ (`` `A([h, ..]) | `B([h, ..]) `` over
+  `` [`A(Array<i64>), `B(Array<string>)] ``) give `h: [i64, string]`
+  as the same binds outside a slice do; where a part of the union is an
+  open cell the slices bind the name one after the other, which makes
+  their elements one cell (`design/tvar_constraints.md`) (pins
+  `slices_of_an_or_arm_over_a_written_union_whose_elements_differ_bind_their_union`
+  and `_of_other_shapes_`). Over `` `A(|x| x, 1) `` and
   `` `B(|y| y + 1, "s") ``, `` `A(r, n) | `B(r, n) => r(2) `` calls
   either, and the open `|x| x` is the `i64` function from there on,
   called or not. The met function is every one of its definitions, a
