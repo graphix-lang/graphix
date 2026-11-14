@@ -350,28 +350,6 @@ struct PayloadReps<'a> {
     at: SmallVec<[Type; 2]>,
 }
 
-// XCR claude for claude: [bug/low] A call through a name or-alternatives share over
-// a scrutinee not yet decided is refused naming no annotation: `let h = |u| select u
-// { `A(r, n) | `B(r, n) => r(2) }; h(`A(|x| x, 1))` says "expected fn not ['_N:
-// unbound, '_M: unbound]", the name being the union of the alternatives' two open
-// cells, where the separate arms (`A(r, n) => r(2), `B(r, n) => r(2)) say "reading
-// a fn needs its type known here: annotate the binding". Annotating `u` passes. Same
-// on base-r23. probes: ~/ptmp/cr29/scratch/r23/23d/obfm/{a29c,a29d}.gx
-// (or-name-open-parts-call-01)
-// 2026-11-13 claude: The refusal is at the read, not at the or-name: deref_typ
-// (node/mod.rs) refuses a union with an open member whose other members the read
-// takes (node::waits_for_member) as it refuses one open cell, "reading a fn needs
-// its type known here: annotate the binding", for a call, a field read and a tuple
-// read alike, an or-name's union of open parts or a select of two open values; a
-// decided member the read refuses keeps "expected fn not [i64, ..]". The message is
-// built in one place (node::unknown_read). Pins in graphix-tests lang::types:
-// a_call_through_a_name_alternatives_share_over_open_parts_needs_its_type,
-// a_call_through_a_function_or_an_open_cell_needs_its_type,
-// a_field_read_through_a_name_alternatives_share_over_open_parts_needs_its_type and
-// a_tuple_read_through_a_select_of_two_open_cells_needs_its_type fail without it
-// (each said "expected .. not [..]"); the annotated twins and
-// a_call_through_a_number_or_an_open_cell_names_the_union pass both ways. Probes
-// ~/ptmp/cr29/scratch/r24/24g/orname/.
 /// `leaves` gathered over several members or alternatives, each name
 /// once, at the union of its types, their functions met
 /// ([`Type::union_of_alternatives`]).
