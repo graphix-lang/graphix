@@ -78,6 +78,43 @@ fn an_instance_checked_again_meets_its_arguments_in_the_same_order() {
     }
 }
 
+/// An instance that checks its body again leaves the defaults of a
+/// function it returns to the calls through it, as its definition's check
+/// does: a call that passes the label never judges the default.
+#[test]
+fn an_instance_checked_again_leaves_a_returned_default_to_its_calls() {
+    let programs = [
+        (
+            "let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$;\nv(0)(#d: \"s\", 7)\n",
+            "\"s\"",
+        ),
+        ("let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$;\nv(0)(7)\n", "\"1\""),
+        (
+            "let v = |k: i64| |j: i64| |#d = 1, x: i64| cast<string>(d)$;\n\
+             v(0)(0)(#d: \"s\", 7)\n",
+            "\"s\"",
+        ),
+        (
+            "let v = |k: i64| {f: |#d = 1, x: i64| cast<string>(d)$, n: k};\n\
+             v(0).f(#d: \"s\", 7)\n",
+            "\"s\"",
+        ),
+        (
+            "let v = |k: i64| select k {\n\
+               0 => |#d = 1, x: i64| cast<string>(d)$,\n\
+               _ => |#d = 2, x: i64| cast<string>(d)$\n\
+             };\n\
+             let w = v(0);\n\
+             w(#d: \"s\", 7)\n",
+            "\"s\"",
+        ),
+    ];
+    for (program, expected) in programs {
+        assert_eq!(run(program, false), expected, "{program}");
+        assert_eq!(run(program, true), expected, "under GRAPHIX_NO_SUBST: {program}");
+    }
+}
+
 /// An instance that checks its body again types a written test's binds as
 /// its definition did: a member the test's structure rules out, the
 /// instance's whole scrutinee here, gives them nothing.

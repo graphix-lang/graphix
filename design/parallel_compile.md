@@ -547,14 +547,18 @@ and catches read: `par_growth` (20000 slots, an arithmetic callback)
 The default `typecheck0_instance` is the check: the leaves, a reference
 (which copies its binding's scheme), and declarations. `GRAPHIX_NO_SUBST=1`
 checks and elaborates every instance again, but for its selects' verdicts
-(coverage, dead arms, guards, the one-runtime-form and map-key refusals)
-and a `Transparent` a JSON or TOML writer's value holds, which stay its
-definition's, as an instance without check rows takes them
-(`node::rechecking_instance`, `typ::TextSite`): the instance's narrower
-types can make an arm the definition needs unreachable, and such an arm,
-which never runs, binds its names at ⊥; and at the instance's types a
+(coverage, dead arms, guards, the one-runtime-form and map-key refusals),
+a `Transparent` a JSON or TOML writer's value holds, and the labeled
+defaults its return hides, which stay its definition's, as an instance
+without check rows takes them (`node::rechecking_instance`,
+`typ::TextSite`, `GXLambda::typecheck0`): the instance's narrower types
+can make an arm the definition needs unreachable, and such an arm, which
+never runs, binds its names at ⊥; at the instance's types a
 `Transparent` over the definition's own variable is over the type a call
-gave it. A labeled default compiled at a bind takes its types from its
+gave it; and an instance's return holds what its site's later uses
+decided (`v(0)(#d: "s", 7)` makes `#d` a string), against which a default
+no call needs would be refused. A call that omits the label judges it.
+A labeled default compiled at a bind takes its types from its
 definition's check as an instance's body does, and is checked so only
 where there are no rows (`callsite::checked_default`).
 

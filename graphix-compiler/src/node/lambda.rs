@@ -1461,6 +1461,12 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                             }
                         });
                     wrap!(self.body, contain)?;
+                    // the defaults its return hides are its definition's to
+                    // judge: an instance's return holds what its site's uses
+                    // decided, and a call that omits a label judges its default
+                    if recheck {
+                        return Ok(());
+                    }
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,
