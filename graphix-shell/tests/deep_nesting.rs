@@ -1527,6 +1527,13 @@ fn written_holder_chains_check_in_linear_time() {
 // that outlives one walk. (b) as before. (c) superlinear still (0.97/1.08/1.57/3.04 G
 // at 160/320/640/1280): the connect's walks over what the proof does not keep. probes:
 // ~/ptmp/cr29/scratch/r24/24f/call-dag-arg-walk-01/ (xu0-*, w-*, fn-*, m.sh)
+// 2026-11-14 claude: Lane 24f follow-up: the containment's test runs only where one
+// side is a cell and the other a node, its filter inlined into contains_int_inner, so
+// a step that is neither pays no call: guicheck (GRAPHIX_EVAL_THREADS=1, --no-cache
+// --check over the GUI examples) the lane before this CR 39.48-39.59 G (four runs),
+// with it 39.58-39.59 G (three runs); with the test called at every step it was
+// 39.58-39.80 G. The figures and pins above stand (--no-fusion --expand at 1280 links
+// 4.95 G, the written chain's --check at 1280 3.04 G).
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,

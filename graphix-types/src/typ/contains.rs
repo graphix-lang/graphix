@@ -2808,20 +2808,23 @@ fn same_content(a: &Type, b: &Type) -> bool {
     }
 }
 
-/// Whether `a` and `b`, one of them a cell proved ground, are one type: a
-/// ground cell stands for its resolution ([`TVar::ground_resolution`]),
-/// and two nodes over one content, or of one kind over the same parts,
-/// hold each other.
+/// Whether `a` and `b`, a cell proved ground and a node, are one type
+/// ([`resolves_to`]).
+#[inline]
 fn same_resolution(a: &Type, b: &Type) -> bool {
-    let ground = |t: &Type| match t {
-        Type::TVar(tv) => tv.ground_resolution(),
-        _ => None,
-    };
-    let (ra, rb) = match (ground(a), ground(b)) {
-        (None, None) => return false,
-        r => r,
-    };
-    let (a, b) = (ra.as_ref().unwrap_or(a), rb.as_ref().unwrap_or(b));
+    match (a, b) {
+        (Type::TVar(tv), t) | (t, Type::TVar(tv)) if node_addr(t).is_some() => {
+            resolves_to(tv, t)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `tv`, proved ground, is `t`: the cell stands for its resolution
+/// ([`TVar::ground_resolution`]), and two nodes over one content, or of one
+/// kind over the same parts, hold each other.
+fn resolves_to(tv: &TVar, t: &Type) -> bool {
+    let Some(r) = tv.ground_resolution() else { return false };
     let same = |x: &Type, y: &Type| match (x, y) {
         (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
         (Type::TVar(v0), Type::TVar(v1)) => v0.cell_addr() == v1.cell_addr(),
@@ -2830,10 +2833,10 @@ fn same_resolution(a: &Type, b: &Type) -> bool {
     let parts = |x: &[Type], y: &[Type]| {
         x.len() == y.len() && x.iter().zip(y.iter()).all(|(x, y)| same(x, y))
     };
-    match (a, b) {
+    match (&r, t) {
         (Type::Tuple(x), Type::Tuple(y)) => parts(x, y),
         (Type::Variant(t0, x, _), Type::Variant(t1, y, _)) => t0 == t1 && parts(x, y),
-        (a, b) => same(a, b),
+        (r, t) => same_content(r, t),
     }
 }
 
