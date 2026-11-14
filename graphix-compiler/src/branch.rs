@@ -8,7 +8,7 @@
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue,
     cost::{self, ForkSite, Meter, Parts, Plan, SlotPlan, SlotSite},
-    env::Map,
+    env::{self, Map},
     expr::{Expr, ExprId},
     node::{
         callsite::CallNode,
@@ -200,10 +200,6 @@ impl VarAliases {
         self.aliases.as_ref().and_then(|a| a.map.get(&id).copied())
     }
 
-    fn pairs(&self) -> impl Iterator<Item = (BindId, BindId)> + '_ {
-        self.aliases.iter().flat_map(|a| a.map.iter().map(|(i, o)| (*i, *o)))
-    }
-
     /// These with each id of `changes` another's variable or, given
     /// `None`, none, read at `read_at`. An id comes once, unless each of
     /// its changes is to none.
@@ -255,20 +251,28 @@ impl VarAliases {
         from.map.ptr_eq(&mine.map).then_some(from)
     }
 
-    /// The pairs of these that `later` may lack: where `later` was made
-    /// from these, the pairs it lacks of them, else all of them.
-    pub(crate) fn maybe_lacked<'a>(
-        &'a self,
-        later: &'a Self,
-    ) -> impl Iterator<Item = (BindId, BindId)> + 'a {
-        let (step, all) = match self.step_to(later) {
-            Some(from) => (Some(from.lacked.iter().copied()), None),
-            None => (None, Some(self.pairs())),
-        };
-        step.into_iter().flatten().chain(all.into_iter().flatten())
+    /// Each pair of these outside the subtrees their map shares with
+    /// `other`'s that `other` does not hold in its place
+    /// ([`env::each_unshared`]): among them is every pair `other` lacks or
+    /// names another variable for.
+    fn each_unshared(&self, other: &Self, mut f: impl FnMut(BindId, BindId)) {
+        let Some(mine) = self.aliases.as_deref() else { return };
+        let none = Map::default();
+        let theirs = other.aliases.as_deref().map_or(&none, |a| &a.map);
+        env::each_unshared(&mine.map, theirs, |inner, outer| f(*inner, *outer))
     }
 
-    // CR claude for claude: [perf/low] A forked branch's sync still walks a
+    /// Each pair of these that `later` may lack: where `later` was made
+    /// from these, the pairs it lacks of them, else
+    /// [`Self::each_unshared`]'s.
+    pub(crate) fn maybe_lacked(&self, later: &Self, mut f: impl FnMut(BindId, BindId)) {
+        match self.step_to(later) {
+            Some(from) => from.lacked.iter().for_each(|(inner, outer)| f(*inner, *outer)),
+            None => self.each_unshared(later, f),
+        }
+    }
+
+    // XCR claude for claude: [perf/low] A forked branch's sync still walks a
     // whole table. Two tables compare by their change alone only where one
     // was made from the other in one step (VarAliases::step_to), and a
     // sibling's sync between a branch's fork and its own breaks that, so
@@ -282,28 +286,65 @@ impl VarAliases {
     // between two readings: a log of them in StaticCallees by read_at, or a
     // diff of the two maps that skips the subtrees they share.
     // (alias-branch-walk-01)
+    // 2026-11-14 claude: Two tables neither made from the other in one step now
+    // compare by the pairs outside the subtrees their maps share that the other
+    // map's node in their place does not hold (env::each_unshared: children
+    // matched by node identity, unmatched ones paired in order between shared
+    // ones, a leaf's pairs and an inner node's entries checked against the
+    // counterpart's), in VarAliases::maybe_lacked (each_left, with_kept) and in
+    // with_kept's walk of the smaller table; the one-step lacked list stays.
+    // st.gx instructions:u, debug, lane before vs after: GRAPHIX_PAR=off 12.22
+    // G vs 12.21 G, auto 21.6-26.2 G vs 12.86-12.91 G, force 18.22 G vs
+    // 17.73-17.80 G; sc1000/sc4000/csc1000/ctl4000 unchanged within noise,
+    // outputs identical. Pins failing with the whole-table walk back:
+    // branch::tests::a_table_made_from_another_is_compared_by_what_changed (a
+    // table compared with the one made from it) and
+    // sibling_tables_are_compared_by_what_changed;
+    // env::test::unshared_pairs_hold_every_difference_and_little_else pins the
+    // walk's contract. What force still walks is alias-retired-union-walk-01.
     /// These with every alias of `kept` they lack: these over `kept`,
     /// built on whichever of the two has the fewer pairs to visit.
     fn with_kept(&self, kept: &Self) -> Self {
         if self.same(kept) {
             return self.clone();
         }
-        let (base, over) = if kept.step_to(self).is_none() && self.len() < kept.len() {
-            let over =
-                self.pairs().filter(|(inner, outer)| kept.listed(*inner) != Some(*outer));
-            (kept, over.collect::<LPooled<Vec<_>>>())
+        let mut add: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
+        let base = if kept.step_to(self).is_none() && self.len() < kept.len() {
+            self.each_unshared(kept, |inner, outer| {
+                if kept.listed(inner) != Some(outer) {
+                    add.push((inner, outer))
+                }
+            });
+            kept
         } else {
-            let lacked = kept
-                .maybe_lacked(self)
-                .filter(|(inner, _)| self.listed(*inner).is_none());
-            (self, lacked.collect())
+            kept.maybe_lacked(self, |inner, outer| {
+                if self.listed(inner).is_none() {
+                    add.push((inner, outer))
+                }
+            });
+            self
         };
         base.updated(
-            over.iter().map(|(inner, outer)| (*inner, Some(*outer))),
+            add.iter().map(|(inner, outer)| (*inner, Some(*outer))),
             self.read_at,
         )
     }
 
+    // CR claude for claude: [perf/low] A branch's table keeps every pair
+    // its syncs and merges took in, so once retirements drop joins from the
+    // readings, each later reading the branch takes in differs from its
+    // table at every retired pair, spread over the map, and with_kept walks
+    // most of the reading's pairs though it adds none. st.gx
+    // (~/ptmp/cr29/scratch/r24/24f/abw/, with m.gx, m.gxi), debug,
+    // GRAPHIX_PAR=force: 3183 of 3251 with_kept calls take a table read
+    // later than these, of up to 6.1 k pairs, into these of up to 7.0 k,
+    // which hold it whole: 12.1 M pairs visited, about 15% of the run's
+    // instructions (17.8 G; GRAPHIX_PAR=off 12.2 G, auto 12.9 G). Where these
+    // hold the reading before the one taken in whole, only the pairs the
+    // step between those two readings changed can be missing from these:
+    // a table could keep the last reading it took in whole and compare the
+    // next with it (env::each_unshared of the two readings, which share all
+    // but the step's paths). (alias-retired-union-walk-01)
     /// Take in the table of a branch forked from these: its aliases, and
     /// every one of these it lacks, read at the later of the two.
     pub(crate) fn absorb(&mut self, child: &Self) {
@@ -331,11 +372,11 @@ impl VarAliases {
         if self.same(later) {
             return;
         }
-        for (inner, outer) in self.maybe_lacked(later) {
+        self.maybe_lacked(later, |inner, outer| {
             if later.var(inner) == inner {
                 f(inner, outer)
             }
-        }
+        })
     }
 
     /// How many bindings are another's variable.
@@ -2001,6 +2042,18 @@ mod tests {
         (table, pairs)
     }
 
+    /// How many pairs of `of` a comparison with `with` names.
+    fn visited(of: &VarAliases, with: &VarAliases) -> usize {
+        let mut n = 0;
+        of.maybe_lacked(with, |_, _| n += 1);
+        n
+    }
+
+    /// The most pairs a comparison of two tables that share subtrees names
+    /// for one changed binding: at most those of the leaf and the inner
+    /// nodes on its path.
+    const PER_CHANGE: usize = 64;
+
     #[test]
     fn a_table_made_from_another_is_compared_by_what_changed() {
         for n in [64, 4096] {
@@ -2008,7 +2061,8 @@ mod tests {
             let (gone, outer) = pairs[n / 2];
             let (joined, to) = (BindId::new(), BindId::new());
             let later = old.updated([(gone, None), (joined, Some(to))], n as u64 + 1);
-            assert_eq!(old.maybe_lacked(&later).count(), 1);
+            assert_eq!(visited(&old, &later), 1);
+            assert!(visited(&later, &old) <= 2 * PER_CHANGE);
             let mut left = vec![];
             old.each_left(&later, |inner, outer| left.push((inner, outer)));
             assert_eq!(left, [(gone, outer)]);
@@ -2018,8 +2072,45 @@ mod tests {
                 (outer, to, n + 1)
             );
             let rebuilt = VarAliases::new(pairs.iter().copied().collect(), 0);
-            assert_eq!(rebuilt.maybe_lacked(&later).count(), n);
-            assert_eq!(later.maybe_lacked(&old).count(), n);
+            left.clear();
+            rebuilt.each_left(&later, |inner, outer| left.push((inner, outer)));
+            assert_eq!(left, [(gone, outer)]);
+        }
+    }
+
+    #[test]
+    fn sibling_tables_are_compared_by_what_changed() {
+        let n = 4096;
+        let (base, pairs) = grown(n);
+        let (gone, outer) = pairs[n / 2];
+        let [a, x, b, y, c, z] = [(); 6].map(|_| BindId::new());
+        let first = base.updated([(a, Some(x)), (gone, None)], n as u64 + 1);
+        let second = base.updated([(b, Some(y))], n as u64 + 2);
+        let third = second.updated([(c, Some(z))], n as u64 + 3);
+        for (of, with, changes) in [
+            (&first, &second, 3),
+            (&second, &first, 3),
+            (&base, &third, 2),
+            (&third, &first, 4),
+        ] {
+            assert!(visited(of, with) <= changes * PER_CHANGE);
+        }
+        let mut left = vec![];
+        first.each_left(&third, |inner, outer| left.push((inner, outer)));
+        assert_eq!(left, [(a, x)]);
+        left.clear();
+        third.each_left(&first, |inner, outer| left.push((inner, outer)));
+        left.sort_unstable();
+        let mut want = [(gone, outer), (b, y), (c, z)];
+        want.sort_unstable();
+        assert_eq!(left, want);
+        for (top, under) in [(&first, &third), (&third, &first)] {
+            let kept = top.with_kept(under);
+            assert_eq!(
+                (kept.var(a), kept.var(b), kept.var(c), kept.var(gone), kept.len()),
+                (x, y, z, outer, n + 3)
+            );
+            assert!(visited(&kept, top) <= 4 * PER_CHANGE);
         }
     }
 
@@ -2036,7 +2127,7 @@ mod tests {
                 n as u64 + 2,
             );
             let taken = more.with_kept(&kept);
-            assert_eq!(kept.maybe_lacked(&taken).count(), 0);
+            assert_eq!(visited(&kept, &taken), 0);
             let (inner, outer) = pairs[n - 1];
             assert_eq!(
                 (taken.var(joined), taken.var(inner), taken.len(), taken.read_at()),

@@ -4950,7 +4950,9 @@ mod static_callees_tests {
             index.unjoin(gone, outer);
             index.join(joined, outer);
             let later = index.aliases_after(old.read_at()).expect("the changes since");
-            assert_eq!(old.maybe_lacked(&later).count(), 1);
+            let mut visited = 0;
+            old.maybe_lacked(&later, |_, _| visited += 1);
+            assert_eq!(visited, 1);
             let mut left = vec![];
             old.each_left(&later, |inner, outer| left.push((inner, outer)));
             assert_eq!(left, [(gone, outer)]);

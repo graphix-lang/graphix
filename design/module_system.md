@@ -240,16 +240,24 @@ and `a_reload_in_a_forked_branch_retires_its_binding_in_the_event`.
 A join costs its change, not the table. The table is a persistent map,
 and each reading is made from the one before it by the bindings whose
 joins changed since (`StaticCallees::aliases_after`,
-`VarAliases::updated`); a table made from another keeps the pairs it
-lacks of it, so the runtime's walk of the bindings that left and a
-branch's absorb visit those alone where one table was made from the
-other, and every pair otherwise (`VarAliases::maybe_lacked`). An absorb
-that walks builds on the larger of the two tables and visits the
-smaller's pairs (`VarAliases::with_kept`), so a branch whose reading
-lost pairs to retirements does not put each back one at a time. Pins:
+`VarAliases::updated`), so two readings, and the tables branches make
+from them, share every subtree no change between them reached. A table
+made from another keeps the pairs it lacks of it, so the runtime's walk
+of the bindings that left and a branch's absorb visit those alone where
+one table was made from the other. Otherwise, as where a sibling's sync
+came between a branch's fork and its own, they visit the pairs outside
+the subtrees the two maps share that the other map's node in their place
+does not hold (`VarAliases::maybe_lacked`, `env::each_unshared`): the
+pairs the changes between the two tables reached, at most the leaf and
+the inner nodes on each change's path. An absorb that walks builds on
+the larger of the two tables and visits the smaller's
+(`VarAliases::with_kept`), so a branch whose reading lost pairs to
+retirements does not put each back one at a time. Pins:
 `branch::tests::a_table_made_from_another_is_compared_by_what_changed`,
-`a_table_that_lacks_pairs_of_the_kept_one_is_built_on_it` and
-`static_callees_tests::a_view_takes_in_only_what_changed_since_its_table`.
+`sibling_tables_are_compared_by_what_changed`,
+`a_table_that_lacks_pairs_of_the_kept_one_is_built_on_it`,
+`static_callees_tests::a_view_takes_in_only_what_changed_since_its_table`
+and `env::test::unshared_pairs_hold_every_difference_and_little_else`.
 
 A reload joins its new body's binding before the body it replaces
 retires; while the new source compiles, the replaced body's bindings

@@ -20,6 +20,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
+use imhm::{Contents, NodeRef, SlotRef};
 use netidx_core::{
     pack::{Pack, PackError},
     path::Path,
@@ -45,6 +46,97 @@ use triomphe::Arc;
 pub type Hasher = imhm::FxBuildHasher;
 pub type Map<K, V> = imhm::Map<K, V, Hasher>;
 pub type Set<K> = imhm::Set<K, Hasher>;
+
+/// Each pair of `of` outside the subtrees its tree shares with `with`'s
+/// that the node of `with` in its place does not hold: every pair `of`
+/// holds that `with` lacks or holds another value for is among them, and
+/// no pair of a shared subtree is.
+pub fn each_unshared<K: Eq, V: Eq>(
+    of: &Map<K, V>,
+    with: &Map<K, V>,
+    mut f: impl FnMut(&K, &V),
+) {
+    if let Some(root) = of.root() {
+        unshared(root, with.root(), &mut f)
+    }
+}
+
+/// [`each_unshared`] under `of`, a node at the depth of `with`. An inner
+/// node's children are in fragment order and a leaf's pairs in hash
+/// order, so the children of `of` that `with` lacks between two it shares
+/// are compared, in order, with the children of `with` between those two:
+/// their counterparts, unless a fragment there was filled or emptied.
+fn unshared<'a, K: Eq, V: Eq>(
+    of: NodeRef<'a, K, V>,
+    with: Option<NodeRef<'_, K, V>>,
+    f: &mut impl FnMut(&'a K, &'a V),
+) {
+    if with.is_some_and(|w| w.identity() == of.identity()) {
+        return;
+    }
+    let mut nodes: SmallVec<[NodeRef<'_, K, V>; 32]> = SmallVec::new();
+    let mut pairs: SmallVec<[(&K, &V); 32]> = SmallVec::new();
+    match with.map(|w| w.contents()) {
+        Some(Contents::Leaf(theirs)) => pairs.extend(theirs),
+        Some(Contents::Inner(theirs)) => {
+            for slot in theirs {
+                match slot {
+                    SlotRef::Entry(k, v) => pairs.push((k, v)),
+                    SlotRef::Node(n) => nodes.push(n),
+                }
+            }
+        }
+        None => (),
+    }
+    let mut held = 0;
+    match of.contents() {
+        Contents::Leaf(mine) => {
+            for (k, v) in mine {
+                if !holds(&pairs, &mut held, k, v) {
+                    f(k, v)
+                }
+            }
+        }
+        Contents::Inner(slots) => {
+            let (mut next, mut counterpart) = (0, 0);
+            for slot in slots {
+                match slot {
+                    SlotRef::Entry(k, v) => {
+                        if !holds(&pairs, &mut held, k, v) {
+                            f(k, v)
+                        }
+                    }
+                    SlotRef::Node(n) => {
+                        match nodes[next..]
+                            .iter()
+                            .position(|t| t.identity() == n.identity())
+                        {
+                            Some(at) => {
+                                next += at + 1;
+                                counterpart = next
+                            }
+                            None => {
+                                unshared(n, nodes.get(counterpart).copied(), f);
+                                counterpart += 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether `pairs`, from `next` on, hold `k` at `v`, then past it.
+fn holds<K: Eq, V: Eq>(pairs: &[(&K, &V)], next: &mut usize, k: &K, v: &V) -> bool {
+    match pairs[*next..].iter().position(|(tk, tv)| *tk == k && *tv == v) {
+        Some(at) => {
+            *next += at + 1;
+            true
+        }
+        None => false,
+    }
+}
 
 #[derive(Clone)]
 pub struct Bind {
@@ -3105,6 +3197,54 @@ impl Env {
 mod test {
     use super::*;
     use crate::is_block_component;
+
+    #[test]
+    fn unshared_pairs_hold_every_difference_and_little_else() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut below = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for n in [16, 64, 4096] {
+            let keys: Vec<BindId> = (0..n).map(|_| BindId::new()).collect();
+            let mut base: Map<BindId, BindId> = Map::default();
+            for k in keys.iter() {
+                base.insert_cow(*k, BindId::new());
+            }
+            for _ in 0..20 {
+                let [mut first, mut second] = [base.clone(), base.clone()];
+                let mut changes = 0;
+                for map in [&mut first, &mut second] {
+                    for _ in 0..=below(6) {
+                        changes += 1;
+                        match below(3) {
+                            0 => drop(map.remove_cow(&keys[below(n)])),
+                            1 => drop(map.insert_cow(BindId::new(), BindId::new())),
+                            _ => drop(map.insert_cow(keys[below(n)], BindId::new())),
+                        }
+                    }
+                }
+                for (of, with) in [(&first, &second), (&second, &first), (&base, &first)]
+                {
+                    let mut seen: Vec<(BindId, BindId)> = vec![];
+                    each_unshared(of, with, |k, v| seen.push((*k, *v)));
+                    for (k, v) in of.iter() {
+                        if with.get(k) != Some(v) {
+                            assert!(seen.contains(&(*k, *v)), "{k:?} missed");
+                        }
+                    }
+                    assert!(seen.len() <= (changes * 64).min(of.len()));
+                }
+            }
+            let rebuilt: Map<BindId, BindId> =
+                base.iter().map(|(k, v)| (*k, *v)).collect();
+            for (of, with) in [(&rebuilt, &base), (&base, &base.clone())] {
+                each_unshared(of, with, |k, _| panic!("{k:?} named"));
+            }
+        }
+    }
 
     #[test]
     fn two_forks_registering_one_glob_join() {
