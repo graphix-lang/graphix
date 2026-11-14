@@ -2746,13 +2746,11 @@ impl FnType {
                             )
                             .unwrap_or(false);
                         if !ok {
-                            let member_predicate = matches!(
-                                impl_tc,
-                                Type::Bound(Bound::OneNumber | Bound::NoError)
-                            );
-                            let undeclared = match member_predicate {
-                                true => sig_type.rigid_member_without(env, &impl_tc)?,
-                                false => None,
+                            let undeclared = match &impl_tc {
+                                Type::Bound(Bound::OneNumber | Bound::NoError) => {
+                                    sig_type.rigid_member_to_declare(env, &impl_tc)?
+                                }
+                                _ => None,
                             };
                             let declare = match undeclared {
                                 None => CompactString::default(),

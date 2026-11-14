@@ -2480,8 +2480,10 @@ adds it; it is written, for a nullable number of one numeric type:
   members the way `Singleton` counts its members; open cells are
   admitted. Against a fixed signature (`ContainsFlags::Sealed`) a rigid
   member is its caller's pick (`UnionParts::count_rigid_numbers`): it
-  counts as the numeric types every closed type among its conjuncts
-  holds, all of them where it has none; where a conjunct implies
+  counts as the numeric types that are members of every type among its
+  conjuncts, all of them where it has none; a conjunct with a member
+  that is `Any` or a variable admits all, and an unknown below a
+  constructor (`Array<'c>`) is no number; where a conjunct implies
   `OneNumber` and more than one of those is new to the union, as one
   more, which no other member is known to be. So ``['a, `X]`` holds
   under `'a: Number + OneNumber` and not under `'a: Number`, `['a, i64]`

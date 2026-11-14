@@ -2044,6 +2044,65 @@ run!(
     "/test/m.gx" => "let f = 'q: [Number, null] + OneNumber |x: 'q| -> i64 0"
 );
 
+// A bound counts by its members: an unknown below a constructor is no
+// number, a member that is a variable or `Any` may be any.
+run!(
+    a_variable_bounded_by_a_type_with_a_variable_below_is_no_number,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [Array<string>, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Array<'c>>(x: ['a, i64]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+);
+
+run!(
+    a_variable_bounded_by_a_union_with_any_below_counts_its_numbers,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = { let v: [Array<Any>, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: [Array<Any>, i64]>(x: ['a, i64]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_bounded_by_a_union_holding_a_variable_may_be_any_number,
+    refused("signature has concrete type [i64, 'a], which the implementation constraint OneNumber does not admit"),
+    "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: [i64, 'c]>(x: ['a, i64]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_bounded_by_a_union_holding_any_may_be_any_number,
+    refused("signature has concrete type [i64, 'a], which the implementation constraint OneNumber does not admit"),
+    "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "type A = Any; val f: fn<'a: [A, string]>(x: ['a, i64]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+// The refusal names a bound to declare only where declaring it is
+// enough: beside a number, or an error, no bound of the variable's is.
+fn refused_naming_no_bound(v: Result<&Value>) -> bool {
+    v.is_err_and(|e| {
+        let e = format!("{e:#}");
+        e.contains("does not admit") && !e.contains("is any type its bounds admit")
+    })
+}
+
+run!(
+    a_one_number_bound_over_a_variable_beside_a_number_names_no_bound,
+    refused_naming_no_bound,
+    "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number>(x: ['a, i64]) -> i64;",
+    "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_no_error_bound_over_a_variable_beside_an_error_names_no_bound,
+    refused_naming_no_bound,
+    "/test.gx" => "mod m; let result = { let v: [i64, Error<`E>] = i64:1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn(x: ['a, Error<`E>]) -> i64;",
+    "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
+; FuseExpect::None);
+
 // An implementation variable only bounds name is one type at an instance:
 // what stands where the bound naming it is held, or, named at two places,
 // what its own bounds settle it to, which must then hold both. One whose

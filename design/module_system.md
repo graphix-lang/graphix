@@ -495,7 +495,8 @@ writes around a variable, the variable is still any type its bounds
 admit: ``'q: OneNumber`` holds ``x: ['a, `X]`` under ``'a: Number +
 OneNumber``, never under ``'a: Number``, and ``'q: NoError`` holds it
 only where a bound of `'a` implies `NoError`; the refusal names the bound
-to declare (`design/tvar_constraints.md`, the two predicates' sections;
+to declare where declaring it is enough, so not beside a number or an
+error (`design/tvar_constraints.md`, the two predicates' sections;
 pins: `a_one_number_bound_*`, `a_no_error_bound_*`,
 `a_one_number_variable_*`, `a_variable_bounded_by_*`,
 `a_singleton_variable_*`).

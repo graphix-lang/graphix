@@ -4091,18 +4091,32 @@ impl Type {
         })
     }
 
-    /// A rigid open member of `self` read as a union, none of whose
-    /// conjuncts implies the bound `c`.
-    pub(crate) fn rigid_member_without(
+    /// The rigid open member of `self` read as a union whose declaring
+    /// the member predicate `c` (`OneNumber`, `NoError`) makes `c` hold of
+    /// the union against a fixed signature: `None` where another member
+    /// fails `c` whatever the variables declare.
+    pub(crate) fn rigid_member_to_declare(
         &self,
         env: &Env,
         c: &Type,
     ) -> Result<Option<TVar>> {
-        let mut parts = UnionParts::new(Measure::Members);
+        let one_number = matches!(c, Type::Bound(Bound::OneNumber));
+        let mut parts = UnionParts::new(match one_number {
+            true => Measure::Numbers,
+            false => Measure::Members,
+        });
         self.union_parts(Some((env, false)), &mut parts)?;
-        for tv in parts.open.iter().filter(|tv| tv.is_rigid()) {
-            if !tv.conjunct_implies(env, c)? {
-                return Ok(Some(tv.clone()));
+        let mut rigid = parts.open.iter().filter(|tv| tv.is_rigid());
+        let Some(first) = rigid.next() else { return Ok(None) };
+        let enough = match one_number {
+            true => parts.known == 0 && rigid.all(|tv| tv.same_cell(first)),
+            false => !self.may_be_error(env, false, false)?,
+        };
+        if enough {
+            for tv in parts.open.iter().filter(|tv| tv.is_rigid()) {
+                if !tv.conjunct_implies(env, c)? {
+                    return Ok(Some(tv.clone()));
+                }
             }
         }
         Ok(None)
@@ -6904,8 +6918,9 @@ impl UnionParts {
     }
 
     /// Count each rigid open member, a fixed signature's variable, as the
-    /// numeric types its caller may pick: those every closed type among
-    /// its conjuncts holds, or one more where a conjunct implies
+    /// numeric types its caller may pick: those every type among its
+    /// conjuncts holds as a member (any, where a member of the conjunct
+    /// is `Any` or open), or one more where a conjunct implies
     /// `OneNumber` and several of them are new.
     fn count_rigid_numbers(&mut self, env: &Env) -> Result<()> {
         let one_number = Type::Bound(Bound::OneNumber);
@@ -6916,10 +6931,14 @@ impl UnionParts {
             }
             let mut numbers = netidx_value::Typ::number();
             for c in tv.cell_constraints().iter() {
-                if !(c.is_predicate() || c.is_trait_ref(env) || c.holds_unknown(env)) {
+                if !(c.is_predicate() || c.is_trait_ref(env)) {
                     let mut own = UnionParts::new(Measure::Numbers);
                     c.union_parts(Some((env, false)), &mut own)?;
-                    numbers &= own.prims;
+                    // `known` beyond the numeric primitives is an `Any` member
+                    let named = (own.prims & netidx_value::Typ::number()).len();
+                    if own.open.is_empty() && own.known == named {
+                        numbers &= own.prims
+                    }
                 }
             }
             let new = (numbers & !self.prims).len();
