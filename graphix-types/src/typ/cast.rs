@@ -2629,24 +2629,34 @@ fn rep_overlaps(a: &Type, b: &Type) -> bool {
 enum Subject {
     /// A type beside `b`.
     Beside,
-    /// A select arm's inferred test: its cells, bound or open, are parts
-    /// the arm binds and does not test.
+    /// A select arm's test whose cells, bound or open, are parts the arm
+    /// binds and does not test; a union of the test's types every value
+    /// of a member it holds ([`holds`]).
     Binds,
-    /// A select arm's written test: a cell is the type it took, and a
-    /// union of the test's types every value of a member it holds
-    /// ([`holds`]).
+    /// A select arm's written test at its arm: as [`Self::Binds`], but a
+    /// cell is the type it took.
     Written,
 }
 
-/// Whether `t`, a part of a written test, is `b` or a union holding it,
-/// `b` a head no union: a value of `b` that passes the test there is
+/// Whether `t`, a part of a select arm's test, is `b` or a union holding
+/// it, `b` a head no union: a value of `b` that passes the test there is
 /// typed `b` ([`Type::matching_type`]), whatever else of `t` shares its
-/// form.
-fn holds(env: &Env, t: &Type, b: &Type) -> bool {
-    ensure_sufficient(|| match rep_head(env, t).as_deref() {
-        Some(Type::Set(ts)) => ts.iter().any(|t| holds(env, t, b)),
-        Some(h) => union_identical_in(env, h, b),
-        None => false,
+/// form. A name the search has expanded (`unfolded`) is not read again.
+fn holds(env: &Env, unfolded: &mut Unfolded, t: &Type, b: &Type) -> bool {
+    ensure_sufficient(|| {
+        #[cfg(test)]
+        WRITTEN_HOLDS.with(|n| n.set(n.get() + 1));
+        if let Type::Ref(tr) = t
+            && tr.resolve_in(env).is_some()
+            && !unfolded.first(t)
+        {
+            return false;
+        }
+        match rep_head(env, t).as_deref() {
+            Some(Type::Set(ts)) => ts.iter().any(|t| holds(env, unfolded, t, b)),
+            Some(h) => union_identical_in(env, h, b),
+            None => false,
+        }
     })
 }
 
@@ -2704,12 +2714,12 @@ fn rep_collision(
                     |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
                 match (a, b) {
                     (Type::Bottom, _) | (_, Type::Bottom) => None,
-                    (Type::Set(_), Type::Set(ts)) if subject == Subject::Written => {
+                    (Type::Set(_), Type::Set(ts)) if subject != Subject::Beside => {
                         pairs(&mut ts.iter().map(|t| (a, t)))
                     }
-                    (Type::Set(ts), _)
-                        if subject == Subject::Written
-                            && ts.iter().any(|t| holds(env, t, b)) =>
+                    (Type::Set(_), _)
+                        if subject != Subject::Beside
+                            && holds(env, &mut Unfolded::default(), a, b) =>
                     {
                         None
                     }
@@ -2832,8 +2842,9 @@ impl Type {
     /// [`Self::rep_collision`] for a select arm testing for `self` among
     /// `t`: a cell of the test's, bound or open, is a part the arm binds
     /// and does not test (a bind, a slice's rest), so it collides with
-    /// nothing; under [`Open::Unknown`] an open one of `t`'s may be any
-    /// type, even where the arm's capture shares it.
+    /// nothing, and neither does a part of `t` that a union of the
+    /// test's holds; under [`Open::Unknown`] an open cell of `t`'s may be
+    /// any type, even where the arm's capture shares it.
     pub fn rep_collision_tested(
         &self,
         env: &Env,
@@ -3589,6 +3600,7 @@ thread_local! {
     static IS_A_NAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static SHAPE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static HOLDS_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WRITTEN_HOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `s` read as a value literal.
@@ -4111,6 +4123,26 @@ pub(crate) mod tests {
         assert!(test.rep_collision_written(&env, &other).is_some());
         let narrow = parsed(&env, "(fn(x: i64) -> i64, i64)");
         assert!(narrow.rep_collision_written(&env, &held).is_some());
+    }
+
+    // A written test that is a DAG of named unions looks for the member
+    // it holds through each name once per union it meets, not once per
+    // path: 39 names under 39 unions, not 2^19 paths.
+    #[test]
+    fn a_written_test_reads_each_name_of_a_union_dag_once() {
+        let defs = union_dag(20);
+        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
+        let (env, test) = typed(&defs, "L20");
+        let steps = |rest: &str| {
+            let rest = parsed(&env, rest);
+            super::WRITTEN_HOLDS.with(|n| n.set(0));
+            let r = test.rep_collision_written(&env, &rest);
+            (r.is_some(), super::WRITTEN_HOLDS.with(|n| n.get()))
+        };
+        let (collides, n) = steps("`D(i64)");
+        assert!(!collides && n <= 4 * 39 * 39, "{n} steps");
+        let (collides, n) = steps("`C");
+        assert!(!collides && n <= 4 * 39, "{n} steps");
     }
 
     /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =

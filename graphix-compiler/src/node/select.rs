@@ -931,6 +931,15 @@ impl Reach {
         // which (written-variable-settle-first-01) refuses today: fix that first.
         // probes: ~/ptmp/cr29/scratch/r24/24a/wvt/{dead1,dead2,dead3,dead4,dead5,dead6,
         // dead7}.gx, gen/g1-summary.txt (written-variable-dead-arm-01)
+        // 2026-11-13 claude: written-variable-told-01's reviewer: a union the test
+        // writes over references does the same since that review's correction (the
+        // held-member rule at the settle too): over `u = select v { 0 => (&mut a, 1), 1
+        // => (&mut b, 2), _ => (null, 3) }` with `type Y = [[&mut i64, null], &mut
+        // string]`, `select u { (Y, i64) as (r, n) => n, (x, n) => n + 10 }` checks and
+        // prints (1, 2, 3), the second arm never taken (base-r24 refuses the first arm,
+        // "can't tell"); the written test alone (`(Y, i64) as (r, n) => n`) checks too,
+        // so here no catch-all is needed. probe:
+        // ~/ptmp/cr29/scratch/r24/24a/wvt/review/h07.gx
         if checking && (self.wildcard || self.atype == empty) {
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \

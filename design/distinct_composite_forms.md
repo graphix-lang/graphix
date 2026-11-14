@@ -199,7 +199,12 @@ value of it that passes is typed as it (`Type::matching_type`): a
 difference keeps a product the test holds without being it, so `('q, i64)
 as (r, n)` over `[(fn(x: i64) -> i64, i64), (fn(y: string) -> string,
 i64)]`, where `'q` took both functions, checks beside a `_` arm and gives
-`r` both. A slice pattern's predicate is a Set whose rest cell holds the whole
+`r` both. A union the test writes holds its members the same way, at the
+arm and at the settle: `([&mut i64, &mut string], i64) as (r, n)` over
+`[(&mut i64, i64), (&mut string, i64)]` gives `r` both references, and is
+refused where a `(&mut f64, i64)` reaches the arm too. The search for the
+member reads each name of the union once. A slice pattern's predicate is a
+Set whose rest cell holds the whole
 element type, so as a type it covers every array and subtracts everything
 from what reaches the arm; its test is its elements', each of which sees
 any member of the element type. So each element that is not a bind is
@@ -250,8 +255,9 @@ values in Rust use `rep` or a `GraphixShape` derive.
   bound of what else reaches the arm; an open one of what else reaches
   the arm does, even where the arm's capture shares it
   (`Type::rep_collision_tested`). A written test's variable is the type
-  it took, and a part of what else reaches the arm that a union of the
-  test's holds passes as itself (`Type::rep_collision_written`). Each
+  it took at its arm (`Type::rep_collision_written`), and in both
+  judgments a part of what else reaches the arm that a union of the
+  test's holds passes as itself. Each
   element of a slice pattern is a
   test of its own among the whole element type, whatever the rest covers
   (`StructPatternNode::element_tests`). A

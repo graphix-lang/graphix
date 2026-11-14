@@ -4734,6 +4734,45 @@ run!(
     FuseExpect::None
 );
 
+// A union a test writes holds each member's part at the arm and at the
+// select's settle: its bind is every reference the members hold.
+run!(
+    written_union_binds_two_reference_types,
+    r#"{
+        type R = [&mut i64, &mut string, null];
+        let k = |v: i64| {
+            let a = 1;
+            let b = "s";
+            let u = select v { 0 => (&mut a, 1), 1 => (&mut b, 2), _ => (null, 3) };
+            select u {
+                (R, i64) as (r, n) => select r {
+                    null as _ => n,
+                    p => select *p { i64 as i => i + 10, string as s => str::len(s) + 100 }
+                }
+            }
+        };
+        [k(0), k(1), k(2)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [11, 101, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_union_is_tested_beside_a_reference_it_does_not_hold,
+    r#"{
+        let k = |v: i64| {
+            let a = 1;
+            let b = "s";
+            let c = 2.5;
+            let u = select v { 0 => (&mut a, 1), 1 => (&mut b, 2), _ => (&mut c, 3) };
+            select u { ([&mut i64, &mut string], i64) as (r, n) => n, _ => 0 }
+        };
+        k(0)
+    }"#,
+    refused("this pattern can't tell &mut i64 from &mut f64");
+    FuseExpect::None
+);
+
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };
