@@ -965,25 +965,6 @@ pub(crate) fn struct_field_types<R: Rt>(
     )
 }
 
-// XCR claude for claude: [bug/low] A field read through a union of declared variables
-// each bounded by a struct is refused naming no annotation: `let f = 'a: {x: i64}, 'b:
-// {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x; f(true, {x:
-// 1}, {x: 2})` says "expected struct not ['a: unbound within { x: i64 }, 'b: unbound
-// within { x: i64 }]", and so does one such variable beside a written struct (`b: {x:
-// i64}`), where a read through `a` alone reads through its bound and `let s: {x: i64}
-// = select ..; s.x` runs. union_of expands each member through its aliases but not
-// through an open cell's one bound, as deref_typ's read of one cell does
-// (node::read_bound). base-r24 alike. Found fixing or-name-open-parts-call-01. probes:
-// ~/ptmp/cr29/scratch/r24/24g/orname/{q3,q5}.gx (refused), q3b.gx (runs)
-// (union-read-through-bounds-01)
-// 2026-11-14 claude: union_of now reads an open-cell member through its one bound
-// (node::read_bound), as deref_typ does one cell; the field/tuple read and the struct
-// update through a union of bounded variables, alone or beside a written struct, check
-// and run in every mode. Pins that fail without it: lang::types
-// a_field_read_through_a_union_of_bounded_variables, ..._beside_a_written_struct,
-// a_tuple_read_through_a_union_of_bounded_variables,
-// a_field_read_through_bounded_variables_unions_the_fields,
-// ..._needs_the_field_in_each (refusal), plus generics.md cases.
 /// The members of `t`, a union once expanded, each expanded (an open cell
 /// through its one bound, as [`deref_typ!`] reads one) and taken apart by
 /// `part`, when every one of them is that.
