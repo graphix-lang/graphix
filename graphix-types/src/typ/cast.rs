@@ -1889,35 +1889,35 @@ impl Type {
         }
     }
 
-    /// `self`, a written test, with every ⊥ in a named type's arguments,
-    /// a cell bound to it included, as `Any`; `None` where no argument
-    /// holds one. A test passes every value at either, but the union a
-    /// name expands to keeps `Any` where it drops ⊥: `Opt<'b>` over `type
-    /// Opt<'x> = ['x, null]`, `'b` the test's own variable, would test
-    /// for null alone where `['b, null]` written out passes every value.
-    pub fn blind_named_args(&self) -> Option<Type> {
+    /// `self`, a written test, with every ⊥ outside a function type, a
+    /// cell bound to it included, as `Any`; `None` where none holds one.
+    /// A test passes every value at either, but a union keeps `Any` where
+    /// it drops ⊥: `['b, null]`, `'b` the test's own variable left at ⊥,
+    /// would read as `null` alone, under a name (`Opt<'b>` over `type
+    /// Opt<'x> = ['x, null]`) in the node-walk's test and anywhere in a
+    /// fused arm's layout of what it binds.
+    pub fn blind_bottoms(&self) -> Option<Type> {
         /// The shared nodes holding nothing to change, those of 16 nodes
         /// or more: a small test takes no table.
         struct Clean {
-            nodes: super::Lazy<AHashSet<(usize, bool)>>,
+            nodes: super::Lazy<AHashSet<usize>>,
             steps: u32,
         }
-        fn go(t: &Type, named: bool, clean: &mut Clean) -> Option<Type> {
+        fn go(t: &Type, clean: &mut Clean) -> Option<Type> {
             clean.steps += 1;
             ensure_sufficient(|| match t {
-                Type::Bottom if named => Some(Type::Any),
-                Type::TVar(tv) => go(&tv.binding()?, named, clean),
+                Type::Bottom => Some(Type::Any),
+                Type::TVar(tv) => go(&tv.binding()?, clean),
                 Type::Fn(_) => None,
                 t => {
-                    let node = super::node_addr(t).map(|n| (n, named));
+                    let node = super::node_addr(t);
                     if let Some(n) = &node
                         && clean.nodes.get().is_some_and(|c| c.contains(n))
                     {
                         return None;
                     }
                     let from = clean.steps;
-                    let named = named || matches!(t, Type::Ref(_));
-                    let blind = t.cow_children(&mut |c| go(c, named, clean));
+                    let blind = t.cow_children(&mut |c| go(c, clean));
                     if blind.is_none()
                         && clean.steps - from >= 16
                         && let Some(n) = node
@@ -1928,7 +1928,7 @@ impl Type {
                 }
             })
         }
-        go(self, false, &mut Clean { nodes: super::Lazy::new(), steps: 0 })
+        go(self, &mut Clean { nodes: super::Lazy::new(), steps: 0 })
     }
 
     /// True if v is structurally compatible with the type.

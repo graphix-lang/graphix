@@ -292,14 +292,16 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   settles to ⊥, which a run-time test passes every value at
   (`Type::is_a`, `IsAFlags::Strict` apart); inside an `Any` part it is
   the arm's to decide, and `Any` at the arm's end, as an inferred cell
-  is. A named type applied to it
-  would lose that: `Opt<'b>` over `type Opt<'x> = ['x, null]` expands to
-  `null` once `'b` is ⊥, a union dropping its ⊥ member, where `['b,
-  null]` written out keeps the cell. So from `typecheck1` on an arm's
-  written predicate holds `Any` for every ⊥ in a named type's arguments
-  (`Type::blind_named_args`, `Select::typecheck1`), which both engines
+  is. A union drops a ⊥ member and keeps `Any`: `Opt<'b>` over `type
+  Opt<'x> = ['x, null]` expands to `null` once `'b` is ⊥, and a fused
+  arm would lay out `x` of `Array<['b, i64]> as [x, ..]` as an `i64`
+  whatever element reaches it. So from `typecheck1` on an arm's written
+  predicate holds `Any` for every ⊥ outside a function type
+  (`Type::blind_bottoms`, `Select::typecheck1`), which both engines
   read: `Array<Opt<'b>> as [x, ..]` matches what `Array<['b, null]> as
-  [x, ..]` matches, under an array, a typedef's parameter and a
+  [x, ..]` matches, and `x` holds the element that reaches it in either
+  (pin `lang::select::written_test_own_variable_beside_another_member_binds_what_reaches`),
+  under an array, a typedef's parameter and a
   recursive typedef's, and a closed argument (`Opt<i64>`) is tested. The
   union written out under a recursive typedef's argument (`U<['b, null]>`
   over `type U<'a> = [`Nil, `C('a, U<Opt<'a>>)]`) is rewritten alike: its

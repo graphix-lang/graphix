@@ -313,7 +313,7 @@ or a union, `never()` arms as bottom
 productions of the merge shape, or-patterns, list patterns, type tests
 that hold the scrutinee's type, a written tuple, struct or array test
 over a composite whose type it does not hold, one holding `Any` (its own
-variable under a named type, `Array<Opt<'b>>`) read as the one composite
+variable left at ⊥, `Array<Opt<'b>>`, `Array<['b, i64]>`) read as the one composite
 member of the scrutinee its type may pass and holds whole, any union of
 encoded members as one
 value (`` [`A, `B, null] ``, a list beside an array) with its written

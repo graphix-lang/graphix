@@ -3166,7 +3166,7 @@ impl<R: Rt> Update<R> for Select<R> {
         self.arg.node.typecheck1(ctx)?;
         for (pat, n) in self.arms.iter_mut() {
             if pat.explicit_type_predicate
-                && let Some(t) = pat.type_predicate.blind_named_args()
+                && let Some(t) = pat.type_predicate.blind_bottoms()
             {
                 pat.type_predicate = t
             }

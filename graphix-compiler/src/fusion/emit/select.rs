@@ -2343,7 +2343,7 @@ fn emit_structure_cond(
     Ok(scond)
 }
 
-// CR claude for claude: [bug/high] A written test's own variable left open beside
+// XCR claude for claude: [bug/high] A written test's own variable left open beside
 // another member of its part reads the bind as that member, whatever value reaches
 // it: `let o: [string, null] = null; let g = |v: [Array<[string, null]>, i64]| select
 // v { Array<['b, i64]> as [x, ..] => x, _ => never() }; println(g([o]))` prints 0
@@ -2364,6 +2364,14 @@ fn emit_structure_cond(
 // ~/ptmp/cr29/scratch/r24/24a/wtrv/{n2,n3,n4}.gx (run.sh beside them runs base and
 // lane, both engines), dgen.py and dexp.py (the generated programs and their oracle)
 // (written-own-variable-member-layout-01)
+// 2026-11-14 claude: Select::typecheck1 now turns every ⊥ of a written predicate
+// outside a function type into Any (Type::blind_bottoms, was blind_named_args: under
+// a named type's arguments only), so a fused arm lays the bind out as what reaches it
+// and the node-walk's test is unchanged (is_a passes every value at either). n2/n3
+// print what --no-fusion prints; the 3360 generated programs (dgen.py) run ok in both
+// engines or are refused at --check (2708/652, 0 wrong). Pin
+// lang::select::written_test_own_variable_beside_another_member_binds_what_reaches
+// fails jit and jit_par without it.
 /// `sp` over the composite member of a value scrutinee (an option or a
 /// result of a composite, a union holding composites, or a composite a
 /// `written` predicate tests) that the arm's predicate `pred_typ` names:
@@ -2374,7 +2382,7 @@ fn emit_structure_cond(
 /// member is tested by type, a `written` predicate strictly, an inferred
 /// one as the node-walk's shape test reads it. A predicate with no
 /// composite frozen form (`Any` where a written one's own variable stands
-/// under a named type, a wildcard in an inferred one) reads the value as
+/// at ⊥, a wildcard in an inferred one) reads the value as
 /// the one composite member of the scrutinee it may pass; a written one
 /// passes it by its type alone and holds the whole of it, so its binds
 /// have the member's types. `None` where the scrutinee is no such value or

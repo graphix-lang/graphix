@@ -12472,6 +12472,39 @@ run!(
     FuseExpect::Jit
 );
 
+// A written test's own variable left open beside another member of its
+// part passes every value, and the bind holds the value that reaches it,
+// read in no member's form: a null, a string, an i64 and a variant.
+run!(
+    written_test_own_variable_beside_another_member_binds_what_reaches,
+    r#"{
+        let byi = |v: [Array<[string, null]>, i64]| select v { Array<['b, i64]> as [x, ..] => select x { null as _ => 10, s => str::len(s) }, _ => -1 };
+        let bys = |v: [Array<[i64, null]>, i64]| select v { Array<['b, string]> as [x, ..] => select x { null as _ => 10, n => n }, _ => -1 };
+        let byt = |v: [Array<[string, null]>, i64]| select v { Array<['b, (i64, i64)]> as [x, ..] => select x { null as _ => 10, s => str::len(s) }, _ => -1 };
+        let byf = |v: [Array<[string, null]>, i64]| select v { Array<['b, f64]> as [x, ..] => select x { null as _ => 10, s => str::len(s) }, _ => -1 };
+        let tag = |v: [Array<[`Q, `R]>, i64]| select v { Array<['b, i64]> as [x, ..] => select x { `Q => 1, `R => 2 }, _ => -1 };
+        let tup = |v: [Array<([string, null], i64)>, i64]| select v { Array<(['b, i64], i64)> as [(x, n), ..] => select x { null as _ => n, s => str::len(s) }, _ => -1 };
+        let decl = |v: [Array<'a>, i64]| select v { Array<['b, i64]> as [x, ..] => str::len("<[x]>"), _ => -1 };
+        let o: [string, null] = null;
+        let s: [string, null] = "abc";
+        let i: [i64, null] = 5;
+        let n: [i64, null] = null;
+        let u: [i64, string] = "abcd";
+        [
+            byi([o]), byi([s]), byi(1),
+            bys([i]), bys([n]),
+            byt([o]), byt([s]),
+            byf([o]), byf([s]),
+            tag([`Q]), tag([`R]),
+            tup([(o, 7)]), tup([(s, 7)]),
+            decl([u]), decl([o]), decl([`Q]), decl(2)
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [10, 3, -1, 5, 10, 10, 3, 10, 3, 1, 2, 7, 3, 6, 6, 4, -1]);
+    FuseExpect::Jit
+);
+
 /// A select over `T` whose first arm tests 14 Errors deep, then `arms`:
 /// what reaches the later arms is exact and shares its levels, 2^14 paths
 /// through 14 nodes.
