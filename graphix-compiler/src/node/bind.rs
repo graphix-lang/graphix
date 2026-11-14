@@ -4,7 +4,9 @@ use super::{
     coretraits::with_hooks,
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef},
-    pattern::{CompiledAbstracts, Holder, StructPatternNode, rigid_refusal},
+    pattern::{
+        CompiledAbstracts, Holder, StructPatternNode, rigid_refusal, undecided_members,
+    },
     place::{self, Path, RefPath},
     read_var_by,
     select::lower_view,
@@ -153,6 +155,7 @@ pub(crate) fn lower_over_operands<R: Rt>(
             ctx,
             &typ,
             &expr::StructurePattern::Bind(name.clone().into()),
+            Holder::Let,
             &scope,
             spec.pos,
             spec.ori.clone(),
@@ -327,7 +330,8 @@ impl<R: Rt> Bind<R> {
             None => None,
         };
         let compile_pattern = |ctx: &mut CompileCtx<R>, typ: &Type| {
-            StructPatternNode::compile(ctx, typ, pat, scope, spec.pos, spec.ori.clone())
+            let ori = spec.ori.clone();
+            StructPatternNode::compile(ctx, typ, pat, Holder::Let, scope, spec.pos, ori)
                 .at(&spec)
         };
         let mut deferred = None;
@@ -393,12 +397,37 @@ impl<R: Rt> Bind<R> {
                         // two members for one
                         match pat
                             .complete_type_predicate(&ctx.env, &ptyp, &typ)
+                            .map_err(|e| {
+                                undecided_members(&ctx.env, e, &spec.ori, Holder::Let)
+                            })
                             .at(&spec)?
                         {
                             Some(t) => (t, true),
                             None => (ptyp, false),
                         }
                     };
+                    // CR claude for claude: [bug/medium] A let's partial struct
+                    // pattern over two members whose named field holds composite
+                    // types that differ leaves the name's type open, and the name
+                    // never fires. `let v: [{a: Array<i64>, c: string}, {a:
+                    // Array<string>, c: string}] = {a: [1], c: "x"}; let {a, ..} =
+                    // v; println("[a]")` checks and prints nothing (r5.gx); the
+                    // REPL gives `a` the type `_`, and `let z: string = a` checks
+                    // beside it (r9.gx). Alike `(i64, i64)` against `(string,
+                    // string)` and `i64` against `Array<string>` (rt.txt); `i64`
+                    // against `string` types `a` as `[i64, string]`, and naming
+                    // every field (`let {a, c: _} = v`) prints [1] (r6.gx). Here
+                    // the completion `{a: '_, c: string}` fits every member, then
+                    // `binds` infers the pattern's own `{a: '_}` again, not the
+                    // completion, and Type::narrow_per_member decides nothing of
+                    // it against `{a, c}` members (a temporary print in
+                    // fits_every_member: pred `{ a: '_8340: unbound }`, Ok). With
+                    // the value unannotated (`x: string`, `y: string` lets in a
+                    // select's arms) it is refused "match error .. can't be
+                    // matched by { a: Array<i64>, c: string }" instead (r4.gx).
+                    // Same on base-r24. probes: ~/ptmp/cr29/scratch/r24/24g/lumr/
+                    // (let-partial-open-bind-01)
+
                     // a `_` matches what the value holds, deciding none of it
                     if !completed && pat.has_partial_struct() {
                         deferred = Some(Deferred::Partial(ptyp));
@@ -603,7 +632,7 @@ impl<R: Rt> Bind<R> {
         self.forwards(ctx) && written(ctx, &self.pattern)
     }
 
-    // CR claude for claude: [bug/low] A destructuring let's two-member refusal is the
+    // XCR claude for claude: [bug/low] A destructuring let's two-member refusal is the
     // select's, its cells printed raw. `let {a, ..} = v` over `{a: [1], c: x}` and `{a:
     // ["s"], c: y}`, `x` and `y` lets over `never()`, is refused "the pattern { a, .. }
     // matches two members, { a: Array<i64>, c: '_8347: unbound } and { a: Array<string>,
@@ -615,13 +644,37 @@ impl<R: Rt> Bind<R> {
     // Bind::compile's completion pass UndecidedMembers through as it came). A fix: tell
     // it through undecided_members in the let's own words. Same on base-r23. probes:
     // ~/ptmp/cr29/scratch/r23/23d/umrc/l2.gx, l1.gx (let-undecided-members-raw-01)
+    // 2026-11-13 claude: Fixed: node::pattern::undecided_members (moved from select.rs)
+    // tells an UndecidedMembers refusal in its holder's words (Holder::Arm/Let/Formal:
+    // 'at this select/let/parameter', the remedy `T as {pat}`, `let {pat}: T = ..` or
+    // `{pat}: T`), the cells named through Holders. Every completion site calls it: the
+    // select's arm completion, Bind::compile's eager completion and
+    // Bind::complete_partial (Let), and StructPatternNode::compile_int's completion
+    // under a written type (PatCx::holder: a let's annotation, a parameter, a select's
+    // written test, which printed 'p: unbound before). UndecidedMembers' own Display is
+    // site-neutral. Pins that fail with each site's telling undone:
+    // lang::tuples_structs::let_partial_struct_over_undecided_members_refused
+    // (complete_partial), ..._over_an_annotated_value_of_undecided_members_refused
+    // (eager), ..._under_an_annotation_of_undecided_members_refused,
+    // parameter_partial_struct_over_undecided_members_refused,
+    // lang::select::partial_struct_under_a_test_of_undecided_members_refused
+    // (compile_int); twins that run: let_partial_struct_over_annotated_members,
+    // let_partial_struct_annotated_over_undecided_members,
+    // let_struct_naming_every_field_over_undecided_members,
+    // parameter_partial_struct_over_decided_members,
+    // partial_struct_under_a_test_of_decided_members. Probes
+    // ~/ptmp/cr29/scratch/r24/24g/lumr/.
     /// Complete a pattern that leaves struct fields out against the
     /// value's type.
     fn complete_partial(&mut self, ctx: &mut CompileCtx<R>, ptyp: Type) -> Result<()> {
         let ExprKind::Bind(b) = &self.spec.kind else { return Ok(()) };
         let spec = &self.spec;
         // irrefutable, it never takes two members for one
-        let t = b.pattern.complete_type_predicate(&ctx.env, &ptyp, &self.typ).at(spec)?;
+        let t = b
+            .pattern
+            .complete_type_predicate(&ctx.env, &ptyp, &self.typ)
+            .map_err(|e| undecided_members(&ctx.env, e, &spec.ori, Holder::Let))
+            .at(spec)?;
         let Some(t) = t else {
             if self.typ.with_deref(|t| t.is_none()) {
                 bailat!(spec, "non exhaustive struct matches require type annotations")

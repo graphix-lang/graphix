@@ -4,11 +4,11 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::Env,
     expr::{
-        AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt,
-        union_members, union_members_with,
+        AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, UndecidedMembers,
+        WrittenAt, union_members, union_members_with,
     },
     format_with_flags,
-    node::{Held, compiler, list, prune::Prune},
+    node::{Held, Holders, compiler, list, prune::Prune},
     prune::BoundaryRef,
     rep,
     typ::{
@@ -169,6 +169,7 @@ struct PatCx<'a> {
     /// abstract pattern's payload is compiled against a representation
     /// at parameters of its own.
     own_payloads: bool,
+    holder: Holder,
 }
 
 fn leaf_bind<R: Rt>(
@@ -382,12 +383,66 @@ fn merge_leaves(
     Ok(())
 }
 
-/// What holds a pattern that meets a type variable held rigid.
+/// What holds a pattern: what its refusals call it and how they write
+/// its annotation.
 #[derive(Clone, Copy)]
 pub(super) enum Holder {
     Arm,
     Let,
     Formal,
+}
+
+/// An [`UndecidedMembers`] refusal of a pattern `holder` holds, told with
+/// the bindings whose types the undecided cells are, a cell no binding
+/// names numbered.
+pub(super) fn undecided_members(
+    env: &Env,
+    e: anyhow::Error,
+    at: &Origin,
+    holder: Holder,
+) -> anyhow::Error {
+    let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
+    let mut holders = Holders::new(env, None);
+    let mut written = |t: &Type| {
+        t.written_form(&mut |tv| match tv.is_bound() {
+            true => None,
+            false => holders
+                .name_cell(tv)
+                .or_else(|| tv.written_own())
+                .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
+        })
+    };
+    let [a, b] = &u.members;
+    let (a, b, meanings) = match (written(a), written(b)) {
+        (Some(a), Some(b)) => {
+            (format_compact!("{a}"), format_compact!("{b}"), holders.meanings(at))
+        }
+        _ => format_with_flags(PrintFlag::DerefTVars, || {
+            (format_compact!("{a}"), format_compact!("{b}"), CompactString::new(""))
+        }),
+    };
+    let pat = &u.pattern;
+    let (head, site, fix) = match holder {
+        Holder::Arm => (
+            "the pattern",
+            "select",
+            format_compact!("the member you mean, e.g. `T as {pat}`"),
+        ),
+        Holder::Let => (
+            "the pattern",
+            "let",
+            format_compact!("the binding with the type it binds, `let {pat}: T = ..`"),
+        ),
+        Holder::Formal => (
+            "the parameter",
+            "parameter",
+            format_compact!("the parameter with the type it binds, `{pat}: T`"),
+        ),
+    };
+    anyhow!(
+        "{head} {pat} matches two members, {a} and {b}, told apart by types not decided \
+         at this {site}; annotate those types, or {fix}, or name every field{meanings}"
+    )
 }
 
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
@@ -1864,15 +1919,17 @@ impl StructPatternNode {
 
     /// Compile `spec` against the explicit type `type_predicate` (a
     /// `let` or lambda parameter's type).
-    pub fn compile<R: Rt>(
+    pub(super) fn compile<R: Rt>(
         ctx: &mut CompileCtx<R>,
         type_predicate: &Type,
         spec: &StructurePattern,
+        holder: Holder,
         scope: &Scope,
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Self> {
-        let cx = PatCx { scope, pos, ori: &ori, inferred: false, own_payloads: false };
+        let cx =
+            PatCx { scope, pos, ori: &ori, inferred: false, own_payloads: false, holder };
         Self::compile_with(ctx, cx, type_predicate, spec)
     }
 
@@ -1995,7 +2052,10 @@ impl StructPatternNode {
             let shape = spec.infer_type_predicate(env, &cx.scope.lexical)?;
             // the written type is the run-time test: the completion shapes
             // only the binds
-            let shape = match spec.complete_type_predicate(env, &shape, type_predicate)? {
+            let shape = match spec
+                .complete_type_predicate(env, &shape, type_predicate)
+                .map_err(|e| undecided_members(env, e, cx.ori, cx.holder))?
+            {
                 Some(t) => t,
                 None => shape,
             };
@@ -3295,8 +3355,14 @@ impl<R: Rt> PatternNode<R> {
                 return Err(rigid_refusal(&ctx.env, &ids, sp, tp, &tv, Holder::Arm));
             }
         }
-        let cx =
-            PatCx { scope, pos, ori: &ori, inferred: !explicit, own_payloads: !explicit };
+        let cx = PatCx {
+            scope,
+            pos,
+            ori: &ori,
+            inferred: !explicit,
+            own_payloads: !explicit,
+            holder: Holder::Arm,
+        };
         let structure_predicate = StructPatternNode::compile_with(
             ctx,
             cx,

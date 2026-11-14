@@ -3,7 +3,7 @@ use super::{
     compiler::compile,
     pattern::{
         ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
-        rigid_refusal, written_refusal,
+        rigid_refusal, undecided_members, written_refusal,
     },
     wake::{self, ArmMask, TrackedFires},
 };
@@ -13,7 +13,7 @@ use crate::{
     env::Env,
     expr::{
         At, Decided, Expr, ExprId, ExprKind, Origin, Pattern, StructurePattern,
-        UndecidedMembers, union_members, union_members_open, union_members_with,
+        union_members, union_members_open, union_members_with,
     },
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -3283,7 +3283,9 @@ impl<R: Rt> Select<R> {
                 let t = spec_pat
                     .structure_predicate
                     .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
-                    .map_err(|e| undecided_members(&ctx.env, e, &self.spec.ori))
+                    .map_err(|e| {
+                        undecided_members(&ctx.env, e, &self.spec.ori, Holder::Arm)
+                    })
                     .at(&site)?;
                 if let Some(t) = t {
                     pat.structure_predicate.realign(&ctx.env, &t)?;
@@ -3929,32 +3931,6 @@ impl Decisions {
             };
         }
     }
-}
-
-/// An [`UndecidedMembers`] refusal told with the bindings whose types
-/// the undecided cells are, a cell no binding names numbered.
-fn undecided_members(env: &Env, e: anyhow::Error, at: &Origin) -> anyhow::Error {
-    let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
-    let mut holders = Holders::new(env, None);
-    let mut written = |t: &Type| {
-        t.written_form(&mut |tv| match tv.is_bound() {
-            true => None,
-            false => holders
-                .name_cell(tv)
-                .or_else(|| tv.written_own())
-                .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
-        })
-    };
-    let (Some(a), Some(b)) = (written(&u.members[0]), written(&u.members[1])) else {
-        return e;
-    };
-    let pat = &u.pattern;
-    let meanings = holders.meanings(at);
-    anyhow!(
-        "the pattern {pat} matches two members, {a} and {b}, told apart by types not \
-         decided at this select; annotate those types, or the member you mean, e.g. `T \
-         as {pat}`, or name every field{meanings}"
-    )
 }
 
 /// An undecided cell the written test `t` tests in a member of `reaching`:

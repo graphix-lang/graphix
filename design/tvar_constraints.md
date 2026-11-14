@@ -1408,19 +1408,23 @@ A partial struct pattern's completion is the arm's run-time test, so
 members its left-out fields tell apart only by undecided cells are two
 members (`strictly_identical`), refused as any ambiguous completion is,
 unless what reaches the arm leaves one: annotate the cells, the member,
-or name every field; a program whose cells end up equal is refused
-until annotated. The refusal writes the two members as a program can
-(`select::undecided_members`): an undecided cell as `'x` for the binding
-it waits for, one a let's annotation wrote as its variable (`'q`), and
-one no binding names (the element of a `[]`, a read through a reference
-to an unnamed expression, a call's result) numbered, `'_1`, `'_2`, one
-number a cell (`Holders::number`), told as "types no binding names,
-annotated where their values are built". A call's copy of a variable
-its callee declares is one no binding names, though it carries the
-callee's name (`TCell::call_copy`): two calls of `|x: 'a| -> Array<'a>
-[]` give `Array<'_1>` and `Array<'_2>`, not `Array<'a>` twice, which
-reads as one type, unless a let's annotation took the copies and the
-members are written through the copies' own names.
+or name every field; a program whose cells end up equal is refused until
+annotated. A destructuring `let` and a parameter complete their pattern
+alike and refuse it alike, each in its own words ("at this let",
+annotated `let {a, ..}: T = ..`; "at this parameter"). The refusal
+writes the two members as a program can (`pattern::undecided_members`,
+which every completion site calls with its `Holder`): an undecided cell
+as `'x` for the binding it waits for, one a let's annotation wrote as
+its variable (`'q`), and one no binding names (the element of a `[]`, a
+read through a reference to an unnamed expression, a call's result)
+numbered, `'_1`, `'_2`, one number a cell (`Holders::number`), told as
+"types no binding names, annotated where their values are built". A
+call's copy of a variable its callee declares is one no binding names,
+though it carries the callee's name (`TCell::call_copy`): two calls of
+`|x: 'a| -> Array<'a> []` give `Array<'_1>` and `Array<'_2>`, not
+`Array<'a>` twice, which reads as one type, unless a let's annotation
+took the copies and the members are written through the copies' own
+names.
 
 ### Unfolding a pair of definitions
 

@@ -132,7 +132,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   member, or annotate `x` and `y`. The refusal shows a type no binding
   names (a `[]`'s element, a call's result) as `'_1`: annotate where the
   struct is built. Two calls of one generic function are two types,
-  `'_1` and `'_2`, though the function wrote one `'a`.
+  `'_1` and `'_2`, though the function wrote one `'a`. A destructuring
+  `let` (`let {a, ..} = v`, "not decided at this let") and a parameter
+  are refused alike: annotate `x` and `y`, the binding (`let {a, ..}: T
+  = v`), or name every field.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   A name tests nothing, so an arm may bind such a part, and the bind
@@ -198,6 +201,8 @@ ok 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 0, (bool, i
 ok 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 0, (bool, 'b) as (false, v) => 1, (false, null) => 3 }
 no "missing match cases" 'b: [i64, u8] |x: (bool, [i64, u8]), y: 'b| select x { (bool, 'b) as (true, a) => 1, (false, _) => 2 }
 ok |x| select (x, 0) { ((a, b), _) => a }
+no "not decided at this let" let b = true; let x = never(); let y = never(); let v = select b { true => {a: [1], c: x}, false => {a: [2], c: y} }; let {a, ..} = v; x <- 1; y <- "w"; a
+ok let b = true; let x = never(); let y = never(); let v = select b { true => {a: [1], c: x}, false => {a: [2], c: y} }; let {a, c: _} = v; x <- 1; y <- "w"; a
 no "not decided at this select" |x| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x: [`J, `M]| { let r = &mut (x, 0); select *r { (`J, _) => 1, (`M, _) => 2 } }
 ok |x| { let r = &mut (x, 0); select *r { ((a, b), _) => a } }

@@ -511,6 +511,146 @@ run!(
     FuseExpect::None
 );
 
+// A partial struct pattern over two members told apart only by types not
+// decided where it is completed is refused in its holder's words, the
+// cells named by their bindings: a let completing it at the check, as it
+// compiles, or under its annotation, and a parameter.
+run!(
+    let_partial_struct_over_undecided_members_refused,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let {a, ..} = v;
+    x <- 1;
+    y <- "w";
+    a
+}"#,
+    refused(
+        "the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: \
+         Array<string>, c: 'y }, told apart by types not decided at this let; annotate \
+         those types, or the binding with the type it binds, `let { a, .. }: T = ..`, or \
+         name every field, writing for 'x the type of `x` (line 3, column 9) and for 'y \
+         the type of `y` (line 4, column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    let_partial_struct_over_an_annotated_value_of_undecided_members_refused,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v: [{a: Array<i64>, c: 'p}, {a: Array<i64>, c: 'q}] =
+        select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let {a, ..} = v;
+    x <- 1;
+    y <- 2;
+    a
+}"#,
+    refused(
+        "the pattern { a, .. } matches two members, { a: Array<i64>, c: 'p } and { a: \
+         Array<i64>, c: 'q }, told apart by types not decided at this let; annotate those \
+         types, or the binding with the type it binds, `let { a, .. }: T = ..`, or name \
+         every field"
+    );
+    FuseExpect::None
+);
+
+run!(
+    let_partial_struct_under_an_annotation_of_undecided_members_refused,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let {a, ..}: [{a: Array<i64>, c: 'p}, {a: Array<i64>, c: 'q}] = v;
+    x <- 1;
+    y <- 2;
+    a
+}"#,
+    refused(
+        "the pattern { a, .. } matches two members, { a: Array<i64>, c: 'p } and { a: \
+         Array<i64>, c: 'q }, told apart by types not decided at this let; annotate those \
+         types, or the binding with the type it binds, `let { a, .. }: T = ..`, or name \
+         every field"
+    );
+    FuseExpect::None
+);
+
+run!(
+    parameter_partial_struct_over_undecided_members_refused,
+    r#"{
+    type S<'p, 'q> = [{a: i64, c: 'p}, {a: i64, c: 'q}];
+    let f = |{a, ..}: S<'p, 'q>| a;
+    f({a: 1, c: 1})
+}"#,
+    refused(
+        "the parameter { a, .. } matches two members, { a: i64, c: 'p } and { a: i64, c: \
+         'q }, told apart by types not decided at this parameter; annotate those types, or \
+         the parameter with the type it binds, `{ a, .. }: T`, or name every field"
+    );
+    FuseExpect::None
+);
+
+// Each remedy the refusal names passes: the cells annotated, the binding
+// annotated, every field named.
+run!(
+    let_partial_struct_over_annotated_members,
+    r#"{
+    let t = true;
+    let x: i64 = never();
+    let y: i64 = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let {a, ..} = v;
+    x <- 3;
+    a
+}"#,
+    prints("[i64:1]")
+);
+
+run!(
+    let_partial_struct_annotated_over_undecided_members,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let {a, ..}: {a: Array<i64>, c: i64} = v;
+    x <- 3;
+    a
+}"#,
+    prints("[i64:1]")
+);
+
+run!(
+    let_struct_naming_every_field_over_undecided_members,
+    r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let {a, c: _} = v;
+    x <- 1;
+    y <- "w";
+    a
+}"#,
+    prints("[i64:1]")
+);
+
+run!(
+    parameter_partial_struct_over_decided_members,
+    r#"{
+    type S<'p, 'q> = [{a: i64, c: 'p}, {a: i64, c: 'q}];
+    let f = |{a, ..}: S<i64, i64>| a;
+    f({a: 1, c: 1})
+}"#,
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
 // A capture over a partial struct pattern stands over the whole value, so a
 // field read through it takes the value's index.
 run!(

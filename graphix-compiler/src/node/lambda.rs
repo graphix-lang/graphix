@@ -1739,6 +1739,7 @@ impl<R: Rt> GXLambda<R> {
                 ctx,
                 &atyp.typ,
                 &a.pattern,
+                Holder::Formal,
                 scope,
                 a.pos.0,
                 origin.clone(),

@@ -100,6 +100,8 @@ impl Family {
                 "expected struct not",
                 "the members' fields differ",
                 "not decided at this select",
+                "not decided at this let",
+                "not decided at this parameter",
                 "matches more than one member",
             ],
             Family::VariantWiden => &["missing match cases"],

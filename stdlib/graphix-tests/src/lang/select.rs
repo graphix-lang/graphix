@@ -6143,6 +6143,29 @@ run!(partial_struct_unnamed_read_cells_annotated_where_built, r#"{
     select v { {a: Array<string>, c: string} as s => s.c, {a, ..} => w }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "w"); FuseExpect::Jit);
 
+// Under a written test, the test's own variables are the undecided types,
+// written by their names.
+run!(partial_struct_under_a_test_of_undecided_members_refused, r#"{
+    let t = true;
+    let x = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let r = select v { [{a: Array<i64>, c: 'p}, {a: Array<i64>, c: 'q}] as {a, ..} => a };
+    x <- 1;
+    y <- 2;
+    r
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: 'p } and { a: Array<i64>, c: 'q }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field"); FuseExpect::None);
+
+run!(partial_struct_under_a_test_of_decided_members, r#"{
+    let t = true;
+    let x: i64 = never();
+    let y: string = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: [2], c: y} };
+    let r = select v { [{a: Array<i64>, c: i64}, {a: Array<i64>, c: string}] as {a, ..} => a };
+    x <- 1;
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1]); FuseExpect::Jit);
+
 run!(partial_struct_unnamed_cell_beside_a_named_one_refused, r#"{
     let b = true;
     let x = never();
