@@ -680,7 +680,8 @@ implementation, `'k` at its place and `'p` as its witness
 The order a call decides its variables in is not modelled, so some
 implementations every instance of which is held are refused: a variable
 with no witness at two places of one signature variable that the first of
-them decides (`sig-one-type-order-01`). Pins: `lang::interfaces`
+them decides (`design/tvar_constraints.md`, "refusal does not model which
+place of a signature variable a call decides first"). Pins: `lang::interfaces`
 `an_unpaired_variable_*_is_one_type` with their twins
 (`*_is_its_own_bound`, `*_holds`), `a_variable_paired_by_*`,
 `an_unpaired_variable_in_an_argument_must_be_admitted`,

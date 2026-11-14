@@ -4398,6 +4398,10 @@ impl FnType {
         // every generated pick (g3/h21_0307, of sig-one-type-order-01's kind). probes:
         // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/review/{a4,a1,a6}/main.gx,
         // tr/k3.gx there (README) (inst-settle-all-01)
+        // 2026-11-14 claude: Round 25 review of sig-one-type-order-01: that CR is closed
+        // by D36 and deleted; g3/h21_0307 is refused at --check on base-r25 (over-refusal,
+        // no order of it runs), so it is no longer a case that ran at every pick.
+        // design/tvar_constraints.md names the refusal and its rewrites.
         let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
             let mut placed: LPooled<AddrSet> = LPooled::take();
             own.for_each_type(&mut |t| {
