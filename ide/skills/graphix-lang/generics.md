@@ -313,7 +313,10 @@ and a `&mut` of it is refused: to write it at one type, write that type
 on its `let` (`let j: fn(x: i64) -> i64 = s.g`). Arms holding lambdas
 over two declared variables (`|p: 'a| p` beside `|q: 'b| q`) stay two
 members, and a call through them is refused, naming both: give both one
-variable, or one written type.
+variable, or one written type. A read of a declared variable's value (a call,
+`.x`, `.0`) takes its declaration's bound: the variable is rigid in the body,
+so annotating a binding does not help; declare `'a: fn(x: i64) -> i64`,
+`'a: {x: i64}` or `'a: (i64, i64)`, or write the type in its place.
 
 ```graphix,cases
 no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
@@ -326,6 +329,9 @@ no "i64 does not contain string" let mk = |z| |x| x; let s = {f: |x| x, g: |y| y
 ok let mk = |z| |x| x; let s = {f: |x| x, g: |y| y}; let t = {s with g: mk(0)}; (t.f(1), t.f("s"), t.g(2))
 no "needs its type known here" let s = {f: |x| x}; let j = never(); let t = {s with f: j}; let r = t.f("s"); j <- |x: i64| x + 1; r
 ok let s = {f: |x| x}; let j: fn(x: i64) -> i64 = never(); let t = {s with f: j}; let r = t.f(2); j <- |x: i64| x + 1; r
+no "needs the type of `'a` known here: the definition declares `'a`" let f = |a: 'a| a(1); f(|x| x + 1)
+no "needs the type of `'a` known here: the definition declares `'a`" let f = 'a: Number |a: 'a| a(1); f(1)
+ok let f = 'a: fn(x: i64) -> i64 |a: 'a| a(1); f(|x| x + 1)
 ok let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => r.f(v) } }; (k(2), k(-2))
 no "i64 does not contain string" let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => (r.f(v), r.f("s")) } }; k(2)
 no "one of fn(p: 'a: i64) -> 'a: i64 and fn(q: 'b: string) -> 'b: string; write one variable in both, or one written type in both" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)

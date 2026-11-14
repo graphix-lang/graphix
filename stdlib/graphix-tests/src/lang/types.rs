@@ -12846,7 +12846,7 @@ run!(
 // never a typedef of the trait's name.
 run!(
     trait_bound_is_read_through_as_no_typedef,
-    refused("reading a struct needs its type known here"),
+    refused("reading a struct needs the type of `'a` known here"),
     "/test.gx" => r#"
         trait Sh { val sh: fn(self) -> string };
         impl Sh for i64 { let sh = |s| "i" };
@@ -14905,6 +14905,18 @@ run!(
     FuseExpect::None
 );
 
+// A read through a variable the definition declares is refused naming its
+// declaration, where no annotation of a binding helps.
+run!(
+    a_call_through_a_declared_variable_names_its_declaration,
+    r#"{
+  let f = |a: 'a| a(1);
+  f(|x| x + 1)
+}"#,
+    refused("reading a fn needs the type of `'a` known here: the definition declares `'a`, so declare a bound it reads as a fn, `'a: fn(..) -> ..`");
+    FuseExpect::None
+);
+
 run!(
     a_struct_update_through_a_union_of_bounded_variables,
     r#"{
@@ -14912,6 +14924,26 @@ run!(
   (f(true, {x: 1, z: 5}, {a: 7, x: 2}), f(false, {x: 1, z: 5}, {a: 7, x: 2}))
 }"#,
     prints("[[[\"x\", i64:9], [\"z\", i64:5]], [[\"a\", i64:7], [\"x\", i64:9]]]");
+    FuseExpect::None
+);
+
+run!(
+    a_call_through_a_declared_variable_with_a_bound_a_fn_has,
+    r#"{
+  let f = 'a: fn(x: i64) -> i64 |a: 'a| a(1);
+  f(|x| x + 1)
+}"#,
+    prints("i64:2");
+    FuseExpect::Jit
+);
+
+run!(
+    a_call_through_a_declared_variable_with_a_bound_no_read_takes,
+    r#"{
+  let f = 'a: Number |a: 'a| a(1);
+  f(1)
+}"#,
+    refused("reading a fn needs the type of `'a` known here");
     FuseExpect::None
 );
 
@@ -14926,6 +14958,16 @@ run!(
 );
 
 run!(
+    a_call_through_a_select_of_declared_variables_names_the_declaration,
+    r#"{
+  let f = |c: bool, a: 'a, b: 'b| (select c { true => a, false => b })(1);
+  f(true, |x| x, |x| x)
+}"#,
+    refused("reading a fn needs the type of `'a` known here: the definition declares `'a`");
+    FuseExpect::None
+);
+
+run!(
     a_field_read_through_a_variable_no_bound_reads_beside_a_bounded_one_needs_its_type,
     r#"{
   let f = 'a: Number, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
@@ -14933,6 +14975,46 @@ run!(
 }"#,
     refused("reading a struct needs its type known here");
     FuseExpect::None
+);
+
+run!(
+    a_field_read_through_a_declared_variable_names_its_declaration,
+    r#"{
+  let f = |a: 'a| a.x;
+  f({x: 1})
+}"#,
+    refused("reading a struct needs the type of `'a` known here: the definition declares `'a`, so declare a bound it reads as a struct, `'a: {..}`");
+    FuseExpect::None
+);
+
+run!(
+    a_field_read_through_a_declared_variable_with_a_bound_a_struct_has,
+    r#"{
+  let f = 'a: {x: i64} |a: 'a| a.x;
+  f({x: 1})
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    a_tuple_read_through_a_declared_variable_names_its_declaration,
+    r#"{
+  let f = |a: 'a| a.0;
+  f((1, 2))
+}"#,
+    refused("reading a tuple needs the type of `'a` known here: the definition declares `'a`, so declare a bound it reads as a tuple, `'a: (..)`");
+    FuseExpect::None
+);
+
+run!(
+    a_tuple_read_through_a_declared_variable_with_a_bound_a_tuple_has,
+    r#"{
+  let f = 'a: (i64, i64) |a: 'a| a.0;
+  f((1, 2))
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
 );
 
 // A member the read refuses decides the refusal, whatever the open one

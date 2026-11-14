@@ -324,7 +324,7 @@ macro_rules! deref_typ {
                                 _ => false,
                             };
                             if $crate::node::needs_member_type(&$ctx.env, ms, reads) {
-                                return Err($crate::node::unknown_read($name));
+                                return Err($crate::node::unknown_read($name, &nt));
                             }
                             $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                                 match ($union)(&$ctx.env, &nt) {
@@ -340,7 +340,7 @@ macro_rules! deref_typ {
                     })?,
                     None => match $crate::node::read_bound(&$ctx.env, bound.take())? {
                         Some(b) => typ = Some(b),
-                        None => return Err($crate::node::unknown_read($name)),
+                        None => return Err($crate::node::unknown_read($name, &$typ)),
                     },
                 }
             }
@@ -414,7 +414,7 @@ pub fn needs_member_type(
     open
 }
 
-// CR claude for claude: [bug/low] A read through a variable its definition declares
+// XCR claude for claude: [bug/low] A read through a variable its definition declares
 // names a remedy already written: `let f = |a: 'a| a(1); f(|x| x + 1)` and `let f = 'a:
 // Number |a: 'a| a(1); f(1)` say "reading a fn needs its type known here: annotate the
 // binding", the binding being annotated `'a`; `a.x` and `a.0` say the same for a
@@ -426,11 +426,50 @@ pub fn needs_member_type(
 // "expected fn not ..". base-r24 alike. Found reviewing or-name-open-parts-call-01.
 // probes: ~/ptmp/cr29/scratch/r24/24g/orname-review/{q1,q2,s1,s4,t1}.gx
 // (rigid-read-remedy-01)
-/// The refusal of a read of a `name` (a fn, a struct, a tuple) through a
-/// type not yet known.
+// 2026-11-14 claude: unknown_read now takes the type read and, where it is or holds a
+// variable the definition being checked declares (TVar::declared_name), says the
+// variable is rigid and names the remedy in its declaration ('a: fn(..) -> .. / {..} /
+// (..)) instead of 'annotate the binding'; undeclared open cells keep the old text.
+// Message-only: no verdict changes. Pins fail without it:
+// lang::types::a_call_through_a_declared_variable_names_its_declaration,
+// ..._with_a_bound_no_read_takes,
+// a_call_through_a_select_of_declared_variables_names_the_declaration,
+// a_field_read_/a_tuple_read_through_a_declared_variable_names_its_declaration,
+// trait_bound_is_read_through_as_no_typedef (message rewritten); twins with a bound a
+// read takes pass; generics.md cases fence.
+/// The refusal of a read of a `name` (a fn, a struct, a tuple) through
+/// `typ`, a type not yet known. Where `typ` holds a variable the definition
+/// being checked declares, that variable is rigid and no annotation of a
+/// binding gives it a type: the remedy is in its declaration.
 #[doc(hidden)]
-pub fn unknown_read(name: &str) -> anyhow::Error {
-    anyhow!("reading a {name} needs its type known here: annotate the binding")
+pub fn unknown_read(name: &str, typ: &Type) -> anyhow::Error {
+    match declared_open(typ) {
+        Some(var) => {
+            let bound = match name {
+                "fn" => "fn(..) -> ..",
+                "struct" => "{..}",
+                _ => "(..)",
+            };
+            anyhow!(
+                "reading a {name} needs the type of `'{var}` known here: the definition \
+                 declares `'{var}`, so declare a bound it reads as a {name}, `'{var}: \
+                 {bound}`, or write its type there"
+            )
+        }
+        None => {
+            anyhow!("reading a {name} needs its type known here: annotate the binding")
+        }
+    }
+}
+
+/// The name of a variable the definition being checked declares that `typ`
+/// is or holds as a member of a union.
+fn declared_open(typ: &Type) -> Option<ArcStr> {
+    match typ {
+        Type::TVar(tv) => tv.declared_name(),
+        Type::Set(ms) => ms.iter().find_map(declared_open),
+        _ => None,
+    }
 }
 
 pub(crate) use crate::expr::NOP;
