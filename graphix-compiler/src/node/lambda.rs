@@ -2798,12 +2798,12 @@ impl<R: Rt> DefGate<R> {
     fn tell_held(&self, ide: &mut Ide, spec: &Expr) {
         let Some(end) = spec.end.get() else { return };
         let mut cells = SmallVec::new();
-        self.sig.each_quantifier(|_, tv| {
+        self.sig.each_quantifier(|name, tv| {
             if let Some(c) = tv.open_cell()
                 && !c.level().is_generic()
                 && c.level().depth() >= self.depth
             {
-                cells.push(c)
+                cells.push(c.renamed(name.clone()))
             }
         });
         if !cells.is_empty() {

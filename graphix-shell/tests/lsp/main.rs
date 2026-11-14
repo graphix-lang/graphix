@@ -141,6 +141,23 @@ rf(1) + rs(2, 3)
     assert_eq!(detail("|rf(1)", "rf").as_deref(), Some(generic));
 }
 
+/// A cell a definition declares hovers by its declared name in the
+/// definition's text, whichever handle of it the hovered type reaches: a
+/// pattern bind of a `let rec`'s argument, and a collection built over it.
+#[test]
+fn a_declared_cell_hovers_by_its_declared_name() {
+    const SRC: &str = "\
+let rec rf = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a| -> 'a select x { n => rf(n, g) };
+let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e| e); x };
+rf(1, |y| y) + k(2)
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "(|n, g)", "n: 'a");
+    hover_is(&mut c, "let |m ", "m: Array<'a>");
+}
+
 /// A variable a call decided hovers, and outlines, as the type it was
 /// decided to be, as a message prints it, whatever bound it carries; one
 /// a declared variable's cell holds, an inferred return's or an inferred

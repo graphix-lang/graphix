@@ -3896,7 +3896,7 @@ impl HeldQuantifiers {
         Self { held, declared: Declared::current() }
     }
 
-    // CR claude for claude: [readability/low] A hover in a definition's
+    // XCR claude for claude: [readability/low] A hover in a definition's
     // text names a cell the definition declares by whatever handle reached
     // it, where a message made in the body names it by its declared name
     // (`Declared`): in `let rec rf = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a|
@@ -3921,11 +3921,26 @@ impl HeldQuantifiers {
     // the cell 'a; re-run with
     // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/lsp_hover.py p8
     // main.gx 'let |m ' on the 25g build.
+    // 2026-11-14 claude: Each handle of HeldSpan::cells carries its declared
+    // name (lambda.rs tell_held); HeldQuantifiers::resolving names the copies
+    // by it in a Declared frame. Pin: graphix-shell/tests/lsp/main.rs
+    // a_declared_cell_hovers_by_its_declared_name (base-r25 hovers n: '_8176
+    // and m: Array<'b>).
     /// `typ` resolved ([`Type::resolve_tvars`]), and what it prints by: the
-    /// copies of the open cells of `held` it holds.
+    /// copies of the open cells of `held` it holds, each named by the name
+    /// its handle in `held` carries when that is a declared name.
     pub fn resolving(typ: &Type, held: &[TVar]) -> (Type, Self) {
         let (typ, held) = typ.resolve_tvars_copying(held);
-        (typ, Self { held, declared: Declared::default() })
+        let vars: SmallVec<[TVar; 2]> =
+            held.iter().filter(|c| !c.name.starts_with('_')).cloned().collect();
+        let declared = match vars.is_empty() {
+            true => Declared::default(),
+            false => Declared(Some(Arc::new(DeclaredFrame {
+                vars,
+                outer: Declared::default(),
+            }))),
+        };
+        (typ, Self { held, declared })
     }
 
     /// The copies of the held cells the resolved type holds.

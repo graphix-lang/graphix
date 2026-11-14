@@ -156,7 +156,8 @@ pub struct ExprTypeSite {
 /// The quantifiers a named definition's close generalized, over its text
 /// `[pos, end)`: a type shown there holds them as the definition's own,
 /// which no call picks, as a message made in the body prints them
-/// ([`crate::typ::tvar::HeldQuantifiers`]).
+/// ([`crate::typ::tvar::HeldQuantifiers`]). Each handle in `cells` carries
+/// the name the definition declares its cell by.
 #[derive(Debug, Clone)]
 pub struct HeldSpan {
     pub ori: Arc<Origin>,
