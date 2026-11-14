@@ -15427,3 +15427,53 @@ run!(
     refused("'b: Array<[i64, string]> does not contain Array<f64>");
     FuseExpect::None
 );
+
+// A bound that names a typedef holds the name's parameter to the parameter's
+// bound in the signature that writes it, where no argument has met it.
+run!(
+    bound_name_parameter_beside_an_argument_breaking_its_bound_refused,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  let f = 'a: N<'b> |x: 'b, y: Array<'a>| x;
+  f("s", [])
+}"#,
+    refused("'b: unbound within Number does not contain string");
+    FuseExpect::None
+);
+run!(
+    bound_name_parameter_beside_an_argument_within_its_bound,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  let f = 'a: N<'b> |x: 'b, y: Array<'a>| x;
+  f(1, [])
+}"#,
+    is(Value::I64(1))
+);
+run!(
+    bound_name_parameter_beside_an_argument_breaking_its_bound_through_a_wrapper_refused,
+    r#"{
+  type N<'t: Number> = ['t, null];
+  let f = 'a: N<'b> |x: 'b, y: Array<'a>| x;
+  let h = |v| f(v, []);
+  h("s")
+}"#,
+    refused("unbound within Number does not contain string");
+    FuseExpect::None
+);
+run!(
+    bound_name_parameter_no_error_beside_an_error_argument_refused,
+    r#"{
+  let f = 'a: Result<'b, `E> |x: 'b, y: Array<'a>| x;
+  f(error(`Q), [])
+}"#,
+    refused("unbound within NoError does not contain Error");
+    FuseExpect::None
+);
+run!(
+    bound_name_parameter_no_error_beside_a_value_argument,
+    r#"{
+  let f = 'a: Result<'b, `E> |x: 'b, y: Array<'a>| x;
+  f(1, [])
+}"#,
+    is(Value::I64(1))
+);

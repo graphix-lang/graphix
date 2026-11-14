@@ -2755,7 +2755,10 @@ the two apart. A typedef parameter's bound applies where the reference
 expands (`lookup_ref_by`): an open argument takes the conjunct, a known
 one is checked, so `Result<[i64, Error<`F>], `E>` is refused, and a
 generic definition's variable passed as `Result`'s success type carries
-it in its signature.
+it in its signature. A written name is held the same way where it is
+written (`TypeRef::check_application`): in `'a: Result<'b, `E>` the cell
+`'b` takes `NoError` as its own conjunct at the signature, so a call that
+leaves `'a` undecided still refuses an `'b` the bound rejects.
 
 - `NoError ⊇ t` (`Type::may_be_error` negated) reads `t`'s members
   through bindings and type references; an error nested in a collection

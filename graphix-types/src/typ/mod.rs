@@ -1499,7 +1499,7 @@ impl TypeRef {
         }
     }
 
-    // CR claude for claude: [bug/medium] The check accepts and the build refuses a call
+    // XCR claude for claude: [bug/medium] The check accepts and the build refuses a call
     // that leaves undecided a variable whose bound names a typedef with a bounded
     // parameter, where another argument breaks that parameter's bound. `type N<'t:
     // Number> = ['t, null]; let f = 'a: N<'b> |x: 'b, y: Array<'a>| x; f("s", [])`
@@ -1517,6 +1517,13 @@ impl TypeRef {
     // them for the bounds it drops (contains.rs merge_bare_cycle). probes:
     // ~/ptmp/cr29/scratch/r24/24c/bcnb/{m2,m12,m14}.gx, m13.gx (runs)
     // (named-bound-param-unheld-01)
+    // 2026-11-14 claude: check_application (typ/mod.rs) gives a bare open variable
+    // argument its parameter's bound where the name is written, so a signature's 'a:
+    // N<'b> holds 'b to Number before any call; m2/m12/m14 are refused at the call ('b:
+    // unbound within Number does not contain string; NoError does not contain Error<..>),
+    // m13 f(1, []) runs. Pins in lang/types.rs bound_name_parameter_* (12 cases fail
+    // without the fix: the three refusals x 4 modes). The non-variable-argument half is
+    // named-bound-arg-decides-01 and stands: i1/i3/t2 behave as before.
     // CR claude for claude: [bug/low] A bounded parameter's bound decides, or refuses,
     // an undecided argument that is not a bare open variable. `type N<'t: Number> = ['t,
     // null]; type I<'t> = 't; let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y); let h = |v|
@@ -1621,8 +1628,10 @@ impl TypeRef {
 
     /// Refuse this application of a name that resolves when it gives the
     /// definition the wrong number of parameters, or a parameter holding
-    /// no open cell that the parameter's bound refuses. Never writes a
-    /// cell.
+    /// no open cell that the parameter's bound refuses. A parameter that
+    /// is a bare open variable takes the parameter's bound, as an
+    /// expansion gives it ([`Self::hold_bounds_of`]); no other cell is
+    /// written.
     pub fn check_application(&self, env: &Env) -> Result<()> {
         let Some(def) = self.resolve_peek(env) else { return Ok(()) };
         def.check_arity(&self.name, &self.params)?;
@@ -1630,8 +1639,12 @@ impl TypeRef {
         for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
             let Some(bound) = bound else { continue };
             let bound = bound.replace_tvars(&known);
-            if !arg.has_unbound() && !bound.has_unbound() {
-                bound.check_contains(env, arg)?
+            match arg {
+                Type::TVar(tv) if !tv.is_bound() => tv.add_cell_constraint(bound),
+                _ if !arg.has_unbound() && !bound.has_unbound() => {
+                    bound.check_contains(env, arg)?
+                }
+                _ => (),
             }
         }
         Ok(())
