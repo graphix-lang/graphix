@@ -1648,38 +1648,6 @@ impl<R: Rt> Qop<R> {
             }
             let etyp =
                 if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
-            // XCR claude for claude: [bug/medium] A build refuses a call the check
-            // accepted where a function raises with `?` over a union holding a bare
-            // variable and the call's value puts an error into that variable. `let f =
-            // |x: ['a, Error<`A>]| x?; let v: [i64, Error<`A>, Error<`B>] = error(`B); let
-            // r = { catch(e) e ~ select e.0.error { `A => -1 }; f(v) }` passes `--check`
-            // and the run fails "in the instance of f(v) .. this error reaches a catch
-            // whose handler was checked to take Error<ErrChain<`A>>: type mismatch
-            // Error<ErrChain<`A>> does not contain Error<ErrChain<[`A, `B]>>"
-            // (GRAPHIX_ELAB_AUDIT=1 reports it). With the arm `B => -2 added the check
-            // and the build both refuse it, "unreachable arm", so only `catch(e:
-            // Error<ErrChain<[`A, `B]>>)` builds. The definition's check takes the errors
-            // off `['a, Error<`A>]`, so its signature throws `A alone and that is what
-            // the call's check joins into the catch (CallSite::raise_throws); the
-            // instance's operand is `[i64, Error<`A>, Error<`B>]`, and the join below
-            // raises both. base-r24 and lane 24d alike. `|x: ['a, Error<'e>]| x?` splits
-            // the same way over a value of two error tags, where the first decides 'e
-            // and the other goes to 'a (value-members-one-cell-order-01). With `'a:
-            // NoError` declared the call is refused where it is written, "['a: unbound
-            // within NoError, Error<`A>] does not contain [i64, Error<`A>, Error<`B>]".
-            // What would fix it: a `?` whose operand's union holds a bare variable with
-            // no NoError bound is refused at the definition, naming the bound to
-            // declare; that needs a census. probes:
-            // ~/ptmp/cr29/scratch/r24/24d/upm-rev/{w2,w3,w5,w6,c2run}.gx, catch.txt
-            // (qop-open-member-errors-01)
-            // 2026-11-14 claude: A `?` whose operand holds an open member (a declared
-            // variable or an undecided cell) with no NoError conjunct beside a decided
-            // error member is refused where it is written
-            // (Strip::open_member_raising_nothing), naming 'a: NoError to declare or the
-            // cell to annotate; `$` is untouched. Pins lang::types::qop_over_* (the four
-            // refusals fail in every mode with the call removed; the NoError, Result and
-            // annotated twins run); skill cases. Census 2967 files: no verdict or message
-            // change from this commit. Needs a soak.
             join_raised(&ctx.env, handler, &etyp)?;
         }
         Ok(())
