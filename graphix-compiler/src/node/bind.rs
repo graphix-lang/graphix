@@ -303,6 +303,8 @@ impl<R: Rt> Bind<R> {
         b: &expr::BindExpr,
     ) -> Result<Node<R>> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
+        let declares_method = netidx_core::path::Path::basename(&*scope.lexical)
+            .is_some_and(crate::is_method_block);
         let annotation = match annotation {
             Some(t) => {
                 // CR claude for claude: [bug/low] One module text gives a let's
@@ -325,8 +327,6 @@ impl<R: Rt> Bind<R> {
                 // (annotation-typedef-form-01)
                 let t = t.scope_refs(&scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
-                let declares_method = netidx_core::path::Path::basename(&*scope.lexical)
-                    .is_some_and(crate::is_method_block);
                 let t = match declares_method {
                     true => t.rewrite_declared_args(&ctx.env)?,
                     false => t.rewrite_trait_args(&ctx.env)?,
@@ -371,7 +371,7 @@ impl<R: Rt> Bind<R> {
             let pattern = compile_pattern(ctx, &typ)?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
-            // CR claude for claude: [bug/low] A `let rec` method whose declared signature
+            // XCR claude for claude: [bug/low] A `let rec` method whose declared signature
             // holds a variable beside a written member under one constructor, ahead of the
             // position that decides it, cannot be implemented: `trait T { val m: fn(self, x:
             // [Array<'a>, Array<string>], y: 'a) -> i64 }; impl T for i64 { let rec m = |s,
@@ -385,7 +385,21 @@ impl<R: Rt> Bind<R> {
             // signature (traits::signature_of), which this compile cannot tell from an
             // annotation the method wrote, whose variables the value decides. probes:
             // ~/ptmp/cr29/scratch/r24/24d/mum/{r1,r2}.gx (rec-method-union-member-01)
-            if !typ.contains(&ctx.env, ntyp).at(&spec)? {
+            // a method's containment is `check_value`'s, with the declaration's
+            // variables held rigid by its impl or trait
+            // 2026-11-14 claude: A method-block let rec no longer runs the compile-time
+            // containment of its annotation against the lambda: that one ran before
+            // Impl/Trait::typecheck0 held the declaration's variables rigid, so a written
+            // member took the declaration's variable; the same containment is check_value's,
+            // which runs under those gates (as for a non-rec method). Pins that fail without
+            // it:
+            // lang::traits::method_rec_variable_beside_a_written_member_ahead_of_its_decider
+            // (CR probe) and method_rec_annotation_the_value_does_not_fit_is_refused
+            // (message); method_rec_written_annotation_decides_its_variable keeps a written
+            // annotation's own variable accepted. A rec method whose annotation is written
+            // identical to the declaration is still refused as its non-rec twin is
+            // (method_let_annotation_variable_ahead_of_its_decider_is_the_written_members).
+            if !declares_method && !typ.contains(&ctx.env, ntyp).at(&spec)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bailat!(spec, "match error {ntyp} can't be matched by {typ}")
                 })?

@@ -6167,6 +6167,42 @@ run!(
     ; FuseExpect::None
 );
 
+run!(
+    method_rec_variable_beside_a_written_member_ahead_of_its_decider,
+    prints("[i64:0, i64:0]"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> i64 };
+        impl T for i64 {
+            let rec m = |s, x, y| select s { 0 => 0, n => m(n - 1, x, y) }
+        };
+        let result = (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+    "#
+);
+
+run!(
+    method_rec_written_annotation_decides_its_variable,
+    is(Value::I64(5)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: i64) -> i64 };
+        impl T for i64 {
+            let rec m: fn(self, x: 'b) -> i64 = |s, x| select s { 0 => x, n => m(n - 1, x) + 1 }
+        };
+        let result = T::m(2, 3)
+    "#
+);
+
+run!(
+    method_rec_annotation_the_value_does_not_fit_is_refused,
+    refused("type mismatch string does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: i64) -> i64 };
+        impl T for i64 {
+            let rec m: fn(self, x: string) -> i64 = |s, x| select s { 0 => 0, n => m(n - 1, x) }
+        };
+        let result = T::m(2, 3)
+    "#
+);
+
 // Where the declaration holds the method's type from above (its result,
 // a callback's parameter) and no parameter before it holds the variable,
 // the lambda's own variable there could be the declaration's or the
