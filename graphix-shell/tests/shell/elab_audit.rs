@@ -42,3 +42,38 @@ fn an_instance_leaves_open_what_its_call_left_open() {
     assert_eq!(ran.stdout.lines().last(), Some("(7, 7)"), "{}", ran.stdout);
     assert!(!ran.stderr.contains("ELAB-AUDIT"), "{}", ran.stderr);
 }
+
+/// A site's return that holds a union lower bound member by member takes
+/// an instance's equal union as the same bound: the unify-back narrows
+/// nothing, under the second check as under substitution.
+#[test]
+fn an_instance_returning_the_sites_union_narrows_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = "type B<'p> = Abstract<'p>;\n\
+                   let t = sys::time::timer(duration:10.ms, false);\n\
+                   let go = |t| {\n\
+                     let x = never();\n\
+                     let b = B([x]);\n\
+                     b <- B(x);\n\
+                     let v = b.0;\n\
+                     x <- t ~ 1;\n\
+                     println(array::map([v], |e| e));\n\
+                     null\n\
+                   };\n\
+                   go(t);\n\
+                   sys::exit(sys::time::after_idle(duration:100.ms, 0))\n";
+    for env in [
+        &[("GRAPHIX_ELAB_AUDIT", "1")][..],
+        &[("GRAPHIX_ELAB_AUDIT", "1"), ("GRAPHIX_NO_SUBST", "1")][..],
+    ] {
+        let ran = graphix(dir.path(), program, &["--no-cache"], env);
+        assert!(ran.status.success(), "{}", ran.stderr);
+        assert_eq!(
+            ran.stdout.lines().collect::<Vec<_>>(),
+            ["[[1]]", "[1]"],
+            "{}",
+            ran.stdout
+        );
+        assert!(!ran.stderr.contains("ELAB-AUDIT"), "{env:?}: {}", ran.stderr);
+    }
+}

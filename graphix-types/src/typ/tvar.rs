@@ -2779,8 +2779,10 @@ impl TVar {
     /// binding's are.
     pub(crate) fn add_lower(&self, t: Type) {
         let cell = self.cell();
-        if cell.read().lower.iter().any(|e| union_identical(e, &t) || union_member(e, &t))
-        {
+        let held = |m: &Type| {
+            cell.read().lower.iter().any(|e| union_identical(e, m) || union_member(e, m))
+        };
+        if held(&t) || matches!(&t, Type::Set(ms) if ms.iter().all(held)) {
             return;
         }
         require_bounds(&self.cell_constraints(), &t);

@@ -3387,6 +3387,24 @@ impl<R: Rt> CallSite<R> {
             // (~/ptmp/cr29/scratch/r24/24b/pbas-rev/gen3.py). probes:
             // ~/ptmp/cr29/scratch/r24/24b/pbas-rev/{ns1,ns1_top,ns1_id}.gx
             // (nosubst-unify-back-self-union-01)
+            // 2026-11-14 claude: PARTIAL. Cause found: TVar::add_lower deduped a new lower
+            // bound only against each existing lower one at a time, so a union lower whose
+            // members the cell already held as separate lowers (a TVar bound to i64 and
+            // Array<TVar bound to i64>) was pushed as a further member and printed as a
+            // nested self-union. add_lower now also returns when every member of a Set
+            // bound is already held. Pin: graphix-shell tests
+            // shell::elab_audit::an_instance_returning_the_sites_union_narrows_nothing
+            // (fails without the fix under GRAPHIX_NO_SUBST=1, passes with it); ns1.gx is
+            // silent. What remains: in the gen3.py corpus
+            // (~/ptmp/cr29/scratch/r25/25d/aud.sh runs it, 1275 programs,
+            // GRAPHIX_NO_SUBST=1 GRAPHIX_ELAB_AUDIT=1) 20 programs report on base-r25 and
+            // 18 still do, e.g. gen p0050 (b = B((1,[x])); b <- B((2,x)); select b.0
+            // {..}): there the site's lowers hold the definition's open cell of x and the
+            // second check's instance returns a Set over fresh open cells of its own, so
+            // the added bound is a genuinely different union by cell identity (printed
+            // '_N_2, '_N_3), not a duplicate; making them agree needs the instance's cells
+            // unified with the site's, not a dedupe. Programs run right; the shipped mode
+            // substitutes and is unaffected. Left as a CR for that remainder.
             let before =
                 dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if !site_ft.rtype.prove_ground() {
