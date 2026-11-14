@@ -395,10 +395,12 @@ impl), so a function made in it still dispatches through the module's
 trait wherever it is first called; its functions pin the interface's
 dispatchers and impl methods from the load's compile
 (`LoadedBody::declare`), and a reload that fails gives nothing
-(`LoadedBody::revive`). The import tables stay (CR
-`dropped-import-tables-01`), and a function that outlives a dropped
-declaration, a static one or one in a load an embedder drops, binds at
-no new call site (CR `escaped-fn-dropped-trait-01`). Pins:
+(`LoadedBody::revive`). The import tables at scopes that cross a body
+go with their input ("A body's table goes with its input", below); the
+one at the module's own path stays (CR `root-module-table-01`). A
+function that outlives a dropped declaration, a static one or one in a
+load an embedder drops, binds at no new call site (CR
+`escaped-fn-dropped-trait-01`). Pins:
 `lib_tests::leaks::a_dropped_module_takes_its_declared_core_impl`,
 `a_dropped_module_takes_its_declared_trait_and_impl`,
 `a_dropped_interface_module_takes_what_its_interface_declared`,
