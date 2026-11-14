@@ -413,11 +413,13 @@ can keep the original member slice.
   probe of a member that is an application asks `closed` at the count
   the union is met at). They part too at a part that waits for the end
   of a function's arguments, which a trial begun inside them binds at
-  once. A trial that met one allows no placement, and a placement that
-  meets one asks a trial at each such union from there: the trials are
+  once. A placement that meets one asks a trial at each such union from
+  there, the unions ahead of it taking the trial's word: the trials are
   saved only where no member is a choice, which is where the
   applications of two definitions with one body are. Pins `typ::contains::tests::
   a_placement_leaves_its_trial_at_a_choice_between_members`,
+  `a_union_ahead_of_a_choice_between_members_asks_no_trial_of_its_own`
+  (14 steps a union fewer than with a trial each),
   `a_member_decided_since_the_walk_met_it_takes_a_decided_type`,
   `closed_now_reads_the_cells_after_closed_answered_from_a_kept_verdict`,
   `lang::types::

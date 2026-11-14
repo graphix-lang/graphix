@@ -208,14 +208,11 @@ pub(super) struct ContainsHist {
     /// trial of their own.
     proved: bool,
     /// The walk places a union's members in an order a trial placed them
-    /// all in ([`Type::place_in_order`]), and neither has met a choice
-    /// since ([`Self::strays`]): that trial took each union below with
-    /// two members holding open cells as written, and so does this
-    /// placement, with no trial of its own.
+    /// all in ([`Type::place_in_order`]), and has met no choice since
+    /// ([`Self::strays`]): that trial took each union below with two
+    /// members holding open cells as written, and so does this placement,
+    /// with no trial of its own.
     as_tried: bool,
-    /// The walk met a choice ([`Self::strays`]): were it a trial, it
-    /// vouches for no union below the one it placed.
-    chose: bool,
     /// A union's first member that holds a type takes it (a walk that
     /// binds copies alone, a select's patterns), where any other walk
     /// refuses a choice between two ([`AmbiguousMember`]).
@@ -372,7 +369,6 @@ impl ContainsHist {
             trial: false,
             proved: false,
             as_tried: false,
-            chose: false,
             ordered: false,
             early: false,
             identical: IdenticalMemo::default(),
@@ -427,7 +423,6 @@ impl ContainsHist {
     /// between a union's members, which the trial makes by their order
     /// and the walk judges.
     fn strays(&mut self) {
-        self.chose = true;
         self.as_tried = false
     }
 
@@ -5548,7 +5543,7 @@ impl Type {
     /// does. A [`ContainsHist::trial`] that places them took every union
     /// below with two members holding open cells as written, so the
     /// placement it allows does too (`as_tried`), asking no trial of its
-    /// own for them until either meets a choice ([`ContainsHist::strays`]).
+    /// own for them until it meets a choice ([`ContainsHist::strays`]).
     fn place_in_order(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -5585,7 +5580,7 @@ impl Type {
             let mut on_copies = trial();
             hist.seed(&mut on_copies, &mut known, env, inherit);
             if place(flags, env, &mut on_copies, &copy0, c0, &copy1)? {
-                // CR claude for claude: [perf/low] ContainsHist::chose changes no verdict any
+                // XCR claude for claude: [perf/low] ContainsHist::chose changes no verdict any
                 // test or the differential shows, and costs trials. It was added for the stale
                 // answer set-commit-stale-closure-01 fixed: a trial that had met a choice could
                 // have read a member as undecided where its placement read it decided. Now a
@@ -5608,7 +5603,18 @@ impl Type {
                 // design/tvar_constraints.md ("allows it for no union below"), or pin a pair
                 // that needs it. probes: ~/ptmp/cr29/scratch/r24/24d/scs-rev/ (README;
                 // port.py knob 4) (trial-chose-redundant-01)
-                let tried = hist.as_tried || (on_copies.trial && !on_copies.chose);
+                // 2026-11-14 claude: ContainsHist::chose and its half of strays are deleted:
+                // the placement a trial allows (place_in_order) now takes the trial's word for
+                // the unions it walks ahead of the first choice, and clears as_tried itself
+                // where it meets one. Pin
+                // typ::contains::tests::a_union_ahead_of_a_choice_between_members_asks_no_trial_of_its_own
+                // (steps per union ahead of the choice: 62 with chose, 48 without; fails with
+                // chose restored: n=1 234 steps against 172). graphix-types 667, graphix-tests
+                // lib 24322, deep_nesting 51 pass; no verdict pin changed. Docs:
+                // design/tvar_constraints.md and type_operation_scaling.md. guicheck
+                // instructions base-r25 39.717e9, lane 39.761e9 (earlier lane commits
+                // included).
+                let tried = hist.as_tried || on_copies.trial;
                 let outer = mem::replace(&mut hist.as_tried, tried);
                 let r = place(flags, env, hist, t0, s0, order);
                 hist.as_tried &= outer;
@@ -7755,6 +7761,48 @@ mod tests {
             crate::format_with_flags(crate::PrintFlag::DerefTVars, || xs[2].to_string()),
             "[Array<'b: [i64, null]>, Array<'a: string>]"
         );
+    }
+
+    // The unions a trial walks before it meets a choice between members
+    // are taken as written by the placement it allows too, which asks no
+    // trial of its own for them: each union ahead of the choice adds the
+    // steps of one walk, not of a walk and a trial.
+    #[test]
+    fn a_union_ahead_of_a_choice_between_members_asks_no_trial_of_its_own() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let steps = |n: usize| {
+            let ahead = |part: &str| -> String {
+                (0..n).map(|k| part.replace('k', &k.to_string()) + ", ").collect()
+            };
+            let held = at_root(
+                &env,
+                &format!(
+                    "[`X({}[Array<'a>, Array<Array<['c, i64, Array<i64>]>>], \
+                     [Array<'a>, `T('a)]), `Y('d)]",
+                    ahead("[i64, `T('pk), Array<Array<'pk>>]")
+                ),
+            );
+            let t = at_root(
+                &env,
+                &format!(
+                    "[`X({}Array<Array<[i64, Array<i64>]>>, \
+                     [Array<Array<i64>>, `T(Array<[i64, Array<i64>]>)]), \
+                     `Y(Array<Array<Array<Array<Array<Array<Array<i64>>>>>>>)]",
+                    ahead("[i64, Array<Array<i64>>]")
+                ),
+            );
+            CONTAINS_STEPS.with(|n| n.set(0));
+            held.check_contains(&env, &t).unwrap();
+            CONTAINS_STEPS.with(|n| n.get())
+        };
+        let none = steps(0);
+        for n in 1..=4 {
+            let steps = steps(n);
+            assert!(
+                steps <= none + 52 * n,
+                "n={n}: {steps} steps against {none} with none"
+            );
+        }
     }
 
     // `closed_now` reads the cells: a verdict `closed` reached at the same
