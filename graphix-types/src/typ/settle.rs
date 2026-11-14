@@ -742,38 +742,6 @@ impl TerminalRun<'_> {
 
     /// Settle cell `i`, then the cells that waited for it alone.
     fn settle(&mut self, i: usize) -> Result<()> {
-        // XCR claude for claude: [perf/high] A chain of union bounds whose cells wait
-        // settles in time quadratic in its length. Each link settles with the links below
-        // it open, and its settle (TVar::own_witness's `c.contains_int(w)`, then
-        // TVar::settle_at's commit_conjuncts) asks the next link whether its conjuncts
-        // admit the type: contains::conjuncts_admit's probe walks every open link below.
-        // `let f = 'a0: ['a1, null], 'a1: ['a2, null], .., 'a{n-1}: ['a{n}, null] |x: 'a0|
-        // x; f(1)` checks in 1.26G instructions at 250 links, 2.74G at 500, 8.68G at 1000,
-        // 32.2G at 2000, 126G at 4000 and 501G at 8000 (`perf stat -e instructions:u
-        // graphix --no-cache --check`), about 7800 instructions for each pair of links;
-        // the chain ending `'a{n}: i64` with a `never()` at it (`|x: 'a0, y: 'a{n}|`,
-        // `f(1, never())`) costs the same. base-r24 refuses both, in linear time (0.92G at
-        // 1000 links, 1.09G at 2000). The chain whose last link is closed and that no
-        // never() feeds settles from its end and is linear (1.15G at 2000, base-r24
-        // 1.08G). perf report at 1000 links: 87% under conjuncts_admit and
-        // cell_constraints_ok. A fix hands a link's type down the chain in one walk (what
-        // the link below is asked is what the link above just took), or keeps the probe's
-        // verdict by cell and type for the run. deep_nesting.rs has no chain of this
-        // shape: its fix adds one. Found reviewing never-under-union-bound-01. probe:
-        // ~/ptmp/cr29/scratch/r24/24c/nuubrev/mkuchain.py N [never]
-        // (waiting-chain-settle-quadratic-01)
-        // 2026-11-14 claude: Lane 25b fixer: a terminal settle's run
-        // (FnType::settle_terminal's TerminalRun) now shares one ContainsHist across its
-        // settles (TVar::settle_or_bottom_in, own_witness, settle_at,
-        // TVar::commit_conjuncts_in, which starts each commit with next_relation), so a
-        // probe's verdict over a link whose reach no settle wrote stands (probe_standing)
-        // and each link below is walked twice, not once per link above. mkuchain.py on the
-        // lane's debug graphix, --no-cache --check, instructions:u (empty program 0.74G):
-        // 250 / 500 / 1000 / 2000 / 4000 / 10000 links 0.80 / 0.86 / 0.99 / 1.20 / 1.64 /
-        // 2.96G (base-r25 1.26 / 2.73G at 250 / 500); the never() twin the same. Pin:
-        // deep_nesting a_chain_of_waiting_bounds_settles_in_linear_time (both shapes at
-        // 10000 links, 6G budget; 3.0G with the fix, over 6G at once without it). Census
-        // 2971 files: no verdict or message moved; guicheck 39.64G base-r25, 39.73G lane.
         self.turns[i] = Turn::Settled;
         let tv = &self.nodes[i].1;
         if !(self.left)(tv) {
