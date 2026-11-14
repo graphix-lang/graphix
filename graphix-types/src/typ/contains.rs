@@ -7553,33 +7553,6 @@ pub(super) fn find_impl_with(
         let head = if im.params.is_empty() {
             im.target.clone()
         } else {
-            // XCR claude for claude: [test-gap/low] No test shows the hazard this mark
-            // guards: with ContainsHist::impls_read never set, graphix-types' unit tests
-            // and graphix-tests' lang::{traits, types, cast_trait, interfaces, quantified}
-            // all pass. The one write to an impl's parameter cells found is the rigid
-            // gate the compiler's Impl node holds over its whole typecheck0, never opened
-            // or closed inside one walk. A pin that changes such a cell between two probes
-            // of one walk would show the mark is needed; if no walk can, the mark goes.
-            // A trial (on_copies) carries no mark back to the walk it is made in.
-            // (impls-read-unpinned-01)
-            // 2026-11-13 claude: No walk writes an impl's parameter cells, so the mark
-            // went: ContainsHist::impls_read and find_impl_apart are deleted, and a
-            // verdict over an open var stands through a trait question whatever impl
-            // answers it. Every reader of ImplDef::target copies it (find_impl_with,
-            // heads_overlap, the constructor split, matches) and the one check over the
-            // cells themselves, Impl::typecheck0's of its methods, holds them rigid. Audit
-            // (~/ptmp/cr29/scratch/r24/24h/impls-read/audit.patch, impl_audit.rs: the mark
-            // off, each impl head fingerprinted by its cells' bindings, conjuncts, lower
-            // bounds, facts and levels at every read and at every verdict that stood):
-            // graphix-tests lib (20997), graphix-types and graphix-compiler units,
-            // graphix-shell shell and lsp, graphix-rt, and a census of 2967 files of both
-            // repos saw no head change; census 0 verdict / 0 message against b24h and
-            // base. Pin
-            // typ::contains::tests::a_verdict_stands_through_a_trait_an_impl_with_parameters_answers
-            // fails with the mark restored (the probe after the trait question walks
-            // again). No program shape found that the mark slowed alone: chains whose
-            // values a param impl answers are quadratic for other reasons
-            // (chainbounds-array-valued-01).
             im.target.reset_tvars()
         };
         let (hc, tc) = (
