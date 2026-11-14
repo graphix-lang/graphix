@@ -4488,53 +4488,6 @@ impl<R: Rt> CallSite<R> {
             }
         }
         self.raise_throws(ctx, ftype, true)?;
-        // XCR claude for claude: [readability/low] A refusal of a call's result
-        // names the call's own cell where it is an enclosing definition's
-        // declared variable: in `'b: Number |f: fn() -> 'b| -> i64 { let r: i64 =
-        // f(); r }` the check below merges `self.rtype` ('_N) into the rigid 'b
-        // (GRAPHIX_DBG_BIND: CELL-MERGE), and the refusal reads "i64 does not
-        // contain '_8365: unbound within Number", where `|x: 'b| .. let r: i64 =
-        // x` says "'b: unbound within Number". base-r23 prints the same for `f:
-        // fn(x: 'b) -> 'b`. The cell is 'b's; the message should say so. probes:
-        // ~/ptmp/cr29/scratch/r23/23h/method-bound-callback-result-01/{s1,s2,s4}.gx
-        // (call-result-rigid-name-01)
-        // 2026-11-12 claude: Another refusal over the same merged cell: an operator
-        // over the call's result,
-        // ~/ptmp/cr29/scratch/r23/23h/method-bound-callback-result-01/review/v7.gx
-        // ('b: Number |f: fn(x: i64) -> 'b| -> 'b f(1) + 1), reads "cannot compute
-        // '_8369: unbound within Number + i64" where the parameter's twin names 'b;
-        // so the fix belongs where the call's result is shown, not only at this
-        // check.
-        // 2026-11-13 claude: A third witness, a call's result handed on to another
-        // call: |x: 'a| { let id = |v| v; let g = |v: (i64, i64)| v.0; g(id(x)) }
-        // reads "type mismatch (i64, i64) does not contain '_8342: unbound" where
-        // g(x) says 'a (base-r24 and lane 24g alike), probe
-        // ~/ptmp/cr29/scratch/r24/24g/rru/review/r10.gx. pattern.rs's declared_var
-        // (rigid-refusal-unnamed-01) finds a rigid cell's name in the signatures
-        // being checked (CompileCtx::rec_defs); the printer could take the same
-        // name for a rigid cell's merged handle, which would serve every site here
-        // at once.
-        // 2026-11-14 claude: Fixed in the printer, so every site at once: the
-        // definition gate (lambda.rs DefGate::open) declares the variables it holds
-        // rigid in tvar::Declared (a thread's innermost-first stack, Declaring
-        // guard), and printed_name gives a cell a definition being checked declares
-        // that name (TVar::declared_name) whatever handle reaches it; TypeMismatch,
-        // formatted after the gate closes, keeps the stack it was made under in
-        // HeldQuantifiers. pattern.rs's declared_var now reads the same table
-        // instead of walking rec_defs' signatures. s2/s4 say 'b, v7 'cannot compute
-        // 'b: unbound within Number + i64', r10 'a (base-r24: '_N). Pins:
-        // lang::quantified::{a_call_result_in_a_declared_variable_prints_its_name,
-        // an_operand_in_a_declared_variable_prints_its_name,
-        // a_call_result_handed_on_prints_its_name,
-        // an_enclosing_definitions_variable_prints_its_name,
-        // two_declared_variables_print_their_names,
-        // an_impls_variable_prints_its_name}; with printed_name reading the handle
-        // they and the two two_instances_of_an_inferred_generic_print_apart_* pins
-        // (now 'a/'b for the cells x and y merged into) fail, 32 runs; with no
-        // snapshot in HeldQuantifiers the 5 type-mismatch pins + the union one fail
-        // (24 runs). Outcome manifest blessed (rigid-gate-alias-sep2026/01 now
-        // 'does not contain 'b'). Hovers run after the gate closes and are
-        // unchanged.
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
