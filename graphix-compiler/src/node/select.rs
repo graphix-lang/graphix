@@ -4301,39 +4301,6 @@ impl Uncovered {
         Ok(())
     }
 
-    // XCR claude for claude: [bug/low] A member of the lower view that a pool of arms
-    // takes whole still reaches the arms behind them: `|x, b: bool| { let r = &mut
-    // (select b { true => (b, x), false => (`L, 0) }); select *r { (true, _) => 1,
-    // (false, _) => 2, (_, 0) => 3, _ => 4 } }` is refused "(_, 0) tests a value of 'x",
-    // and the plain twin `select (select b { .. }) { .. }` checks and prints [1, 3].
-    // Reach pools over the referent the arms decided, `[(Any, i64), (bool, Any)]`,
-    // whose members overlap, so the bool pair completes none and Reach::covered is
-    // empty there; over the twin's `[(bool, 'x), (`L, i64)]` it completes `(bool, 'x)`.
-    // What would close it: pools that count the lower view's own members (a Reach over
-    // the view, stepped beside check_undecided's arms), once its differences and
-    // probes are shown to bind no cell of the view. probes:
-    // ~/ptmp/cr29/scratch/r23/23d/lvr/pool.gx, e.txt lines 3 and 4 (run with rb.sh)
-    // (lower-view-pool-cover-01)
-    // 2026-11-14 claude: Fixed: Uncovered::pool counts a literal pool over the lower
-    // view's own members, stepped arm by arm beside check_undecided (Below::met_beside),
-    // and takes out the member a pool completes. An unguarded arm pools against the one
-    // member left that its test holds where its pattern takes it
-    // (StructPatternNode::headed_part), every open cell held, and never a member holding
-    // a cell the arms decided (Member::decided), so the pooled arms take every value of
-    // the member whatever its cells become. LiteralPool::claim_among is Reach's own
-    // pooling, given the members. This CR's select and its struct, payload,
-    // abstract-parameter, two-part, nested and or forms run as the plain twin does.
-    // Pins, lang::select_undecided: arm_behind_a_pool_of_a_member_below_a_reference,
-    // .._of_a_struct_and_a_payload_.., .._below_an_abstract_parameter,
-    // .._over_two_parts_.., arm_behind_an_or_pool_..,
-    // arm_behind_a_pool_that_binds_the_open_part,
-    // later_use_decides_a_cell_of_a_pooled_member_..,
-    // arm_behind_a_pool_tests_the_member_that_reaches_it_refused and
-    // dead_arm_behind_a_pool_.._refused fail in every mode with the fix undone (36
-    // runs); arm_behind_half_a_pool_.._refused, .._a_guarded_pool_..,
-    // arm_between_the_halves_.., .._over_a_cell_the_arms_decided_refused hold either
-    // way. Left: two tag arms over one part (standing-by-tests-together-01), slices and
-    // a member inside a part. probes: ~/ptmp/cr29/scratch/r24/24b/lvp/ (README)
     /// Take out the members the unguarded arms from `pooled` up to
     /// `before` complete a pool of. An arm pools against the one member
     /// left, none of whose cells the arms decided, that its test holds
