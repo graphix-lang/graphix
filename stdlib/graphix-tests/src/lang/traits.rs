@@ -5016,6 +5016,59 @@ run!(
 ; FuseExpect::None);
 
 run!(
+    impl_self_in_a_dynamic_module_signature_refusal_says_self_reads_the_target,
+    refused(
+        "W is the impl's type, which `self` reads in this signature; the signature \
+         sees only the names it imports, so it must `use` W"
+    ),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait T { val m: fn(self) -> i64 };
+        impl T for W {
+            let m = |s| {
+                let status = mod foo dynamic {
+                    sandbox whitelist [core];
+                    sig { val f: fn(x: self) -> self };
+                    source "let f = |x| x"
+                };
+                select status { error as e => 0, null as _ => foo::f(s).0 }
+            }
+        };
+        let result = T::m(W(7))
+    "#
+; FuseExpect::None);
+
+run!(
+    impl_self_in_a_module_interface_refusal_says_self_reads_the_target,
+    refused(
+        "W is the impl's type, which `self` reads in this signature; the signature \
+         sees only the names it imports, so it must `use` W"
+    ),
+    "/test.gx" => r#"
+        type W = Abstract<i64>;
+        trait T { val m: fn(self) -> i64 };
+        impl T for W { let m = |s| { mod m; m::f(s).0 + 1 } };
+        let result = T::m(W(7))
+    "#,
+    "/test/m.gxi" => r#"
+val f: fn(x: self) -> self
+"#,
+    "/test/m.gx" => r#"
+let f = |x| x
+"#
+; FuseExpect::None);
+
+run!(
+    interface_name_the_item_writes_is_refused_without_the_self_note,
+    |v: Result<&Value>| matches!(v, Err(e)
+        if format!("{e:#}").contains("undefined type T")
+            && !format!("{e:#}").contains("which `self` reads")),
+    "/test.gx" => "mod inner; let result = inner::v",
+    "/test/inner.gxi" => "val v: T",
+    "/test/inner.gx" => "type T = i64; let v: T = 1"
+);
+
+run!(
     impl_self_in_a_dynamic_module_signature_imports_the_target,
     is(Value::I64(7)),
     "/test.gx" => r#"

@@ -29,7 +29,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
-        Written,
+        UnresolvableRef, Written,
         settle::{DataPositions, VariableUnion},
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
@@ -1070,7 +1070,7 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
     ))
 }
 
-// CR claude for claude: [readability/low] A signature's `self` in an impl
+// XCR claude for claude: [readability/low] A signature's `self` in an impl
 // over a named target that the signature does not import is refused by the
 // target's name at the impl's head: in `impl T for W` (`type W =
 // Abstract<i64>`), a dynamic `sig { val f: fn(x: self) -> self }` or a
@@ -1081,12 +1081,48 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
 // `Written::Name` is refused for a name written outside its item. probes:
 // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/{p_abs.gx,sa/}
 // (impl-self-sig-refusal-site-01)
+// 2026-11-14 claude: check_interface_names now tells, over a refusal of a name
+// written outside its item (before it, or in another source: what the impl's
+// self was read as), that the name is the impl's type which self reads and that
+// the signature must use it (told_self_target). Pins that fail without it:
+// lang::traits
+// impl_self_in_a_dynamic_module_signature_refusal_says_self_reads_the_target,
+// impl_self_in_a_module_interface_refusal_says_self_reads_the_target;
+// interface_name_the_item_writes_is_refused_without_the_self_note keeps the
+// note off a name the item writes itself.
 /// Refuse a name the interface item `si` writes that the interface
 /// neither imports nor declares: each resolves in `view`
 /// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
 /// item's declared type, which may not write a union of two of its
 /// variables in a function type ([`VariableUnion`]).
 fn check_interface_names(
+    view: &Env,
+    scope: &ModPath,
+    si: &SigItem,
+    val: Option<&Type>,
+) -> Result<()> {
+    interface_names(view, scope, si, val).map_err(|e| told_self_target(e, si))
+}
+
+/// A refused name written outside the item `si`, before it or in another
+/// source, is the target of the impl the interface sits in, which the
+/// item's `self` was read as: say so, and that the interface imports it.
+fn told_self_target(e: anyhow::Error, si: &SigItem) -> anyhow::Error {
+    let Some(u) = e.downcast_ref::<UnresolvableRef>() else { return e };
+    let (Some(pos), Some(ori)) = (u.pos, u.ori.as_ref()) else { return e };
+    if **ori == *si.ori && pos >= si.pos {
+        return e;
+    }
+    let told = format_compact!(
+        "{} is the impl's type, which `self` reads in this signature; the signature \
+         sees only the names it imports, so it must `use` {}",
+        u.name,
+        u.name
+    );
+    Told::over(e, &told)
+}
+
+fn interface_names(
     view: &Env,
     scope: &ModPath,
     si: &SigItem,
