@@ -74,13 +74,24 @@ pub struct VarAliases {
     /// ([`crate::StaticCallees::aliases_after`]): each view of the
     /// runtime asks for what changed since its own table's.
     read_at: u64,
+    /// The map of a table these took in whole, every pair of which these
+    /// hold: the next table of the same lineage differs from it only by
+    /// what its steps changed.
+    took: Option<Map<BindId, BindId>>,
 }
 
 static NO_FILTER: Filter = [0; FILTER_WORDS];
 
 impl Default for VarAliases {
     fn default() -> Self {
-        Self { lo: u64::MAX, hi: 0, filter: &NO_FILTER, aliases: None, read_at: 0 }
+        Self {
+            lo: u64::MAX,
+            hi: 0,
+            filter: &NO_FILTER,
+            aliases: None,
+            read_at: 0,
+            took: None,
+        }
     }
 }
 
@@ -166,7 +177,7 @@ impl VarAliases {
         // SAFETY: the filter lives in an `Arc` that `aliases` holds for as
         // long as `Self` does, and nothing writes a shared filter
         let filter = unsafe { &*(&*aliases.filter as *const Filter) };
-        Self { lo, hi, filter, aliases: Some(aliases), read_at }
+        Self { lo, hi, filter, aliases: Some(aliases), read_at, took: None }
     }
 
     pub(crate) fn read_at(&self) -> u64 {
@@ -255,10 +266,19 @@ impl VarAliases {
     /// `other`'s that `other` does not hold in its place
     /// ([`env::each_unshared`]): among them is every pair `other` lacks or
     /// names another variable for.
-    fn each_unshared(&self, other: &Self, mut f: impl FnMut(BindId, BindId)) {
-        let Some(mine) = self.aliases.as_deref() else { return };
+    fn each_unshared(&self, other: &Self, f: impl FnMut(BindId, BindId)) {
         let none = Map::default();
         let theirs = other.aliases.as_deref().map_or(&none, |a| &a.map);
+        self.each_unshared_of(theirs, f)
+    }
+
+    /// [`Self::each_unshared`] against the map `theirs`.
+    fn each_unshared_of(
+        &self,
+        theirs: &Map<BindId, BindId>,
+        mut f: impl FnMut(BindId, BindId),
+    ) {
+        let Some(mine) = self.aliases.as_deref() else { return };
         env::each_unshared(&mine.map, theirs, |inner, outer| f(*inner, *outer))
     }
 
@@ -273,14 +293,28 @@ impl VarAliases {
     }
 
     /// These with every alias of `kept` they lack: these over `kept`,
-    /// built on whichever of the two has the fewer pairs to visit.
+    /// built on whichever of the two has the fewer pairs to visit. Where
+    /// `kept` took in an earlier table of these' lineage in whole, only
+    /// the pairs these differ from it by can be ones `kept` lacks.
     fn with_kept(&self, kept: &Self) -> Self {
+        self.with_kept_counting(kept).0
+    }
+
+    /// [`Self::with_kept`], and how many pairs it visited.
+    fn with_kept_counting(&self, kept: &Self) -> (Self, usize) {
         if self.same(kept) {
-            return self.clone();
+            return (self.clone(), 0);
         }
         let mut add: LPooled<Vec<(BindId, BindId)>> = LPooled::take();
+        let mut visited = 0;
         let base = if kept.step_to(self).is_none() && self.len() < kept.len() {
-            self.each_unshared(kept, |inner, outer| {
+            let none = Map::default();
+            let against = kept.took.as_ref().unwrap_or(match kept.aliases.as_deref() {
+                Some(a) => &a.map,
+                None => &none,
+            });
+            self.each_unshared_of(against, |inner, outer| {
+                visited += 1;
                 if kept.listed(inner) != Some(outer) {
                     add.push((inner, outer))
                 }
@@ -288,19 +322,24 @@ impl VarAliases {
             kept
         } else {
             kept.maybe_lacked(self, |inner, outer| {
+                visited += 1;
                 if self.listed(inner).is_none() {
                     add.push((inner, outer))
                 }
             });
             self
         };
-        base.updated(
+        let mut taken = base.updated(
             add.iter().map(|(inner, outer)| (*inner, Some(*outer))),
             self.read_at,
-        )
+        );
+        if let Some(mine) = self.aliases.as_deref() {
+            taken.took = Some(mine.map.clone())
+        }
+        (taken, visited)
     }
 
-    // CR claude for claude: [perf/low] A branch's table keeps every pair
+    // XCR claude for claude: [perf/low] A branch's table keeps every pair
     // its syncs and merges took in, so once retirements drop joins from the
     // readings, each later reading the branch takes in differs from its
     // table at every retired pair, spread over the map, and with_kept walks
@@ -315,6 +354,20 @@ impl VarAliases {
     // a table could keep the last reading it took in whole and compare the
     // next with it (env::each_unshared of the two readings, which share all
     // but the step's paths). (alias-retired-union-walk-01)
+    // 2026-11-14 claude: with_kept no longer walks the reading against the
+    // whole parent table when the parent took in an earlier reading of the same
+    // lineage: VarAliases keeps that reading's map (took) and compares the next
+    // against it, so only the step's pairs are visited. Probe st.gx
+    // (~/ptmp/cr29/scratch/r25/25h/), debug, GRAPHIX_PAR=force: 18.10 G ->
+    // 14.70 G instructions:u (par=off 12.5 G, auto unchanged at about 13.2 G);
+    // sc1000, ctl4000 unchanged. Pins that fail without it:
+    // branch::tests::a_table_of_a_lineage_the_kept_one_took_in_is_compared_by_its_steps
+    // (pairs visited per step bounded; whole-table walk reaches 670),
+    // absorbing_a_lineage_keeps_the_union_of_its_readings (the union model,
+    // with removals from the parent). Needs a soak.
+    // 2026-11-14 claude: Correction: only the first pin fails without the fix; the
+    // second guards the correctness of the took path (union model with removals from
+    // the parent) and passes either way.
     /// Take in the table of a branch forked from these: its aliases, and
     /// every one of these it lacks, read at the later of the two.
     pub(crate) fn absorb(&mut self, child: &Self) {
@@ -2103,6 +2156,76 @@ mod tests {
                 (taken.var(joined), taken.var(inner), taken.len(), taken.read_at()),
                 (to, outer, n + 1, n as u64 + 2)
             );
+        }
+    }
+
+    /// How many pairs of `of` a comparison with the whole of `with` names.
+    fn visited_against(of: &VarAliases, with: &VarAliases) -> usize {
+        let mut n = 0;
+        of.each_unshared(with, |_, _| n += 1);
+        n
+    }
+
+    #[test]
+    fn a_table_of_a_lineage_the_kept_one_took_in_is_compared_by_its_steps() {
+        let n = 4096;
+        let (mut child, pairs) = grown(n);
+        let mut parent = child.clone();
+        let (mut most, mut whole) = (0, 0);
+        for step in 0..16u64 {
+            let retired: Vec<_> = pairs
+                .iter()
+                .skip(step as usize)
+                .step_by(32)
+                .map(|(id, _)| (*id, None))
+                .collect();
+            child = child.updated(retired, n as u64 + 2 * step);
+            let (to, outer) = (BindId::new(), BindId::new());
+            child = child.updated([(to, Some(outer))], n as u64 + 2 * step + 1);
+            let (taken, visited) = child.with_kept_counting(&parent);
+            assert_eq!((taken.var(to), taken.len()), (outer, n + step as usize + 1));
+            if step > 0 {
+                most = most.max(visited);
+                whole = visited_against(&child, &parent)
+            }
+            parent = taken;
+        }
+        assert!(most <= 2 * PER_CHANGE, "{most}");
+        assert!(whole > 4 * PER_CHANGE, "{whole}");
+    }
+
+    #[test]
+    fn absorbing_a_lineage_keeps_the_union_of_its_readings() {
+        let ids: Vec<BindId> = (0..300).map(|_| BindId::new()).collect();
+        let outers: Vec<BindId> = (0..8).map(|_| BindId::new()).collect();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut below = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut child = VarAliases::default();
+        let mut parent = VarAliases::default();
+        for step in 1..800u64 {
+            let changes: Vec<_> = (0..=below(5))
+                .map(|_| {
+                    let id = ids[below(ids.len())];
+                    (id, (below(3) != 0).then(|| outers[below(outers.len())]))
+                })
+                .collect();
+            child = child.updated(changes, step);
+            if below(7) == 0 {
+                let gone: Vec<_> = (0..4).map(|_| ids[below(ids.len())]).collect();
+                parent = parent.without(&gone)
+            }
+            let before = parent.clone();
+            parent.absorb(&child);
+            for id in ids.iter() {
+                let want = child.listed(*id).or(before.listed(*id));
+                assert_eq!(parent.listed(*id), want, "step {step}");
+            }
+            assert_eq!(parent.read_at(), step.max(before.read_at()));
         }
     }
 
