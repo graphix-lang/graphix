@@ -580,7 +580,7 @@ impl FnType {
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         let mut nodes: LPooled<AddrSet> = LPooled::take();
-        self.for_each_type(&mut |t| reached(t, true, out, &mut nodes))
+        self.for_each_type(&mut |t| reached(t, out, &mut nodes))
     }
 }
 
@@ -662,13 +662,6 @@ impl Type {
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         reached_cells(self, out)
-    }
-
-    /// [`Self::reached_cells`] short of every function type: the cells a
-    /// value of this type holds as data.
-    #[doc(hidden)]
-    pub fn data_cells(&self, out: &mut AHashMap<usize, TVar>) {
-        reached(self, false, out, &mut LPooled::take())
     }
 
     /// The type variable, first by name, that stands in this type outside
@@ -1119,17 +1112,11 @@ fn union_into(into: &mut Expanded, from: &[usize]) {
 }
 
 fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
-    reached(t, true, out, &mut LPooled::take())
+    reached(t, out, &mut LPooled::take())
 }
 
-/// `reached_cells`, each shared composite walked once (`nodes`), into
-/// function types where `into_fns`.
-fn reached(
-    t: &Type,
-    into_fns: bool,
-    out: &mut AHashMap<usize, TVar>,
-    nodes: &mut AddrSet,
-) {
+/// `reached_cells`, each shared composite walked once (`nodes`).
+fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             if out.insert(tv.cell_addr(), tv.clone()).is_none() {
@@ -1139,14 +1126,13 @@ fn reached(
                     (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
                 };
                 for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
-                    reached(t, into_fns, out, nodes)
+                    reached(t, out, nodes)
                 }
             }
         }
         t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
-        Type::Fn(_) if !into_fns => (),
-        Type::Fn(ft) => ft.for_each_type(&mut |t| reached(t, into_fns, out, nodes)),
-        t => t.for_each_child(&mut |c| reached(c, into_fns, out, nodes)),
+        Type::Fn(ft) => ft.for_each_type(&mut |t| reached(t, out, nodes)),
+        t => t.for_each_child(&mut |c| reached(c, out, nodes)),
     })
 }
 

@@ -29,7 +29,7 @@ use crate::{
     typ::{
         AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
         Written,
-        settle::VariableUnion,
+        settle::{DataPositions, VariableUnion},
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
@@ -662,19 +662,22 @@ impl Holder {
         let written_before = |b: &Held, f: &Held| {
             place_order((&b.ori, b.pos), (&f.ori, f.pos)).then(b.id.cmp(&f.id)).is_lt()
         };
-        let reaches = |cells: fn(&Type, &mut AHashMap<usize, TVar>), t: &Type| {
+        let reaches = |t: &Type| {
             let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            cells(t, &mut reached);
+            t.reached_cells(&mut reached);
             reached.contains_key(&tv.cell_addr())
+        };
+        let in_data = |t: &Type| {
+            let mut data = false;
+            DataPositions::new(&ctx.env).walk(t, Default::default(), &mut |c, at| {
+                data |= !at.function && c.same_cell(tv)
+            });
+            data
         };
         let leads_on = |def: &LambdaDef<R>| {
             let mut leads = false;
             def.captured_ids(&mut |id| {
-                leads |= ctx
-                    .env
-                    .by_id
-                    .get(&id)
-                    .is_some_and(|b| reaches(Type::reached_cells, &b.typ))
+                leads |= ctx.env.by_id.get(&id).is_some_and(|b| reaches(&b.typ))
             });
             leads
         };
@@ -687,7 +690,7 @@ impl Holder {
             for def in level.drain(..).filter(|d| followed.insert(d.id)) {
                 def.captured_ids(&mut |id| {
                     let Some(b) = ctx.env.by_id.get(&id) else { return };
-                    if !seen.insert(id) || !reaches(Type::reached_cells, &b.typ) {
+                    if !seen.insert(id) || !reaches(&b.typ) {
                         return;
                     }
                     let mut holds_fn = false;
@@ -704,7 +707,7 @@ impl Holder {
                             Type::TVar(t) if t.stands_for() == tv.stands_for() => {
                                 Holds::Itself
                             }
-                            t if reaches(Type::data_cells, t) => Holds::InData,
+                            t if in_data(t) => Holds::InData,
                             _ if next[before..].iter().any(|d| leads_on(d)) => {
                                 Holds::InLambdas
                             }
