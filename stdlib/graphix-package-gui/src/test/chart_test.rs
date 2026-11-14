@@ -44,6 +44,7 @@ async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
     let code = format!(
         "use gui::*;\nuse gui::chart::{{self, *}};\n\
          let day1 = [(datetime:\"2024-01-01T00:00:00Z\", 1.0), (datetime:\"2024-01-02T00:00:00Z\", 2.0)];\n\
+         let none: Array<(f64, f64)> = [];\n\
          let result = chart({args})"
     );
     GuiTestHarness::new(&code).await
@@ -66,7 +67,7 @@ async fn axis_range_renders() -> Result<()> {
 async fn empty_line_draws_nothing() -> Result<()> {
     let h = chart_harness(concat!(
         "#width: &`Fill, #height: &`Fixed(200.0), ",
-        r#"&[chart::line(#label: "test", &[])]"#,
+        r#"&[chart::line(#label: "test", &none)]"#,
     ))
     .await?;
     assert_eq!(chart(&h).mode(), ChartMode::Empty);
@@ -78,7 +79,7 @@ async fn empty_line_draws_nothing() -> Result<()> {
 async fn empty_colored_scatter_draws_nothing() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         &[chart::scatter(#color: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, &[])]",
+         &[chart::scatter(#color: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, &none)]",
     )
     .await?;
     assert_eq!(chart(&h).mode(), ChartMode::Empty);
@@ -258,7 +259,7 @@ async fn legend_style() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn a_legend_counts_only_drawn_series() -> Result<()> {
     assert_same_series_pixels(
-        r#"line(&[(1.0, 1.0), (2.0, 2.0)]), line(#label: "nothing yet", &[])"#,
+        r#"line(&[(1.0, 1.0), (2.0, 2.0)]), line(#label: "nothing yet", &none)"#,
         "line(&[(1.0, 1.0), (2.0, 2.0)])",
     )
     .await
