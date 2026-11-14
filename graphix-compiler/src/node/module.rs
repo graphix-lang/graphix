@@ -8,8 +8,8 @@ use crate::{
     },
     errf,
     expr::{
-        At, BindSig, Doc, ErrorSite, Expr, ExprId, ExprKind, ModPath, Origin,
-        ParserContext, Sandbox, Sig, SigItem, SigKind, Source, Told, TypeDefBody,
+        At, BindSig, Doc, ErrorSite, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name,
+        Origin, ParserContext, Sandbox, Sig, SigItem, SigKind, Source, Told, TypeDefBody,
         TypeDefExpr, UseItem, WrittenAt, add_interface_modules, parser,
     },
     format_with_flags,
@@ -26,6 +26,7 @@ use crate::{
     },
     profile::{self, Phase},
     shared_map::SharedMap,
+    stack::ensure_sufficient,
     typ::{
         AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
         Written,
@@ -115,6 +116,39 @@ pub(crate) fn later_use(
             }
         }
     }
+}
+
+/// Each module `e` declares at the level of the list it is a statement of:
+/// the statement itself when it is a `mod`, and a dynamic module written
+/// where a value is (`let st = mod foo dynamic { .. }`, a call's argument,
+/// a dynamic module's source). What opens a scope of its own declares at
+/// that scope's level, and is not entered.
+pub(crate) fn declared_modules<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Name)) {
+    match &e.kind {
+        ExprKind::Block { .. }
+        | ExprKind::Lambda(_)
+        | ExprKind::Select(_)
+        | ExprKind::Catch(_)
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_)
+        | ExprKind::SeqMachine(_)
+        | ExprKind::SeqCapture(_) => (),
+        ExprKind::Module { name, value } => {
+            f(name);
+            if let ModuleKind::Dynamic { source, .. } = &**value {
+                declared_modules(source, f)
+            }
+        }
+        _ => ensure_sufficient(|| e.for_each_child(&mut |c| declared_modules(c, f))),
+    }
+}
+
+/// Whether statement `e` of a list is a `use` or declares a module there:
+/// what [`Unsettled`] records of it is no longer to come once it begins.
+pub(crate) fn brings_names(e: &Expr) -> bool {
+    let mut declares = false;
+    declared_modules(e, &mut |_| declares = true);
+    declares || matches!(e.kind, ExprKind::Use { .. })
 }
 
 /// Resolve one item of a `use` against the namespace table

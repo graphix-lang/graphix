@@ -95,6 +95,66 @@ const DYNAMIC_MODULE_GOOD_SOURCE_AFTER_A_BAD_ONE: &str = r#"
 
 run!(dynamic_module_good_source_after_a_bad_one, DYNAMIC_MODULE_GOOD_SOURCE_AFTER_A_BAD_ONE, is(Value::I64(500)); FuseExpect::Jit);
 
+// A dynamic module bound by a `let` declares its name in the block's
+// whole list, as a `mod` statement does: a path through the name above it
+// never reads an outer module of that name.
+const LET_BOUND_MODULE: &str = r#"mod foo dynamic {
+    sandbox whitelist [core];
+    sig { type Foo<'a> = ['a, string]; val f: fn(x: i64) -> i64 };
+    source "let f = |x| x"
+}"#;
+
+run!(
+    a_let_bound_dynamic_module_above_its_type_path_refused,
+    refused("undefined type foo::Foo"),
+    "/test.gx" => format!(
+        "mod foo; let result = {{ let x: foo::Foo<i64> = \"s\"; let st = {LET_BOUND_MODULE}; \
+         select st {{ error as e => \"e\", null as _ => x }} }}"
+    ),
+    "/test/foo.gx" => "type Foo<'a> = Array<'a>"
+    ; FuseExpect::None
+);
+
+run!(
+    a_let_bound_dynamic_module_below_its_type_path,
+    is(Value::String("s".into())),
+    "/test.gx" => format!(
+        "mod foo; let result = {{ let st = {LET_BOUND_MODULE}; let x: foo::Foo<i64> = \"s\"; \
+         select st {{ error as e => \"e\", null as _ => x }} }}"
+    ),
+    "/test/foo.gx" => "type Foo<'a> = Array<'a>"
+);
+
+run!(
+    a_let_bound_dynamic_module_in_a_call_above_its_type_path_refused,
+    refused("undefined type foo::Foo"),
+    "/test.gx" => format!(
+        "mod foo; let result = {{ let x: foo::Foo<i64> = \"s\"; \
+         let r = array::len([{LET_BOUND_MODULE}]); (x, r) }}"
+    ),
+    "/test/foo.gx" => "type Foo<'a> = Array<'a>"
+    ; FuseExpect::None
+);
+
+run!(
+    two_let_bound_dynamic_modules_of_one_name_refused,
+    refused("duplicate module definition"),
+    "/test.gx" => format!(
+        "let result = {{ let a = {LET_BOUND_MODULE}; let b = {LET_BOUND_MODULE}; (a, b) }}"
+    )
+    ; FuseExpect::None
+);
+
+run!(
+    sibling_blocks_each_bind_a_dynamic_module_of_one_name,
+    is(Value::String("ok".into())),
+    "/test.gx" => format!(
+        "let result = {{ let a = {{ let st = {LET_BOUND_MODULE}; st }}; \
+         let b = {{ let st = {LET_BOUND_MODULE}; st }}; \
+         select a {{ error as _ => \"e\", null as _ => select b {{ error as _ => \"e\", null as _ => \"ok\" }} }} }}"
+    )
+);
+
 // A reload refused for a typo leaves what the running body registered in
 // the interface's place: the good source that follows narrows the
 // declared Cast with its own method, as a reload with no typo does.

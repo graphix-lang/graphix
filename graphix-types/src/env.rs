@@ -1793,6 +1793,14 @@ impl Env {
         Ok(None)
     }
 
+    /// Whether the list being compiled at `level` declares a module named
+    /// `name`, and registered its path before its statements compiled.
+    pub fn list_declares_module(&self, level: &str, name: &str) -> bool {
+        self.unsettled
+            .get(level)
+            .is_some_and(|(l, _)| l.modules.iter().any(|(_, k)| k.as_str() == name))
+    }
+
     /// The module at or around `m` that a list being compiled declares
     /// in a statement it has not reached: nothing it holds is known yet.
     fn unsettled_module<'a>(&self, m: &'a str) -> Option<&'a str> {

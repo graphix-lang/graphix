@@ -460,16 +460,19 @@ fn compile_kind<R: Rt>(
         // are compiled in statement position only; a dynamic module
         // produces a real `[error, null]` value, so it is an expression.
         ExprKind::Module { name, value } => match &**value {
-            ModuleKind::Dynamic { .. } => compile_module(
-                ctx,
-                flags,
-                spec.clone(),
-                scope,
-                top_id,
-                name,
-                value,
-                false,
-            ),
+            ModuleKind::Dynamic { .. } => {
+                let predeclared = ctx.env.list_declares_module(&scope.lexical, name);
+                compile_module(
+                    ctx,
+                    flags,
+                    spec.clone(),
+                    scope,
+                    top_id,
+                    name,
+                    value,
+                    predeclared,
+                )
+            }
             _ => not_an_expression(spec, "a module definition"),
         },
         ExprKind::Use { .. } => not_an_expression(spec, "a use declaration"),

@@ -1295,14 +1295,20 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     // pre-register the block's `mod` names so resolution is independent
     // of declaration order; the `Module` arm is told, so its own
     // duplicate guard does not trip
+    let mut dup = None;
     for e in exprs.iter() {
-        if let ExprKind::Module { name, .. } = &e.kind {
+        module::declared_modules(e, &mut |name| {
             let p = ModPath(scope.lexical.append(name));
             if ctx.env.lexical.modules.contains(&p) {
-                return Err(anyhow!("duplicate module definition {p}").at(&(*e)));
+                dup.get_or_insert_with(|| {
+                    anyhow!("duplicate module definition {p}").at(&(*e))
+                });
             }
             ctx.env.lexical.modules.insert_cow(p);
-        }
+        });
+    }
+    if let Some(e) = dup {
+        return Err(e);
     }
     let n = exprs.len();
     let typedefs: SmallVec<[ArcStr; 4]> = exprs
@@ -1325,7 +1331,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             _ => None,
         }),
     );
-    // CR claude for claude: [bug/medium] A dynamic module bound by a `let` (`let st =
+    // XCR claude for claude: [bug/medium] A dynamic module bound by a `let` (`let st =
     // mod foo dynamic { .. }`) is neither registered before its list compiles nor
     // recorded as still to come: both scans here see only the list's own `mod`
     // statements. So a path through its name written above it reads an outer module
@@ -1344,16 +1350,26 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     // is. probes:
     // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/review/{dyn-mod-let,dyn-mod-typedef}/
     // (dyn-module-let-shadow-01)
+    // 2026-11-14 claude: A dynamic module written where a value is (a let initializer, a
+    // call argument, another dynamic module's source) is now pre-registered with the list's
+    // mod statements (node::module::declared_modules) and compiles predeclared
+    // (Env::list_declares_module), so a path through its name above it is refused (undefined
+    // type foo::Foo) as the statement form is. Pins in lang::modules that fail without the
+    // fix: a_let_bound_dynamic_module_above_its_type_path_refused,
+    // a_let_bound_dynamic_module_in_a_call_above_its_type_path_refused; twins: below the
+    // module, two same-name modules refused, sibling blocks each binding one. Census of
+    // base-r25 against this build: 2967 files, no verdict or message difference.
+    // Value-position modules inside a select arm, lambda, catch or nested block declare at
+    // that scope's level and are not entered. Needs a soak.
     let mut later = env::Unsettled::default();
     for (i, e) in exprs.iter().enumerate() {
         match &e.kind {
-            ExprKind::Module { name, .. } => {
-                later.modules.push((i, name.name.as_str().into()))
-            }
             ExprKind::Use { names, .. } => {
                 module::later_use(&ctx.env, list, i, e, names, &mut later)
             }
-            _ => (),
+            _ => module::declared_modules(e, &mut |name| {
+                later.modules.push((i, name.name.as_str().into()))
+            }),
         }
     }
     let brings = !later.is_empty();
@@ -1370,7 +1386,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             catches.push(i);
         }
         let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
-        if brings && matches!(e.kind, ExprKind::Use { .. } | ExprKind::Module { .. }) {
+        if brings && module::brings_names(e) {
             ctx.env.settle_statement(list, i)
         }
         let boundary = prune::Prune::boundary(ctx);

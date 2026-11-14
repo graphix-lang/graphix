@@ -827,7 +827,11 @@ an error.
 Before compiling a block's children, `compile_block_children`
 pre-registers the block's `mod` NAMES (refusing a duplicate there; each
 `mod` statement then compiles with `predeclared` set, so its own
-duplicate guard does not trip), and `bind_sig` pre-registers sig `mod`
+duplicate guard does not trip; a dynamic module written where a value is,
+`let st = mod foo dynamic { .. }`, a call's argument or a dynamic module's
+source, is pre-registered the same way, found by `declared_modules` without
+entering a nested scope, and compiles `predeclared` by
+`Env::list_declares_module`), and `bind_sig` pre-registers sig `mod`
 items the same way, so declaration order carries no visibility meaning
 and a sibling submodule wins over a same-named package (`list::List`
 inside tui is the submodule). Values are NOT pre-registered: forward
