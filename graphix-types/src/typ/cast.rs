@@ -2389,13 +2389,12 @@ pub enum Open {
 /// type it may yet bind, collides with the other: it may share the
 /// other's form, or, `ordered`, be another numeric type. A bound that is
 /// a type holds every value of the cell, so a cell with such bounds
-/// collides only where each of them does. Under `tested`, `a`'s cells
-/// collide with nothing ([`rep_collision`]), except against a type bound
-/// of `b`'s cell: a value of the bound passes the test whole.
+/// collides only where each of them does, each judged on a walk of its
+/// own: the pairs a bound that collides held clear are not clear for the
+/// rest of `seen`'s walk.
 fn open_collision(
     env: &Env,
     seen: &mut RepSeen,
-    tested: bool,
     ordered: bool,
     a: &Type,
     b: &Type,
@@ -2421,7 +2420,7 @@ fn open_collision(
             };
         }
         let mut why = None;
-        // CR claude for claude: [risk/low] A collision this loop found is dropped
+        // XCR claude for claude: [risk/low] A collision this loop found is dropped
         // where a later bound of the cell does not collide (`found?`), and outside a
         // test (`tested` false) the bounds are judged on the walk's own `seen`: the
         // pairs of names met under the dropped collision stay held clear, and a later
@@ -2433,15 +2432,19 @@ fn open_collision(
         // through a pair of names the walk meets again. What would close it: judge
         // each bound on a walk of its own, as under `tested`.
         // (open-bound-collision-dropped-01)
+        // 2026-11-14 claude: open_collision judged each typed bound of a cell on the
+        // walk's shared seen, so a bound that collided and was dropped (a later bound
+        // did not collide) left its pairs of names held clear for the rest of the
+        // walk. Each bound now has a walk of its own (the CR's witness: a cell bounded
+        // by X and {q: i64}, X and Y structs of a &i64 and a &string; the tuple of the
+        // cell and Y against (Y, X) read as no collision). Pin:
+        // cast.rs::a_bound_that_collides_clears_no_pair_for_the_next_part, which fails
+        // without the fix.
         for b in typed.iter() {
-            let judge = |seen: &mut RepSeen| {
-                rep_collision(env, seen, Subject::Beside, Open::Unknown, ordered, t, b)
-            };
-            let found = match tested {
-                // `seen` clears pairs by what the walk found under `tested`
-                true => judge(&mut RepSeen::default()),
-                false => judge(seen),
-            };
+            let walk = &mut RepSeen::default();
+            let found =
+                rep_collision(env, walk, Subject::Beside, Open::Unknown, ordered, t, b);
+            seen.env_read |= walk.env_read;
             why = Some(found?);
         }
         match why? {
@@ -2862,10 +2865,7 @@ fn rep_collision(
                         (Open::Unknown, Some(Type::Set(ts)), _) => {
                             pairs(seen, &mut ts.iter().map(|t| (t, b)))
                         }
-                        (Open::Unknown, _, _) => {
-                            let tested = subject == Subject::Binds;
-                            open_collision(env, seen, tested, ordered, a, b)
-                        }
+                        (Open::Unknown, _, _) => open_collision(env, seen, ordered, a, b),
                     };
                 };
                 let (a, b) = (ha, hb);
@@ -4349,6 +4349,26 @@ pub(crate) mod tests {
             let told = parsed(&env, told);
             assert!(test.rep_collision_written(&env, &told).is_none(), "{test}, {told}");
         }
+    }
+
+    /// A cell with two bounds that are types collides where each bound
+    /// does, and a bound that collides clears no pair of names for the
+    /// parts of the walk after it.
+    #[test]
+    fn a_bound_that_collides_clears_no_pair_for_the_next_part() {
+        let defs = [("X", "{r: &i64}"), ("Y", "{r: &string}")];
+        let (env, _) = typed(&defs, "null");
+        let cell = TVar::empty_named(literal!("c"));
+        cell.add_cell_constraint(parsed(&env, "X"));
+        cell.add_cell_constraint(parsed(&env, "{q: i64}"));
+        let cell = Type::TVar(cell);
+        let (x, y) = (parsed(&env, "X"), parsed(&env, "Y"));
+        let tuple =
+            |a: &Type, b: &Type| Type::Tuple(Arc::from_iter([a.clone(), b.clone()]));
+        assert!(cell.rep_collision_open(&env, &y).is_none());
+        assert!(x.rep_collision_open(&env, &y).is_some());
+        assert!(y.rep_collision_open(&env, &x).is_some());
+        assert!(tuple(&cell, &y).rep_collision_open(&env, &tuple(&y, &x)).is_some());
     }
 
     /// What tells a product test's part from its counterpart is looked
