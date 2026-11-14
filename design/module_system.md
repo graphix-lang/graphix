@@ -590,8 +590,10 @@ value's types, which no call copies.
 The implementation's bounds are judged once the pairing is done
 (`FnType::sig_bounds`). A conjunct a signature bound matches pairs the
 variables inside it, as a position does; one of another shape pairs
-nothing (the implementation's bound may be the wider). Each conjunct is
-then read in
+nothing, and neither does a union of the bound's length whose members
+pair with the bound's in no order (the implementation's bound may be the
+wider: ``'q: [`A(Number), 'p]`` under ``'b: [`A(i64), 'a]``). Each
+conjunct is then read in
 the signature's terms, a paired cell as the signature's type at its
 place and any other open cell as a copy whose conjuncts are read so,
 with every signature variable rigid, one only its bounds name too, since

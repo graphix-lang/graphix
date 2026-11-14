@@ -1703,6 +1703,73 @@ run!(
     "/test/m.gx" => "let f = 'p: [i64, string], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
 );
 
+// A union bound of the signature's length whose members cannot pair one
+// to one pairs nothing, as a bound of another shape: the implementation's
+// may be the wider member by member, and the bounds' judgment holds it.
+run!(
+    a_union_bound_wider_in_a_member_holds,
+    is(Value::String("s".into())),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: [`A(i64), 'a]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [`A(Number), 'p] |x: 'q| -> 'q x"
+);
+
+run!(
+    a_union_bound_wider_inside_a_members_payload_holds,
+    prints("[\"A\", i64:1, \"s\"]"),
+    "/test.gx" => "mod m; let result = m::f(`A(1, \"s\"))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: [`A(i64, 'a), null]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [`A(Number, 'p), null] |x: 'q| -> 'q x"
+);
+
+run!(
+    a_variable_in_two_union_bounds_that_cannot_pair_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f(\"s\", 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: [`A(i64), 'a], 'd: [`A(i64), 'c]>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [`A(Number), 'p], 'r: [`A(Number), 'p] |x: 'q, y: 'r| -> i64 0"
+);
+
+run!(
+    a_union_bound_wider_in_a_member_must_be_declared,
+    refused("the implementation requires 'b: ['p, `A(Number)], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(\"s\")",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: [`A(i64), 'a]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [`A(Number), 'p] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    a_union_bound_narrower_in_a_member_must_be_declared,
+    refused("the implementation requires 'b: ['p, `A(string)], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(`A(1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: [`A(i64), 'a]>(x: 'b) -> 'b;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: [`A(string), 'p] |x: 'q| -> 'q x"
+; FuseExpect::None);
+
+run!(
+    a_variable_in_two_union_bounds_that_cannot_pair_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f(\"s\", 1)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: [`A(i64), 'a], 'd: [`A(i64), 'c]>(x: 'b, y: 'd) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [`A(Number), 'p], 'r: [`A(Number), 'p] |x: 'q, y: 'r| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_variable_twice_in_a_union_bound_that_cannot_pair_is_one_type,
+    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    "/test.gx" => "mod m; let result = m::f((\"s\", 1))",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: [`A(i64), ('a, 'c)]>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [`A(Number), ('p, 'p)] |x: 'q| -> i64 0"
+; FuseExpect::None);
+
+run!(
+    a_predicate_variable_in_a_union_bound_that_cannot_pair_must_be_declared,
+    refused("the implementation requires 'b: ['p, `A(string)], which the signature does not declare"),
+    "/test.gx" => "mod m; let result = { let v: [i64, f64] = 1; m::f(v) }",
+    "/test/m.gxi" => "val f: fn<'a: Number, 'b: [`A(i64), 'a]>(x: 'b) -> i64;",
+    "/test/m.gx" => "let f = 'p: OneNumber, 'q: [`A(string), 'p] |x: 'q| -> i64 0"
+; FuseExpect::None);
+
 // The variable inside a signature's bound is as much the caller's as one
 // at a position, whatever the implementation names its own.
 run!(

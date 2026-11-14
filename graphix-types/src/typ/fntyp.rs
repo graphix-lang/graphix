@@ -2119,7 +2119,7 @@ impl FnType {
                     }
                 }
             }
-            tvar_map.settle(env, hist)?;
+            tvar_map.settle_bound(env, hist);
             // a cell may carry several conjuncts of one shape (`'q:
             // Array<'p> + Array<'r>`, a method's own beside its trait's):
             // each that no bound paired with pairs with a bound that takes
@@ -2488,7 +2488,7 @@ impl FnType {
                 sig_tcs.extend(bounds.iter().cloned());
             }
             let in_sig = in_sig(impl_tc);
-            // CR claude for claude: [bug/medium] An implementation bound of another shape
+            // XCR claude for claude: [bug/medium] An implementation bound of another shape
             // than the signature's pairs nothing, and this asks `implies` of a conjunct
             // that still holds an open implementation cell, which a probe lets stand for
             // a signature variable whatever its own bound says (Type::contains_tvars's
@@ -2637,6 +2637,19 @@ impl FnType {
             // judgment. The patch itself was not applied or run again in that review: its
             // tables (k4 k5 u1n valid, u1 y6 z1 the three it let through) are the first
             // thing to re-run.
+            // 2026-11-14 claude: Round 25 (lane 25f): k4-drop.patch applied
+            // (SigPairs::settle_bound in FnType::sig_bounds). Re-run: k4 k5 u1n w1 x6 x7b
+            // x11 x12 y2n z3 check and run; u1 y6 z1 refused at the check (u1, y6 by 'is
+            // one type wherever a bound names it', z1 by 'requires 'b: .. which the
+            // signature does not declare'); k6 k7 w2 w4 w5 x1 x7 x13 y1 y2 y4 y5 z1b z2
+            // refused as before; w3 stays refused by the one-type rule
+            // (sig-one-type-order-01's class). Pins in lang::interfaces: a_union_bound_*
+            // (4), a_variable_in_two_union_bounds_that_cannot_pair_{holds,is_one_type},
+            // a_variable_twice_in_a_union_bound_that_cannot_pair_is_one_type,
+            // a_predicate_variable_in_a_union_bound_that_cannot_pair_must_be_declared;
+            // all 8 fail in 4 modes with the fntyp.rs line undone. Census 0/0 of 2967 vs
+            // base-r25; deep_nesting passes; guicheck 39,600,458,046 base, 39,537,547,981
+            // after. Needs a soak.
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());

@@ -2867,10 +2867,9 @@ each are judged. A conjunct of another shape than every bound pairs
 nothing, and a variable inside it stands for a part of the signature only
 where its own conjuncts admit it, and is one type wherever a bound names
 it: the part at its one place, or the witness of its own bounds, or the
-implementation is refused (`design/module_system.md`). A union of a
-bound's length whose members pair with the bound's in no order is
-refused, though the implementation's may be the wider
-(`iface-bound-shape-01`).
+implementation is refused (`design/module_system.md`). So does a union of
+a bound's length whose members pair with the bound's in no order
+(`SigPairs::settle_bound`): the implementation's may be the wider.
 
 ### `FnType` derives its constraint list from the cells
 

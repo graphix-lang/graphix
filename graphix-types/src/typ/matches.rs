@@ -146,12 +146,32 @@ impl SigPairs {
         hist: &mut RefHist<AHashSet<RefPair>>,
     ) -> Result<()> {
         while !self.deferred.is_empty() {
-            let rest = self.split_group();
-            let r = self.search(env, hist);
-            self.deferred = rest;
-            r?
+            self.settle_group(env, hist)?
         }
         Ok(())
+    }
+
+    /// [`Self::settle`] for the unions a bound deferred: a group that
+    /// cannot pair pairs nothing, as a bound of another shape does.
+    pub(super) fn settle_bound(
+        &mut self,
+        env: &Env,
+        hist: &mut RefHist<AHashSet<RefPair>>,
+    ) {
+        while !self.deferred.is_empty() {
+            let _ = self.settle_group(env, hist);
+        }
+    }
+
+    fn settle_group(
+        &mut self,
+        env: &Env,
+        hist: &mut RefHist<AHashSet<RefPair>>,
+    ) -> Result<()> {
+        let rest = self.split_group();
+        let r = self.search(env, hist);
+        self.deferred = rest;
+        r
     }
 
     /// Keep in `deferred` the last union and every union linked to it
