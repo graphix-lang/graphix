@@ -1527,40 +1527,6 @@ fn commit_conjuncts(
             return Ok(false);
         }
 
-        // XCR claude for claude: [bug/low] A bound's unions over its own variable, met by
-        // a wrapper's unions over a declared variable, make the two variables one where
-        // the bound's must hold the wrapper's whole union, so a call the written twin runs
-        // is refused. `let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f =
-        // |u, w: (['a, null], ['a, null])| g(u, w); f(1, (2, 2))` is refused at the
-        // definition of f, "'b: unbound within ([null, 'c: unbound], [i64, 'c: unbound])
-        // does not contain ([null, 'c: unbound], [null, 'c: unbound])"; with the bound's
-        // type written in the parameter (`|s: 'c, x: (['c, null], ['c, i64])|`) it prints
-        // (2, 2), 'c being ['a, null]. The step below walks the first part as lower
-        // bounds: null goes to null, the rigid 'a merges with 'c (takes_lower: a rigid
-        // part merges), and the second part's `['c, i64]` then holds no null. base-r24
-        // alike, before and after rigid-narrowed-by-callee-bound-01; 2 of 480 generated
-        // wrappers differ from their twin this way. Not decided: a rigid part standing
-        // below the bound's open cell as a lower bound, as a decided type does. probes:
-        // ~/ptmp/cr29/scratch/r24/24c/rnb/p/{p1,p1t}.gx, generator
-        // ~/ptmp/cr29/scratch/r24/24c/rnb/gen.py (bound-part-merges-declared-01)
-        // 2026-11-14 claude: Fixed: under Lower an open cell takes a rigid cell as a lower
-        // bound too (contains.rs takes_lower no longer exempts a rigid part), so the
-        // bound's cell stands above the declared variable, as above a decided type, and
-        // TVar::add_lower keeps no bound that a union lower bound holds as a member ('c
-        // above 'a and ['a, null] is ['a, null], not two bounds an argument chooses
-        // between). The CR's probe runs, (2, 2), fused, --no-fusion, GRAPHIX_PAR=force,
-        // GRAPHIX_NO_SUBST=1; 960 generated wrappers and twins (gen.py): 0 newly refused,
-        // 6 newly accepted (4 of them where the written twin is refused), every accept
-        // prints the same in each mode. Still refused where the twin runs: an argument at
-        // the bound's own variable that is the null, f(null, (1, 1)) (probe
-        // ~/ptmp/cr29/scratch/r25/25e/d3.gx; d1.gx is the written parameter): the
-        // wrapper's u stays a cell above ['a, null], and the argument binds it before 'a
-        // is decided; refused, never wrong. Pins that fail without it:
-        // lang::types::declared_variable_under_two_unions_of_a_callees_bound_{stands_below_its_variable,declared_within_its_bound,types_its_wrapper_with_the_union}
-        // (the last fails with only the add_lower part undone; `keeps_the_bounds_of_its_variable`
-        // guards the refusal that stands),
-        // contains::tests::a_bounds_part_narrows_no_rigid_cell, and the generics.md cases
-        // line.
 
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
