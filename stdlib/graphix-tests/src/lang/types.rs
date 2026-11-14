@@ -14857,6 +14857,26 @@ run!(
 );
 
 run!(
+    a_field_read_through_bounded_variables_with_the_field_at_different_places,
+    r#"{
+  let f = 'a: {x: i64, z: i64}, 'b: {a: i64, x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
+  (f(true, {x: 1, z: 5}, {a: 7, x: 2}), f(false, {x: 1, z: 5}, {a: 7, x: 2}))
+}"#,
+    prints("[i64:1, i64:2]");
+    FuseExpect::None
+);
+
+run!(
+    a_struct_update_through_a_union_of_bounded_variables,
+    r#"{
+  let f = 'a: {x: i64, z: i64}, 'b: {a: i64, x: i64} |c: bool, a: 'a, b: 'b| {(select c { true => a, false => b }) with x: 9};
+  (f(true, {x: 1, z: 5}, {a: 7, x: 2}), f(false, {x: 1, z: 5}, {a: 7, x: 2}))
+}"#,
+    prints("[[[\"x\", i64:9], [\"z\", i64:5]], [[\"a\", i64:7], [\"x\", i64:9]]]");
+    FuseExpect::None
+);
+
+run!(
     a_field_read_through_bounded_variables_needs_the_field_in_each,
     r#"{
   let f = 'a: {x: i64}, 'b: {y: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
