@@ -2811,6 +2811,23 @@ impl<R: Rt> CallSite<R> {
         })
     }
 
+    // CR claude for claude: [bug/low] In the REPL, a call that omits the label of a
+    // function an earlier input's definition returns passes the check and its bind
+    // refuses it. After the input `let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$`,
+    // the input `v(0)(9)` prints `-: string` and then logs "v(0)(9): binding the callee
+    // failed: at: line: 1, column: 24, in: 1: type mismatch _ does not contain i64"; the
+    // same through a struct field (`v(0).f(9)`) alike, and `let w = v(0)` then `w(7)`
+    // fails at the bind with the "settled when its input ended; declare w's type" text
+    // the check should have given. One input (`{ let v = ..; v(0)(9) }`) and a script
+    // print 1. GRAPHIX_DBG_BIND=1: in the script the omitting call binds the instance's
+    // #d cell to i64 at its check (check_omitted_defaults); in the REPL that bind never
+    // comes (likely the earlier input's definition is not known there: defaults_open,
+    // not verified), and the cell is SETTLE-BOTTOMed before the bind, perhaps by the
+    // settle of `v(0)`, whose result holds it, which the exemption below (this site's
+    // own settle) does not reach.
+    // base-r24 alike, both GRAPHIX_NO_SUBST modes. probes:
+    // ~/ptmp/cr29/scratch/r24/24h/nsr-rev/{rd1,rd2,rd3,rd4_one_input}.repl (run with
+    // repl.sh BIN FILE) (repl-returned-default-open-01)
     /// This site's terminal settle of still-unbound constrained cells,
     /// deferred to the statement boundary. Cells reachable from an
     /// omitted default the check did not see are exempt: the default
