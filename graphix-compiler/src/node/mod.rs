@@ -286,10 +286,11 @@ macro_rules! bailat {
 }
 
 /// Read `$typ` through the first of the patterns that matches. A union with
-/// an open member, whose other members the patterns read, waits for its
-/// type ([`crate::node::waits_for_member`]). Another union no pattern reads is
-/// refused with the error `$union(env, union)` (optional, after `;`) gives
-/// for it, or else as "expected `$name` not" the union.
+/// an open member, whose other members the patterns read, is refused as one
+/// open cell is: its type is needed here ([`crate::node::needs_member_type`]).
+/// Another union no pattern reads is refused with the error
+/// `$union(env, union)` (optional, after `;`) gives for it, or else as
+/// "expected `$name` not" the union.
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
@@ -321,7 +322,7 @@ macro_rules! deref_typ {
                                 $($pat => true),+,
                                 _ => false,
                             };
-                            if $crate::node::waits_for_member(&$ctx.env, ms, reads) {
+                            if $crate::node::needs_member_type(&$ctx.env, ms, reads) {
                                 return Err($crate::node::unknown_read($name));
                             }
                             $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
@@ -375,11 +376,11 @@ pub fn read_bound(env: &env::Env, mut bound: Option<Type>) -> Result<Option<Type
     }))
 }
 
-/// Whether a read through the union `ms` waits for a member's type: one
-/// is an open cell no bound reads, and the read `reads` each other one,
-/// through its typedefs and its bound.
+/// Whether a read through the union `ms` needs a member's type: one is an
+/// open cell no bound reads, and the read `reads` each other one, through
+/// its typedefs and its bound.
 #[doc(hidden)]
-pub fn waits_for_member(
+pub fn needs_member_type(
     env: &env::Env,
     ms: &[Type],
     reads: impl Fn(&Type) -> bool,
@@ -412,6 +413,18 @@ pub fn waits_for_member(
     open
 }
 
+// CR claude for claude: [bug/low] A read through a variable its definition declares
+// names a remedy already written: `let f = |a: 'a| a(1); f(|x| x + 1)` and `let f = 'a:
+// Number |a: 'a| a(1); f(1)` say "reading a fn needs its type known here: annotate the
+// binding", the binding being annotated `'a`; `a.x` and `a.0` say the same for a
+// struct and a tuple, and so does a union of such variables, `(select c { true => a,
+// false => b })(1)` over `a: 'a, b: 'b` (through needs_member_type). The variable is
+// rigid in its body check, so no annotation of the binding helps: the remedy is in its
+// declaration (a bound the read takes, `'a: fn(x: i64) -> i64`, runs, as does the
+// written type in its place), and a bound no read takes (`Number`) is the mismatch
+// "expected fn not ..". base-r24 alike. Found reviewing or-name-open-parts-call-01.
+// probes: ~/ptmp/cr29/scratch/r24/24g/orname-review/{q1,q2,s1,s4,t1}.gx
+// (rigid-read-remedy-01)
 /// The refusal of a read of a `name` (a fn, a struct, a tuple) through a
 /// type not yet known.
 #[doc(hidden)]

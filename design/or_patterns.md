@@ -90,7 +90,8 @@ select x {
   yet decided the name is a union of open cells, and a call or a field
   read through it needs its type known, as a read through one open cell
   does: a union with an open member whose other members the read takes
-  waits for that member (`node::waits_for_member`, pins
+  is refused naming the annotation, as nothing waits for that member
+  (`node::needs_member_type`, pins
   `a_call_through_a_name_alternatives_share_over_open_parts_needs_its_type`
   and its annotated twin).
 - **A shadowed alternative is a dead-arm error** (the house select
