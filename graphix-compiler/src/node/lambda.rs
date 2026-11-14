@@ -2306,7 +2306,7 @@ impl Lambda {
         let mut trait_quantifiers: LPooled<Vec<(TVar, Type)>> = LPooled::take();
         let mut param = |env: &Env, name: ArcStr, typ: &Type| -> Result<Type> {
             match &typ.scope_refs(&scope.lexical) {
-                t @ Type::Ref(tr) if env.trait_of_ref(tr).is_some() => {
+                t @ Type::Ref(tr) if env.settled_trait_of_ref(tr)?.is_some() => {
                     let tv = TVar::empty_named(name);
                     trait_quantifiers.push((tv.clone(), t.clone()));
                     Ok(Type::trait_param(env, tv, tr))

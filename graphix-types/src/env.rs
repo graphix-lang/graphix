@@ -1517,6 +1517,13 @@ impl Env {
     // never judged, and the run does not return. probes:
     // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/{fn-body-import,fn-body-typedef,fn-body-typedef-glob}/
     // (import-snapshot-fallthrough-01)
+    // 2026-11-13 claude: Reachable as a wrong value, not only a risk: `let f = |x: Option<f64>| x; mod o; use
+    // o::Option; let r = f("s"); let y = select r { null as _ => 0.0, f64 as v => v + 1.0 }; println(y)` over
+    // o's `type Option<'a> = ['a, string]` passes `--check` (the call reads the import, the body and its
+    // result the prelude's Option), prints 1.0 fused and logs "no arm matches "s": a coverage hole in the
+    // check" under `--no-fusion`; base-r24 alike. With `mod o` above f the select is refused as it should be
+    // (lang::types::lambda_parameter_above_the_use_reads_the_import pins that order). probe:
+    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/review/fn-above-mod-wrong-value/
     /// [`Self::lookup_at`], with whether `origin` is inside the level's
     /// module already known: one chain's levels share their module.
     fn lookup_in<T>(
@@ -1880,6 +1887,33 @@ impl Env {
         match self.resolve_type_name(&tr.scope, &tr.name) {
             Ok(Some(TypeName::Trait(id))) => Some(id),
             _ => None,
+        }
+    }
+
+    /// [`Self::trait_of_ref`] for a reader that takes a trait for a bound
+    /// as it compiles, where a type waits for the check: a name that means
+    /// a trait as the scopes stand and that a statement not compiled yet
+    /// may change is refused ([`Self::open_list`]).
+    pub fn settled_trait_of_ref(&self, tr: &TypeRef) -> Result<Option<TraitId>> {
+        if let Some(id) = tr.trait_id() {
+            return Ok(Some(id));
+        }
+        if tr.resolved().is_some() {
+            return Ok(None);
+        }
+        let e = match self.resolve_type_name(&tr.scope, &tr.name) {
+            Ok(Some(TypeName::Trait(id))) => return Ok(Some(id)),
+            Ok(_) => return Ok(None),
+            Err(e) if e.is::<ChangesLater>() => e,
+            Err(_) => return Ok(None),
+        };
+        let stands =
+            self.resolve_path(&tr.scope, &tr.name, NameNs::Type, false, |s, n| {
+                self.type_name_at(s, n)
+            });
+        match stands {
+            Ok(Some(Ok(TypeName::Trait(_)))) => Err(e),
+            _ => Ok(None),
         }
     }
 

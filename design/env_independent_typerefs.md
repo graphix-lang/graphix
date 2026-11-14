@@ -231,15 +231,22 @@ nothing.
   the name unexpanded (as at `later_typedef`); a
   statement that needs the type as it compiles (a type test, a cast, a
   `let` that takes it apart, an abstract constructor) is refused, naming
-  the `use` or the module to move up. The record is not lexical: a
-  definition checked under its snapshot after its list has compiled reads
-  what the list brought. Pins: `lang::types::typedef_above_the_use_*`,
+  the `use` or the module to move up. A trait written as a parameter's
+  type is taken for a bound as its function or signature compiles, so a
+  name that means a trait as the scopes stand and that such a statement
+  may change is refused there the same way (`Env::settled_trait_of_ref`);
+  a bound a quantifier declares (`'a: Show`) is read at the check. The
+  record is not lexical: a definition checked under its snapshot after
+  its list has compiled reads what the list brought. Pins: `lang::types::typedef_above_the_use_*`,
   `typedef_between_a_use_and_the_module_*`, `typedef_above_a_glob*`,
   `typedef_between_a_glob_and_its_module*`, `block_typedef_above_the_blocks_use*`,
   `nested_block_typedef_above_an_outer_use_refused`,
   `typedef_through_an_imported_module_declared_below*`,
   `let_annotation_above_the_use_reads_the_import`, `type_test_*_the_use*`,
-  `cast_above_the_use_refused`, `destructuring_let_*`.
+  `cast_above_the_use_refused`, `destructuring_let_*`,
+  `trait_parameter_*`, `signature_trait_parameter_*`,
+  `declared_trait_bound_above_a_glob`,
+  `lambda_parameter_above_the_use_reads_the_import`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

@@ -4754,6 +4754,71 @@ run!(
     "/test/o.gx" => "type P = (i64, string)"
 );
 
+// A trait as a parameter's type is taken for a bound as the function or
+// the signature compiles, so above a `use` that may change the name it is
+// refused; a type there is read at the check, and so is a declared bound.
+run!(
+    trait_parameter_above_a_glob_refused,
+    refused("Show may name what a later glob `use` of this block imports: write the `use` before the name's first use"),
+    "/test.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s }; \
+        let result = { let f = |x: Show| Show::show(x); let v = f(1); use array::*; v }"
+; FuseExpect::None);
+
+run!(
+    trait_parameter_below_the_glob,
+    is(Value::I64(1)),
+    "/test.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s }; \
+        let result = { use array::*; let f = |x: Show| Show::show(x); f(1) }"
+);
+
+run!(
+    trait_parameter_above_the_use_of_its_name_refused,
+    refused("Show names what a later `use` of this block imports: write the `use` before the name's first use"),
+    "/test.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s }; mod o; \
+        let result = { let f = |x: Show| Show::show(x); let v = f(1); use o::Show; v }",
+    "/test/o.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s + 10 }"
+; FuseExpect::None);
+
+run!(
+    signature_trait_parameter_above_a_glob_refused,
+    refused("Show may name what a later glob `use` of this block imports"),
+    "/test.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s }; \
+        let result = { trait Twice { val twice: fn(self, x: Show) -> i64 }; \
+        impl Twice for i64 { let twice = |s, x| Show::show(x) + s }; \
+        let v = Twice::twice(1, 1); use array::*; v }"
+; FuseExpect::None);
+
+run!(
+    signature_trait_parameter_below_the_glob,
+    is(Value::I64(2)),
+    "/test.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s }; \
+        let result = { use array::*; trait Twice { val twice: fn(self, x: Show) -> i64 }; \
+        impl Twice for i64 { let twice = |s, x| Show::show(x) + s }; \
+        Twice::twice(1, 1) }"
+);
+
+run!(
+    declared_trait_bound_above_a_glob,
+    is(Value::I64(1)),
+    "/test.gx" => "trait Show { val show: fn(self) -> i64 }; \
+        impl Show for i64 { let show = |s| s }; \
+        let result = { let f = 'a: Show |x: 'a| Show::show(x); let v = f(1); use array::*; v }"
+);
+
+run!(
+    lambda_parameter_above_the_use_reads_the_import,
+    is(Value::I64(1)),
+    "/test.gx" => "mod o; let f = |x: Option<f64>| x; use o::Option; \
+        let result = select f(\"s\") { string as _ => 1, f64 as _ => 0 }",
+    "/test/o.gx" => IMPORTED_OPTION
+);
+
 /// An alias that bounds its parameter is not looked through; its body
 /// written out in its place checks.
 const BOUNDED_ALIAS_OVER_A_RECURSIVE_PARAMETER: &str = r#"

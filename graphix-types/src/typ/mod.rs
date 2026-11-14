@@ -4023,7 +4023,7 @@ impl Type {
                 let mut params_changed = false;
                 for (i, a) in ft.args.iter().enumerate() {
                     let typ = match &a.typ {
-                        Type::Ref(tr) if env.trait_of_ref(tr).is_some() => {
+                        Type::Ref(tr) if env.settled_trait_of_ref(tr)?.is_some() => {
                             let name: ArcStr = match a.name() {
                                 Some(n) => format_compact!("#{n}").as_str().into(),
                                 None => format_compact!("#arg{i}").as_str().into(),
