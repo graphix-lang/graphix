@@ -750,7 +750,8 @@ async fn a_function_escaping_a_dropped_block_keeps_its_imports_while_held() -> R
 }
 
 /// A value keeps the type its block imported once the block's table is
-/// gone: later inputs read the type through the value, never the table.
+/// gone: later inputs read the type through the value, never the table,
+/// which would now give them the root's type of the name.
 #[tokio::test(flavor = "current_thread")]
 async fn a_blocks_imported_type_outlives_its_table() -> Result<()> {
     let files = [
@@ -765,10 +766,13 @@ async fn a_blocks_imported_type_outlives_its_table() -> Result<()> {
         .rt
         .compile(literal!(
             "mod m;
+             type T = string;
              let v = { use m::T; let x: T = m::mk(1); x };
              let none = { use m::{T, U}; let n: U<T> = null; n };
              let some = { use m::{T, U}; let s: U<T> = m::mk(2); s };
-             let empty = { use m::T; let e: Array<T> = []; e }"
+             let empty = { use m::T; let e: Array<T> = []; e };
+             let held = { use m::T; let h: fn(x: i64) -> T = m::mk; h };
+             let made = { use m::T; cast<T>(m::mk(5))$ }"
         ))
         .await?;
     for _ in 0..3 {
@@ -787,13 +791,40 @@ async fn a_blocks_imported_type_outlives_its_table() -> Result<()> {
           let es: Array<m::T> = array::push(empty, v);
           let a = select none { null as _ => 10, t => t.a };
           let b = select w { null as _ => 20, t => t.a };
-          (f(v), a, b, array::len(es))
+          (f(v), a, b, array::len(es), held(3).a, made.a)
         }",
     )
     .await?;
     let want: Value =
-        [1i64, 10, 2, 1].into_iter().map(Value::I64).collect::<Vec<_>>().into();
+        [1i64, 10, 2, 1, 3, 5].into_iter().map(Value::I64).collect::<Vec<_>>().into();
     await_update(&mut rx, id, |v| *v == want).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// A callback in a block that stays builds each new slot's body against
+/// the block's imports, whatever compiled since.
+#[tokio::test(flavor = "current_thread")]
+async fn a_live_blocks_callback_builds_new_slots_against_its_imports() -> Result<()> {
+    let (ctx, mut rx) =
+        fixture_runtime([], crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let array = |ns: &[i64]| -> Value {
+        ns.iter().copied().map(Value::I64).collect::<Vec<_>>().into()
+    };
+    let _a = ctx.rt.compile(literal!("let a = [1, 2]")).await?;
+    let (mapped, _live) =
+        compile_one(&ctx, r#"{ use str::len; array::map(a, |x| len("ab") + x) }"#)
+            .await?;
+    let want = array(&[3, 4]);
+    await_update(&mut rx, mapped, |v| *v == want).await?;
+    for _ in 0..3 {
+        let (id, res) = compile_one(&ctx, "{ use str::len; len(\"ab\") }").await?;
+        await_update(&mut rx, id, |v| *v == Value::I64(2)).await?;
+        drop(res)
+    }
+    let _grown = ctx.rt.compile(literal!("a <- [1, 2, 3, 4]")).await?;
+    let want = array(&[3, 4, 5, 6]);
+    await_update(&mut rx, mapped, |v| *v == want).await?;
     ctx.shutdown().await;
     Ok(())
 }
