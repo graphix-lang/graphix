@@ -1550,49 +1550,6 @@ impl FnType {
         self.collect_tvars_seen(known, &mut TVarsSeen::take())
     }
 
-    // XCR claude for claude: [bug/low] A name walk over a quantified signature
-    // reads a bound of a cell declared outside it under the signature's own
-    // names. This walk passes the conjuncts of every position cell
-    // (for_each_part) and close_through_bounds those of every cell found, both
-    // keyed by name, so where an enclosing definition's cell has a bound naming
-    // a variable the signature also declares, the enclosing variable lands
-    // under that name, and constraint_view, printed_view, each_quantifier and
-    // check_quantifiers_held read it as the signature's own. In `let f = 'a:
-    // Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z| -> i64 0; g(w)
-    // }; f([1])` g declares `'a`, which nothing of g holds, and the check
-    // accepts it (h1.gx; h2.gx, where no outside bound names `'a`, is refused,
-    // "'a is declared but the signature does not hold it"). `graphix fmt
-    // --stdout` rewrites 5 of 12000 generated nests (gen2.py q mode, seeds 101
-    // 202 303 404: fmt/g404_s02086.gx prints its inner signature's own `'z:
-    // i64`, held only through a bound, as `'z: Any`) and refuses
-    // fmt/g303_s00747.gx as a formatter bug, on base-r23 and after
-    // (nested-quantifier-capture-01), which gave the alias walk the scope rule
-    // alone. Where one round finds two cells of one name, close_through_bounds
-    // keeps one or the other by hash order: collect_tvars_through_bounds of a
-    // nested signature of bounds_order.gx disagrees between calls. A fix would
-    // give the name walks the alias walk's rule (tvar::ConjunctsPassed): a
-    // signature's walk reads the bounds of its own quantifiers alone. probes:
-    // ~/ptmp/cr29/scratch/r23/23f/nested-quantifier-capture/ (README)
-    // (name-walk-outer-bound-01)
-    // 2026-11-13 claude: Fixed: the name walks take the alias walk's scope
-    // rule. FnType::collect_tvars_seen, close_through_bounds and
-    // check_quantifiers_held pass the conjuncts of the signature's own
-    // quantifiers alone (FnType::in_name_scope, TVarsSeen::passes, a set of the
-    // names); an unquantified signature walks in the scope it is in, and only a
-    // walk no signature encloses passes every cell's. h1.gx is now refused ('a
-    // is declared but the signature does not hold it), the five rewritten nests
-    // and g303_s00747.gx print as written, and a nested signature's
-    // collect_tvars_through_bounds finds its own cell at every call. Pins that
-    // fail without it:
-    // lang::types::a_quantifier_only_an_enclosing_bound_names_is_refused,
-    // parser::test::a_nested_signature_prints_its_own_variables_bound,
-    // typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier.
-    // a_cell_write_drops_the_free_cells_read_before_it now writes the nested
-    // signature's own quantifier, the cell its walk reads. Census 2967 files: 0
-    // verdict and 0 message changes. 12000 gen2.py nests: 6 rewritten on base
-    // print as written, no other change. 3000 genlam.py programs: same
-    // verdicts, 121 refusals now name an unheld quantifier or give the remedy.
-    // probes: ~/ptmp/cr29/scratch/r24/24g/name-walk-outer-bound/
     pub(super) fn collect_tvars_seen(
         &self,
         known: &mut AHashMap<ArcStr, TVar>,
