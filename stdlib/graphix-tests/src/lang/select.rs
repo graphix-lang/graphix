@@ -13428,3 +13428,103 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 0]);
     FuseExpect::Jit
 );
+
+run!(
+    variant_bool_literals_beside_a_written_array_cover_the_payload,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A(Array<i64>) as `A(a) => 2 }; [f(`A(true)), f(`A(false)), f(`A([5]))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]);
+    FuseExpect::None);
+
+run!(
+    variant_written_array_before_bool_literals_cover_the_payload,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(Array<i64>) as `A(a) => 2, `A(true) => 0, `A(false) => 1 }; [f(`A(true)), f(`A(false)), f(`A([5]))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]);
+    FuseExpect::None);
+
+run!(
+    variant_bool_literals_beside_an_array_slice_ladder_cover_the_payload,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3 }; [f(`A(true)), f(`A(false)), f(`A([5])), f(`A([]))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    variant_bool_literals_beside_a_list_slice_ladder_cover_the_payload,
+    "{ let f = |x: [`A([bool, List<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([<h, t..>]) => 2, `A([<>]) => 3 }; [f(`A(true)), f(`A(false)), f(`A([<5>])), f(`A([<>]))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2, 3]);
+    FuseExpect::Jit);
+
+run!(
+    variant_bool_literals_beside_a_written_map_and_a_number_cover_the_payload,
+    "{ let f = |x: [`A([bool, Map<string, i64>, i64])]| select x { `A(true) => 0, `A(false) => 1, `A(Map<string, i64>) as `A(m) => 2, `A(i64) as `A(n) => n }; [f(`A(true)), f(`A(false)), f(`A({\"a\" => 1})), f(`A(7))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2, 7]);
+    FuseExpect::None
+);
+
+run!(
+    variant_bool_null_and_slice_ladder_cover_the_payload,
+    "{ let f = |x: [`A([bool, null, Array<i64>]), `B]| select x { `A(true) => 0, `A(false) => 1, `A(null) => 4, `A([a, ..]) => 2, `A([]) => 3, `B => 5 }; [f(`A(true)), f(`A(false)), f(`A(null)), f(`A([1])), f(`A([])), f(`B)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 4, 2, 3, 5]);
+    FuseExpect::Jit);
+
+run!(
+    variant_bool_or_pattern_beside_a_written_array_covers_the_payload,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) | `A(false) => 0, `A(Array<i64>) as `A(a) => 2 }; [f(`A(true)), f(`A([1]))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 2]);
+    FuseExpect::None);
+
+run!(
+    tuple_bool_literals_beside_an_array_slice_ladder_cover_the_member,
+    "{ let f = |x: ([bool, Array<i64>], i64)| select x { (true, _) => 0, (false, _) => 1, ([a, ..], _) => 2, ([], _) => 3 }; [f((true, 0)), f((false, 0)), f(([5], 0)), f(([], 0))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    variant_written_array_with_one_bool_literal_misses_the_other,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(Array<i64>) as `A(a) => 2 }; f(`A(true)) }",
+    refused("missing match cases: no arm covers `A(bool)");
+    FuseExpect::None
+);
+
+run!(
+    variant_bool_literals_beside_a_slice_without_the_empty_length_miss_it,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([a, ..]) => 2 }; f(`A(true)) }",
+    refused("missing match cases: no arm covers `A(Array<i64>)");
+    FuseExpect::None
+);
+
+run!(
+    variant_bool_literal_and_slice_ladder_miss_the_other_bool,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A([a, ..]) => 2, `A([]) => 3 }; f(`A(true)) }",
+    refused("missing match cases: no arm covers `A(bool)");
+    FuseExpect::None
+);
+
+run!(
+    variant_bool_literals_and_slice_ladder_miss_null,
+    "{ let f = |x: [`A([bool, null, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3 }; f(`A(true)) }",
+    refused("missing match cases: no arm covers `A(null)");
+    FuseExpect::None
+);
+
+run!(
+    variant_bool_literal_repeated_beside_an_array_slice_is_dead,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(true) => 9, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3 }; f(`A(true)) }",
+    refused("unreachable arm: every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    variant_bool_literal_after_the_cover_beside_an_array_slice_is_dead,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3, `A(false) => 5 }; f(`A(true)) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    variant_guarded_bool_literal_beside_an_array_slice_covers_nothing,
+    "{ let f = |x: [`A([bool, Array<i64>])]| select x { `A(true) if false => 0, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3 }; f(`A(true)) }",
+    refused("missing match cases: no arm covers `A(bool)");
+    FuseExpect::None
+);

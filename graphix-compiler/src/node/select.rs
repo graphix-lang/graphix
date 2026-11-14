@@ -1543,7 +1543,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// CR claude for claude: [bug/low] `true` and `false` arms at a variant's payload
+// XCR claude for claude: [bug/low] `true` and `false` arms at a variant's payload
 // position whose union holds an array or a list never cover the bool member, so
 // the select is refused though an arm takes every value: `|x: [`A([bool,
 // Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A(Array<i64>) as `A(a)
@@ -1557,6 +1557,29 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // member by StructPatternNode::matched_part and a bool pair has no such path.
 // base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/bool/{b05,b06,b08}.gx,
 // b07.gx (the tuple twin) (bool-beside-collection-cover-01)
+// 2026-11-14 claude: PartPool now cuts a variant member too, and a member (tuple,
+// struct or variant) an arm's slice tests inside, not only one a written test does
+// not hold; the bool part pools on its own and the array/list/map/number part is
+// covered by its ladder or its written test. Pins (fail without the fix in 4
+// modes):
+// lang::select::variant_bool_literals_beside_{a_written_array,an_array_slice_ladder,a_list_slice_ladder,a_written_map_and_a_number}_cover_the_payload,
+// variant_written_array_before_bool_literals_..,
+// variant_bool_null_and_slice_ladder_.., variant_bool_or_pattern_..,
+// tuple_bool_literals_beside_an_array_slice_ladder_cover_the_member, and the
+// dead-arm pins
+// variant_bool_literal_{repeated,after_the_cover}_beside_an_array_slice_is_dead;
+// refusal twins pin the missing cases.
+// CR claude for claude: [bug/low] A bool literal beside a slice at another position of
+// one tuple or variant member never covers it, so the select is refused though its arms
+// take every value: `|x: (bool, Array<i64>)| select x { (true, [a, ..]) => 0, (false, _)
+// => 1, (true, []) => 2 }` says "missing match cases: no arm covers (bool,
+// Array<i64>)", and so do `` `A(true, [a, ..]) `` with `` `A(false, _) `` and `` `A(true,
+// []) `` over `` [`A(bool, Array<i64>)] ``, the arms in either order, and `(true, _)`
+// then `(false, [a, ..])` and `(false, [])`. The nested ladder claims lengths only where
+// the slice is all an arm tests (`StructPatternNode::covers`), and the literal pool
+// reads no slice (`pooled_leaves`: a slice is Miss::Unread), so neither group sees the
+// combination (true, []) as covered. base-r25 and lane 25c alike. probes:
+// ~/ptmp/cr29/scratch/r25/25c/bbc/t3.txt (bool-beside-slice-product-cover-01)
 // CR claude for claude: [bug/low] An arm is not found dead behind an arm that takes every
 // value of its variant where the parameter is unannotated and another tag's arm follows:
 // `let f = |s| select s { `A(b) => b, `A(c) => 1, `B => 2 }; f(`A(1))` checks and runs
@@ -2239,12 +2262,13 @@ fn split_members(
     true
 }
 
-/// `m`, a tuple or struct, with `ts` at its positions.
+/// `m`, a tuple, struct or variant, with `ts` at its positions.
 fn with_positions(m: &Type, ts: impl Iterator<Item = Type>) -> Type {
     match m {
         Type::Struct(fs) => Type::Struct(Arc::from_iter(
             fs.iter().zip(ts).map(|((n, _, at), t)| (n.clone(), t, *at)),
         )),
+        Type::Variant(tag, _, at) => Type::Variant(tag.clone(), Arc::from_iter(ts), *at),
         _ => Type::Tuple(Arc::from_iter(ts)),
     }
 }
@@ -2291,14 +2315,22 @@ impl PartPool {
         union_members(env, members_of, &mut members)?;
         let rigid = ContainsFlags::RigidCheck.into();
         for m in members {
-            if !matches!(m, Type::Tuple(_) | Type::Struct(_)) {
+            if !matches!(m, Type::Tuple(_) | Type::Struct(_) | Type::Variant(..)) {
                 continue;
             }
             let mut narrowed = false;
-            for (pat, _) in arms.iter().filter(|(p, _)| p.explicit_type_predicate) {
+            for (pat, _) in arms.iter() {
                 let t = &pat.type_predicate;
-                if t.could_match(env, &m)? && !t.contains_with_flags(rigid, env, &m)? {
-                    narrowed = true;
+                narrowed = match pat.explicit_type_predicate {
+                    true => {
+                        t.could_match(env, &m)?
+                            && !t.contains_with_flags(rigid, env, &m)?
+                    }
+                    false => pat.atoms().iter().any(|(sp, _)| {
+                        nests_slice(sp) && Shape::of(sp).is_some_and(|s| s.fits(&m))
+                    }),
+                };
+                if narrowed {
                     break;
                 }
             }
@@ -2313,6 +2345,9 @@ impl PartPool {
     fn cut(&mut self, env: &Env, m: &Type) -> Result<bool> {
         let (shape, positions): (Shape, SmallVec<[&Type; 8]>) = match m {
             Type::Tuple(ts) => (Shape::Tuple(ts.len()), ts.iter().collect()),
+            Type::Variant(tag, ts, _) => {
+                (Shape::Variant(tag.clone(), ts.len()), ts.iter().collect())
+            }
             Type::Struct(fs) => (
                 Shape::Struct(fs.iter().map(|(n, _, _)| n.clone()).collect()),
                 fs.iter().map(|(_, t, _)| t).collect(),
@@ -2353,6 +2388,7 @@ impl PartPool {
             let shape = match &shape {
                 Shape::Tuple(n) => Shape::Tuple(*n),
                 Shape::Struct(names) => Shape::Struct(names.clone()),
+                Shape::Variant(tag, n) => Shape::Variant(tag.clone(), *n),
                 _ => return Ok(false),
             };
             let group = PoolGroup {

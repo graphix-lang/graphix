@@ -317,6 +317,10 @@ no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }
 no "missing match cases" |x: (bool, [i64, string, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (false, null) => 3 }
+ok |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A(Array<i64>) as `A(a) => 2 }
+ok |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(false) => 1, `A([a, ..]) => 2, `A([]) => 3 }
+ok |x: ([bool, Array<i64>], i64)| select x { (true, _) => 0, (false, _) => 1, ([a, ..], _) => 2, ([], _) => 3 }
+no "missing match cases: no arm covers `A(bool)" |x: [`A([bool, Array<i64>])]| select x { `A(true) => 0, `A(Array<i64>) as `A(a) => 2 }
 ok 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => 1, (bool, string) as (false, s) => 2, (false, null) => 3 }
 ok 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 0, (bool, 'b) as (false, v) => 1, (false, null) => 3 }
 no "missing match cases" 'b: [i64, u8] |x: (bool, [i64, u8]), y: 'b| select x { (bool, 'b) as (true, a) => 1, (false, _) => 2 }

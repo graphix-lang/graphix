@@ -74,8 +74,9 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   a name or `_` there admits, `Head::Open`, as is a primitive member's
   value but `bool` and `null`, `Head::Rest`), and an arm under
   a type test pools only a member the test holds, held rigid (a declared
-  variable the test names holds only itself, never its bound); a tuple or
-  struct member a written test can match and does not hold is also cut
+  variable the test names holds only itself, never its bound); a tuple,
+  struct or variant member a written test can match and does not hold, or
+  that an arm's slice at one of its positions tests, is also cut
   into parts (`PartPool`), each one member of every position's union (a
   primitive set one per primitive, a declared variable at the position
   its one typed bound's members, each also held by a test naming the
@@ -84,7 +85,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   covers itself, a declared variable's parts together the variable, and
   an arm whose every part it reaches already matches what it matches
   there is dead (`(true, _)`, `(bool, i64) as (false, n)` and `(bool,
-  null) as (false, _)` cover `(bool, [i64, null])`); neither pool finds
+  null) as (false, _)` cover `(bool, [i64, null])`, and `` `A(true) ``,
+  `` `A(false) `` and `` `A(Array<i64>) as `A(a) `` or `` `A([a, ..]) `` with
+  `` `A([]) `` cover `` `A([bool, Array<i64>]) ``: the bool part is a pool of its
+  own and the array part a ladder or a cover); neither pool finds
   dead an arm whose written test can match a scrutinee member it does
   not see (an open cell, read as its one typed bound, or `Any`:
   `Reach::reaches_unpooled`); a group whose combinations of
