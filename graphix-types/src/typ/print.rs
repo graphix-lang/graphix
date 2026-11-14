@@ -246,6 +246,14 @@ thread_local! {
     /// No less than what the capped print being written still shows;
     /// unbounded outside one.
     static SHOWN: Cell<usize> = const { Cell::new(usize::MAX) };
+    /// A part of a member prints alone to be compared ([`Parts`]): a union
+    /// refuses to print, since it would print each of its members.
+    static ALONE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static MEMBER_PRINTS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// A union's scratch: it takes writes while its text is no longer than
@@ -367,13 +375,15 @@ impl Type {
 /// ([`crate::print_standing`]): a member identical to an earlier one (two
 /// names of one cell), or printing as it does where either holds a cell
 /// (two cells bound to one type), prints once, and a lone member prints
-/// bare. A member prints into scratch only as far as
+/// bare. A member that prints as a kept one by their parts ([`Parts`])
+/// does not print, so a part many members share prints once. Any other
+/// prints into scratch only as far as
 /// the farther of what [`SHOWN`] reaches and the longest member kept,
 /// past which it prints like none of them: a member whose text passes
 /// that is kept as far as it printed, and once the kept text passes
 /// [`SHOWN`] the next member that is not identical to one kept counts as
 /// kept unprinted, since none of it shows.
-// CR claude for claude: [risk/low] Members that print alike over distinct cells each print
+// XCR claude for claude: [risk/low] Members that print alike over distinct cells each print
 // whole to be compared, so unions of them nested inside each other cost 2^depth for text that
 // grows by a few bytes a level, under `Brief`'s cap or not: `S = [(S', c1), (S', c2)]`, c1 and c2
 // two open cells of one generated name, takes 2.4/10/36/142 ms at depth 12/14/16/18 (291
@@ -386,7 +396,32 @@ impl Type {
 // each print as one lower bound still print alike and still cost 2^depth: 2.3/10/37/146 ms at
 // depth 12/14/16/18 (Brief and the whole print alike, 87..129 bytes). Probe variant: the probe
 // with cell.add_lower(i64) on each cell.
+// 2026-11-14 claude: Fixed: write_deref_set first asks each kept member whether the new one
+// prints as it by their parts (print::Parts), and prints it only if not: one node prints as
+// itself, two of one head as their parts do, and a cell (or a part opposite one) prints alone
+// into the scratch beside its counterpart, within the kept member's length; a union met while a
+// cell prints alone refuses (ALONE), so a cell holding a union is told by the member's text as
+// before. Text unchanged: census 2967 files, 0 verdict, 0 message vs the lane's last. The probe
+// at depth 18: 140 ms -> 22 us; 524286 member prints -> 18. Pins in contains::tests:
+// members_alike_but_for_their_cells_print_a_shared_part_once (open cells, and cells printing as
+// one lower bound) fails with the parts check off (524286 vs 18),
+// members_told_by_their_parts_print_as_their_text_would fails too (7 vs 3),
+// members_alike_but_for_cells_holding_a_union_print_as_before fails with ALONE off (29524 vs
+// 1534). What stays 2^depth is copies of one union that are not one node
+// (print-lookalike-copies-exp-01).
+// CR claude for claude: [risk/low] Members alike but for two copies of one union that are not one
+// node, or for cells holding such copies, still print whole to be compared, so nesting them costs
+// 2^depth as before: `Parts` tells a union only by its node, and a cell holding one refuses to
+// print alone (`ALONE`), since printing both copies there would cost three prints of the level
+// below where the member's text costs two. contains::tests::
+// members_alike_but_for_cells_holding_a_union_print_as_before: 1534 member prints at depth 10
+// for 10 levels of text. A fix tells two unions alike by their members (each member's verdict
+// against the other's, in one context) or reuses a union's text across copies printed under the
+// same cells. No program has shown such a chain. (print-lookalike-copies-exp-01)
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
+    if ALONE.get() {
+        return Err(fmt::Error);
+    }
     let cap = SHOWN.get();
     let mut text: LPooled<String> = LPooled::take();
     let mut kept: SmallVec<[(&Type, usize, usize); 16]> = SmallVec::new();
@@ -399,6 +434,15 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
             kept.push((t, start, start));
             break;
         }
+        let as_kept = kept.iter().any(|&(k, a, b)| {
+            Parts { text: &mut text, left: b - a }.members(k, t)
+                && !(k.tvar_free() && t.tvar_free())
+        });
+        if as_kept {
+            continue;
+        }
+        #[cfg(test)]
+        MEMBER_PRINTS.with(|n| n.set(n.get() + 1));
         let longest = kept.iter().map(|(_, a, b)| b - a).max().unwrap_or(0);
         let reach = cap.max(start + longest);
         let printed = {
@@ -429,6 +473,86 @@ fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
             write_list(f, kept.iter().map(|(_, a, b)| &text[*a..*b]))?;
             write!(f, "]")
         }
+    }
+}
+
+/// Whether a member prints as a kept one did, told from their parts, so
+/// a part the two share prints for neither: one node prints as itself,
+/// and two of one head as their parts do. A cell, or a part standing
+/// where the other holds one, prints alone after `text` beside its
+/// counterpart, the two within the `left` bytes the kept member's text
+/// leaves them, a union in either refusing to print ([`ALONE`]). False
+/// where that cannot tell: two heads, or a union, function or application
+/// that is not one node.
+struct Parts<'a> {
+    text: &'a mut String,
+    left: usize,
+}
+
+impl Parts<'_> {
+    /// Two members, neither a cell, whose text would be the member's.
+    fn members(&mut self, k: &Type, t: &Type) -> bool {
+        !matches!(k, Type::TVar(_)) && !matches!(t, Type::TVar(_)) && self.alike(k, t)
+    }
+
+    fn alike(&mut self, k: &Type, t: &Type) -> bool {
+        if k.node_key().is_some_and(|a| t.node_key() == Some(a)) {
+            return true;
+        }
+        crate::stack::ensure_sufficient(|| match (k, t) {
+            (Type::TVar(_), _) | (_, Type::TVar(_)) => self.print_alike(k, t),
+            (Type::Tuple(a), Type::Tuple(b)) => self.all(a, b),
+            (Type::Variant(x, a, _), Type::Variant(y, b, _)) => x == y && self.all(a, b),
+            (Type::Struct(a), Type::Struct(b)) => {
+                let (a, b) = (struct_fields(a), struct_fields(b));
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(&b)
+                        .all(|((n, x, _), (m, y, _))| n == m && self.alike(x, y))
+            }
+            (Type::Array(a), Type::Array(b))
+            | (Type::List(a), Type::List(b))
+            | (Type::Error(a), Type::Error(b)) => self.alike(a, b),
+            (Type::ByRef(m, a), Type::ByRef(n, b)) => m == n && self.alike(a, b),
+            (Type::Map(a), Type::Map(b)) => {
+                self.alike(&a.key, &b.key) && self.alike(&a.value, &b.value)
+            }
+            (Type::Ref(a), Type::Ref(b)) => {
+                a.name == b.name && self.all(&a.params, &b.params)
+            }
+            (
+                Type::Abstract { id: x, params: a },
+                Type::Abstract { id: y, params: b },
+            ) => x == y && self.all(a, b),
+            (Type::Primitive(a), Type::Primitive(b)) => a == b,
+            (Type::Bound(a), Type::Bound(b)) => a == b,
+            (Type::Bottom, Type::Bottom)
+            | (Type::Any, Type::Any)
+            | (Type::Hole, Type::Hole) => true,
+            _ => false,
+        })
+    }
+
+    fn all(&mut self, a: &[Type], b: &[Type]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| self.alike(a, b))
+    }
+
+    fn print_alike(&mut self, k: &Type, t: &Type) -> bool {
+        let _alone = Restore::replace(&ALONE, true);
+        let start = self.text.len();
+        let kept =
+            write!(Scratch { text: &mut *self.text, cap: start + self.left }, "{k}");
+        let mid = self.text.len();
+        let len = mid - start;
+        let alike = kept.is_ok()
+            && len <= self.left
+            && write!(Scratch { text: &mut *self.text, cap: mid + len }, "{t}").is_ok()
+            && self.text[mid..] == self.text[start..mid];
+        self.text.truncate(start);
+        if alike {
+            self.left -= len;
+        }
+        alike
     }
 }
 

@@ -7519,6 +7519,102 @@ mod tests {
         }
     }
 
+    /// `[(t, c1), (t, c2)]` nested `depth` deep, `t` the level below and
+    /// `c1`, `c2` two cells `cell` makes.
+    fn alike_over_cells(depth: usize, cell: impl Fn() -> Type) -> Type {
+        (0..depth).fold(prim(Typ::I64), |t, _| {
+            let member = || Type::Tuple(Arc::from_iter([t.clone(), cell()]));
+            Type::Set(Arc::from_iter([member(), member()]))
+        })
+    }
+
+    /// The members printed to print `t` whole and under `Brief`, which
+    /// agree, and the text.
+    fn member_prints(t: &Type) -> (usize, usize, String) {
+        let flags = PrintFlag::DerefTVars | PrintFlag::ReplacePrims;
+        let counted = |f: &dyn Fn() -> String| {
+            crate::typ::print::MEMBER_PRINTS.with(|n| n.set(0));
+            let s = f();
+            (crate::typ::print::MEMBER_PRINTS.with(|n| n.get()), s)
+        };
+        let (whole_n, whole) = counted(&|| format_with_flags(flags, || format!("{t}")));
+        let (brief_n, brief) = counted(&|| format!("{}", Brief(t)));
+        assert_eq!(whole, brief);
+        (whole_n, brief_n, whole)
+    }
+
+    /// Members alike but for two cells that print alike, nested: the part
+    /// they share prints once a level, not 2^depth times, whether the
+    /// cells are open or print as their one lower bound.
+    #[test]
+    fn members_alike_but_for_their_cells_print_a_shared_part_once() {
+        let depth = 18;
+        let open = || Type::TVar(TVar::empty_named(literal!("_7")));
+        let lowered = || {
+            let cell = TVar::empty_named(literal!("_7"));
+            cell.add_lower(prim(Typ::String));
+            Type::TVar(cell)
+        };
+        for (cell, shown) in
+            [(&open as &dyn Fn() -> Type, "'_7: unbound"), (&lowered, "string")]
+        {
+            let t = alike_over_cells(depth, cell);
+            let expected =
+                (0..depth).fold(String::from("i64"), |s, _| format!("({s}, {shown})"));
+            assert_eq!(member_prints(&t), (depth, depth, expected));
+        }
+    }
+
+    /// The parts decide only what the text would: cells that print apart
+    /// keep both members, and a cell prints as the type it is bound to.
+    #[test]
+    fn members_told_by_their_parts_print_as_their_text_would() {
+        let named =
+            |n: &'static str| move || Type::TVar(TVar::empty_named(ArcStr::from(n)));
+        let pair = |a: Type, b: Type| {
+            let shared = alike_over_cells(2, named("_7"));
+            let member = |c| Type::Tuple(Arc::from_iter([shared.clone(), c]));
+            Type::Set(Arc::from_iter([member(a), member(b)]))
+        };
+        let inner = "((i64, '_7: unbound), '_7: unbound)";
+        let apart = pair(named("_7")(), named("_8")());
+        assert_eq!(
+            member_prints(&apart).2,
+            format!("[({inner}, '_7: unbound), ({inner}, '_8: unbound)]")
+        );
+        let bound = TVar::empty_named(literal!("_9"));
+        bound.bind(prim(Typ::I64));
+        let to_binding = pair(Type::TVar(bound), prim(Typ::I64));
+        assert_eq!(member_prints(&to_binding), (3, 3, format!("({inner}, i64)")));
+    }
+
+    /// Members alike but for cells each holding a copy of the level below,
+    /// nested over open cells of one name: a cell holding a union is told
+    /// by the members' text, each member printed as before (2^(depth+1) -
+    /// 2), not by their parts, which would print the level below three
+    /// times. Only the lowest level's, over open cells, are told by parts.
+    #[test]
+    fn members_alike_but_for_cells_holding_a_union_print_as_before() {
+        fn level(depth: usize) -> Type {
+            match depth {
+                0 => Type::TVar(TVar::empty_named(literal!("_7"))),
+                _ => {
+                    let member = || {
+                        let cell = TVar::empty_named(literal!("_9"));
+                        cell.bind(level(depth - 1));
+                        Type::Tuple(Arc::from_iter([prim(Typ::I64), Type::TVar(cell)]))
+                    };
+                    Type::Set(Arc::from_iter([member(), member()]))
+                }
+            }
+        }
+        let depth = 10;
+        let expected =
+            (0..depth).fold(String::from("'_7: unbound"), |s, _| format!("(i64, {s})"));
+        let prints = (1 << (depth + 1)) - 2 - (1 << (depth - 1));
+        assert_eq!(member_prints(&level(depth)), (prints, prints, expected));
+    }
+
     /// `&T` and `&mut T` over one inner allocation are two types to every
     /// memo and every walk that visits a shared node once.
     #[test]
