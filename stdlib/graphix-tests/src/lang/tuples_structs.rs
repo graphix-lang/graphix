@@ -741,6 +741,56 @@ run!(
 );
 
 run!(
+    let_refutable_slice_over_members_with_composite_fields_refused,
+    r#"{
+    let e: Array<i64> = [];
+    let v: [{a: Array<i64>, c: string}, {a: Array<string>, c: string}] = {a: e, c: "x"};
+    let {a: [h, ..], ..} = v;
+    h
+}"#,
+    refused("refutable patterns are not allowed in let");
+    FuseExpect::None
+);
+
+run!(
+    let_refutable_slice_in_a_full_struct_over_members_with_composite_fields_refused,
+    r#"{
+    let e: Array<i64> = [];
+    let v: [{a: Array<i64>, c: string}, {a: Array<string>, c: string}] = {a: e, c: "x"};
+    let {a: [h, ..], c: _} = v;
+    h
+}"#,
+    refused("refutable patterns are not allowed in let");
+    FuseExpect::None
+);
+
+run!(
+    let_refutable_slice_over_a_select_of_members_with_composite_fields_refused,
+    r#"{
+    let t = true;
+    let x: string = "x";
+    let y: string = "y";
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let {a: [h, ..], ..} = v;
+    h
+}"#,
+    refused("refutable patterns are not allowed in let");
+    FuseExpect::None
+);
+
+run!(
+    let_refutable_slice_over_tuple_members_with_composite_parts_refused,
+    r#"{
+    let e: Array<i64> = [];
+    let v: [(Array<i64>, string), (Array<string>, string)] = (e, "x");
+    let ([h, ..], _) = v;
+    h
+}"#,
+    refused("refutable patterns are not allowed in let");
+    FuseExpect::None
+);
+
+run!(
     parameter_partial_struct_over_decided_members,
     r#"{
     type S<'p, 'q> = [{a: i64, c: 'p}, {a: i64, c: 'q}];

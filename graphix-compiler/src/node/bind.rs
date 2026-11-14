@@ -528,8 +528,7 @@ impl<R: Rt> Bind<R> {
             (node, pattern, typ)
         };
         if deferred.is_none()
-            && narrowed.is_none()
-            && !pattern.covers(&ctx.env, &typ, false)
+            && !pattern.covers(&ctx.env, narrowed.as_ref().unwrap_or(&typ), false)
         {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
@@ -630,9 +629,9 @@ impl<R: Rt> Bind<R> {
         }
         if narrowed.is_none() {
             self.pattern.realign(&ctx.env, &self.typ).at(spec)?;
-            if !self.pattern.covers(&ctx.env, &self.typ, false) {
-                bailat!(spec, "refutable patterns are not allowed in let");
-            }
+        }
+        if !self.pattern.covers(&ctx.env, narrowed.as_ref().unwrap_or(&self.typ), false) {
+            bailat!(spec, "refutable patterns are not allowed in let");
         }
         let apart = self.apart(ctx);
         self.type_names(ctx, &pred, apart)
@@ -719,7 +718,7 @@ impl<R: Rt> Bind<R> {
             })?
         }
         self.pattern.realign(&ctx.env, &t).at(spec)?;
-        if narrowed.is_none() && !self.pattern.covers(&ctx.env, &self.typ, false) {
+        if !self.pattern.covers(&ctx.env, narrowed.as_ref().unwrap_or(&self.typ), false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
         let leaves = self
