@@ -1524,44 +1524,6 @@ impl Type {
         Ok(out)
     }
 
-    // XCR claude for claude: [bug/low] An open function that meets two members that do
-    // not meet each other takes the first, so the order of a union's members decides
-    // a lambda's type. Over `let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y
-    // + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; let u = t.f; select t { {f, a: _} =>
-    // f("s"), _ => "no" }` the read `t.f` makes `|x| x` the `i64` function and the
-    // call is refused, "i64 does not contain string"; with the field names `b` and
-    // `c` exchanged it meets `|z| "[z]!"` first and the program prints "s". An
-    // or-arm's name does the same by the order of its scrutinee's members (`A(r) |
-    // `B(r) | `C(r)` over `A(|x| x)`, `B(|y| y + 1)`, `C(|z| "[z]!")`, against the
-    // same with the tags `B` and `C` exchanged). The rule for a type two undecided
-    // members could take is that it goes to neither (contains.rs::AmbiguousMember).
-    // Same on base-r23 for the field read. probes:
-    // ~/ptmp/cr29/scratch/r23/23d/obfm/{o1,o2,o3,o5}.gx (fn-meet-first-member-01)
-    // 2026-11-12 claude: (review of or-bind-fn-meet-01) An or-arm's name now meets
-    // its parts in the order its alternatives are written before the order of its
-    // scrutinee's members, since merge_leaves meets them first: over `A(|x| x),
-    // `B(|y| y + 1), `C(|z| "[z]!") the arm `A(r) | `C(r) | `B(r) makes |x| x the
-    // string function and `A(r) | `B(r) | `C(r) the i64 one. probe:
-    // ~/ptmp/cr29/scratch/r23/23d/obfm-review/o6.gx (o3.gx of the fixer's probes is
-    // its twin)
-    // 2026-11-14 claude: Type::meet_open_fns no longer lets the first member a
-    // function meets decide it: a member with cells of its own is one type with every
-    // member it meets, and one that meets two it cannot both be is refused where they
-    // meet (setops::two_meets), the member that looks for its meets and the one it
-    // finds alike; the refusal names the three and the fix, the part of the lambda's
-    // type that tells the two apart (a parameter, or what it throws). The CR's probes
-    // o1/o2/o3/o5/o6 are refused in every order, and run with the parameter written.
-    // A member whose open cells are all a scheme's still joins the first member it
-    // meets, which decides nothing of it. Pins that fail without it:
-    // lang::types::field_read_refuses_a_lambda_two_members_could_decide (all six
-    // member orders), field_read_refuses_a_lambda_beside_two_functions and its
-    // _exchanged twin, field_read_refuses_a_capture_two_members_could_decide,
-    // field_read_refuses_a_lambda_two_errors_could_decide,
-    // select_refuses_a_lambda_two_arms_could_decide,
-    // select_refuses_a_generic_function_two_arms_could_decide,
-    // lang::select::or_name_refuses_a_function_two_could_decide and its two exchanged
-    // twins. Census: no file of either repo changes verdict or message. probes:
-    // ~/ptmp/cr29/scratch/r24/24d/fmfm/
     // CR claude for claude: [bug/low] A select of two copies of one function whose
     // signature holds a typedef union of two of its variables under one constructor
     // is refused where a call of its binding runs: `type P<'p, 'q> = [Array<'p>,
