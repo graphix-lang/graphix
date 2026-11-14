@@ -10559,6 +10559,58 @@ run!(
     FuseExpect::None
 );
 
+// What a variable beside a member took under an invariant constructor
+// stands for the parameters after it, so the parameter that holds the
+// variable alone goes first where it is to take the member too.
+run!(
+    variable_beside_a_member_under_a_writable_reference_stands_for_a_later_reference_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let put = |w: &mut Opt<'a>, k: &mut 'a| -> Opt<'a> { *w <- once(*k); *w };
+  let n0: Opt<i64> = null;
+  let d: Opt<i64> = 5;
+  put(&mut n0, &mut d)$
+}"#,
+    refused("&mut 'a: i64 does not contain &mut [i64, null]");
+    FuseExpect::None
+);
+run!(
+    variable_beside_a_member_under_a_writable_reference_takes_a_later_reference_without_it,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let put = |w: &mut Opt<'a>, k: &mut 'a| -> Opt<'a> { *w <- once(*k); *w };
+  let n0: Opt<i64> = null;
+  let d: i64 = 5;
+  put(&mut n0, &mut d)$
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+run!(
+    variable_decided_with_the_member_first_holds_under_a_later_writable_reference,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let put = |k: &mut 'a, w: &mut Opt<'a>| -> Opt<'a> { *w <- once(*k); *w };
+  let n0: Opt<i64> = null;
+  let d: Opt<i64> = 5;
+  put(&mut d, &mut n0)$
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+run!(
+    variable_beside_a_member_under_a_writable_reference_stands_for_a_value_before_it_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let put = |v: 'a, w: &mut Opt<'a>| -> Opt<'a> { *w <- once(v); *w };
+  let n0: Opt<i64> = null;
+  let d: Opt<i64> = 5;
+  put(d, &mut n0)$
+}"#,
+    refused("'a: i64 does not contain [i64, null]");
+    FuseExpect::None
+);
+
 run!(
     alias_over_a_variable_under_an_abstract_builds_at_a_nested_alias,
     r#"{

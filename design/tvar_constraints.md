@@ -872,6 +872,17 @@ the variable is `i64` unless an earlier parameter decided it wider (pins
 `open_member_beside_a_covered_primitive_takes_no_argument_apart_refused`,
 `alias_over_a_variable_under_a_writable_reference_takes_no_member_it_adds_refused`,
 `typ::contains::tests::an_open_member_takes_only_the_primitives_no_member_does`).
+Under an invariant constructor both `i64` and `[i64, null]` solve `['a,
+null] = [i64, null]`, and the narrowest is taken by that rule, never by a
+member's place; nothing widens it afterwards. So which parameter stands
+first decides (D36): `|w: &mut Opt<'a>, k: &mut 'a|` at two `Opt<i64>` is
+the mismatch where `k` is written and takes a `k: i64`; `|k: &mut 'a, w:
+&mut Opt<'a>|` runs, `'a` the `[i64, null]`; and a data parameter `v: 'a`
+given the `Opt<i64>` is the mismatch on either side of `w`, since `w` is
+checked first (pins
+`lang::types::variable_beside_a_member_under_a_writable_reference_stands_for_a_later_reference_refused`,
+`_takes_a_later_reference_without_it`, `_stands_for_a_value_before_it_refused`,
+`variable_decided_with_the_member_first_holds_under_a_later_writable_reference`).
 A rigid check never commits, so one that fails is asked again with such
 members as their members, committing no bound of the name's parameters
 (`Type::contains_unfolded`, under `ContainsFlags::RigidCheck` alone: every

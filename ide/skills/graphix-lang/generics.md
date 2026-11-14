@@ -115,6 +115,16 @@ no "pattern null will never match" let f = |x: ['a, null]| -> 'a x$; let v: [Arr
 ok type N = [i64, null]; let f = 'a: Number |x: [['a, null], Array<i64>]| x; let v: [N, Array<i64>] = 1; f(v)
 ```
 
+Under a `&mut` nothing widens the variable afterwards: a `&mut 'a`
+parameter after it that is given the whole nullable is refused. Put the
+parameter that holds the variable alone first.
+
+```graphix,cases
+no "&mut 'a: i64 does not contain &mut [i64, null]" let f = |w: &mut ['a, null], k: &mut 'a| -> i64 0; let n: [i64, null] = null; let d: [i64, null] = 1; f(&mut n, &mut d)
+ok let f = |k: &mut 'a, w: &mut ['a, null]| -> i64 0; let n: [i64, null] = null; let d: [i64, null] = 1; f(&mut d, &mut n)
+ok let f = |w: &mut ['a, null], k: &mut 'a| -> i64 0; let n: [i64, null] = null; let d = 1; f(&mut n, &mut d)
+```
+
 Two members of one constructor holding two of its variables ask the
 same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
 'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`, `[fn(x: 'c) -> i64, fn(x: 'd)

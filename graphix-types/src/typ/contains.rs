@@ -5572,6 +5572,13 @@ impl Type {
         // {order,errs,catch}.txt (a program a line; cmp.sh prints base-r24's and the
         // lane's verdicts: order.out, errs.out, catch.out)
         // (value-members-one-cell-order-01)
+        // 2026-11-13 claude: The same order under an invariant position, where one placing
+        // alone solves it: over 'let f = |w: &mut ['a, Array<'a>]| -> 'a never()', 'type T0
+        // = Array<i64>; type T1 = Array<Array<i64>>; let n0: [T0, T1] = [1]; f(&mut n0)' is
+        // refused, "&mut ['a: i64, Array<'a: i64>] does not contain &mut [T0, T1]", and
+        // checks with the two names swapped, as the written-out [Array<i64>,
+        // Array<Array<i64>>] does in either order (base-r24 alike). probes:
+        // ~/ptmp/cr29/scratch/r24/24d/ius/e.txt lines 2-5 (hp2.sh; e.lane.out, e.base.out)
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a
@@ -5740,6 +5747,22 @@ impl Type {
         // takes its definition's types, runs every one of them. probes:
         // ~/ptmp/cr29/scratch/r24/24d/udm-rev/{u3,p10,p11}.gx, diff-pre/sound.txt,
         // diff-base/sound-summary.txt
+        // 2026-11-13 claude: Closing invariant-union-two-solutions-01 (D36): a wrapper
+        // that passes an undecided parameter to an invariant position holding a
+        // variable beside a member splits the same way. 'type Opt<'x> = ['x, null];
+        // let put = |w: &mut Opt<'a>, k: &mut 'a| -> Opt<'a> { *w <- once(*k); *w };
+        // let n0: Opt<i64> = null; let d: Opt<i64> = 5; let g = |u| put(u, &mut d);
+        // g(&mut n0)' checks and runs (u takes the formal as it stands and k decides
+        // 'a at [i64, null]), and under GRAPHIX_NO_SUBST=1 g's instance, its u
+        // decided, gives 'a the i64 and is refused, "&mut 'a: i64 does not contain
+        // &mut [i64, null]", as the direct call put(&mut n0, &mut d) is. Beside a
+        // member that is no primitive ('x beside {x: i64}) the instance checked again
+        // is refused where the formal names the alias and runs where it writes the
+        // union out. Of 4317 accepted programs of gen.py (seeds 501-503, 640 families)
+        // 40 are refused under NO_SUBST, all of this wrapper shape; the default build
+        // runs every one alike plain, --no-fusion, PAR=force and under ELAB_AUDIT.
+        // probes:
+        // ~/ptmp/cr29/scratch/r24/24d/ius/{ns_alias,ns_written,ns185_alias,ns185_written}.gx
         let mut undecided_free = s0
             .iter()
             .zip(&free)
@@ -5808,49 +5831,6 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [bug/low] An invariant position holding a union of a variable
-    // and a member decides the variable by how the argument's type is spelled, and by
-    // the order of the parameters, where the argument already holds the member: `['a,
-    // null]` equal to `[i64, null]` holds at 'a = i64 and at 'a = [i64, null], and the
-    // first containment takes one. Over `type Opt<'a> = ['a, null]; let nest = |w: &mut
-    // Opt<'a>| -> &mut 'a never()`, `let x: &mut Opt<i64> = nest(&mut n0)` checks for
-    // `n0: Opt<Opt<i64>>` (the member `Opt<i64>` goes to 'a whole) and is refused for
-    // `n0: [i64, null]`, `Opt<i64>` and `Opt<[i64, null]>`, "&mut Opt<i64> does not
-    // contain &mut 'a: i64"; `let x: &mut i64` the other way round. The formal's
-    // spelling changes nothing (`w: &mut ['a, null]` gives the same verdicts). A call
-    // only the wider solution types depends on parameter order: `|w: &mut Opt<'a>, k:
-    // &mut 'a| -> i64 0` at `(&mut n0, &mut d)` with `n0: Opt<i64>` and `d: Opt<i64>`
-    // is refused, "&mut 'a: i64 does not contain &mut [i64, null]", and `|k: &mut 'a, w:
-    // &mut Opt<'a>|` runs; with `k: 'a` both orders are refused, "'a: i64 does not
-    // contain [i64, null]", and `n0: Opt<Opt<i64>>` runs in every one. Nothing unsound,
-    // and the check and the build agree (base-r23 alike; found closing
-    // alias-instance-signature-01). What would fix it is a rule, not looked into: the
-    // variable waits for its other positions as one in a data position does, or the
-    // choice is refused naming what to annotate. probes:
-    // ~/ptmp/cr29/scratch/r23/23b/alias/w.txt (one program a line, run by hp.sh; w/h1.gx
-    // to h23.gx) (invariant-union-two-solutions-01)
-    // 2026-11-12 claude: The check and the build agree in the default mode only. A
-    // substituted instance loses the argument's spelling, so an instance checked again
-    // (GRAPHIX_NO_SUBST=1) takes the other solution: `let nest = |w: &mut Opt<'a>| ->
-    // &mut 'a never(); let wrap = |n| nest(n); let n0: Opt<Opt<i64>> = null; let x: &mut
-    // Opt<i64> = wrap(&mut n0)` checks and runs, and under GRAPHIX_NO_SUBST=1 wrap's
-    // instance is refused, "&mut [i64, null] does not contain &mut 'a: i64"; `B<Opt<'a>>`
-    // and a wrapper typed `|n: &mut Opt<'q>|` alike. 240 of 2688 accepted programs that
-    // call through a wrapper split this way, on base-r23 and the lane alike, none in the
-    // default mode (see union-nosubst-order-01 for the kind). probes:
-    // ~/ptmp/cr29/scratch/r23/23b/alias-review/ns1.gx to ns5.gx, gen.py, res.lane
-    // 2026-11-13 claude: Since union-prim-member-whole-01's fix the argument's spelling
-    // no longer decides: Type::place_members takes Opt<i64> beside null a part at a time,
-    // so n0: Opt<Opt<i64>> gives 'a i64 as [i64, null], Opt<i64> and Opt<[i64, null]> do.
-    // 'let x: &mut Opt<i64> = nest(&mut n0)' is refused and 'let x: &mut i64' checks in
-    // all four (pin
-    // lang::types::alias_over_a_variable_under_a_writable_reference_takes_no_member_it_adds_refused),
-    // and wrap's instance agrees under GRAPHIX_NO_SUBST=1 (n3/q2.gx, q7.gx; ns1's split
-    // is gone with the program it accepted). What is left is the order of the parameters
-    // alone: the check takes the narrower solution, so '|w: &mut Opt<'a>, k: &mut 'a|' at
-    // two Opt<i64> is refused in every spelling of n0 and '|k: &mut 'a, w: &mut Opt<'a>|'
-    // runs in every one. probes: ~/ptmp/cr29/scratch/r24/24d/upm/n3/, n4/c/ (progs.txt a
-    // program a line, pre.out and post3.out)
     /// Containment both ways: an invariant position.
     fn equal_int(
         &self,
