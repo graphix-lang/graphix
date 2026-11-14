@@ -13583,10 +13583,9 @@ run!(
 );
 
 // A cell of an argument that a bound's part holding an open cell meets is
-// related to that cell by the bound's own containment alone. Narrowed by
-// the part as well, it stood within a union whose variable stood above it,
-// and the same cell under a constructor could go below that variable no
-// more: `[u, [u]]` under `'x: Array<['a, null]>`.
+// related to that cell by the bound's own containment alone, so the same
+// cell bare and under a constructor both stand below the bound's
+// variable: `[u, [u]]` under `'x: Array<['a, null]>`.
 run!(
     undecided_value_bare_and_in_an_array_under_a_union_bound,
     r#"{
@@ -13636,6 +13635,33 @@ run!(
     refused("[i64, Array<i64>] does not contain string");
     FuseExpect::None
 );
+run!(
+    undecided_value_under_a_union_bound_takes_what_a_later_callback_decides,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x, k: fn(a: 'a) -> i64|
+    select y[1]$ { null as _ => 0, v => k(v) };
+  let g = |u| f([u, [u]], |a: [i64, Array<i64>]| select a {
+    i64 as i => i,
+    Array<i64> as a => a[0]$ + 100
+  });
+  g(1)
+}"#,
+    is(Value::I64(101))
+);
+run!(
+    undecided_value_under_a_union_bound_takes_what_a_later_callback_decides_refused,
+    r#"{
+  let f = 'x: Array<['a, null]> |y: 'x, k: fn(a: 'a) -> i64|
+    select y[1]$ { null as _ => 0, v => k(v) };
+  let g = |u| f([u, [u]], |a: [i64, Array<i64>]| select a {
+    i64 as i => i,
+    Array<i64> as a => a[0]$ + 100
+  });
+  g("s")
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
 
 // The copy of a formal that an argument pre-unifies with opens its
 // widenable variables above no lower bound, as it opens a decided one: a
@@ -13650,6 +13676,48 @@ run!(
   select r[0]$ { null as _ => "n", string as s => s }
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s")
+);
+run!(
+    literal_narrower_than_what_a_bounds_holder_put_its_variable_above_nested,
+    r#"{
+  let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<Array<'a2>>| x2;
+  let w0: [null, string] = null;
+  let r = f(w0, [["s"], []]);
+  select r[0]$[0]$ { null as _ => "n", string as s => s }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s")
+);
+run!(
+    literal_narrower_than_what_a_bounds_holder_put_a_one_instance_variable_above,
+    r#"{
+  let mk = |z| 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2;
+  let h = mk(0);
+  let w0: [null, string] = null;
+  let r = h(w0, ["s"]);
+  select r[0]$ { null as _ => "n", string as s => s }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s")
+);
+run!(
+    undecided_value_after_a_literal_narrower_than_what_bounds_it,
+    r#"{
+  let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>, x3: Array<'a2>| (x2, x3);
+  let w0: [null, string] = null;
+  let g = |u| f(w0, ["s"], [u]);
+  g(null)
+}"#,
+    prints(r#"[["s"], [null]]"#)
+);
+run!(
+    undecided_value_after_a_literal_narrower_than_what_bounds_it_refused,
+    r#"{
+  let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>, x3: Array<'a2>| (x2, x3);
+  let w0: [null, string] = null;
+  let g = |u| f(w0, ["s"], [u]);
+  g(1)
+}"#,
+    refused("[null, string] does not contain i64");
+    FuseExpect::None
 );
 run!(
     literal_narrower_than_what_a_chain_of_bounds_put_its_variable_above,

@@ -2658,6 +2658,32 @@ impl<R: Rt> DefGate<R> {
                 spec: Arc::new(spec.clone()),
             });
         }
+        // CR claude for claude: [bug/medium] A call site in a named definition's body
+        // settles with the enclosing statement, after the calls of the definition that
+        // the statement makes have instantiated its signature, so a bound that settle
+        // puts on a cell the signature reaches comes too late for them: the check
+        // accepts and the build refuses. `let f = 'a0: ['a1, bool], 'a1: ['a2, duration]
+        // |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u| f(w0, u);
+        // g(1)` passes --check and the run fails "an instance at fn(u: i64) -> i64 of a
+        // definition typed fn(u: [null, string]) -> [null, string]"; `g("s")`, a valid
+        // call, fails the same way, in a block too, and GRAPHIX_NO_SUBST=1 refuses each
+        // at `f(w0, u)` (the first, "unsatisfiable constraints on 'a1: [duration, 'a2:
+        // i64]"). The
+        // site's first argument puts 'a1 above `[null, string]`, and 'a1's own bound
+        // reaches 'a2, which is u, only when 'a1 settles: `SETTLE 'a1` and `LOWER 'a2`
+        // under GRAPHIX_DBG_BIND come after the check of `g(1)`, which bound its copy
+        // of u to i64. These are right: `g(w0)` and u annotated `[null, string]` run;
+        // one bound alone (`'a1: ['a2, duration] |x0: 'a1, x2: 'a2|`) refuses `g(1)`
+        // at the check, "[null, string] does not contain i64"; the chain written in
+        // the parameter (`x0: [['a2, duration], bool]`) refuses `g(1)` and prints s
+        // for `g("s")`. base-r24 alike (its build names f's instance). 2 of 350
+        // generated calls under a chain of two bounds. A fix passes a lower bound a
+        // cell takes on to the open cells of its conjuncts when it takes it (what the
+        // cell binds to holds the bound and stands within the conjunct), or settles
+        // at the gate's close the cells of the body's sites that reach the signature's.
+        // Found reviewing bound-union-binds-argument-early-01. probes:
+        // ~/ptmp/cr29/scratch/r24/24c/bubarev/n{1,2,7}.gx (check accepts, build
+        // refuses), n{3,4,5,6,12}.gx (right), gen2.py (def-site-settle-after-calls-01)
         ctx.pending_settles.last_mut().expect("root settle frame").append(frame);
         ctx.rec_defs.remove(&self.def);
         ctx.env.by_id.remove(&self.faux_id);

@@ -454,7 +454,9 @@ own check refuses a `"s"` narrower than the bound, where the argument
 checked alone (`["s"]` at `x2: Array<'a2>`) fits the variable at its
 meeting with the formal (pins
 `lang::types::literal_narrower_than_what_*`,
-`literal_outside_what_*_refused`). An expression whose type its own
+`literal_outside_what_*_refused`,
+`undecided_value_after_a_literal_narrower_than_what_*`). An expression
+whose type its own
 check has yet to make (a seq step's captured argument, a field read) is
 not pre-unified with the copy. Neither is an argument holding no undecided
 cell (a declared variable of the definition the call stands in, a

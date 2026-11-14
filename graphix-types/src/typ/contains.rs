@@ -1434,6 +1434,33 @@ fn commit_conjuncts(
         // form has the same early bind for a union of primitives
         // (written-primitive-union-binds-early-01). probes ~/ptmp/cr29/scratch/r24/24c/buba/
         // (README, tried.txt)
+        // 2026-11-14 claude: Lane 24c reviewer: the two fixed mechanisms hold (the ten pins
+        // and the unit test fail with either rule undone; 1400 generated calls beside their
+        // written twins, the lane before the commit against it: 5 newly accepted, each valid
+        // and the same fused, with --no-fusion, under GRAPHIX_PAR=force and
+        // GRAPHIX_NO_SUBST=1, none newly refused; census 2967 files, no verdict or message
+        // moved). The dropped fix (b) was built again: it breaks 7 pins of lang::types, the
+        // six named above and
+        // partial_wrapper_bound_reaches_the_callees_instance_under_a_recursive_typedef.
+        // Mechanism (2) is fixed only where the call opens a copy, so where the variable
+        // above the bound's lower bound is widenable. Where it is not, a literal narrower
+        // than the lower bound is still refused, and the union written in the parameter
+        // runs: a function type holds the variable (`let f = 'a1: ['a2, duration] |x0: 'a1,
+        // x2: Array<'a2>, k: fn(a: 'a2) -> i64| x2; let w0: [null, string] = null; f(w0,
+        // ["s"], |a: [null, string]| 0)`, "Array<[null, string]> does not contain
+        // Array<string>"), an undecided argument pinned it first (`|x0: 'a1, x2: Array<'a2>,
+        // x3: Array<'a2>|` given `(w0, [u], ["s"])` in a wrapper), or the literal goes to a
+        // second bounded variable (`'a3: Array<'a2> |x0: 'a1, x2: 'a3, ..|` given `["s"]`).
+        // There the pre-unification is with the formal as it stands, the element takes the
+        // lower bound, and a copy would not help alone: the meeting with the formal refuses
+        // a type the lower bound holds (lower-bound-refuses-narrower-01; `x2: fn() ->
+        // Array<'a2>` given `|| ["s"]` is refused there with no pre-unification). base-r24
+        // alike. Pins added:
+        // lang::types::undecided_value_under_a_union_bound_takes_what_a_later_callback_decides{,_refused},
+        // literal_narrower_than_what_a_bounds_holder_put_{its_variable_above_nested,a_one_instance_variable_above},
+        // undecided_value_after_a_literal_narrower_than_what_*. probes
+        // ~/ptmp/cr29/scratch/r24/24c/bubarev/{j1,k12,k18,j18}.gx (refused),
+        // {j1t,k12t,k18t,j18t}.gx (the written twins, which run), gen2.py
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
