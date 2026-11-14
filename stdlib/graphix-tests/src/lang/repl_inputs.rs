@@ -872,6 +872,22 @@ async fn returned_default_through_a_field_or_one_input_binds_at_the_check() -> R
     .await
 }
 
+/// A call of an instance's annotated binding is judged against that call's
+/// definitions alone: the instance an earlier input built left no lambda on
+/// the annotation a later input's instance compiles.
+#[tokio::test(flavor = "current_thread")]
+async fn annotated_binding_of_an_instance_names_its_own_lambdas() -> Result<()> {
+    session(&[
+        Accept(
+            "let mk = |t: 'a| { let v: fn(?#d: 'q, x: i64) -> string = \
+             |#d = t, x: i64| cast<string>(d)$; v }",
+        ),
+        Produce("mk(1)(7)", Value::from("1")),
+        Produce("mk(\"z\")(8)", Value::from("z")),
+    ])
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn annotated_returned_default_takes_a_later_call() -> Result<()> {
     session(&[

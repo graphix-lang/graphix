@@ -516,7 +516,7 @@ fn distinct_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Value; 2]
     defs
 }
 
-// CR claude for claude: [risk/low] In a function's body, the function type a `let`'s
+// XCR claude for claude: [risk/low] In a function's body, the function type a `let`'s
 // annotation holds names the lambdas of every compile of that `let`: its definition's
 // check's and each instance's built so far, so a judgment over "the definitions the value
 // may be" in one instance compiles another instance's default, in that instance's
@@ -547,6 +547,13 @@ fn distinct_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Value; 2]
 // reaches an annotation that hides the label (`let w: fn(x: i64) -> string = select j { 0 =>
 // v, _ => never() }`, ladi/e13.gx). probe:
 // ~/ptmp/cr29/scratch/r24/24c/ladi-rev/repl_siblings.txt
+// 2026-11-14 claude: Fixed: Type::scope_refs (FnType::scope_refs_with) gives each scoping of
+// a written function type a LambdaIds node of its own, so the compiles of one let (the
+// check's, each instance's) no longer link their lambdas onto the expression's one node.
+// Pins that fail without it: tvar.rs scoped_fn_types_have_their_own_lambda_ids,
+// repl_inputs.rs annotated_binding_of_an_instance_names_its_own_lambdas (mk("z")(8) was
+// refused 'q: string does not contain i64). e8/e8b/e11/e12/e13 under GRAPHIX_NO_SUBST=1 now
+// run.
 /// The definitions a function of type `ft` may be, in the order the
 /// program writes them ([`LambdaDef::written_order`]); an id no definition
 /// is registered for comes last.

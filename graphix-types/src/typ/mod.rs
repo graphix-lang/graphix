@@ -4243,6 +4243,7 @@ impl Type {
                 }));
                 Some(Type::Ref(Arc::new(tr.with_scope(scope.clone(), params))))
             }
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_with(scope, copies)))),
             t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),
         }
     }

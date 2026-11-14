@@ -125,3 +125,9 @@ def's `LambdaIds` (`LambdaIds::instantiate`) so def-body facts carry
 while a site's inflows land on the site's copy. The cell merge de-fangs
 skew when copies MEET; copies that are never unified against each
 other still drift, which is why there must be exactly one.
+
+A written function type takes its own `LambdaIds` each time `Type::scope_refs`
+scopes it (a `let`'s annotation, a lambda's signature), so the compiles of one
+`let` in a body (its check and each instance) never link their lambdas onto one
+node: a judgment over the definitions a value may be names the lambdas of the
+compile it is in.

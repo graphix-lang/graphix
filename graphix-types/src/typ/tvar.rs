@@ -7116,6 +7116,32 @@ mod tests {
         };
         assert_ne!(ids(&t), ids(&copy));
     }
+
+    /// Each scoping of a written type, a function type or one nested in a
+    /// struct, has a node of its own, tvars or not.
+    #[test]
+    fn scoped_fn_types_have_their_own_lambda_ids() {
+        let root = ModPath::root();
+        let addr = |t: &Type| match t {
+            Type::Fn(ft) => ft.lambda_ids.addr(),
+            Type::Struct(fs) => match &fs[0].1 {
+                Type::Fn(ft) => ft.lambda_ids.addr(),
+                t => panic!("{t:?}"),
+            },
+            t => panic!("{t:?}"),
+        };
+        for src in [
+            "fn(?#d: 'q, x: i64) -> string",
+            "fn(x: i64) -> string",
+            "{f: fn(?#d: 'q, x: i64) -> string}",
+            "{f: fn(x: i64) -> string}",
+        ] {
+            let t = crate::expr::parser::parse_type(src).unwrap();
+            let (a, b) = (t.scope_refs(&root), t.scope_refs(&root));
+            assert_ne!(addr(&a), addr(&b), "{src}");
+            assert_ne!(addr(&a), addr(&t), "{src}");
+        }
+    }
 }
 
 thread_local! {
