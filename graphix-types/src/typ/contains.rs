@@ -8346,6 +8346,24 @@ mod tests {
         assert_eq!(member_prints(&t), (1, 1, String::from("(string, string)")));
     }
 
+    /// A cell keeps the name it first printed under through a message,
+    /// whatever handle a later member reaches it by, so a kept member's
+    /// part reprints as it first did and a member whose text differs from
+    /// every kept one is kept.
+    #[test]
+    fn members_over_a_cell_named_by_a_later_member_print_as_their_text_would() {
+        let c = || Type::TVar(TVar::empty_named(literal!("_7")));
+        let x = TVar::empty_named(literal!("b"));
+        let pair = |a: TVar, b: Type| Type::Tuple(Arc::from_iter([Type::TVar(a), b]));
+        let k = pair(x.renamed(literal!("_6")), c());
+        let t = pair(x.clone(), prim(Typ::I64));
+        let u = pair(x.renamed(literal!("z")), c());
+        let s = Type::Set(Arc::from_iter([k, t, u]));
+        let want = "[('_6: unbound, '_7: unbound), ('_6: unbound, i64), \
+                    ('_6: unbound, '_7_1: unbound)]";
+        assert_eq!(member_prints(&s), (3, 3, String::from(want)));
+    }
+
     /// `&T` and `&mut T` over one inner allocation are two types to every
     /// memo and every walk that visits a shared node once.
     #[test]
