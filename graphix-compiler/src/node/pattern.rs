@@ -1091,39 +1091,6 @@ impl StructPatternNode {
         )
     }
 
-    // XCR claude for claude: [bug/high] An abstract pattern with no written test, over a
-    // value that is `Any`, types its payload at the widest instance, which is every
-    // instance's type only where the representation holds each parameter covariantly:
-    // `type W<'a> = Abstract<&mut 'a>; let i = 1; let f = |x: Any| select x { W(r) => *r
-    // <- "s", _ => never() }; f(W(&mut i)); println(i + 1)` checks (`r: &mut Any`), the
-    // node-walk logs an arith error and the fused run panics "kernel param `i`: runtime
-    // String("s") does not match the compiled Scalar(I64) slot". A parameter in a
-    // function's argument is the same hole, caught at run time: `Abstract<fn(x: 'a) ->
-    // i64>`, `W(g) => g("s")` over `W(|x: i64| x + 1)` logs "binding the callee failed: a
-    // run-time bind at g("s") did not type" and the call is bottom (as
-    // fn-cell-over-any-01). The written test is right: `W<Any> as W(r)` does not take a
-    // `W<i64>`. A plain pattern there is refused (`&mut 'q as r` over `Any`: "this
-    // pattern can't tell what the reference in .. refers to where the scrutinee may hold
-    // Any", Type::ref_over_any). Same on base-r24. A fix: refuse an abstract pattern an
-    // `Any` member reaches whose representation holds a parameter under a writable
-    // reference or in a function's argument, naming the written test (`W<T> as W(r)`);
-    // census both repos. probes: ~/ptmp/cr29/scratch/r24/24a/apa-rev/q07.gx, q08.gx;
-    // right: t01.gx (abstract-invariant-over-any-01)
-    // 2026-11-14 claude: StructPatternNode::narrow_payloads refuses an inferred abstract
-    // pattern a value that is Any reaches, where a name takes it or a part of it out (a
-    // payload bind, its capture, a capture around it), when
-    // AbstractRep::widest_holds_each (variance::covariant_in) finds a parameter under a
-    // writable reference, a function's argument or an abstract type's parameter, naming
-    // the written instance (W<T> as W(..)). W(_) naming nothing still passes; covariant
-    // reps (&'a, fn(..) -> 'a, recursive and aliased typedefs) are unchanged. Pins that
-    // fail without it:
-    // lang::select::{abstract_payload_under_a_writable_reference_over_any_refused,
-    // abstract_payload_in_a_function_argument_over_any_refused,
-    // abstract_payload_in_an_any_part_under_a_writable_reference_refused,
-    // abstract_capture_over_any_under_a_writable_reference_refused} (16 runs); twin
-    // abstract_payload_under_a_writable_reference_written_instance; unit
-    // variance::a_body_is_covariant_where_each_parameter_is. Census of both repos: no
-    // change. Probes ~/ptmp/cr29/scratch/r25/25a/aio/.
     /// The parameters an abstract pattern's type stands at in `m`, one
     /// member of the type at its position: `m`'s own when `m` is an
     /// instance of its type, the widest instance's when `m` is `Any`
