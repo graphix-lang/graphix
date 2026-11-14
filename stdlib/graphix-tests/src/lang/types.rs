@@ -15950,3 +15950,69 @@ run!(
     refused("null");
     FuseExpect::None
 );
+
+run!(
+    narrower_argument_under_a_cell_above_a_union_takes_the_union_second,
+    r#"{
+  let f = 'a1: ['a3, null], 'a2: ['a3, null] |x1: 'a1, x2: 'a2| 7;
+  let v: [i64, string] = 1;
+  let u: i64 = 1;
+  f(v, u)
+}"#,
+    prints("i64:7")
+);
+
+run!(
+    narrower_argument_under_a_cell_above_a_union_takes_the_union_first,
+    r#"{
+  let f = 'a1: ['a3, null], 'a2: ['a3, null] |x1: 'a1, x2: 'a2| 7;
+  let v: [i64, string] = 1;
+  let u: i64 = 1;
+  f(u, v)
+}"#,
+    prints("i64:7")
+);
+
+run!(
+    narrower_argument_under_a_cell_above_a_union_through_a_wrapper,
+    r#"{
+  let f = 'a1: ['a3, null], 'a2: ['a3, null] |x1: 'a1, x2: 'a2| 7;
+  let h = |a, b| f(a, b);
+  let v: [i64, string] = 1;
+  let u: i64 = 1;
+  h(u, v)
+}"#,
+    prints("i64:7")
+);
+
+run!(
+    argument_outside_the_union_a_cell_stands_above_is_still_refused,
+    r#"{
+  let f = 'a1: ['a3, null], 'a2: ['a3, null] |x1: 'a1, x2: 'a2| 7;
+  let v: [i64, string] = 1;
+  let u: f64 = 1.;
+  f(v, u)
+}"#,
+    refused("does not contain f64");
+    FuseExpect::None
+);
+
+run!(
+    narrower_argument_under_a_bound_chain_over_a_recursive_typedef,
+    r#"{
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  let f = 'a0: Array<G<'a2, 'a1>>, 'a2: Array<G<'a4, 'a3>>, 'a4: [i64, null],
+    'a3: Array<G<'a4, 'a4>>, 'a1: Array<G<'a3, 'a2>>
+    |x0: 'a0, x1: 'a1, x2: 'a2, x3: 'a3, x4: 'a4| [x4];
+  type S = Array<G<null, null>>;
+  type Y2 = Array<[`Y([`Z(Array<[`X(null)]>)])]>;
+  type Y1 = Array<G<S, Y2>>;
+  let y3: S = [`X(null)];
+  let y2: Y2 = [`Y(`Z([`X(null)]))];
+  let y1: Y1 = [];
+  let y0: Array<G<Y2, Y1>> = [];
+  f(y0, y1, y2, y3, null)
+}"#,
+    prints("[null]")
+);

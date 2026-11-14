@@ -203,6 +203,15 @@ refusal `.._does_not_hold_is_refused`; under `GRAPHIX_NO_SUBST`,
 Only a call does: a select's pattern over such a cell still decides it
 (`lang::types::select_arms_at_two_depths_over_two_payloads`).
 
+A cell a conjunct holds (`'a3` in `'a1: ['a3, null]`) is not the cell being
+decided: where it stands above lower bounds that hold the type a conjunct's
+probe or commit meets, and the type holds not all of them, it holds the type
+as it stands and binds nothing (`contains::held_by_lower`,
+`ContainsFlags::Conjunct`; `FnType::bounds_hold` asks it too), so `'a1` and
+`'a2` over `'a3` take an `i64` and a `[i64, string]` in either order (pins
+`lang::types::narrower_argument_under_a_cell_above_a_union_*` and
+`narrower_argument_under_a_bound_chain_over_a_recursive_typedef`).
+
 No pattern decides a cell held rigid. A pattern that tests or binds
 inside a value of one (a definition's declared variable, a variable its
 signature names, an impl's parameter)

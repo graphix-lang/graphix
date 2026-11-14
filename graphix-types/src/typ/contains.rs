@@ -75,6 +75,10 @@ pub enum ContainsFlags {
     /// conjuncts admit it, since the rigid cell may take on none, and one
     /// holds a predicate only where its own conjuncts imply it.
     Sealed,
+    /// The walk is the probe of a cell's conjunct: an open cell it reaches
+    /// that stands above a lower bound holding `t` holds `t` as it stands
+    /// ([`held_by_lower`]), since it is not the cell being decided.
+    Conjunct,
 }
 
 /// What a trial on copies takes from the walk it is made in
@@ -1132,7 +1136,8 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
         & (ContainsFlags::Lower
             | ContainsFlags::IntoMember
             | ContainsFlags::LowerInArgs
-            | ContainsFlags::Sealed);
+            | ContainsFlags::Sealed
+            | ContainsFlags::Conjunct);
     match flags.intersects(ContainsFlags::Commit | ContainsFlags::RigidCheck) {
         true => kept | ContainsFlags::RigidCheck,
         false => kept,
@@ -1500,8 +1505,16 @@ fn commit_conjuncts(
         // ~/ptmp/cr29/scratch/r24/24d/mum/{k3,k12,g1}.gx (refused), {k10,k1,k9,k8}.gx (run)
         // 2026-11-14 claude: The witness left is item D39 in ~/ptmp/cr-discuss.md (Open).
         let held = match exact(c) {
-            true => c.contains_int(flags, env, hist, t)?,
-            false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
+            true => c.contains_int(flags | ContainsFlags::Conjunct, env, hist, t)?,
+            false => commit_parts(
+                tv,
+                flags | ContainsFlags::Conjunct,
+                env,
+                hist,
+                &mut Lazy::new(),
+                c,
+                t,
+            )?,
         };
         if !held {
             return Ok(false);
@@ -1704,7 +1717,12 @@ fn commit_parts(
                     // a bound that names its own cell (`'a: fn(x: 'a)`) would
                     // make the cell's binding hold itself: no finite type
                     if tv.would_cycle(&ca.typ)
-                        || !ta.typ.contains_int(flags, env, hist, &ca.typ)?
+                        || !ta.typ.contains_int(
+                            flags & !ContainsFlags::Conjunct,
+                            env,
+                            hist,
+                            &ca.typ,
+                        )?
                     {
                         return Ok(false);
                     }
@@ -1979,6 +1997,38 @@ fn commit_lower(
     holds_union(&lower, flags, env, hist, t)
 }
 
+/// Whether the open cell `tv`, above lower bounds that hold `t` and that
+/// `t` is strictly narrower than, holds `t` as it stands (`t ⊆ L ⊆ tv`):
+/// binding it to `t` would not hold its bounds. The bound that holds
+/// commits, so `t`'s open cells take their part of it. `None` where no
+/// bound holds `t`, or `t` holds them all and the cell binds to it.
+fn held_by_lower(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<Option<bool>> {
+    let lower = tv.cell_lower();
+    if lower.is_empty()
+        || !flags.contains(ContainsFlags::Conjunct)
+        || flags.contains(ContainsFlags::Contra)
+    {
+        return Ok(None);
+    }
+    for l in lower.iter() {
+        if l.contains_int(guide(flags), env, hist, t)?
+            && !holds_union(&lower, guide(flags), env, hist, t)?
+        {
+            return match flags.contains(ContainsFlags::Commit) {
+                true => l.contains_int(flags, env, hist, t).map(Some),
+                false => Ok(Some(true)),
+            };
+        }
+    }
+    Ok(None)
+}
+
 /// The flags `t ⊇ l` runs with for a lower bound `l` of a cell bound to
 /// `t`: the open cells of `t` take their parts of `l` as lower bounds in
 /// turn, so a cell above two bounds holds both whatever their order.
@@ -1996,7 +2046,7 @@ fn conjuncts_admit(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    // CR claude for claude: [bug/medium] An open cell standing above a lower bound is
+    // XCR claude for claude: [bug/medium] An open cell standing above a lower bound is
     // refused a type that bound holds, where a conjunct's probe asks it: the probe runs
     // without `Lower`, so the cell would bind to the narrower type, which does not hold
     // its bound. Over `let f = 'a1: ['a3, null], 'a2: ['a3, null] |x1: 'a1, x2: 'a2| 7;
@@ -2049,7 +2099,18 @@ fn conjuncts_admit(
     // z: 'a|` prints 1; base-r24 refused the first argument
     // (bound-union-binds-argument-early-01). probes:
     // ~/ptmp/cr29/scratch/r24/24c/buba/pin/{x1,x2,x3,x4,a11,a11t}.gx, g2/p0145-b.gx
-    let probe = guide(flags) & !ContainsFlags::Lower;
+    // 2026-11-14 claude: Fixed: contains::held_by_lower answers a conjunct's probe,
+    // commit (commit_conjuncts) and FnType::bounds_hold (ContainsFlags::Conjunct) for an
+    // open cell above lower bounds that hold the type and that the type does not hold,
+    // binding nothing. The four probes (union_wide_narrow, union_narrow_wide{,_wrapper},
+    // inner_direct) run. Pins that fail without it:
+    // lang::types::narrower_argument_under_a_cell_above_a_union_{takes_the_union_first,takes_the_union_second,through_a_wrapper}
+    // and narrower_argument_under_a_bound_chain_over_a_recursive_typedef; twin
+    // argument_outside_the_union_a_cell_stands_above_is_still_refused. Not covered: a
+    // formal cell itself met by a narrower argument still settles first (a_bound_chain_*
+    // pins), which the shortcut would break if applied there (first attempt, 10 pins
+    // failed). Census 2967 files, no verdict or message moved. needs a soak.
+    let probe = (guide(flags) & !ContainsFlags::Lower) | ContainsFlags::Conjunct;
     for c in tv.cell_constraints().iter() {
         if !holds_cell(env, c, tv.cell_addr()) && !c.contains_int(probe, env, hist, t)? {
             return Ok(false);
@@ -4231,6 +4292,9 @@ impl Type {
                         t0.add_lower(t1.clone());
                     }
                     return Ok(true);
+                }
+                if let Some(held) = held_by_lower(t0, flags, env, hist, t1)? {
+                    return Ok(held);
                 }
                 // A constraint violation fails here, at the site that
                 // tried it.

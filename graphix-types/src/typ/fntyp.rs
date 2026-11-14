@@ -1931,7 +1931,12 @@ impl FnType {
     ) -> Result<bool> {
         for (tv, tc) in self.constraint_view().iter() {
             if tv.open_cell().is_none()
-                && !tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))?
+                && !tc.contains_int(
+                    flags | ContainsFlags::Conjunct,
+                    env,
+                    hist,
+                    &Type::TVar(tv.clone()),
+                )?
             {
                 return Ok(false);
             }
