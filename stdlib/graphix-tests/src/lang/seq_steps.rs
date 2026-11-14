@@ -679,6 +679,110 @@ async fn a_fire_a_replaced_callee_read_is_spent(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A fire made once a slot's callee is gone is nobody's: the array emptied
+// before the 8, so the last step is owed it. One the callee read before it
+// went is spent: the 5 leaves the last step waiting for the 13.
+async fn a_fire_after_a_slots_callee_went_is_owed(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let xs = [1];
+        xs <- select step { 6 => [], _ => never() };
+        let k = 1;
+        let h = select k { 1 => |x: i64| { ev; x }, _ => |x: i64| x };
+        seq go {
+            until live(step) >= 3;
+            until live(array::len(array::map(xs, h)) + step) >= 11;
+            live(uniq(ev))
+        }
+    }"#;
+    assert_eq!(run(&code.replace("EV", "8 | 13"), mode).await?, [8]);
+    assert_eq!(run(&code.replace("EV", "5 | 13"), mode).await?, [13]);
+    Ok(())
+}
+
+// So is one made once a reference the step reads through has left the
+// input: `p` moved to `y` before the 8. The 5, read through `p`, is spent.
+// A reference that comes back reads the input as it stands, so the 8 it
+// missed stays owed.
+async fn a_fire_after_a_reference_left_its_target_is_owed(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let y = 0;
+        let p = &ev;
+        p <- select step { MOVES, _ => never() };
+        seq go {
+            until live(step) >= 4;
+            until live(any(*p, 0) * 0 + step) >= 12;
+            live(uniq(ev))
+        }
+    }"#;
+    let run = |ev: &str, moves: &str| {
+        let code = code.replace("EV", ev).replace("MOVES", moves);
+        async move { run(&code, mode).await }
+    };
+    assert_eq!(run("8 | 13", "6 => &y").await?, [8]);
+    assert_eq!(run("5 | 13", "6 => &y").await?, [13]);
+    assert_eq!(run("8 | 13", "5 => &y, 9 => &ev").await?, [8]);
+    Ok(())
+}
+
+// An arm of a step's select is told the same: its reference left `ev`
+// before the 8, which the second arm is owed.
+async fn a_fire_after_an_arms_reference_left_its_target_is_owed(
+    mode: Mode,
+) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let y = 0;
+        let p = &ev;
+        p <- select step { 6 => &y, _ => never() };
+        seq go {
+            live(select live(step) < 10 {
+                true => filter(any(*p, 0), |c| c < 0),
+                false => uniq(ev)
+            })
+        }
+    }"#;
+    assert_eq!(run(&code.replace("EV", "8 | 13"), mode).await?, [8]);
+    assert_eq!(run(&code.replace("EV", "5 | 13"), mode).await?, [13]);
+    Ok(())
+}
+
+// What an earlier run's callee captured is the step's no longer once the
+// step holds a function that drops it: the second run's step replaced its
+// callee before the 28, which its last step is owed.
+async fn a_fire_after_a_later_runs_callee_was_replaced_is_owed(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 40 => n + 1, _ => never() };
+        let go = select step { 1 | 21 => step, _ => never() };
+        let ev = never();
+        ev <- select step { 8 | 12 | 28 | 37 => step, _ => never() };
+        let k = 1;
+        k <- select step { 26 => 2, _ => never() };
+        let f = select k { 1 => |u: i64| { ev; u }, _ => |u: i64| u };
+        seq go {
+            until live(step) >= 3;
+            until live(f(0) + step) >= (go + 10);
+            live(uniq(ev))
+        }
+    }"#;
+    assert_eq!(run(code, mode).await?, [12, 28]);
+    Ok(())
+}
+
 // An arm of a step's select spends what its bound callee read as a step
 // does: the first arm's callee counted the 3, so the last arm waits for
 // the 9.
@@ -809,6 +913,10 @@ modes!(
     a_fire_before_a_reference_took_its_target_is_not_its_own,
     a_fire_before_an_arms_callee_was_bound_is_not_its_own,
     a_fire_a_replaced_callee_read_is_spent,
+    a_fire_after_a_slots_callee_went_is_owed,
+    a_fire_after_a_reference_left_its_target_is_owed,
+    a_fire_after_an_arms_reference_left_its_target_is_owed,
+    a_fire_after_a_later_runs_callee_was_replaced_is_owed,
     a_fire_an_arms_bound_callee_read_is_spent,
     a_fire_as_an_arm_falls_asleep_stays_owed,
     a_passed_step_is_asleep_before_its_machine_sleeps,

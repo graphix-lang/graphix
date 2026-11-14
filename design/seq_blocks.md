@@ -569,6 +569,13 @@ as one from before the step woke does: a callee bound in an ordinary
 cycle is a body, delivered nothing, and read the input only as it
 stood; a reference that took the input as its target fired its read at
 the standing value, which is the reference's fire and not the input's.
+The step is told what it reads no more the same way: a reader dropped
+as it ran (a slot's callee deleted, a reference that left its target, a
+callee replaced by one that drops the input) marks the event too
+(`ExecCtx::unref_reader`), and the input leaves the step's inputs in
+that cycle, whether the step learned it in this run or an earlier one
+left it there. A fire of it from then on is nobody's, and a later step
+that names the input is owed it.
 What the step learned joins its inputs when it is deselected
 (`TrackedFires::deselect`), so a fire of it between two runs is owed to
 the step's next entry.
@@ -595,6 +602,10 @@ a_fire_before_a_callee_was_bound_is_not_its_own,
 a_fire_before_a_reference_took_its_target_is_not_its_own,
 a_fire_before_an_arms_callee_was_bound_is_not_its_own,
 a_fire_a_replaced_callee_read_is_spent,
+a_fire_after_a_slots_callee_went_is_owed,
+a_fire_after_a_reference_left_its_target_is_owed,
+a_fire_after_an_arms_reference_left_its_target_is_owed,
+a_fire_after_a_later_runs_callee_was_replaced_is_owed,
 a_fire_an_arms_bound_callee_read_is_spent,
 a_fire_as_an_arm_falls_asleep_stays_owed,
 a_passed_step_is_asleep_before_its_machine_sleeps,
@@ -623,13 +634,17 @@ what it reads nothing (`wake::in_body`, `design/bind_driven_bodies.md`).
   (a `Deref`'s target, `evaluated`). An input that joins either way is
   one the consumer read: `evaluated` clears its bit, `deselect` clears
   it where the input was written since the consumer woke, unless the
-  consumer learned it as it ran (`learned`).
+  consumer learned it as it ran (`learned`). An evaluation that changed
+  what the consumer reads takes out of `per_arm` what it reads no more
+  (`evaluated`).
 - `learned`: per consumer, the inputs it reads that `per_arm` does not
   name yet: what a callee it bound captures, a reference's new target.
   `CallSite::update_call` and `Deref::address` set `Event::learned` at
-  a bind, `ran` says whether the consumer's evaluation set it, and
-  `evaluated` then collects the consumer's refs again, callees
-  included. The consumer reads a learned input live: `observe_except`
+  a bind and `ExecCtx::unref_reader` where a reader is dropped, `ran`
+  says whether the consumer's evaluation set it, and `evaluated` then
+  collects the consumer's refs again, callees included: what is not
+  among them leaves `learned` and `per_arm`. The consumer reads a
+  learned input live: `observe_except`
   counts it seen, `deliver` spends its bit where it fires this cycle and
   injects nothing for it, and a bit from before it was learned stays.
   `deselect` moves the set into `per_arm`; a sleep that is no deselect

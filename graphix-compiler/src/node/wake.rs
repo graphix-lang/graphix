@@ -257,7 +257,8 @@ pub(crate) fn inject<R: Rt>(
 #[derive(Debug, Default)]
 pub(crate) struct TrackedFires {
     /// Per arm: the body's free refs. Refreshed at each deselect, when
-    /// the arm's subtree is fully materialized.
+    /// the arm's subtree is fully materialized; an evaluation that
+    /// changed what the arm reads takes out what it reads no more.
     per_arm: Vec<IntSet<BindId>>,
     /// Per arm: the inputs the pattern binds the body reads are facets
     /// of. Reading a facet consumes the input's fire; the facet itself
@@ -534,31 +535,45 @@ impl TrackedFires {
         }
         learned[i].clear();
         for id in old.iter() {
-            if !per_arm[i].contains(id) && all.drop_one(id) {
-                if pending.contains(id) {
-                    Arc::make_mut(pending).remove(id);
-                }
-                carried.remove(id);
+            if !per_arm[i].contains(id) {
+                Self::unread(all, pending, carried, id)
             }
+        }
+    }
+
+    /// One arm fewer reads `id`: where none reads it now, its fire is
+    /// nobody's.
+    fn unread(
+        all: &mut Inputs,
+        pending: &mut Arc<IntSet<BindId>>,
+        carried: &mut IntSet<BindId>,
+        id: &BindId,
+    ) {
+        if all.drop_one(id) {
+            if pending.contains(id) {
+                Arc::make_mut(pending).remove(id);
+            }
+            carried.remove(id);
         }
     }
 
     /// Arm `i` was evaluated: the first time, add what its own nodes
     /// name only once they ran (a `Deref`'s target), callees left out.
     /// The arm read such an input live as it ran, so it consumes its fire.
-    /// Where the evaluation `bound` a callee or a reference's target
-    /// ([`TrackedFires::ran`]), collect what the arm reads now: an input
-    /// it learns it read as it stood, so a fire of it from before stays
-    /// owed, and one delivered this cycle it read.
+    /// Where the evaluation `changed` what the arm reads
+    /// ([`TrackedFires::ran`]), collect what it reads now: an input it
+    /// learns it read as it stood, so a fire of it from before stays
+    /// owed, and one delivered this cycle it read; an input it reads no
+    /// more is not its own from this cycle on.
     pub(crate) fn evaluated<R: Rt>(
         &mut self,
         ctx: &ExecCtx<'_, R>,
         i: usize,
-        bound: bool,
+        changed: bool,
         fill: impl Fn(&mut Refs),
     ) {
         let first = !self.ran.replace(i);
-        if !first && !bound {
+        if !first && !changed {
             return;
         }
         let (mut inputs, mut consumed): (Scratch, Scratch) =
@@ -578,15 +593,22 @@ impl TrackedFires {
             }
             consumes[i].extend(consumed.drain());
         }
-        if !bound {
+        if !changed {
             return;
         }
         let mut r = Refs::default();
         fill(&mut r);
         Self::arm_refs(&ctx.env, &r, &mut inputs, &mut consumed);
-        let Self { per_arm, pending, learned, .. } = self;
+        let Self { per_arm, all, pending, carried, learned, .. } = self;
         let learned = &mut learned[i];
         learned.retain(|id| inputs.contains(id));
+        per_arm[i].retain(|id| {
+            let read = inputs.contains(id);
+            if !read {
+                Self::unread(all, pending, carried, id)
+            }
+            read
+        });
         for id in inputs.drain() {
             if !per_arm[i].contains(&id)
                 && learned.insert(id)
@@ -696,7 +718,7 @@ impl TrackedFires {
     }
 
     /// Arm `i` ran this cycle: close the scope [`Self::open`] opened.
-    /// Whether the evaluation bound a callee or a reference's target
+    /// Whether the evaluation changed what the arm reads
     /// ([`Event::learned`]).
     pub(crate) fn ran<R: Rt>(
         &mut self,
@@ -704,7 +726,7 @@ impl TrackedFires {
         i: usize,
         opened: Opened,
     ) -> bool {
-        let bound = ctx.event.learned;
+        let changed = ctx.event.learned;
         ctx.event.learned |= opened.learned;
         if let Some(outer) = opened.scope
             && let Some(scope) = mem::replace(&mut ctx.catch_up, outer)
@@ -719,7 +741,7 @@ impl TrackedFires {
             }
         }
         self.clock[i].ran(ctx.rt.cycle());
-        bound
+        changed
     }
 
     /// The first cycle whose writes arm `i` did not see.

@@ -215,8 +215,8 @@ pub struct Event {
     /// Last cycle's fires each delivered now to the readers the walk had
     /// passed when it was made ([`Rt::late`]).
     pub late: Option<Arc<Late>>,
-    /// A call bound a callee, or a reference took a target, in the
-    /// evaluation in progress: what it reads grew
+    /// What the evaluation in progress reads changed: a call bound a
+    /// callee, a reference took a target, or a reader was dropped
     /// (`node::wake::TrackedFires::evaluated`).
     pub(crate) learned: bool,
 }
@@ -2767,6 +2767,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
 
     /// [`Self::unref_var`] for a reader taken earlier.
     pub(crate) fn unref_reader(&mut self, id: BindId, reader: prune::Reader) {
+        self.event.learned = true;
         let key = (id, reader);
         // read through the view first: a branch that compiled nothing
         // must not fork its compile view to find nothing pending
