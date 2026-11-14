@@ -4903,43 +4903,6 @@ impl Type {
             .collect())
     }
 
-    // XCR claude for claude: [risk/low] Which member of a union a walk on copies gives a
-    // type depends on what the walk looked at before. The shortcut for a decided member
-    // asks ContainsHist::closed, which keeps `Open` for a node it met before its cells
-    // were bound: a walk that first meets the member after the binding answers at once
-    // and binds nothing, one that met it before has it as one candidate among the
-    // admitted, and a walk on copies gives the type to the first of them (Type::take).
-    // In typ::contains::tests::a_trial_that_chose_a_member_allows_no_placement_below the
-    // trial of the outer union binds 'a, then gives `Array<null>` to `P<'b, 'a>` and
-    // binds 'b to null (closed('a) false, closed_now('a) true); a trial begun at the
-    // inner union, the cells standing the same, answers by 'a's binding, binds 'b to
-    // `Array<[null, string]>` two members on, and does not hold. So the order
-    // Type::place_in_order picks follows the walk's history, and a trial of an outer
-    // union is no witness for a union below it (ContainsHist::strays keeps the placement
-    // from taking it as one). ContainsHist::closed_now here would make the shortcut the
-    // cells' own; untried: it walks the member again after every write, and it moves
-    // which order the trials pick, so it needs the differential and a census. Found in
-    // the review of open-app-commit-trials-01. trace:
-    // ~/ptmp/cr29/scratch/r23/23c/oact-rev/stale-closure-trace.txt
-    // (set-commit-stale-closure-01)
-    // 2026-11-14 claude: Type::set_commit, Type::take and Type::place_covered ask
-    // ContainsHist::binds_nothing, closed_now of the member and the type, so a walk on
-    // copies gives a decided type to the decided member wherever it stands among the
-    // members. set_commit's shortcut is then no parting of a trial and its placement and
-    // its strays call is gone: the differential (the r23 review's harness with knobs for
-    // the old shortcut, the stray and a trial at every union) finds no pair of 640k that
-    // differs in verdict or binding without the stray, and 184 that differ from the old
-    // shortcut (107 the old code refused and this holds, 7 it held and this refuses as
-    // AmbiguousMember, 1 it held and this refuses as a mismatch). base-r24 refused
-    // g1.gx, type mismatch, and checked g2.gx, the same program with the typedef's
-    // arguments in the other order; both check now. The test this CR names is deleted:
-    // its trial held only by the stale answer, and its pair is now a mismatch (the
-    // deepest-first trial meets three undecided takers of one array and takes the
-    // first). Pins that fail with ContainsHist::closed back in binds_nothing:
-    // typ::contains::tests::a_member_decided_since_the_walk_met_it_takes_a_decided_type,
-    // lang::types::a_member_decided_in_a_trial_takes_a_decided_type (4 modes). guicheck
-    // 39.12e9 before, 39.09e9 after; census 2967 files, none differs. probes:
-    // ~/ptmp/cr29/scratch/r24/24d/scs/ (README)
     /// Decide `s ⊇ t` by the member that takes `t` ([`Self::take`]),
     /// structural members before bare unbound tvars, which admit anything:
     /// `['b, Array<'b>]` must bind an array through `Array<'b>`. `None`
