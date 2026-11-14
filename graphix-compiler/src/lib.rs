@@ -4637,7 +4637,9 @@ fn compile_top<R: Rt>(
     let input = Input::enter();
     let top_id = spec.id;
     ctx.open_compile_frame(top_id);
+    ctx.env.sweep_names();
     let saved = Saved::take(ctx);
+    let outer = ctx.env.enter_input();
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);
     let compiled = build(ctx, &spec, top_id);
@@ -4672,6 +4674,7 @@ fn compile_top<R: Rt>(
     if let Err(e) = input.end(ctx, &ctx.env.lexical, Some(node.typ())) {
         return Err(abandon_stmt(ctx, node, saved, expr::At::at(e, &spec)));
     }
+    ctx.env.leave_input(outer);
     Ok((node, out_scope))
 }
 

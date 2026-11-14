@@ -244,7 +244,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
-async fn held(ctx: &TestCtx) -> Result<[usize; 13]> {
+async fn held(ctx: &TestCtx) -> Result<[usize; 14]> {
     let s = ctx.rt.env_stats().await?;
     let env = ctx.rt.get_env().await?;
     macro_rules! names {
@@ -266,6 +266,7 @@ async fn held(ctx: &TestCtx) -> Result<[usize; 13]> {
         names!(env.lexical.typedefs),
         names!(env.lexical.traits),
         env.lexical.modules.len(),
+        env.names.len(),
     ])
 }
 
@@ -706,6 +707,95 @@ async fn a_dropped_interface_module_takes_what_its_interface_declared() -> Resul
         Value::String(literal!("60 {\"C\":40} 10")),
     )
     .await
+}
+
+/// A dropped block's import table goes with it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_block_takes_its_import_table() -> Result<()> {
+    compiled_and_dropped([], r#"{ use str::len; len("ab") }"#, Value::I64(2)).await
+}
+
+/// A function that left a dropped block builds its body against the
+/// block's imports for as long as a value names it, and the block's
+/// tables go with the function.
+#[tokio::test(flavor = "current_thread")]
+async fn a_function_escaping_a_dropped_block_keeps_its_imports_while_held() -> Result<()>
+{
+    const ROUNDS: i64 = 50;
+    let (ctx, mut rx) =
+        fixture_runtime([], crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let _g = ctx.rt.compile(literal!("let g: fn(s: string) -> i64 = never();")).await?;
+    let is = |n: i64| move |v: &Value| *v == Value::I64(n);
+    let mut early = None;
+    for k in 0..5 + ROUNDS {
+        if k == 5 {
+            early = Some(held(&ctx).await?)
+        }
+        let block =
+            format!("{{ use str::len; let f = |s: string| len(s) + {k}; g <- f; null }}");
+        let (_, made) = compile_one(&ctx, block.as_str()).await?;
+        let (written, call) = compile_one(&ctx, r#"g("ab")"#).await?;
+        await_update(&mut rx, written, is(2 + k)).await?;
+        drop((made, call));
+        // the block is gone, and this call is the first to build f's body
+        // since
+        let (late, call) = compile_one(&ctx, r#"g("abc")"#).await?;
+        await_update(&mut rx, late, is(3 + k)).await?;
+        drop(call);
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, Some(late), "grew over {ROUNDS} escaped functions");
+    Ok(())
+}
+
+/// A value keeps the type its block imported once the block's table is
+/// gone: later inputs read the type through the value, never the table.
+#[tokio::test(flavor = "current_thread")]
+async fn a_blocks_imported_type_outlives_its_table() -> Result<()> {
+    let files = [
+        ("/m.gxi", "type T = {a: i64}; type U<'a> = ['a, null]; val mk: fn(x: i64) -> T"),
+        ("/m.gx", "let mk = |x: i64| -> T {a: x}"),
+    ]
+    .map(|(path, text)| (path, VfsEntry::from(ArcStr::from(text))));
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let before = ctx.rt.get_env().await?.names.len();
+    let _held = ctx
+        .rt
+        .compile(literal!(
+            "mod m;
+             let v = { use m::T; let x: T = m::mk(1); x };
+             let none = { use m::{T, U}; let n: U<T> = null; n };
+             let some = { use m::{T, U}; let s: U<T> = m::mk(2); s };
+             let empty = { use m::T; let e: Array<T> = []; e }"
+        ))
+        .await?;
+    for _ in 0..3 {
+        let (id, res) = compile_one(&ctx, "{ use str::len; len(\"ab\") }").await?;
+        await_update(&mut rx, id, |v| *v == Value::I64(2)).await?;
+        drop(res)
+    }
+    // the last block compiled keeps its table until the next compile
+    let swept = ctx.rt.get_env().await?.names.len();
+    assert!(swept <= before + 1, "the blocks' tables are held: {before} then {swept}");
+    let (id, _late) = compile_one(
+        &ctx,
+        "{
+          let f = |q: m::T| q.a;
+          let w: m::U<m::T> = some;
+          let es: Array<m::T> = array::push(empty, v);
+          let a = select none { null as _ => 10, t => t.a };
+          let b = select w { null as _ => 20, t => t.a };
+          (f(v), a, b, array::len(es))
+        }",
+    )
+    .await?;
+    let want: Value =
+        [1i64, 10, 2, 1].into_iter().map(Value::I64).collect::<Vec<_>>().into();
+    await_update(&mut rx, id, |v| *v == want).await?;
+    ctx.shutdown().await;
+    Ok(())
 }
 
 /// A module declared at the root is declared again once it is dropped.

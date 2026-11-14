@@ -34,7 +34,7 @@ use std::{
     hash::Hash,
     iter, mem,
     sync::{
-        OnceLock,
+        OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -451,6 +451,29 @@ pub struct ScopeNames {
     /// abstract types from a same-named module's in another body
     /// ([`AbstractId::declared`]); a file module's source is its file.
     pub site: Option<ArcStr>,
+    /// The input whose bodies name the scope, where the scope crosses a
+    /// body: the table goes when no lexical view holds the input
+    /// ([`Env::sweep_names`]).
+    pub input: Option<Weak<()>>,
+}
+
+/// A top-level input: a REPL input, a script, a statement an embedder
+/// compiles. Every lexical view made while it compiles holds it, and so
+/// does every view made under one of those, so it lives as long as
+/// anything can still compile in a scope one of its bodies names.
+#[derive(Clone, Debug, Default)]
+pub struct InputHold(std::sync::Arc<()>);
+
+impl ScopeNames {
+    /// Whether a view made in `input` holds the table's input. A view
+    /// made in none (an image's, a tool's copy of the env after a
+    /// compile) reads what it finds.
+    fn held_by(&self, input: Option<&InputHold>) -> bool {
+        match (&self.input, input) {
+            (Some(owner), Some(i)) => Weak::as_ptr(owner) == std::sync::Arc::as_ptr(&i.0),
+            (None, _) | (_, None) => true,
+        }
+    }
 }
 
 impl crate::tracked::SameValue for ScopeNames {
@@ -522,7 +545,12 @@ impl Pack for ScopeNames {
         let imports = crate::shared_map::map_decode(buf, &mut |buf| {
             Ok((CompactString::decode(buf)?, ImportEntry::decode(buf)?))
         })?;
-        Ok(Self { imports, globs: Pack::decode(buf)?, site: Pack::decode(buf)? })
+        Ok(Self {
+            imports,
+            globs: Pack::decode(buf)?,
+            site: Pack::decode(buf)?,
+            input: None,
+        })
     }
 }
 
@@ -798,6 +826,12 @@ fn scope_kind(scope: &str) -> &'static str {
     if is_block_scope(scope) { "block" } else { "module" }
 }
 
+/// Whether `scope` names a body: a path with a generated component, which
+/// one compile names and no other.
+fn crosses_body(scope: &str) -> bool {
+    Path::parts(scope).any(crate::is_block_component)
+}
+
 /// True if scope `s` is `prefix` itself or a path descendant of it.
 pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
     if prefix == "/" || s == prefix {
@@ -901,6 +935,8 @@ pub struct Lexical {
     /// The load of a dynamic module's source this view is inside, whose
     /// own traits, impls and imports it reads before the registries'.
     pub body: Option<Arc<LoadedBody>>,
+    /// The top-level input this view was made in.
+    pub input: Option<InputHold>,
 }
 
 impl Lexical {
@@ -1062,7 +1098,9 @@ pub struct Env {
     /// Every scope's explicit namespace (imports + globs), keyed by
     /// scope path. A global registry, not lexical state: it survives
     /// `swap_lexical`, so deferred resolution can consult the
-    /// defining module's table.
+    /// defining module's table. A table at a scope that crosses a body
+    /// is read only by a view that holds its input
+    /// ([`ScopeNames::input`]).
     pub names: TrackedMap<ModPath, ScopeNames>,
     /// Every Graphix-minted abstract type's representation, global;
     /// visibility is decided at lookup.
@@ -1586,6 +1624,11 @@ impl Env {
         let kept = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
         let mut later_module = None;
         if let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) {
+            debug_assert!(
+                sn.held_by(self.lexical.input.as_ref()),
+                "{n} is looked up from {origin} through the import table at \
+                 {level} by a view made in another input"
+            );
             if depth > MAX_IMPORT_DEPTH {
                 bail!("import chain too deep resolving `{n}` (import cycle?)")
             }
@@ -2633,8 +2676,7 @@ impl Env {
                 bail!("`{key}` is already defined in this scope; use `as` to rename")
             }
         }
-        let sn = self.names.get_or_default(scope.clone());
-        sn.imports.insert_cow(key.into(), entry);
+        self.names_mut(scope).imports.insert_cow(key.into(), entry);
         Ok(())
     }
 
@@ -2671,6 +2713,7 @@ impl Env {
                 imports: retain(&sn.imports, |k, _| import(k)),
                 globs: Arc::new(sn.globs.iter().filter(|g| glob(g)).cloned().collect()),
                 site: sn.site.clone(),
+                input: sn.input.clone(),
             };
             view.names.insert(scope.clone(), sn);
         }
@@ -2691,9 +2734,9 @@ impl Env {
         ori: &Origin,
         pos: SourcePosition,
     ) {
-        if Path::parts(&scope.0).any(|p| p.starts_with('#')) {
+        if crosses_body(scope) {
             let place = crate::typ::declaration_place(ori, pos);
-            self.names.get_or_default(scope.clone()).site = Some(place.as_str().into());
+            self.names_mut(scope).site = Some(place.as_str().into());
         }
     }
 
@@ -2720,8 +2763,41 @@ impl Env {
         if self.names.get(scope).is_some_and(|sn| sn.globs.contains(&src)) {
             return;
         }
+        Arc::make_mut(&mut self.names_mut(scope).globs).push(src)
+    }
+
+    /// The table at `scope` to write, made where there is none: one at a
+    /// scope that crosses a body is the input's being compiled.
+    fn names_mut(&mut self, scope: &ModPath) -> &mut ScopeNames {
+        let input = match (&self.lexical.input, self.names.get(scope)) {
+            (Some(input), None) if crosses_body(scope) => {
+                Some(std::sync::Arc::downgrade(&input.0))
+            }
+            _ => None,
+        };
         let sn = self.names.get_or_default(scope.clone());
-        Arc::make_mut(&mut sn.globs).push(src)
+        if input.is_some() {
+            sn.input = input
+        }
+        sn
+    }
+
+    /// Begin a top-level input: the views made from here on hold it,
+    /// until [`Self::leave_input`] takes what it returns.
+    pub fn enter_input(&mut self) -> Option<InputHold> {
+        mem::replace(&mut self.lexical.input, Some(InputHold::default()))
+    }
+
+    /// End the input begun where [`Self::enter_input`] returned `outer`.
+    pub fn leave_input(&mut self, outer: Option<InputHold>) {
+        self.lexical.input = outer
+    }
+
+    /// Drop the import tables of every input no lexical view holds: a
+    /// definition and a module keep a view, so nothing can compile in
+    /// the scopes such an input's bodies name.
+    pub fn sweep_names(&mut self) {
+        self.names.retain(|_, sn| sn.input.as_ref().is_none_or(|i| i.strong_count() > 0))
     }
 
     /// Whether `level` itself declares `name`: a binding, a type or a
