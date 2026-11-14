@@ -1389,47 +1389,6 @@ impl Type {
         Self::union_with(env, Merge::Exact, ts)
     }
 
-    // XCR claude for claude: [bug/low] A read of one value whose type is a typedef union
-    // of two function types over two undecided variables makes the two variables one:
-    // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
-    // F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; s.fld }; h(1, "s",
-    // |q: i64| q + 1)` is refused, "type mismatch i64 does not contain string" at "s",
-    // naming no annotation, and so is a tuple read (`let r = f(u, v, w); r.0` over an
-    // `f` returning `(x, y, z)`). `h` returning `f(u, v, w)` itself, or taking the tuple
-    // apart by a pattern, runs, and so does `h` with its parameters written (`|u: 'c, v:
-    // 'd, w: F2<'c, 'd>|`). The read is a union of one alternative, which joins nothing,
-    // yet meet_alternatives takes that alternative's own members apart and meets them,
-    // and the welding normalize pairs them, where design/tvar_constraints.md keeps a
-    // union a typedef's expansion made as two members. runtime-bind-fn-union-01 stopped
-    // this inside a function type's signature only. Not looked into: which of the two
-    // merges the variables here, and whether a read of one alternative should return it
-    // as it stands. base-r23 alike. Found reviewing runtime-bind-fn-union-01. probes:
-    // ~/ptmp/cr29/scratch/r23/23b/rbf-rev/{e5,d4}.gx (refused), {e1,e3,e4,d3b}.gx (run)
-    // (read-welds-data-union-01)
-    // 2026-11-14 claude: Both merged the variables, each enough alone: meet_alternatives
-    // took the one alternative's members apart and met them, and union_with's welding
-    // normalize paired them (the plain Type::union of one type too, which is what a
-    // dereference takes). One alternative now joins nothing (setops::sole: one node
-    // however many times it stands, ⊥ aside): it meets nothing and is its type as it
-    // stands under a plain normalize. So a read of one value through a field, a tuple
-    // position, an error's payload, a dereference, a variant's pattern, a select of one
-    // binding in every arm or any over it is a read of its binding: e5.gx runs, and
-    // d4.gx's call of h checks (its last line calls the union, refused as
-    // lang::types::field_read_result_of_a_signature_union_of_functions_is_no_one_function
-    // pins). The read decides nothing any more, so a call through it is refused as the
-    // call of its binding always was (a call takes one function type), where the read
-    // used to make the members one: genrev.py 23 500 (1500 programs) has 32 newly
-    // refused, all calls through a read of a union with a variable no argument decided
-    // (F2<'a, 'b>, 'b nowhere else), 31 of them refused alike on base-r24 with the read
-    // written as a pattern bind; 0 newly accepted; census of both repos 0 verdicts
-    // changed. Pins that fail without the fix (4 modes each):
-    // lang::types::{field_read_of,tuple_read_of,error_payload_read_of,deref_of,variant_pattern_over,any_over}_one_value_keeps_its_union_of_functions_over_two_variables,
-    // select_of_one_binding_in_every_arm_keeps_its_union_of_functions_over_two_variables,
-    // call_through_a_field_read_of_a_union_of_functions_over_two_variables_refused,
-    // call_through_a_tuple_read_of_a_union_of_functions_no_argument_decided_refused, and
-    // typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings.
-    // Left, as alternative-union-members-pair-01: the same pairing inside one of several
-    // alternatives. probes: ~/ptmp/cr29/scratch/r24/24d/rwd/ (README)
     /// The union of a select's alternatives, which a call through the
     /// select must accept alike: function members meet first, and so do
     /// those in the members' parts ([`Self::meet_alternatives`]).
