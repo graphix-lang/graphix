@@ -2074,6 +2074,18 @@ impl PartialOrd for TVar {
 // Array<Array<'a>>, Array<'a>]`, fix `[i64, Array<'a>, Array<Array<'a>>]`; no
 // verdict or value changed there, nor in 3095 more generated selects in five modes.
 // probes: ~/ptmp/cr29/scratch/r24/24f/sacm/{p0214,p0475}.repl
+// 2026-11-13 claude: (review of slice-arms-member-cost-01) Two more of 1200 gen4.py
+// functions (seeds 13 to 15) print differently since that fix, no verdict or value
+// changed: p0289 keeps `Array<string>` in a result union where head kept `Array<'a:
+// string>`, and p0394 (`h` alone, `_ => []` for its last arm) holds its result in
+// another order and prints the parameter's element cell under another name than the
+// result's, head `fn(x: (List<Array<'a>>, Array<(Any, Any)>)) -> [Array<'a>,
+// Array<'_0>, Array<Any>]`, fix `fn(x: (List<Array<'_0>>, ..)) -> [Array<'_1>,
+// Array<Any>, Array<'a>]` (one cell: a call types `'a` by its argument). A later
+// `array::len(r)` over its result is refused either way, by another message: head
+// "Array<'a: i64> does not contain [Array<'a1: i64>, Array<_>, Array<Any>]", fix
+// "Array<'a: _> does not contain [Array<_>, Array<Any>, Array<'a1: i64>]". probes:
+// ~/ptmp/cr29/scratch/r24/24f/sacm-rev/{p0289,p0394}.repl, t6.txt (run with rr.sh)
 impl Ord for TVar {
     fn cmp(&self, other: &Self) -> Ordering {
         let (c0, c1) = (self.cell(), other.cell());
