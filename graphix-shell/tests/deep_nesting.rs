@@ -2238,7 +2238,7 @@ fn deep_nesting_does_not_overflow() {
     );
 }
 
-// CR claude for claude: [test-gap/medium] The 45 G budget below is 0.8% over what
+// XCR claude for claude: [test-gap/medium] The 45 G budget below is 0.8% over what
 // main's code retires alone (base-r24's binary 44.63 G, `perf stat -e
 // instructions:u`), and the count moves with the box's load by more than that:
 // with other lanes' builds running (load average 45 to 76) eight runs of
@@ -2251,6 +2251,13 @@ fn deep_nesting_does_not_overflow() {
 // range: the figure this pin guards against is 80.3 G (the sharing of 8e6e9f7d1
 // put back). probe: ~/ptmp/cr29/scratch/r24/24e/finisher/{sd.gx,m.sh}
 // (select-budget-load-01)
+// 2026-11-14 claude: Not load-dependent at present: round 24's landing took the
+// program from 44.6 G to 33 G. On base-r25 at load average 105, six runs of 'perf
+// stat -e instructions:u graphix --no-cache --no-fusion' retired 32.84 to 32.92 G
+// (0.25% spread); the pin's own run reads 33.1 G. The budget is now 40 G (21% over
+// the loaded range, half of the 80.3 G the sharing's loss costs). What would catch
+// a regression: select_discriminants_first_value_in_time over 40 G. Probe:
+// ~/ptmp/cr29/scratch/r25/h/{sd.gx,m.sh}
 #[test]
 #[cfg(target_os = "linux")]
 fn select_discriminants_first_value_in_time() {
@@ -2275,5 +2282,5 @@ fn select_discriminants_first_value_in_time() {
         "let r = array::fold(array::map(xs, |x| f(x)), 0, |a, b| a + b);\n\
         sys::exit(select r { 2197000 => 0, _ => 1 }); r",
     );
-    completes_within(&["--no-cache", "--no-fusion"], &source, 45 * BILLION);
+    completes_within(&["--no-cache", "--no-fusion"], &source, 40 * BILLION);
 }
