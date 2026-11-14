@@ -1199,34 +1199,6 @@ fn typecheck_arg<R: Rt>(
         }
         Opening::Closed | Opening::Open => SmallVec::new(),
     };
-    // XCR claude for claude: [bug/medium] A lambda passed at a variable that does not
-    // widen, bounded by a union of two function types, is bound to the variable before
-    // its own check, so no member of the bound gives it its parameter: the check
-    // accepts and the build refuses the instance. `type E<'x, 'y> = [fn(v: 'x) -> i64,
-    // fn(v: 'y) -> string]; let f = 'a2: E<'a3, 'a3> |z: 'a3, x1: 'a2, k: fn(q: 'a2)
-    // -> i64| 7; f(1, |v| 1, |q| 0)` passes `--check` and the run fails "an instance at
-    // fn(z: i64, x1: fn(v: _) -> i64, k: fn(q: fn(v: _) -> i64) -> i64) -> i64 of a
-    // definition typed ..". Without `k` ('a2 widens, so the lambda is checked against
-    // the formal's open copy and the bound's member takes it after) it prints 7, and so
-    // does the bound `'a2: fn(v: 'a3) -> i64` with `k`. base-r24 alike. The
-    // pre-unification below binds 'a2 to the lambda while its result is unknown, where
-    // contains::member_with_parts tells no member apart, and once the lambda is checked
-    // 'a2 is bound and its bound is not asked again
-    // (bound-union-binds-argument-early-01 is the same early bind, refused where this
-    // is accepted). probes: ~/ptmp/cr29/scratch/r24/24d/ubo/{zb,zc,zd,z5}.gx
-    // (unwidenable-bound-callback-01)
-    // 2026-11-14 claude: Closed in Type::pre_unify_seen: a callback whose formal is an
-    // open variable bounded by a union of function types where two members take it and
-    // none holds the other (TVar::bound_takers_ambiguous) is left to its own check,
-    // which binds the variable once its result tells the members apart, as the widening
-    // path does. A callback of no result is refused naming the annotation
-    // (UndecidedTaker), where the build refused the instance. Pins that fail without
-    // it:
-    // lang::types::callback_into_a_union_bound_under_a_function_takes_the_members_parameter,
-    // callback_into_the_second_member_of_a_union_bound_under_a_function,
-    // callback_of_no_result_into_a_union_bound_under_a_function_refused (the
-    // written-result twin passes). Census 2967 files: no change; guicheck 39.644G base
-    // vs 39.764G lane (39.793G lane without the fix).
     match &opening {
         Opening::Closed => {
             Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
