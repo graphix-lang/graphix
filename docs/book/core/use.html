@@ -262,6 +262,16 @@ module: <code>use self::sub::x</code> may stand above <code>mod sub;</code>. Mod
 names are visible whatever their order; a value is not, because a
 module's body runs where its <code>mod</code> statement stands, so a sub-module
 that imports a parent's value must be declared below that value.</p>
+<p>A type name an import brings means that import throughout its statement
+list, above the <code>use</code> as well: <code>type Op = {mode: Mode}</code> written above
+<code>use sys::fs::Mode</code> names the imported <code>Mode</code>, never an outer type of
+that name. A statement above the <code>use</code> that needs the type while it
+compiles (a cast, a type test, a <code>let</code> that takes the type apart, an
+abstract constructor, a trait written as a parameter's type) is refused,
+and the error names the <code>use</code> to move up. The same holds for a name
+imported from a module declared further down, and, above a glob, for
+every type name the scope neither declares nor imports itself. Writing
+<code>use</code> first, then <code>mod</code>, avoids all of it.</p>
 <h2 id="shadowing-and-collisions"><a class="header" href="#shadowing-and-collisions">Shadowing and collisions</a></h2>
 <p>Within one scope, names resolve in precedence order: an explicit
 declaration beats an import, an import beats a glob, a glob beats the

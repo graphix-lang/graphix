@@ -442,10 +442,12 @@ its own position, when its arm tests nothing else: <code>([], _)</code> and
 <code>([x, ..], 0)</code> does, claims no lengths. A position of several array
 types counts as one array, so <code>`A([])</code> and <code>`A([x, ..])</code> cover
 <code>`A([Array&lt;i64&gt;, Array&lt;string&gt;])</code>. One that also holds a value no
-slice matches (<code>`A([Array&lt;i64&gt;, null])</code>) counts no lengths: finish
-its arms with a catch-all there (<code>`A(_)</code>), or write the type one
-variant a member (<code>[`A(Array&lt;i64&gt;), `A(null)]</code>), where
-<code>`A(null)</code> is an arm of its own.</p>
+slice matches (<code>`A([Array&lt;i64&gt;, null])</code>) counts the lengths of its
+arrays alone: <code>`A([])</code> and <code>`A([x, ..])</code> cover
+<code>`A(Array&lt;i64&gt;)</code>, and an arm of its own covers the rest
+(<code>`A(null)</code>). The slice's elements count only where they take any
+value of the element type: <code>`A([(a, b), ..])</code> claims no length of
+<code>`A(Array&lt;[(i64, i64), i64]&gt;)</code>.</p>
 <h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
 <p>Lists (see <a href="./fundamental_types.html#list">Fundamental Types</a>) have
 their own slice-like patterns, written with the list literal's
@@ -593,6 +595,19 @@ type beside the other members' parts: over <code>[(`A, z), (`B, "s")]</code>,
 refused where it is written. A type test tests what it reads as a
 pattern does: <code>(`J, [i64, string]) as (`J, s)</code> over <code>(`J, z)</code> is
 refused until <code>z</code> is annotated, since <code>z</code> might become neither.</p>
+<p>A type test over a scrutinee that is one of two such types is refused
+too. With <code>u</code> an <code>x</code> or a <code>y</code>, both written later, <code>select u { i64 as n =&gt; n, _ =&gt; 0 }</code> could make either one an <code>i64</code>, and the check does not
+pick one by the order they stand in: annotate <code>x</code> or <code>y</code>. The other is
+then the test's to decide, or stays open where the annotation holds the
+test. Tests that cover the scrutinee between them, <code>i64 as n =&gt; .., string as s =&gt; ..</code>, decide both: each is an <code>[i64, string]</code>.</p>
+<p>Arms that bind the same part of such a scrutinee bind one type there.
+No literal or guard beside a bind narrows it, so in <code>|s| select s { `A(1, a) =&gt; a + 1, `A(2, a) =&gt; str::len(a), _ =&gt; 0 }</code> both <code>a</code> are the
+payload's one type, and the select is refused for using it as an <code>i64</code>
+and as a <code>string</code>. Annotate <code>s</code> with the union the payload may be, and
+test the bind inside the arm.</p>
+<p>A slice with a rest over a binding the arms decide leaves the type of
+the other elements to later writes, and at run time it takes a value of
+whatever they bring, at every position. After <code>let v = never(); let z = select v { [</code>J(n), ..] =&gt; n + 1, _ =&gt; 3 }<code>, </code>n<code>is an</code>i64<code>, and ``v &lt;- [</code>J(1), <code>K]`` checks. ``v &lt;- [</code>J("s"), <code>K]`` brings a member the pattern takes that </code>n<code>was not typed over, so the pattern is refused ("takes a value of ``</code>J(string) <code>too") until `v` is annotated:</code>let v: Array&lt;[<code>J(i64), </code>J(string), <code>K]&gt; = never()`` makes </code>n<code>an</code>[i64, string]`.</p>
 <p>For the same reason, two members whose left-out fields differ only in
 types not decided yet are two members, and a partial pattern over both
 is refused:</p>
@@ -678,7 +693,9 @@ the arm and delivers its bindings.</p>
 name's type is the union of its types in the alternatives:
 <code>`A(n) | `B(n)</code> over <code>[`A(i64), `B(string)]</code> binds <code>n: [i64, string]</code>.
 Functions bound under one name are one function type where their
-signatures agree, so the name can be called.
+signatures agree, so the name can be called. A function still open
+(<code>|x| x</code>) beside two that are not one type is refused: write its
+parameter's type.
 <code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
 alternative binds <code>x</code>, the first binds nothing).</li>
 <li><strong>One guard per arm.</strong> A guard written after the alternation covers the

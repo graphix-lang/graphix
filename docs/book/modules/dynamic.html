@@ -229,6 +229,10 @@ hidden from the loading code. This provides encapsulation - see the
 <li>a trait statement defines a trait, and an impl statement, <code>impl Show for T;</code>, declares an implementation the loaded module must provide.</li>
 <li>a use statement imports names the signature uses, e.g. <code>use sys::io::Read;</code></li>
 </ul>
+<p>Like an interface, the signature sees only what it imports or declares
+itself. A type of the loading program is imported, <code>use super::Config;</code>,
+and declared above the module; a signature naming a type it does not
+import is refused when the loading program is checked.</p>
 <p>A dynamic module has no sub-modules: its source is one piece of text, so
 it cannot declare a <code>mod</code>, and a <code>mod</code> in its sig is refused.</p>
 </li>
@@ -249,8 +253,9 @@ initialized, possibly causing values it exports to update.</p>
 <p>A function taken out of the module and kept somewhere else (<code>saved &lt;- foo::add</code>) is the function of the body it was taken from. After a reload it
 still runs that body's code, over that body's bindings as they last stood, and
 it sees nothing of the new module: a trait method its code calls is the one that
-body implemented, and a name it uses is what that body imported. Code that should
-follow a reload calls through the module each time, <code>foo::add(x)</code>.</p>
+body implemented, also where a function outside the module that it calls makes
+the call, and a name it uses is what that body imported. Code that should follow
+a reload calls through the module each time, <code>foo::add(x)</code>.</p>
 <p>Obviously the loaded module must match the type signature defined in the dynamic
 mod statement. However, the signature checking only cares that every item
 mentioned in the signature is present in the dynamic module and that the types

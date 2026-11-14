@@ -324,8 +324,9 @@ that every use shares, so it is refused: declare the val at one type,
 outside it, <code>let y = never(); let f = |x| { y &lt;- x; x }</code>, has one type
 for every call, and is refused: give <code>y</code> a type that holds every <code>'a</code>
 (<code>let y: Any = never()</code>), or declare <code>f</code> at one type. So is one that
-something writes, <code>let f = |x| x; f &lt;- |x| x</code>, whose writers share one
-type: declare <code>f</code> at one type.</p>
+calls a function a call returned, <code>let k = mk(); let f = |x| k(x)</code>: the
+call's result is one instance, so write a lambda in its place, <code>let k = |x| ..</code>. So is one that something writes, <code>let f = |x| x; f &lt;- |x| x</code>,
+whose writers share one type: declare <code>f</code> at one type.</p>
 <p>A <code>val</code> whose type holds a variable is generic wherever its function
 types stand: in a struct (<code>val c: {f: fn(x: 'a) -&gt; 'a}</code>), an array or a
 type alias, and with its own quantifiers written (<code>val f: fn&lt;'a: Any&gt;(..)</code>) or not; each use takes it at its own types. What is written

@@ -301,13 +301,23 @@ show(v)
 </code></pre>
 <p>Every member needs an implementation. Two spellings of one type are one
 member. Where one member holds another (<code>Array&lt;i64&gt;</code> beside
-<code>Array&lt;[i64, string]&gt;</code>) the narrower is tested first. A value that two
-members share where neither holds the other (<code>[1]</code> in <code>Array&lt;[i64, string]&gt;</code> and <code>Array&lt;[i64, null]&gt;</code>) takes the one that comes first in
-the union as it prints: a union's members are sorted, so that is not the
-order they were written in. The call narrows only the <code>self</code>
-argument, so a trait with a method that takes <code>self</code> anywhere else (as
-another parameter's type, or in the bound of a type variable) cannot be
-called on a union: write the <code>select</code> yourself there.</p>
+<code>Array&lt;[i64, string]&gt;</code>) the narrower is tested first. The call narrows
+only the <code>self</code> argument, so a trait with a method that takes <code>self</code>
+anywhere else (as another parameter's type, or in the bound of a type
+variable) cannot be called on a union: write the <code>select</code> yourself there.</p>
+<p>A call is refused where two members may share a value and neither holds
+the other: <code>[1]</code> is a value of both <code>Array&lt;[i64, string]&gt;</code> and
+<code>Array&lt;[i64, null]&gt;</code>, and the empty array is a value of every array type
+(the empty list and the empty map likewise), so nothing says which
+implementation such a value would take. Give the value one member's
+type. Where it must stay a union, write the <code>select</code>: a value of both
+takes the arm you wrote first, and that arm names its member's type
+again, since its bind holds only the values that reach it:</p>
+<pre><code class="language-graphix fragment">select v {
+  Array&lt;[i64, null]&gt; as a =&gt; { let a: Array&lt;[i64, null]&gt; = a; show(a) },
+  Array&lt;[i64, string]&gt; as a =&gt; show(a)
+}
+</code></pre>
 <h2 id="traits-as-bounds"><a class="header" href="#traits-as-bounds">Traits as Bounds</a></h2>
 <p>A trait names no value's type; it constrains a type variable:</p>
 <pre><code class="language-graphix fragment">let describe = 'a: Show |x: 'a| "&lt;[show(x)]&gt;";

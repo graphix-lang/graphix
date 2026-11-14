@@ -234,9 +234,11 @@ callers may do.</p>
 <p>A call chooses a type for each declared variable from its arguments, its
 result and what it throws, so a variable must appear in the signature:
 on an argument, the return type or the throws, or inside the bound of
-another variable that does (<code>'a: Array&lt;'b&gt;, 'b: Int |x: 'a|</code>). One that
-only the body names could be chosen by no call, and the definition is
-refused,</p>
+another variable it declares that does
+(<code>'a: Array&lt;'b&gt;, 'b: Int |x: 'a|</code>); the bound of a variable an enclosing
+definition declares names that definition's variables, never this one's.
+One that only the body names could be chosen by no call, and the
+definition is refused,</p>
 <pre><code class="language-graphix">〉let h = 'a: Number |x: i64| -&gt; i64 { let v: 'a = 1; x }
 error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 </code></pre>
@@ -316,6 +318,15 @@ Abstract('a: Number |x: 'a| -&gt; 'a x)
 〉(h, k)
 -: (fn(x: 'a: unbound within Number) -&gt; 'a: unbound within Number, fn(x: 'a1: unbound within Number) -&gt; 'a1: unbound within Number)
 (Abstract('a: Number |x: 'a| -&gt; 'a x), Abstract('a: Number |x: 'a| -&gt; 'a x))
+</code></pre>
+<p>An inferred variable numbers apart the same way: where a message shows
+two instances' copies of one, the second prints with <code>_</code> and a number
+after the first's name. Each read of a generic binding is an instance
+of its own:</p>
+<pre><code class="language-graphix">〉let id = |x| x
+〉(id, id)
+-: (fn(x: '_7: unbound) -&gt; '_7: unbound, fn(x: '_7_1: unbound) -&gt; '_7_1: unbound)
+(Abstract(|x| x), Abstract(|x| x))
 </code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type

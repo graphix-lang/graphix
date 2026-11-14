@@ -1860,6 +1860,16 @@ module: <code>use self::sub::x</code> may stand above <code>mod sub;</code>. Mod
 names are visible whatever their order; a value is not, because a
 module's body runs where its <code>mod</code> statement stands, so a sub-module
 that imports a parent's value must be declared below that value.</p>
+<p>A type name an import brings means that import throughout its statement
+list, above the <code>use</code> as well: <code>type Op = {mode: Mode}</code> written above
+<code>use sys::fs::Mode</code> names the imported <code>Mode</code>, never an outer type of
+that name. A statement above the <code>use</code> that needs the type while it
+compiles (a cast, a type test, a <code>let</code> that takes the type apart, an
+abstract constructor, a trait written as a parameter's type) is refused,
+and the error names the <code>use</code> to move up. The same holds for a name
+imported from a module declared further down, and, above a glob, for
+every type name the scope neither declares nor imports itself. Writing
+<code>use</code> first, then <code>mod</code>, avoids all of it.</p>
 <h2 id="shadowing-and-collisions"><a class="header" href="#shadowing-and-collisions">Shadowing and collisions</a></h2>
 <p>Within one scope, names resolve in precedence order: an explicit
 declaration beats an import, an import beats a glob, a glob beats the
@@ -2175,10 +2185,12 @@ its own position, when its arm tests nothing else: <code>([], _)</code> and
 <code>([x, ..], 0)</code> does, claims no lengths. A position of several array
 types counts as one array, so <code>`A([])</code> and <code>`A([x, ..])</code> cover
 <code>`A([Array&lt;i64&gt;, Array&lt;string&gt;])</code>. One that also holds a value no
-slice matches (<code>`A([Array&lt;i64&gt;, null])</code>) counts no lengths: finish
-its arms with a catch-all there (<code>`A(_)</code>), or write the type one
-variant a member (<code>[`A(Array&lt;i64&gt;), `A(null)]</code>), where
-<code>`A(null)</code> is an arm of its own.</p>
+slice matches (<code>`A([Array&lt;i64&gt;, null])</code>) counts the lengths of its
+arrays alone: <code>`A([])</code> and <code>`A([x, ..])</code> cover
+<code>`A(Array&lt;i64&gt;)</code>, and an arm of its own covers the rest
+(<code>`A(null)</code>). The slice's elements count only where they take any
+value of the element type: <code>`A([(a, b), ..])</code> claims no length of
+<code>`A(Array&lt;[(i64, i64), i64]&gt;)</code>.</p>
 <h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
 <p>Lists (see <a href="core/./fundamental_types.html#list">Fundamental Types</a>) have
 their own slice-like patterns, written with the list literal's
@@ -2326,6 +2338,19 @@ type beside the other members' parts: over <code>[(`A, z), (`B, "s")]</code>,
 refused where it is written. A type test tests what it reads as a
 pattern does: <code>(`J, [i64, string]) as (`J, s)</code> over <code>(`J, z)</code> is
 refused until <code>z</code> is annotated, since <code>z</code> might become neither.</p>
+<p>A type test over a scrutinee that is one of two such types is refused
+too. With <code>u</code> an <code>x</code> or a <code>y</code>, both written later, <code>select u { i64 as n =&gt; n, _ =&gt; 0 }</code> could make either one an <code>i64</code>, and the check does not
+pick one by the order they stand in: annotate <code>x</code> or <code>y</code>. The other is
+then the test's to decide, or stays open where the annotation holds the
+test. Tests that cover the scrutinee between them, <code>i64 as n =&gt; .., string as s =&gt; ..</code>, decide both: each is an <code>[i64, string]</code>.</p>
+<p>Arms that bind the same part of such a scrutinee bind one type there.
+No literal or guard beside a bind narrows it, so in <code>|s| select s { `A(1, a) =&gt; a + 1, `A(2, a) =&gt; str::len(a), _ =&gt; 0 }</code> both <code>a</code> are the
+payload's one type, and the select is refused for using it as an <code>i64</code>
+and as a <code>string</code>. Annotate <code>s</code> with the union the payload may be, and
+test the bind inside the arm.</p>
+<p>A slice with a rest over a binding the arms decide leaves the type of
+the other elements to later writes, and at run time it takes a value of
+whatever they bring, at every position. After <code>let v = never(); let z = select v { [</code>J(n), ..] =&gt; n + 1, _ =&gt; 3 }<code>, </code>n<code>is an</code>i64<code>, and ``v &lt;- [</code>J(1), <code>K]`` checks. ``v &lt;- [</code>J("s"), <code>K]`` brings a member the pattern takes that </code>n<code>was not typed over, so the pattern is refused ("takes a value of ``</code>J(string) <code>too") until `v` is annotated:</code>let v: Array&lt;[<code>J(i64), </code>J(string), <code>K]&gt; = never()`` makes </code>n<code>an</code>[i64, string]`.</p>
 <p>For the same reason, two members whose left-out fields differ only in
 types not decided yet are two members, and a partial pattern over both
 is refused:</p>
@@ -2411,7 +2436,9 @@ the arm and delivers its bindings.</p>
 name's type is the union of its types in the alternatives:
 <code>`A(n) | `B(n)</code> over <code>[`A(i64), `B(string)]</code> binds <code>n: [i64, string]</code>.
 Functions bound under one name are one function type where their
-signatures agree, so the name can be called.
+signatures agree, so the name can be called. A function still open
+(<code>|x| x</code>) beside two that are not one type is refused: write its
+parameter's type.
 <code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
 alternative binds <code>x</code>, the first binds nothing).</li>
 <li><strong>One guard per arm.</strong> A guard written after the alternation covers the
@@ -3309,9 +3336,11 @@ callers may do.</p>
 <p>A call chooses a type for each declared variable from its arguments, its
 result and what it throws, so a variable must appear in the signature:
 on an argument, the return type or the throws, or inside the bound of
-another variable that does (<code>'a: Array&lt;'b&gt;, 'b: Int |x: 'a|</code>). One that
-only the body names could be chosen by no call, and the definition is
-refused,</p>
+another variable it declares that does
+(<code>'a: Array&lt;'b&gt;, 'b: Int |x: 'a|</code>); the bound of a variable an enclosing
+definition declares names that definition's variables, never this one's.
+One that only the body names could be chosen by no call, and the
+definition is refused,</p>
 <pre><code class="language-graphix">〉let h = 'a: Number |x: i64| -&gt; i64 { let v: 'a = 1; x }
 error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 </code></pre>
@@ -3391,6 +3420,15 @@ Abstract('a: Number |x: 'a| -&gt; 'a x)
 〉(h, k)
 -: (fn(x: 'a: unbound within Number) -&gt; 'a: unbound within Number, fn(x: 'a1: unbound within Number) -&gt; 'a1: unbound within Number)
 (Abstract('a: Number |x: 'a| -&gt; 'a x), Abstract('a: Number |x: 'a| -&gt; 'a x))
+</code></pre>
+<p>An inferred variable numbers apart the same way: where a message shows
+two instances' copies of one, the second prints with <code>_</code> and a number
+after the first's name. Each read of a generic binding is an instance
+of its own:</p>
+<pre><code class="language-graphix">〉let id = |x| x
+〉(id, id)
+-: (fn(x: '_7: unbound) -&gt; '_7: unbound, fn(x: '_7_1: unbound) -&gt; '_7_1: unbound)
+(Abstract(|x| x), Abstract(|x| x))
 </code></pre>
 <p>A third bound, <code>Discernible</code>, says the values of a type can be told
 apart at run time the way the type tells them apart. Nearly every type
@@ -4556,13 +4594,23 @@ show(v)
 </code></pre>
 <p>Every member needs an implementation. Two spellings of one type are one
 member. Where one member holds another (<code>Array&lt;i64&gt;</code> beside
-<code>Array&lt;[i64, string]&gt;</code>) the narrower is tested first. A value that two
-members share where neither holds the other (<code>[1]</code> in <code>Array&lt;[i64, string]&gt;</code> and <code>Array&lt;[i64, null]&gt;</code>) takes the one that comes first in
-the union as it prints: a union's members are sorted, so that is not the
-order they were written in. The call narrows only the <code>self</code>
-argument, so a trait with a method that takes <code>self</code> anywhere else (as
-another parameter's type, or in the bound of a type variable) cannot be
-called on a union: write the <code>select</code> yourself there.</p>
+<code>Array&lt;[i64, string]&gt;</code>) the narrower is tested first. The call narrows
+only the <code>self</code> argument, so a trait with a method that takes <code>self</code>
+anywhere else (as another parameter's type, or in the bound of a type
+variable) cannot be called on a union: write the <code>select</code> yourself there.</p>
+<p>A call is refused where two members may share a value and neither holds
+the other: <code>[1]</code> is a value of both <code>Array&lt;[i64, string]&gt;</code> and
+<code>Array&lt;[i64, null]&gt;</code>, and the empty array is a value of every array type
+(the empty list and the empty map likewise), so nothing says which
+implementation such a value would take. Give the value one member's
+type. Where it must stay a union, write the <code>select</code>: a value of both
+takes the arm you wrote first, and that arm names its member's type
+again, since its bind holds only the values that reach it:</p>
+<pre><code class="language-graphix fragment">select v {
+  Array&lt;[i64, null]&gt; as a =&gt; { let a: Array&lt;[i64, null]&gt; = a; show(a) },
+  Array&lt;[i64, string]&gt; as a =&gt; show(a)
+}
+</code></pre>
 <h2 id="traits-as-bounds"><a class="header" href="#traits-as-bounds">Traits as Bounds</a></h2>
 <p>A trait names no value's type; it constrains a type variable:</p>
 <pre><code class="language-graphix fragment">let describe = 'a: Show |x: 'a| "&lt;[show(x)]&gt;";
@@ -5270,8 +5318,9 @@ that every use shares, so it is refused: declare the val at one type,
 outside it, <code>let y = never(); let f = |x| { y &lt;- x; x }</code>, has one type
 for every call, and is refused: give <code>y</code> a type that holds every <code>'a</code>
 (<code>let y: Any = never()</code>), or declare <code>f</code> at one type. So is one that
-something writes, <code>let f = |x| x; f &lt;- |x| x</code>, whose writers share one
-type: declare <code>f</code> at one type.</p>
+calls a function a call returned, <code>let k = mk(); let f = |x| k(x)</code>: the
+call's result is one instance, so write a lambda in its place, <code>let k = |x| ..</code>. So is one that something writes, <code>let f = |x| x; f &lt;- |x| x</code>,
+whose writers share one type: declare <code>f</code> at one type.</p>
 <p>A <code>val</code> whose type holds a variable is generic wherever its function
 types stand: in a struct (<code>val c: {f: fn(x: 'a) -&gt; 'a}</code>), an array or a
 type alias, and with its own quantifiers written (<code>val f: fn&lt;'a: Any&gt;(..)</code>) or not; each use takes it at its own types. What is written
@@ -5623,6 +5672,10 @@ hidden from the loading code. This provides encapsulation - see the
 <li>a trait statement defines a trait, and an impl statement, <code>impl Show for T;</code>, declares an implementation the loaded module must provide.</li>
 <li>a use statement imports names the signature uses, e.g. <code>use sys::io::Read;</code></li>
 </ul>
+<p>Like an interface, the signature sees only what it imports or declares
+itself. A type of the loading program is imported, <code>use super::Config;</code>,
+and declared above the module; a signature naming a type it does not
+import is refused when the loading program is checked.</p>
 <p>A dynamic module has no sub-modules: its source is one piece of text, so
 it cannot declare a <code>mod</code>, and a <code>mod</code> in its sig is refused.</p>
 </li>
@@ -5643,8 +5696,9 @@ initialized, possibly causing values it exports to update.</p>
 <p>A function taken out of the module and kept somewhere else (<code>saved &lt;- foo::add</code>) is the function of the body it was taken from. After a reload it
 still runs that body's code, over that body's bindings as they last stood, and
 it sees nothing of the new module: a trait method its code calls is the one that
-body implemented, and a name it uses is what that body imported. Code that should
-follow a reload calls through the module each time, <code>foo::add(x)</code>.</p>
+body implemented, also where a function outside the module that it calls makes
+the call, and a name it uses is what that body imported. Code that should follow
+a reload calls through the module each time, <code>foo::add(x)</code>.</p>
 <p>Obviously the loaded module must match the type signature defined in the dynamic
 mod statement. However, the signature checking only cares that every item
 mentioned in the signature is present in the dynamic module and that the types
@@ -7174,8 +7228,14 @@ val args: fn() -&gt; Array&lt;string&gt;;
 /// join parts to path using the OS specific path separator
 val join_path: fn(path: string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 
-/// flush stdout/stderr and terminate the process with the given exit
-/// code; a code outside 0..=255 exits with 1. The return type is fully polymorphic because the call never
+/// flush stdout/stderr and end the program with the given exit code; a
+/// code outside 0..=255 exits with 1. The cycle in which the call fires
+/// is the program's last. It runs to its end, so what else it prints is
+/// printed and every call it makes is made, and nothing runs after it:
+/// a `&lt;-` it queued never lands, a reply still on its way is never
+/// delivered, and an async call still at work (a file write, a send)
+/// may be cut short. Exit on the event that says the work is done. The
+/// return type is fully polymorphic because the call never
 /// actually returns; it fires when its argument produces a value, so
 /// you can use it as the trailing expression of a program to make it
 /// exit deterministically on completion.
