@@ -410,9 +410,16 @@ quantified annotation on the `let`, or, for an implementation that is no
 lambda, a lambda, or a literal of lambdas for a val that is no function;
 the binding named is one the lambdas the implementation holds reach
 through the lambdas they capture: one whose own type is the cell, else
-one that holds it in data, else one that holds it in lambdas it holds as
-data; of several alike the nearest, then the one the program writes
-first, so its annotation lifts the refusal, `module::Holder::of`). The
+one that holds it in data, else one that holds lambdas and that
+something writes, else one that holds it in lambdas it holds as data; of
+several alike the nearest, then the one the program writes first, so its
+annotation lifts the refusal, `module::Holder::of`). A written binding
+that holds lambdas (`let k = |x| x; k <- |x| x`) is no scheme: every
+read shares its type, so it is named as written and its lambdas are not
+followed, since what they capture lifts nothing while it shares. Its
+annotation lifts the refusal only where the implementation hands it the
+cell's values and takes none back (`{ k(x); x }` over `k: fn(x: Any) ->
+Any`, not `k(x)`). The
 lambdas a binding holds are its own, those its data's function types
 carry, and those behind a generic binding's read of a function (`let f =
 s.g`); a binding whose value is any other function (a call's result,

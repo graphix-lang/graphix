@@ -2247,11 +2247,12 @@ run!(
     ; FuseExpect::None
 );
 
-// Of two captures that hold the cell in lambdas they hold as data, the one
-// written first is named, then the other, and with both annotated it runs.
+// Of two captures that hold the cell in lambdas they hold as data and that
+// something writes, the one written first is named, then the other, and
+// with both annotated it runs.
 run!(
     val_names_the_lambda_holder_written_first,
-    refused("that of st, a binding outside its let: declare the val at one type, or give st a type that holds every 'a"),
+    refused("that of st, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give st a type that holds every 'a"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let st = {f: |x| x}; st <- {f: |x| x}; let st2 = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
@@ -2259,7 +2260,7 @@ run!(
 
 run!(
     val_names_the_second_lambda_holder_once_the_first_is_annotated,
-    refused("that of st2, a binding outside its let: declare the val at one type, or give st2 a type that holds every 'a"),
+    refused("that of st2, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give st2 a type that holds every 'a"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let st: {f: fn(x: Any) -> Any} = {f: |x| x}; st <- {f: |x| x}; let st2 = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
@@ -2272,6 +2273,90 @@ run!(
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let st: {f: fn(x: Any) -> Any} = {f: |x| x}; st <- {f: |x| x}; let st2: {f: fn(x: Any) -> Any} = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
     ; FuseExpect::None
+);
+
+// A lambda binding something writes is one type for every reader: the
+// implementation that calls it is told that binding, by name.
+const WRITTEN_K: &str = "that of k, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give k a type that holds every 'a";
+
+run!(
+    val_names_a_written_lambda_it_calls,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| k(x)"
+);
+
+run!(
+    val_names_a_written_lambda_it_hands_its_argument,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| { k(x); x }"
+);
+
+run!(
+    val_written_lambda_it_hands_its_argument_annotated,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k: fn(x: Any) -> Any = |x| x; k <- |x| x; let f = |x| { k(x); x }"
+    ; FuseExpect::None
+);
+
+run!(
+    val_unwritten_lambda_it_calls_is_generic,
+    prints(r#"[i64:1, "s"]"#),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k = |x| x; let f = |x| k(x)"
+    ; FuseExpect::Jit
+);
+
+// Past a generic lambda the implementation calls, to the written one it
+// calls in turn.
+run!(
+    val_names_a_written_lambda_behind_a_generic_one,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k = |x| x; k <- |x| x; let g = |x| k(x); let f = |x| g(x)"
+);
+
+// A written binding's lambdas are not followed: what they capture is no
+// annotation's to widen while every read of the binding shares its type.
+run!(
+    val_names_a_written_lambda_not_what_it_captures,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let d: Any = never(); let k = |x| { d <- x; x }; k <- |x| x; let f = |x| k(x)"
+);
+
+run!(
+    val_names_a_written_lambda_over_an_open_capture,
+    refused(WRITTEN_K),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let d = never(); let k = |x| { d <- x; x }; k <- |x| x; let f = |x| k(x)"
+);
+
+run!(
+    val_names_a_written_struct_of_lambdas_not_what_they_capture,
+    refused("that of st, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give st a type that holds every 'a"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let d = never(); let st = {h: |x| { d <- x; x }}; st <- {h: |x| x}; let f = |x| st.h(x)"
+);
+
+// An implementation something writes is one type itself: the val at one
+// type is the way out.
+run!(
+    val_written_implementation_names_the_written_lambda_it_calls,
+    refused("that of k, a binding outside its let that something writes: declare the val at one type"),
+    "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
+    "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
+    "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| k(x); f <- |x| k(x)"
 );
 
 // A capture whose own type is the cell is named before one that holds it

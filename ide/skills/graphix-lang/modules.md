@@ -147,7 +147,9 @@ use picks it: `val v: Array<'a>` is refused (declare it at one type,
 null]}`. The implementation must be as general as the val: under `val f:
 fn(x: 'a) -> 'a`, `let f = |x| { y <- x; x }` over an outer `let y =
 never()` is refused (`let y: Any`, or the val at one type), and so is a
-written `let f = |x| x; f <- |x| x` (declare the val at one type). A
+written `let f = |x| x; f <- |x| x` (declare the val at one type), and
+`let f = |x| k(x)` over a written `let k = |x| x; k <- |x| x`, whose
+type every read of `k` shares (the val at one type). A
 trait method alike: one that writes an
 outer binding, or whose value is neither a lambda nor a generic
 binding's read and has a type its value fixed (`(store, 1).0` over a

@@ -3137,6 +3137,39 @@ run!(
     refused("that of y, a binding outside its let: give y a type that holds every 'a")
 );
 
+// A method that calls a lambda something writes is told that binding, by
+// name: every read of it shares its type.
+run!(
+    method_over_a_written_lambda_names_it,
+    r#"{
+    type C = Abstract<i64>;
+    let k = |s, x| x;
+    k <- |s, x| x;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = |s, x| k(s, x) };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    refused(
+        "that of k, a binding outside its let that something writes, which holds one type for every reader: give k a type that holds every 'a"
+    )
+);
+
+run!(
+    method_handing_a_written_lambda_its_argument_annotated,
+    r#"{
+    type C = Abstract<i64>;
+    let k: fn(s: C, x: Any) -> Any = |s, x| x;
+    k <- |s, x| x;
+    trait Put { val put: fn(self, x: 'a) -> 'a };
+    impl Put for C { let put = |s, x| { k(s, x); x } };
+    let c = C(1);
+    (Put::put(c, 1), Put::put(c, "s"))
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+
 // A method over outer bindings names the one whose own type is the shared
 // cell, not one built from it, and that annotation lifts the refusal.
 run!(
