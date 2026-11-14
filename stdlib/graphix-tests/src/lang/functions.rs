@@ -4309,6 +4309,301 @@ run!(default_under_a_bodys_annotation_returned_twice, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s 1"); FuseExpect::None);
 
+// A default that holds a function is called through its label, as a
+// written argument is: the defaults of that function a call through the
+// label may omit are judged there, at the call that omits the outer one,
+// and narrow the label's variable as the written argument's would.
+run!(default_holding_a_defaulted_fn, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_beside_a_written_one, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    "[f(7)] [f(#w: |#d = "s", x: i64| cast<string>(d)$, 8)]"
+}
+"#, is(Value::from("1 s")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_in_a_field, r#"
+{
+    let f = |#w: {cb: fn(?#d: 'z, x: i64) -> string, n: i64} = {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1}, x: i64| w.cb(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_behind_a_typedef, r#"
+{
+    type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string, n: i64};
+    let f = |#w: W<'z> = {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1}, x: i64| w.cb(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_in_an_element, r#"
+{
+    let f = |#w: Array<fn(?#d: 'z, x: i64) -> string> = [|#d = 1, x: i64| cast<string>(d)$], x: i64| (w[0]$)(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_under_an_option, r#"
+{
+    let f = |#w: [fn(?#d: 'z, x: i64) -> string, null] = |#d = 1, x: i64| cast<string>(d)$, x: i64| select w { null as _ => "n", g => g(x) };
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_fn_that_returns_a_defaulted_fn, r#"
+{
+    let f = |#w: fn(k: i64) -> fn(?#d: 'z, x: i64) -> string = |k: i64| |#d = 1, x: i64| cast<string>(d)$, x: i64| w(0)(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_named_defaulted_fn, r#"
+{
+    let inner = |#d = 1, x: i64| cast<string>(d)$;
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = inner, x: i64| w(x);
+    "[f(7)] [inner(#d: "k", 8)]"
+}
+"#, is(Value::from("1 k")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_three_deep, r#"
+{
+    let f = |
+        #w: fn(?#d: fn(?#e: 'z, y: i64) -> string, x: i64) -> string =
+            |#d: fn(?#e: 'y, y: i64) -> string = |#e = 1, y: i64| cast<string>(e)$, x: i64| d(x),
+        x: i64
+    | w(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_reads_a_capture, r#"
+{
+    let mk = |t: i64| {
+        let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$, x: i64| w(x);
+        f(7)
+    };
+    mk(4)
+}
+"#, is(Value::from("4")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_in_a_generic_body, r#"
+{
+    let o = |k: 'a| {
+        let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+        "[k] [f(7)] [f(#w: |#d = "s", x: i64| cast<string>(d)$, 8)]"
+    };
+    "[o(0)] [o("u")]"
+}
+"#, is(Value::from("0 1 s u 1 s")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_per_element, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    str::join(#sep: " ", array::map([1, 2], |k| f(k)))
+}
+"#, is(Value::from("1 1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_in_a_seqs_step, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    seq { let a = f(7); a }
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+// The label's variable is one type for the call: an argument that decided
+// it first, a second default that shares it, or the function type that
+// takes the function refuses an inner default of another type, at the
+// check, as the same function written at the call is refused.
+run!(default_holding_a_defaulted_fn_of_an_arguments_type, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(x);
+    f(3, 7)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_of_another_type_than_an_argument, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(x);
+    f("q", 7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(written_defaulted_fn_of_another_type_than_an_argument, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string, y: 'z, x: i64| w(x);
+    f(#w: |#d = 1, x: i64| cast<string>(d)$, "q", 7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(written_defaulted_fn_of_an_arguments_type, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(x);
+    f(#w: |#d = "s", x: i64| cast<string>(d)$, "q", 7)
+}
+"#, is(Value::from("s")); FuseExpect::Jit);
+
+run!(two_defaults_holding_defaulted_fns_of_one_type, r#"
+{
+    let f = |#v: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, #w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| "[v(x)] [w(x)]";
+    f(7)
+}
+"#, is(Value::from("1 1")); FuseExpect::Jit);
+
+run!(two_defaults_holding_defaulted_fns_of_two_types, r#"
+{
+    let f = |#v: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, #w: fn(?#d: 'z, x: i64) -> string = |#d = "s", x: i64| cast<string>(d)$, x: i64| "[v(x)] [w(x)]";
+    f(7)
+}
+"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(default_holding_one_of_two_defaulted_fns, r#"
+{
+    let c = true;
+    let f = |
+        #w: fn(?#d: 'z, x: i64) -> string = select c { true => |#d = 1, x: i64| cast<string>(d)$, false => |#d = 2, x: i64| "two" },
+        x: i64
+    | w(x);
+    f(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_one_of_two_defaulted_fns_of_two_types, r#"
+{
+    let c = true;
+    let f = |
+        #w: fn(?#d: 'z, x: i64) -> string = select c { true => |#d = 1, x: i64| cast<string>(d)$, false => |#d = "z", x: i64| "two" },
+        x: i64
+    | w(x);
+    f(7)
+}
+"#, refused("the functions met here share one #d"); FuseExpect::None);
+
+// The same where the outer label is one a function type hides or makes
+// optional: a formal, a `let`'s annotation, a typedef, a function a call
+// returns (one instance, whose label the first call decides).
+run!(default_holding_a_defaulted_fn_behind_an_optional_formal, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let g = |h: fn(?#w: fn(?#d: 'q, x: i64) -> string, x: i64) -> string| h(7);
+    g(f)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_behind_a_closed_optional_formal, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let g = |h: fn(?#w: fn(?#d: string, x: i64) -> string, x: i64) -> string| h(7);
+    g(f)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_behind_a_formal_that_hides_it, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(x);
+    let g = |h: fn(y: i64, x: i64) -> string| h(3, 7);
+    g(f)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_behind_a_formal_that_fixes_it, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(x);
+    let g = |h: fn(y: string, x: i64) -> string| h("q", 7);
+    g(f)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_holding_a_fn_that_returns_a_defaulted_fn_behind_a_formal_that_hides_it, r#"
+{
+    let f = |#w: fn(k: i64) -> fn(?#d: 'z, x: i64) -> string = |k: i64| |#d = 1, x: i64| cast<string>(d)$, x: i64| w(0)(x);
+    let g = |h: fn(x: i64) -> string| h(7);
+    g(f)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_fn_that_returns_a_defaulted_fn_behind_an_annotation_that_hides_it, r#"
+{
+    let f = |#w: fn(k: i64) -> fn(?#d: 'z, x: i64) -> string = |k: i64| |#d = 1, x: i64| cast<string>(d)$, x: i64| w(0)(x);
+    let v: fn(x: i64) -> string = f;
+    v(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_behind_an_annotation, r#"
+{
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let v: fn(?#w: fn(?#d: 'q, x: i64) -> string, x: i64) -> string = f;
+    v(7)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_behind_a_typedefs_fn, r#"
+{
+    type H<'q> = fn(?#w: fn(?#d: 'q, x: i64) -> string, x: i64) -> string;
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let v: H<'q> = f;
+    v(7)
+}
+"#, is(Value::from("1")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_behind_a_closed_typedefs_fn, r#"
+{
+    type H = fn(?#w: fn(?#d: string, x: i64) -> string, x: i64) -> string;
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let v: H = f;
+    v(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_of_a_returned_fn, r#"
+{
+    let mk = |t: i64| |#w: fn(?#d: 'z, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$, x: i64| w(x);
+    let a = mk(4);
+    let b = mk(5);
+    "[a(7)] [b(#w: |#d = "s", x: i64| cast<string>(d)$, 8)]"
+}
+"#, is(Value::from("4 s")); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_of_a_returned_fn_called_two_ways, r#"
+{
+    let mk = |t: i64| |#w: fn(?#d: 'z, x: i64) -> string = |#d = t, x: i64| cast<string>(d)$, x: i64| w(x);
+    let a = mk(4);
+    "[a(7)] [a(#w: |#d = "s", x: i64| cast<string>(d)$, 8)]"
+}
+"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_in_an_abstracts_field, r#"
+{
+    type A<'z> = Abstract<{cb: fn(?#w: fn(?#d: 'z, x: i64) -> string, x: i64) -> string}>;
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let a = A({cb: f});
+    (a.0).cb(7)
+}
+"#, is(Value::from("1")); FuseExpect::None);
+
+// A default that holds its own function reaches its own judgment, which
+// is the one it gets.
+run!(default_holding_its_own_fn, r#"
+{
+    let rec f = |#a: fn(b: i64) -> i64 = f, b: i64| -> i64 b;
+    f(1)
+}
+"#, is(Value::I64(1)); FuseExpect::Jit);
+
+run!(default_passing_its_own_fn, r#"
+{
+    let g = |h: fn(b: i64) -> i64| 0;
+    let rec f = |#a: i64 = g(f), b: i64| -> i64 b;
+    f(1)
+}
+"#, is(Value::I64(1)); FuseExpect::Jit);
+
 // An abstract type's constructor holds its argument through the type's
 // representation, which no reader of the payload names a function by: a
 // default bounds the construction's parameter from below, so the

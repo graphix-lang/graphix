@@ -440,6 +440,17 @@ ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c: C<[i64, string]>
 no "write the body's type, `-> C<i64>`" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<'z> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
 ```
 
+A labeled default that holds a function is judged as that function
+written at the call is: its own defaults must fit the label's type as the
+call's arguments left it, whether or not the body passes the inner label.
+Pass the outer label where they do not.
+
+```graphix,cases
+ok let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x); f(7)
+no "string does not contain i64" let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(#d: y, x); f("q", 7)
+ok let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(#d: y, x); f(#w: |#d = "s", x: i64| cast<string>(d)$, "q", 7)
+```
+
 A call's arguments are met in the order of the parameters, then the
 labeled defaults it omits, and nothing waits for a later one. A generic
 function's variable that only data holds widens to a decided argument

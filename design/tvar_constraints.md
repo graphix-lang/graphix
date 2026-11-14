@@ -1206,6 +1206,24 @@ An image carries each cell's level and each definition's depth.
   bind compiled is checked over that copy's label, so the instance's
   body types see what it decides (`CallSite::instance_signature`; pin
   `lang::functions::default_hidden_by_a_fn_type_types_the_instance`).
+- A default that holds a function is called through its label, so it
+  is walked against the label as a written argument is against its
+  formal (`check_hidden_defaults` from `callsite::checked_default`):
+  the defaults of that function a call through the label may omit are
+  judged there and narrow the label's variable, at every check that
+  judges the outer default (the call that omits it, the fn type that
+  hides it or makes it optional). `let f = |#w: fn(?#d: 'z, x: i64) ->
+  string = |#d = 1, ..| .., x: i64| w(x); f(7)` holds `'z: i64`, and
+  with a `y: 'z` given a string it is refused as `f(#w: |#d = 1, ..|
+  .., "q", 7)` is, whether or not the body passes `#d`. The walk goes as
+  deep as the defaults nest; a default that holds its own function
+  (`let rec f = |#a: fn(b: i64) -> i64 = f, ..|`) reaches the judgment
+  in progress, which is the one it gets (`CompileCtx::enter_default`
+  in `judge_hidden_defaults`). Where the site's fn type hides the outer
+  label, the bind walks the default it compiled over the fitted copy's
+  label as well, so a body that calls what the held function returns
+  (`w(0)(x)`) reads the label decided. Pins
+  `lang::functions::default_holding_a_defaulted_fn` and its neighbours.
 - A function value's labeled default that a fn type hides or makes
   optional is judged where the value meets that type
   (`callsite::check_hidden_defaults`). A call's formal is the site's own

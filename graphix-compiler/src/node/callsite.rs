@@ -229,7 +229,9 @@ impl ArgStage {
 /// ([`InstanceTypes::of_default`]), as an instance's body does.
 #[derive(Clone, Copy)]
 enum Judge {
-    Check,
+    /// The functions the default holds have their own defaults judged at
+    /// the label ([`check_hidden_defaults`]), whose cells they narrow so.
+    Check(Narrowing),
     Bind,
 }
 
@@ -266,12 +268,12 @@ fn checked_default<R: Rt>(
             Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
         let types = match judge {
             Judge::Bind => InstanceTypes::of_default(ctx, f, expr.id),
-            Judge::Check => None,
+            Judge::Check(_) => None,
         };
         // a check outside the definition reads its scheme, whose cells it
         // may not decide: it compiles among generic cells, and the copy
         // below is what it judges
-        let _level = (matches!(judge, Judge::Check) && !ctx.rec_defs.contains(&f.id))
+        let _level = (matches!(judge, Judge::Check(_)) && !ctx.rec_defs.contains(&f.id))
             .then(|| AtLevel::enter(Level::GENERIC));
         let mut node = f.in_signature(ctx, types.clone(), |ctx| {
             compile(ctx, flags, expr.clone(), &local_scope, top_id)
@@ -289,20 +291,27 @@ fn checked_default<R: Rt>(
     let label = |ft: &FnType| -> Option<Type> {
         ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
     };
+    // CR claude for claude: [bug/medium] A default that is a call's result holding a function
+    // with an open cell (one instance, which nothing in the definition decides) is judged at
+    // the check on this copy, which decides nothing of the default's own type, and the bind's
+    // default reads the cell as bottom: the check accepts and the build refuses. `let mk = |k:
+    // i64| |d, x: i64| cast<string>(d)$; let f = |#w: fn(d: 'z, x: i64) -> string = mk(0), y:
+    // 'z, x: i64| w(y, x); f(1, 7)` checks, and its build fails "in the instance of f(1, 7) at
+    // this call site .. in: mk(0): type mismatch fn(d: 'z: i64, x: i64) -> string does not
+    // contain fn(d: _, x: i64) -> string"; the same with a defaulted function (`mk = |k: i64|
+    // |#d = 1, x: i64| ..`, `#w: fn(?#d: 'z, x: i64) -> string = mk(0)`, `f(7)`), whose written
+    // twin `f(#w: mk(0), 7)` runs. With the result named outside the default (`let m = mk(0);
+    // .. = m`) both run. base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf/s/
+    // {call_result_plain, call_result_plain_let, call_result_inner, call_result_inner_let,
+    // call_result_written}.gx (default-call-result-open-01)
     let copy = match judge {
-        Judge::Check if node.typ().has_unbound() => {
+        Judge::Check(_) if node.typ().has_unbound() => {
             Some(node.typ().instantiate_with(&mut LPooled::take(), &ctx.rec_defs))
         }
-        Judge::Check | Judge::Bind => None,
+        Judge::Check(_) | Judge::Bind => None,
     };
     let typ = copy.as_ref().unwrap_or(node.typ());
-    // the default is held as a written argument is, in the signature the
-    // call sees it in
-    let held = |sig: &FnType| match label(sig) {
-        None => Ok(()),
-        Some(t) => t.check_contains(&ctx.env, typ),
-    };
-    // CR claude for claude: [bug/medium] A labeled default whose value holds a function with a
+    // XCR claude for claude: [bug/medium] A labeled default whose value holds a function with a
     // labeled default of its own is held by containment alone: the inner default is never
     // judged (no check_hidden_defaults walk here), so a call that omits the outer label passes
     // --check and the build or the bind refuses it. `let f = |#w: fn(?#d: 'z, x: i64) -> string
@@ -317,19 +326,51 @@ fn checked_default<R: Rt>(
     // the three arms below. probes: ~/ptmp/cr29/scratch/r23/23b/trdrev/{lam_default_fn,
     // lam_default, lam_default_struct, lam_default_passed}.gx
     // (default-holds-defaulted-fn-01)
+    // 2026-11-14 claude: callsite::checked_default walks the default it holds against the label
+    // (check_hidden_defaults, the narrowing its judgment came with: Judge::Check(Narrowing)),
+    // in all three arms, so the inner defaults narrow the label's variable at the check;
+    // CallSite::instance_signature walks the same over the fitted copy's label where the site
+    // hides the outer one (a body calling what the held function returns, w(0)(x));
+    // judge_hidden_defaults enters the default it judges (CompileCtx::enter_default), so a
+    // default holding or passing its own function ends (let rec f = |#a: i64 = g(f), ..| hung
+    // on base-r24). Newly refused at the check: only programs whose written twin (the same
+    // function passed at the call) base-r24 refuses the same way; census 0/0. Pins
+    // lang::functions::default_holding_a_defaulted_fn and its 34 neighbours (default_holding_*,
+    // two_defaults_holding_*, default_passing_its_own_fn): 28 fail with the walks undone,
+    // default_passing_its_own_fn hangs, the two ..returns_a_defaulted_fn_behind_*_that_hides_it
+    // fail without instance_signature's walk. Left: default-call-result-open-01 (a default that
+    // is a call's result), and under GRAPHIX_NO_SUBST=1 an inner default now meets
+    // nosubst-returned-default-01. probes ~/ptmp/cr29/scratch/r24/24c/dhdf/ (README)
+    let hidden = |ctx: &mut CompileCtx<R>, t: &Type| match judge {
+        Judge::Check(narrowing) => {
+            check_hidden_defaults(ctx, flags, scope, top_id, t, typ, narrowing)
+        }
+        Judge::Bind => Ok(()),
+    };
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
-        Some(t) => match join {
-            Some(join) => {
-                let undecided =
-                    typ.has_free_in_data().then(|| undecided_binds(ctx, &node)).flatten();
-                join(&ctx.env, name, &t, typ, undecided)
-            }
-            None => t.check_contains(&ctx.env, typ),
-        },
+        Some(t) => {
+            match join {
+                Some(join) => {
+                    let undecided = typ
+                        .has_free_in_data()
+                        .then(|| undecided_binds(ctx, &node))
+                        .flatten();
+                    join(&ctx.env, name, &t, typ, undecided)
+                }
+                None => t.check_contains(&ctx.env, typ),
+            }?;
+            hidden(ctx, &t)
+        }
+        // the default is held as a written argument is, in the signature
+        // the call sees it in
         None => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-            held(&callee_instance(ctx, f, name, site, &mut gates))?;
-            value.map_or(Ok(()), held)
+            let inst = callee_instance(ctx, f, name, site, &mut gates);
+            let sigs = [Some(&inst), value].into_iter().flatten();
+            sigs.filter_map(|sig| label(sig)).try_for_each(|t| {
+                t.check_contains(&ctx.env, typ)?;
+                hidden(ctx, &t)
+            })
         }
     });
     node.refs(defaults);
@@ -372,6 +413,11 @@ fn judge_hidden_defaults<R: Rt>(
             if required.is_some_and(|fa| !fa.kind.has_default()) {
                 continue;
             }
+            // a default whose value holds its own function reaches itself:
+            // the judgment in progress is the one it gets
+            if !ctx.enter_default(f.id, name) {
+                continue;
+            }
             let node = checked_default(
                 ctx,
                 flags,
@@ -383,7 +429,13 @@ fn judge_hidden_defaults<R: Rt>(
                 &mut Refs::default(),
                 Some(formal),
                 Some(value),
-                Judge::Check,
+                Judge::Check(match narrowing {
+                    Narrowing::Constructed => Narrowing::Constructed,
+                    Narrowing::Site
+                    | Narrowing::Written
+                    | Narrowing::Copy
+                    | Narrowing::Instance => Narrowing::Site,
+                }),
                 match narrowing {
                     Narrowing::Constructed => Some(&mut bound),
                     Narrowing::Site
@@ -391,8 +443,9 @@ fn judge_hidden_defaults<R: Rt>(
                     | Narrowing::Copy
                     | Narrowing::Instance => None,
                 },
-            )
-            .map_err(|e| met_default_note::<R>(e, &defs, name))?;
+            );
+            ctx.leave_default(f.id, name);
+            let node = node.map_err(|e| met_default_note::<R>(e, &defs, name))?;
             ctx.discard(node);
         }
     }
@@ -2802,7 +2855,7 @@ impl<R: Rt> CallSite<R> {
                         name,
                         expr,
                         &mut Refs::default(),
-                        Judge::Check,
+                        Judge::Check(Narrowing::Site),
                         Some(&mut join),
                     )
                     .map_err(|e| met_default_note::<R>(e, &defs, name))?;
@@ -2853,10 +2906,11 @@ impl<R: Rt> CallSite<R> {
     /// The signature this site's instance of `f` runs with where the
     /// site's `view` lists other parameters than `f`'s (`None`: the view):
     /// a call's copy of `f`'s fitted to it, each label the view hides
-    /// holding the default this site compiled for it.
+    /// holding the default this site compiled for it and the defaults of
+    /// the functions that default holds.
     fn instance_signature(
         &self,
-        ctx: &CompileCtx<R>,
+        ctx: &mut CompileCtx<R>,
         view: &FnType,
         f: &LambdaDef<R>,
     ) -> Result<Option<FnType>> {
@@ -2864,6 +2918,8 @@ impl<R: Rt> CallSite<R> {
             return Ok(None);
         }
         let fitted = super::lambda::fit_callee(ctx, view, &f.typ)?;
+        let mut flags = self.flags;
+        flags.remove(CFlag::WarnUnhandled);
         for farg in fitted.args.iter() {
             let Some(name) = farg.label() else { continue };
             if view.args.iter().any(|a| a.label() == Some(name)) {
@@ -2876,6 +2932,18 @@ impl<R: Rt> CallSite<R> {
                 .and_then(|a| a.node.as_ref())
             {
                 wrap!(node, farg.typ.check_contains(&ctx.env, node.typ()))?;
+                wrap!(
+                    node,
+                    check_hidden_defaults(
+                        ctx,
+                        flags,
+                        &self.scope,
+                        self.top_id,
+                        &farg.typ,
+                        node.typ(),
+                        Narrowing::Site
+                    )
+                )?;
             }
         }
         Ok(Some(fitted))
