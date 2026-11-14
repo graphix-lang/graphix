@@ -319,7 +319,10 @@ pub struct ProgramArgs(pub Vec<ArcStr>);
 /// How `sys::exit` ends a program, seeded into `ctx.libstate` by an
 /// embedder that ends in order (a display cleared, its runtime stopped)
 /// and then exits with the code. Without one the process exits on the
-/// spot.
+/// spot. The request is made inside the program's last cycle
+/// (`Control::exit`), which may still be running when it arrives: the
+/// runtime is idle (`GXHandle::wait_idle`) once that cycle's batch is
+/// sent.
 #[derive(Clone)]
 pub struct ExitRequest(
     triomphe::Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<i32>>>>,
@@ -4036,7 +4039,10 @@ printer!(Println, "core_println", Printer::Println, null_result, false);
 crate::fast_builtin!(
     /// `array::len` — registered here (the array package binds the name)
     /// because core's `Collection` implementation for `Array` needs it.
-    ArrayLen, ArrayLenEv, "core_array_len", array_len
+    ArrayLen,
+    ArrayLenEv,
+    "core_array_len",
+    array_len
 );
 
 fn array_len(args: &[Value]) -> Option<Value> {
@@ -4049,7 +4055,10 @@ fn array_len(args: &[Value]) -> Option<Value> {
 crate::fast_builtin!(
     /// `list::len` — registered here because core's `Collection`
     /// implementation for `List` needs it; the list package binds the name.
-    ListLen, ListLenEv, "core_list_len", list_len
+    ListLen,
+    ListLenEv,
+    "core_list_len",
+    list_len
 );
 
 fn list_len(args: &[Value]) -> Option<Value> {
@@ -4059,7 +4068,10 @@ fn list_len(args: &[Value]) -> Option<Value> {
 crate::fast_builtin!(
     /// `map::len` — registered here for the `Collection` implementation
     /// for `Map`; the map package binds the name.
-    MapLen, MapLenEv, "core_map_len", map_len
+    MapLen,
+    MapLenEv,
+    "core_map_len",
+    map_len
 );
 
 fn map_len(args: &[Value]) -> Option<Value> {

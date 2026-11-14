@@ -1,10 +1,12 @@
 use anyhow::Result;
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use graphix_package_core::{
-    ProgramArgs, run,
-    testing::{self, FuseExpect, is},
+    ExitRequest, PrintSink, ProgramArgs, run,
+    testing::{self, FuseExpect, HANG_GUARD, Mode, is},
 };
+use graphix_rt::GXEvent;
 use netidx::publisher::Value;
+use tokio::time::timeout;
 
 const ARGS_EMPTY: &str = r#"
     sys::args()
@@ -176,9 +178,9 @@ run!(stdio_constructors_are_sync, r#"{
 }"#, is(Value::Bool(true)); FuseExpect::None);
 
 // sys::exit under an embedder that seeded an ExitRequest and stopped
-// listening ends nothing: the process is the embedder's. The program runs
-// in a child of this binary, which a process exit would end with the
-// program's code (fuzz-lib-b-01).
+// listening ends the program and not the process, which is the
+// embedder's. The program runs in a child of this binary, which a process
+// exit would end with the program's code (fuzz-lib-b-01).
 #[tokio::test(flavor = "current_thread")]
 async fn exit_without_a_listener_keeps_the_process() -> Result<()> {
     const CHILD: &str = "GRAPHIX_TEST_EXIT_CHILD";
@@ -188,7 +190,7 @@ async fn exit_without_a_listener_keeps_the_process() -> Result<()> {
             "{ let x = 3; sys::exit(x); x }",
             &crate::TEST_REGISTER,
             |ctx| {
-                ctx.libstate.set(graphix_package_core::ExitRequest::new().0);
+                ctx.libstate.set(ExitRequest::new().0);
             },
         )
         .await?;
@@ -206,5 +208,59 @@ async fn exit_without_a_listener_keeps_the_process() -> Result<()> {
         "{:?}\n{stdout}",
         out.status
     );
+    Ok(())
+}
+
+// sys::exit ends the program in the cycle that asks. That cycle runs
+// whole, what its walk reaches after the exit included, and its batch is
+// delivered; no cycle runs after it, so a counter that runs flat out stops
+// there. The runtime then answers its embedder as an idle one, and what the
+// embedder compiles never runs.
+#[tokio::test(flavor = "current_thread")]
+async fn exit_is_the_programs_last_cycle() -> Result<()> {
+    const LAST: i64 = 20;
+    const CODE: &str = r#"{
+        let n = 0;
+        n <- n + 1;
+        sys::exit(select n { m if m == 20 => m - 20, _ => never() });
+        let twice = array::map([n, n], |x| x * 2);
+        println("[n] [twice]");
+        n
+    }"#;
+    for mode in Mode::ALL {
+        let sink = PrintSink::default();
+        let (exit, asked) = ExitRequest::new();
+        let seeded = sink.clone();
+        let (ctx, mut rx) = testing::fixture_runtime(
+            [("/test.gx", testing::result_source(CODE))],
+            &crate::TEST_REGISTER,
+            mode,
+            move |ctx| {
+                ctx.libstate.set(seeded);
+                ctx.libstate.set(exit);
+            },
+        )
+        .await?;
+        let res = testing::compile_result(&ctx).await?;
+        assert_eq!(timeout(HANG_GUARD, asked).await??, 0, "{mode:?}");
+        // answered once the cycle that asked has run
+        ctx.rt.compile(literal!("println(\"late\")")).await?;
+        ctx.rt.get_env().await?;
+        let printed: String =
+            (0..=LAST).map(|n| format!("{n} [{}, {}]\n", n * 2, n * 2)).collect();
+        assert_eq!(sink.take(), printed, "{mode:?}");
+        timeout(HANG_GUARD, ctx.rt.wait_idle()).await??;
+        let mut values = vec![];
+        while let Ok(mut batch) = rx.try_recv() {
+            values.extend(batch.drain(..).filter_map(|e| match e {
+                GXEvent::Updated(id, v) if id == res.exprs[0].id => Some(v),
+                _ => None,
+            }))
+        }
+        let counted: Vec<Value> = (0..=LAST).map(Value::I64).collect();
+        assert_eq!(values, counted, "{mode:?}");
+        assert_eq!(sink.take(), "", "{mode:?}");
+        ctx.shutdown().await;
+    }
     Ok(())
 }

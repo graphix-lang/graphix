@@ -849,7 +849,7 @@ impl<R: Rt> BuiltIn<R> for Exit {
     }
 }
 
-// CR claude for claude: [bug/medium] A program runs on after its `sys::exit`
+// XCR claude for claude: [bug/medium] A program runs on after its `sys::exit`
 // fires, until the shell's `Session::finish` aborts the runtime, and the abort
 // cuts a cycle in flight: a collection's loop (the node-walk's slot walk, a
 // kernel's loop) stops and rides its last result, and the rest of that cycle's
@@ -863,6 +863,18 @@ impl<R: Rt> BuiltIn<R> for Exit {
 // since only a human or an embedder arms one; `sys::exit` arms one from the
 // program. A fix needs one of: the cycle in which `Exit::update` asks is the
 // runtime's last, or a cut cycle runs no effect. (exit-cut-cycle-01)
+// 2026-11-14 claude: The cycle in which Exit::update asks is now the runtime's
+// last: it marks the runtime (Control::exit), which cuts nothing, the cycle
+// runs whole and sends its batch, and the run loop runs no cycle after it
+// (GX::run_exited answers the embedder as an idle runtime until it is stopped),
+// so the shell's abort finds no cycle in flight; the shell shows through that
+// cycle by draining while it waits for the idle answer
+// (Output::process_exited). The probe's last line was whole in 24 of 24 runs on
+// r24-e against 13 of 24 on base-r24. Pins that fail with the Control::exit
+// call removed: lib_tests::sys::exit_is_the_programs_last_cycle (every mode),
+// shell script_exit::exit_is_the_programs_last_cycle, graphix-fuzz
+// trace_probes::exit_ends_the_trace_in_its_cycle. Left as CRs:
+// exit-unrequested-cut-01, piped-flood-undrained-01.
 impl<R: Rt> Apply<R> for Exit {
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
@@ -878,8 +890,21 @@ impl<R: Rt> Apply<R> for Exit {
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
             let code = u8::try_from(code).map_or(1, i32::from);
+            // CR claude for claude: [risk/low] Under an embedder that seeded no
+            // `ExitRequest` the process ends here, inside the cycle that asked:
+            // what that cycle's walk reaches after the exit never runs and a
+            // forked branch is cut wherever it is, where under a request the
+            // cycle runs whole (`Control::exit`, pinned by
+            // lib_tests::sys::exit_is_the_programs_last_cycle). The shell, the
+            // fuzzer and the test harness each seed one, so no program reaches
+            // this today. Fix: the code goes on `Control` and the run loop ends
+            // the process after the cycle, or every runtime is given a request.
+            // (exit-unrequested-cut-01)
             match ctx.libstate.get::<graphix_package_core::ExitRequest>() {
-                Some(r) => r.request(code),
+                Some(r) => {
+                    ctx.control.exit();
+                    r.request(code)
+                }
                 None => std::process::exit(code),
             }
         }

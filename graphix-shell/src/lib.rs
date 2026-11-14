@@ -167,6 +167,19 @@ impl<X: GXExt> Output<X> {
 
     /// Show every batch the runtime has sent, once `gx` has answered a
     /// request: every batch of the cycles before it is in the stream.
+    // CR claude for claude: [bug/medium] That premise fails while the
+    // subscriber's channel is full: the runtime answers `get_env` from the
+    // send loop of a cycle whose batch still waits for room
+    // (`GX::send_batch`), so the `try_recv` drain can end before that batch
+    // and the ones after it arrive, and they are never shown. At the end of
+    // piped input the `wait_idle` before this call drains nothing either, so
+    // a runtime held in that send never answers it and the teardown bound is
+    // spent first. probe:
+    // ~/ptmp/cr29/scratch/r24/24e/exit-cut-cycle-01/flood.sh, a piped REPL
+    // counter to 5000: base-r24 (main be2c16a05) printed 113 of the 5001
+    // values and r24-e 133, each after 5 to 6 seconds, status 0.
+    // `process_exited` drains while it waits for the idle answer; the end of
+    // piped input needs the same. (piped-flood-undrained-01)
     async fn process_sent(
         &mut self,
         gx: &GXHandle<X>,
@@ -179,6 +192,32 @@ impl<X: GXExt> Output<X> {
             self.process_batch(env, newenv, &mut batch).await?;
         }
         ControlFlow::Continue(())
+    }
+
+    /// Show every batch of a runtime whose program asked to exit, through
+    /// the cycle that asked: it runs no cycle after that one and is idle
+    /// once that cycle's batch is sent, which waits for the room made
+    /// here.
+    async fn process_exited(
+        &mut self,
+        gx: &GXHandle<X>,
+        from_gx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+        env: &mut Env,
+        newenv: &mut Option<Env>,
+    ) -> ControlFlow<Result<Option<i32>>> {
+        let idle = gx.wait_idle();
+        tokio::pin!(idle);
+        loop {
+            select! {
+                biased;
+                _ = &mut idle => break,
+                batch = from_gx.recv() => match batch {
+                    Some(mut batch) => self.process_batch(env, newenv, &mut batch).await?,
+                    None => break,
+                },
+            }
+        }
+        self.process_sent(gx, from_gx, env, newenv).await
     }
 
     /// Show a batch of the runtime's events, following its env: `Break`
@@ -877,10 +916,8 @@ impl<X: GXExt> Shell<X> {
                 let mut key = None;
                 select! {
                     code = exit_requested(&mut session.exit) => if let Some(code) = code {
-                        // the runtime answers once the cycle that asked has sent
-                        // its batch: show it, and every batch before it
                         match output
-                            .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
+                            .process_exited(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
                             .await
                         {
                             ControlFlow::Break(r) => break 'session r,

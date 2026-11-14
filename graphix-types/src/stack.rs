@@ -341,7 +341,8 @@ pub fn grow<R>(f: impl FnOnce() -> R) -> R {
 /// running `ExecCtx`. `Abort` stops the runtime for good: in-flight loops
 /// abort and the run loop ends. A cause beside it says what stopped the
 /// runtime; none when its embedder shut it down. Polled lock-free via
-/// [`Control::interrupted`] and `graphix_interrupted`.
+/// [`Control::interrupted`] and `graphix_interrupted`. `Exit` is the
+/// program's own end and stops nothing in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[bitflags]
 #[repr(u32)]
@@ -353,6 +354,9 @@ pub enum CtlFlag {
     StackBudget = 4,
     /// Set beside `Abort` when the activation budget stopped the runtime.
     ActivationBudget = 8,
+    /// Set by the program ([`Control::exit`]): the cycle that set it is
+    /// the runtime's last.
+    Exit = 16,
 }
 
 /// What stopped a runtime before its embedder shut it down.
@@ -770,6 +774,19 @@ impl Control {
     /// aborts and the run loop ends.
     pub fn interrupted(&self) -> bool {
         self.flags.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
+    }
+
+    /// The program ends itself (`sys::exit`), from inside a cycle: that
+    /// cycle runs whole, no loop of it aborts, and its batch is delivered.
+    /// The runtime runs no cycle after it, and goes on answering its
+    /// embedder until that stops it. Sticky.
+    pub fn exit(&self) {
+        self.flags.fetch_or(CtlFlag::Exit as u32, Ordering::Release);
+    }
+
+    /// True once the program has ended itself ([`Self::exit`]).
+    pub fn exited(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & (CtlFlag::Exit as u32) != 0
     }
 }
 

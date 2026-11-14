@@ -7970,6 +7970,28 @@ mod trace_probes {
         assert_eq!(printed, [(0, "got 20000000\n")], "{prog}");
     }
 
+    /// A subject's `sys::exit` ends it in the cycle that asks, on both
+    /// engines: the trace stops at that cycle's value, short of its cap,
+    /// and holds the code. A counter that ran on would fill the trace.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exit_ends_the_trace_in_its_cycle() {
+        let prog = "{ let n = 0; n <- n + 1; \
+                    sys::exit(select n { m if m == 20 => m - 17, _ => never() }); n }";
+        let counted: Vec<Value> = (0..=20).map(Value::I64).collect();
+        for mode in [Mode::Interp, Mode::Jit] {
+            let o = run_program(prog, mode, std::time::Duration::from_secs(60)).await;
+            let Outcome::Trace(t) = o else { panic!("{mode:?}: {o:?}") };
+            assert_eq!(t.exit, Some(3), "{mode:?}");
+            assert!(!t.epochs.iter().any(|e| e.capped), "{mode:?}: {t:?}");
+            let values: Vec<Value> = t
+                .epochs
+                .iter()
+                .flat_map(|e| e.events.iter().map(|(_, v)| v.clone()))
+                .collect();
+            assert_eq!(values, counted, "{mode:?}");
+        }
+    }
+
     /// A comment above the body is legal, the reject marker included: a
     /// well-typed program under `// expect: reject` runs, so a pin whose
     /// refusal regressed to acceptance fails the gate.

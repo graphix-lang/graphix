@@ -98,6 +98,22 @@ semantics:
   cycle left half-delivered to be made whole again, so the stopped
   runtime is dropped and a new one minted.
 
+A program's own end is not a stop. `sys::exit` cuts nothing: it marks
+its runtime (`Control::exit`), the cycle that asked runs whole and
+delivers its batch, and the run loop runs no cycle after it
+(`GX::run_exited`), so no later cycle is in flight when the embedder,
+told through its `ExitRequest`, shuts the runtime down. Until then the
+runtime answers its embedder as an idle one (the shell fetches the
+program's output expression after a first cycle that exits; the fuzzer
+reads the trace), and what the embedder compiles or writes then never
+runs. The request arrives while that cycle may still be running, and
+the runtime is idle once the cycle's batch is sent: the shell shows
+batches until `wait_idle` answers (`Output::process_exited`). An
+embedder that seeded no `ExitRequest` gets the process's exit on the
+spot, where `Exit::update` runs. Pins:
+`lib_tests::sys::exit_is_the_programs_last_cycle`,
+`graphix-shell/tests/shell/script_exit.rs`.
+
 The shell arms its keys before the first cycle (a top-level infinite
 loop wedges inside `load_env`, before the input loop exists). The
 interrupt is `Ctrl-\` (SIGQUIT; Ctrl-Break on Windows): a script ends at it

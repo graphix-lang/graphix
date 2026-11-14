@@ -30,6 +30,37 @@ fn exit_prints_its_own_cycle() {
     }
 }
 
+/// `sys::exit` ends the program in the cycle that asks: a counter that
+/// runs flat out prints through that cycle, what the cycle's walk reaches
+/// after the exit included, and the shell shows that cycle's value; no
+/// cycle runs after it while the shell hears of the exit.
+#[test]
+fn exit_is_the_programs_last_cycle() {
+    const LAST: i64 = 300;
+    let program = format!(
+        "let n = 0;\n\
+         n <- n + 1;\n\
+         sys::exit(select n {{ m if m == {LAST} => m - {LAST}, _ => never() }});\n\
+         let twice = array::map([n, n], |x| x * 2);\n\
+         println(\"[n] [twice]\");\n\
+         n\n"
+    );
+    let printed: Vec<String> =
+        (0..=LAST).map(|n| format!("{n} [{}, {}]", n * 2, n * 2)).collect();
+    let values: Vec<String> = (0..=LAST).map(|n| n.to_string()).collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for args in [&["--no-cache"][..], &["--no-cache", "--no-fusion"]] {
+        for _ in 0..3 {
+            let ran = graphix(dir.path(), &program, args, &[]);
+            assert!(ran.status.success(), "{args:?}: {}", ran.stderr);
+            let (lines, shown): (Vec<&str>, Vec<&str>) =
+                ran.stdout.lines().partition(|l| l.contains('['));
+            assert_eq!(lines, printed, "{args:?}: {}", ran.stderr);
+            assert_eq!(shown, values, "{args:?}: {}", ran.stderr);
+        }
+    }
+}
+
 #[test]
 fn a_stopped_runtime_says_why() {
     let program = "let rec f = |n: i64| -> i64 select n { 0 => 0, k => k + f(k - 1) };\n\

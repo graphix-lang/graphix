@@ -710,8 +710,20 @@ impl<X: GXExt> GX<X> {
             tr.cycle_end(self.ctx.rt.cycle, worked);
         }
         self.ctx.rt.cycle += 1;
-        // input is served while the batch waits for room: a display's
-        // rebuild compiles through it while the shell waits on the display
+        self.send_batch(batch, sets, to_rt, input, aborted).await
+    }
+
+    /// Send `batch` to the subscriber. Input is served while it waits for
+    /// room: a display's rebuild compiles through it while the shell waits
+    /// on the display.
+    async fn send_batch(
+        &mut self,
+        mut batch: GPooled<Vec<GXEvent>>,
+        sets: &mut Vec<EmbedderWrite>,
+        to_rt: &mut UnboundedReceiver<ToGX<X>>,
+        input: &mut Vec<ToGX<X>>,
+        aborted: &Notify,
+    ) {
         let sub = self.sub.clone();
         let mut open = true;
         loop {
@@ -1524,6 +1536,78 @@ impl<X: GXExt> GX<X> {
         }
     }
 
+    /// The idle verdict: `Idle` to a subscriber that asked for it, then
+    /// the answers of the idle waiters, of the settle waiters `quiet`
+    /// holds for and of the trace's. True when the `Idle` is owed, the
+    /// subscriber's channel being full: the idle waiters are answered at
+    /// the verdict after its send, so it precedes their answers.
+    fn answer_idle(&mut self, quiet: impl Fn(&Settle) -> bool) -> bool {
+        let mut idle_owed = false;
+        if self.notify_idle {
+            match self.sub.try_reserve() {
+                Ok(permit) => {
+                    let mut batch = self.batch_pool.take();
+                    batch.push(GXEvent::Idle);
+                    permit.send(batch);
+                    self.notify_idle = false;
+                }
+                Err(tmpsc::error::TrySendError::Full(())) => idle_owed = true,
+                Err(tmpsc::error::TrySendError::Closed(())) => self.notify_idle = false,
+            }
+        }
+        if !idle_owed {
+            for tx in self.idle_waiters.drain(..) {
+                let _ = tx.send(());
+            }
+        }
+        for (_, tx) in self.settle_waiters.extract_if(.., |(until, _)| quiet(until)) {
+            let _ = tx.send(());
+        }
+        if let Some(tr) = self.trace.as_mut() {
+            tr.resolve(self.ctx.rt.cycle.saturating_sub(1));
+        }
+        idle_owed
+    }
+
+    /// What is left of a runtime whose program ended itself
+    /// (`Control::exit`): it runs no cycle, so nothing the program left
+    /// queued or in flight is delivered and no write of its embedder's
+    /// lands, and it answers its embedder as an idle runtime does until
+    /// the embedder stops it.
+    async fn run_exited(
+        &mut self,
+        to_rt: &mut UnboundedReceiver<ToGX<X>>,
+        aborted: &Notify,
+        sets: &mut Vec<EmbedderWrite>,
+        input: &mut Vec<ToGX<X>>,
+    ) {
+        while !self.ctx.control.interrupted() {
+            sets.clear();
+            self.calls.clear();
+            let idle_owed = self.answer_idle(|_| true);
+            select! {
+                permit = reserve_or_never(&self.sub, idle_owed) => {
+                    if let Ok(permit) = permit {
+                        let mut batch = self.batch_pool.take();
+                        batch.push(GXEvent::Idle);
+                        permit.send(batch);
+                    }
+                    self.notify_idle = false;
+                    continue
+                },
+                _ = aborted.notified() => continue,
+                n = to_rt.recv_many(input, INPUT_BATCH) => if n == 0 {
+                    break
+                },
+            }
+            let mut batch = self.batch_pool.take();
+            self.process_input_batch(sets, input, &mut batch).await;
+            if !batch.is_empty() {
+                self.send_batch(batch, sets, to_rt, input, aborted).await
+            }
+        }
+    }
+
     pub(super) async fn run(
         mut self,
         to_rt: &mut tmpsc::UnboundedReceiver<ToGX<X>>,
@@ -1599,36 +1683,7 @@ impl<X: GXExt> GX<X> {
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
-                    if self.notify_idle {
-                        match self.sub.try_reserve() {
-                            Ok(permit) => {
-                                let mut batch = self.batch_pool.take();
-                                batch.push(GXEvent::Idle);
-                                permit.send(batch);
-                                self.notify_idle = false;
-                            }
-                            Err(tmpsc::error::TrySendError::Full(())) => idle_owed = true,
-                            Err(tmpsc::error::TrySendError::Closed(())) => {
-                                self.notify_idle = false
-                            }
-                        }
-                    }
-                    // the verdict's Idle precedes its waiters' answers: an
-                    // owed one answers them at the verdict after its send
-                    if !idle_owed {
-                        for tx in self.idle_waiters.drain(..) {
-                            let _ = tx.send(());
-                        }
-                    }
-                    if settled {
-                        let waiters = &mut self.settle_waiters;
-                        for (_, tx) in waiters.extract_if(.., |(until, _)| quiet(until)) {
-                            let _ = tx.send(());
-                        }
-                    }
-                    if let Some(tr) = self.trace.as_mut() {
-                        tr.resolve(self.ctx.rt.cycle.saturating_sub(1));
-                    }
+                    idle_owed = self.answer_idle(quiet);
                     idle_passes = 0;
                 }
             } else {
@@ -1715,6 +1770,10 @@ impl<X: GXExt> GX<X> {
             if first_cycle {
                 first_cycle = false;
                 info!("first cycle time: {:?}", st.elapsed());
+            }
+            if self.ctx.control.exited() {
+                self.run_exited(to_rt, aborted, &mut sets, &mut input).await;
+                return Ok(());
             }
         }
     }
