@@ -1666,3 +1666,17 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+run!(
+    a_call_result_in_a_lets_two_variables_prints_its_name,
+    "{ let m = 'c: Number |g: fn() -> 'c| -> i64 { let r: ['x, 'y] = g(); 0 }; m(|| 1) }",
+    refused("'c: unbound within Number could go to 'x: unbound or 'y: unbound of the union");
+    FuseExpect::None
+);
+
+run!(
+    a_call_result_in_a_lets_declared_variable_runs,
+    "{ let m = 'c: Number |g: fn() -> 'c| -> 'c { let r: ['c, null] = g(); r$ }; m(|| 1) }",
+    is(Value::I64(1));
+    FuseExpect::Jit
+);

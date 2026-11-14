@@ -15,8 +15,8 @@ use crate::{
             Identical, IdenticalMemo, one_type, strictly_identical, union_identical,
         },
         tvar::{
-            CellFact, CellLock, Cycle, Fresh, HeldQuantifiers, RigidGate, Standing,
-            Toward, bare_path, cell_writes, cycle_toward, settled_cause_note,
+            CellFact, CellLock, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
+            Standing, Toward, bare_path, cell_writes, cycle_toward, settled_cause_note,
             would_cycle_inner,
         },
         variance,
@@ -2354,6 +2354,9 @@ pub struct AmbiguousMember {
     typ: Type,
     members: SmallVec<[Type; 2]>,
     contra: bool,
+    /// The definitions being checked where the refusal was made, whose
+    /// variables it names after their gates close.
+    declared: Declared,
 }
 
 impl AmbiguousMember {
@@ -2377,6 +2380,7 @@ impl AmbiguousMember {
             typ: t.clone(),
             members: members.iter().map(|m| (*m).clone()).collect(),
             contra: flags.contains(ContainsFlags::Contra),
+            declared: Declared::current(),
         })
     }
 
@@ -2393,15 +2397,18 @@ impl AmbiguousMember {
         impl std::fmt::Display for Fact<'_> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let Fact(a) = self;
-                format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                    write!(f, "{} could go to ", Brief(&a.typ))?;
-                    write_members(f, &a.members)?;
-                    write!(
-                        f,
-                        " of the union {}, which nothing has decided, and the check \
-                         picks none by order",
-                        Brief(&a.union)
-                    )
+                let flags = PrintFlag::DerefTVars | PrintFlag::ReplacePrims;
+                a.declared.printing(|| {
+                    format_with_flags(flags, || {
+                        write!(f, "{} could go to ", Brief(&a.typ))?;
+                        write_members(f, &a.members)?;
+                        write!(
+                            f,
+                            " of the union {}, which nothing has decided, and the check \
+                             picks none by order",
+                            Brief(&a.union)
+                        )
+                    })
                 })
             }
         }

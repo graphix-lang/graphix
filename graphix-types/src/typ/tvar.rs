@@ -3495,6 +3495,17 @@ struct DeclaredFrame {
 }
 
 impl Declared {
+    /// The variables of the definitions whose bodies this thread checks.
+    pub(crate) fn current() -> Self {
+        DECLARED.with_borrow(Self::clone)
+    }
+
+    /// `f`, naming the cells these variables declare by their names.
+    pub(crate) fn printing<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _declared = Declaring::replace(self.clone());
+        f()
+    }
+
     /// The name a variable of these declares the open cell `tv` stands for
     /// by, the least where two do.
     fn name_of(&self, tv: &TVar) -> Option<ArcStr> {
@@ -3527,7 +3538,7 @@ impl Declaring {
     #[doc(hidden)]
     pub fn enter(vars: impl IntoIterator<Item = TVar>) -> Self {
         let vars: SmallVec<[TVar; 2]> = vars.into_iter().collect();
-        let outer = DECLARED.with_borrow(Declared::clone);
+        let outer = Declared::current();
         match vars.is_empty() {
             true => Self(outer),
             false => {
@@ -3571,7 +3582,7 @@ impl HeldQuantifiers {
                 }
             })
         }
-        Self { held, declared: DECLARED.with_borrow(Declared::clone) }
+        Self { held, declared: Declared::current() }
     }
 
     /// `f`, printing as when the refusal was made.
@@ -3582,16 +3593,17 @@ impl HeldQuantifiers {
                 HELD.with_borrow_mut(|h| h.truncate(self.0))
             }
         }
-        let _declared = Declaring::replace(self.declared.clone());
-        if self.held.is_empty() {
-            return f();
-        }
-        let _truncate = Truncate(HELD.with_borrow_mut(|h| {
-            let len = h.len();
-            h.extend(self.held.iter().map(TVar::cell_addr));
-            len
-        }));
-        f()
+        self.declared.printing(|| {
+            if self.held.is_empty() {
+                return f();
+            }
+            let _truncate = Truncate(HELD.with_borrow_mut(|h| {
+                let len = h.len();
+                h.extend(self.held.iter().map(TVar::cell_addr));
+                len
+            }));
+            f()
+        })
     }
 }
 
