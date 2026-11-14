@@ -2527,50 +2527,6 @@ impl Env {
         }
     }
 
-    // XCR claude for claude: [risk/low] Two impl heads that share values and neither
-    // holds the other are both registered (the test below is containment either way),
-    // and a union dispatch over them gives a shared value to whichever member the
-    // union's own order puts first, which is not the order written: `impl Show for
-    // Array<[i64, string]> { let show = |x| "arr-is" }; impl Show for Array<[i64,
-    // null]> { let show = |x| "arr-in" }; let x: [Array<[i64, string]>, Array<[i64,
-    // null]>] = [1]; Show::show(x)` prints arr-in, where `let y: Array<[i64, string]>
-    // = [1]; Show::show(y)` prints arr-is. base-r23 and lane 23b after
-    // trait-dispatch-equal-members-01 alike, with and without --no-fusion. The empty
-    // array is such a value of any two Array heads. Whether heads that share a value
-    // are refused at the impl, or the dispatch's order is said to be the type's, is a
-    // language rule nobody has ruled on. probe: ~/ptmp/cr29/scratch/r23/23b/tdm/b1.gx
-    // (impl-heads-share-values-01)
-    // 2026-11-13 claude: Review of trait-dispatch-equal-members-01: the member a
-    // shared value takes follows the names too, since a union's members are sorted
-    // and a name sorts by its spelling. With the two impls above, `type S =
-    // Array<[i64, string]>; type N = Array<[i64, null]>; let z: [S, N] = [1]` prints
-    // arr-in, and the same two types named A1 and B1 (`[A1, B1]`, `[B1, A1]`, and
-    // behind `type P = [A1, string]; type Q = [B1, null]` as `[P, Q]` or `[Q, P]`)
-    // print arr-is. Renaming a typedef changes which impl runs. This is a language
-    // rule, so the CR goes to eric; it is not yet an item in ~/ptmp/cr-discuss.md.
-    // probes: ~/ptmp/cr29/scratch/r23/23b/tdm-rv/b1r.gx, b2r.gx
-    // 2026-11-13 claude: Eric ruled (2026-11-13, cr-discuss D37): (c), refuse it. A
-    // trait call is refused where the type of its value is a union two of whose
-    // members have impls and share a runtime form, as a select arm may not tell such
-    // members apart (Type::rep_collision); the refusal names the annotation (give the
-    // value one member's type). Impls stay unrestricted, and a call on a value of one
-    // member's type is unaffected. Needs a census.
-    // 2026-11-14 claude: A trait call over a union two of whose members cross (one
-    // value may be a value of both and neither holds the other) is refused: by the
-    // check (trait_contains over Type::dispatch_crossing) and again where
-    // resolve_trait_call lowers the call, and the refusal says to give the value one
-    // member's type. What is shared is Type::shares_value: could_match either way,
-    // where two arrays, lists or maps share the empty one. Fail with the refusal
-    // undone: lang::traits::trait_union_dispatch_{members_that_cross_refused,
-    // members_that_cross_named_s_n_refused, members_that_cross_named_a1_b1_refused,
-    // two_arrays_cross_refused, two_tuples_cross_refused,
-    // declared_variable_may_cross_refused, ring_of_members_refused},
-    // typ::setops::tests::dispatch_crossing_is_a_shared_value_neither_member_holds
-    // and the modules.md case. Census: one file newly refused,
-    // design/review-2026-10-12/repro/x-typecheck-patterns-03.gx. Judged here, not
-    // ruled: one generic impl serving both members is refused too (it would run at
-    // one member's type or the other's), and a member holding an open cell crosses
-    // whatever it may share a value with. See also (shares-value-recursive-pair-01).
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.
