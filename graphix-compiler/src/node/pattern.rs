@@ -1301,41 +1301,6 @@ impl StructPatternNode {
         })
     }
 
-    // XCR claude for claude: [structure/low] Nothing needs this rule any more. It
-    // was the kernel's: an arm, an or-alternative and a composite member were emitted
-    // wherever the shape passed, so a bind's type had to hold every such member's part.
-    // A kernel now emits none of them where the pattern admits no value
-    // (StructPatternNode::may_admit, the judgment ByAnyTest types binds by, literals
-    // included), so a written test and an or-alternative could narrow a bind by a
-    // literal as an inferred predicate does, and RuledOut would go. What it takes: the
-    // checker's two rules agree on a type that is no union (ByAnyTest skips only a
-    // union's members; ByShape rules a lone type out too, which an instance checked
-    // again relies on); hold_slice_members' or-alternative case; the pins
-    // lang::select::written_union_bind_beside_a_literal_holds_every_member_refused and
-    // slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out, the two
-    // `cases` lines of the graphix-lang skill and design/select_coverage.md, which
-    // state the exception; and a census, since a narrower bind makes an arm over the
-    // part it lost dead. A differential that judges a bind's static type against every
-    // value it takes, both engines: ~/ptmp/cr29/scratch/r23/23d/sft-review/rgen.py,
-    // and for instances ~/ptmp/cr29/scratch/r24/24a/dgen.py (written-literal-narrowing-01)
-    // 2026-11-14 claude: RuledOut and its two rules are gone: StructPatternNode::leaves
-    // rules a member out where the pattern admits no value of it (admits: tags, literals,
-    // arities, fields), in a union or alone, for an inferred predicate, a written test and
-    // an or-alternative alike; hold_slice_members takes an or-alternative through admits
-    // like any other element. Pins that fail without it:
-    // lang::select::written_union_bind_beside_a_literal_holds_the_members_it_admits,
-    // written_union_bind_beside_a_literal_loses_the_part_it_rules_out,
-    // slice_element_or_alternative_bind_holds_the_members_its_literal_admits,
-    // written_test_instance_bind_is_the_part_of_the_member_the_literal_admits and
-    // written_test_slice_literal_rules_out_no_member_for_a_bind (rewritten: its bind is
-    // now string alone). A lone type is judged by admits, not by shape alone, so an
-    // instance checked again (GRAPHIX_NO_SUBST) types a bind as its definition did: with
-    // the union-only rule dgen.py seed 1 had two NO_SUBST refusals (384, 390), with the
-    // single rule none. Probes: rgen.py seeds 1-3 (1399 programs) 0 unsound beyond the
-    // generator's own unbound-cell artifact (same on base-r25), 0 engine or base-run
-    // differences, 0 newly refused; dgen.py seeds 1-2 clean in all six modes. Census 2967
-    // files 0 verdict changes; docs: design/select_coverage.md, graphix-lang SKILL.md and
-    // its cases line.
     /// Every leaf name with the part of `typ` it stands over, `typ`
     /// being a type of this pattern's shape; a member the pattern admits no
     /// value of ([`Self::admits`]) gives none. An or-pattern's
