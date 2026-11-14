@@ -10644,6 +10644,80 @@ run!(
     FuseExpect::None
 );
 
+// Two signatures that are one type, with a typedef union of functions
+// spelling the same two variables in the other order, meet under the
+// pairing of the members the union's order gives: the call is refused
+// where that pairing welds the argument's variable to the other's, and
+// runs, narrower than either, where it welds none wrongly. The twin
+// spelling of each refused program runs.
+run!(
+    union_of_functions_the_formals_spell_in_the_other_order_is_refused_after_a_param,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x0: 'b, x2: F2<'b, 'a>| 0;
+  let app = |k: fn(x0: 'c, x2: F2<'d, 'c>) -> i64, v: 'c, w: 'd| 0;
+  app(f, 1, "s")
+}"#,
+    refused("does not contain string");
+    FuseExpect::None
+);
+run!(
+    union_of_functions_the_formals_spell_in_the_same_order_runs_after_a_param,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x0: 'b, x2: F2<'b, 'a>| 0;
+  let app = |k: fn(x0: 'c, x2: F2<'c, 'd>) -> i64, v: 'c, w: 'd| 0;
+  app(f, 1, "s")
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+run!(
+    union_of_functions_the_formals_spell_in_the_other_order_is_refused_before_a_param,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x2: F2<'b, 'a>, x0: 'b| 0;
+  let app = |k: fn(x2: F2<'d, 'c>, x0: 'c) -> i64, v: 'c, w: 'd| 0;
+  app(f, 1, "s")
+}"#,
+    refused("does not contain string");
+    FuseExpect::None
+);
+run!(
+    union_of_functions_the_formals_spell_in_the_same_order_runs_before_a_param,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x2: F2<'b, 'a>, x0: 'b| 0;
+  let app = |k: fn(x2: F2<'c, 'd>, x0: 'c) -> i64, v: 'c, w: 'd| 0;
+  app(f, 1, "s")
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+run!(
+    select_of_two_spellings_of_a_union_of_functions_is_refused_where_the_call_names_one_member,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let c = true;
+  let f = |x0: 'b, x2: F2<'b, 'a>| 0;
+  let g = select c { true => f, false => |x0: 'b, x2: F2<'a, 'b>| 0 };
+  g(1, |q: string| 0)
+}"#,
+    refused("does not contain fn(q: string) -> i64");
+    FuseExpect::None
+);
+run!(
+    each_spelling_of_a_union_of_functions_alone_takes_the_call_the_select_of_both_refuses,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |x0: 'b, x2: F2<'b, 'a>| 0;
+  let h = |x0: 'b, x2: F2<'a, 'b>| 0;
+  (f(1, |q: string| 0), h(1, |q: string| 0))
+}"#,
+    prints("[i64:0, i64:0]");
+    FuseExpect::None
+);
+
 // One value joins nothing: a read of it through a field, a tuple
 // position, an error's payload, a reference, a variant's pattern, a
 // select of one binding in every arm or `any` over it alone returns its

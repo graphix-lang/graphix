@@ -2653,31 +2653,6 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
         && members(actual).iter().any(|m| !keep(m) && !null(m))
 }
 
-// CR claude for claude: [bug/low] A function member of a union that is another
-// function's renaming is welded to it, each member under a renaming of its own,
-// whatever the signature around the union has said of the cells: the first
-// member in the union's order that the function renames takes it. So two
-// signatures that are one type, with a typedef union spelling the same two
-// variables in the other order, have those variables made one where they meet.
-// `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |x0: 'b, x2:
-// F2<'b, 'a>| 0; let app = |k: fn(x0: 'c, x2: F2<'d, 'c>) -> i64, v: 'c, w: 'd|
-// 0; app(f, 1, "s")` is refused, "type mismatch 'd: i64 does not contain
-// string", naming no annotation, and runs with the formal spelled `F2<'c, 'd>`
-// (x1.gx, x2.gx; with the union first, x7.gx and x8.gx alike). `let g = select
-// c { true => f, false => |x0: 'b, x2: F2<'a, 'b>| 0 }; g(1, |q: string| 0)` is
-// refused, "F2<'a: i64, 'b: 'a: i64> does not contain fn(q: string) -> i64",
-// where each of the two functions takes that call (x3.gx, x5.gx). Nothing wrong
-// runs: the type left is narrower than either. base-r24 alike. With
-// `Identical::Renamed` answered false here x1, x3 and x7 are refused as a choice
-// between two undecided members ("the check picks none by order"), and so are
-// x2.gx and x8.gx, which run today by the same pairing: so the rule is not
-// that alone. What would fix it: a member is another's renaming only under the pairs
-// the signature around it has made (a cell it shares or has paired is itself),
-// and a function that renames two members is refused or left to the walk; then
-// a census. select-copies-union-meet-01 took two copies of one signature out of
-// this path (`setops::renames` pairs the cells over the whole signature). probes:
-// ~/ptmp/cr29/scratch/r24/24d/scm/{x1,x2,x3,x5,x7,x8}.gx
-// (union-member-renaming-order-01)
 /// Two types identical up to `Fn` equality whose cells can be welded;
 /// under `commit` their function types are linked as one.
 fn identical_linked(hist: &mut ContainsHist, t0: &Type, t1: &Type, commit: bool) -> bool {
