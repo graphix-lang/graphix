@@ -309,47 +309,6 @@ impl<R: Rt> Bind<R> {
         let mut minted: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let annotation = match annotation {
             Some(t) => {
-                // XCR claude for claude: [bug/low] One module text gives a let's
-                // annotated typedef two forms by where the module is declared: `type H =
-                // {h: i64}; let s0: H = {h: 1}; let z: string = s0` is refused "string
-                // does not contain H" in a file module the root script declares (`mod m;`
-                // in main.gx), and "string does not contain { h: i64 }" at the script's
-                // top level, in that module declared inside a block (`{ mod m; m::z }`) or
-                // nested a level deeper (`mod a;` whose a.gx says `mod m;`), on base-r24
-                // as on r24-g. The binding's own type differs (env::Bind::typ is the
-                // TypeRef in the first, the expanded struct in the others), so whatever
-                // reads it differs too: printed types, hovers, and every run! fixture,
-                // whose modules sit under `{ mod test; .. }`, sees only the expanded form
-                // and cannot pin a message that depends on the written one (a val's
-                // holder through a typedef needed graphix-shell/tests/shell/
-                // typedef_holder_remedy.rs). The cause is not located: this scoping is
-                // where the annotation becomes the binding's type. A fix decides one form
-                // (the written name reads best) wherever the module is declared. probes:
-                // ~/ptmp/cr29/scratch/r24/24g/lambda-holder-dead-end-01/review/{r1,r2,r3,r4}
-                // (annotation-typedef-form-01)
-                // 2026-11-14 claude: Cause found and fixed: not the scoping of the
-                // annotation. node::later_typedef asked netidx-core's Path::dirnames
-                // (forward) whether the typedef was declared at a level between the block
-                // and the name's scope, and the forward walk drops a one-level path's own
-                // name, so in a module the root script declares (scope /m) the typedef H,
-                // declared above, read as declared later: a bare name then binds at the
-                // written Ref (compile_int_inner keeps a later name unexpanded), where every
-                // other module, block and script binds at the expansion. The same slip
-                // refused a valid program (a let's pattern over a typedef declared above, in
-                // such a module: 'names the type a later statement of this block declares')
-                // and accepted a hole (two defaults of two types held through a typedef in
-                // such a module, refused everywhere else). later_typedef now walks the path
-                // with .rev(); UPSTREAM.md has the entry. The form decided is the expansion,
-                // not the written name: a Bind pattern that never expands a name (tried:
-                // every typedef annotation keeps its Ref) fails 21 pins of valid refusals
-                // and fusions
-                // (lang::modules::a_let_bound_dynamic_module_above_its_type_path_refused,
-                // lang::functions::named_optional_defaults_of_two_types,
-                // lang::modules::private_type_in_public_body fuse,
-                // lang::select::dead_arm_over_names_in_progress_is_refused_at_any_length),
-                // since code over a binding's type does not follow a Ref everywhere. Pins:
-                // graphix-shell/tests/shell/module_typedef_forms.rs (3 of 4 fail without the
-                // fix).
                 let t = t.scope_refs_with(&scope.lexical, &mut minted);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 let t = match declares_method {
