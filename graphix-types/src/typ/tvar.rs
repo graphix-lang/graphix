@@ -5697,6 +5697,19 @@ impl Type {
                 let tags: SmallVec<[u32; 4]> =
                     held.iter().map(|(a, _)| *a as u32).collect();
                 let p: SmallVec<[&Type; 4]> = held.iter().map(|(_, t)| *t).collect();
+                // CR claude for claude: [bug/low] A slice pattern over an array a select joined with
+                // an empty one still welds the variables of a union an element holds. `type F2<'p,
+                // 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+                // let h = |u, v, w| { let g = select c { true => [], false => [f(u, v, w)] }; select g
+                // { [a, ..] => a, _ => never() }; (u, v) }; h(1, "s", |q: i64| q + 1)` is refused,
+                // "type mismatch i64 does not contain string", where `[f(u, v, w)]` in both arms (and
+                // a bare `[f(u, v, w)]`, m5) runs. The part joined here is right (a debug print of
+                // `joined` shows `[fn(q: 'a) -> i64, fn(q: 'b) -> i64, '_N]`), and the name `a` is
+                // typed `[fn(q: 'a) -> i64, '_N]` afterwards, one member short: the weld is made
+                // after this join, in what binds the cell (contains_ordered or open_over_any) or a
+                // later normalize that carries no alternatives. Nothing wrong runs (the refusal is
+                // the conservative side). probes: ~/ptmp/cr29/scratch/r25/25e/rv/{s1,s3,q4,q5}.gx
+                // (alternative-slice-join-undecided-01)
                 let joined = Type::union_exact_of_parts(env, &p, &tags)?;
                 if joined.contains_ordered(env, &cell)? && c.binding().is_none() {
                     joined.open_over_any(env, &cell)?
