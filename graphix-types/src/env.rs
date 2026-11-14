@@ -1702,13 +1702,14 @@ impl Env {
             true => self.unsettled.get(level).map(|(l, from)| (&**l, *from)),
             false => None,
         };
-        let kind = scope_kind(level);
+        let kind = || scope_kind(level);
         if let Some((l, from)) = later
             && l.uses.iter().any(|(i, k)| *i >= from && k.as_str() == n)
         {
             return Err(anyhow!(ChangesLater(format_compact!(
                 "{n} names what a later `use` of this {kind} imports: write the \
-                 `use` before the name's first use"
+                 `use` before the name's first use",
+                kind = kind()
             ))));
         }
         let kept = self.lexical.body.as_ref().and_then(|b| b.names_at(level));
@@ -1740,7 +1741,8 @@ impl Env {
                         "{n} names what a `use` of this {kind} imports from module \
                          {}, which a later statement declares: declare the module \
                          before the name's first use",
-                        written_level(m)
+                        written_level(m),
+                        kind = kind()
                     ))));
                 }
                 // A kind-miss on an import falls through to globs
@@ -1777,7 +1779,8 @@ impl Env {
         {
             return Err(anyhow!(ChangesLater(format_compact!(
                 "{n} may name what a later glob `use` of this {kind} imports: write \
-                 the `use` before the name's first use"
+                 the `use` before the name's first use",
+                kind = kind()
             ))));
         }
         if let Some(m) = later_module {
@@ -1785,7 +1788,8 @@ impl Env {
                 "{n} may name what a glob `use` of this {kind} imports from module \
                  {}, which a later statement declares: declare the module before \
                  the name's first use",
-                written_level(m)
+                written_level(m),
+                kind = kind()
             ))));
         }
         Ok(None)
