@@ -330,9 +330,15 @@ thread_local! {
     static POSITIONS: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
         RefCell::new(AddrMap::default());
     /// For the outermost `for_each_part` call: what each nested quantified
-    /// signature holds from outside itself, as `collect_held` finds it
-    /// under no guard, while this thread writes no cell.
+    /// signature holds from outside itself, as `collect_held` finds it,
+    /// while this thread writes no cell.
     static FREE: RefCell<FreeCells> = RefCell::new(FreeCells::default());
+    /// The signatures and cells the walks in progress entered
+    /// [`CONSTRAINING`] and [`CONJUNCTS`] for, since the outermost
+    /// [`free_cells`] read in progress began; empty where none is.
+    static TOUCHED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// How many [`free_cells`] reads are in progress on this thread.
+    static TOUCHING: Cell<usize> = const { Cell::new(0) };
     /// How many times a walk's guard has refused a signature or a cell.
     static CUTS: Cell<u64> = const { Cell::new(0) };
     /// How deep signature parses nest on this thread.
@@ -348,12 +354,16 @@ thread_local! {
 struct FreeCells {
     /// [`tvar::cell_writes`] when the entries were read from the cells.
     writes: u64,
-    of: AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>,
+    of: AddrMap<FreeEntry>,
 }
+
+/// What `collect_held` found of a signature: the signature, the cells, and
+/// the guard keys the walk entered, sorted, which it found them under.
+type FreeEntry = (Arc<FnType>, Vec<(ArcStr, TVar)>, Vec<usize>);
 
 impl FreeCells {
     /// The entries that still stand: none after a cell write.
-    fn current(&mut self) -> &mut AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)> {
+    fn current(&mut self) -> &mut AddrMap<FreeEntry> {
         let writes = tvar::cell_writes();
         if self.writes != writes {
             self.writes = writes;
@@ -536,7 +546,7 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
     })
 }
 
-// CR claude for claude: [perf/low] Comparing a nest of quantified
+// XCR claude for claude: [perf/low] Comparing a nest of quantified
 // signatures, each in the bound of a variable of the one around it and
 // naming a variable from outside itself, collects each one's free cells
 // again at every level: for_each_part's conjunct pass holds CONSTRAINING
@@ -553,21 +563,29 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
 // the same under them. probe:
 // ~/ptmp/cr29/scratch/r24/24f/nested-bound-alias/steps_probe.rs
 // (free-cells-guarded-memo-01)
+// 2026-11-14 claude: free_cells' memo entry now records the CONSTRAINING and
+// CONJUNCTS keys its walk entered, and answers under any guards that hold none
+// of them (Walking::holds_any), not only under none. TVAR_WALK_STEPS of a == b,
+// 10/40/160 deep, nested_by_bound_naming_outer: 1324, 17104, 260224 -> 604,
+// 2284, 9004; nested_held_beside_the_next_bound 1652, 20732, 313052 -> linear.
+// Pin: fntyp::tests::nests_held_in_a_bound_compare_in_linear_steps (fails
+// without the change: 17104 steps at 40 deep, 260224 at 160). deep_nesting
+// passes; guicheck 39677309623 base-r25, 39706849556 here.
 /// The cells the quantified signature `ft` holds from outside itself
 /// ([`collect_held`]), its own quantifiers' left out, into `known`:
 /// memoized while a `for_each_part` walk is in progress. A walk no guard
-/// cut is the same under every guard, and one that found nothing finds
-/// nothing under any.
+/// cut is the same under every set of guards that holds none of the
+/// signatures and cells it entered them for, and one that found nothing
+/// finds nothing under any.
 pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
     let key = Arc::as_ptr(ft) as usize;
-    let unguarded = || {
-        CONSTRAINING.with_borrow(|s| s.is_empty())
-            && CONJUNCTS.with_borrow(|s| s.is_empty())
-    };
     let hit = FREE.with_borrow_mut(|m| match m.current().get(&key) {
-        Some((_, cells)) if cells.is_empty() || unguarded() => {
+        Some((_, cells, entered)) if cells.is_empty() || !Walking::holds_any(entered) => {
             for (name, tv) in cells {
                 known.entry(name.clone()).or_insert_with(|| tv.clone());
+            }
+            if TOUCHING.with(|t| t.get()) > 0 {
+                TOUCHED.with_borrow_mut(|t| t.extend_from_slice(entered));
             }
             true
         }
@@ -578,11 +596,13 @@ pub(super) fn free_cells(ft: &Arc<FnType>, known: &mut AHashMap<ArcStr, TVar>) {
     }
     let cuts = CUTS.with(|c| c.get());
     let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    let touching = Touching::begin();
     collect_held(ft, &mut inner);
     inner.retain(|name, _| !ft.quantifiers.contains(name));
     if PARTS_DEPTH.with(|d| d.get()) > 0 && CUTS.with(|c| c.get()) == cuts {
         let cells = inner.iter().map(|(n, tv)| (n.clone(), tv.clone())).collect();
-        FREE.with_borrow_mut(|m| m.current().insert(key, (ft.clone(), cells)));
+        let entered = touching.keys();
+        FREE.with_borrow_mut(|m| m.current().insert(key, (ft.clone(), cells, entered)));
     }
     for (name, tv) in inner.drain() {
         known.entry(name).or_insert(tv);
@@ -633,6 +653,60 @@ impl Walking {
             CUTS.with(|c| c.set(c.get() + 1));
         }
         entered.then(|| Walking { set, key })
+    }
+
+    /// [`Self::enter_key`] on [`CONSTRAINING`] or [`CONJUNCTS`], the keys
+    /// entered noted for the [`free_cells`] reads in progress, whether the
+    /// guard admits the walk or not.
+    fn enter_guard(set: &'static LocalKey<RefCell<AddrSet>>, key: usize) -> Option<Self> {
+        if TOUCHING.with(|t| t.get()) > 0 {
+            TOUCHED.with_borrow_mut(|t| t.push(key));
+        }
+        Self::enter_key(set, key)
+    }
+
+    /// Whether a guard of `CONSTRAINING` or `CONJUNCTS` holds one of `keys`.
+    fn holds_any(keys: &[usize]) -> bool {
+        let held = |set: &'static LocalKey<RefCell<AddrSet>>| {
+            set.with_borrow(|s| !s.is_empty() && keys.iter().any(|k| s.contains(k)))
+        };
+        held(&CONSTRAINING) || held(&CONJUNCTS)
+    }
+}
+
+/// One [`free_cells`] read in progress: the keys the guards were entered
+/// for since it began are its walk's, and it forgets them when the
+/// outermost read ends, unwind too.
+struct Touching {
+    start: usize,
+}
+
+impl Touching {
+    fn begin() -> Self {
+        TOUCHING.with(|t| t.set(t.get() + 1));
+        Touching { start: TOUCHED.with_borrow(|t| t.len()) }
+    }
+
+    /// The keys entered since `begin`, sorted, and into the read around it.
+    fn keys(&self) -> Vec<usize> {
+        TOUCHED.with_borrow(|t| {
+            let mut keys = t[self.start..].to_vec();
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        })
+    }
+}
+
+impl Drop for Touching {
+    fn drop(&mut self) {
+        let outermost = TOUCHING.with(|t| {
+            t.set(t.get() - 1);
+            t.get() == 0
+        });
+        if outermost {
+            TOUCHED.with_borrow_mut(|t| t.clear());
+        }
     }
 }
 
@@ -1236,14 +1310,16 @@ impl FnType {
             f(cx, vargs, false)
         }
         f(cx, rtype, false);
-        if let Some(_guard) = Walking::enter(&CONSTRAINING, self) {
+        if let Some(_guard) =
+            Walking::enter_guard(&CONSTRAINING, self as *const FnType as usize)
+        {
             // the cells the positions name, each nested signature's own
             // conjunct pass left to that signature's walk
             let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
             self.for_each_type(&mut |t| t.collect_position_tvars(&mut cells, &mut seen));
             for (_, tv) in sorted_tvars(cells.drain()).drain(..) {
-                if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr())
+                if let Some(_cell) = Walking::enter_guard(&CONJUNCTS, tv.cell_addr())
                     && pass(cx, &tv)
                 {
                     for tc in tv.cell_constraints() {
@@ -1458,9 +1534,13 @@ impl FnType {
         how: Aliasing,
     ) {
         self.alias_tvars_in(known, passed, how);
-        let Some(_guard) = Walking::enter(&CONSTRAINING, self) else { return };
+        let Some(_guard) =
+            Walking::enter_guard(&CONSTRAINING, self as *const FnType as usize)
+        else {
+            return;
+        };
         while let Some(tv) = passed.next_met() {
-            if let Some(_cell) = Walking::enter_key(&CONJUNCTS, tv.cell_addr())
+            if let Some(_cell) = Walking::enter_guard(&CONJUNCTS, tv.cell_addr())
                 && passed.first(&tv)
             {
                 for tc in tv.cell_constraints() {
@@ -3414,6 +3494,29 @@ mod tests {
         };
         let (a, b) = (steps(40), steps(160));
         assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
+    }
+
+    // Comparing a nest whose signatures each name a variable from outside
+    // themselves, and stand in the bound of a variable of the one around
+    // them, reads each signature's free cells a bounded number of times,
+    // under the guards of the walks around it too.
+    #[test]
+    fn nests_held_in_a_bound_compare_in_linear_steps() {
+        use crate::typ::Type;
+        let shapes: [(&str, fn(usize) -> String); 2] = [
+            ("bound naming outer", nested_by_bound_naming_outer),
+            ("held beside the next bound", nested_held_beside_the_next_bound),
+        ];
+        for (name, shape) in shapes {
+            let steps = |n| {
+                let parse =
+                    || Type::Fn(triomphe::Arc::new(parse_fn_type(&shape(n)).unwrap()));
+                let (t, u) = (parse(), parse());
+                walk_steps(|| assert!(t == u && t.cmp(&u).is_eq()))
+            };
+            let (a, b) = (steps(40), steps(160));
+            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
+        }
     }
 
     /// The distinct cells `t` holds under `name`.
