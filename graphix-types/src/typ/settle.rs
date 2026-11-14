@@ -791,6 +791,7 @@ impl TerminalRun<'_> {
 impl FnType {
     /// Every cell the signature reaches, through bindings and conjuncts,
     /// by address.
+    /// [`FnType::reached_cells`] for a type.
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         let mut nodes: LPooled<AddrSet> = LPooled::take();
@@ -902,7 +903,6 @@ fn count_positions(
 }
 
 impl Type {
-    /// [`FnType::reached_cells`] for a type.
     /// How many positions of this type each cell stands at, by address.
     /// A shared composite counts at every meeting, and a cell a typedef's
     /// argument holds counts at least twice.
@@ -911,6 +911,7 @@ impl Type {
         count_positions(self, 1, out, &mut LPooled::take())
     }
 
+    /// [`FnType::reached_cells`] for a type.
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         reached_cells(self, out)
