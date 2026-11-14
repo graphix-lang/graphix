@@ -2,7 +2,7 @@ use crate::{
     AddrMap, AddrSet, PrintFlag, SourcePosition,
     dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
     env::{Env, ImplDef},
-    expr::ModPath,
+    expr::{ModPath, Told},
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
@@ -3597,7 +3597,7 @@ impl Type {
         ))
     }
 
-    // CR claude for claude: [readability/low] A type whose impl's bound refuses a
+    // XCR claude for claude: [readability/low] A type whose impl's bound refuses a
     // union is told only that it does not implement the trait: with `impl<'a: Show>
     // Show for Array<'a>` and `type U = [(i64, [i64, string]), ([i64, null], i64)]`,
     // `Show::show(xs)` over `xs: Array<U>` is refused "Array<U> does not implement
@@ -3609,6 +3609,12 @@ impl Type {
     // that impl over the type its parameter took, and say that one. probes:
     // ~/ptmp/cr29/scratch/r24/24d/ihsv-rv/a8.gx, a13.gx
     // (trait-bound-refusal-untold-01)
+    // 2026-11-14 claude: Fixed: Env-level trait refusal (contains.rs trait_refusal,
+    // now bound_refusal + impl_bound_refusal) asks each bound of an impl whose head
+    // holds the failing member over the type its parameter took, and tells that
+    // refusal under 'M does not implement T: a bound of its impl is not met'. Pins
+    // that fail without it:
+    // lang::traits::trait_impl_bound_{crossing_names_the_members,crossing_nested_under_two_impls,form_collision_names_the_members,missing_impl_names_the_type}.
     /// An open cell bounded by a trait refuses a type with a member that
     /// has no impl of it: name the member, and an impl a sibling module
     /// holds but leaves out of its interface.
@@ -3617,66 +3623,102 @@ impl Type {
         if tv.binding().is_some() {
             return None;
         }
+        tv.cell_constraints().iter().find_map(|c| Self::bound_refusal(env, c, t))
+    }
+
+    /// Why `t` fails the trait bound `c`, when `c` is a trait reference.
+    fn bound_refusal(env: &Env, c: &Self, t: &Self) -> Option<anyhow::Error> {
+        let Self::Ref(r) = c else { return None };
+        let tid = env.trait_of_ref(r)?;
+        let def = env.trait_def(tid)?;
         let mut hist = ContainsHist::new();
-        for c in tv.cell_constraints().iter() {
-            let Self::Ref(r) = c else { continue };
-            let Some(tid) = env.trait_of_ref(r) else { continue };
-            let Some(def) = env.trait_def(tid) else { continue };
-            let members = Self::dispatch_members(env, t).ok()?;
-            let seen = env.impls_of(tid).unwrap_or_default();
-            let name = &def.name;
-            for m in members.iter() {
-                if Self::trait_contains(tid, BitFlags::empty(), env, &mut hist, m).ok()? {
-                    continue;
-                }
-                let hidden = env.impls.get(&tid).and_then(|l| {
-                    l.iter()
-                        .find(|im| {
-                            !seen.iter().any(|s| Arc::ptr_eq(s, im))
-                                && env.heads_overlap(&im.target, m).unwrap_or(false)
-                        })
-                        .cloned()
-                });
-                return Some(match hidden {
-                    None => anyhow::anyhow!("{m} does not implement {name}"),
-                    Some(im) => anyhow::anyhow!(
-                        "{m} does not implement {name} here: the impl in module {} is \
-                         not in its interface (declare `impl {name} for {m};` there)",
-                        crate::written_scope(&im.scope)
-                    ),
-                });
+        let members = Self::dispatch_members(env, t).ok()?;
+        let seen = env.impls_of(tid).unwrap_or_default();
+        let name = &def.name;
+        for m in members.iter() {
+            if Self::trait_contains(tid, BitFlags::empty(), env, &mut hist, m).ok()? {
+                continue;
             }
-            if members.len() > 1
-                && let Some(m) = def.self_beyond_receiver(env)
+            let hidden = env.impls.get(&tid).and_then(|l| {
+                l.iter()
+                    .find(|im| {
+                        !seen.iter().any(|s| Arc::ptr_eq(s, im))
+                            && env.heads_overlap(&im.target, m).unwrap_or(false)
+                    })
+                    .cloned()
+            });
+            return Some(match hidden {
+                None => match Self::impl_bound_refusal(env, tid, m) {
+                    Some(why) => Told::over(
+                        why,
+                        &format_compact!(
+                            "{m} does not implement {name}: a bound of its impl is \
+                             not met"
+                        ),
+                    ),
+                    None => anyhow::anyhow!("{m} does not implement {name}"),
+                },
+                Some(im) => anyhow::anyhow!(
+                    "{m} does not implement {name} here: the impl in module {} is \
+                     not in its interface (declare `impl {name} for {m};` there)",
+                    crate::written_scope(&im.scope)
+                ),
+            });
+        }
+        if members.len() > 1
+            && let Some(m) = def.self_beyond_receiver(env)
+        {
+            return Some(anyhow::anyhow!(
+                "a {name} call over {} narrows only its self argument, and \
+                 {name}::{} takes `self` beyond it, in another parameter, a \
+                 variable's bound, or under a function parameter or a writable \
+                 reference in its result: select on the value and make the call for \
+                 each member",
+                Brief(t),
+                m.name
+            ));
+        }
+        if let Some(why) = Self::dispatch_collision(env, &members) {
+            let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+            if let Indiscernible::Pair(a, b) = &why
+                && (open(a) || open(b))
             {
+                let known = if open(a) { b } else { a };
                 return Some(anyhow::anyhow!(
-                    "a {name} call over {} narrows only its self argument, and \
-                     {name}::{} takes `self` beyond it, in another parameter, a \
-                     variable's bound, or under a function parameter or a writable \
-                     reference in its result: select on the value and make the call \
-                     for each member",
-                    Brief(t),
-                    m.name
+                    "a {} call over {t} tests each member, but a type variable in it \
+                     isn't known here and may share {known}'s runtime form: annotate it",
+                    def.name
                 ));
             }
-            if let Some(why) = Self::dispatch_collision(env, &members) {
-                let open =
-                    |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-                if let Indiscernible::Pair(a, b) = &why
-                    && (open(a) || open(b))
-                {
-                    let known = if open(a) { b } else { a };
-                    return Some(anyhow::anyhow!(
-                        "a {} call over {t} tests each member, but a type variable in it \
-                         isn't known here and may share {known}'s runtime form: annotate it",
-                        def.name
-                    ));
-                }
-                let what = format_compact!("a {} call over {t}", def.name);
-                return Some(why.untold(&what));
+            let what = format_compact!("a {} call over {t}", def.name);
+            return Some(why.untold(&what));
+        }
+        if let Some((a, b)) = Self::dispatch_crossing(env, &members).ok()? {
+            return Some(Self::crossing_refusal(&def.name, t, a, b));
+        }
+        None
+    }
+
+    /// Why a bound of an impl of `tid` whose head holds `m` is not met by
+    /// what its parameter took.
+    fn impl_bound_refusal(env: &Env, tid: TraitId, m: &Self) -> Option<anyhow::Error> {
+        for im in env.impls_of(tid)?.iter().filter(|im| !im.params.is_empty()) {
+            let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            let Some(head) = im.target.reset_tvars_int(&mut known, Fresh::Copy) else {
+                continue;
+            };
+            head.drop_bounds();
+            if !head.contains(env, m).ok()? {
+                continue;
             }
-            if let Some((a, b)) = Self::dispatch_crossing(env, &members).ok()? {
-                return Some(Self::crossing_refusal(&def.name, t, a, b));
+            for p in im.params.iter() {
+                let taken = known.get(&p.cell_addr()).and_then(TVar::binding);
+                let Some(taken) = taken else { continue };
+                for c in p.cell_constraints().iter() {
+                    if let Some(why) = Self::bound_refusal(env, c, &taken) {
+                        return Some(why);
+                    }
+                }
             }
         }
         None

@@ -416,6 +416,89 @@ run!(
     ; FuseExpect::None
 );
 
+// A type whose impl's bound refuses a union is told the bound's refusal.
+run!(
+    trait_impl_bound_crossing_names_the_members,
+    refused(
+        "Array<U> does not implement Show: a bound of its impl is not met: a Show \
+         call over [(i64, [i64, string]), ([i64, null], i64)] tests each member, and \
+         a value may be both (i64, [i64, string]) and ([i64, null], i64), neither of \
+         which holds the other: give the value one member's type"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for (i64, [i64, string]) { let show = |x| "is" };
+        impl Show for ([i64, null], i64) { let show = |x| "ni" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |xs| "[array::map(xs, |x| Show::show(x))]"
+        };
+        type U = [(i64, [i64, string]), ([i64, null], i64)];
+        let xs: Array<U> = [(1, 1), (null, 1), (1, "a")];
+        let result = Show::show(xs)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    trait_impl_bound_crossing_nested_under_two_impls,
+    refused(
+        "Array<Array<U>> does not implement Show: a bound of its impl is not met: \
+         Array<U> does not implement Show: a bound of its impl is not met: a Show \
+         call over [(i64, [i64, string]), ([i64, null], i64)] tests each member"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for (i64, [i64, string]) { let show = |x| "is" };
+        impl Show for ([i64, null], i64) { let show = |x| "ni" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |xs| "[array::map(xs, |x| Show::show(x))]"
+        };
+        type U = [(i64, [i64, string]), ([i64, null], i64)];
+        let xs: Array<Array<U>> = [[(1, 1)]];
+        let result = Show::show(xs)
+    "#
+    ; FuseExpect::None
+);
+
+// A bound that fails by a form collision says so.
+run!(
+    trait_impl_bound_form_collision_names_the_members,
+    refused(
+        "Array<U> does not implement Show: a bound of its impl is not met: a Show \
+         call over [fn(x: i64) -> i64, fn(x: string) -> string] can't tell fn(x: i64) \
+         -> i64 from fn(x: string) -> string: both have the same runtime form"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for fn(x: i64) -> i64 { let show = |x| "fi" };
+        impl Show for fn(x: string) -> string { let show = |x| "fs" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |xs| "[array::map(xs, |x| Show::show(x))]"
+        };
+        type U = [fn(x: i64) -> i64, fn(x: string) -> string];
+        let f = |x: i64| x;
+        let xs: Array<U> = [f];
+        let result = Show::show(xs)
+    "#
+    ; FuseExpect::None
+);
+
+// A bound whose type has no impl at all keeps the plain message.
+run!(
+    trait_impl_bound_missing_impl_names_the_type,
+    refused("Array<bool> does not implement Show: a bound of its impl is not met: bool does not implement Show"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |xs| "[array::map(xs, |x| Show::show(x))]"
+        };
+        let xs: Array<bool> = [true];
+        let result = Show::show(xs)
+    "#
+    ; FuseExpect::None
+);
+
 // A declared variable may be any type: a member holding one crosses
 // whatever it may share a value with.
 run!(
