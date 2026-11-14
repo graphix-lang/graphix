@@ -1223,7 +1223,7 @@ impl<R: Rt> Update<R> for Qop<R> {
         ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        let row = types.settle(self.spec.id, &self.typ);
+        let row = types.settle(ctx, &self.spec, &self.typ)?;
         let decided = types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0]));
         self.typecheck0_with(
             ctx,

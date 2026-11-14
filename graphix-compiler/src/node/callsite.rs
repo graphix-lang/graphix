@@ -5089,7 +5089,7 @@ impl<R: Rt> CallSite<R> {
             }
         }
         self.raise_throws(ctx, &ftype, false)?;
-        if !types.settle(self.spec.id, &self.rtype) {
+        if !types.settle(ctx, &self.spec, &self.rtype)? {
             wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         }
         self.ftype = Some(TArc::new(ftype));

@@ -726,8 +726,10 @@ impl InstanceTypes {
     /// type. A node of an instance can be born knowing a type its
     /// definition's check widened (`d.domain` born `string` where the
     /// check unified it with a formal's `[Array<i64>, string]`): the
-    /// instance's knowledge stands.
-    // CR claude for claude: [risk/medium] A node of an instance born with a closed
+    /// instance's knowledge stands where either holds the other, and the
+    /// instance is refused where a closed born type and a closed row are
+    /// disjoint.
+    // XCR claude for claude: [risk/medium] A node of an instance born with a closed
     // type its definition's row does not contain keeps the born type, and fused code
     // then reads the value at the wrong representation. Type::take_row answers true
     // wherever `typ` holds no open cell, whatever the row is (its last arm), so a born
@@ -745,8 +747,43 @@ impl InstanceTypes {
     // refuses a signature) makes this a refusal. It is one containment per such node
     // per instance, so measure the build of the GUI examples before adding it. probe:
     // ~/ptmp/cr29/scratch/r24/24c/ibsc-rev/b12.gx (instance-born-type-unchecked-01)
-    pub(crate) fn settle(&mut self, id: ExprId, typ: &Type) -> bool {
-        self.typ(id).is_some_and(|t| typ.take_row(&t))
+    // 2026-11-14 claude: InstanceTypes::settle now refuses an instance where a node's
+    // closed born type and its closed row are disjoint (neither type holds the other;
+    // wider-than-row stands, as
+    // lang::types::undecided_value_after_a_literal_narrower_than_what_bounds_it
+    // needs). Probe b12.gx no longer reproduces on base-r25 (the naming bug is fixed);
+    // with that fix temporarily undone the lane refuses it: 'a node of an instance is
+    // 'a: string where its definition's check settled i64'. Pins: lambda.rs
+    // settle_tests (two unit tests; the refusal one fails without the check). lang
+    // 24298 pass, census 2967 files 0 verdict/message changes, guicheck +0.13% over
+    // the lane, deep_nesting ok.
+    pub(crate) fn settle<R: Rt>(
+        &mut self,
+        ctx: &CompileCtx<R>,
+        spec: &Expr,
+        typ: &Type,
+    ) -> Result<bool> {
+        self.settle_in(&ctx.env, spec.id, typ).at(spec)
+    }
+
+    fn settle_in(&mut self, env: &Env, id: ExprId, typ: &Type) -> Result<bool> {
+        let Some(row) = self.typ(id) else { return Ok(false) };
+        let born_closed = !typ.has_unbound();
+        if !typ.take_row(&row) {
+            return Ok(false);
+        }
+        if born_closed
+            && !row.has_unbound()
+            && !row.contains(env, typ)?
+            && !typ.contains(env, &row)?
+        {
+            return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+                bail!(
+                    "a node of an instance is {typ} where its definition's check settled {row}"
+                )
+            });
+        }
+        Ok(true)
     }
 
     /// What the node at `id` derived beside its own type, in its order
@@ -3426,5 +3463,48 @@ pub(crate) mod elab_audit {
         if std::env::var_os("GRAPHIX_ELAB_AUDIT").is_some_and(|v| v == "bt") {
             eprintln!("{}", std::backtrace::Backtrace::force_capture());
         }
+    }
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+    use netidx_value::Typ;
+
+    fn instance_of(id: ExprId, row: Type) -> InstanceTypes {
+        let mut table = DefTable::default();
+        table.types.insert(id, row);
+        InstanceTypes {
+            tables: Tables { table: SArc::new(table), outer: None },
+            known: Known::default(),
+            open: IntSet::default(),
+        }
+    }
+
+    #[test]
+    fn a_closed_born_type_disjoint_from_a_closed_row_is_refused() {
+        let (env, id) = (Env::default(), ExprId::new());
+        let mut types = instance_of(id, Type::Primitive(Typ::I64.into()));
+        let err = types
+            .settle_in(&env, id, &Type::Primitive(Typ::String.into()))
+            .expect_err("string where the row is i64");
+        assert!(
+            err.to_string()
+                .contains("is string where its definition's check settled i64")
+        );
+    }
+
+    #[test]
+    fn a_closed_born_type_beside_a_row_that_holds_it_or_is_held_by_it_stands() {
+        let (env, id) = (Env::default(), ExprId::new());
+        let wide = Type::Set(Arc::from_iter([
+            Type::Primitive(Typ::I64.into()),
+            Type::Primitive(Typ::String.into()),
+        ]));
+        let string = Type::Primitive(Typ::String.into());
+        let mut types = instance_of(id, wide.clone());
+        assert!(types.settle_in(&env, id, &string).unwrap());
+        let mut types = instance_of(id, string);
+        assert!(types.settle_in(&env, id, &wide).unwrap());
     }
 }

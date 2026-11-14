@@ -905,7 +905,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         let node = &mut self.node;
         self.reads
             .within(ctx, |ctx| wrap!(node, node.typecheck0_instance(ctx, types)))?;
-        if !types.settle(self.spec.id, &self.typ) {
+        if !types.settle(ctx, &self.spec, &self.typ)? {
             self.check_value(ctx, Narrowing::Instance)?;
         }
         self.complete_deferred(ctx)?;

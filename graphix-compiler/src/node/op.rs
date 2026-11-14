@@ -158,7 +158,7 @@ macro_rules! binary_node {
             ) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
                 wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
-                if false $(|| $settles)? && !types.settle(self.spec.id, &self.typ) {
+                if false $(|| $settles)? && !types.settle(ctx, &self.spec, &self.typ)? {
                     self.typecheck_own(ctx)?;
                 }
                 Ok(())
@@ -602,7 +602,7 @@ impl<R: Rt> Update<R> for Unary<R> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
-        match self.op == UnaryOp::Not || types.settle(self.spec.id, &self.typ) {
+        match self.op == UnaryOp::Not || types.settle(ctx, &self.spec, &self.typ)? {
             true => Ok(()),
             false => self.typecheck_own(ctx),
         }

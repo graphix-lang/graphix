@@ -526,7 +526,11 @@ callback's `d.domain` is born `string` where the check unified its cell
 with a formal's `[Array<i64>, string]`;
 `lang::functions::instance_node_narrower_than_its_row`, found by the
 admin TUI, not the gate). A node whose open cell found no part of its
-row derives its type as the check does.
+row derives its type as the check does. A node born with a closed type
+beside a closed row stands where either type holds the other; where
+they are disjoint the instance is refused
+(`InstanceTypes::settle`, a unit test in `lambda.rs`'s `settle_tests`):
+the kernel would read the value at the wrong representation.
 
 An instance judges nothing: what its definition's check accepted, it
 accepts (a refusal there is a check gap; the operators' mixed-numeric
