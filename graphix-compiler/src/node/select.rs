@@ -3916,36 +3916,6 @@ impl Deciding {
         )
     }
 
-    // XCR claude for claude: [bug/low] A holder's binding rewritten outside the steps
-    // that record it is read as rewritten. `decided` runs after each arm's pattern step
-    // and coverage step; the arms' bodies and the select's result union
-    // (Type::union_of_alternatives) run between and after them, and a normalization
-    // there that drops the member holding the decided cell leaves nothing in
-    // Decisions::held, so check_undecided walks the binding without that member. `let z
-    // = never(); let k: [i64, null] = 1; let u = select k { i64 as n => {a: n}, _ =>
-    // {a: z} }; select u { {a: 7} => u, v => u }` checks and decides `z` i64 (a later
-    // `z <- "s"` says "z is i64, inferred from an earlier use"); with `1` for either
-    // arm's body, or `{a: 1}` for `{a: n}`, it is refused "{ a: 7 } tests a value of
-    // 'z, a type not decided at this select". `(7, _)` over `(n, 0)` and `(z, 0)`, and
-    // an unannotated parameter for `z`, alike. No wrong value: the cell is bound. Same
-    // on base-r23. Tried: recording each holder that differs from its binding before
-    // the arms once more where the last check_undecided is called (the holders alone,
-    // never the cells, since a cell a body decided is not the patterns' decision)
-    // refuses all three and leaves a body's decision (`(a, 1) => { z <- a; a }`)
-    // accepted; not censused. probes: ~/ptmp/cr29/scratch/r23/23c/crash-rev/s1.gx,
-    // t4.gx, t5.gx, twins s2.gx, s4.gx (held-rewrite-after-steps-01)
-    // 2026-11-14 claude: Deciding::rewritten records each holder whose binding differs
-    // from the one it had before the arms, once, where check_undecided is called (the
-    // end and the dead-arm path); the steps record cells alone. A body's own decision
-    // stays accepted (body_deciding_a_member_a_later_union_drops). Pins in
-    // lang::select_undecided that fail without it:
-    // test_deciding_a_member_the_result_union_drops_refused,
-    // tuple_test_deciding_a_member_the_result_union_drops_refused,
-    // test_deciding_a_parameter_the_result_union_drops_refused,
-    // test_deciding_a_member_an_arm_body_drops_refused,
-    // test_deciding_a_member_a_guard_drops_refused,
-    // test_deciding_a_member_an_arm_body_drops_before_a_dead_arm_refused. Census
-    // against base-r24: no verdict or message changed.
     /// Add to `decided` each binding rewritten since the arms began, as it
     /// was then, whatever rewrote it: a union an arm's body or the select's
     /// result builds may drop the member that held a cell a pattern decided.
