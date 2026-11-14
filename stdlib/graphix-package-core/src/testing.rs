@@ -1102,6 +1102,19 @@ pub const HANG_GUARD: Duration = Duration::from_secs(600);
 pub enum Collect {
     /// Its first `n` updates.
     First(usize),
+    // CR claude for claude: [risk/low] About 20 tests collect with a quiet window
+    // (`Collect::Quiet`, `updates_until_quiet`: 100 ms to 1 s; lang::{attributes, byref,
+    // delivery, dense_deltas, fusion_review, modules, par_attrs, prune, test_builtins,
+    // wake_outside}, lib_tests::{bottom, http, lift, list, map, fs::watch},
+    // tests/fusion_diagnostics, tests/shared/runtime_cost), many on programs that settle.
+    // After the first value the window is wall time: a later cycle that runs longer than
+    // it (a JIT build, a dynamic load, the runtime's thread descheduled on a loaded box)
+    // ends the collection early, and a test that expects the values after it fails. It is
+    // the exposure test-local-wall-deadlines-01 took out of the waits for one value. None
+    // is seen to fail yet. A fix: a program that ends by itself collects with
+    // `Collect::Settled`, and the window counts only while the runtime is idle (it starts
+    // at a `GXHandle::wait_idle` answer), so a long cycle is never a quiet one.
+    // (quiet-window-positive-waits-01)
     /// Every update until the runtime settles, or none arrives for the
     /// window after the first (a program with a standing source).
     Quiet(Duration),

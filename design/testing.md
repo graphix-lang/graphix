@@ -28,12 +28,16 @@ How `run!` fixtures run, and what a landing owes.
   `testing::run_fixture`, compiled once, never a driver per fixture.
   Every wait for a value goes through `testing::next_update` (or
   `next_update_raw`, the value as delivered), which `run!`,
-  `run_with_tempdir!`, the `eval*` helpers, `Fixture`, `collect` and
-  `updates_until` share: it fails when the runtime settles without the
+  `run_with_tempdir!`, the `eval*` helpers, `Fixture` and
+  `Collect::First` share: it fails when the runtime settles without the
   value (nothing outstanding can bring it), and wall time bounds only a
   hang (`testing::HANG_GUARD`), so a program's work takes what the box's
-  load makes it take. A test takes no deadline of its own for a value
-  that must come; a wall window is only for what must not come.
+  load makes it take. `Collect::Settled` takes every value until the
+  settle, under the same guard. A test takes no deadline of its own for
+  a value that must come; a wall window is only for what must not come.
+  `Collect::Quiet` (and `updates_until_quiet`) also ends a collection at
+  the first gap of its window after a value: that window is wall time,
+  for a program with a standing source that never settles.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
   and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
   forked nothing (a finding where the fixture has fork points).
