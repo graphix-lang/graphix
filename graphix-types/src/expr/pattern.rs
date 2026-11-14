@@ -464,31 +464,6 @@ impl StructurePattern {
         })
     }
 
-    // XCR claude for claude: [bug/low] The refusal of a partial struct pattern two of
-    // whose members complete apart prints an undecided cell raw and offers a select's
-    // remedy wherever the pattern stands. `let {a, ..} = v` over `{a: [1], c: x}` and
-    // `{a: ["s"], c: y}`, `x: string` and `y` lets over `never()`, is refused "the
-    // pattern { a, .. } matches more than one member of [{ a: Array<i64>, c: string },
-    // { a: Array<string>, c: '_8337: unbound }]; annotate the member you mean, e.g. `T
-    // as { a, .. }`": a let takes every member and has no `T as` test, and `y` goes
-    // unnamed (r3.gx; m2.gx alike with `a: [2]`); a select prints the cell raw
-    // too (s3.gx), and `let {a, ..}` over `[{a: i64, b: string}, {a: i64, c: f64}]`
-    // (m1.gx) offers `T as`, where only a select takes that value apart. A fix: an
-    // error type its holder tells, as node::pattern::undecided_members tells
-    // UndecidedMembers, the cells named through Holders, a let's and a parameter's
-    // remedy what takes the value (every field named where the members share their
-    // fields, else a select). Same on base-r24. probes:
-    // ~/ptmp/cr29/scratch/r24/24g/lumr/{r3,m1,m2,s3}.gx (many-members-told-raw-01)
-    // 2026-11-14 claude: Two members that complete apart are now a ManyMembers
-    // (Apart::Decided) told by members_refusal at every completion site: cells named
-    // through Holders, a select asks for the member, a let and a parameter name every
-    // field where the members share theirs and bind the value whole and select
-    // otherwise. Pins that fail without it:
-    // lang::tuples_structs::{let_partial_struct_over_members_decided_apart_refused,
-    // let_partial_struct_over_members_that_share_no_fields_refused,
-    // parameter_partial_struct_over_members_that_share_no_fields_refused,
-    // select_partial_struct_over_members_decided_apart_refused}; skill cases in
-    // ide/skills/graphix-lang/select.md.
 
     /// The completion of the one scrutinee member `complete` answers
     /// for and the pattern, of the inferred type `ptype`, could match. A
