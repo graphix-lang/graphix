@@ -3623,11 +3623,19 @@ impl Type {
         if tv.binding().is_some() {
             return None;
         }
-        tv.cell_constraints().iter().find_map(|c| Self::bound_refusal(env, c, t))
+        let mut asking: LPooled<Vec<(TraitId, Self)>> = LPooled::take();
+        tv.cell_constraints()
+            .iter()
+            .find_map(|c| Self::bound_refusal(env, c, t, &mut asking))
     }
 
     /// Why `t` fails the trait bound `c`, when `c` is a trait reference.
-    fn bound_refusal(env: &Env, c: &Self, t: &Self) -> Option<anyhow::Error> {
+    fn bound_refusal(
+        env: &Env,
+        c: &Self,
+        t: &Self,
+        asking: &mut Vec<(TraitId, Self)>,
+    ) -> Option<anyhow::Error> {
         let Self::Ref(r) = c else { return None };
         let tid = env.trait_of_ref(r)?;
         let def = env.trait_def(tid)?;
@@ -3639,6 +3647,9 @@ impl Type {
             if Self::trait_contains(tid, BitFlags::empty(), env, &mut hist, m).ok()? {
                 continue;
             }
+            if asking.iter().any(|(i, a)| *i == tid && a == m) {
+                continue;
+            }
             let hidden = env.impls.get(&tid).and_then(|l| {
                 l.iter()
                     .find(|im| {
@@ -3648,7 +3659,7 @@ impl Type {
                     .cloned()
             });
             return Some(match hidden {
-                None => match Self::impl_bound_refusal(env, tid, m) {
+                None => match Self::asked_impl_bound_refusal(env, tid, m, asking) {
                     Some(why) => Told::over(
                         why,
                         &format_compact!(
@@ -3699,9 +3710,28 @@ impl Type {
         None
     }
 
+    /// [`Self::impl_bound_refusal`] with `m` recorded as being asked about,
+    /// so a type that reaches itself through the bound is not asked again.
+    fn asked_impl_bound_refusal(
+        env: &Env,
+        tid: TraitId,
+        m: &Self,
+        asking: &mut Vec<(TraitId, Self)>,
+    ) -> Option<anyhow::Error> {
+        asking.push((tid, m.clone()));
+        let why = Self::impl_bound_refusal(env, tid, m, asking);
+        asking.pop();
+        why
+    }
+
     /// Why a bound of an impl of `tid` whose head holds `m` is not met by
     /// what its parameter took.
-    fn impl_bound_refusal(env: &Env, tid: TraitId, m: &Self) -> Option<anyhow::Error> {
+    fn impl_bound_refusal(
+        env: &Env,
+        tid: TraitId,
+        m: &Self,
+        asking: &mut Vec<(TraitId, Self)>,
+    ) -> Option<anyhow::Error> {
         for im in env.impls_of(tid)?.iter().filter(|im| !im.params.is_empty()) {
             let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
             let Some(head) = im.target.reset_tvars_int(&mut known, Fresh::Copy) else {
@@ -3715,7 +3745,7 @@ impl Type {
                 let taken = known.get(&p.cell_addr()).and_then(TVar::binding);
                 let Some(taken) = taken else { continue };
                 for c in p.cell_constraints().iter() {
-                    if let Some(why) = Self::bound_refusal(env, c, &taken) {
+                    if let Some(why) = Self::bound_refusal(env, c, &taken, asking) {
                         return Some(why);
                     }
                 }

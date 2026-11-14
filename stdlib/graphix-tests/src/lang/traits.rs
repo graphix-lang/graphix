@@ -499,6 +499,27 @@ run!(
     ; FuseExpect::None
 );
 
+// A type that reaches itself through its impl's bound is asked once, and the
+// member that fails is named.
+run!(
+    trait_impl_bound_recursive_type_names_the_failing_member,
+    refused(
+        "Array<T> does not implement Show: a bound of its impl is not met: (i64, i64) \
+         does not implement Show"
+    ),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64 { let show = |x| "int" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |xs| "[array::map(xs, |x| Show::show(x))]"
+        };
+        type T = [Array<T>, (i64, i64)];
+        let xs: T = [];
+        let result = Show::show(xs)
+    "#
+    ; FuseExpect::None
+);
+
 // A declared variable may be any type: a member holding one crosses
 // whatever it may share a value with.
 run!(
