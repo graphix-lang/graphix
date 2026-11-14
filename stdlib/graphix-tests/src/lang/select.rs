@@ -4992,6 +4992,33 @@ run!(
 );
 
 run!(
+    written_variable_over_a_value_and_a_function_leaves_a_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (7, 1), _ => (|x: i64| x + 100, 2) };
+            select u { ('q, i64) as (r, n) => n, _ => 0 }
+        };
+        k(0)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_over_a_value_and_a_function_twin_runs,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (7, 1), _ => (|x: i64| x + 100, 2) };
+            select u { ('q, i64) as (r, n) => n }
+        };
+        [k(0), k(1)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 2]);
+    FuseExpect::Jit
+);
+
+run!(
     written_variable_over_every_member_leaves_a_names_catch_all_dead,
     r#"{
         let k = |v: i64| {
