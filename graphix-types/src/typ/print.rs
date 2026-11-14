@@ -413,6 +413,22 @@ impl Type {
 // for 10 levels of text. A fix tells two unions alike by their members (each member's verdict
 // against the other's, in one context) or reuses a union's text across copies printed under the
 // same cells. No program has shown such a chain. (print-lookalike-copies-exp-01)
+// 2026-11-14 claude: r25 fixer, no code change (BLOCKED, not forced). The test pin
+// members_alike_but_for_cells_holding_a_union_print_as_before still shows 1534 prints at depth 10
+// on base-r25, so the CR is current. A fix that tells two unions alike by their members must also
+// reproduce write_deref_set's dedup, which depends on identity, not text alone: two tvar_free
+// members that print alike are both kept unless strictly_identical (print.rs write_deref_set, the
+// !(k.tvar_free() && t.tvar_free()) guards), so pairwise alike of the members is not enough: the
+// identity pattern among members (which pairs are strictly_identical, which fall to Parts, which
+// to text) has to match between the two copies, plus the SHOWN/left budgets that depend on
+// position, plus a cell bound to a union has to be derefed by alike where print_alike now refuses
+// it (ALONE). Reusing a union's text across copies needs a memo keyed by structure under the same
+// cells, i.e. a new walk. Both add machinery to Parts, which already carries an open unsoundness
+// CR (print-parts-renamed-01) in the same code; the cost is exponential only for a message type
+// nesting unions of cells that each hold a copy of the level below, and no program has shown one.
+// Recommendation: leave this CR as the record (or delete it) unless a program shows the chain; if
+// one does, the right fix is probably to make unions built by one inference share a node, not to
+// teach the printer to match copies.
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     if ALONE.get() {
         return Err(fmt::Error);
