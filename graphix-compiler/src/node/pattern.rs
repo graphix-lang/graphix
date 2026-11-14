@@ -274,6 +274,15 @@ fn expand(env: &Env, typ: &Type) -> Option<Type> {
     Some(t)
 }
 
+/// The union of `parts`, `None` of none.
+fn union_of(mut parts: SmallVec<[Type; 4]>) -> Option<Type> {
+    match parts.len() {
+        0 => None,
+        1 => parts.pop(),
+        _ => Some(Type::Set(Arc::from_iter(parts)).normalize()),
+    }
+}
+
 /// Whether `typ`'s head is a constructor every value of it has, or a union
 /// of such: an open cell, `Any` or ⊥, alone or in a union, may yet hold a
 /// value of any shape.
@@ -2736,32 +2745,48 @@ impl StructPatternNode {
     /// pattern's width, each field it names at its index.
     /// `None` for any other pattern, or where no member passes.
     pub(crate) fn matched_part(&self, env: &Env, typ: &Type) -> Option<Type> {
+        self.part(env, typ, false)
+    }
+
+    /// A part of `typ` that holds every value this pattern takes of it:
+    /// [`Self::matched_part`], with `bool` at a bool literal and, at an
+    /// or-pattern, the parts of its alternatives, each of which has one.
+    pub(crate) fn headed_part(&self, env: &Env, typ: &Type) -> Option<Type> {
+        self.part(env, typ, true)
+    }
+
+    fn part(&self, env: &Env, typ: &Type, heads: bool) -> Option<Type> {
         let parts = |binds: &[Self], ts: &[Type]| {
             (ts.len() == binds.len()).then_some(())?;
             let parts = binds
                 .iter()
                 .zip(ts.iter())
-                .map(|(b, t)| b.matched_part(env, t))
+                .map(|(b, t)| b.part(env, t, heads))
                 .collect::<Option<SmallVec<[Type; 8]>>>()?;
             Some(Arc::from_iter(parts))
         };
+        let literal = |typ_of: Typ| {
+            let t = Type::Primitive(typ_of.into());
+            t.could_match(env, typ).unwrap_or(false).then_some(t)
+        };
         crate::stack::ensure_sufficient(|| match self {
             Self::Bind(_) | Self::Ignore => Some(typ.clone()),
-            Self::Literal(Value::Null) => {
-                let null = Type::Primitive(Typ::Null.into());
-                null.could_match(env, typ).unwrap_or(false).then_some(null)
-            }
+            Self::Literal(Value::Null) => literal(Typ::Null),
+            Self::Literal(Value::Bool(_)) if heads => literal(Typ::Bool),
+            Self::Or { alts } if heads => union_of(
+                alts.iter().map(|a| a.part(env, typ, heads)).collect::<Option<_>>()?,
+            ),
             Self::Slice { kind: SliceKind::Tuple, binds, all: _ } => {
                 match &expand(env, typ)? {
                     Type::Tuple(ts) => Some(Type::Tuple(parts(binds, ts)?)),
-                    t => self.members_part(env, t),
+                    t => self.members_part(env, t, heads),
                 }
             }
             Self::Variant { tag, binds, all: _ } => match &expand(env, typ)? {
                 Type::Variant(t, ts, at) if t == tag => {
                     Some(Type::Variant(t.clone(), parts(binds, ts)?, *at))
                 }
-                t => self.members_part(env, t),
+                t => self.members_part(env, t, heads),
             },
             Self::Struct { binds, width, all: _ } => match &expand(env, typ)? {
                 Type::Struct(fs) => {
@@ -2773,7 +2798,7 @@ impl StructPatternNode {
                         .iter()
                         .map(|(n, t, at)| {
                             let t = match binds.iter().find(|(m, _, _)| m == n) {
-                                Some((_, _, p)) => p.matched_part(env, t)?,
+                                Some((_, _, p)) => p.part(env, t, heads)?,
                                 None => t.clone(),
                             };
                             Some((n.clone(), t, *at))
@@ -2781,22 +2806,16 @@ impl StructPatternNode {
                         .collect::<Option<SmallVec<[_; 8]>>>()?;
                     Some(Type::Struct(Arc::from_iter(fields)))
                 }
-                t => self.members_part(env, t),
+                t => self.members_part(env, t, heads),
             },
             _ => None,
         })
     }
 
-    /// [`Self::matched_part`] over `t`, a union: the parts of its members.
-    fn members_part(&self, env: &Env, t: &Type) -> Option<Type> {
+    /// [`Self::part`] over `t`, a union: the parts of its members.
+    fn members_part(&self, env: &Env, t: &Type, heads: bool) -> Option<Type> {
         let Type::Set(ms) = t else { return None };
-        let mut parts: SmallVec<[Type; 4]> =
-            ms.iter().filter_map(|m| self.matched_part(env, m)).collect();
-        match parts.len() {
-            0 => None,
-            1 => parts.pop(),
-            _ => Some(Type::Set(Arc::from_iter(parts)).normalize()),
-        }
+        union_of(ms.iter().filter_map(|m| self.part(env, m, heads)).collect())
     }
 
     /// Whether every value of `typ` passes this pattern's structure:

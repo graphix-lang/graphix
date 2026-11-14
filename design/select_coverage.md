@@ -120,9 +120,17 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   holds whole, every cell still open one type equal only to itself
   (`Uncovered`: over the referent of `` &mut (select b { true => (`K,
   x), false => (`L, 0) }) ``, `(_, 0)` behind `` (`K, _) `` meets no
-  value of `x`; a member inside a part, `select (*r, 1)`, is not taken
-  out; the settle holds the cells of a member built into such a cell
-  that one of the arms' tests holding no cell holds whatever they
+  value of `x`), and less each member those arms take together: the
+  literal pool counted over the view's own members, an arm pooled
+  against the one member left, none of whose cells the arms decided,
+  that its test holds where its pattern takes it, every cell held
+  (`Uncovered::pool`, `StructPatternNode::headed_part`: over `(b, x)`
+  beside `` (`L, 0) ``, `(_, 0)` behind `(true, _)` and `(false, _)`
+  meets no value of `x`, where the referent the arms decided, `[(Any,
+  i64), (bool, Any)]`, holds two members the bool pair could match and
+  `Reach` completes no pool; a member inside a part, `select (*r, 1)`,
+  is not taken out; the settle holds the cells of a member built into
+  such a cell that one of the arms' tests holding no cell holds whatever they
   become, so no other test decides them by its place in the arms'
   union, and `x` stays open there with the parts in either order; a
   member no test holds so that two of them could take, `` (`K, x, y) ``

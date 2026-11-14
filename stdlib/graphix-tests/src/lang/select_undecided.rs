@@ -1455,6 +1455,168 @@ run!(written_arm_behind_a_cover_of_a_member_below_a_reference, r#"{
     [f(1, true), f(1, false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2]); FuseExpect::Jit);
 
+// A member of the bound that unguarded arms before an arm take together, a
+// literal pool over its heads, does not reach it either: each of those arms'
+// tests holds the member where its pattern takes it, whatever the member's
+// cells become.
+run!(arm_behind_a_pool_of_a_member_below_a_reference, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (x, b), false => (0, `L) });
+        select *r { (_, true) => 1, (_, false) => 2, (0, _) => 3, _ => 4 }
+    };
+    [
+        f("s", true, true), f("s", false, true), f("s", true, false),
+        f(0, true, true), f(0, false, true), f(0, false, false),
+        g("s", true, true), g("s", false, true), g("s", true, false),
+        g(0, true, true), g(0, false, true), g(0, false, false)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3]); FuseExpect::Jit);
+
+run!(arm_behind_a_pool_of_a_struct_and_a_payload_below_a_reference, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => {k: b, v: x}, false => {k: `L, v: 0} });
+        select *r { {k: true, v: _} => 1, {k: false, v: _} => 2, {k: _, v: 0} => 3, _ => 4 }
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => `P(b, x), false => `P(`L, 0) });
+        select *r { `P(true, _) => 1, `P(false, _) => 2, `P(_, 0) => 3, _ => 4 }
+    };
+    [
+        f("s", true, true), f("s", false, true), f("s", true, false), f(0, false, true),
+        g("s", true, true), g("s", false, true), g("s", true, false), g(0, false, true)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 2, 1, 2, 3, 2]); FuseExpect::Jit);
+
+run!(arm_behind_a_pool_of_a_member_below_an_abstract_parameter, r#"{
+    type W<'p> = Abstract<'p>;
+    let f = |x, b: bool, c: bool| {
+        let w = W(select c { true => (b, x), false => (`L, 0) });
+        select w.0 { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    [f("s", true, true), f("s", false, true), f("s", true, false), f(0, true, true)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 1]); FuseExpect::Jit);
+
+run!(arm_behind_a_pool_over_two_parts_of_a_member_below_a_reference, r#"{
+    let f = |x, a: bool, b: bool, c: bool| {
+        let r = &mut (select c { true => (a, b, x), false => (`L, `L, 0) });
+        select *r {
+            (true, true, _) => 1,
+            (true, false, _) => 2,
+            (false, _, _) => 3,
+            (_, _, 0) => 4,
+            _ => 5
+        }
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => ((b, 1), x), false => (`L, 0) });
+        select *r { ((true, _), _) => 1, ((false, _), _) => 2, (_, 0) => 4, _ => 5 }
+    };
+    [
+        f("s", true, true, true), f("s", true, false, true), f("s", false, true, true),
+        f("s", true, true, false), f(0, true, true, true),
+        g("s", true, true), g("s", false, true), g("s", true, false), g(0, true, true)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 4, 1, 1, 2, 4, 1]); FuseExpect::Jit);
+
+run!(arm_behind_an_or_pool_of_a_member_below_a_reference, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true | false, _) => 1, (_, 0) => 3, _ => 4 }
+    };
+    let g = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) | (false, _) => 1, (_, 0) => 3, _ => 4 }
+    };
+    let h = |x, t: [`A, `B, `C], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A | `B, _) => 1, (`C, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    [
+        f("s", true, true), f("s", false, true), f("s", true, false), f(0, true, true),
+        g("s", true, true), g("s", false, true), g("s", true, false), g(0, true, true),
+        h("s", `A, true), h("s", `C, true), h("s", `A, false), h(0, `B, true)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 3, 1, 1, 1, 3, 1, 1, 2, 3, 1]); FuseExpect::Jit);
+
+// A name in a pooled arm holds the member's part as it stands, so the
+// arm's test still holds the member.
+run!(arm_behind_a_pool_that_binds_the_open_part, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, n) => str::len("[n]"), (false, _) => 20, (_, 0) => 30, _ => 40 }
+    };
+    [f("s", true, true), f(100, true, true), f("s", false, true), f("s", true, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3, 20, 30]); FuseExpect::Jit);
+
+run!(later_use_decides_a_cell_of_a_pooled_member_below_a_reference, r#"{
+    let x = never();
+    let b = false;
+    let c = true;
+    let r = &mut (select c { true => (b, x), false => (`L, 0) });
+    let s = select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 };
+    x <- "s";
+    s
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
+
+// The pool is what frees the arm behind: half of it, a guarded half, an
+// arm between its halves, or a member it does not take, and the arm is
+// refused.
+run!(arm_behind_half_a_pool_of_a_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (_, 0) => 3, _ => 4 }
+    };
+    f("s", true, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_behind_a_guarded_pool_of_a_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) if c => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    f("s", true, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_between_the_halves_of_a_pool_below_a_reference_refused, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (_, 0) => 3, (false, _) => 2, _ => 4 }
+    };
+    f("s", true, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_behind_a_pool_tests_the_member_that_reaches_it_refused, r#"{
+    let f = |x, y, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, y) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    f(1, 0, true, true)
+}"#, refused("(_, 0) tests a value of 'y, a type not decided at this select"); FuseExpect::None);
+
+// A cell of the member that the arms decided is not one the pool's arms
+// hold whatever it becomes: the test behind them is what decided it.
+run!(arm_behind_a_pool_over_a_cell_the_arms_decided_refused, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 }
+    };
+    f(0, true, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+// The arms up to a dead one are judged behind the pool too, so the dead
+// arm is what is refused.
+run!(dead_arm_behind_a_pool_of_a_member_below_a_reference_refused, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, (true, _) => 5, _ => 4 }
+    };
+    f(1, true, true)
+}"#, refused("unreachable arm"); FuseExpect::None);
+
 run!(arm_behind_a_cover_tests_the_member_that_reaches_it_refused, r#"{
     let f = |x, y, b: bool| {
         let r = &mut (select b { true => (`K, x), false => (`L, y) });
