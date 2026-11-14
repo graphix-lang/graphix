@@ -1225,8 +1225,10 @@ fn an_interface_mismatch_is_reported_where_it_is() {
 }
 
 /// What the check tells above the error it explains leads the
-/// diagnostic: the binding a module's refusal names to annotate, an
-/// operator's remedy, and a note told at two frames, once.
+/// diagnostic: the binding a module's refusal names to annotate, with
+/// its file where the diagnostic is in another (the module's, or its
+/// interface's), an operator's remedy, and a note told at two frames,
+/// once.
 #[test]
 fn what_the_check_tells_first_leads_the_diagnostic() {
     let mut c = Client::start(&[
@@ -1237,9 +1239,27 @@ fn what_the_check_tells_first_leads_the_diagnostic() {
     c.open("main.gx");
     c.open("m.gx");
     let d = c.diagnostics("m.gx");
-    let told = "the check decides a type the code around the module left open: \
-                annotate `fs` (line 1, column 5)\nval go is declared (i64, f64)";
-    assert!(matches!(&d[..], [(1, 0, m)] if m.starts_with(told)), "{d:?}");
+    let told = format!(
+        "the check decides a type the code around the module left open: \
+         annotate `fs` (line 1, column 5 in file {})\nval go is declared (i64, f64)",
+        c.path("main.gx").display()
+    );
+    assert!(matches!(&d[..], [(1, 0, m)] if m.starts_with(&told)), "{d:?}");
+    let mut c = Client::start(&[
+        ("main.gx", "let a = never();\nmod m;\nm::y\n"),
+        ("m.gxi", "val y: i64;\nval z: i64;\n"),
+        ("m.gx", "let y = { super::a <- 1; 1 };\n"),
+    ]);
+    for f in ["main.gx", "m.gxi", "m.gx"] {
+        c.open(f);
+    }
+    let told = format!(
+        "the check decides a type the code around the module left open: \
+         annotate `a` (line 1, column 5 in file {})\nsig item val z: i64 is missing \
+         an implementation",
+        c.path("main.gx").display()
+    );
+    assert_eq!(c.diagnostics("m.gxi"), [(1, 0, told)]);
     let mut c = Client::start(&[("a.gx", "let s = \"a\";\ns + \"b\"\n")]);
     c.open("a.gx");
     let told = "cannot compute string + string: arithmetic takes numbers (to join \

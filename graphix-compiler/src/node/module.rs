@@ -8,9 +8,9 @@ use crate::{
     },
     errf,
     expr::{
-        At, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext,
-        Sandbox, Sig, SigItem, SigKind, Source, Told, TypeDefBody, TypeDefExpr, UseItem,
-        WrittenAt, add_interface_modules, parser,
+        At, BindSig, Doc, ErrorSite, Expr, ExprId, ExprKind, ModPath, Origin,
+        ParserContext, Sandbox, Sig, SigItem, SigKind, Source, Told, TypeDefBody,
+        TypeDefExpr, UseItem, WrittenAt, add_interface_modules, parser,
     },
     format_with_flags,
     ide::{ModuleRefSite, SigImplLink},
@@ -2297,10 +2297,12 @@ impl<R: Rt> Update<R> for Module<R> {
                 let res = match (self.check_body(ctx), writes.foreign()) {
                     (res, None) => res,
                     (res, Some(w)) => {
+                        let shown = res.as_ref().err().and_then(shown_in);
+                        let shown = shown.unwrap_or(&self.spec.ori);
                         let m = format_compact!(
                             "the check decides a type the code around the module \
                              left open: {}",
-                            decided_binds(ctx, &self.scope.lexical, &self.spec.ori, &w)
+                            decided_binds(ctx, &self.scope.lexical, shown, &w)
                         );
                         match res {
                             Ok(()) => Err(anyhow!("{m}")),
@@ -2339,10 +2341,19 @@ impl<R: Rt> Update<R> for Module<R> {
     }
 }
 
+/// The file `e` is reported in: its site's, or the one a parse or an
+/// interface item placed it in.
+fn shown_in(e: &anyhow::Error) -> Option<&Arc<Origin>> {
+    match e.downcast_ref::<ErrorSite>() {
+        Some(site) => Some(&site.expr().ori),
+        None => e.downcast_ref::<ParserContext>().map(|p| &p.ori),
+    }
+}
+
 /// The bindings around `module` whose types hold what its check wrote,
-/// by position, for the refusal of its statement in `at`: each named
-/// with its file where that is not `at`'s. A binding a lowering made (a
-/// definition's own throws) is never named.
+/// by position, for a refusal reported in `at`: each named with its file
+/// where that is not `at`'s. A binding a lowering made (a definition's
+/// own throws) is never named.
 fn decided_binds<R: Rt>(
     ctx: &CompileCtx<R>,
     module: &ModPath,

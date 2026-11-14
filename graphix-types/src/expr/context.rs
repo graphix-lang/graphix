@@ -247,15 +247,14 @@ struct Line {
 }
 
 impl Told {
-    /// `e` with `text` told above it; told again right above itself, it
-    /// is one line.
+    /// `e` with `text` told above it, unless the nearest thing told
+    /// under it already says `text`.
     pub fn over(e: anyhow::Error, text: &str) -> anyhow::Error {
-        let under = e.downcast_ref::<Told>().map(|t| t.0.clone());
-        let line = match under {
-            Some(under) if under.text == text => under,
-            under => Arc::new(Line { text: text.into(), under }),
+        let under = match e.downcast_ref::<Told>() {
+            Some(told) if told.0.text == text => return e,
+            told => told.map(|t| t.0.clone()),
         };
-        e.context(Told(line))
+        e.context(Told(Arc::new(Line { text: text.into(), under })))
     }
 
     /// Everything told from here down the chain, outermost first.
@@ -281,8 +280,25 @@ impl std::error::Error for Told {}
 
 #[cfg(test)]
 mod test {
-    use super::{At, Origin, parser};
+    use super::{At, Origin, Told, parser};
     use crate::expr::{Expr, ExprKind};
+
+    /// A note told again over itself, through a frame, is in the chain
+    /// once; a different one between them keeps both.
+    #[test]
+    fn a_note_told_over_itself_is_told_once() {
+        let at = |line| ExprKind::NoOp.to_expr(crate::SourcePosition { line, column: 1 });
+        let e = Told::over(anyhow::anyhow!("leaf").at(&at(2)), "annotate `fs`");
+        let e = Told::over(e.at(&at(1)), "annotate `fs`");
+        let message = format!("{e:#}");
+        assert_eq!(message.matches("annotate `fs`").count(), 1, "{message}");
+        let e = Told::over(Told::over(e, "annotate `g`"), "annotate `fs`");
+        let told = e.downcast_ref::<Told>().unwrap();
+        assert_eq!(
+            told.lines().collect::<Vec<_>>(),
+            ["annotate `fs`", "annotate `g`", "annotate `fs`"]
+        );
+    }
 
     #[test]
     fn a_rewritten_frame_keeps_its_source_text() {
