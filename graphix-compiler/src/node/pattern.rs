@@ -3376,33 +3376,6 @@ impl<R: Rt> PatternNode<R> {
         scrut: &Type,
         leaves: &mut SmallVec<[Leaf; 4]>,
     ) -> Result<()> {
-        // XCR claude for claude: [bug/medium] A written test that is `_` where a
-        // declared variable stands types its name at bottom, and the run-time test
-        // for bottom passes every value: `let k = |z: 'a| select z { _ as w => w + 1,
-        // _ => 0 }; println(k("q"))` passes --check; fused it panics ("kernel param
-        // `w`: runtime String("q") does not match the compiled Scalar(I64) slot") and
-        // --no-fusion logs an arith error. Alike under a bound (`'a: [i64, string]`),
-        // and where a union of products holds the variable: `(i64, _) as (n, w)` over
-        // `[(i64, 'a), (string, 'a)]` checks with `n + w`. Over a closed type the
-        // same test is refused ("pattern _ will never match [i64, string]"), and
-        // under one product (`(_, i64) as (w, n)` over `('a, i64)`, `Array<_> as [w,
-        // ..]` over `Array<'a>`) the name keeps the variable and `w + 1` is refused.
-        // Same on base-r24. Not diagnosed further: the name is typed by the test
-        // where the test does not hold the scrutinee around it, and
-        // StructurePattern::meets_rigid_written refuses `_` only for a pattern that
-        // tests or binds inside the variable's value. What would close it: refuse
-        // `_` at a part of a written test where a declared variable stands, as
-        // written_refusal does inside one, naming `Any`. probes:
-        // ~/ptmp/cr29/scratch/r24/24a/tba/review/{h1,h3,h4,h5,h7}.gx
-        // (bottom-test-over-variable-01)
-        // 2026-11-14 claude: A name a written test types at `_` where a declared
-        // variable stands (`_ as w` over 'a, a bound, a union of products) is refused
-        // in type_inside_rigid, naming the type or Any. Pins
-        // lang::select::written_bottom_over_a_declared_{variable,bound}_refused and
-        // written_bottom_in_a_union_of_products_refused fail without it (12 of 16
-        // mode runs); twin written_bottom_over_a_declared_variable_any_twin and the
-        // select.md cases lines hold the accepted forms. Census base-r25 vs mine: no
-        // file changes.
         let parts = self.type_predicate.matching_parts(env, scrut)?;
         let mut inside: SmallVec<[Leaf; 4]> = SmallVec::new();
         self.structure_predicate.leaves(
