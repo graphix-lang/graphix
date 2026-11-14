@@ -2466,37 +2466,6 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         }
     }
 
-    // XCR claude for claude: [bug/low] An instance of a retired body's function that
-    // is first built after the reload binds every call of that body's own functions
-    // at run time, so nothing fuses there and `#[native]` refuses the bind: the call
-    // is bottom. `forget_binding` drops a deleted binding's `bind_to_lambda` entry
-    // though a function value still pins the binding, and a call site built later
-    // finds no static callee. n3native.gx: the first body is `let helper = |y: i64| y
-    // + 6; let make = |x: i64| #[native] helper(x)`, `saved` is its `make`, and
-    // `late`, which first calls `saved` after the reload, logs "binding the callee
-    // failed: .. call `helper(x)` has no static callee: its function is a run-time
-    // value" and never has a value, where the instance alive across the reload
-    // prints 20. n1native.gx: the same for the body's own `#[native] (Sh::sh(C(x)) +
-    // 5)`; base-r24 alike, both. n2native.gx: the same through an outside function
-    // (`#[native] app(C(x))`), since retired-body-outside-dispatch-01 dispatches it
-    // to the retired body's impl (base-r24 fused it over the next body's). Without
-    // the attribute the value is right and unfused, and a seq step that makes such a
-    // call takes a cycle more a run (r2long.gx against its `alive`: `late` moves
-    // every 5 cycles, `alive` every 4). With the entry left in place while the
-    // binding is pinned the three print `late=[20, 21]`; the entry must then go when
-    // the last function value naming the binding does (`release_references`), or the
-    // leak pins fail. An escaped closure of a deleted slot or block that calls a
-    // sibling function is the same code, not probed. probes:
-    // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/review/{n1native,n2native,n3native,r2long}.gx,
-    // `graphix --no-cache` (orphan-fn-late-bind-defuse-01)
-    // 2026-11-14 claude: Fixed: forget_binding keeps the bind_to_lambda/builtin_bindings records while a
-    // reference or function value pins the binding; delete_binding drops them when nothing names it,
-    // release_references when the last holder goes, and Lives::collect walks the record's function value as one
-    // more value of the orphan (else the extra owner kept the captures alive and the leak pins failed). Pins
-    // failing without the fix (jit, jit_par):
-    // modules::a_retired_bodys_function_first_called_after_the_reload_binds_{its_helper,its_own_impl,an_outside_function}_statically;
-    // the seq-step pin a_function_saved_across_a_reload_dispatches_a_seq_steps_call_to_its_own_impl is rewritten
-    // (late now moves at alive's cadence: two runs, not one).
     /// Forget what the indexes that outlive a batch hold for `id`, a
     /// binding about to be deleted. One that is another's variable
     /// ([`StaticCallees::join`]) leaves it here, and where a reference or
