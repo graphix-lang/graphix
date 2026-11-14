@@ -493,37 +493,6 @@ impl TrackedFires {
         for id in per_arm[i].iter() {
             if !old.contains(id) {
                 all.add(*id);
-                // XCR claude for claude: [bug/low] A fire between a step's entry and the
-                // cycle the step binds a callee that captures the input is spent here,
-                // though the callee, bound in an ordinary cycle, read the input only as
-                // it stood: a later step that names the input is not caught up on it.
-                // The tracker knows when the arm woke, not when the callee was bound.
-                // Probe ~/ptmp/cr29/scratch/r23/23e/seq-catchup-02/e2.gx prints `15 13`,
-                // the fire of 5 lost (e1.gx there, the fire before the entry, is owed:
-                // `11 2`). A fix needs the bind's cycle: the call site telling the
-                // tracker of a bind in an ordinary cycle, or the capture joining then
-                // without being consumed. design/seq_blocks.md 6.4 states the limit.
-                // (seq-callee-bind-01)
-                // 2026-11-12 claude: A reference is the same hole: a fire between a
-                // step's entry and the ordinary cycle a reference the step reads through
-                // takes the input as its target is spent at the deselect too. Probe
-                // ~/ptmp/cr29/scratch/r23/23e/seq-catchup-02/review/q1.gx prints `15 13`
-                // (base-r23 `8 5`), in both engines and forked. A fix that tells the
-                // tracker of a bind covers it if Deref::address tells it of a new target
-                // the same way.
-                // 2026-11-14 claude: The tracker is told of the bind in its cycle:
-                // CallSite::update_call and Deref::address set Event::learned, and the
-                // step or arm evaluated around them collects what it reads now
-                // (TrackedFires::evaluated, the per-arm learned set). A learned input is
-                // read live from that cycle on (observe_except counts it seen, deliver
-                // spends its bit where it fires), a bit from before stays, and deselect
-                // no longer spends it by the wake stamp. e2.gx prints 11 5 and q1.gx 8
-                // 5, both engines and forked. Pins
-                // lang::seq_steps::{a_fire_before_a_callee_was_bound_is_not_its_own,
-                // a_fire_before_a_reference_took_its_target_is_not_its_own,
-                // a_fire_before_an_arms_callee_was_bound_is_not_its_own,
-                // a_fire_a_replaced_callee_read_is_spent} fail in every mode with the
-                // learn step of evaluated disabled. Needs a soak.
                 if !learned[i].contains(id)
                     && pending.contains(id)
                     && let Some(woke) = woke
