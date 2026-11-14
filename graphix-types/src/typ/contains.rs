@@ -1381,7 +1381,7 @@ fn commit_conjuncts(
         // (refused), {q5,q4}.gx (the written twins)
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
-            false => commit_parts(tv, flags, env, hist, c, t)?,
+            false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
         };
         if !held {
             return Ok(false);
@@ -1440,13 +1440,17 @@ impl TVar {
 /// the least it must accept. A writable reference's referent is its
 /// part's exactly, and so is an abstract type's parameter. Of a union's
 /// members, each name and bound variable among them followed to what it
-/// stands for, one has the parts ([`member_with_parts`]). A probe
-/// accepted `t` already; what the walk can't line up it leaves.
+/// stands for, one has the parts ([`member_with_parts`]). A decided
+/// variable of the conjunct is met as its binding, and a name in `t`
+/// applied over an open cell as what it stands for, each pair of a part
+/// and such a name once (`expanded`). A probe accepted `t` already; what
+/// the walk can't line up it leaves.
 fn commit_parts(
     tv: &TVar,
     flags: BitFlags<ContainsFlags>,
     env: &Env,
     hist: &mut ContainsHist,
+    expanded: &mut Lazy<AHashSet<RefPair>>,
     c: &Type,
     t: &Type,
 ) -> Result<bool> {
@@ -1455,10 +1459,11 @@ fn commit_parts(
             return c.contains_int(flags, env, hist, t);
         }
         let all = |pairs: &mut dyn Iterator<Item = (&Type, &Type)>,
-                   hist: &mut ContainsHist|
+                   hist: &mut ContainsHist,
+                   expanded: &mut Lazy<AHashSet<RefPair>>|
          -> Result<bool> {
             for (c, t) in pairs {
-                if !commit_parts(tv, flags, env, hist, c, t)? {
+                if !commit_parts(tv, flags, env, hist, expanded, c, t)? {
                     return Ok(false);
                 }
             }
@@ -1494,15 +1499,28 @@ fn commit_parts(
                 }
                 Some(_) => Ok(true),
                 None => match t.binding() {
-                    Some(b) => commit_parts(tv, flags, env, hist, c, &b),
+                    Some(b) => commit_parts(tv, flags, env, hist, expanded, c, &b),
                     None => Ok(true),
                 },
             },
+            (Type::TVar(c), _) => match c.binding() {
+                Some(c) => commit_parts(tv, flags, env, hist, expanded, &c, t),
+                None => Ok(true),
+            },
+            (_, Type::Ref(_)) if !hist.closed_now(t) => {
+                let pair = (hist.ref_id(c, env), hist.ref_id(t, env));
+                match t.lookup_ref(env) {
+                    Ok(t) if expanded.get_mut().insert(pair) => {
+                        commit_parts(tv, flags, env, hist, expanded, c, &t)
+                    }
+                    Ok(_) | Err(_) => Ok(true),
+                }
+            }
             (Type::Ref(_), _) => match c.lookup_ref(env) {
-                Ok(c) => commit_parts(tv, flags, env, hist, &c, t),
+                Ok(c) => commit_parts(tv, flags, env, hist, expanded, &c, t),
                 Err(_) => Ok(true),
             },
-            (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist),
+            (_, Type::Set(ts)) => all(&mut ts.iter().map(|t| (c, t)), hist, expanded),
             (Type::Set(cs), t) if structured(t) => {
                 let named: SmallVec<[Type; 8]>;
                 let cs: &[Type] = match cs.iter().all(structured_or_prim) {
@@ -1516,7 +1534,7 @@ fn commit_parts(
                     },
                 };
                 match member_with_parts(c, cs, flags, env, hist, t)? {
-                    Some(c) => commit_parts(tv, flags, env, hist, c, t),
+                    Some(c) => commit_parts(tv, flags, env, hist, expanded, c, t),
                     None => Ok(true),
                 }
             }
@@ -1524,7 +1542,7 @@ fn commit_parts(
             | (Type::List(c), Type::List(t))
             | (Type::Error(c), Type::Error(t))
             | (Type::ByRef(Mutability::Shared, c), Type::ByRef(_, t)) => {
-                commit_parts(tv, flags, env, hist, c, t)
+                commit_parts(tv, flags, env, hist, expanded, c, t)
             }
             (Type::ByRef(Mutability::Mut, c), Type::ByRef(Mutability::Mut, t)) => {
                 c.equal_int(flags, env, hist, t)
@@ -1532,22 +1550,28 @@ fn commit_parts(
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
                 c.contains_int(flags, env, hist, t)
             }
-            (Type::Map(c), Type::Map(t)) => {
-                all(&mut [(&c.key, &t.key), (&c.value, &t.value)].into_iter(), hist)
-            }
+            (Type::Map(c), Type::Map(t)) => all(
+                &mut [(&c.key, &t.key), (&c.value, &t.value)].into_iter(),
+                hist,
+                expanded,
+            ),
             (Type::Tuple(cs), Type::Tuple(ts)) if cs.len() == ts.len() => {
-                all(&mut cs.iter().zip(ts.iter()), hist)
+                all(&mut cs.iter().zip(ts.iter()), hist, expanded)
             }
             (Type::Variant(x, cs, _), Type::Variant(y, ts, _))
                 if x == y && cs.len() == ts.len() =>
             {
-                all(&mut cs.iter().zip(ts.iter()), hist)
+                all(&mut cs.iter().zip(ts.iter()), hist, expanded)
             }
             (Type::Struct(cs), Type::Struct(ts))
                 if cs.len() == ts.len()
                     && cs.iter().zip(ts.iter()).all(|(c, t)| c.0 == t.0) =>
             {
-                all(&mut cs.iter().zip(ts.iter()).map(|(c, t)| (&c.1, &t.1)), hist)
+                all(
+                    &mut cs.iter().zip(ts.iter()).map(|(c, t)| (&c.1, &t.1)),
+                    hist,
+                    expanded,
+                )
             }
             (Type::Fn(cf), Type::Fn(tf))
                 if cf.args.len() == tf.args.len()
@@ -1566,7 +1590,7 @@ fn commit_parts(
                         return Ok(false);
                     }
                 }
-                commit_parts(tv, flags, env, hist, &cf.rtype, &tf.rtype)
+                commit_parts(tv, flags, env, hist, expanded, &cf.rtype, &tf.rtype)
             }
             _ => Ok(true),
         }
@@ -1811,6 +1835,31 @@ fn conjuncts_admit(
     hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
+    // CR claude for claude: [bug/medium] An open cell standing above a lower bound is
+    // refused a type that bound holds, where a conjunct's probe asks it: the probe runs
+    // without `Lower`, so the cell would bind to the narrower type, which does not hold
+    // its bound. Over `let f = 'a1: ['a3, null], 'a2: ['a3, null] |x1: 'a1, x2: 'a2| 7;
+    // let v: [i64, string] = 1; let u: i64 = 1`, `f(v, u)` is refused at the check, "'a2:
+    // unbound within [null, 'a3: unbound above [i64, string]] does not contain i64", a
+    // valid call ('a3 is [i64, string]); `f(u, v)` passes `--check` and the run fails "an
+    // instance at fn(x1: i64, x2: [i64, string]) -> i64 of a definition typed fn<'a1:
+    // [null, 'a3], 'a2: [null, 'a3]>(x1: 'a1, x2: 'a2) -> i64", a wrapper `let h = |a, b|
+    // f(a, b); h(u, v)` alike, and GRAPHIX_NO_SUBST=1 runs both. There FnType::held_at
+    // places 'a1 and 'a2, which puts 'a3 above both arguments (LOWER under
+    // GRAPHIX_DBG_BIND), and its containment then asks `[null, 'a3] >= i64` here and is
+    // refused; its first attempt binds 'a3 to i64. A direct call of a chain of bounds
+    // over a recursive typedef with every argument's type written is refused the same
+    // way, "'a2: .. 'a3: unbound .. above Array<G<null, null>> .. does not contain
+    // Array<`Y(`Z(Array<`X(null)>))>" (inner_direct.gx). These run: `u` annotated `[i64,
+    // string]`, and the union written in the parameters (`|x1: ['a3, null], x2: ['a3,
+    // null]|`), in either order. base-r24 alike. A cell above L holds what L holds,
+    // whatever it binds to: a fix answers the probe so in contains_dispatch (an open cell
+    // one of whose lower bounds holds the type), binding nothing. Found fixing
+    // partial-wrapper-instance-01. probes:
+    // ~/ptmp/cr29/scratch/r24/24c/pwi/union_wide_narrow.gx (refused at the check),
+    // union_narrow_wide{,_wrapper}.gx (refused at the run),
+    // union_{annotated,written,written_rev}.gx (run), inner_direct.gx (refused at the
+    // check) (lower-bound-refuses-narrower-01)
     let probe = guide(flags) & !ContainsFlags::Lower;
     for c in tv.cell_constraints().iter() {
         if !holds_cell(env, c, tv.cell_addr()) && !c.contains_int(probe, env, hist, t)? {
@@ -8138,6 +8187,51 @@ mod tests {
         assert!(tu.contains_with_flags(BitFlags::empty(), &env, &int).unwrap());
         assert!(tu.contains(&env, &int).unwrap());
         assert!(te.contains(&env, &prim(Typ::String)).is_ok_and(|held| !held), "{te}");
+    }
+
+    // a bound's parts reach the open cells a name in the value is applied
+    // over, however deep the name's definition holds them (an exact part
+    // binds its cell, another narrows it), and a decided variable of the
+    // bound stands as its binding; two recursive names met against each
+    // other are walked once
+    #[test]
+    fn a_bounds_parts_reach_the_cells_under_a_name() {
+        let defs = [
+            ("G<'a, 'b>", "[`X('a), `Y(H<'b, 'a>)]"),
+            ("H<'a, 'b>", "[`X('b), `Y(G<'b, 'a>), `Z('a)]"),
+            ("T<'x>", "[`Leaf('x), `Node(Array<T<'x>>)]"),
+            ("U<'x>", "[`Leaf('x), `Node(Array<U<'x>>)]"),
+        ];
+        for (bound_and_value, decided, part) in [
+            ("(G<i64, string>, G<'p, 'q>)", None, "string"),
+            ("(Array<T<string>>, Array<U<'q>>)", None, "string"),
+            (
+                "(('d, i64), (Array<'q>, i64))",
+                Some("Array<[string, null]>"),
+                "[string, null]",
+            ),
+        ] {
+            let (env, t) = Env::typed_at_root(&defs, bound_and_value).unwrap();
+            t.alias_tvars(&mut LPooled::take());
+            let Type::Tuple(sides) = &t else { panic!("{t} is no pair") };
+            let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            t.collect_tvars(&mut cells);
+            if let Some(d) = decided {
+                cells["d"].bind(parsed(d))
+            }
+            let holder = var("holder");
+            holder.add_cell_constraint(sides[0].clone());
+            assert!(holder.commit_conjuncts(&env, &sides[1]).unwrap(), "{t}");
+            let part = parsed(part);
+            let q = &cells["q"];
+            let within: SmallVec<[Type; 2]> =
+                q.binding().into_iter().chain(q.cell_constraints()).collect();
+            assert!(
+                matches!(&within[..], [c] if part.contains(&env, c).unwrap()
+                    && c.contains(&env, &part).unwrap()),
+                "{t}: 'q within {within:?}"
+            );
+        }
     }
 }
 

@@ -1894,6 +1894,22 @@ null]` and `'a` above both, and whatever decides either probes it. Pins:
 `contains::tests::a_bound_that_holds_its_own_cell_narrows_nothing`,
 `a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type`.
 
+A bound's parts reach every open cell of the value its variable takes
+(`contains::commit_parts`): a part that is one type binds the cell it
+meets, any other narrows it. The walk goes through what the two sides
+name: a decided variable of the bound is its binding, and a typedef
+application in the value over an open cell is what it stands for, each
+pair of a part and an application once, so two recursive names met
+against each other return. A cell the walk left out would stay free of
+the bound and settle within its own alone, where no instance holds
+both. A wrapper `'b2: Array<G<'b4, 'b3>>, 'b3: Q<'b4, 'b4> |y4: 'b4, y3,
+y2: 'b2| f(y2, y3, y4)` over a callee `'a2: Array<G<'a4, 'a3>>, 'a3:
+Q<'a4, 'a4>` stands `'b2` within both chains, the callee's over `y3`'s
+cell: `y2` given `[]` takes the element `G<'b4, 'b3>`, and its `'b3`,
+which `G`'s body holds under the name `H`, takes the callee's part,
+`y3`'s type. Pins: `lang::types::partial_wrapper_bound_*`,
+`contains::tests::a_bounds_parts_reach_the_cells_under_a_name`.
+
 ### `Concrete`: a conjunct that is a predicate
 
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever

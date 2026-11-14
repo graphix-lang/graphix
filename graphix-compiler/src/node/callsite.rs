@@ -1469,6 +1469,28 @@ fn holds_a_variable(t: &Type) -> bool {
 /// member is not: which member takes a type turns on what the cells are,
 /// so the first argument that meets it decides it.
 fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
+    // CR claude for claude: [bug/low] A variable only bounds hold takes no argument wider
+    // than the first that reached it through a bound. Over `let f = 'a1: Array<'a3>, 'a2:
+    // Array<'a3> |x1: 'a1, x2: 'a2| 7; let v: Array<[i64, null]> = [1]; let u: Array<i64>
+    // = [1]`, `f(u, v)` is refused, "'a2: unbound within Array<'a3: i64> does not contain
+    // Array<[i64, null]>", where `f(v, u)` runs and the bounds written in the parameters
+    // (`|x1: Array<'a3>, x2: Array<'a3>|`) run in both orders: there 'a3 widens to the
+    // wider argument, as a variable only data holds does. Under the bounds 'a3 is bound
+    // to i64 when 'a1 binds (BIND under GRAPHIX_DBG_BIND), and no widening reaches it.
+    // The refusal names nothing to annotate (`u` annotated `Array<[i64, null]>` runs). An
+    // instance checked again (GRAPHIX_NO_SUBST=1) refuses this way what the build by
+    // substitution runs, where a wrapper's parameters are in another order than its
+    // callee's: `h([`X(null)], [`Y(`Z([`X(null)]))], [], [], null)` over a partial
+    // wrapper of a chain of bounds prints [null], and its instance checked again fails
+    // "'a0: unbound within Array<G<'a2: .., 'a1: unbound within Array<G<'a3:
+    // Array<`X(null)>, ..>>>> does not contain .." (inner.gx, pinned as
+    // lang::types::partial_wrapper_bound_reaches_the_callees_instance_under_a_recursive_typedef).
+    // base-r24 alike. Not decided: widen a variable a bound holds as one a position
+    // holds, or keep the refusal and have it name the argument to annotate. Found fixing
+    // partial-wrapper-instance-01. probes:
+    // ~/ptmp/cr29/scratch/r24/24c/pwi/array_narrow_wide.gx (refused),
+    // array_{wide_narrow,written}.gx (run), inner.gx (runs; refused under
+    // GRAPHIX_NO_SUBST=1) (bound-var-no-widen-01)
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();

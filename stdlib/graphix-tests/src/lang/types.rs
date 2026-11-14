@@ -13230,3 +13230,94 @@ run!(
 }"#,
     prints("[[], []]")
 );
+
+// A bound's parts reach the open cells of what its variable takes through
+// the names the value holds and the bound's own decided variables. A
+// wrapper that declares its callee's chain of bounds and leaves a
+// parameter the chain names inferred stands within both chains, so the
+// variable its own chain holds, which no parameter does, takes what the
+// callee's took, and the instance holds every bound.
+run!(
+    partial_wrapper_bound_reaches_a_variable_under_a_recursive_typedef,
+    r#"{
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a2: Array<G<'a4, 'a3>>, 'a3: Q<'a4, 'a4>
+    |x2: 'a2, x3: 'a3, x4: 'a4| (x2, x3, x4);
+  let h = 'b2: Array<G<'b4, 'b3>>, 'b3: Q<'b4, 'b4>
+    |y4: 'b4, y3, y2: 'b2| f(y2, y3, y4);
+  h("s", `B("t"), [`X("u")])
+}"#,
+    prints(r#"[[["X", "u"]], ["B", "t"], "s"]"#)
+);
+
+run!(
+    partial_wrapper_bound_reaches_a_variable_under_a_recursive_typedef_empty,
+    r#"{
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a2: Array<G<'a4, 'a3>>, 'a3: Q<'a4, 'a4>
+    |x2: 'a2, x3: 'a3, x4: 'a4| (x2, x3, x4);
+  let h = 'b2: Array<G<'b4, 'b3>>, 'b3: Q<'b4, 'b4>
+    |y4: 'b4, y3, y2: 'b2| f(y2, y3, y4);
+  h("s", `B("t"), [])
+}"#,
+    prints(r#"[[], ["B", "t"], "s"]"#)
+);
+
+run!(
+    partial_wrapper_bound_under_a_recursive_typedef_refuses_another_variant,
+    r#"{
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a2: Array<G<'a4, 'a3>>, 'a3: Q<'a4, 'a4>
+    |x2: 'a2, x3: 'a3, x4: 'a4| (x2, x3, x4);
+  let h = 'b2: Array<G<'b4, 'b3>>, 'b3: Q<'b4, 'b4>
+    |y4: 'b4, y3, y2: 'b2| f(y2, y3, y4);
+  h("s", `B("t"), [`Y(`Z(`A("q")))])
+}"#,
+    refused("does not contain Array<`Y(`Z(`A(string)))>");
+    FuseExpect::None
+);
+
+run!(
+    partial_wrapper_bound_reaches_the_callees_instance_under_a_recursive_typedef,
+    r#"{
+  type G<'a, 'b> = [`X('a), `Y(H<'b, 'a>)];
+  type H<'a, 'b> = [`X('b), `Y(G<'b, 'a>), `Z('a)];
+  let f = 'a0: Array<G<'a2, 'a1>>, 'a2: Array<G<'a4, 'a3>>, 'a4: [i64, null],
+    'a3: Array<G<'a4, 'a4>>, 'a1: Array<G<'a3, 'a2>>
+    |x0: 'a0, x1: 'a1, x2: 'a2, x3: 'a3, x4: 'a4| [x4];
+  let h = 'b2: Array<G<'b4, 'b3>>, 'b4: [i64, null], 'b3: Array<G<'b4, 'b4>>,
+    'b1: Array<G<'b3, 'b2>>
+    |y3: 'b3, y2, y0, y1: 'b1, y4: 'b4| f(y0, y1, y2, y3, y4);
+  h([`X(null)], [`Y(`Z([`X(null)]))], [], [], null)
+}"#,
+    prints("[null]")
+);
+
+run!(
+    partial_wrapper_bound_reaches_an_element_through_a_decided_variable,
+    r#"{
+  let f = 'a2: ('a3, i64) |x3: 'a3, x2: 'a2| (x2, x3);
+  let h = 'b2: ('b3, i64), 'b3: Array<[i64, string, null]> |y3, y2: 'b2| f(y3, y2);
+  let v: Array<[i64, null]> = [1];
+  h(v, ([], 1))
+}"#,
+    prints("[[[], i64:1], [i64:1]]")
+);
+
+run!(
+    partial_wrapper_bound_through_a_decided_variable_refuses_another_element,
+    r#"{
+  let f = 'a2: ('a3, i64) |x3: 'a3, x2: 'a2| (x2, x3);
+  let h = 'b2: ('b3, i64), 'b3: Array<[i64, string, null]> |y3, y2: 'b2| f(y3, y2);
+  let v: Array<[i64, null]> = [1];
+  h(v, (["s"], 1))
+}"#,
+    refused("[i64, null, string] & [i64, null]> does not contain Array<string>");
+    FuseExpect::None
+);
