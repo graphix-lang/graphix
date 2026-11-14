@@ -106,7 +106,7 @@ run!(undecided_member_beside_a_guarded_tag_refused, r#"{
 run!(arm_cells_are_decided, r#"{
     let f = |x| select x { `A(0) => 1, `A(n) => n, `B(_) => 2 };
     [f(`A(3)), f(`B("s"))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2]); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2]); FuseExpect::None);
 
 run!(undecided_payload_members_refused, r#"{
     let b = true;
@@ -2186,82 +2186,3 @@ run!(slice_element_beside_a_wildcard_over_a_let_the_arms_decide_refused, r#"{
     v <- [`J("s"), 0];
     z
 }"#, refused("cannot compute Any + i64"); FuseExpect::None);
-
-// A `_` at a part of a tuple, struct or variant decides nothing of a
-// scrutinee the arms decide, as a `_` arm decides nothing of the whole: the
-// part is what the other arms and the uses of their binds make it.
-run!(wildcard_beside_a_bind_over_an_unannotated_parameter, r#"{
-    let f = |s| select s { (1, _) => 0, (_, b) => b + 1 };
-    [f((1, 5)), f((2, 5))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 6]); FuseExpect::Jit);
-
-run!(wildcard_beside_a_bind_behind_a_slice_ladder, r#"{
-    let f = |s| select s { ([], _) => 0, ([x, ..], b) => str::len(b) };
-    [f(([], "q")), f(([1], "abc"))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3]); FuseExpect::Jit);
-
-run!(wildcard_beside_a_bind_returned_keeps_the_binds_type, r#"{
-    let f = |s| select s { ([], _) => 0, ([x, ..], b) => b };
-    let r = f(([1], "abc"));
-    select r { i64 as i => i, string as z => str::len(z) }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
-
-run!(wildcards_beside_binds_at_two_parts, r#"{
-    let f = |s| select s { ([x], b, c) => x + b, ([], _, _) => 1, ([x, y, t..], _, _) => 2 };
-    [f(([], 5, "r")), f(([3], 5, "r")), f(([1, 2], 5, "r"))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 8, 2]); FuseExpect::Jit);
-
-run!(wildcard_beside_a_bind_in_a_variant_and_a_struct, r#"{
-    let f = |s| select s { `A(1, _) => 0, `A(_, b) => b + 1 };
-    let g = |s| select s { {a: 1, b: _} => 0, {a: _, b} => b + 1 };
-    [f(`A(2, 5)), g({a: 2, b: 7})]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 8]); FuseExpect::Jit);
-
-run!(wildcard_beside_a_bind_over_a_let_written_later, r#"{
-    let s = never();
-    let v = select s { (1, _) => 0, (_, b) => b + 1 };
-    s <- (2, 5);
-    v
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
-
-// A bind inside a part the other arms leave to a `_` is typed by the
-// argument: the function's result holds it.
-run!(bind_inside_a_part_beside_wildcards_is_the_arguments, r#"{
-    let f = |x| select x { (1, _) => 0, (2, (c, _)) => c, (_, _) => 1 };
-    let r = f((2, ("abc", 4)));
-    select r { i64 as i => i, string as z => str::len(z) }
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
-
-run!(bind_inside_a_part_beside_wildcards_read_as_a_number_refused, r#"{
-    let f = |x| select x { (1, _) => 0, (2, (c, _)) => c, (_, _) => 1 };
-    let r = f((2, ("abc", 4)));
-    r + 1
-}"#, refused("cannot compute [i64, string] + i64"); FuseExpect::None);
-
-// The part is the type another arm tests there, as `"a" => 1, _ => 2`
-// makes a whole scrutinee a string.
-run!(wildcard_part_is_the_type_another_arm_tests_refused, r#"{
-    let f = |s| select s { (1, _) => 0, (_, "a") => 1, (_, _) => 2 };
-    f((2, 5))
-}"#, refused("type mismatch (i64, string) does not contain (i64, i64)"); FuseExpect::None);
-
-run!(wildcard_part_annotated_beside_a_test, r#"{
-    let f = |s: (i64, [i64, string])| select s { (1, _) => 0, (_, "a") => 1, (_, _) => 2 };
-    [f((2, 5)), f((2, "a"))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1]); FuseExpect::Jit);
-
-run!(wildcard_part_of_a_let_written_at_two_types_refused, r#"{
-    let s = never();
-    let v = select s { (1, _) => 0, (_, _) => 1 };
-    s <- (1, "a");
-    s <- (2, 3);
-    v
-}"#, refused("declare s: (i64, [i64, string]) where it is bound"); FuseExpect::None);
-
-run!(wildcard_part_of_a_let_declared_at_two_types, r#"{
-    let s: (i64, [i64, string]) = never();
-    let v = select s { (1, _) => 0, (_, _) => 1 };
-    s <- (1, "a");
-    s <- (2, 3);
-    v
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);

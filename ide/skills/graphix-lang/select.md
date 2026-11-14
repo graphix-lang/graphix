@@ -95,16 +95,6 @@ select, and runtime forms. Each rule refuses and names the fix.
   `string` in the other is refused where the select is written
   ("string does not contain i64"). Annotate the scrutinee with the
   union and test the bind inside the arm.
-- A `_` at a position of a tuple, struct or variant decides nothing of
-  a scrutinee the arms decide (an unannotated parameter, a `never()`
-  let), as a `_` arm decides nothing of the whole: the part is what the
-  other arms and the uses of their binds make it. `(1, _) => 0, (_, b)
-  => b + 1` takes an `(i64, i64)`, and `(1, _) => 0, (_, "a") => 1, (_,
-  _) => 2` an `(i64, string)`, so a call with `(2, 5)` is refused:
-  annotate the parameter with the wider part, `|s: (i64, [i64,
-  string])|`. Two writes of different types to such a part of a let are
-  refused the same way, naming the declaration. A `_` among a slice's
-  elements still makes them `Any` (below).
 - A slice arm with a rest over a `never()` let the arms decide leaves the
   other elements' type to later writes, and takes a value of whatever
   they bring at every position. A write that brings a member an element's
@@ -233,12 +223,6 @@ no "typed the pattern's binds for W<i64> alone" type W<'a> = Abstract<'a>; let f
 no "string does not contain i64" let f = |s| select s { `A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 }; f(`A(1, "q"))
 ok let f = |s| select s { `A(1, a) => a, `A(2, a) => a, _ => never() }; (f(`A(1, "q")), f(`A(2, 5)))
 ok let f = |s: `A(i64, [i64, string])| select s { `A(_, a) => select a { i64 as n => n + 1, string as t => str::len(t) } }; (f(`A(1, 5)), f(`A(2, "q")))
-ok let f = |s| select s { (1, _) => 0, (_, b) => b + 1 }; f((2, 5))
-ok let f = |s| select s { ([], _) => 0, ([x, ..], b) => str::len(b) }; f(([1], "q"))
-no "(i64, string) does not contain (i64, i64)" let f = |s| select s { (1, _) => 0, (_, "a") => 1, (_, _) => 2 }; f((2, 5))
-ok let f = |s: (i64, [i64, string])| select s { (1, _) => 0, (_, "a") => 1, (_, _) => 2 }; f((2, 5))
-no "declare s: (i64, [i64, string])" let s = never(); let v = select s { (1, _) => 0, (_, _) => 1 }; s <- (1, "a"); s <- (2, 3); v
-ok let s: (i64, [i64, string]) = never(); let v = select s { (1, _) => 0, (_, _) => 1 }; s <- (1, "a"); s <- (2, 3); v
 no "is a part of 'x" |x| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: Array<[`J, `M]>| select (x[0]$, 0) { (`J, _) => 1, _ => 2 }
 ok |x: (bool, [i64, null])| select x { (true, _) => 0, (bool, i64) as (false, n) => n, (bool, null) as (false, _) => 1 }

@@ -4180,25 +4180,6 @@ impl Type {
             t => t.cow_children(&mut |c| c.any_as_tvar_int()),
         })
     }
-
-    /// An inferred predicate as it decides a scrutinee no type has decided:
-    /// the `Any` of a `_` at a position of a tuple, struct or variant is a
-    /// cell of its own, as a name there brings, so the part is what the
-    /// other arms and the uses of their binds make it. The elements of an
-    /// array or list share one type, where a `_` stays `Any`.
-    pub fn any_parts_as_tvars(&self) -> Type {
-        self.any_parts_as_tvars_int().unwrap_or_else(|| self.clone())
-    }
-
-    fn any_parts_as_tvars_int(&self) -> Option<Type> {
-        ensure_sufficient(|| match self {
-            Type::Any => Some(Type::empty_tvar()),
-            Type::Tuple(_) | Type::Struct(_) | Type::Variant(..) | Type::Set(_) => {
-                self.cow_children(&mut |c| c.any_parts_as_tvars_int())
-            }
-            _ => None,
-        })
-    }
 }
 
 /// An id that is the low 64 bits of a uuid: a fixed eight bytes, where a
