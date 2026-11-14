@@ -1097,3 +1097,28 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3, 3, 3]);
     FuseExpect::Jit
 );
+
+run!(
+    hof_over_a_union_of_arrays_waits_for_its_source,
+    r#"{
+  let xs: [Array<_>, Array<i64>] = sys::time::after_idle(duration:10.ms, [1, 2, 3]);
+  let ls: [List<_>, List<i64>] = sys::time::after_idle(duration:10.ms, [<1, 2, 3>]);
+  let m = #[native] array::map(xs, |v| v + 1);
+  let f = #[native] array::fold(xs, 0, |acc, v| acc + v);
+  let k = #[native] array::filter(xs, |v| v > 1);
+  let l = #[native] list::map(ls, |v| v * 2);
+  [m[2]$, f, k[0]$, list::fold(l, 0, |a, v| a + v)]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 6, 2, 12]);
+    FuseExpect::Jit
+);
+
+run!(
+    hof_over_a_bottom_union_of_arrays_is_bottom,
+    r#"{
+  let xs: [Array<_>, Array<i64>] = never();
+  any(array::len(#[native] array::map(xs, |v| v + 1)), sys::time::after_idle(duration:10.ms, 7))
+}"#,
+    is(Value::I64(7));
+    FuseExpect::Jit
+);

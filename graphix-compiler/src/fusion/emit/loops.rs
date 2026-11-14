@@ -170,7 +170,7 @@ fn convert_collection_result(
 }
 
 impl Flavor {
-    // CR claude for claude: [bug/high] A collection HOF over an array source whose
+    // XCR claude for claude: [bug/high] A collection HOF over an array source whose
     // type is a union of arrays aborts the process while the source is bottom. `let
     // xs: [Array<_>, Array<i64>] = never(); println(array::map(xs, |v| v))` panics
     // "graphix: zero ValArray bits — JIT codegen bug" in graphix_valarray_len
@@ -187,6 +187,22 @@ impl Flavor {
     // kind is not an array is not fused. probes:
     // ~/ptmp/cr29/scratch/r24/24d/uofl/{jit1,jit2}.gx, jit3.repl
     // (hof-union-source-bottom-abort-01)
+    // 2026-11-14 claude: Flavor::emit_source took a value-shaped source (a union of
+    // arrays rides as a Value) as the loop's ValArray: a bottom one carried the
+    // Value::Null placeholder, payload 0, which graphix_valarray_len aborted on. The
+    // Array flavor now emits its source through emit_into_slot(..,
+    // LocalKind::Composite), the slot narrowing a binding or argument takes
+    // (narrow_value_to_composite: a present value's payload, an owned empty array
+    // under taint); an Array-kind source is emitted as before. Every loop (map,
+    // fold, filter, filter_map, flat_map, find, find_map, init) goes through
+    // emit_source. The jit1/jit2/jit3 probes run on the lane's build fused,
+    // --no-fusion and PAR=force alike. Pins, each aborting without the fix:
+    // fusion_review::hof_over_a_union_of_arrays_waits_for_its_source,
+    // fusion_review::hof_over_a_bottom_union_of_arrays_is_bottom,
+    // repl_inputs::loop_over_an_earlier_bottom_union_of_arrays. A List or Map source
+    // already went through emit_owned_value_operand_node, which handles a
+    // Value-shaped bottom (pinned by list::map over [List<_>, List<i64>] in the
+    // first).
     /// Emit the loop source as the scaffold's ValArray, whose disc drives
     /// the firing wrap.
     fn emit_source<R: Rt>(
@@ -196,9 +212,12 @@ impl Flavor {
     ) -> Result<scaffold::ArraySrc> {
         match self {
             Self::Array => {
-                let ownership = emit::node_composite_source(source);
-                let array = source.emit_clif(cx)?;
-                Ok(scaffold::ArraySrc { ptr: array.payload, disc: array.disc, ownership })
+                let array = emit_into_slot(cx, source, LocalKind::Composite)?;
+                Ok(scaffold::ArraySrc {
+                    ptr: array.cv.payload,
+                    disc: array.cv.disc,
+                    ownership: array.source,
+                })
             }
             Self::List => emit_flattened_source(cx, source, "graphix_list_to_valarray"),
             Self::CMap => emit_flattened_source(cx, source, "graphix_cmap_to_pairs"),

@@ -114,6 +114,21 @@ async fn annotated_empty_literal_takes_a_later_write() -> Result<()> {
     .await
 }
 
+/// A later input's loop over an earlier input's bottom, whose type is a
+/// union of arrays, runs fused and stays bottom.
+#[tokio::test(flavor = "current_thread")]
+async fn loop_over_an_earlier_bottom_union_of_arrays() -> Result<()> {
+    session(&[
+        Accept("let f = |x| select x { [a] => [a], [] => [], _ => never() }"),
+        Accept("let r = f([1, 2])"),
+        Produce(
+            "any(array::len(array::map(r, |v| v + 1)), sys::time::after_idle(duration:10.ms, 7))",
+            Value::I64(7),
+        ),
+    ])
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn bottom_let_settles_at_its_input() -> Result<()> {
     session(&[
