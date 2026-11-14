@@ -4038,6 +4038,7 @@ impl<R: Rt> CallSite<R> {
         } else {
             fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set))
         };
+        ctx.event.learned |= bound;
         // a fresh bind's quiet arguments stand: a formal fires when its
         // argument does, and an omitted default is a constant
         if bound {

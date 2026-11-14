@@ -215,6 +215,10 @@ pub struct Event {
     /// Last cycle's fires each delivered now to the readers the walk had
     /// passed when it was made ([`Rt::late`]).
     pub late: Option<Arc<Late>>,
+    /// A call bound a callee, or a reference took a target, in the
+    /// evaluation in progress: what it reads grew
+    /// (`node::wake::TrackedFires::evaluated`).
+    pub(crate) learned: bool,
 }
 
 /// Deliveries made a cycle late, each to its reader alone: a fire, or
@@ -230,6 +234,7 @@ impl Event {
             custom: Arc::new(Mutex::new(IntMap::default())),
             root: None,
             late: None,
+            learned: false,
         }
     }
 
@@ -277,22 +282,25 @@ impl Event {
             custom: self.custom.clone(),
             root: self.root,
             late: self.late.clone(),
+            learned: false,
         }
     }
 
     /// Apply what the forked branch's event `child` delivered.
     pub(crate) fn merge(&mut self, child: Self) {
-        let Self { view: _, variables, custom: _, root: _, late: _ } = child;
+        let Self { view: _, variables, custom: _, root: _, late: _, learned } = child;
         self.variables.merge(variables);
+        self.learned |= learned;
     }
 
     pub fn clear(&mut self) {
-        let Self { view, variables, custom, root, late } = self;
+        let Self { view, variables, custom, root, late, learned } = self;
         *view = View::Cycle;
         variables.clear();
         custom.lock().clear();
         *root = None;
         *late = None;
+        *learned = false;
     }
 }
 

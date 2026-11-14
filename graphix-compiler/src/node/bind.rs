@@ -2468,6 +2468,7 @@ impl<R: Rt> Deref<R> {
                     Some(_) => Moved::Target,
                     None => Moved::First,
                 };
+                ctx.event.learned = true;
                 self.release(ctx);
                 let reader = ctx.stamped_reader(self.top_id, Some(&self.read));
                 if cell != id {
@@ -2492,6 +2493,7 @@ impl<R: Rt> Deref<R> {
         if a.cell == cell {
             return;
         }
+        ctx.event.learned = true;
         let reader = ctx.stamped_reader(top_id, Some(read));
         if a.cell != a.id {
             ctx.unref_reader(a.cell, reader.clone());

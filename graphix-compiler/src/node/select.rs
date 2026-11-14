@@ -239,9 +239,9 @@ fn evaluate_arm<R: Rt>(
     let injected = tracked.deliver(ctx, i);
     let scope = tracked.open(ctx, i);
     let r = produce(ctx, &mut arm.1);
-    tracked.ran(ctx, i, scope);
+    let bound = tracked.ran(ctx, i, scope);
     TrackedFires::restore(ctx.event, injected);
-    tracked.evaluated(&ctx.env, i, |r| arm_refs(arm, r));
+    tracked.evaluated(ctx, i, bound, |r| arm_refs(arm, r));
     r
 }
 

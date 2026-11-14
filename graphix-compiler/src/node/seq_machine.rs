@@ -369,9 +369,9 @@ fn evaluate<R: Rt>(
                 });
             }
         }
-        tracked.ran(ctx, k, scope);
+        let bound = tracked.ran(ctx, k, scope);
         TrackedFires::restore(ctx.event, injected);
-        tracked.evaluated(&ctx.env, k, |r| step.refs(r));
+        tracked.evaluated(ctx, k, bound, |r| step.refs(r));
         done
     })
 }

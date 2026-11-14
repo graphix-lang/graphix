@@ -276,6 +276,25 @@ pub(crate) struct TrackedFires {
     ran: ArmMask,
     /// Per arm: where it stands in time.
     clock: Vec<ArmClock>,
+    /// Per arm: the inputs it reads that `per_arm` does not name yet,
+    /// what it learned as it ran since its refs were collected (a callee
+    /// it bound captures them, a reference took one as its target). It
+    /// reads them live, and is delivered none of their owed fires.
+    learned: Vec<IntSet<BindId>>,
+}
+
+/// What [`TrackedFires::open`] put aside, for [`TrackedFires::ran`].
+pub(crate) struct Opened {
+    scope: Option<Option<Arc<CatchUp>>>,
+    learned: bool,
+}
+
+/// Whether `id` is delivered fired this cycle.
+fn fires<R: Rt>(ctx: &ExecCtx<'_, R>, id: &BindId) -> bool {
+    matches!(
+        read_var(ctx, id),
+        Some(VarRead::Delivered(tv)) if super::delivered_view(ctx.event, tv).is_fired()
+    )
 }
 
 /// One bit per arm; inline up to 64 arms.
@@ -396,6 +415,8 @@ impl ArmClock {
 /// overwrote, for [`TrackedFires::restore`].
 pub(crate) type Injected = SmallVec<[(BindId, Prior<TagValue>); 4]>;
 
+type Scratch = LPooled<IntSet<BindId>>;
+
 impl TrackedFires {
     /// An arm's tracked inputs into `inputs` and the pattern-bind inputs
     /// it consumes into `consumes`, both cleared first, from `r`: the
@@ -434,6 +455,7 @@ impl TrackedFires {
             carried: IntSet::default(),
             ran: ArmMask::new(n),
             clock: vec![ArmClock::Asleep(cycle); n],
+            learned: (0..n).map(|_| IntSet::default()).collect(),
         };
         for i in 0..n {
             let mut r = Refs::default();
@@ -447,16 +469,17 @@ impl TrackedFires {
     }
 
     /// Arm `i` is deselected: it falls asleep this cycle, and its refs
-    /// are collected again, its subtree being fully materialized. An
-    /// input that joins them, written since the arm woke, the arm read
-    /// as it ran (a callee it bound captures it): it consumes its fire.
+    /// are collected again, its subtree being fully materialized. What
+    /// it learned as it ran joins them as it stands. Any other input
+    /// that joins them, written since the arm woke, the arm read as it
+    /// ran: it consumes its fire.
     pub(crate) fn deselect<R: Rt>(
         &mut self,
         ctx: &ExecCtx<'_, R>,
         i: usize,
         fill: impl FnOnce(&mut Refs),
     ) {
-        let Self { per_arm, consumes, all, pending, carried, clock, .. } = self;
+        let Self { per_arm, consumes, all, pending, carried, clock, learned, .. } = self;
         let woke = match clock[i] {
             ArmClock::Awake { since, .. } => Some(since),
             ArmClock::Asleep(_) => None,
@@ -469,7 +492,7 @@ impl TrackedFires {
         for id in per_arm[i].iter() {
             if !old.contains(id) {
                 all.add(*id);
-                // CR claude for claude: [bug/low] A fire between a step's entry and the
+                // XCR claude for claude: [bug/low] A fire between a step's entry and the
                 // cycle the step binds a callee that captures the input is spent here,
                 // though the callee, bound in an ordinary cycle, read the input only as
                 // it stood: a later step that names the input is not caught up on it.
@@ -487,7 +510,21 @@ impl TrackedFires {
                 // (base-r23 `8 5`), in both engines and forked. A fix that tells the
                 // tracker of a bind covers it if Deref::address tells it of a new target
                 // the same way.
-                if pending.contains(id)
+                // 2026-11-14 claude: The tracker is told of the bind in its cycle:
+                // CallSite::update_call and Deref::address set Event::learned, and the
+                // step or arm evaluated around them collects what it reads now
+                // (TrackedFires::evaluated, the per-arm learned set). A learned input is
+                // read live from that cycle on (observe_except counts it seen, deliver
+                // spends its bit where it fires), a bit from before stays, and deselect
+                // no longer spends it by the wake stamp. e2.gx prints 11 5 and q1.gx 8
+                // 5, both engines and forked. Pins
+                // lang::seq_steps::{a_fire_before_a_callee_was_bound_is_not_its_own,
+                // a_fire_before_a_reference_took_its_target_is_not_its_own,
+                // a_fire_before_an_arms_callee_was_bound_is_not_its_own,
+                // a_fire_a_replaced_callee_read_is_spent} fail in every mode with the
+                // learn step of evaluated disabled. Needs a soak.
+                if !learned[i].contains(id)
+                    && pending.contains(id)
                     && let Some(woke) = woke
                     && ctx.rt.store_get(id).is_some_and(|(_, stamp)| *stamp >= woke)
                 {
@@ -495,6 +532,7 @@ impl TrackedFires {
                 }
             }
         }
+        learned[i].clear();
         for id in old.iter() {
             if !per_arm[i].contains(id) && all.drop_one(id) {
                 if pending.contains(id) {
@@ -508,29 +546,56 @@ impl TrackedFires {
     /// Arm `i` was evaluated: the first time, add what its own nodes
     /// name only once they ran (a `Deref`'s target), callees left out.
     /// The arm read such an input live as it ran, so it consumes its fire.
-    pub(crate) fn evaluated(
+    /// Where the evaluation `bound` a callee or a reference's target
+    /// ([`TrackedFires::ran`]), collect what the arm reads now: an input
+    /// it learns it read as it stood, so a fire of it from before stays
+    /// owed, and one delivered this cycle it read.
+    pub(crate) fn evaluated<R: Rt>(
         &mut self,
-        env: &Env,
+        ctx: &ExecCtx<'_, R>,
         i: usize,
-        fill: impl FnOnce(&mut Refs),
+        bound: bool,
+        fill: impl Fn(&mut Refs),
     ) {
-        if self.ran.replace(i) {
+        let first = !self.ran.replace(i);
+        if !first && !bound {
             return;
         }
-        let mut r = Refs::without_callees();
-        fill(&mut r);
-        let (mut inputs, mut consumed) = (IntSet::default(), IntSet::default());
-        Self::arm_refs(env, &r, &mut inputs, &mut consumed);
-        let Self { per_arm, consumes, all, pending, .. } = self;
-        for id in inputs {
-            if per_arm[i].insert(id) {
-                all.add(id);
-                if pending.contains(&id) {
-                    Arc::make_mut(pending).remove(&id);
+        let (mut inputs, mut consumed): (Scratch, Scratch) =
+            (LPooled::take(), LPooled::take());
+        if first {
+            let mut r = Refs::without_callees();
+            fill(&mut r);
+            Self::arm_refs(&ctx.env, &r, &mut inputs, &mut consumed);
+            let Self { per_arm, consumes, all, pending, .. } = self;
+            for id in inputs.drain() {
+                if per_arm[i].insert(id) {
+                    all.add(id);
+                    if pending.contains(&id) {
+                        Arc::make_mut(pending).remove(&id);
+                    }
                 }
             }
+            consumes[i].extend(consumed.drain());
         }
-        consumes[i].extend(consumed);
+        if !bound {
+            return;
+        }
+        let mut r = Refs::default();
+        fill(&mut r);
+        Self::arm_refs(&ctx.env, &r, &mut inputs, &mut consumed);
+        let Self { per_arm, pending, learned, .. } = self;
+        let learned = &mut learned[i];
+        learned.retain(|id| inputs.contains(id));
+        for id in inputs.drain() {
+            if !per_arm[i].contains(&id)
+                && learned.insert(id)
+                && pending.contains(&id)
+                && fires(ctx, &id)
+            {
+                Arc::make_mut(pending).remove(&id);
+            }
+        }
     }
 
     /// Record this cycle's sound fires of tracked inputs. Runs before
@@ -551,15 +616,14 @@ impl TrackedFires {
         evaluated: &[usize],
         carried: Option<&IntSet<BindId>>,
     ) {
-        let Self { all, pending, carried: carried_bits, per_arm, .. } = self;
-        let seen: LPooled<IntSet<BindId>> =
-            evaluated.iter().flat_map(|i| per_arm[*i].iter().copied()).collect();
+        let Self { all, pending, carried: carried_bits, per_arm, learned, .. } = self;
+        let seen: Scratch = evaluated
+            .iter()
+            .flat_map(|i| per_arm[*i].iter().chain(learned[*i].iter()).copied())
+            .collect();
         for id in all.keys.iter() {
             let carry = carried.is_some_and(|c| c.contains(id));
-            if (carry || !seen.contains(id))
-                && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
-                && super::delivered_view(ctx.event, tv).is_fired()
-            {
+            if (carry || !seen.contains(id)) && fires(ctx, id) {
                 if carry {
                     carried_bits.insert(*id);
                 } else if !pending.contains(id) {
@@ -608,13 +672,10 @@ impl TrackedFires {
 
     /// Arm `i` runs: under a wake or step view, open the catch-up scope
     /// for what it learns as it runs; what to put back, for [`Self::ran`].
-    pub(crate) fn open<R: Rt>(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R>,
-        i: usize,
-    ) -> Option<Option<Arc<CatchUp>>> {
+    pub(crate) fn open<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>, i: usize) -> Opened {
+        let learned = mem::take(&mut ctx.event.learned);
         if !ctx.event.init() {
-            return None;
+            return Opened { scope: None, learned };
         }
         // an arm sleeps whenever the arm around it does
         let unseen = match &ctx.catch_up {
@@ -630,17 +691,22 @@ impl TrackedFires {
             fresh: false,
             body: false,
         };
-        Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))))
+        let scope = Some(mem::replace(&mut ctx.catch_up, Some(Arc::new(scope))));
+        Opened { scope, learned }
     }
 
     /// Arm `i` ran this cycle: close the scope [`Self::open`] opened.
+    /// Whether the evaluation bound a callee or a reference's target
+    /// ([`Event::learned`]).
     pub(crate) fn ran<R: Rt>(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
         i: usize,
-        outer: Option<Option<Arc<CatchUp>>>,
-    ) {
-        if let Some(outer) = outer
+        opened: Opened,
+    ) -> bool {
+        let bound = ctx.event.learned;
+        ctx.event.learned |= opened.learned;
+        if let Some(outer) = opened.scope
             && let Some(scope) = mem::replace(&mut ctx.catch_up, outer)
         {
             let taken = mem::take(&mut *scope.taken.lock());
@@ -653,6 +719,7 @@ impl TrackedFires {
             }
         }
         self.clock[i].ran(ctx.rt.cycle());
+        bound
     }
 
     /// The first cycle whose writes arm `i` did not see.
@@ -691,7 +758,8 @@ impl TrackedFires {
     /// delivery at the current standing value for each input not
     /// delivered live this cycle. Returns the injected entries for
     /// [`Self::restore`]; a bottomed or vanished input spends its bit
-    /// and injects nothing.
+    /// and injects nothing. An input the arm learned as it ran spends
+    /// its bit where it fires this cycle, and is delivered nothing.
     pub(crate) fn deliver<R: Rt>(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
@@ -701,11 +769,18 @@ impl TrackedFires {
         if self.pending.is_empty() {
             return injected;
         }
-        let Self { per_arm, consumes, pending, .. } = self;
+        let Self { per_arm, consumes, pending, learned, .. } = self;
         let pending = Arc::make_mut(pending);
         if let Some(consumed) = consumes.get(i) {
             for id in consumed.iter() {
                 pending.remove(id);
+            }
+        }
+        if let Some(learned) = learned.get(i) {
+            for id in learned.iter() {
+                if pending.contains(id) && fires(ctx, id) {
+                    pending.remove(id);
+                }
             }
         }
         let Some(set) = per_arm.get(i) else { return injected };

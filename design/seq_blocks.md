@@ -557,18 +557,21 @@ its input until one does, so one made before the run, or in the last
 run after its readers passed, is caught up too. The step awake when an
 input fires
 spends the fire, also where it reads the input only through a reference
-whose target it learned as it ran (`TrackedFires::evaluated`), or
-through a callee it bound. What a callee captures joins the step's
-inputs when the step is deselected (`TrackedFires::deselect`), and one
-written since the step woke is one the callee read: its fire is spent,
-so a later step that names the input waits for the next one, and a fire
-of it between two runs is owed to the step's next entry. A fire from
-before the step woke stays owed where the callee was bound after the
-entry, in an ordinary cycle: a body is delivered nothing. The tracker
-knows when the step woke, not when the callee was bound, so a fire
-between the two is spent though the callee read it only as it stood;
-so is one made before a reference the step reads through took the
-input as its target, in an ordinary cycle after the entry.
+whose target it learned as it ran, or through a callee it bound. The
+tracker is told of both in the cycle they happen: a call that binds a
+callee and a `Deref` that takes a target mark the cycle's event
+(`Event::learned`), and the step evaluated around them collects what it
+reads now (`TrackedFires::evaluated`). An input it learns it reads live
+from that cycle on: a fire of it while the step is awake is spent,
+whatever function the step binds after, so a later step that names the
+input waits for the next one. A fire from before that cycle stays owed,
+as one from before the step woke does: a callee bound in an ordinary
+cycle is a body, delivered nothing, and read the input only as it
+stood; a reference that took the input as its target fired its read at
+the standing value, which is the reference's fire and not the input's.
+What the step learned joins its inputs when it is deselected
+(`TrackedFires::deselect`), so a fire of it between two runs is owed to
+the step's next entry.
 An arm of a step's select does the same; it did not run in the cycle it
 is deselected, so the select observes that cycle's fires again. A
 passed step is asleep from the cycle it is passed, whatever
@@ -588,6 +591,10 @@ a_callee_bound_in_an_earlier_run_is_caught_up,
 a_step_asleep_with_its_machine_saw_what_came_before,
 a_fire_read_through_a_bound_callee_is_spent,
 a_fire_before_a_steps_entry_is_not_its_callees,
+a_fire_before_a_callee_was_bound_is_not_its_own,
+a_fire_before_a_reference_took_its_target_is_not_its_own,
+a_fire_before_an_arms_callee_was_bound_is_not_its_own,
+a_fire_a_replaced_callee_read_is_spent,
 a_fire_an_arms_bound_callee_read_is_spent,
 a_fire_as_an_arm_falls_asleep_stays_owed,
 a_passed_step_is_asleep_before_its_machine_sleeps,
@@ -615,7 +622,18 @@ what it reads nothing (`wake::in_body`, `design/bind_driven_bodies.md`).
   first evaluation its own nodes add what they name only once they ran
   (a `Deref`'s target, `evaluated`). An input that joins either way is
   one the consumer read: `evaluated` clears its bit, `deselect` clears
-  it where the input was written since the consumer woke.
+  it where the input was written since the consumer woke, unless the
+  consumer learned it as it ran (`learned`).
+- `learned`: per consumer, the inputs it reads that `per_arm` does not
+  name yet: what a callee it bound captures, a reference's new target.
+  `CallSite::update_call` and `Deref::address` set `Event::learned` at
+  a bind, `ran` says whether the consumer's evaluation set it, and
+  `evaluated` then collects the consumer's refs again, callees
+  included. The consumer reads a learned input live: `observe_except`
+  counts it seen, `deliver` spends its bit where it fires this cycle and
+  injects nothing for it, and a bit from before it was learned stays.
+  `deselect` moves the set into `per_arm`; a sleep that is no deselect
+  (a machine's) keeps it.
 - `consumes`: per consumer, the inputs the pattern binds it reads are
   facets of (`Env::pattern_inputs`). Reading a pattern bind consumes
   those inputs' bits; the bind itself is never delivered.

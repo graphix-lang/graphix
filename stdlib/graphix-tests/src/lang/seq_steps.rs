@@ -582,6 +582,103 @@ async fn a_fire_before_a_steps_entry_is_not_its_callees(mode: Mode) -> Result<()
     Ok(())
 }
 
+// Nor is a fire from before the cycle the step bound the callee: the 5
+// came after the second step's entry and before `f` became the function
+// that holds `ev`, which read it only as it stood, so the last step is
+// owed it. A fire the callee read after that spends it: the 8 leaves the
+// last step waiting for the 13.
+async fn a_fire_before_a_callee_was_bound_is_not_its_own(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let k = 1;
+        k <- select step { 6 => 2, _ => never() };
+        let f = select k { 1 => |u: i64| -> i64 u, _ => |u: i64| { ev; u } };
+        seq go { until live(step) >= 4; until live(f(0) + step) >= 11; live(uniq(ev)) }
+    }"#;
+    assert_eq!(run(&code.replace("EV", "5 | 13"), mode).await?, [5]);
+    assert_eq!(run(&code.replace("EV", "5 | 8 | 13"), mode).await?, [13]);
+    Ok(())
+}
+
+// A reference is the same: `p` took `ev` as its target after the 5, so the
+// move read the 5 as it stood and the last step is owed it; the 8, read
+// through `p`, spends it.
+async fn a_fire_before_a_reference_took_its_target_is_not_its_own(
+    mode: Mode,
+) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let y = 0;
+        let p = &y;
+        p <- select step { 6 => &ev, _ => never() };
+        seq go { until live(step) >= 4; until live(*p + step) >= SUM; live(uniq(ev)) }
+    }"#;
+    let run = |ev: &str, sum: &str| {
+        let code = code.replace("EV", ev).replace("SUM", sum);
+        async move { run(&code, mode).await }
+    };
+    assert_eq!(run("5 | 13", "16").await?, [5]);
+    assert_eq!(run("5 | 8 | 13", "20").await?, [13]);
+    Ok(())
+}
+
+// So is an arm of a step's select: the first arm bound the callee that
+// holds `ev` after the 5.
+async fn a_fire_before_an_arms_callee_was_bound_is_not_its_own(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let k = 1;
+        k <- select step { 6 => 2, _ => never() };
+        let f = select k { 1 => |u: i64| -> i64 u, _ => |u: i64| { ev; u } };
+        seq go {
+            live(select live(step) < 10 {
+                true => filter(f(0), |c| c < 0),
+                false => uniq(ev)
+            })
+        }
+    }"#;
+    assert_eq!(run(&code.replace("EV", "5 | 13"), mode).await?, [5]);
+    assert_eq!(run(&code.replace("EV", "5 | 8 | 13"), mode).await?, [13]);
+    Ok(())
+}
+
+// A fire a callee read is spent though the step binds another function
+// after it: the first function read the 5, so the last step waits for the
+// 13. One made once the step holds a function that does not read `ev` is
+// owed: the 8.
+async fn a_fire_a_replaced_callee_read_is_spent(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { n if n < 16 => n + 1, _ => never() };
+        let go = select step { 1 => step, _ => never() };
+        let ev = never();
+        ev <- select step { EV => step, _ => never() };
+        let k = 1;
+        k <- select step { AT => 2, _ => never() };
+        let f = select k { 1 => |u: i64| { ev; u }, _ => |u: i64| u };
+        seq go { until live(step) >= 3; until live(f(0) + step) >= 11; live(uniq(ev)) }
+    }"#;
+    let run = |ev: &str, at: &str| {
+        let code = code.replace("EV", ev).replace("AT", at);
+        async move { run(&code, mode).await }
+    };
+    assert_eq!(run("5 | 13", "7").await?, [13]);
+    assert_eq!(run("8 | 13", "6").await?, [8]);
+    Ok(())
+}
+
 // An arm of a step's select spends what its bound callee read as a step
 // does: the first arm's callee counted the 3, so the last arm waits for
 // the 9.
@@ -708,6 +805,10 @@ modes!(
     a_step_asleep_with_its_machine_saw_what_came_before,
     a_fire_read_through_a_bound_callee_is_spent,
     a_fire_before_a_steps_entry_is_not_its_callees,
+    a_fire_before_a_callee_was_bound_is_not_its_own,
+    a_fire_before_a_reference_took_its_target_is_not_its_own,
+    a_fire_before_an_arms_callee_was_bound_is_not_its_own,
+    a_fire_a_replaced_callee_read_is_spent,
     a_fire_an_arms_bound_callee_read_is_spent,
     a_fire_as_an_arm_falls_asleep_stays_owed,
     a_passed_step_is_asleep_before_its_machine_sleeps,
