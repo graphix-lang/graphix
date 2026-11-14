@@ -386,7 +386,10 @@ fn judge_hidden_defaults<R: Rt>(
                 Judge::Check,
                 match narrowing {
                     Narrowing::Constructed => Some(&mut bound),
-                    Narrowing::Site | Narrowing::Written | Narrowing::Copy => None,
+                    Narrowing::Site
+                    | Narrowing::Written
+                    | Narrowing::Copy
+                    | Narrowing::Instance => None,
                 },
             )
             .map_err(|e| met_default_note::<R>(e, &defs, name))?;
@@ -396,6 +399,26 @@ fn judge_hidden_defaults<R: Rt>(
     Ok(())
 }
 
+// CR claude for claude: [risk/low] In a function's body, the function type a `let`'s
+// annotation holds names the lambdas of every compile of that `let`: its definition's
+// check's and each instance's built so far, so a judgment over "the definitions the value
+// may be" in one instance compiles another instance's default, in that instance's
+// environment. `{ let j = 0; let mk = |t: 'a| -> string { let v: fn(?#d: 'q, x: i64) ->
+// string = select j { 0 => |#d = t, x: i64| cast<string>(d)$, _ => never() }; v(7) };
+// "[mk(1)] [mk("z")]" }` prints "1 z", and under GRAPHIX_NO_SUBST=1 the instance of
+// mk("z") is refused at the default `t`, "the functions met here share one #d .. 'q: i64
+// does not contain string": the copy's 'q took i64 from the default of mk(1)'s lambda.
+// A trace of judge_hidden_defaults there printed the same three ids for the declared
+// function and the value ({the check's}, then +mk(1)'s, then +mk("z")'s): Bind::compile
+// takes the annotation by Type::scope_refs, which copies its cells and keeps each
+// function type's LambdaIds node (FnType::cow_walk clones the handle), so every compile
+// of the `let` links its lambda onto the expression's one node. A fix gives each compile
+// a node of its own (LambdaIds::instantiate), if nothing reads the shared one on purpose.
+// base-r24 alike under NO_SUBST, and without it until an instance's `let` stopped
+// judging such a function (let-annotation-default-instance-01). The default build shows
+// no wrong verdict or value in the probes; a call through `v` in an instance names
+// three definitions where it could name one. probes:
+// ~/ptmp/cr29/scratch/r24/24c/ladi/{e8,e8b,e11,e12}.gx (annotation-names-sibling-lambdas-01)
 /// The definitions a function of type `ft` may be, in the order the
 /// program writes them ([`LambdaDef::written_order`]); an id no definition
 /// is registered for comes last.
@@ -467,6 +490,11 @@ pub(crate) enum Narrowing {
     /// none (a typedef's body writes it) is judged as it stands, since
     /// no call will.
     Copy,
+    /// [`Self::Copy`] in an instance, whose types are its definition's
+    /// check's: a function that names the value's definitions keeps the
+    /// definition's verdict, given before the body's calls decided the
+    /// declaration. One that names none is judged as it stands.
+    Instance,
 }
 
 impl Narrowing {
@@ -480,7 +508,7 @@ impl Narrowing {
                  reader, so this default must fit its type as it is written: write \
                  the default's type in the binding's type",
             ),
-            Narrowing::Copy => Some(
+            Narrowing::Copy | Narrowing::Instance => Some(
                 "a function read through a typedef's function type is not known \
                  where it is called, so this default must fit the declared type as \
                  it is written: write the default's type in the declared type",
@@ -644,6 +672,7 @@ fn hidden_defaults_at<R: Rt>(
                 Narrowing::Copy if names_definitions(formal, fv) => {
                     judge(ctx, &formal.reset_tvars_with(&mut walk.copies))
                 }
+                Narrowing::Instance if names_definitions(formal, fv) => Ok(()),
                 narrowing => match narrowing.note() {
                     Some(note) if formal.has_unbound() => {
                         judge(ctx, formal).map_err(|e| Told::over(e, note))

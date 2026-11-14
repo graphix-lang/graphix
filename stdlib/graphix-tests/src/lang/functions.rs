@@ -4134,6 +4134,117 @@ run!(default_of_another_type_written_behind_a_functions_return, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+// A declaration nothing writes leaves its label's variable to the calls
+// through it, in a function's body as at the top level: the instance takes
+// its definition's verdict on the default, whatever the calls decided.
+run!(default_under_a_bodys_annotation_no_call, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        "none"
+    };
+    mk(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "none"); FuseExpect::Jit);
+
+run!(default_under_a_bodys_annotation_a_call_passes_the_label, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        v(#d: "s", 7)
+    };
+    mk(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::None);
+
+run!(default_under_a_bodys_annotation_a_call_omits_the_label, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        "[v(7)] [v(#d: 2, 8)]"
+    };
+    mk(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 2"); FuseExpect::None);
+
+run!(default_under_a_bodys_annotation_of_another_type_than_a_call_passes, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        "[v(#d: "s", 7)] [v(8)]"
+    };
+    mk(1)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_under_a_bodys_optional_annotation, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: [fn(?#d: 'q, x: i64) -> string, null] =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null };
+        (v$)(#d: "s", 7)
+    };
+    mk(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::None);
+
+run!(default_under_a_bodys_struct_annotation, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: {cb: fn(?#d: 'q, x: i64) -> string} =
+            select j { 0 => {cb: |#d = 1, x: i64| cast<string>(d)$}, _ => never() };
+        v.cb(#d: "s", 7)
+    };
+    mk(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::None);
+
+run!(default_under_a_bodys_array_annotation, r#"
+{
+    let j = 0;
+    let mk = |t: Any| -> string {
+        let v: Array<fn(?#d: 'q, x: i64) -> string> =
+            [select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() }];
+        (v[0]$)(#d: "s", 7)
+    };
+    mk(1)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::None);
+
+run!(default_under_a_bodys_annotation_returned, r#"
+{
+    let j = 0;
+    let mk = |t: Any| {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
+        v
+    };
+    mk(1)(#d: "s", 7)
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::None);
+
+run!(default_of_a_factorys_variable_under_a_bodys_annotation, r#"
+{
+    let j = 0;
+    let mk = |t: 'a| -> string {
+        let v: fn(?#d: 'q, x: i64) -> string =
+            select j { 0 => |#d = t, x: i64| cast<string>(d)$, _ => never() };
+        v(7)
+    };
+    "[mk(1)] [mk("z")]"
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 z"); FuseExpect::None);
+
 // An abstract type's constructor holds its argument through the type's
 // representation, which no reader of the payload names a function by: a
 // default bounds the construction's parameter from below, so the

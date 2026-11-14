@@ -696,8 +696,10 @@ impl<R: Rt> Bind<R> {
         self.type_leaves(ctx, leaves, apart)
     }
 
-    /// The binding holds its value's type, unless it forwards it.
-    fn check_value(&self, ctx: &mut CompileCtx<R>) -> Result<()> {
+    /// The binding holds its value's type, unless it forwards it. A
+    /// binding nothing writes judges its value's hidden defaults by
+    /// `unwritten`.
+    fn check_value(&self, ctx: &mut CompileCtx<R>, unwritten: Narrowing) -> Result<()> {
         if !self.forwards(ctx) {
             let written = written(ctx, &self.pattern);
             let value = match written {
@@ -708,7 +710,7 @@ impl<R: Rt> Bind<R> {
                 matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
             let contain = |t: &Type| t.check_contains(&ctx.env, &value);
             wrap!(self.node, contain(&self.typ))?;
-            // CR claude for claude: [bug/medium] In a function's body, a `let` whose
+            // XCR claude for claude: [bug/medium] In a function's body, a `let` whose
             // annotation leaves a label's type to a variable of its own, over a select
             // whose arm is a lambda with a default, passes the check and is refused when
             // the instance is built: `let j = 0; let mk = |t: Any| -> string { let v:
@@ -728,12 +730,28 @@ impl<R: Rt> Bind<R> {
             // ~/ptmp/cr29/scratch/r23/23b/cud/{s1,s6,s7,s8,s9,s12}.gx, twins that run
             // {s2,s13,s14,s15}.gx, gen.py, gen.out
             // (let-annotation-default-instance-01)
+            // 2026-11-14 claude: An instance's let takes its definition's verdict on a
+            // function its annotation names the definitions of
+            // (callsite::Narrowing::Instance, from Bind::typecheck0_instance): the
+            // definition judged the default on a copy while the label's variable was
+            // open, and the instance read the variable as the body's calls or the settle
+            // left it. A function a typedef names is still judged as it stands. Pins
+            // lang::functions::default_under_a_bodys_annotation_{no_call,
+            // a_call_passes_the_label, returned}, default_under_a_bodys_{optional,
+            // struct, array}_annotation and
+            // default_of_a_factorys_variable_under_a_bodys_annotation fail with
+            // Narrowing::Copy passed there; .._a_call_omits_the_label and
+            // .._of_another_type_than_a_call_passes pin what the definition's check still
+            // decides and refuses. The 156 gen.py rows:
+            // ~/ptmp/cr29/scratch/r24/24c/ladi/sweep.out. Under GRAPHIX_NO_SUBST=1 two
+            // instances still split (annotation-names-sibling-lambdas-01), and a returned
+            // one by (nosubst-returned-default-01).
             if annotated {
                 let scope = Scope::root();
                 let (flags, top) = (BitFlags::empty(), self.spec.id);
                 let narrowing = match written {
                     true => Narrowing::Written,
-                    false => Narrowing::Copy,
+                    false => unwritten,
                 };
                 wrap!(
                     self.node,
@@ -946,7 +964,7 @@ impl<R: Rt> Update<R> for Bind<R> {
             let ids = |p: &expr::StructurePattern| ids.get(p);
             refuse_inside_rigid(&ctx.env, &ids, &self.spec, &b.pattern, &self.typ)?;
         }
-        self.check_value(ctx)?;
+        self.check_value(ctx, Narrowing::Copy)?;
         self.complete_deferred(ctx)?;
         self.publish(ctx);
         Ok(())
@@ -961,7 +979,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         self.reads
             .within(ctx, |ctx| wrap!(node, node.typecheck0_instance(ctx, types)))?;
         if !types.settle(self.spec.id, &self.typ) {
-            self.check_value(ctx)?;
+            self.check_value(ctx, Narrowing::Instance)?;
         }
         self.complete_deferred(ctx)?;
         self.publish(ctx);

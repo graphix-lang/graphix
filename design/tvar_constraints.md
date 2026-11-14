@@ -1243,7 +1243,18 @@ An image carries each cell's level and each definition's depth.
   (`callsite::Narrowing::Copy`): one that names the value's definitions,
   by the link `contains` left on it, is judged on a copy and decides
   nothing of the declaration, since every call through it judges the
-  default again at its own view. A function type a typedef's body writes
+  default again at its own view. That verdict is given while the
+  declaration's variable is open, and the body's calls decide it after: a
+  call that passes the label may make it a type the default does not fit
+  (`let v: fn(?#d: 'q, x: i64) -> string = select j { 0 => |#d = 1, ..|
+  .., _ => never() }; v(#d: "s", 7)` holds `'q: string` and never needs
+  the default), and with no call it settles to bottom. So an instance,
+  whose `let` reads the variable as its definition's check left it, takes
+  the definition's verdict on such a function and judges nothing
+  (`Narrowing::Instance`); the function a typedef names, below, it judges
+  as it stands, as its definition did. Pins
+  `lang::functions::default_under_a_bodys_annotation_no_call` and its
+  neighbours. A function type a typedef's body writes
   names none: each expansion is a type of its own, so the reader's `w.cb`
   is a function no definition is known for, no call judges its default,
   and the bind would meet whatever the declaration's variable settled to.
