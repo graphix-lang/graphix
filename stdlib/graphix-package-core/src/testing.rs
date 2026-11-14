@@ -585,6 +585,20 @@ pub async fn next_update(
     next_update_raw(rt, rx, id).await.map(data)
 }
 
+// CR claude for claude: [risk/medium] The settle below was answered before the update a
+// program still owed, once: lib_tests::tcp::tcp_accept_deleted::jit failed "the
+// runtime settled without an update of ExprId(..)" in one full gate of lane 24d
+// (2026-11-14, with the other lanes' builds running) and passed in the 21 other gates
+// of that day and in the rerun. The program is never without a task or an armed timer
+// until its last cycle as far as its text shows (a listen, an after_idle of 300 ms,
+// then a connect and an after_idle of 100 ms per attempt, whose arm's sleep stops the
+// timer in the cycle that answers), so either GXRt::outstanding misses something that
+// can still deliver (a timer between its fire and the cycle that reads it, a call a
+// sleep stopped, the fused build's first cycle), or an update can be outside the event
+// stream when the settle answers. Not reproduced and not looked into further; a fix
+// starts by running that test in a loop under a build's load with the runtime's
+// tasks, timers and cycle logged at the settle's answer. log:
+// ~/ptmp/cr29/scratch/r24/coord/gate-tcp-accept-deleted.log.gz (settle-before-update-01)
 /// The next update of `id` as the runtime delivered it. A runtime that
 /// settles without one fails at once, since nothing outstanding can bring
 /// it; otherwise the wait lasts as long as the program's work does under
