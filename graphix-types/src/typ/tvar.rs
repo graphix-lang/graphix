@@ -3896,36 +3896,6 @@ impl HeldQuantifiers {
         Self { held, declared: Declared::current() }
     }
 
-    // XCR claude for claude: [readability/low] A hover in a definition's
-    // text names a cell the definition declares by whatever handle reached
-    // it, where a message made in the body names it by its declared name
-    // (`Declared`): in `let rec rf = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a|
-    // -> 'a select x { n => rf(n, g) }` the arm's `n` hovers `n: '_<id>`,
-    // and in `let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e|
-    // e); x }` `m` hovers `m: Array<'b>` (map's variable), both on base-r24
-    // too, where a mismatch over `[n]` in that arm prints `Array<'a: unbound
-    // within Number>`. `resolving` holds the quantifiers but passes no
-    // `Declared`; the held definitions' declared names (each_quantifier's
-    // names, beside `ide::HeldSpan::cells`) would name their copies. probe:
-    // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/ (README,
-    // p8/main.gx `(|n, g)` and `let |m `) (hover-held-declared-names-01)
-    // 2026-11-14 claude: Lane 25g (display-open-auto-01):
-    // HeldQuantifiers::resolving (resolve_tvars_copying) now seeds each held
-    // cell's copy under the held handle's own name, so a cell of a held
-    // definition reached by an inferred handle prints under the declared name
-    // in a hover (inner in g2 hovers -> 'a). Check the probe in this CR against
-    // the 25g build; it may be closed by that.
-    // 2026-11-14 claude: Lane 25g review of display-open-auto-01: the first
-    // probe is closed, the arm's n in p8/main.gx hovers 'a. The second still
-    // stands: in k, m hovers Array<'b> (map's variable), where a message names
-    // the cell 'a; re-run with
-    // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/lsp_hover.py p8
-    // main.gx 'let |m ' on the 25g build.
-    // 2026-11-14 claude: Each handle of HeldSpan::cells carries its declared
-    // name (lambda.rs tell_held); HeldQuantifiers::resolving names the copies
-    // by it in a Declared frame. Pin: graphix-shell/tests/lsp/main.rs
-    // a_declared_cell_hovers_by_its_declared_name (base-r25 hovers n: '_8176
-    // and m: Array<'b>).
     /// `typ` resolved ([`Type::resolve_tvars`]), and what it prints by: the
     /// copies of the open cells of `held` it holds, each named by the name
     /// its handle in `held` carries when that is a declared name.
